@@ -338,13 +338,15 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 //   - The clear failed: released (uncounted, fenced like the clear), so a
 //     peer or the next sweep retries it.
 //   - The clear was refused (taken by a newer epoch, terminal, or gone):
-//     nothing is this node's to hand back, so no release.
-//   - The job's context ended first: the cause owns the next step. A shutdown
-//     release (errJobReleased) has already released it, and a self-reclaim
-//     (errJobSuperseded) holds it at a newer epoch, so neither is released
-//     again. Any other end — a refused heartbeat, an in-process cancel — gets
-//     the fenced release, which the store refuses if the job is no longer
-//     this epoch's.
+//     nothing is this node's to hand back, so no release; reported as a lost
+//     claim (endLostClaim).
+//   - The job's context ended first: the cause owns the next step. A refused
+//     heartbeat or a cancel on this node (errCancelledHere) means the job is
+//     no longer this claim's: reported as a lost claim, no release. A
+//     shutdown release (errJobReleased) has already released it, and a
+//     self-reclaim (errJobSuperseded) holds it at a newer epoch, so neither is
+//     released again. Any other end gets the fenced release, which the store
+//     refuses if the job is no longer this epoch's.
 func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel context.CancelCauseFunc, handle *asyncJobHandle, job *spi.SearchJob) bool {
 	if jobCtx.Err() == nil {
 		cerr := s.searchStore.ClearResults(jobCtx, job.ID, job.Epoch)

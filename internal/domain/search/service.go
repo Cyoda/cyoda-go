@@ -49,6 +49,12 @@ var errJobReleased = errors.New("async search job released for reclaim")
 // mistaken for a graceful handoff.
 var errJobSuperseded = errors.New("async search job superseded by self-reclaim")
 
+// errCancelledHere cancels an executor whose job CancelAsync has just written
+// CANCELLED on this node. It wraps spi.ErrAlreadyTerminal, the store's answer
+// to any later write, so every path reads this cancel as it reads one made on
+// another node: a lost claim (fencedRefusal).
+var errCancelledHere = fmt.Errorf("async search job cancelled on this node: %w", spi.ErrAlreadyTerminal)
+
 // jobLookupErr preserves why an async-job lookup failed.
 //
 // A job that genuinely is not there keeps ErrSearchJobNotFound, which the
@@ -625,7 +631,7 @@ func (s *SearchService) CancelRunning(jobID string) bool {
 	if !ok {
 		return false
 	}
-	entry.cancel(nil)
+	entry.cancel(errCancelledHere)
 	return true
 }
 
@@ -1378,31 +1384,11 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	case jobCtx.Err() != nil:
 		// Cancelled — in-process CancelRunning, or a heartbeat the store
 		// refused (a cross-node cancel or other terminal status, a lost
-		// claim). The read below tells which: a job no longer this
-		// executor's is reported once (endLostClaim) and not recorded.
-		// context.WithoutCancel so the recovery READ below is not itself
-		// aborted by the same cancellation (the write that follows strips
-		// cancellation on its own).
-		recoveryCtx := context.WithoutCancel(jobCtx)
-		job, getErr := s.searchStore.GetJob(recoveryCtx, jobID)
-		switch {
-		case errors.Is(getErr, spi.ErrNotFound):
-			endLostClaim(jobID, getErr)
-			return
-		case getErr == nil && (job.Status != "RUNNING" || job.Epoch != epoch):
-			endLostClaim(jobID, context.Cause(jobCtx))
-			return
-		}
-		// Still this executor's RUNNING claim, or the read failed: the job
-		// was interrupted, a server-side failure.
-		// jobCtx, not recoveryCtx: writeAsyncFailure's own release-cause
-		// guard reads context.Cause(ctx) before stripping cancellation, and
-		// context.Cause on a WithoutCancel derivative always reports nil
-		// (its Err() is unconditionally nil) — recoveryCtx would silently
-		// defeat the guard. writeAsyncFailure strips cancellation itself
-		// right after the guard, so passing jobCtx costs nothing here.
+		// claim). writeAsyncFailure tells which: a job no longer this
+		// executor's is reported once (endLostClaim) and not recorded; its
+		// own RUNNING claim was interrupted, a server-side failure.
 		s.writeAsyncFailure(jobCtx, jobID, epoch, failureReason(jobID,
-			common.Internal("async search job interrupted", errors.Join(context.Cause(jobCtx), getErr))), finishTime, calcTimeMs)
+			common.Internal("async search job interrupted", context.Cause(jobCtx))), finishTime, calcTimeMs)
 		return
 	case prodErr != nil:
 		s.writeAsyncFailure(jobCtx, jobID, epoch, failureReason(jobID, prodErr), finishTime, calcTimeMs)
@@ -1462,6 +1448,12 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epo
 		// there, but the cause is still readable from ctx itself.
 		return
 	}
+	if ctx.Err() != nil && s.noLongerOurs(ctx, jobID, epoch) {
+		// The job's context ended — whichever step was failing — because the
+		// job was settled, claimed elsewhere or removed: not a failure of
+		// this executor's to record.
+		return
+	}
 	ctx = context.WithoutCancel(ctx)
 	// Rendered only now, past the release check: a reason built by
 	// failureReason logs the failure and may mint a ticket, so a released job
@@ -1475,6 +1467,23 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epo
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
 	}
+}
+
+// noLongerOurs reads the job once, after its executor's context ended, and
+// reports whether it is no longer this executor's to record — settled,
+// claimed at another epoch, or removed — reporting that once if so
+// (endLostClaim). A read that fails leaves the job this executor's.
+func (s *SearchService) noLongerOurs(ctx context.Context, jobID string, epoch int64) bool {
+	job, err := s.searchStore.GetJob(context.WithoutCancel(ctx), jobID)
+	switch {
+	case errors.Is(err, spi.ErrNotFound):
+		endLostClaim(jobID, err)
+		return true
+	case err == nil && (job.Status != "RUNNING" || job.Epoch != epoch):
+		endLostClaim(jobID, context.Cause(ctx))
+		return true
+	}
+	return false
 }
 
 // GetAsyncStatus returns the current status of an async search job.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +35,9 @@ func TestAsyncSearch_LostClaimEndsWithOneLine(t *testing.T) {
 			t.Fatalf("ClaimStale: %v", err)
 		}
 	}
+	// The memory store reaps only a terminal job, so a removal cancels
+	// first; the executor may meet either refusal, which is why every lost
+	// claim is reported alike.
 	remove := func(t *testing.T, store spi.AsyncSearchStore, ctx context.Context, jobID string) {
 		cancelOnOtherNode(t, store, ctx, jobID)
 		if _, err := store.ReapExpired(context.Background(), 0); err != nil {
@@ -107,4 +111,88 @@ func TestAsyncSearch_LostClaimEndsWithOneLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+// blockingModelFactory hands out a model store whose reads, once armed, wait
+// for their context to end and then answer its error, as a store's read does
+// when the job it serves is cancelled mid-read.
+type blockingModelFactory struct {
+	spi.StoreFactory
+	armed   atomic.Bool
+	entered chan struct{}
+}
+
+func (f *blockingModelFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
+	ms, err := f.StoreFactory.ModelStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &blockingModelStore{ModelStore: ms, f: f}, nil
+}
+
+type blockingModelStore struct {
+	spi.ModelStore
+	f *blockingModelFactory
+}
+
+func (m *blockingModelStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
+	if !m.f.armed.Load() {
+		return m.ModelStore.Get(ctx, ref)
+	}
+	select {
+	case m.f.entered <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// A cancel that lands while the job is still loading what it needs before
+// the scan — not only during the scan — ends it as a lost claim: one INFO
+// line, no ERROR, no ticket.
+func TestAsyncSearch_CancelDuringEarlyStepsEndsAsALostClaim(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-early-cancel")
+	ref := spi.ModelRef{EntityName: "earlycancel", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+	store, _ := base.AsyncSearchStore(context.Background())
+	factory := &blockingModelFactory{StoreFactory: base, entered: make(chan struct{}, 1)}
+	pool := search.NewWorkerPool(1, 4)
+	t.Cleanup(func() { pool.Drain(context.Background()) })
+	hold := make(chan struct{})
+	if err := pool.Submit(func() { <-hold }); err != nil {
+		t.Fatalf("Submit the holder: %v", err)
+	}
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
+		WithAsyncPool(pool).
+		WithHeartbeat(time.Hour)
+
+	// Submit while the read is unarmed (submit-time validation reads the
+	// model too), then arm it and let the job run into it.
+	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}, search.SearchOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	factory.armed.Store(true)
+	close(hold)
+	select {
+	case <-factory.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the job never reached its model read")
+	}
+
+	logs := captureJobLogs(t)
+	if _, err := svc.CancelAsync(ctx, jobID); err != nil {
+		t.Fatalf("CancelAsync: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "jobID="+jobID) {
+		if time.Now().After(deadline) {
+			t.Fatal("the executor logged nothing for the cancelled job")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	assertOneLostClaimLine(t, logs.String(), jobID)
 }
