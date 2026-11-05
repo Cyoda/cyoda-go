@@ -13,7 +13,7 @@ The status of an async search carries an optional `failureReason` (string).
 - **HTTP:** `GET /search/async/{jobId}/status` (`getAsyncSearchStatus`),
   member `failureReason` of `AsyncSearchStatusDto`.
 - **gRPC:** the `EntitySnapshotSearchResponse` answering a
-  `SnapshotGetStatusRequest` (and a `SnapshotCancelRequest`), member
+  `SnapshotGetStatusRequest` (and a refused `SnapshotCancelRequest`), member
   `status.failureReason` of `SearchSnapshotStatus`
   (`docs/cyoda/schema/search/SearchSnapshotStatus.json`).
 - **Text.** The same rule as an error response:

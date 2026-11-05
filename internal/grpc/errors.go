@@ -344,20 +344,15 @@ func snapshotSearchError(ctx context.Context, ceID string, err error) (*cepb.Clo
 }
 
 // snapshotCancelRefused builds the answer to a cancel of a snapshot that has
-// already ended: the error envelope, carrying the status the snapshot ended
-// with (from the refusal's Props) instead of the generic FAILED.
-func snapshotCancelRefused(ctx context.Context, ceID string, appErr *common.AppError) (*cepb.CloudEvent, error) {
-	code, msg, retryable := buildErrorFields(appErr)
-	snapshotID, _ := appErr.Props["snapshotId"].(string)
-	current, _ := appErr.Props["currentStatus"].(string)
+// already ended: the error envelope, carrying the snapshot's own status in
+// place of the generic FAILED.
+func snapshotCancelRefused(ctx context.Context, ceID string, refusal error, st events.SearchSnapshotStatusJson) (*cepb.CloudEvent, error) {
+	code, msg, retryable := buildErrorFields(refusal)
 	resp := events.EntitySnapshotSearchResponseJson{
 		ID:       ceID,
 		Success:  false,
 		Warnings: ctxWarnings(ctx),
-		Status: events.SearchSnapshotStatusJson{
-			SnapshotID: snapshotID,
-			Status:     events.SearchSnapshotStatusJsonStatus(current),
-		},
+		Status:   st,
 		Error: &events.EntitySnapshotSearchResponseJsonError{
 			Code:      code,
 			Message:   msg,

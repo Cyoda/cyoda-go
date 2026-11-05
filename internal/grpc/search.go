@@ -295,8 +295,14 @@ func (s *CloudEventsServiceImpl) handleSnapshotCancelRequest(ctx context.Context
 	err := s.searchService.CancelAsyncSearch(ctx, req.SnapshotID)
 	if appErr := (*common.AppError)(nil); errors.As(err, &appErr) && appErr.Code == common.ErrCodeSearchJobAlreadyTerminal {
 		// The snapshot has already ended: refused as the HTTP door refuses
-		// it, with the status it ended with rather than the generic one.
-		return snapshotCancelRefused(ctx, ce.Id, appErr)
+		// it, with the snapshot's own full status (failureReason included)
+		// rather than the generic one.
+		snapStatus, serr := s.searchService.GetAsyncSearchStatus(ctx, req.SnapshotID)
+		if serr != nil {
+			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", SnapshotCancelRequest, "ceId", ce.Id, "error", serr.Error())
+			return snapshotSearchError(ctx, ce.Id, serr)
+		}
+		return snapshotCancelRefused(ctx, ce.Id, appErr, snapshotStatusJSON(snapStatus))
 	}
 	if err != nil {
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", SnapshotCancelRequest, "ceId", ce.Id, "error", err.Error())

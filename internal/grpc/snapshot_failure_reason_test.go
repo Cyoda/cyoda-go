@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,5 +75,47 @@ func TestRPC_SnapshotGetStatus_FailureReason(t *testing.T) {
 	}
 	if ok.FailureReason != nil {
 		t.Errorf("SUCCESSFUL status carries failureReason %q; want it absent", *ok.FailureReason)
+	}
+}
+
+// A cancel of a FAILED snapshot is refused (SEARCH_JOB_ALREADY_TERMINAL) with
+// the snapshot's full status, so the refusal still says why it failed.
+func TestRPC_SnapshotCancel_FailedSnapshotKeepsFailureReason(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	store, _ := factory.AsyncSearchStore(context.Background())
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(
+		factory, common.NewDefaultUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())}
+	ctx := grpcTenantCtx()
+
+	const reason = "search failed unexpectedly"
+	const id = "aaaaaaaa-0000-0000-0000-000000000003"
+	if err := store.CreateJob(ctx, &spi.SearchJob{
+		ID: id, TenantID: "test-tenant", Status: "RUNNING",
+		ModelRef:   spi.ModelRef{EntityName: "person", ModelVersion: "1"},
+		CreateTime: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if err := store.UpdateJobStatus(ctx, id, 1, "FAILED", 0, reason, time.Now(), 1); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+
+	resp, err := svc.EntitySearch(ctx, makeCE(SnapshotCancelRequest, map[string]any{
+		"id": "cancel-" + id, "snapshotId": id,
+	}))
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Success || typed.Error == nil || !strings.HasPrefix(typed.Error.Message, "SEARCH_JOB_ALREADY_TERMINAL: ") {
+		t.Fatalf("cancel = success %v, error %+v; want refused with SEARCH_JOB_ALREADY_TERMINAL", typed.Success, typed.Error)
+	}
+	if typed.Status.Status != events.SearchSnapshotStatusJsonStatusFAILED || typed.Status.SnapshotID != id {
+		t.Fatalf("status = %+v, want the snapshot's FAILED status", typed.Status)
+	}
+	if typed.Status.FailureReason == nil || *typed.Status.FailureReason != reason {
+		t.Errorf("failureReason = %v, want %q", typed.Status.FailureReason, reason)
 	}
 }

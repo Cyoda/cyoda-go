@@ -14,8 +14,9 @@ with `SEARCH_JOB_ALREADY_TERMINAL`, not retryable:
 - **gRPC:** the `EntitySnapshotSearchResponse` answering a
   `SnapshotCancelRequest` has `success` false, `error.code` `CLIENT_ERROR`,
   `error.message` starting `SEARCH_JOB_ALREADY_TERMINAL: `, and `status` the
-  snapshot's own status: `status.snapshotId` the requested id, `status.status`
-  the status it ended with.
+  snapshot's own full status, as a `SnapshotGetStatusRequest` answers it:
+  `status.status` the status it ended with, and `status.failureReason` for a
+  `FAILED` snapshot.
 
 A job that finishes while the cancel is landing is answered the same way. The
 store's cancel is idempotent on a terminal job, so cyoda-go reads the job's
@@ -24,10 +25,11 @@ the job's status is `CANCELLED`.
 
 ## What changed
 
-- gRPC answered `success` true for a snapshot that had already ended.
-- On both doors, a job that finished between the status check and the cancel
-  was answered as cancelled (`CANCELLED`) while its status stayed
-  `SUCCESSFUL` or `FAILED`.
+- gRPC answered `success` true for a snapshot that had already ended,
+  including one that finished between the status check and the cancel.
+- HTTP answered a job that finished between the status check and the cancel
+  as cancelled (`CANCELLED`) while its status stayed `SUCCESSFUL` or
+  `FAILED`.
 
 ## Cloud today
 
@@ -49,6 +51,8 @@ current status, and adds the warning `Snapshot not cancelled, current status is
   (`TestCancelAsync_JobThatFinishedFirstIsNotReportedCancelled`).
 - gRPC: `internal/grpc/search_test.go`
   (`TestEntitySearch_SnapshotCancel_AlreadyTerminal`, and
-  `TestEntitySearch_SnapshotCancel_Envelope` for a running snapshot).
+  `TestEntitySearch_SnapshotCancel_Envelope` for a running snapshot) and
+  `internal/grpc/snapshot_failure_reason_test.go`
+  (`TestRPC_SnapshotCancel_FailedSnapshotKeepsFailureReason`).
 - E2E (HTTP): `internal/e2e/search_test.go`
   (`TestAsyncSearch_Cancel_AlreadyCompleted`).
