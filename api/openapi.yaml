@@ -2469,9 +2469,8 @@ paths:
         selected is reported in `idToError`, a failed batch deletes nothing and
         its error is reported for each of its entities, and the other batches
         still run. In a request that joins another request's transaction, the
-        delete commits and rolls back nothing itself: what it deleted before
-        a failure stays in the owner's transaction, which commits or not as
-        a whole.
+        delete commits and rolls back nothing itself: the owner's transaction
+        commits or rolls back as a whole.
         A malformed condition body returns `400 INVALID_CONDITION`.
       operationId: deleteEntities
       parameters:

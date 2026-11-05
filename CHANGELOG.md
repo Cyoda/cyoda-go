@@ -22,8 +22,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (other than the entity being gone) fails the request before any batch
   runs; it answered a per-id failure. In a request that joins another
   request's transaction, the delete commits and rolls back nothing itself:
-  what it deleted before a failure stays in the owner's transaction, which
-  commits or not as a whole. On memory, a transaction that deletes an entity
+  the owner's transaction commits or rolls back as a whole. On memory, a transaction that deletes an entity
   another transaction deleted after its snapshot now loses a write race, as
   on SQLite and PostgreSQL, rather than answering it as already gone; on
   SQLite, a failed read inside a transaction is no longer reported as the
