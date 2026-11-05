@@ -104,6 +104,7 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		{Status: 403, Code: "FORBIDDEN"},          // TestRouteGuard_DataRouteRequiresM2M: the caller lacks ROLE_M2M
 		{Status: 404, Code: "MODEL_NOT_FOUND"},    // model not registered
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_CreateDuplicate et al.
+		{Status: 412, Code: "ENTITY_MODIFIED"},    // TestCreate_CBDPostSegmentConflict_Is412
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_PartialKeyCreate, TestUniqueKeys_OverBoundNumeric
 		// TestModelKindBranch_KeyedPathCannotGainAContainer: a STRUCTURAL write
 		// that would give a keyed path a container branch.
@@ -125,6 +126,7 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		{Status: 400, Code: "BAD_REQUEST"},                      // invalid JSON array or parameter
 		{Status: 404, Code: "MODEL_NOT_FOUND"},                  // one or more models not registered
 		{Status: 409, Code: "UNIQUE_VIOLATION"},                 // TestUniqueKeys_CollectionIntraBatchDuplicate, TestUniqueKeys_MixedModelBatch
+		{Status: 412, Code: "ENTITY_MODIFIED"},                  // TestCreateCollection_CBDPostSegmentConflict_Is412
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"},               // TestUniqueKeys_CollectionPartialKeyCreate
 		{Status: 400, Code: "WORKFLOW_FAILED"},                  // TestCalloutEndpoints_EveryDoorEveryCode/create-collection/terminal
 		{Status: 408, Code: "TRANSACTION_TIMEOUT"},              // TestTransactionControl_WriteOps_TransactionTimeout408/CreateCollection
