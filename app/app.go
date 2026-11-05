@@ -744,9 +744,6 @@ func New(cfg Config) *App {
 		BaseRouter:       internalapi.NewChiMux(queryRules, txJoinMW),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
 	})
-	if cfg.OTelEnabled {
-		apiHandler = otelhttp.NewMiddleware("cyoda")(apiHandler)
-	}
 	mux.Handle("/", authMW(apiHandler))
 
 	// Context path — wrap all routes under configurable prefix
@@ -779,6 +776,14 @@ func New(cfg Config) *App {
 	// (auth is applied on the owning node).
 	if cfg.Cluster.Enabled {
 		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback, contextPath)(a.handler)
+	}
+
+	// Every request gets a server span, the hand-registered routes (token,
+	// JWKS, admin, grouped statistics, help, peer routes) as much as the
+	// generated API routes, and a request forwarded to its transaction's owner
+	// as much as one served here.
+	if cfg.OTelEnabled {
+		a.handler = otelhttp.NewMiddleware("cyoda")(a.handler)
 	}
 
 	// CORS sits outside cluster routing so preflights short-circuit at the
