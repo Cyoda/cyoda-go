@@ -1245,8 +1245,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `failureReason` on HTTP `GET /search/async/{jobId}/status`, and
   `status.failureReason` on the gRPC `SnapshotGetStatusRequest` answer. A
   failure the request caused carries the client error a direct search would
-  answer, error code first; any other failure carries a fixed text that names
-  no internal detail (for example `search failed unexpectedly`). Before, a
+  answer, error code first; a server-side failure carries
+  `SERVER_ERROR: internal error [ticket: <uuid>]`, its detail logged under the
+  ticket; an unclassified one carries a fixed text (for example `search
+  failed unexpectedly`). Before, a
   caller saw `FAILED` and no reason. See `cyoda help search`.
 
 - **HTTP responses carry warnings in `Cyoda-Warning` headers.** A warning a

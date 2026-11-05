@@ -816,7 +816,7 @@ type AsyncSearchStatusDto struct {
 	// ExpirationDate When the search job will expire and be automatically deleted
 	ExpirationDate time.Time `json:"expirationDate"`
 
-	// FailureReason Why the search job failed. Present only when `searchJobStatus` is FAILED, and absent for every other status. For a failure the request itself caused, it is the same client error a direct search would answer, code first (for example `INVALID_FIELD_PATH: condition or sort references an invalid field path`); for a server-side failure it is a fixed text that names no internal detail (for example `search failed unexpectedly`).
+	// FailureReason Why the search job failed. Present only when `searchJobStatus` is FAILED, and absent for every other status. For a failure the request itself caused, it is the same client error a direct search would answer, code first (for example `INVALID_FIELD_PATH: condition or sort references an invalid field path`); for any other failure it names no internal detail: a server-side failure is `SERVER_ERROR: internal error [ticket: <uuid>]`, its detail logged under the ticket, and an unclassified one is a fixed text (for example `search failed unexpectedly`).
 	FailureReason *string `json:"failureReason,omitempty"`
 
 	// FinishTime When the search job completed (null if still running)

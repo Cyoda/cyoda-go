@@ -446,7 +446,7 @@ How an abort surfaces depends on whether retrying could plausibly work:
 
 - **Transient contention → `503 STORAGE_UNAVAILABLE`, retryable.** An operation that cannot get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — one that opens a transaction (every entity write, an async search's scan and result writes), or one needing a second connection while the caller's transaction holds one (a point-in-time read, an async-search job record or a key-value statement in a transaction) — and an operation whose transaction PostgreSQL already aborted for exceeding `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. A second attempt may well succeed. At COMMIT only PostgreSQL's own report of the idle abort is retryable: a COMMIT that meets a closed connection has an unknown outcome and answers `500` with a ticket.
 - **Statement ceiling exceeded → `500` with a ticket, not retryable.** A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT`. Re-running work that just exceeded its ceiling will exceed it again, so advertising a retry would be a lie. The exception is the store producing a consistency time: that wait answers a retryable `503 CONSISTENCY_TIME_UNAVAILABLE`.
-- **Async scan ceiling exceeded → recorded on the job, never an HTTP status.** A scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` fails the job it belongs to: the job goes `FAILED` and its record holds a fixed message, which every status read of the job serves as its `failureReason`. No ticket is minted, because the failure happens after the submit response.
+- **Async scan ceiling exceeded → recorded on the job, never an HTTP status.** A scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` fails the job it belongs to: the job goes `FAILED` and its record holds a fixed message, which every status read of the job serves as its `failureReason`. The message names the ceiling and no internal detail, so it carries no ticket.
 
 The server log names the ceiling when PostgreSQL reports it — `statement_timeout`, `idle_in_transaction_session_timeout` when the server's report reaches the driver, and `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` for an async scan — which is what turns an otherwise unexplained failure into a diagnosable one. An acquire timeout is logged as a failure to get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT`. See `cmd/cyoda/help/content/errors/STORAGE_UNAVAILABLE.md` for the caller-facing statement of the retryable/non-retryable split.
 
@@ -1486,10 +1486,13 @@ client: the status read serves it as `failureReason` on HTTP
 (`AsyncSearchStatusDto`) and as `status.failureReason` on the gRPC
 `SnapshotGetStatusRequest` answer, and serves no reason for any other status.
 The engine writes only client-safe text there
-(`internal/domain/search.jobFailureMessage`): a classified error's own
-message, which is code first, or a fixed text. A driver error or a recovered
-panic is recorded as `search failed unexpectedly`, and its detail stays in
-the log. A `SelfExecutingSearchStore` writes the field itself, not through
+(`internal/domain/search.jobFailureMessage`), and logs each failure once with
+the job id: a failure the request caused records its client error's own
+message, code first; a server-side failure records `SERVER_ERROR: internal error [ticket: <uuid>]`, its message and
+detail logged under the ticket, as both doors answer it; an unclassified one
+(a driver error, a recovered panic) records the fixed `search failed
+unexpectedly`, its detail in the log; a few fixed texts name a known cause
+(the attempt cap, the ceiling). A `SelfExecutingSearchStore` writes the field itself, not through
 `jobFailureMessage`, so the status read does not serve its text: a failed job
 of such a store reports `search failed unexpectedly`.
 

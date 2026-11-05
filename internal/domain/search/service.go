@@ -125,9 +125,13 @@ type asyncScanScoper interface {
 // status's failureReason). It is therefore held to the response contract like
 // any error a client is shown; nothing else stands between this text and the
 // wire.
-func jobFailureMessage(err error) string {
+//
+// It logs the failure once, with jobID: at INFO for a failure the request
+// caused, at ERROR, with the detail, for any other.
+func jobFailureMessage(jobID string, err error) string {
 	var ceiling searchCeilingExceeded
 	if errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
+		slog.Info("async search job failed", "pkg", "search", "jobID", jobID, "reason", searchCeilingMessage)
 		return searchCeilingMessage
 	}
 	// An operational error's Message is client-safe by construction. A
@@ -137,13 +141,15 @@ func jobFailureMessage(err error) string {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
 		if appErr.Level == common.LevelOperational {
+			slog.Info("async search job failed", "pkg", "search", "jobID", jobID, "reason", appErr.Error())
 			return appErr.Error()
 		}
 		ticket := uuid.New().String()
-		slog.Error("async search job failed", "pkg", "search", "ticket", ticket,
+		slog.Error("async search job failed", "pkg", "search", "jobID", jobID, "ticket", ticket,
 			"message", appErr.Message, "detail", appErr.Detail)
 		return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
 	}
+	slog.Error("async search job failed", "pkg", "search", "jobID", jobID, "err", err)
 	return jobFailureFallback
 }
 
@@ -1203,7 +1209,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	modelStore, err := s.factory.ModelStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(jobID, err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 	// Fail the job rather than answering without the schema. This load is
@@ -1219,10 +1225,11 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// jobFailureMessage to the generic fallback, so a tenant whose model
 		// store is down would read an actionable code on /search/direct and
 		// "search failed unexpectedly" here, for one and the same outage.
-		// common.Internal always returns a non-nil *AppError, and only its
-		// Message reaches the persisted job record — never its Detail.
+		// common.Internal always returns a non-nil *AppError; the job record
+		// gets the ticketed generic text, and its Message and Detail are logged
+		// under the ticket.
 		appErr := common.Internal("failed to load model schema for condition validation", fieldsErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(appErr), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(jobID, appErr), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1230,7 +1237,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// Ordinary error handling, not a designed branch: a condition that
 		// translated at submission translates here (schema changes after
 		// locking are additive). Anything else is an unexpected failure.
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(common.Internal("failed to translate search condition", translateErr)), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(jobID, common.Internal("failed to translate search condition", translateErr)), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 
@@ -1242,7 +1249,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	entityStore, err := s.factory.EntityStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(jobID, err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 
@@ -1262,7 +1269,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	if iterErr != nil {
 		// Classify exactly as the synchronous door does. The job record
 		// is the only report an async caller gets, and jobFailureMessage
-		// renders an *AppError's client-safe text while collapsing
+		// renders an operational *AppError's client-safe text while collapsing
 		// anything else to the generic fallback — so an unclassified
 		// sentinel turned a client's own malformed request into
 		// "search failed unexpectedly". Reaching a plugin's path
@@ -1355,12 +1362,10 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureFallback, finishTime, calcTimeMs)
 		return
 	case prodErr != nil:
-		slog.Warn("async search job failed", "pkg", "search", "jobID", jobID, "err", prodErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(prodErr), finishTime, calcTimeMs)
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(jobID, prodErr), finishTime, calcTimeMs)
 		return
 	case saveErr != nil:
-		slog.Error("failed to save search results", "pkg", "search", "jobID", jobID, "err", saveErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(saveErr), finishTime, calcTimeMs)
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(jobID, saveErr), finishTime, calcTimeMs)
 		return
 	}
 

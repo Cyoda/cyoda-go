@@ -11013,8 +11013,10 @@ components:
             request itself caused, it is the same client error a direct
             search would answer, code first (for example
             `INVALID_FIELD_PATH: condition or sort references an invalid field
-            path`); for a server-side failure it is a fixed text that names no
-            internal detail (for example `search failed unexpectedly`).
+            path`); for any other failure it names no internal detail: a
+            server-side failure is `SERVER_ERROR: internal error [ticket:
+            <uuid>]`, its detail logged under the ticket, and an unclassified
+            one is a fixed text (for example `search failed unexpectedly`).
       required:
         - calculationTimeMillis
         - createTime

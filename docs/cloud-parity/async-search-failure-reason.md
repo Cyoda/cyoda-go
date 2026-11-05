@@ -20,6 +20,9 @@ The status of an async search carries an optional `failureReason` (string).
   - A failure the request itself caused carries the client error a direct
     search would answer for it, error code first — for example
     `INVALID_FIELD_PATH: condition or sort references an invalid field path`.
+  - A server-side failure carries `SERVER_ERROR: internal error [ticket:
+    <uuid>]`, as an error response does, with its detail logged under the
+    ticket.
   - Any other failure carries a fixed text that names no internal detail —
     for example `search failed unexpectedly`, `search abandoned: executor lost
     repeatedly` (a job whose executor was lost too many times), or
