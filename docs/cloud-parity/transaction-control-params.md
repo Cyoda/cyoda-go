@@ -143,8 +143,8 @@ commits nothing and the owner may still commit them.
    existing partial-success/per-chunk contract, never as a top-level 408.
 3. `transactionSize`-batched deletes are partial-commit: batches committed
    before a failure remain committed and are reported as removed; failed or
-   version-conflicted ids are reported per-id, never silently dropped or
-   retried.
+   version-conflicted ids are reported per-id, never silently dropped; only
+   a batch that lost a write race is run again.
 4. Any transaction-control parameter on a joined/forwarded request is a hard
    `400`, never silently honored or silently ignored.
 5. No parameter changes default (absent) behavior — this is a PATCH-safe,

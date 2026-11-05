@@ -959,7 +959,8 @@ func TestDeleteEntitiesConditional_SingleTx_PerIDFaultFailsWhole(t *testing.T) {
 
 // A batch is one transaction too, and as atomic: a per-id fault fails its
 // batch, rolling back the deletes made before it, and every id of the batch
-// is answered the batch's error; the other batches still run.
+// that resolved nothing on its own is answered the batch's error; the other
+// batches still run.
 func TestDeleteEntitiesConditional_Batched_PerIDFaultFailsItsBatch(t *testing.T) {
 	e := newTaskEnv(t)
 	seedPersons(t, e.h, e.ctx, 5) // ages 0..4: four match, two batches of two
@@ -985,6 +986,56 @@ func TestDeleteEntitiesConditional_Batched_PerIDFaultFailsItsBatch(t *testing.T)
 		}
 		if n := e.tasksOf(t, id); n != 1 {
 			t.Errorf("tasks of entity %s of the failed batch = %d, want 1", id, n)
+		}
+	}
+}
+
+// modifiedGetStore answers Get for one id with its version moved on, as if
+// the entity changed after it was selected.
+type modifiedGetStore struct {
+	spi.EntityStore
+	modifiedID string
+}
+
+func (s *modifiedGetStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
+	e, err := s.EntityStore.Get(ctx, entityID)
+	if err != nil || entityID != s.modifiedID {
+		return e, err
+	}
+	moved := *e
+	moved.Meta.Version++
+	return &moved, nil
+}
+
+// A failed batch keeps the outcome of an id it resolved on its own: an entity
+// changed since selection is answered ENTITY_MODIFIED, and the batch's error
+// goes only to its other ids.
+func TestDeleteEntitiesConditional_Batched_FailedBatchKeepsPerIDOutcomes(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 3) // ages 0..2: two match, one batch of two
+	store, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	changed, faulted := ids[1], ids[2]
+	e.withEntityStore(t, &faultOnNthDeleteStore{EntityStore: &modifiedGetStore{EntityStore: store, modifiedID: changed}, n: 1})
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 2)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.RemovedCount != 0 || len(res.IDToError) != 2 {
+		t.Fatalf("Removed=%d IDToError=%v, want nothing removed and both ids answered", res.RemovedCount, res.IDToError)
+	}
+	if msg := res.IDToError[changed]; !strings.HasPrefix(msg, common.ErrCodeEntityModified) {
+		t.Errorf("IDToError[changed] = %q, want its own %s outcome", msg, common.ErrCodeEntityModified)
+	}
+	if msg := res.IDToError[faulted]; !strings.HasPrefix(msg, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("IDToError[faulted] = %q, want the batch's ticketed error", msg)
+	}
+	for _, id := range []string{changed, faulted} {
+		if !e.exists(t, id) {
+			t.Errorf("entity %s of the failed batch was deleted", id)
 		}
 	}
 }
