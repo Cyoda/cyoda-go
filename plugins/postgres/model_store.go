@@ -81,9 +81,6 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 		return fmt.Errorf("failed to save model %s: %w", desc.Ref, err)
 	}
 	if stale != 0 {
-		if buildIsDev() {
-			return fmt.Errorf("Save found %d stale extension rows for %s; operator-contract violation (see docs/CONSISTENCY.md)", stale, desc.Ref)
-		}
 		slog.Warn("Save cleared stale extension rows",
 			"pkg", "postgres", "ref", desc.Ref, "count", stale)
 	}

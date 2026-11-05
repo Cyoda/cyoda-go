@@ -20,7 +20,6 @@ import (
 // bound to a Config field, so they are exempt from the coverage assertion.
 var preConfigVars = map[string]bool{
 	"CYODA_PROFILES":              true, // read in app/envfiles.go before DefaultConfig() runs
-	"CYODA_DEBUG":                 true, // reserved; not read anywhere yet
 	"CYODA_SUPPRESS_BANNER":       true, // read directly in cmd/cyoda/main.go
 	"CYODA_COMPUTE_GRPC_ENDPOINT": true, // compute-test-client side, not app.Config
 	"CYODA_COMPUTE_CLIENT_ID":     true, // compute-test-client side, not app.Config

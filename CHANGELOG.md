@@ -1551,6 +1551,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **`CYODA_DEBUG` is removed from `cyoda help config`.** The help listed it
+  as reserved; the server never read it.
+
 - **Seven error codes the server never answers are removed** from the
   code set and from `cyoda help errors`: `TX_REQUIRED`, `TX_CONFLICT`,
   `TX_COORDINATOR_NOT_CONFIGURED`, `TX_NO_STATE`,

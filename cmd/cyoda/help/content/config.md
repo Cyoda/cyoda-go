@@ -84,7 +84,6 @@ loads `.env`, `.env.postgres` and `.env.otel` from the working directory.
 - `CYODA_LOG_LEVEL` (string, default: `info`) — accepted: `debug|info|warn|error`.
 - `CYODA_SUPPRESS_BANNER` (bool, default: `false`) — silence startup and mock-auth banners.
 - `CYODA_STARTUP_TIMEOUT` (duration, default: `30s`) — deadline for plugin init, TM init, and (cluster mode) the gossip seed-join retry loop.
-- `CYODA_DEBUG` — reserved; not currently read by the server.
 - `CYODA_MAX_STATE_VISITS` (int, default: `10`) — max visits per state in workflow cascade.
 - `CYODA_MODEL_CACHE_LEASE` (duration, default: `5m`) — model cache lease duration; actual expiry is jittered ±10%.
 - `CYODA_STATS_GROUP_MAX` (int, default: `10000`) — cardinality ceiling for `POST /api/entity/stats/{entityName}/{modelVersion}/query`. When the grouped-stats result produces more distinct `groupKey` combinations than this value, the request fails with 422 `GROUP_CARDINALITY_EXCEEDED`. Also caps the request `limit` parameter (`limit > max` rejects with 400 `INVALID_LIMIT`). Values `<= 0` are silently clamped to the default (`10000`) — a non-positive cap would disable the ceiling entirely (plugins treat `<= 0` as "unbounded"), defeating the safety net.

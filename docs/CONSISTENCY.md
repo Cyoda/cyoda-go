@@ -246,9 +246,7 @@ after `Save` returns the saved schema alone, and a model saved under the
 reference of a deleted one starts from its saved schema. Through the
 state machine the log is already empty at that point, so the Postgres
 and SQLite plugins log a `WARN` with the count when either finds rows
-there — a writer bypassed the state machine. Under a development-mode
-flag (`postgres.SetDebugMode(true)`), Postgres' `Save` returns the same
-event as an error instead.
+there — a writer bypassed the state machine.
 
 Operator misuse — issuing `Unlock` while writers are still in flight
 — is undefined behavior at the SPI level. On Postgres, `Unlock` takes
