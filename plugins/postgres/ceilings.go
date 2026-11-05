@@ -113,7 +113,7 @@ func newAcquireContext(ctx context.Context, timeout time.Duration) (context.Cont
 type acquireTimeoutError struct{ cause error }
 
 func (e *acquireTimeoutError) Error() string {
-	return "could not acquire a database connection within the configured timeout: " + e.cause.Error()
+	return "could not acquire a database connection within CYODA_POSTGRES_ACQUIRE_TIMEOUT: " + e.cause.Error()
 }
 func (e *acquireTimeoutError) Unwrap() error            { return e.cause }
 func (e *acquireTimeoutError) StorageUnavailable() bool { return true }

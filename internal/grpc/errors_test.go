@@ -25,7 +25,7 @@ import (
 func TestBuildErrorFields_OperationalCauseIsLogged(t *testing.T) {
 	records := captureSlog(t)
 
-	cause := errors.New("Begin: could not acquire a database connection within the configured timeout")
+	cause := errors.New("Begin: could not acquire a database connection within CYODA_POSTGRES_ACQUIRE_TIMEOUT")
 	appErr := common.Operational(
 		http.StatusServiceUnavailable,
 		common.ErrCodeStorageUnavailable,
