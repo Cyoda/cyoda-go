@@ -2466,8 +2466,8 @@ paths:
         request with its error, deleting nothing. With `transactionSize` each
         batch is atomic the same way: an entity gone or changed since it was
         selected is reported in `idToError`, a failed batch deletes nothing and
-        its error is reported for each of its entities, and the other batches
-        still run. In a request that joins another request's transaction, the
+        its error is reported for each of its other entities, and the other
+        batches still run. In a request that joins another request's transaction, the
         delete commits and rolls back nothing itself: the owner's transaction
         commits or rolls back as a whole.
         A malformed condition body returns `400 INVALID_CONDITION`.

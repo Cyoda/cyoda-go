@@ -17,7 +17,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `transactionSize` each batch is atomic the same way (PostgreSQL answered
   every later id of the batch a spurious failure, or retried the batch as a
   conflict): a failed batch deletes nothing, its error is reported for each
-  of its entities, and the other batches still run. A `pointInTime`
+  of its other entities (an entity gone or changed keeps its own entry), and
+  the other batches still run. A `pointInTime`
   batched delete whose read of a matched entity's current version fails
   (other than the entity being gone) fails the request before any batch
   runs; it answered a per-id failure. In a request that joins another

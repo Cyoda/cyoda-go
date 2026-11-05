@@ -1459,8 +1459,9 @@ func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore sp
 // deleteBatched implements spec D4: successive owned transactions of
 // ≤batchSize ids each re-check the matched entity's version before
 // deleting — so a concurrent modification after selection excludes that id
-// rather than destroying a version the caller never saw. A failed batch
-// commit maps its ids into IDToError; later batches still run. Joined
+// rather than destroying a version the caller never saw. A failed batch (one
+// id's fault, its task removal or its commit) reports its failure on every id
+// it did not resolve; later batches still run. Joined
 // requests never reach here (handler rejects the param).
 //
 // Selection has two shapes, chosen by pointInTime:
