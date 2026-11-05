@@ -27,7 +27,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   another transaction deleted after its snapshot now loses a write race, as
   on SQLite and PostgreSQL, rather than answering it as already gone; on
   SQLite, a failed read inside a transaction is no longer reported as the
-  entity being gone.
+  entity being gone. On memory and SQLite, an entity a transaction already
+  deleted is gone to it, as on PostgreSQL: deleting it again is "not found"
+  (a joined `pointInTime` delete reports it in `idToError`, where it was
+  counted as removed), and a delete-all in that transaction leaves its first
+  delete, and the user it names, as it was.
 
 - **gRPC: a `SnapshotCancelRequest` for a snapshot that has already ended is
   refused,** as `PUT /search/async/{jobId}/cancel` refuses it: `success`

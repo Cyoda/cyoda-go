@@ -891,6 +891,11 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 			if err := rows.Scan(&id); err != nil {
 				return fmt.Errorf("scan id for deleteAll: %w", err)
 			}
+			// An entity this transaction already deleted keeps that delete
+			// and its attribution, as PostgreSQL's DeleteAll skips it.
+			if tx.Deletes[id] {
+				continue
+			}
 			tx.Deletes[id] = true
 			delete(tx.Buffer, id)
 			tx.WriteSet[id] = true

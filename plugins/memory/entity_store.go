@@ -731,6 +731,11 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		attribution := spi.WriteAttribution{Attributed: a, Executor: e}
 
 		for _, ent := range mainEntities {
+			// An entity this transaction already deleted keeps that delete
+			// and its attribution, as PostgreSQL's DeleteAll skips it.
+			if tx.Deletes[ent.Meta.ID] {
+				continue
+			}
 			tx.Deletes[ent.Meta.ID] = true
 			delete(tx.Buffer, ent.Meta.ID)
 			tx.WriteSet[ent.Meta.ID] = true
