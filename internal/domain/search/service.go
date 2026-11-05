@@ -1652,6 +1652,17 @@ func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelRe
 	if err := s.searchStore.Cancel(ctx, jobID, finishTime); err != nil {
 		return CancelResult{}, fmt.Errorf("failed to cancel job: %w", err)
 	}
+	// Cancel is idempotent on a terminal job, so its nil does not say this
+	// call ended the job: one that finished (or failed) in the meantime is
+	// left as it ended. The job is terminal now, and a terminal status is
+	// final, so this read is what happened.
+	job, err = s.searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		return CancelResult{}, jobLookupErr(jobID, err)
+	}
+	if job.Status != "CANCELLED" {
+		return CancelResult{Cancelled: false, CurrentStatus: job.Status}, nil
+	}
 
 	// Best-effort in-process abort: if this node happens to be running (or
 	// still has queued) the job, stop it immediately rather than waiting up
