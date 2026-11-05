@@ -972,26 +972,14 @@ type DeleteResult struct {
 	IDs           []string
 }
 
-// perIDDeleteError renders one item's delete failure for DeleteResult.IDToError
-// and logs it once, as a door's funnel logs a refused request
-// (common.ReportError).
-//
-// That map is serialised into a 200 response body, so whatever goes in it is on
-// the wire — and a storage failure's own text carries driver wording, the SQL
-// this layer wrapped it with, and a SQLSTATE. None of that is the caller's to
-// see. The same split the rest of the API uses applies per item
-// (deleteError): a domain error keeps its detail and a classified storage
-// outage keeps its code; anything else is logged under a ticket and the caller
-// gets the ticket to quote.
-func perIDDeleteError(ctx context.Context, entityID string, err error) string {
-	return common.ReportError(ctx, deleteError(entityID, err), "pkg", "entity", "entityId", entityID)
-}
-
 // deleteError classifies one item's delete failure as both doors classify a
 // failure: an AppError as it is; a missing entity as 404 ENTITY_NOT_FOUND;
 // anything else through common.Internal, which keeps a storage outage, an
 // epoch mismatch or a lost race its own operational code and makes the rest a
-// server-side failure.
+// server-side failure, naming the entity in what it logs.
+//
+// What it answers is on the wire: a 404's text, or WriteError's and
+// ReportError's sanitized text, never a store's own wording.
 func deleteError(entityID string, err error) *common.AppError {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
@@ -1000,7 +988,7 @@ func deleteError(entityID string, err error) *common.AppError {
 	if errors.Is(err, spi.ErrNotFound) {
 		return common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("entity id=%s not found", entityID))
 	}
-	return common.Internal("entity delete failed", err)
+	return common.Internal("entity delete failed", fmt.Errorf("entity %s: %w", entityID, err))
 }
 
 // deleteSelectionPlan is how a conditional delete selects entities once
@@ -1358,8 +1346,8 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 				}
 				// Any other fault fails the whole request: the one
 				// transaction is atomic on every backend, as PostgreSQL
-				// forces (a failed statement aborts it). Per-id faults are
-				// the batched mode's.
+				// forces (a failed statement aborts it), as each batch of
+				// the batched mode is.
 				return deleteError(id, err)
 			}
 			deleted = append(deleted, id)
@@ -1445,12 +1433,15 @@ func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore sp
 		// spuriously fail the guard.
 		cur, gErr := entityStore.Get(ctx, id)
 		if gErr != nil {
-			// A per-id read failure (including ErrNotFound — the entity
-			// was already removed between the as-at match and now) is
-			// this id's problem alone, not the whole request's; the
-			// resolution pass continues with the remaining ids.
-			result.IDToError[id] = perIDDeleteError(ctx, id, gErr)
-			continue
+			// An entity already removed between the as-at match and now is
+			// this id's own outcome; the resolution pass continues. Any
+			// other read fault fails the request: nothing has been deleted
+			// yet, so failing closed costs nothing.
+			if errors.Is(gErr, spi.ErrNotFound) {
+				result.IDToError[id] = common.ReportError(ctx, deleteError(id, gErr), "pkg", "entity", "entityId", id)
+				continue
+			}
+			return nil, deleteError(id, gErr)
 		}
 		targets = append(targets, batchTarget{id: id, baselineVersion: cur.Meta.Version})
 	}
@@ -1472,8 +1463,9 @@ func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore sp
 //     cycle's successful deletes are durable before the NEXT cycle's
 //     Iterate call, a live re-scan of the same filter naturally excludes
 //     them — the match set shrinks on its own as the delete progresses.
-//     seen guards only against re-attempting an id whose batch failed to
-//     commit (or whose own delete failed): such an id is still live and
+//     seen guards only against re-attempting an id whose batch failed (one
+//     id's fault, its task removal or its commit) or whose version changed
+//     since resolution: such an id is still live and
 //     would otherwise resurface on the next cycle's re-scan. It stays
 //     empty on the common all-succeed path (a successfully deleted id
 //     never resurfaces, so there's nothing to remember) and grows only by

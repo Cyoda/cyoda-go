@@ -451,7 +451,7 @@ func TestPerIDDeleteError_SanitizesStorageDetail(t *testing.T) {
 	buf := captureEntitySlog(t)
 
 	raw := errors.New("failed to mark entity deleted: ERROR: canceling statement due to statement timeout (SQLSTATE 57014)")
-	msg := perIDDeleteError(context.Background(), "e-1", raw)
+	msg := reportDeleteError("e-1", raw)
 
 	for _, leak := range []string{"SQLSTATE", "57014", "canceling statement", "mark entity deleted"} {
 		if strings.Contains(msg, leak) {
@@ -482,7 +482,7 @@ func TestPerIDDeleteError_MarkedStorageOutageKeepsItsCode(t *testing.T) {
 	const cause = "acquire: host=db.internal user=cyoda: context deadline exceeded"
 	raw := fmt.Errorf("failed to mark entity deleted: %w", &markedStorageOutage{detail: cause})
 
-	msg := perIDDeleteError(context.Background(), "e-1", raw)
+	msg := reportDeleteError("e-1", raw)
 
 	if !strings.Contains(msg, common.ErrCodeStorageUnavailable) {
 		t.Errorf("a marked storage outage lost its domain code: %s", msg)
@@ -526,7 +526,7 @@ func (*markedStorageOutage) StorageUnavailable() bool { return true }
 // business and carries no infrastructure detail, so it stays legible rather
 // than being flattened into a ticket.
 func TestPerIDDeleteError_KeepsDomainDetail(t *testing.T) {
-	msg := perIDDeleteError(context.Background(), "e-1", fmt.Errorf("ENTITY_NOT_FOUND: entity e-1 not found: %w", spi.ErrNotFound))
+	msg := reportDeleteError("e-1", fmt.Errorf("ENTITY_NOT_FOUND: entity e-1 not found: %w", spi.ErrNotFound))
 	if !strings.Contains(msg, common.ErrCodeEntityNotFound) {
 		t.Errorf("a not-found lost its domain code: %s", msg)
 	}
@@ -600,7 +600,7 @@ func TestClassifyWorkflowError_EpochMismatchIsARetryable409(t *testing.T) {
 // TestPerIDDeleteError_EpochMismatchKeepsItsCode — a delete item that failed on
 // a lost shard reports the retryable code, not a ticket.
 func TestPerIDDeleteError_EpochMismatchKeepsItsCode(t *testing.T) {
-	msg := perIDDeleteError(context.Background(), "e1", fmt.Errorf("transactional delete aborted: shard revoked: %w", spi.ErrEpochMismatch))
+	msg := reportDeleteError("e1", fmt.Errorf("transactional delete aborted: shard revoked: %w", spi.ErrEpochMismatch))
 	if !strings.HasPrefix(msg, common.ErrCodeEpochMismatch+":") {
 		t.Fatalf("message = %q, want the %s code", msg, common.ErrCodeEpochMismatch)
 	}
@@ -637,7 +637,7 @@ func TestPerIDDeleteError_NotFoundIsLoggedOnce(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	msg := perIDDeleteError(context.Background(), "e-9", fmt.Errorf("get: %w", spi.ErrNotFound))
+	msg := reportDeleteError("e-9", fmt.Errorf("get: %w", spi.ErrNotFound))
 	if !strings.HasPrefix(msg, common.ErrCodeEntityNotFound+": ") {
 		t.Fatalf("message = %q, want ENTITY_NOT_FOUND", msg)
 	}
@@ -666,4 +666,10 @@ func TestClassifyEngineError_DeepCausedErrorKeepsTheEngineText(t *testing.T) {
 	if !strings.Contains(got.Detail, "processor enrich failed") || !strings.Contains(got.Detail, "ent-45") {
 		t.Errorf("Detail = %q, want the engine text and the entity", got.Detail)
 	}
+}
+
+// reportDeleteError renders one id's delete failure as the per-id map
+// answers it.
+func reportDeleteError(entityID string, err error) string {
+	return common.ReportError(context.Background(), deleteError(entityID, err), "pkg", "entity", "entityId", entityID)
 }

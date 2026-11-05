@@ -983,5 +983,49 @@ func TestDeleteEntitiesConditional_Batched_PerIDFaultFailsItsBatch(t *testing.T)
 		if !e.exists(t, id) {
 			t.Errorf("entity %s of the failed batch was deleted", id)
 		}
+		if n := e.tasksOf(t, id); n != 1 {
+			t.Errorf("tasks of entity %s of the failed batch = %d, want 1", id, n)
+		}
+	}
+}
+
+// faultingGetStore fails every Get of one id with a server-side error.
+type faultingGetStore struct {
+	spi.EntityStore
+	failID string
+}
+
+func (s *faultingGetStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
+	if entityID == s.failID {
+		return nil, errors.New("pg: statement failed on a dropped connection")
+	}
+	return s.EntityStore.Get(ctx, entityID)
+}
+
+// A batched pointInTime delete reads each matched entity's current version
+// before any batch runs. A read fault there — not the entity being gone —
+// fails the request: nothing has been deleted yet, so it fails closed, and
+// idToError keeps only the outcomes the rule names.
+func TestDeleteEntitiesConditional_Batched_PointInTime_ResolutionFaultFailsTheRequest(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 3)
+	time.Sleep(2 * time.Millisecond)
+	pit := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	store, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	e.withEntityStore(t, &faultingGetStore{EntityStore: store, failID: ids[2]})
+
+	_, err = e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, &pit, false, 10)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeServerError {
+		t.Fatalf("err = %v, want the read fault as a server-side failure of the request", err)
+	}
+	for _, id := range ids[1:] {
+		if !e.exists(t, id) {
+			t.Errorf("entity %s deleted although the request failed", id)
+		}
 	}
 }

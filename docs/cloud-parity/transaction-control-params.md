@@ -60,9 +60,11 @@ through the existing per-chunk `200` contract (error elements carrying
 gRPC `EntityDeleteAllRequest.transactionSize`: batches a bulk delete instead
 of running it as one transaction / one store call.
 
-- `deleteEntities`: matching ids and their current versions are resolved
-  once, in one committed transaction (as-at `pointInTime` when supplied).
-  Ids are then deleted in successive independent transactions of at most N
+- `deleteEntities`: with `pointInTime`, matching ids are selected once,
+  as-at that instant, and each one's current version is read before any
+  batch runs (a read fault other than the entity being gone fails the
+  request); without it, the matching ids are re-selected from committed
+  state before each batch. Ids are then deleted in successive independent transactions of at most N
   ids each. Each batch re-reads every id's current version and deletes only
   if it still equals the resolution-time baseline; a version mismatch (the
   entity changed after resolution) or an entity already gone is recorded in

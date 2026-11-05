@@ -6,6 +6,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A conditional delete without `transactionSize` is atomic on every
+  backend.** When deleting one matched entity failed (other than a write
+  conflict, or the entity being already gone), PostgreSQL aborted the
+  transaction and the request was retried and answered a retryable `409
+  CONFLICT`, while memory and SQLite deleted the other entities and answered
+  `200` with the failure in `idToError`. Every backend now fails the request
+  with that failure's own error and deletes nothing. A `pointInTime`
+  selection's already-gone entity is still reported in `idToError`. With
+  `transactionSize` each batch is atomic the same way (PostgreSQL answered
+  every later id of the batch a spurious failure, or retried the batch as a
+  conflict): a failed batch deletes nothing, its error is reported for each
+  of its entities, and the other batches still run. A `pointInTime`
+  batched delete whose read of a matched entity's current version fails
+  (other than the entity being gone) fails the request before any batch
+  runs; it answered a per-id failure. In a request that joins another
+  request's transaction, the owner's transaction commits or not as a whole.
+
 - **gRPC: a `SnapshotCancelRequest` for a snapshot that has already ended is
   refused,** as `PUT /search/async/{jobId}/cancel` refuses it: `success`
   false, `error.code` `CLIENT_ERROR` with a `SEARCH_JOB_ALREADY_TERMINAL:`
@@ -1765,19 +1782,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
-
-- **A conditional delete without `transactionSize` is atomic on every
-  backend.** When deleting one matched entity failed (other than a write
-  conflict, or the entity being already gone), PostgreSQL aborted the
-  transaction and the request was retried and answered a retryable `409
-  CONFLICT`, while memory and SQLite deleted the other entities and answered
-  `200` with the failure in `idToError`. Every backend now fails the request
-  with that failure's own error and deletes nothing. A `pointInTime`
-  selection's already-gone entity is still reported in `idToError`. With
-  `transactionSize` each batch is atomic the same way (PostgreSQL answered
-  every later id of the batch a spurious failure, or retried the batch as a
-  conflict): a failed batch deletes nothing, its error is reported for each
-  of its entities, and the other batches still run.
 
 - **gRPC: a snapshot the caller does not have, or results of one that has
   not finished, is the caller's error,** as it is on HTTP. A
