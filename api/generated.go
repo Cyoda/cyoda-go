@@ -1189,11 +1189,13 @@ type EntityResultDto struct {
 // response body via the `failed[]` array, not as a `4xx` envelope.
 // Inspect `failed[]` to detect them. The `4xx` envelope is reserved
 // for chunk-wide failures: malformed JSON, missing entity, validation
-// failure, a non-conflict engine error, and a transaction conflict
+// failure, a non-conflict engine error, a transaction conflict
 // (`409 CONFLICT`, retryable) — another transaction committed a
 // change to an item's entity after the chunk read it, or a processor's
-// joined callback lost a write race. A conflict is never isolated to
-// its item.
+// joined callback lost a write race — and `412 ENTITY_MODIFIED` when
+// another transaction changed an item's entity while a
+// COMMIT_BEFORE_DISPATCH processor's callout ran. A conflict is never
+// isolated to its item.
 //
 // `entityIds` contains UUID strings (server is source of truth — the
 // server emits []string, not []object).

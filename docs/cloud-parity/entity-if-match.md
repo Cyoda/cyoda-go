@@ -47,8 +47,9 @@ Every entity update that takes a precondition:
 One case answers `412 ENTITY_MODIFIED` outside this rule, with or without
 `If-Match`: a `COMMIT_BEFORE_DISPATCH` processor committed the update's first
 segment before its callout, and another transaction changed the entity before
-the processor's result was applied. A single update answers `412`; a collection
-update fails whole with `400 WORKFLOW_FAILED`. The committed segment stays.
+the processor's result was applied. Every write door answers `412`, and a
+collection request fails whole; see `post-segment-conflict.md`. The committed
+segment stays.
 
 ## What changed
 

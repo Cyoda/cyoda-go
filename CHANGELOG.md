@@ -6,6 +6,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A change to the entity during a `COMMIT_BEFORE_DISPATCH` callout answers
+  `412 ENTITY_MODIFIED` on every write route.** Another transaction changing
+  the entity between the processor's segment commit and the application of
+  its result now answers create and create collection (HTTP and gRPC) and
+  the HTTP update collection as it answers a single update: `412
+  ENTITY_MODIFIED`, not retryable, `properties.entityId` naming the entity,
+  and a fixed message. Before, those answered `400 WORKFLOW_FAILED` with the
+  engine's text, which named internal transaction ids. A collection request
+  still fails whole.
+
 - **`CYODA_PROXY_TIMEOUT` must be greater than zero;** startup fails
   otherwise. It also bounds a platform clock confirmation round and each
   status ask of `GET /platform/cluster`.

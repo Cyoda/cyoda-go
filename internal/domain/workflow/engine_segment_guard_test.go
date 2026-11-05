@@ -258,9 +258,10 @@ func TestCBD_FirstFlushStoreFailure_IsMarkedInfra(t *testing.T) {
 	}
 }
 
-// TestCBD_ApplyResultStoreFailure_IsMarkedInfra — the apply-result CAS chains
-// ErrPostSegmentConflict, whose text reaches a 4xx body verbatim — so a raw
-// store error there must be marked infra, or it leaks.
+// TestCBD_ApplyResultStoreFailure_IsMarkedInfra — a raw store error at the
+// apply-result CAS is not a conflict, so the entity service's 412 does not
+// claim it; unmarked, it would reach the catch-all 400 WORKFLOW_FAILED with its
+// text verbatim. It must be marked infra, or it leaks.
 func TestCBD_ApplyResultStoreFailure_IsMarkedInfra(t *testing.T) {
 	h := newSegmentGuardHarness(t, "memory")
 	h.registerCBDProcessor("segmenter")

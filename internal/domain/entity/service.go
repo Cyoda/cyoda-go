@@ -313,7 +313,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	result, err := h.engine.Execute(txCtx, entity)
 	if err != nil {
 		slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID)
-		return nil, classifyWorkflowError(err)
+		return nil, classifyEngineError(err, entity.Meta.ID)
 	}
 	// FIRST statement after the error check. It cannot go before it: the engine
 	// returns a nil EngineResult on every error path.
@@ -2076,7 +2076,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		result, err := h.engine.Execute(currentCtx, entity)
 		if err != nil {
 			slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID, "itemIndex", i)
-			return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
+			return nil, classifyEngineError(fmt.Errorf("item %d: %w", i, err), entity.Meta.ID)
 		}
 		// Advance the loop's TX to whichever segment is now open. For
 		// non-segmenting cascades these are unchanged; for segmenting
@@ -2314,22 +2314,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, lbErr := h.engine.Loopback(txCtx, updated, ifMatch)
 		if lbErr != nil {
 			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
-			// An unmarked conflict is a precondition on this request's own
-			// entity: the If-Match check at the start of the transition, or
-			// the apply-result compare after a committed COMMIT_BEFORE_DISPATCH
-			// segment (wfengine.ErrPostSegmentConflict). Both answer 412. See
-			// engineConflictIsTransactionConflict for the conflicts that are
-			// not entity modifications; classifyWorkflowError answers them
-			// with the retryable 409 CONFLICT.
-			if errors.Is(lbErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(lbErr) {
-				appErr := common.Operational(
-					http.StatusPreconditionFailed,
-					common.ErrCodeEntityModified,
-					"entity has been modified since last read")
-				appErr.Props = map[string]any{"entityId": input.EntityID}
-				return nil, appErr
-			}
-			return nil, classifyWorkflowError(lbErr)
+			return nil, classifyEngineError(lbErr, input.EntityID)
 		}
 		// FIRST statement after the error check: the engine returns a nil
 		// EngineResult on every error path.
@@ -2339,15 +2324,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		res, mtErr := h.engine.ManualTransition(txCtx, updated, input.Transition, ifMatch)
 		if mtErr != nil {
 			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
-			if errors.Is(mtErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(mtErr) {
-				appErr := common.Operational(
-					http.StatusPreconditionFailed,
-					common.ErrCodeEntityModified,
-					"entity has been modified since last read")
-				appErr.Props = map[string]any{"entityId": input.EntityID}
-				return nil, appErr
-			}
-			return nil, classifyWorkflowError(mtErr)
+			return nil, classifyEngineError(mtErr, input.EntityID)
 		}
 		// FIRST statement after the error check: the engine returns a nil
 		// EngineResult on every error path.
@@ -2641,7 +2618,8 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			//
 			//   - ErrPostSegmentConflict: the apply-result CAS, raised after
 			//     TX_pre committed and the dispatch fired. No segment is left
-			//     to continue into and the cursor was never advanced.
+			//     to continue into and the cursor was never advanced. It fails
+			//     the whole request with the 412 classifyEngineError gives it.
 			//   - ErrCommitBeforeDispatchInfra: a segment-boundary
 			//     infrastructure failure. TX_pre's own commit can fail a
 			//     read-set check and both stock backends report that as
@@ -2650,15 +2628,16 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			//     conflict alone cannot tell the two apart — and this one is
 			//     not a per-item precondition the caller can fix, so it fails
 			//     the whole request instead of being isolated. It leaves here
-			//     via classifyWorkflowError → common.Internal, whose
-			//     spi.ErrConflict branch answers a retryable 409 (asserted by
-			//     service_classify_test.go): the segment boundary aborted, so
-			//     a fresh attempt is the right advice.
+			//     via classifyEngineError → classifyWorkflowError →
+			//     common.Internal, whose spi.ErrConflict branch answers a
+			//     retryable 409 (asserted by service_classify_test.go): the
+			//     segment boundary aborted, so a fresh attempt is the right
+			//     advice.
 			//   - The other engine infrastructure markers
 			//     (engineConflictIsTransactionConflict): a statement of the
 			//     engine's own met a transaction a concurrent writer had
-			//     already aborted. It leaves through classifyWorkflowError →
-			//     common.Internal → a retryable 409.
+			//     already aborted. It leaves through classifyEngineError →
+			//     classifyWorkflowError → common.Internal → a retryable 409.
 			//
 			// Either way, isolating would let every later item write into a
 			// dead transaction and be lost.
@@ -2676,7 +2655,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				continue
 			}
 			slog.Error("workflow execution failed", "error", engineErr.Error(), "entityId", updated.Meta.ID, "transition", item.transition)
-			return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, engineErr))
+			return nil, classifyEngineError(fmt.Errorf("item %d: %w", i, engineErr), updated.Meta.ID)
 		}
 		// Advance the loop's TX to whichever segment is now open. For
 		// non-segmenting cascades these are unchanged; for segmenting
@@ -2789,6 +2768,31 @@ func classifySaveErr(internalMsg, entityID string, err error) *common.AppError {
 	return common.Internal(internalMsg, err)
 }
 
+// classifyEngineError maps an error from the engine run of one entity's write
+// — a create, an update, or one item of a collection create or update — to the
+// answer the request gives.
+//
+// An unmarked conflict is a precondition on the entity the run writes: the
+// If-Match check at the start of the transition, or the apply-result compare
+// after a committed COMMIT_BEFORE_DISPATCH segment
+// (wfengine.ErrPostSegmentConflict), where another transaction changed the
+// entity during the callout. Both answer 412 ENTITY_MODIFIED naming entityID, on
+// every route, with a fixed message: the engine's text stays in the log. The
+// conflicts engineConflictIsTransactionConflict recognises are not entity
+// modifications; classifyWorkflowError answers them, an aborted transaction
+// first, with the retryable 409 CONFLICT.
+func classifyEngineError(err error, entityID string) *common.AppError {
+	if errors.Is(err, spi.ErrConflict) && !engineConflictIsTransactionConflict(err) {
+		appErr := common.Operational(
+			http.StatusPreconditionFailed,
+			common.ErrCodeEntityModified,
+			"entity has been modified since last read")
+		appErr.Props = map[string]any{"entityId": entityID}
+		return appErr
+	}
+	return classifyWorkflowError(err)
+}
+
 // engineConflictIsTransactionConflict reports whether an engine error that
 // carries spi.ErrConflict came from the engine's own statements rather than
 // from a precondition on the request's own entity. The engine returns two
@@ -2851,9 +2855,10 @@ func engineConflictIsTransactionConflict(err error) bool {
 //     answered "I failed") → 400 WORKFLOW_FAILED, retryable exactly when the
 //     member's own verdict said so. Its text is the member's, behind the
 //     engine's wrap naming the processor, criterion or function.
-//   - Everything else (processor-domain failures, criterion mismatches, CAS
-//     conflicts already mapped upstream, and a Terminal callout failure that
-//     carries no code of its own) → 400 WORKFLOW_FAILED.
+//   - Everything else (processor-domain failures, criterion mismatches, and a
+//     Terminal callout failure that carries no code of its own) → 400
+//     WORKFLOW_FAILED. An entity write's unmarked conflicts never get here:
+//     classifyEngineError answers them with 412 ENTITY_MODIFIED first.
 func classifyWorkflowError(err error) *common.AppError {
 	if a := common.TxAbortedConflict(err); a != nil {
 		return a

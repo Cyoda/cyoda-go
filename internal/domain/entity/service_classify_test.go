@@ -403,6 +403,45 @@ func TestClassifyWorkflowError_NoMatchingMemberMapsTo503(t *testing.T) {
 	}
 }
 
+// TestClassifyEngineError_PostSegmentConflict pins what classifyEngineError
+// claims for 412 and what it leaves to classifyWorkflowError when the
+// post-segment marker is on the chain. The marker is chained onto the store's
+// error, which is a conflict, a unique-key refusal or an aborted transaction.
+func TestClassifyEngineError_PostSegmentConflict(t *testing.T) {
+	const entityID = "9f7f11e2-d8ad-11f1-b5e4-ae468cd3ed18"
+	postSegment := func(cause error) error {
+		return fmt.Errorf("item 0: processor p failed: %w", fmt.Errorf("%w: %w", wfengine.ErrPostSegmentConflict, cause))
+	}
+	cases := []struct {
+		name      string
+		err       error
+		status    int
+		code      string
+		retryable bool
+	}{
+		{"conflict is 412", postSegment(spi.ErrConflict), http.StatusPreconditionFailed, common.ErrCodeEntityModified, false},
+		{"an aborted transaction stays 409", postSegment(fmt.Errorf("%w: %w", spi.ErrConflict, spi.ErrTxAborted)), http.StatusConflict, common.ErrCodeConflict, true},
+		{"a unique-key refusal stays 409", postSegment(spi.ErrUniqueViolation), http.StatusConflict, common.ErrCodeUniqueViolation, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyEngineError(tc.err, entityID)
+			if got.Status != tc.status || got.Code != tc.code || got.Retryable != tc.retryable {
+				t.Fatalf("got %d %s retryable=%t, want %d %s retryable=%t", got.Status, got.Code, got.Retryable, tc.status, tc.code, tc.retryable)
+			}
+			if tc.status != http.StatusPreconditionFailed {
+				return
+			}
+			if got.Props["entityId"] != entityID {
+				t.Fatalf("properties.entityId = %v, want %s", got.Props["entityId"], entityID)
+			}
+			if strings.Contains(got.Message, "processor") || strings.Contains(got.Message, "segment") {
+				t.Fatalf("the engine's text reached the message: %q", got.Message)
+			}
+		})
+	}
+}
+
 // TestPerIDDeleteError_SanitizesStorageDetail — DeleteResult.IDToError is
 // serialised straight into a 200 body (handler.go's deleteResult map), so
 // whatever goes in it is on the wire. A storage failure's own text carries

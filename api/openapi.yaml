@@ -2837,7 +2837,7 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload, collection too large, unsupported format, or a body holding text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8) outside an item's payload, such as in an `ifMatch` or a `transition`; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a value 256 or more levels below the document root; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType. Nothing is committed."
+          description: "Bad request — BAD_REQUEST: invalid payload, collection too large, unsupported format, or a body holding text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8) outside an item's payload, such as in an `ifMatch` or a `transition`; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a value 256 or more levels below the document root; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: the workflow rejected an item. Nothing is committed."
           content:
             application/problem+json:
               schema:
@@ -2859,6 +2859,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "410":
           $ref: '#/components/responses/TransactionGone'
+        "412":
+          description: "Precondition Failed — ENTITY_MODIFIED: another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. The request fails whole. `properties.entityId` names the entity."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
@@ -3076,6 +3082,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "410":
           $ref: '#/components/responses/TransactionGone'
+        "412":
+          description: "Precondition Failed — ENTITY_MODIFIED: another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. The request fails whole. `properties.entityId` names the entity."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
@@ -3258,7 +3270,7 @@ paths:
         "410":
           $ref: '#/components/responses/TransactionGone'
         "412":
-          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version"
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version, or another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. `properties.entityId` names the entity."
           content:
             application/problem+json:
               schema:
@@ -3390,7 +3402,7 @@ paths:
         "410":
           $ref: '#/components/responses/TransactionGone'
         "412":
-          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version, or another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. `properties.entityId` names the entity."
           content:
             application/problem+json:
               schema:
@@ -3600,7 +3612,7 @@ paths:
         "410":
           $ref: '#/components/responses/TransactionGone'
         "412":
-          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version."
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version, or another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. `properties.entityId` names the entity."
           content:
             application/problem+json:
               schema:
@@ -3742,7 +3754,7 @@ paths:
         "410":
           $ref: '#/components/responses/TransactionGone'
         "412":
-          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version, or another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. `properties.entityId` names the entity."
           content:
             application/problem+json:
               schema:
@@ -3994,6 +4006,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "410":
           $ref: '#/components/responses/TransactionGone'
+        "412":
+          description: "Precondition Failed — ENTITY_MODIFIED: another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. The request fails whole. `properties.entityId` names the entity."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
@@ -9515,11 +9533,13 @@ components:
         response body via the `failed[]` array, not as a `4xx` envelope.
         Inspect `failed[]` to detect them. The `4xx` envelope is reserved
         for chunk-wide failures: malformed JSON, missing entity, validation
-        failure, a non-conflict engine error, and a transaction conflict
+        failure, a non-conflict engine error, a transaction conflict
         (`409 CONFLICT`, retryable) — another transaction committed a
         change to an item's entity after the chunk read it, or a processor's
-        joined callback lost a write race. A conflict is never isolated to
-        its item.
+        joined callback lost a write race — and `412 ENTITY_MODIFIED` when
+        another transaction changed an item's entity while a
+        COMMIT_BEFORE_DISPATCH processor's callout ran. A conflict is never
+        isolated to its item.
 
         `entityIds` contains UUID strings (server is source of truth — the
         server emits []string, not []object).
