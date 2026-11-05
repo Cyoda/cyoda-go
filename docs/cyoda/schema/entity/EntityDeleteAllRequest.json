@@ -15,7 +15,7 @@
     },
     "transactionSize": {
       "type": "integer",
-      "description": "Transaction size."
+      "description": "Number of entities to delete per transaction batch. Batches committed before a failure remain durable, and per-id and batch failures are reported in the response. Not supported on a request joining an open transaction. Absent means a single transaction."
     },
     "pageSize": {
       "type": "integer",
@@ -28,7 +28,7 @@
     },
     "verbose": {
       "type": "boolean",
-      "description": "Include the list of entity ids deleted in the response",
+      "description": "Include the list of entity ids the delete attempted in the response; an id whose delete failed also appears in the error map.",
       "default": false
     }
   },

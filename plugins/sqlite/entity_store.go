@@ -741,20 +741,25 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		if tx.Closed {
 			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
-		// Check existence: buffer first, then committed store.
+		// An entity this transaction already deleted is gone to it, as Get
+		// sees.
+		if tx.Deletes[entityID] {
+			return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+		}
+		// Check existence: buffer first, then the transaction's snapshot.
 		if buffered, inBuffer := tx.Buffer[entityID]; !inBuffer {
-			// Check snapshot visibility.
-			_, err := s.getSnapshot(ctx, entityID, tx.SnapshotTime)
-			if err != nil {
-				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+			// Check snapshot visibility. Only an absent entity is "not
+			// found"; any other read failure is reported as it is.
+			if _, err := s.getSnapshot(ctx, entityID, tx.SnapshotTime); err != nil {
+				return fmt.Errorf("Delete %s: %w", entityID, err)
 			}
 		} else {
-			// entityID is a same-tx buffered create/update with no prior
-			// committed row. flushToSQLite's delete loop evicts it from
-			// tx.Buffer below without ever separately flushing it, so
-			// without staging it here that flush would find no `entities`
-			// row to soft-delete and skip writing anything at all — see
-			// deletedBufferedEntities's field doc.
+			// entityID is a write this transaction buffered. Delete
+			// evicts it from tx.Buffer below, so flushToSQLite's delete
+			// loop never flushes it separately; when the entity has no
+			// committed row, without staging it here that flush would
+			// find no `entities` row to soft-delete and skip writing
+			// anything at all — see deletedBufferedEntities's field doc.
 			s.tm.stageDeletedBufferedEntity(tx.ID, entityID, buffered)
 		}
 		tx.Deletes[entityID] = true
@@ -886,6 +891,11 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 			if err := rows.Scan(&id); err != nil {
 				return fmt.Errorf("scan id for deleteAll: %w", err)
 			}
+			// An entity this transaction already deleted keeps that delete
+			// and its attribution, as PostgreSQL's DeleteAll skips it.
+			if tx.Deletes[id] {
+				continue
+			}
 			tx.Deletes[id] = true
 			delete(tx.Buffer, id)
 			tx.WriteSet[id] = true
@@ -977,9 +987,16 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 		if _, ok := tx.Buffer[entityID]; ok {
 			return true, nil
 		}
-		// Fall back to snapshot.
+		// Fall back to snapshot. Only an absent entity does not exist; any
+		// other read failure is reported as it is.
 		_, err := s.getSnapshot(ctx, entityID, tx.SnapshotTime)
-		return err == nil, nil
+		if errors.Is(err, spi.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("Exists %s: %w", entityID, err)
+		}
+		return true, nil
 	}
 
 	// Non-transaction.

@@ -143,8 +143,10 @@ HTTP and gRPC callbacks.
 - Long-running processors hold a database connection and a transaction for
   the entire wait. On PostgreSQL this can exhaust the connection pool under
   load — use `COMMIT_BEFORE_DISPATCH` instead.
-- Both modes propagate the processor's `warnings` and `errors` arrays via
-  `common.AddWarning` / `common.AddError`.
+- Both modes add the processor's `warnings` to the request through
+  `common.AddWarning`; a gRPC response returns them in `warnings`, an HTTP
+  response in `Cyoda-Warning` headers. A processor's failure reaches the caller as the
+  operation's error.
 
 ---
 
@@ -327,7 +329,7 @@ transaction when nothing segments), and the request answers a retryable
 |---|---|
 | Processor's member answers `success:false` | `T_post` rolled back, entity durable in pre-callout state, `400 WORKFLOW_FAILED` with the member's message — or, with `startNewTxOnDispatch`, a retryable `409 CONFLICT` when a callback write in `T_post` had already lost a race |
 | No answer, or the member disconnects | another member is tried only if the processor is `idempotent`; otherwise `T_post` rolled back, `503` with the try's own code |
-| CAS conflict at apply-result boundary (another transaction changed the entity during the dispatch) | `T_post` rolled back, entity durable in pre-callout state; a single update answers `412 ENTITY_MODIFIED`, a collection update fails whole with `400 WORKFLOW_FAILED`. Not retryable as-is: the callout already fired |
+| CAS conflict at apply-result boundary (another transaction changed the entity during the dispatch) | `T_post` rolled back, entity durable in pre-callout state; every write route answers `412 ENTITY_MODIFIED` naming the entity; a collection create or update fails whole. Not retryable as-is: the callout already fired |
 | `If-Match` mismatch when the transition starts | no dispatch, `412 Precondition Failed`, `T_pre` rolled back with its `TRANSITION_ABORTED` audit event; on a collection update the item is isolated instead, and the event commits with its siblings |
 | `T_pre`'s commit refused (another transaction committed a change first) | nothing committed, no dispatch, `409 CONFLICT`, retryable |
 | Infrastructure failure (Begin, Commit, EntityStore lookup) | wrapped with `ErrCommitBeforeDispatchInfra`, mapped to sanitized 5xx with ticket UUID — not 4xx (we don't leak driver text) |
@@ -651,11 +653,13 @@ currently a labelling-only variant.
   the `SYNC` / `ASYNC_SAME_TX` branch — it is not rejected at import time.
   Treat any value not in the four listed above as undefined behaviour and
   do not rely on it.
-- `classifyWorkflowError` maps engine outputs to HTTP:
+- `classifyEngineError` maps an entity write's engine outputs to HTTP on
+  every write route — the first case itself, the rest through
+  `classifyWorkflowError`:
+  - the request's `If-Match` mismatch, or the apply-result CAS conflict after
+    a committed segment → 412 `ENTITY_MODIFIED`, naming the entity
   - `ErrCommitBeforeDispatchInfra` → sanitized 5xx with ticket UUID
   - `ErrTransitionNotFound` → 400 `TRANSITION_NOT_FOUND`
-  - the request's `If-Match` mismatch, or the apply-result CAS conflict after
-    a committed segment → 412 `ENTITY_MODIFIED`
   - any other `spi.ErrConflict` (a refused commit, a lost write race) → 409
     `CONFLICT`, retryable
   - a processor's `success:false` verdict → 400 `WORKFLOW_FAILED` with the

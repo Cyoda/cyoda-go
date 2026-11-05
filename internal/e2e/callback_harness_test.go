@@ -752,6 +752,8 @@ type cnodeReply struct {
 	// nullData answers a processor with `"payload": {"data": null}`: a
 	// payload whose data is null, which says the same as no payload.
 	nullData bool // replyOK, processor
+	// warnings is the answer's `warnings` array; nil leaves it off the wire.
+	warnings []string // replyOK
 }
 
 // answerOK answers success: a processor leaves the entity unchanged, a
@@ -846,6 +848,9 @@ func (r cnodeReply) cloudEvent(req calcRequest) (*cepb.CloudEvent, error) {
 		case r.data != nil:
 			body["payload"] = map[string]any{"data": r.data}
 		}
+	}
+	if r.warnings != nil {
+		body["warnings"] = r.warnings
 	}
 	switch {
 	case r.noSuccess:

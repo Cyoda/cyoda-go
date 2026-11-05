@@ -50,9 +50,10 @@ func TestFailedProcessor_AuditEvents_ManualTransition(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e1", modelRef, map[string]any{})
-	_, err := engine.Execute(ctx, entity, "FIRE")
+	entity.Meta.State = "INITIAL"
+	_, err := engine.ManualTransition(ctx, entity, "FIRE", IfMatch{})
 	if !errors.Is(err, errProcessorRefused) {
-		t.Fatalf("Execute error = %v, want the processor's failure", err)
+		t.Fatalf("ManualTransition error = %v, want the processor's failure", err)
 	}
 
 	auditStore, err := factory.StateMachineAuditStore(ctx)
@@ -128,7 +129,7 @@ func TestFailedProcessor_AuditEvents_CascadedTransition(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e2", modelRef, map[string]any{})
-	_, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	if !errors.Is(err, errProcessorRefused) {
 		t.Fatalf("Execute error = %v, want the processor's failure in the cascade path", err)
 	}
@@ -180,7 +181,7 @@ func TestExecuteProcessors_EmptyPipeline_NoPause(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e1", modelRef, map[string]any{})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if entity.Meta.State != "DONE" {
@@ -227,7 +228,7 @@ func TestEngine_RecordEvent_StampsAttribution(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e1", modelRef, map[string]any{})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 

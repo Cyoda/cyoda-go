@@ -61,8 +61,6 @@ const (
 const (
 	ErrCodeTransactionNodeUnavailable = "TRANSACTION_NODE_UNAVAILABLE"
 	ErrCodeTransactionExpired         = "TRANSACTION_EXPIRED"
-	ErrCodeIdempotencyConflict        = "IDEMPOTENCY_CONFLICT"
-	ErrCodeClusterNodeNotRegistered   = "CLUSTER_NODE_NOT_REGISTERED"
 	ErrCodeTransactionNotFound        = "TRANSACTION_NOT_FOUND"
 	// ErrCodeTransactionTimeout is returned when the client-supplied
 	// transactionTimeoutMillis expires before the first commit. Nothing is
@@ -120,16 +118,8 @@ const (
 )
 
 const (
-	ErrCodeTxRequired                 = "TX_REQUIRED"
-	ErrCodeTxConflict                 = "TX_CONFLICT"
-	ErrCodeTxCoordinatorNotConfigured = "TX_COORDINATOR_NOT_CONFIGURED"
-	ErrCodeTxNoState                  = "TX_NO_STATE"
-)
-
-const (
 	ErrCodeSearchJobNotFound        = "SEARCH_JOB_NOT_FOUND"
 	ErrCodeSearchJobAlreadyTerminal = "SEARCH_JOB_ALREADY_TERMINAL"
-	ErrCodeSearchShardTimeout       = "SEARCH_SHARD_TIMEOUT"
 	ErrCodeSearchResultLimit        = "SEARCH_RESULT_LIMIT"
 	// ErrCodeConditionTypeMismatch is returned when a simple condition's
 	// operator applies to none of the field's declared DataTypes, or a
@@ -307,7 +297,6 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeBadRequest:                       {},
 	ErrCodeCalloutFailed:                    {},
 	ErrCodeCalloutSuperseded:                {},
-	ErrCodeClusterNodeNotRegistered:         {},
 	ErrCodeCommitInJoinedTransaction:        {},
 	ErrCodeModelAdminInJoinedTransaction:    {},
 	ErrCodeCompositeKeyUnsupported:          {},
@@ -331,7 +320,6 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeForbidden:                        {},
 	ErrCodeGroupCardinalityExceeded:         {},
 	ErrCodeHelpTopicNotFound:                {},
-	ErrCodeIdempotencyConflict:              {},
 	ErrCodeIncompatibleType:                 {},
 	ErrCodeInvalidAggregationField:          {},
 	ErrCodeInvalidAggregationOp:             {},
@@ -363,7 +351,6 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeSearchJobNotFound:                {},
 	ErrCodeSearchQueueFull:                  {},
 	ErrCodeSearchResultLimit:                {},
-	ErrCodeSearchShardTimeout:               {},
 	ErrCodeSearchTimeout:                    {},
 	ErrCodeServerBusy:                       {},
 	ErrCodeServerError:                      {},
@@ -376,10 +363,6 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeTransitionNotFound:               {},
 	ErrCodeTrustedKeyCapReached:             {},
 	ErrCodeTrustedKeyNotFound:               {},
-	ErrCodeTxConflict:                       {},
-	ErrCodeTxCoordinatorNotConfigured:       {},
-	ErrCodeTxNoState:                        {},
-	ErrCodeTxRequired:                       {},
 	ErrCodeUnauthorized:                     {},
 	ErrCodeUniqueViolation:                  {},
 	ErrCodeUnsupportedAlgorithm:             {},

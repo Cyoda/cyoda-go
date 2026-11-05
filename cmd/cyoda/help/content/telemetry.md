@@ -73,7 +73,7 @@ The instrumentation name is `github.com/cyoda-platform/cyoda-go`.
 
 Traces are exported via `otlptracehttp`. Spans are created by:
 
-- `otelhttp.NewMiddleware("cyoda")` — wraps the HTTP API handler when `CYODA_OTEL_ENABLED=true`; creates one span per inbound HTTP request.
+- `otelhttp.NewMiddleware("cyoda")` — wraps the whole HTTP handler when `CYODA_OTEL_ENABLED=true`; creates one span per inbound HTTP request, on every route.
 - `otelgrpc.NewServerHandler()` — installed as a gRPC stats handler when `CYODA_OTEL_ENABLED=true`; creates one span per inbound gRPC RPC.
 - `observability.TracingTransactionManager` — decorator around the storage `TransactionManager`; creates spans for `tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`, `tx.rollback_to_savepoint`, `tx.release_savepoint`.
 - `observability.TracingExternalProcessingService` — decorator around the callout path; creates one span per callout, `dispatch.processor`, `dispatch.criteria` or `dispatch.function`, however many tries the callout takes. The span carries `callout.tries`, `callout.handover` and `callout.waited_ms`.
@@ -193,8 +193,6 @@ cyoda-go uses **W3C Trace Context** (`traceparent`, `tracestate`) and **W3C Bagg
 **HTTP**: `otelhttp.NewMiddleware` extracts `traceparent` and `tracestate` from inbound HTTP request headers automatically. Outbound requests (inter-node cluster dispatch via `HTTPForwarder`) do not currently inject trace context.
 
 **gRPC**: `otelgrpc.NewServerHandler()` extracts trace context from inbound gRPC metadata automatically.
-
-**Messaging / internal**: `observability.InjectTraceContext(ctx, headers)` writes `traceparent` and `tracestate` into a `map[string]string` carrier. `observability.ExtractTraceContext(baseCtx, headers)` restores the remote span context. Both use the global text map propagator.
 
 ## METRICS ENDPOINT
 

@@ -513,7 +513,7 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthLatch *health.Latc
 	registry := NewMemberRegistry()
 	srv := NewServer(authSvc, nil, registry, tracker, entityHandler, modelHandler, searchSvc,
 		tokenSigner, noCalloutJoiner(t, tokenSigner, tracker), nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
-		false, 0, true, healthLatch, ka, newFixedConsistency(), func() platformclock.State { return platformclock.State{} }, func() error { return nil })
+		false, 0, true, testProxyTimeout, healthLatch, ka, newFixedConsistency(), func() platformclock.State { return platformclock.State{} }, func() error { return nil })
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

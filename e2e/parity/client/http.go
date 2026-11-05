@@ -1212,18 +1212,28 @@ func (c *Client) SubmitAsyncSearchSorted(t *testing.T, modelName string, modelVe
 // Canonical: api/openapi.yaml /search/async/{jobId}/status.
 func (c *Client) GetAsyncSearchStatus(t *testing.T, jobID string) (string, error) {
 	t.Helper()
-	path := fmt.Sprintf("/api/search/async/%s/status", jobID)
-	raw, err := c.doRaw(t, http.MethodGet, path, "")
+	st, err := c.GetAsyncSearchStatusBody(t, jobID)
 	if err != nil {
 		return "", err
 	}
-	var resp struct {
-		SearchJobStatus string `json:"searchJobStatus"`
+	return st.SearchJobStatus, nil
+}
+
+// GetAsyncSearchStatusBody issues GET /api/search/async/{jobId}/status and
+// returns the whole status body, failureReason included.
+// Canonical: api/openapi.yaml AsyncSearchStatusDto.
+func (c *Client) GetAsyncSearchStatusBody(t *testing.T, jobID string) (AsyncSearchStatus, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/status", jobID)
+	raw, err := c.doRaw(t, http.MethodGet, path, "")
+	if err != nil {
+		return AsyncSearchStatus{}, err
 	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return "", fmt.Errorf("decode GetAsyncSearchStatus response: %w (body=%s)", err, string(raw))
+	var st AsyncSearchStatus
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return AsyncSearchStatus{}, fmt.Errorf("decode GetAsyncSearchStatus response: %w (body=%s)", err, string(raw))
 	}
-	return resp.SearchJobStatus, nil
+	return st, nil
 }
 
 // GetAsyncSearchResults issues GET /api/search/async/{jobId}. Returns

@@ -21,8 +21,8 @@ type ChiMux struct {
 // NewChiMux returns a ChiMux backed by a fresh chi router. Every route checks
 // its query against query before the generated binding reads it. inner wraps
 // every route's handler, outermost first, and runs after the route's ROLE_M2M
-// check: app.go passes the transaction-join middleware here, so a caller the
-// check refuses joins nothing.
+// check: app.go passes the warnings and transaction-join middleware here, so a
+// caller the check refuses joins nothing.
 func NewChiMux(query QueryRules, inner ...func(http.Handler) http.Handler) *ChiMux {
 	return &ChiMux{r: chi.NewRouter(), query: query, inner: inner}
 }

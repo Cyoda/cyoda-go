@@ -186,9 +186,14 @@ func (p *standInPeer) serveHandOver(auth dispatch.PeerAuth, w http.ResponseWrite
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	// The tags travel in the definition; the receiving node reads them there.
+	var tags string
+	if req.Processor != nil {
+		tags = req.Processor.Config.CalculationNodesTags
+	}
 	p.record(handOverSeen{
 		peer: p.nodeID, kind: req.Kind, requestID: req.RequestID, tenantID: req.TenantID,
-		tags: req.Tags, triesLeft: req.TriesLeft, major: req.Major, repeatSafe: req.RepeatSafe,
+		tags: tags, triesLeft: req.TriesLeft, major: req.Major, repeatSafe: req.RepeatSafe,
 	})
 
 	switch p.currentAnswer() {

@@ -6,8 +6,7 @@ package search_test
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"sync"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -143,38 +142,6 @@ func TestReclaimStaleJobs_PanicInSecondPass_KeepsUnsentWritesOwed(t *testing.T) 
 	}
 }
 
-// recordingHandler keeps every log record at or above WARN.
-type recordingHandler struct {
-	mu      sync.Mutex
-	records []string
-}
-
-func (h *recordingHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelWarn }
-func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.records = append(h.records, fmt.Sprintf("%s %s", r.Level, r.Message))
-	return nil
-}
-func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
-
-func (h *recordingHandler) snapshot() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]string(nil), h.records...)
-}
-
-// captureWarnings routes the default logger to a recorder for this test.
-func captureWarnings(t *testing.T) *recordingHandler {
-	t.Helper()
-	h := &recordingHandler{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(h))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return h
-}
-
 // refusingFailStore refuses every FAILED write with refusal.
 type refusingFailStore struct {
 	*orderedClaimStore
@@ -189,8 +156,9 @@ func (s *refusingFailStore) UpdateJobStatus(ctx context.Context, jobID string, e
 }
 
 // An owed FAILED write the store refuses as stale, terminal or missing means
-// the job is no longer this claim's to settle: an ordinary end, logged below
-// WARN, for the attempt-cap write and the undecodable job's write alike.
+// the job is no longer this claim's to settle: a lost claim, reported as one
+// INFO line like every other, for the attempt-cap write and the undecodable
+// job's write alike.
 func TestReclaimStaleJobs_FencedRefusalOfOwedFailIsNotAFault(t *testing.T) {
 	for _, refusal := range []error{spi.ErrStaleClaim, spi.ErrAlreadyTerminal, spi.ErrNotFound} {
 		for _, kind := range []string{"capped", "undecodable"} {
@@ -220,17 +188,24 @@ func TestReclaimStaleJobs_FencedRefusalOfOwedFailIsNotAFault(t *testing.T) {
 				store := &refusingFailStore{orderedClaimStore: ordered, refusal: refusal}
 				svc := newSecondPassService(t, factory, store)
 
-				logs := captureWarnings(t)
+				logs := captureJobLogs(t)
 				if _, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, maxAttempts); err != nil {
 					t.Fatalf("ReclaimStaleJobs: %v", err)
 				}
 				svc.WaitReclaimSecondPass()
 
-				for _, rec := range logs.snapshot() {
-					if kind == "undecodable" && rec == "ERROR failed to decode claimed search job; failing" {
+				var lines []string
+				for _, line := range strings.Split(logs.String(), "\n") {
+					if !strings.Contains(line, "jobID=job-refused") {
+						continue
+					}
+					if kind == "undecodable" && strings.Contains(line, "failed to decode claimed search job") {
 						continue // the defect itself, logged at claim time
 					}
-					t.Errorf("logged %q for an owed FAILED write refused with %v; want below WARN", rec, refusal)
+					lines = append(lines, line)
+				}
+				if len(lines) != 1 || !strings.Contains(lines[0], lostClaimLine) || !strings.Contains(lines[0], "level=INFO") {
+					t.Errorf("lines for an owed FAILED write refused with %v = %q, want one INFO lost-claim line", refusal, lines)
 				}
 			})
 		}

@@ -307,7 +307,7 @@ func runSupersedeScenario(t *testing.T, tc supersedeShape, calloutSucceeds bool)
 		done <- env.callback(t, 1, func(ctx context.Context) error {
 			entity := makeEntity("child-1", modelRef, map[string]any{"x": 1})
 			entity.Meta.TransactionID = env.txID
-			_, err := env.engine.Execute(ctx, entity, "")
+			_, err := env.engine.Execute(ctx, entity)
 			state = entity.Meta.State
 			return err
 		})
@@ -387,7 +387,7 @@ func TestSupersededChain_AsyncNewTx_LeavesItsSavepointAlone(t *testing.T) {
 				done <- env.callback(t, 1, func(ctx context.Context) error {
 					entity := makeEntity("child-sp", modelRef, map[string]any{"x": 1})
 					entity.Meta.TransactionID = env.txID
-					_, err := env.engine.Execute(ctx, entity, "")
+					_, err := env.engine.Execute(ctx, entity)
 					return err
 				})
 			}()

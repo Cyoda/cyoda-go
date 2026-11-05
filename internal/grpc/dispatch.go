@@ -177,9 +177,10 @@ func (d *ProcessorDispatcher) buildCalloutEvent(call Callout) (*cepb.CloudEvent,
 // so a cnode that is attached but not taking data costs up to one answer limit
 // before it is classified NoHandOff.
 //
-// The callout kind and name flow into client-facing diagnostics (warnings and
-// errors surface in the gRPC warnings array and the HTTP body — see
-// .claude/rules/error-handling.md) and into server logs.
+// The callout kind and name flow into client-facing diagnostics (warnings
+// surface in the gRPC warnings array and the HTTP Cyoda-Warning headers, errors
+// in the gRPC error and the HTTP body — see .claude/rules/error-handling.md) and
+// into server logs.
 func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, member *Member, call Callout, pass string) (CalloutResult, *contract.CalloutFailure, bool, error) {
 	label, name, requestID := call.Kind.String(), call.Name, call.RequestID
 	limitMs := call.AnswerLimit.Milliseconds()
@@ -304,7 +305,6 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 			if resp.Error != "" {
 				failure.MemberText = boundMemberText(resp.Error)
 				failure.Message = failure.MemberText
-				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, failure.Message))
 			}
 			return CalloutResult{}, failure, true, nil
 		}

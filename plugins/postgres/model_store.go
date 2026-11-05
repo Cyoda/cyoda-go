@@ -57,42 +57,32 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 		return fmt.Errorf("failed to marshal model descriptor: %w", err)
 	}
 
-	_, err = s.q.Exec(ctx,
-		`INSERT INTO models (tenant_id, model_name, model_version, doc)
-		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (tenant_id, model_name, model_version) DO UPDATE SET doc = EXCLUDED.doc`,
-		string(s.tenantID), desc.Ref.EntityName, desc.Ref.ModelVersion, raw)
+	// Save replaces the model's schema wholesale, so the extension log of
+	// the ref goes with it, in the same statement: a Get after Save returns
+	// the saved schema alone. Through the model state machine the log is
+	// already empty here — Unlock folds it into the schema and Delete
+	// removes it — so rows found here were written by a caller that
+	// bypassed the state machine, and are reported.
+	var stale int64
+	err = s.q.QueryRow(ctx, `
+		WITH ext AS (
+			DELETE FROM model_schema_extensions
+			WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
+			RETURNING 1
+		), saved AS (
+			INSERT INTO models (tenant_id, model_name, model_version, doc)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (tenant_id, model_name, model_version) DO UPDATE SET doc = EXCLUDED.doc
+			RETURNING 1
+		)
+		SELECT (SELECT COUNT(*) FROM ext)`,
+		string(s.tenantID), desc.Ref.EntityName, desc.Ref.ModelVersion, raw).Scan(&stale)
 	if err != nil {
 		return fmt.Errorf("failed to save model %s: %w", desc.Ref, err)
 	}
-
-	// Save is the full-replace lifecycle path. By the operator contract
-	// (docs/CONSISTENCY.md) the extension log must already be empty for
-	// this ref — ExtendSchema is disjoint from Save via the state
-	// machine. Defensively DELETE: in dev builds a non-zero RowsAffected
-	// here is a fatal assertion; in production it logs a warning and
-	// proceeds, because Save itself is the authoritative schema source
-	// at this moment.
-	//
-	// The assertion is defense-in-depth, not the defense: the kernel's
-	// model state machine (LOCKED/UNLOCKED mutual exclusion and the
-	// MODEL_HAS_ENTITIES zero-entity check, e2e-covered in the root
-	// module) is what keeps writers off this path in production. It is
-	// expected to be unreachable through the public API and stays for
-	// writers that bypass the state machine.
-	tag, err := s.q.Exec(ctx, `
-		DELETE FROM model_schema_extensions
-		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), desc.Ref.EntityName, desc.Ref.ModelVersion)
-	if err != nil {
-		return fmt.Errorf("Save: clear extension log for %s: %w", desc.Ref, err)
-	}
-	if n := tag.RowsAffected(); n != 0 {
-		if buildIsDev() {
-			return fmt.Errorf("Save found %d stale extension rows for %s; operator-contract violation (see docs/CONSISTENCY.md)", n, desc.Ref)
-		}
+	if stale != 0 {
 		slog.Warn("Save cleared stale extension rows",
-			"pkg", "postgres", "ref", desc.Ref, "count", n)
+			"pkg", "postgres", "ref", desc.Ref, "count", stale)
 	}
 	return nil
 }
@@ -144,15 +134,35 @@ func (s *modelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 	return refs, nil
 }
 
+// Delete removes the model and, in the same statement, its extension
+// log: a model imported later under the same reference starts from its
+// imported schema alone. Through the model state machine the log is
+// already empty here (Delete requires UNLOCKED, and Unlock folds the log
+// into the schema), so rows found here are reported.
 func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
-	tag, err := s.q.Exec(ctx,
-		`DELETE FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
+	var deleted, stale int64
+	err := s.q.QueryRow(ctx, `
+		WITH m AS (
+			DELETE FROM models
+			WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
+			RETURNING 1
+		), ext AS (
+			DELETE FROM model_schema_extensions
+			WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
+			  AND EXISTS (SELECT 1 FROM m)
+			RETURNING 1
+		)
+		SELECT (SELECT COUNT(*) FROM m), (SELECT COUNT(*) FROM ext)`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&deleted, &stale)
 	if err != nil {
 		return fmt.Errorf("failed to delete model %s: %w", modelRef, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if deleted == 0 {
 		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
+	}
+	if stale != 0 {
+		slog.Warn("Delete cleared stale extension rows",
+			"pkg", "postgres", "ref", modelRef, "count", stale)
 	}
 	return nil
 }
@@ -170,8 +180,8 @@ func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 // NOT NULL constraint.
 //
 // Save-on-lock is deliberately asymmetric with Unlock (no save-on-unlock):
-// Unlock drains the extension log wholesale per the operator contract,
-// so a second savepoint at that moment would be load-bearing-free noise.
+// Unlock folds the extension log into the stored schema and clears it,
+// so a savepoint at that moment would be removed in the same transaction.
 func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 	// Check pre-state so we can skip the savepoint write on the
 	// idempotent re-lock path (already-locked model).
@@ -232,38 +242,62 @@ func (s *modelStore) isCurrentlyUnlocked(ctx context.Context, modelRef spi.Model
 	return !locked, nil
 }
 
+// Unlock transitions the model to the UNLOCKED state and folds its
+// extension log into the stored schema, in one transaction: the schema a
+// Get returns does not change, and the log is empty afterwards. The
+// extensions entity writes made while the model was LOCKED are part of
+// the model's schema; Unlock compacts them, it does not discard them.
+//
+// The state flip runs first because it is also the write-claim on the
+// models row that serialises Unlock with ExtendSchema (see
+// extendSchemaBody): the fold then sees every delta committed before it.
 func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
-	if err := s.updateStateField(ctx, modelRef, spi.ModelUnlocked, "unlock"); err != nil {
-		return err
-	}
-	// Operator contract: all writers (ExtendSchema) must be drained
-	// before Unlock. Lifecycle savepoints (including the one Lock
-	// writes) are expected and not operator-contract violations —
-	// only stale DELTA rows indicate a writer that bypassed the state
-	// machine. Both are cleared here; the dev-mode assertion only
-	// fires on delta remnants.
-	var staleDeltas int
-	if err := s.q.QueryRow(ctx, `
-		SELECT COUNT(*) FROM model_schema_extensions
-		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND kind = 'delta'`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&staleDeltas); err != nil {
-		return fmt.Errorf("Unlock: count stale deltas for %s: %w", modelRef, err)
-	}
-
-	if _, err := s.q.Exec(ctx, `
-		DELETE FROM model_schema_extensions
-		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion); err != nil {
-		return fmt.Errorf("Unlock: clear extension log for %s: %w", modelRef, err)
-	}
-	if staleDeltas != 0 {
-		if buildIsDev() {
-			return fmt.Errorf("Unlock found %d live extension rows for %s; operator-contract violation — concurrent writers did not drain before Unlock", staleDeltas, modelRef)
+	return s.inWriteTx(ctx, fmt.Sprintf("Unlock(%s)", modelRef), func(q Querier) error {
+		shadow := *s
+		shadow.q = q
+		if err := shadow.updateStateField(ctx, modelRef, spi.ModelUnlocked, "unlock"); err != nil {
+			return err
 		}
-		slog.Warn("Unlock drained stale extension rows",
-			"pkg", "postgres", "ref", modelRef, "count", staleDeltas)
-	}
-	return nil
+
+		var raw []byte
+		if err := q.QueryRow(ctx,
+			`SELECT doc FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw); err != nil {
+			return fmt.Errorf("Unlock: read model %s: %w", modelRef, err)
+		}
+		var doc modelDoc
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return fmt.Errorf("Unlock: unmarshal model %s: %w", modelRef, err)
+		}
+		folded, err := shadow.foldLocked(ctx, modelRef, doc.Schema)
+		if err != nil {
+			return fmt.Errorf("Unlock: fold extension log for %s: %w", modelRef, err)
+		}
+
+		tag, err := q.Exec(ctx, `
+			DELETE FROM model_schema_extensions
+			WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
+		if err != nil {
+			return fmt.Errorf("Unlock: clear extension log for %s: %w", modelRef, err)
+		}
+		if tag.RowsAffected() == 0 {
+			return nil // nothing was folded; the stored schema is current
+		}
+
+		doc.Schema = folded
+		updated, err := json.Marshal(doc)
+		if err != nil {
+			return fmt.Errorf("Unlock: marshal model %s: %w", modelRef, err)
+		}
+		if _, err := q.Exec(ctx,
+			`UPDATE models SET doc = $4
+			 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, updated); err != nil {
+			return fmt.Errorf("Unlock: store folded schema for %s: %w", modelRef, err)
+		}
+		return nil
+	})
 }
 
 func (s *modelStore) IsLocked(ctx context.Context, modelRef spi.ModelRef) (bool, error) {
@@ -374,8 +408,17 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	// may persist. When the caller supplies an ambient transaction via
 	// spi.GetTransaction(ctx), rely on the caller's boundary. Otherwise
 	// self-wrap in a pgx.Tx so the boundary exists.
+	return s.inWriteTx(ctx, fmt.Sprintf("ExtendSchema(%s)", ref), func(q Querier) error {
+		return s.extendSchemaBody(ctx, q, ref, delta)
+	})
+}
+
+// inWriteTx runs body on one transaction: the caller's ambient one when
+// ctx carries it, otherwise one inWriteTx opens and commits itself. op
+// names the operation in the self-wrap's error messages.
+func (s *modelStore) inWriteTx(ctx context.Context, op string, body func(q Querier) error) error {
 	if spi.GetTransaction(ctx) != nil {
-		return s.extendSchemaBody(ctx, s.q, ref, delta)
+		return body(s.q)
 	}
 
 	// Same scoping rule as TransactionManager.Begin: the deadline bounds the
@@ -383,10 +426,10 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	// handle — which outlives this call — cannot inherit it.
 	acquireCtx, cancelAcquire := s.acquireContext(ctx)
 	// READ COMMITTED is explicit, not inherited from the server default:
-	// extendSchemaBody's write-claim on the models row relies on every
-	// post-claim statement seeing what the previous claim holder committed,
-	// which per-statement snapshots provide and a REPEATABLE READ snapshot
-	// taken before the claim would not.
+	// the write-claim on the models row (extendSchemaBody, Unlock) relies on
+	// every post-claim statement seeing what the previous claim holder
+	// committed, which per-statement snapshots provide and a REPEATABLE READ
+	// snapshot taken before the claim would not.
 	tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	cancelAcquire() // Begin has returned; the handle must not inherit the deadline
 	if err != nil {
@@ -396,30 +439,29 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 		// does not. ValidateOrExtend's ErrInternalSchema tag chains with a double
 		// %w, so the marker survives it and the schema classifier honours it.
 		return classifyAcquireErr(ctx, acquireCtx,
-			fmt.Sprintf("failed to begin self-wrap tx for ExtendSchema(%s)", ref), err)
+			fmt.Sprintf("failed to begin self-wrap tx for %s", op), err)
 	}
 	// Rollback is idempotent in pgx: no-op once Commit has landed.
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Set the RLS tenant, as every other transaction this plugin opens does
 	// (TransactionManager.Begin, the async-search scan). The owner role
-	// bypasses the policies today, but under a non-owner, RLS-subject role —
-	// the hardening target rls_test.go describes, not a supported deployment —
-	// an unset GUC would filter every row this body needs.
+	// bypasses the policies (row-level security is not supported), and keeping
+	// the setting on every transaction keeps the plugin's transactions alike.
 	if _, err := tx.Exec(ctx,
 		"SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
-		return fmt.Errorf("failed to set tenant for ExtendSchema(%s): %w", ref, err)
+		return fmt.Errorf("failed to set tenant for %s: %w", op, err)
 	}
 
 	// classifiedQuerier keeps the self-wrap statements on the same error
 	// classification the ambient path gets from ctxQuerier — the write-claim's
 	// conflict sentinel and the ceilings' storage-unavailable marker both
 	// depend on it.
-	if err := s.extendSchemaBody(ctx, classifiedQuerier{inner: tx}, ref, delta); err != nil {
+	if err := body(classifiedQuerier{inner: tx}); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return classifyError(fmt.Errorf("failed to commit self-wrap tx for ExtendSchema(%s): %w", ref, err))
+		return classifyError(fmt.Errorf("failed to commit self-wrap tx for %s: %w", op, err))
 	}
 	return nil
 }

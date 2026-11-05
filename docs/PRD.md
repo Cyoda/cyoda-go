@@ -364,27 +364,26 @@ A transaction's lifetime is bounded on every exit path, including a panic. Each 
 
 ### Multi-Node Transaction Affinity
 
-In a multi-node cluster running the **postgres plugin**, the `pgx.Tx`
-handle lives in a single node's process memory. The transaction token
-encodes which node owns the transaction (see Section 9). All
-subsequent requests for that transaction are routed to the owning
-node — no distributed transaction coordination inside cyoda-go.
+In a multi-node cluster a transaction lives in the process of the node
+that began it (with the **postgres plugin**, its `pgx.Tx` handle). The
+transaction token a compute node receives for a callout encodes which
+node owns the transaction (see Section 9). Every request made under that
+token is routed to the owning node, whatever the storage plugin — no
+distributed transaction coordination inside cyoda-go.
 
 If the owning node dies, the transaction dies. PostgreSQL
-automatically rolls back the connection. The client receives
-`TRANSACTION_NODE_UNAVAILABLE` and must retry from scratch. Trading
-this failure mode for operational simplicity (no Paxos, no Raft, no
-ZooKeeper in the cyoda-go process) is a deliberate choice — see §9.
+automatically rolls back the connection. A compute node's callback
+under the transaction's token answers `TRANSACTION_NODE_UNAVAILABLE`,
+and the client's request fails; the client retries it from scratch.
+Trading this failure mode for operational simplicity (no Paxos, no
+Raft, no ZooKeeper in the cyoda-go process) is a deliberate choice —
+see §9.
 
-The commercial **Cassandra plugin** takes a different approach: the
-plugin coordinates transactions across the cluster, so a transaction
-is not pinned to a single owning node and does not fail when any one
-node becomes unavailable mid-transaction. This removes the
-`TRANSACTION_NODE_UNAVAILABLE` failure mode and is one of the
-operational advantages of the Cassandra plugin over the postgres
-plugin in high-availability deployments. The coordination mechanism
-is plugin-internal; contact [Cyoda](https://www.cyoda.com) for
-architectural details.
+The commercial **Cassandra plugin** changes the storage tier, not
+transaction ownership: it removes the single shared database, so writes
+scale horizontally and storage has no single point of failure. A
+transaction still belongs to the node that began it. Contact
+[Cyoda](https://www.cyoda.com) for architectural details.
 
 ---
 
@@ -740,7 +739,7 @@ In a multi-node cluster, a calculation member's gRPC stream terminates at one no
 | **Messaging** | `POST/GET/DELETE /message/...` | Edge message store |
 | **Auth** | `POST /tenants/{tenant}/oauth/token`, `GET /.well-known/jwks.json`, key/trusted/M2M management | Authentication and key management |
 | **Account** | `GET /account` | Account info, subscriptions |
-| **Cluster** | _(not exposed over REST)_ | Connected calculation-member registry is internal-only (`contract.ClusterService`) |
+| **Cluster** | `GET /platform/cluster` | Cluster status read: each node's reachability, lifecycle state and database check (platform operator) |
 | **Admin** | `GET/POST /admin/log-level` | Runtime log level control |
 
 All REST responses follow RFC 9457 (Problem Details) for errors.

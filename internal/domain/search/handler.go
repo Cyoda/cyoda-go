@@ -31,23 +31,6 @@ const (
 	DefaultDirectSearchLimit = 1000
 )
 
-// jobLookupError maps a service-level error to a handler response. Job-not-
-// found is reported as 404 + SEARCH_JOB_NOT_FOUND; an error that already is a
-// *common.AppError (a classified failure from the service, such as a refused
-// point in time) passes through unchanged; any other lookup error is treated
-// as an internal failure, which routes a storage outage to a retryable 503 and
-// everything else to a 500 with a ticket.
-func jobLookupError(err error) *common.AppError {
-	if errors.Is(err, ErrSearchJobNotFound) {
-		return common.Operational(http.StatusNotFound, common.ErrCodeSearchJobNotFound, err.Error())
-	}
-	var appErr *common.AppError
-	if errors.As(err, &appErr) {
-		return appErr
-	}
-	return common.Internal("job lookup failed", err)
-}
-
 // submitAsyncError maps a SubmitAsync error to the response to write.
 // ErrQueueFull — the async-search worker pool's queue is at capacity —
 // maps to the shared retryable 503 (QueueFullError, pool.go), checked
@@ -292,7 +275,7 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 func (h *Handler) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
 	status, err := h.searchSvc.GetAsyncStatus(r.Context(), jobId.String())
 	if err != nil {
-		common.WriteError(w, r, jobLookupError(err))
+		common.WriteError(w, r, JobError(err))
 		return
 	}
 
@@ -353,17 +336,13 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 		// Asking for results before the job finished is a client error, and the
 		// status it is in is domain detail the caller is entitled to. Every other
 		// failure that reaches here — the job lookup, the result-ID read, and
-		// acquiring the entity store — is a server-side failure: jobLookupError
+		// acquiring the entity store — is a server-side failure: JobError
 		// keeps a genuine miss at 404 and routes the rest through common.Internal,
 		// which answers a storage outage with a retryable 503 and keeps the
 		// driver's text out of the body. A failed read of an individual result
 		// entity reaches here too, a miss included: it fails the whole page, see
 		// GetAsyncResults.
-		if errors.Is(err, ErrSearchJobNotComplete) {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err)))
-			return
-		}
-		common.WriteError(w, r, jobLookupError(err))
+		common.WriteError(w, r, JobError(err))
 		return
 	}
 
@@ -401,19 +380,13 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 func (h *Handler) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
 	result, err := h.searchSvc.CancelAsync(r.Context(), jobId.String())
 	if err != nil {
-		common.WriteError(w, r, jobLookupError(err))
+		common.WriteError(w, r, JobError(err))
 		return
 	}
 
 	if !result.Cancelled {
-		// Job was already completed (SUCCESSFUL/FAILED) — Cloud returns 400.
-		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeSearchJobAlreadyTerminal,
-			fmt.Sprintf("snapshot by id=%s is not running. current status=%s", jobId.String(), result.CurrentStatus))
-		appErr.Props = map[string]any{
-			"currentStatus": result.CurrentStatus,
-			"snapshotId":    jobId.String(),
-		}
-		common.WriteError(w, r, appErr)
+		// The job has already ended — Cloud returns 400.
+		common.WriteError(w, r, AlreadyTerminalError(jobId.String(), result.CurrentStatus))
 		return
 	}
 
@@ -440,6 +413,10 @@ func buildStatusResponse(status SearchJobStatus) map[string]any {
 	}
 	if status.FinishTime != nil {
 		resp["finishTime"] = status.FinishTime.UTC().Format(time.RFC3339Nano)
+	}
+	// Set by the service for a FAILED job only.
+	if status.FailureReason != "" {
+		resp["failureReason"] = status.FailureReason
 	}
 	return resp
 }

@@ -5,7 +5,6 @@ stability: stable
 see_also:
   - errors
   - errors.CONFLICT
-  - errors.IDEMPOTENCY_CONFLICT
   - errors.EPOCH_MISMATCH
 ---
 
@@ -27,7 +26,7 @@ The `entityId` property in the problem-detail body identifies the conflicting en
 
 This code answers only a precondition on the request's own entity. A write to the entity later in the same transaction — for example a processor's callback that joined the request's transaction — is the request's own and does not break the `If-Match`; the update succeeds and keeps that write. A change that another transaction commits after the request's read is a lost race, not a failed precondition: the answer is a retryable `409 CONFLICT` (see `errors.CONFLICT`), on every storage backend.
 
-One more case answers this code, with or without `If-Match`: a `COMMIT_BEFORE_DISPATCH` processor committed the request's work before its callout, and another transaction changed the entity before the processor's result was applied. A single update answers `412 ENTITY_MODIFIED`; the committed segment stays.
+One more case answers this code, with or without `If-Match`: a `COMMIT_BEFORE_DISPATCH` processor committed the request's work before its callout, and another transaction changed the entity before the processor's result was applied. Every write route answers it — a create, an update, and an item of a collection create or update — with `entityId` naming that entity. A collection request fails whole: no later item runs. The committed segment stays. In a later chunk of a chunked collection request it is that chunk's error element, as every chunk-wide failure is.
 
 Not retryable in the protocol sense — replaying the same payload with the same `If-Match` value will fail again.
 
@@ -64,5 +63,4 @@ So omitting `If-Match` does not turn off all concurrency control — but it does
 
 - errors
 - errors.CONFLICT
-- errors.IDEMPOTENCY_CONFLICT
 - errors.EPOCH_MISMATCH

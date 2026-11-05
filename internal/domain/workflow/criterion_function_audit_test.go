@@ -197,7 +197,7 @@ func TestAudit_CascadeNoMatch_FunctionsAndReason(t *testing.T) {
 	engine, factory, txMgr, _, ref := auditEnv(t, map[string]criteriaAnswer{"a": {matches: true}},
 		automatedWF("wf", evGroup("AND", evFn("a", ""), evFn("a", evAmountGT100))))
 	entity, txID, txCtx := beginWith(t, txMgr, ref, "e1", 50)
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if entity.Meta.State != "S0" {
@@ -224,7 +224,7 @@ func TestAudit_CascadeMatch_TransitionMakeCarriesFunctions(t *testing.T) {
 	engine, factory, txMgr, _, ref := auditEnv(t, map[string]criteriaAnswer{"a": {matches: true}},
 		automatedWF("wf", evFn("a", evAmountGT10), evAmountGT10))
 	entity, txID, txCtx := beginWith(t, txMgr, ref, "e1", 50)
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if entity.Meta.State != "S2" {
@@ -265,7 +265,7 @@ func TestAudit_Selection_FoundAndSkipped(t *testing.T) {
 	t.Run("amount 50", func(t *testing.T) {
 		engine, factory, txMgr, _, ref := auditEnv(t, map[string]criteriaAnswer{"sel": {matches: true}}, wfA, wfB)
 		entity, txID, txCtx := beginWith(t, txMgr, ref, "e1", 50)
-		if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+		if _, err := engine.Execute(txCtx, entity); err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
 		skips := eventsOf(t, factory, txCtx, "e1", txID, spi.SMEventWorkflowSkipped)
@@ -287,7 +287,7 @@ func TestAudit_Selection_FoundAndSkipped(t *testing.T) {
 	t.Run("amount 150", func(t *testing.T) {
 		engine, factory, txMgr, _, ref := auditEnv(t, map[string]criteriaAnswer{"sel": {matches: true}}, wfA, wfB)
 		entity, txID, txCtx := beginWith(t, txMgr, ref, "e1", 150)
-		if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+		if _, err := engine.Execute(txCtx, entity); err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
 		found := eventsOf(t, factory, txCtx, "e1", txID, spi.SMEventWorkflowFound)
@@ -307,7 +307,7 @@ func manualFire(t *testing.T, criterion string, answers map[string]criteriaAnswe
 	engine, factory, txMgr, rec, ref := auditEnv(t, answers, manualWF(criterion))
 	entity, txID, txCtx := beginWith(t, txMgr, ref, "e1", amount)
 	entity.Meta.State = "PENDING"
-	_, err := engine.ManualTransition(txCtx, entity, "approve")
+	_, err := engine.ManualTransition(txCtx, entity, "approve", IfMatch{})
 	return factory, rec, txID, txCtx, err
 }
 

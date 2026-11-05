@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -238,11 +237,10 @@ func TestStoreFactory_SetApplyFuncTwicePanics(t *testing.T) {
 	factory.SetApplyFunc(jsonRecordingApplyFunc())
 }
 
-// --- D2: Save/Unlock clear extension log + dev-time assertion ---
+// --- Save clears the extension log ---
 
-func TestSave_AfterPriorExtensions_ClearsLog_ProductionMode(t *testing.T) {
-	// Default debugMode == false → production path: Save logs a warn
-	// but succeeds; the log is cleared unconditionally.
+func TestSave_AfterPriorExtensions_ClearsLog(t *testing.T) {
+	// Save logs a warn but succeeds; the log is cleared unconditionally.
 	factory := setupModelExtTest(t)
 	factory.SetApplyFunc(jsonRecordingApplyFunc())
 
@@ -272,89 +270,6 @@ func TestSave_AfterPriorExtensions_ClearsLog_ProductionMode(t *testing.T) {
 
 	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 0 {
 		t.Errorf("expected 0 extension rows after Save, got %d", n)
-	}
-}
-
-func TestSave_AfterPriorExtensions_DevMode_ReturnsError(t *testing.T) {
-	postgres.SetDebugMode(true)
-	t.Cleanup(func() { postgres.SetDebugMode(false) })
-
-	factory := setupModelExtTest(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-
-	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-
-	err = ms.Save(ctx, &spi.ModelDescriptor{
-		Ref:         ref,
-		State:       spi.ModelUnlocked,
-		ChangeLevel: spi.ChangeLevelStructural,
-		Schema:      []byte(`{"base":2}`),
-		UpdateDate:  time.Now().UTC().Truncate(time.Millisecond),
-	})
-	if err == nil {
-		t.Fatal("expected dev-mode assertion error on stale extension rows")
-	}
-	if !strings.Contains(err.Error(), "operator-contract violation") {
-		t.Errorf("want operator-contract error, got: %v", err)
-	}
-}
-
-func TestUnlock_WithLiveExtensions_DevMode_ReturnsError(t *testing.T) {
-	postgres.SetDebugMode(true)
-	t.Cleanup(func() { postgres.SetDebugMode(false) })
-
-	factory := setupModelExtTest(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-
-	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-
-	err = ms.Unlock(ctx, ref)
-	if err == nil {
-		t.Fatal("expected dev-mode assertion error on live extension rows")
-	}
-	if !strings.Contains(err.Error(), "operator-contract violation") {
-		t.Errorf("want operator-contract error, got: %v", err)
-	}
-}
-
-func TestUnlock_CleanState_Succeeds(t *testing.T) {
-	postgres.SetDebugMode(true)
-	t.Cleanup(func() { postgres.SetDebugMode(false) })
-
-	factory := setupModelExtTest(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-	// No ExtendSchema — log is empty.
-
-	if err := ms.Unlock(ctx, ref); err != nil {
-		t.Fatalf("Unlock: %v", err)
 	}
 }
 

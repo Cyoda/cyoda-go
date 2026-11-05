@@ -60,16 +60,23 @@ through the existing per-chunk `200` contract (error elements carrying
 gRPC `EntityDeleteAllRequest.transactionSize`: batches a bulk delete instead
 of running it as one transaction / one store call.
 
-- `deleteEntities`: matching ids and their current versions are resolved
-  once, in one committed transaction (as-at `pointInTime` when supplied).
-  Ids are then deleted in successive independent transactions of at most N
-  ids each. Each batch re-reads every id's current version and deletes only
+- `deleteEntities`: with `pointInTime`, matching ids are selected once,
+  as-at that instant, and each one's current version is read before any
+  batch runs (a read fault other than the entity being gone fails the
+  request); without it, the matching ids are re-selected from committed
+  state before each batch. Ids are then deleted in successive independent
+  transactions of at most N ids each. Each batch re-reads every id's current version and deletes only
   if it still equals the resolution-time baseline; a version mismatch (the
-  entity changed after resolution) or a per-id delete failure is recorded in
-  `deleteResult.idToError`, not retried. A batch whose commit itself fails
-  maps every id it attempted into `idToError` rather than counting them as
-  removed. Batches already committed before a later failure stay committed —
-  a deliberate, opt-in partial-commit contract. `deleteAllErrorsByID` on the
+  entity changed after resolution) or an entity already gone is recorded in
+  `deleteResult.idToError`, not retried. A batch is one transaction and
+  atomic: any other failure to delete one of its entities fails the batch, as
+  does a failed commit, and the batch then maps the failure to every other id
+  it attempted in `idToError` (an id already gone or changed keeps its own
+  entry) rather than counting them as removed. Without `transactionSize` the
+  whole delete is one atomic transaction: only an entity already gone is
+  recorded per id, and any other failure fails the request, deleting nothing.
+  Batches already committed before a later failure stay committed — a
+  deliberate, opt-in partial-commit contract. `deleteAllErrorsByID` on the
   gRPC delete-all response now carries these per-id failures for the first
   time (`transactionSize` sent).
 - `deleteMessages`: the id list is chunked into successive `DeleteBatch`
@@ -136,8 +143,8 @@ commits nothing and the owner may still commit them.
    existing partial-success/per-chunk contract, never as a top-level 408.
 3. `transactionSize`-batched deletes are partial-commit: batches committed
    before a failure remain committed and are reported as removed; failed or
-   version-conflicted ids are reported per-id, never silently dropped or
-   retried.
+   version-conflicted ids are reported per-id, never silently dropped; only
+   a batch that lost a write race is run again.
 4. Any transaction-control parameter on a joined/forwarded request is a hard
    `400`, never silently honored or silently ignored.
 5. No parameter changes default (absent) behavior — this is a PATCH-safe,

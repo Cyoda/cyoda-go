@@ -700,3 +700,18 @@ func TestClassifyAcquireErr_CallerCancelledStaysUnmarked(t *testing.T) {
 		t.Fatalf("a cancelled caller was reported as a server-side outage: %v", err)
 	}
 }
+
+// An acquire that ran out of its own deadline names the setting that bounds
+// it, so the log says which ceiling fired, as the statement and
+// idle-in-transaction ceilings do.
+func TestClassifyAcquireErr_DeadlineNamesTheSetting(t *testing.T) {
+	callerCtx := context.Background()
+	acquireCtx, cancel := context.WithTimeout(callerCtx, time.Nanosecond)
+	defer cancel()
+	<-acquireCtx.Done()
+
+	err := classifyAcquireErr(callerCtx, acquireCtx, "begin", context.DeadlineExceeded)
+	if !strings.Contains(err.Error(), "CYODA_POSTGRES_ACQUIRE_TIMEOUT") {
+		t.Fatalf("the acquire-deadline error does not name its setting: %v", err)
+	}
+}

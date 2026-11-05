@@ -39,7 +39,7 @@ var ErrSearchJobNotComplete = errors.New("search job is not complete")
 // errJobReleased is the cancellation cause set when a job is released
 // (graceful shutdown handoff). The executor writes no terminal status for a
 // job cancelled with this cause: a peer, or this node's next sweep, reclaims
-// it. Every other cancellation cause keeps recording a terminal status.
+// it.
 var errJobReleased = errors.New("async search job released for reclaim")
 
 // errJobSuperseded cancels a stale in-process executor when this same node
@@ -48,6 +48,39 @@ var errJobReleased = errors.New("async search job released for reclaim")
 // from errJobReleased so its failure write is still suppressed but not
 // mistaken for a graceful handoff.
 var errJobSuperseded = errors.New("async search job superseded by self-reclaim")
+
+// errCancelledHere cancels an executor whose job CancelAsync has just written
+// CANCELLED on this node. It wraps spi.ErrAlreadyTerminal, the store's answer
+// to any later write, so every path reads this cancel as it reads one made on
+// another node: a lost claim (fencedRefusal).
+var errCancelledHere = fmt.Errorf("async search job cancelled on this node: %w", spi.ErrAlreadyTerminal)
+
+// errJobEnding is the cause a job's own executor, or its reclaim, cancels the
+// job with when it decides the outcome itself: before its terminal write, or
+// before releasing a reclaimed job it will not run. From then on the end is
+// its to record and report; the shutdown release still hands the job back,
+// silently, in case the recording fails once the store has closed.
+var errJobEnding = errors.New("async search job ending on this node")
+
+// settleJob cancels the job's context with cause and reports whether the end
+// is the caller's to carry out. A job's context is cancelled at most once in
+// effect (the first cause set wins), so whichever party sets it decides the
+// end, and only that party reports it:
+//   - released or superseded first: the next claim's; nothing to report.
+//   - ended on the store's refusal, or by a cancel here: a lost claim,
+//     reported once, here.
+//   - otherwise (the caller's own cause won): the caller's to carry out.
+func settleJob(jobCtx context.Context, cancel context.CancelCauseFunc, jobID string, cause error) bool {
+	cancel(cause)
+	switch got := context.Cause(jobCtx); {
+	case errors.Is(got, errJobReleased), errors.Is(got, errJobSuperseded):
+		return false
+	case fencedRefusal(got):
+		endLostClaim(jobID, got)
+		return false
+	}
+	return true
+}
 
 // jobLookupErr preserves why an async-job lookup failed.
 //
@@ -69,6 +102,27 @@ func jobLookupErr(jobID string, err error) error {
 	return fmt.Errorf("failed to look up search job %s: %w", jobID, err)
 }
 
+// JobError classifies an async-search job operation's error for both doors.
+// Results of a job not yet complete are 400 BAD_REQUEST; job-not-found is
+// 404 SEARCH_JOB_NOT_FOUND; an error that already is a *common.AppError (a
+// classified failure from the service, such as a refused point in time)
+// passes through unchanged; any other error is treated as an internal
+// failure, which routes a storage outage to a retryable 503 and everything
+// else to a 500 with a ticket.
+func JobError(err error) *common.AppError {
+	if errors.Is(err, ErrSearchJobNotComplete) {
+		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err))
+	}
+	if errors.Is(err, ErrSearchJobNotFound) {
+		return common.Operational(http.StatusNotFound, common.ErrCodeSearchJobNotFound, err.Error())
+	}
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	return common.Internal("job lookup failed", err)
+}
+
 // searchCeilingMessage is what a caller sees when their own async job exceeded
 // the backend's async search ceiling. Fixed and non-revealing: GetJob serves
 // this string straight back, so a raw driver error here would put SQL, a
@@ -84,15 +138,16 @@ const searchCeilingMessage = "search exceeded the backend's async search ceiling
 	"narrow the query, or have the operator raise or disable the ceiling " +
 	"(see the config.database help topic)"
 
-// jobFailureFallback replaces any failure described in terms the caller has no
-// business seeing — a driver error, a recovered panic. That text is operator
-// information, and the job record is caller-facing.
+// jobFailureFallback is the reason served for every failed job of a store
+// that executes its own searches (spi.SelfExecutingSearchStore): such a store
+// writes its own failure text, which cyoda-go has not classified, so that
+// text is not served.
 const jobFailureFallback = "search failed unexpectedly"
 
 // jobAttemptsExhausted is the caller-facing failure text for a job the reclaim
 // sweep abandons after its executor was lost (StaleClaims) more times than the
-// configured attempt cap allows. Distinct from jobFailureFallback so a caller
-// can tell a crash-looping job from a one-off internal failure.
+// configured attempt cap allows. Distinct from a ticketed server-side failure,
+// so a caller can tell a crash-looping job from a one-off internal failure.
 const jobAttemptsExhausted = "search abandoned: executor lost repeatedly"
 
 // searchCeilingExceeded is the marker a backend attaches when the async-search
@@ -114,28 +169,106 @@ type asyncScanScoper interface {
 // jobFailureMessage is what gets written into the job record when an async
 // search fails.
 //
-// It follows the same 4xx/5xx split as every other response: a classified
-// client error carries its own already-safe text, and everything else — a
-// storage failure, a driver error, an unclassified wrapper — collapses to a
-// fixed string with the detail left in the log.
+// It classifies the failure as the doors do (common.Internal for a raw
+// error): an operational error — one the request caused, a storage outage, a
+// lost race, a lost shard — carries its own client-safe text, code first, and
+// anything else is a server-side failure, recorded as the generic text with a
+// ticket and its detail logged under the ticket.
 //
-// No status surface serves this string today: neither SearchJobStatus nor
-// SnapshotStatus carries a failure message, so an async caller sees FAILED and
-// no reason. Hold it to the response contract regardless — it is a persisted,
-// servable artefact, and the day a status surface does carry it must not be
-// the day its sanitisation is first considered.
-func jobFailureMessage(err error) string {
+// The string reaches the caller: every status read of a FAILED job serves it
+// as the job's failure reason (SearchJobStatus.FailureReason and
+// SnapshotStatus.FailureReason — HTTP failureReason, and the gRPC snapshot
+// status's failureReason). It is therefore held to the response contract like
+// any error a client is shown; nothing else stands between this text and the
+// wire.
+//
+// It logs the failure once, with jobID, through the funnel both doors share
+// (common.LogError): an operational failure (one the request caused, a
+// storage outage, a lost race) at the error's level — INFO unless the refusing
+// site set another — with its detail and cause, and a server-side one at
+// ERROR, with the detail, under the ticket the record names.
+func jobFailureMessage(jobID string, err error) string {
 	var ceiling searchCeilingExceeded
 	if errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
+		// Its own line: the ceiling is a reason only an async job records,
+		// with no error code of its own for the funnel's line to carry.
+		slog.Info("async search job failed", "pkg", "search", "jobID", jobID, "reason", searchCeilingMessage)
 		return searchCeilingMessage
 	}
-	// AppError.Error() returns the client-safe Message alone; Operational
-	// captures no internal detail and Internal keeps it in Detail, not Message.
+	// Classify as the doors do: a raw error goes through common.Internal, which
+	// keeps a storage outage, a lost race or a lost shard their own codes and
+	// makes anything else a server-side failure.
 	var appErr *common.AppError
-	if errors.As(err, &appErr) {
+	if !errors.As(err, &appErr) {
+		appErr = common.Internal("async search failed", err)
+	}
+	// The one line, through the funnel both doors share.
+	ticket := common.LogError(context.Background(), appErr, "pkg", "search", "jobID", jobID)
+	if appErr.Level == common.LevelOperational {
 		return appErr.Error()
 	}
-	return jobFailureFallback
+	return ticketedReason(ticket)
+}
+
+// ticketedReason is the recorded reason of a server-side failure, as both
+// doors answer one: the generic text and the ticket its detail is logged under.
+func ticketedReason(ticket string) string {
+	return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
+}
+
+// endLostClaim ends an executor whose job is no longer its to record —
+// settled (cancelled, or a takeover's own terminal write), claimed by another
+// executor, or removed — and records nothing. It is the one report of that
+// event, whichever path met it first (the heartbeat, a result write, the
+// terminal write, the pre-run clear of a reclaimed job), logged at INFO: an
+// ordinary end on a cluster. One level for every such end, because which of
+// them it was depends on timing (a takeover whose new owner has already
+// finished reads as settled), and the cause names the store's answer.
+func endLostClaim(jobID string, cause error) {
+	slog.Info("async search job is no longer this executor's to record; stopping",
+		"pkg", "search", "jobID", jobID, "cause", cause)
+}
+
+// failureReason defers jobFailureMessage until writeAsyncFailure knows the
+// record will be written.
+func failureReason(jobID string, err error) jobFailure {
+	return jobFailure{render: func() string { return jobFailureMessage(jobID, err) }, err: err}
+}
+
+// fixedReason is a reason that needs no rendering, for a failure its site
+// has already logged.
+func fixedReason(msg string) jobFailure { return jobFailure{render: func() string { return msg }} }
+
+// jobFailure is a failure an executor may record: render builds the recorded
+// reason, logging the failure; err is the failure itself, for one the job's
+// end leaves unrecorded (nil when the site logged it).
+type jobFailure struct {
+	render func() string
+	err    error
+}
+
+// logUnrecordedJobFailure logs a server-side failure whose job ended without
+// it being recorded — released, superseded, or settled elsewhere — once,
+// under a ticket nothing records, marked discarded. An operational failure
+// behind such an end (a client error, a storage outage, a lost race) is
+// answered by no one and logged by the operation that met it, if at all: it
+// is not an event of its own here.
+func logUnrecordedJobFailure(jobID string, err error) {
+	// A step that failed because the job's own context ended reports that
+	// end, not a fault. (The job context carries no deadline, so a deadline
+	// here is a statement's own, and is one.) A ceiling breach is the
+	// request's own outcome, as recorded.
+	var ceiling searchCeilingExceeded
+	if err == nil || errors.Is(err, context.Canceled) || errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
+		return
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		appErr = common.Internal("async search failed", err)
+	}
+	if appErr.Level != common.LevelOperational {
+		common.LogError(context.Background(), appErr, "pkg", "search", "jobID", jobID, "attempt", "discarded")
+	}
 }
 
 // SearchOptions controls search behavior.
@@ -168,6 +301,9 @@ type SearchJobStatus struct {
 	CreateTime time.Time
 	FinishTime *time.Time
 	CalcTimeMs int64
+	// FailureReason is the reason a FAILED job recorded (see
+	// jobFailureMessage). Empty for every other status.
+	FailureReason string
 }
 
 // SnapshotStatus is a transport-friendly summary of an async search job's state.
@@ -180,6 +316,9 @@ type SnapshotStatus struct {
 	// even though OSS backends never set it.
 	Status        string
 	EntitiesCount int
+	// FailureReason is the reason a FAILED job recorded. Empty for every
+	// other status.
+	FailureReason string
 }
 
 // SearchService provides synchronous and asynchronous entity search over
@@ -264,12 +403,15 @@ type asyncJobHandle struct {
 	// cancel cancels the job's own context (jobCtx), which is what the
 	// heartbeat ticker and the executor's scan/save loop both observe. It
 	// is the ONLY cancellation source a job has: the pool deliberately
-	// keeps none of its own (see jobFunc in pool.go). CancelCauseFunc so
-	// ReleaseRegisteredJobs can cancel with errJobReleased, distinguishing
-	// a graceful-shutdown handoff from every other cancellation (user
-	// cancel, heartbeat fencing, cross-node terminal write), which pass
-	// nil and keep recording a terminal status as before.
+	// keeps none of its own (see jobFunc in pool.go). The first cause set
+	// decides the job's end (settleJob): the store's refusal (the
+	// heartbeat), errCancelledHere (CancelRunning), errJobReleased
+	// (ReleaseRegisteredJobs), errJobSuperseded (registerReclaim), or
+	// errJobEnding (the executor or reclaim deciding the outcome itself).
 	cancel context.CancelCauseFunc
+	// ctx is jobCtx itself, so ReleaseRegisteredJobs can tell whether its
+	// own cancel decided the job's end.
+	ctx context.Context
 	// uc is the submitting user's tenant context, needed to build a fresh
 	// (non-cancelled) ctx for a shutdown-time fenced Release after cancel has
 	// already been called on jobCtx.
@@ -280,6 +422,27 @@ type asyncJobHandle struct {
 	// shutdown-time Release (ReleaseRegisteredJobs) fences against the same
 	// epoch the executor itself is running at.
 	epoch int64
+}
+
+// handBack issues the shutdown-time Release (uncounted, fenced by the job's
+// epoch) and reports whether it landed. A refusal means the job was settled,
+// claimed elsewhere or removed meanwhile; it is reported as a lost claim only
+// when the release is the job's last word (reportRefusal) — a job whose
+// executor is recording its outcome reports its own end.
+func (s *SearchService) handBack(ctx context.Context, jobID string, entry *asyncJobHandle, reportRefusal bool) bool {
+	relCtx := spi.WithUserContext(context.WithoutCancel(ctx), entry.uc)
+	err := s.searchStore.Release(relCtx, jobID, entry.epoch)
+	switch {
+	case err == nil:
+		return true
+	case fencedRefusal(err):
+		if reportRefusal {
+			endLostClaim(jobID, err)
+		}
+	default:
+		slog.Error("failed to release async search job at shutdown", "pkg", "search", "jobID", jobID, "err", err)
+	}
+	return false
 }
 
 // defaultAsyncPoolWorkers/defaultAsyncPoolQueue size the built-in pool
@@ -425,7 +588,7 @@ func (s *SearchService) heartbeatEvery() time.Duration {
 // deregister then leaves the tenant permanently one slot short. Submit's fresh
 // time-UUIDs make that unreachable today, which is a property of the caller,
 // not of this function.
-func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) (*asyncJobHandle, bool) {
+func (s *SearchService) registerJob(jobID string, jobCtx context.Context, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) (*asyncJobHandle, bool) {
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
 	if s.registry == nil {
@@ -441,7 +604,7 @@ func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc
 	if s.maxPerTenant > 0 && s.tenantInFlight[tenant] >= s.maxPerTenant {
 		return nil, false
 	}
-	h := &asyncJobHandle{cancel: cancel, uc: uc, epoch: epoch}
+	h := &asyncJobHandle{cancel: cancel, ctx: jobCtx, uc: uc, epoch: epoch}
 	s.registry[jobID] = h
 	s.tenantInFlight[tenant]++
 	return h, true
@@ -452,8 +615,8 @@ func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc
 // cluster-wide) and, if this node still has a stale handle for the job (its
 // own paused executor), cancels that handle with errJobSuperseded and replaces
 // it. Returns the new handle.
-func (s *SearchService) registerReclaim(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) *asyncJobHandle {
-	h := &asyncJobHandle{cancel: cancel, uc: uc, epoch: epoch}
+func (s *SearchService) registerReclaim(jobID string, jobCtx context.Context, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) *asyncJobHandle {
+	h := &asyncJobHandle{cancel: cancel, ctx: jobCtx, uc: uc, epoch: epoch}
 	// IIFE so the lock is released via defer before old.cancel() runs below —
 	// same reasoning as CancelRunning/ReleaseRegisteredJobs: cancel() can
 	// synchronously wake the old executor or its heartbeat goroutine, either
@@ -539,14 +702,19 @@ func (s *SearchService) deregisterJobHandle(jobID string, h *asyncJobHandle) {
 	}
 }
 
-// tenantOf is the per-tenant cap's bucket key. SubmitAsync rejects a
-// missing UserContext before it ever registers anything, so the empty
-// tenant is unreachable from there; it is defined anyway so the accounting
-// stays total for any other caller.
+// tenantAtCapError is the refusal of a submission from a tenant holding its
+// full share of this node's async capacity: the queue-full 503, logged once
+// at WARN by the door's funnel with the tenant and the cap as its cause.
+func (s *SearchService) tenantAtCapError(uc *spi.UserContext) *common.AppError {
+	return QueueFullError().
+		WithCause(fmt.Errorf("tenant %s at its in-flight cap (%d)", uc.Tenant.ID, s.maxPerTenant)).
+		WithLogLevel(slog.LevelWarn)
+}
+
+// tenantOf is the per-tenant cap's bucket key. Every registered job carries
+// its tenant's UserContext: SubmitAsync rejects a missing one, and a reclaim
+// builds the job tenant's.
 func tenantOf(uc *spi.UserContext) spi.TenantID {
-	if uc == nil {
-		return ""
-	}
 	return uc.Tenant.ID
 }
 
@@ -571,15 +739,18 @@ func (s *SearchService) CancelRunning(jobID string) bool {
 	if !ok {
 		return false
 	}
-	entry.cancel(nil)
+	entry.cancel(errCancelledHere)
 	return true
 }
 
 // ReleaseRegisteredJobs cancels every in-flight (queued or executing) job on
-// this node with errJobReleased and issues a fenced store Release for each,
-// so a peer (or this node's next startup sweep) reclaims and re-runs it
-// promptly instead of waiting for the heartbeat to age out. Returns the count
-// released. Called by App.Shutdown after the drain budget: jobs that finished
+// this node with errJobReleased and issues a fenced store Release for each
+// not already ended by a cancel or by the store's refusal (the store refuses
+// one that is no longer this node's claim), so a peer (or this node's next
+// startup sweep) reclaims and re-runs it promptly instead of waiting for the
+// heartbeat to age out. Returns the count of releases that landed; it
+// includes jobs whose executor was recording the outcome, which may then
+// finish. Called by App.Shutdown after the drain budget: jobs that finished
 // within the budget are already gone from the registry.
 //
 // The store Release is issued right after cancelling, without waiting for the
@@ -600,21 +771,30 @@ func (s *SearchService) ReleaseRegisteredJobs(ctx context.Context) int {
 		return snap
 	}()
 
+	released := 0
 	for jobID, entry := range entries {
 		entry.cancel(errJobReleased)
-		relCtx := ctx
-		if entry.uc != nil {
-			relCtx = spi.WithUserContext(context.WithoutCancel(ctx), entry.uc)
-		}
-		if err := s.searchStore.Release(relCtx, jobID, entry.epoch); err != nil {
-			if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
-				slog.Warn("async search job release lost the race; already settled or reclaimed", "pkg", "search", "jobID", jobID, "err", err)
-				continue
+		switch cause := context.Cause(entry.ctx); {
+		case errors.Is(cause, errJobReleased):
+			if s.handBack(ctx, jobID, entry, true) {
+				released++
 			}
-			slog.Error("failed to release async search job at shutdown", "pkg", "search", "jobID", jobID, "err", err)
+		case errors.Is(cause, errJobEnding):
+			// Its executor or reclaim is recording (or releasing) the job's
+			// end. Released anyway, now, while the store is still open: a
+			// recording that lands afterwards still finishes the job (Release
+			// keeps the epoch), one that fails leaves it handed back, and one
+			// a peer's claim overtakes is refused and reported by the
+			// executor. A refusal here means the recording landed first.
+			if s.handBack(ctx, jobID, entry, false) {
+				released++
+			}
 		}
+		// Any other cause — a cancel here or the store's refusal — ended the
+		// job before the release: nothing is this node's to hand back, and
+		// whoever met it reports it.
 	}
-	return len(entries)
+	return released
 }
 
 // structuralConditionErrCode classifies a ValidateCondition error for the
@@ -738,10 +918,10 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // .ParseCondition builds only the five clause types, and a FunctionCondition
 // is refused earlier), so a caller loses no diagnostic detail here.
 func untranslatableCondition(translateErr error) *common.AppError {
-	slog.Warn("condition cleared validation but could not be translated",
-		"pkg", "search", "err", translateErr)
 	return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-		"condition cannot be translated to a backend predicate").WithCause(translateErr)
+		"condition cannot be translated to a backend predicate").
+		WithCause(fmt.Errorf("condition cleared validation but could not be translated: %w", translateErr)).
+		WithLogLevel(slog.LevelWarn)
 }
 
 // ClassifyStoreQueryError maps the cross-backend sentinels a storage plugin
@@ -802,7 +982,8 @@ func untranslatableCondition(translateErr error) *common.AppError {
 //     it at WARN claimed a system inconsistency on every ordinary hit of the
 //     single most common cause, drowning out the rarer, genuinely anomalous
 //     ones (a malformed NOT node, an out-of-grammar path) the sentinel cannot
-//     be told apart from — so this one logs at DEBUG instead.
+//     be told apart from — so this one is logged at the client-error class
+//     level, INFO, by the door's funnel.
 //
 // match.ErrUnevaluableLeaf and match.ErrUnsupportedOperator are
 // internal/match's OWN Prepare (predicate.Condition side, a different
@@ -830,15 +1011,15 @@ func untranslatableCondition(translateErr error) *common.AppError {
 //
 // match.ErrUnevaluableLeaf and spi.ErrUnevaluableLeaf share both a name and
 // an error message ("unevaluable leaf") by design — two evaluators, one
-// disposition — so the two cases below are logged with an explicit "source"
-// field: a caller reaching for the wrong sentinel in a log-line search would
-// otherwise have no way to tell which evaluator actually rejected the leaf.
+// disposition — so the two cases below name their evaluator in the cause the
+// funnel logs: a caller reaching for the wrong sentinel in a log-line search
+// would otherwise have no way to tell which evaluator actually rejected the
+// leaf.
 //
 // Exported so callers outside this package that drive a store with an
-// engine-translated Filter (entity's grouped-stats service) or run
-// internal/match's residual evaluator directly (entity's conditional-delete
-// planner, grouped-stats' streaming tally) classify identically instead of
-// maintaining a second copy of the table.
+// engine-translated Filter (entity's grouped-stats service and conditional
+// delete) classify identically instead of maintaining a second copy of the
+// table.
 func ClassifyStoreQueryError(err error) *common.AppError {
 	switch {
 	case err == nil:
@@ -848,37 +1029,34 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 			common.ErrCodeSearchResultLimit,
 			"matched result count exceeds the configured limit").WithCause(err)
 	case errors.Is(err, spi.ErrInvalidFilterPath):
-		slog.Warn("storage backend rejected a path the boundary grammar accepted",
-			"pkg", "search", "err", err)
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidFieldPath,
-			"condition or sort references an invalid field path").WithCause(err)
+			"condition or sort references an invalid field path").
+			WithCause(fmt.Errorf("storage backend rejected a path the boundary grammar accepted: %w", err)).
+			WithLogLevel(slog.LevelWarn)
 	case errors.Is(err, spi.ErrUnevaluableLeaf):
-		// DEBUG, not WARN — see this function's doc comment: the dominant
-		// cause here (a field with no declared type) is a documented-normal
-		// 400, not a boundary/backend inconsistency.
-		slog.Debug("search condition leaf rejected by the evaluator: commonly a field with no declared type",
-			"pkg", "search", "source", "spi.Prepare", "err", err)
+		// The class default (INFO), not WARN — see this function's doc
+		// comment: the dominant cause here (a field with no declared type) is
+		// a documented-normal 400, not a boundary/backend inconsistency.
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
-			"condition contains a leaf the backend cannot evaluate").WithCause(err)
+			"condition contains a leaf the backend cannot evaluate").WithCause(fmt.Errorf("rejected by spi.Prepare: %w", err))
 	case errors.Is(err, spi.ErrInvalidPattern):
-		slog.Warn("storage backend could not compile a condition pattern the boundary accepted",
-			"pkg", "search", "source", "spi.ValidateLeafPattern", "err", err)
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
-			"condition contains a pattern operand the backend cannot compile").WithCause(err)
+			"condition contains a pattern operand the backend cannot compile").
+			WithCause(fmt.Errorf("storage backend could not compile a condition pattern the boundary accepted: %w", err)).
+			WithLogLevel(slog.LevelWarn)
 	case errors.Is(err, match.ErrUnevaluableLeaf):
-		// DEBUG, not WARN — same reasoning as the spi.ErrUnevaluableLeaf arm
-		// above: a NOT condition can route the identical no-declared-type
-		// leaf through this evaluator instead of spi.Prepare depending on
-		// translatability alone (the query PLAN, not the input), so the same
-		// documented-normal case reaches this arm just as often.
-		slog.Debug("search condition leaf rejected by the residual evaluator: commonly a field with no declared type",
-			"pkg", "search", "source", "match.Prepare", "err", err)
+		// The class default (INFO), not WARN — same reasoning as the
+		// spi.ErrUnevaluableLeaf arm above: a NOT condition can route the
+		// identical no-declared-type leaf through this evaluator instead of
+		// spi.Prepare depending on translatability alone (the query PLAN, not
+		// the input), so the same documented-normal case reaches this arm
+		// just as often.
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
-			"condition contains a leaf the evaluator cannot evaluate").WithCause(err)
+			"condition contains a leaf the evaluator cannot evaluate").WithCause(fmt.Errorf("rejected by match.Prepare: %w", err))
 	case errors.Is(err, match.ErrUnsupportedOperator):
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
@@ -948,9 +1126,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// hides it. registerJob below remains the authority; this can only
 	// short-circuit to the same rejection it would have reached.
 	if s.tenantAtCap(uc) {
-		slog.Warn("async search submission rejected: tenant at its in-flight cap",
-			"pkg", "search", "tenant", uc.Tenant.ID, "maxPerTenant", s.maxPerTenant)
-		return "", QueueFullError()
+		return "", s.tenantAtCapError(uc)
 	}
 
 	// The job's instant: the caller's, fenced, or a fresh consistency time.
@@ -1038,7 +1214,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// handed to the pool: the submitter owns the queue entry, so both span
 	// the queued state, not just execution.
 	jobCtx, cancel := context.WithCancelCause(bgCtx)
-	handle, ok := s.registerJob(jobID, cancel, uc, 1)
+	handle, ok := s.registerJob(jobID, jobCtx, cancel, uc, 1)
 	if !ok {
 		// This tenant already holds its full share of this node's async
 		// capacity. Same disposition as a pool rejection below — the job
@@ -1049,9 +1225,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		if delErr := s.searchStore.DeleteJob(bgCtx, jobID); delErr != nil {
 			slog.Error("failed to delete search job after per-tenant cap rejection", "pkg", "search", "jobID", jobID, "err", delErr)
 		}
-		slog.Warn("async search submission rejected: tenant at its in-flight cap",
-			"pkg", "search", "tenant", uc.Tenant.ID, "maxPerTenant", s.maxPerTenant)
-		return "", QueueFullError()
+		return "", s.tenantAtCapError(uc)
 	}
 	s.startHeartbeat(jobCtx, cancel, jobID, 1)
 
@@ -1080,7 +1254,9 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 // (ErrAlreadyTerminal), was reclaimed at a newer epoch (ErrStaleClaim) or is
 // gone (ErrNotFound). So a cancel written by any node, a completion, and a
 // lost claim all end the job here in one statement, and jobCtx is cancelled
-// on any such fencing refusal (fencedRefusal).
+// on any such fencing refusal (fencedRefusal), with the refusal as its cause.
+// The heartbeat logs nothing for it: the executor reports the end once
+// (endLostClaim).
 //
 // The tick issues no other store statement. A backend may run Heartbeat on a
 // pool of its own so that a main pool exhausted by entity transactions cannot
@@ -1109,15 +1285,11 @@ func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.Ca
 			case <-ticker.C:
 				hbErr := s.searchStore.Heartbeat(jobCtx, jobID, epoch)
 				switch {
-				case errors.Is(hbErr, spi.ErrAlreadyTerminal):
-					// Cancelled (by any node) or otherwise settled: an
-					// ordinary end, not a fault.
-					slog.Debug("async search job is terminal; stopping its executor", "pkg", "search", "jobID", jobID)
-					cancel(nil)
-					return
 				case fencedRefusal(hbErr):
-					slog.Warn("async search heartbeat refused: the job is no longer this node's claim; aborting it", "pkg", "search", "jobID", jobID, "err", hbErr)
-					cancel(nil)
+					// Settled, claimed by another executor, or removed: the
+					// executor ends, and reports why once (endLostClaim), with
+					// this refusal as the cause.
+					cancel(hbErr)
 					return
 				case jobCtx.Err() != nil:
 					// The job ended (or was released) while the stamp was in
@@ -1170,8 +1342,9 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	// its own defect (Gate 3: no panic value or stack leaves the log).
 	defer func() {
 		if rec := recover(); rec != nil {
+			ticket := uuid.New().String()
 			slog.Error("panic recovered in async search job", "pkg", "search",
-				"jobID", jobID, "err", fmt.Errorf("panic: %v", rec),
+				"jobID", jobID, "ticket", ticket, "err", fmt.Errorf("panic: %v", rec),
 				"stack", string(debug.Stack()))
 			// Same latch as the HTTP and gRPC doors: this executor runs the
 			// same engine and store code, so a panic here is the same
@@ -1179,17 +1352,18 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// it — the node reports 503 on /health and /readyz and stops
 			// taking client traffic.
 			s.healthLatch.Trip()
-			// jobCtx may or may not be cancelled at this point, but the write
-			// must land regardless — writeAsyncFailure strips cancellation
-			// itself (keeping the UserContext value), so a store that aborts
+			// jobCtx may or may not be cancelled at this point. Unless its cause
+			// leaves the job to another claim (writeAsyncFailure decides), the
+			// write must land: writeAsyncFailure strips cancellation itself
+			// (keeping the UserContext value), so a store that aborts
 			// in-flight work on ctx.Err() still accepts it.
-			s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureFallback, s.clock.Now(), 0)
+			s.writeAsyncFailure(jobCtx, handle, jobID, epoch, fixedReason(ticketedReason(ticket)), s.clock.Now(), 0)
 		}
 	}()
 
 	modelStore, err := s.factory.ModelStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 	// Fail the job rather than answering without the schema. This load is
@@ -1201,14 +1375,14 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	// the job would record a short result set as SUCCESSFUL.
 	fields, fieldsErr := loadFieldsMap(jobCtx, modelStore, modelRef)
 	if fieldsErr != nil {
-		// Classify before recording. A raw error falls through
-		// jobFailureMessage to the generic fallback, so a tenant whose model
-		// store is down would read an actionable code on /search/direct and
-		// "search failed unexpectedly" here, for one and the same outage.
-		// common.Internal always returns a non-nil *AppError, and only its
-		// Message reaches the persisted job record — never its Detail.
+		// Classify before recording, naming the step: jobFailureMessage
+		// would classify a raw error the same way, and the explicit wrap
+		// only gives the log line its message.
+		// common.Internal always returns a non-nil *AppError; the job record
+		// gets the ticketed generic text, and its Message and Detail are logged
+		// under the ticket.
 		appErr := common.Internal("failed to load model schema for condition validation", fieldsErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(appErr), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, appErr), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1216,7 +1390,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// Ordinary error handling, not a designed branch: a condition that
 		// translated at submission translates here (schema changes after
 		// locking are additive). Anything else is an unexpected failure.
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(common.Internal("failed to translate search condition", translateErr)), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, common.Internal("failed to translate search condition", translateErr)), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 
@@ -1228,7 +1402,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	entityStore, err := s.factory.EntityStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 
@@ -1247,11 +1421,10 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	})
 	if iterErr != nil {
 		// Classify exactly as the synchronous door does. The job record
-		// is the only report an async caller gets, and jobFailureMessage
-		// renders an *AppError's client-safe text while collapsing
-		// anything else to the generic fallback — so an unclassified
-		// sentinel turned a client's own malformed request into
-		// "search failed unexpectedly". Reaching a plugin's path
+		// is the only report an async caller gets, and only
+		// ClassifyStoreQueryError knows the store-query sentinels that are the
+		// client's own malformed request (a 400); without it they would be
+		// recorded as a server-side failure. Reaching a plugin's path
 		// rejection at all means the boundary grammar and that plugin
 		// disagree; the caller is still owed the 400.
 		prodErr = iterErr
@@ -1281,11 +1454,16 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// SUCCESSFUL with a truncated result set, indistinguishable
 			// from a complete one.
 			defer func() {
-				if closeErr := it.Close(); closeErr != nil {
-					slog.Warn("failed to close async search iterator", "pkg", "search", "jobID", jobID, "err", closeErr)
+				closeErr := it.Close()
+				if closeErr != nil {
 					pErr = closeErr
 				}
 				if errErr := it.Err(); errErr != nil {
+					// The scan error is the job's failure; a Close error beside
+					// it is logged here, as nothing else reports it.
+					if closeErr != nil {
+						slog.Warn("failed to close async search iterator", "pkg", "search", "jobID", jobID, "err", closeErr)
+					}
 					pErr = errErr
 					// A sticky scan error carries the same
 					// cross-backend sentinels Iterate's own error
@@ -1320,84 +1498,83 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	switch {
 	case jobCtx.Err() != nil:
-		// Cancelled — in-process CancelRunning, or a heartbeat the store
-		// refused (a cross-node cancel or other terminal status, a lost
-		// claim). context.WithoutCancel so the recovery READ below
-		// is not itself aborted by the same cancellation (the write that
-		// follows strips cancellation on its own).
-		recoveryCtx := context.WithoutCancel(jobCtx)
-		job, getErr := s.searchStore.GetJob(recoveryCtx, jobID)
-		if getErr == nil && job.Status == "CANCELLED" {
-			// The store already stamped the terminal write (Cancel, or a
-			// takeover's own terminal write) — nothing left to record.
-			return
+		// Cancelled: by the heartbeat on the store's refusal, by a cancel on
+		// this node (errCancelledHere), or by a release or self-reclaim. The
+		// cause says which, and none leaves a failure of this executor's to
+		// record: a refusal (or a cancel here) is a lost claim, reported once;
+		// a released or superseded job is the next claim's. A server-side
+		// fault the scan or the result save met is still logged, once, as
+		// unrecorded — whether the cancel landed before this check or after.
+		settleJob(jobCtx, cancel, jobID, errJobEnding)
+		logUnrecordedJobFailure(jobID, prodErr)
+		if !fencedRefusal(saveErr) {
+			logUnrecordedJobFailure(jobID, saveErr)
 		}
-		// jobCtx, not recoveryCtx: writeAsyncFailure's own release-cause
-		// guard reads context.Cause(ctx) before stripping cancellation, and
-		// context.Cause on a WithoutCancel derivative always reports nil
-		// (its Err() is unconditionally nil) — recoveryCtx would silently
-		// defeat the guard. writeAsyncFailure strips cancellation itself
-		// right after the guard, so passing jobCtx costs nothing here.
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureFallback, finishTime, calcTimeMs)
 		return
 	case prodErr != nil:
-		slog.Warn("async search job failed", "pkg", "search", "jobID", jobID, "err", prodErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(prodErr), finishTime, calcTimeMs)
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, prodErr), finishTime, calcTimeMs)
 		return
 	case saveErr != nil:
-		slog.Error("failed to save search results", "pkg", "search", "jobID", jobID, "err", saveErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(saveErr), finishTime, calcTimeMs)
+		if fencedRefusal(saveErr) {
+			// A result write refused because the job was cancelled, claimed
+			// by another executor or removed: usually the first sign of it,
+			// before the heartbeat's next tick.
+			settleJob(jobCtx, cancel, jobID, saveErr)
+			return
+		}
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, saveErr), finishTime, calcTimeMs)
 		return
 	}
 
-	// context.WithoutCancel, exactly as the panic path above: the switch has
-	// just established that jobCtx was live, but the heartbeat goroutine
-	// cancels it from a different goroutine — on a Heartbeat that the store
-	// refuses as terminal, stale or gone — and a cancel landing in the
-	// window between that check and this call would abort the write and
-	// leave a finished job RUNNING until the stale-job reaper failed it. The
-	// UserContext (and so the tenant scope) is preserved.
+	// Settle the end first, so that a heartbeat refusal or a shutdown release
+	// landing from now on leaves the outcome to this write; then write on
+	// context.WithoutCancel, since settleJob has just cancelled jobCtx. The
+	// UserContext (and so the tenant scope) is preserved. Settling also stops
+	// the heartbeat: a write that hangs past the stale threshold lets the job
+	// be reclaimed rather than look alive.
+	if !settleJob(jobCtx, cancel, jobID, errJobEnding) {
+		return
+	}
 	if err := s.searchStore.UpdateJobStatus(context.WithoutCancel(jobCtx), jobID, epoch, "SUCCESSFUL", count, "", finishTime, calcTimeMs); err != nil {
-		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
-			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)
+		if fencedRefusal(err) {
+			endLostClaim(jobID, err)
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
 	}
 }
 
-// writeAsyncFailure records jobID FAILED via an epoch-fenced write. A lost
-// race against the job's own (or a takeover's) terminal write
-// (ErrAlreadyTerminal/ErrStaleClaim) is expected and logged at Warn, not
-// treated as a failure of the caller — the correct state is already
-// recorded.
+// writeAsyncFailure records jobID FAILED via an epoch-fenced write, for every
+// failure path of an executor. It first settles the job's end (settleJob): a
+// release or self-reclaim leaves the job to the next claim, and a store
+// refusal (or a cancel here, which wraps one) means the job ended under the
+// executor — reported once and not recorded. A write the store then refuses
+// for the same reason is reported the same way.
 //
 // The write runs on context.WithoutCancel(ctx), and that is decided HERE
-// rather than at each of the six call sites: this is a terminal write by
-// definition, so no caller wants it cancellable. Two of the call sites are
-// reached only after `jobCtx.Err() != nil` evaluated false, which makes them a
-// TOCTOU — the heartbeat goroutine cancels jobCtx from another goroutine (a
-// Heartbeat that the store refuses as terminal, stale or gone), and a
-// cancel landing between the check and the write aborts it, leaving a finished
-// job RUNNING until the stale-job reaper fails it with a generic message
-// instead of the real reason recorded here. Stripping cancellation keeps the
-// UserContext (and so the tenant scope) intact; wrapping an already-stripped
-// context again is a no-op, so the cancellation-recovery call site loses
-// nothing by it.
-func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epoch int64, msg string, finishTime time.Time, calcTimeMs int64) {
-	if c := context.Cause(ctx); errors.Is(c, errJobReleased) || errors.Is(c, errJobSuperseded) {
-		// Released for reclaim, or superseded by this node's own self-reclaim:
-		// a peer, this node's next sweep, or the replacing executor re-runs
-		// it. Recording FAILED here would defeat the handoff, and the old
-		// executor's writes are fenced by epoch regardless. Must be checked
-		// before WithoutCancel below — cancellation propagation is stripped
-		// there, but the cause is still readable from ctx itself.
+// rather than at each call site: this is a terminal write by definition, so
+// no caller wants it cancellable — settleJob has just cancelled ctx itself.
+// Stripping cancellation keeps the UserContext (and so the tenant scope)
+// intact.
+func (s *SearchService) writeAsyncFailure(ctx context.Context, handle *asyncJobHandle, jobID string, epoch int64, reason jobFailure, finishTime time.Time, calcTimeMs int64) {
+	if !settleJob(ctx, handle.cancel, jobID, errJobEnding) {
+		// Released or superseded (the next claim's), or ended on the store's
+		// own answer that the job is settled, claimed elsewhere or removed —
+		// whichever step was failing. That answer is final, so it needs no
+		// read: not a failure of this executor's to record. A server-side
+		// fault behind it is still logged, once, as unrecorded.
+		logUnrecordedJobFailure(jobID, reason.err)
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
-	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, msg, finishTime, calcTimeMs); err != nil {
-		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
-			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)
+	// Rendered only now, past the release check: a reason built by
+	// failureReason logs the failure and may mint a ticket, so a released job
+	// records none for it. (The panic path logs its ticket where the failure
+	// happens, and passes a fixedReason.) A write that then loses its race leaves a logged
+	// ticket that no record carries.
+	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, reason.render(), finishTime, calcTimeMs); err != nil {
+		if fencedRefusal(err) {
+			endLostClaim(jobID, err)
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
@@ -1411,14 +1588,27 @@ func (s *SearchService) GetAsyncStatus(ctx context.Context, jobID string) (Searc
 		return SearchJobStatus{}, jobLookupErr(jobID, err)
 	}
 
-	return SearchJobStatus{
+	status := SearchJobStatus{
 		JobID:      job.ID,
 		Status:     job.Status,
 		Total:      job.ResultCount,
 		CreateTime: job.CreateTime,
 		FinishTime: job.FinishTime,
 		CalcTimeMs: job.CalcTimeMs,
-	}, nil
+	}
+	// Only a failed job has a reason; a message on any other record is not
+	// one and is not served as one.
+	if job.Status == "FAILED" {
+		status.FailureReason = job.Error
+		// A store that executes its own searches wrote that text itself, not
+		// through jobFailureMessage: it may carry driver or internal detail, so
+		// the caller gets the fixed fallback instead. Fail closed until the
+		// SPI gives a plugin a way to state a client-safe reason.
+		if _, ok := s.searchStore.(spi.SelfExecutingSearchStore); ok {
+			status.FailureReason = jobFailureFallback
+		}
+	}
+	return status, nil
 }
 
 // AsyncResultsPage holds a page of async search results along with the total count.
@@ -1500,6 +1690,17 @@ func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelRe
 	if err := s.searchStore.Cancel(ctx, jobID, finishTime); err != nil {
 		return CancelResult{}, fmt.Errorf("failed to cancel job: %w", err)
 	}
+	// Cancel is idempotent on a terminal job, so its nil does not say this
+	// call ended the job: one that finished (or failed) in the meantime is
+	// left as it ended. The job is terminal now, and a terminal status is
+	// final, so this read is what happened.
+	job, err = s.searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		return CancelResult{}, jobLookupErr(jobID, err)
+	}
+	if job.Status != "CANCELLED" {
+		return CancelResult{Cancelled: false, CurrentStatus: job.Status}, nil
+	}
 
 	// Best-effort in-process abort: if this node happens to be running (or
 	// still has queued) the job, stop it immediately rather than waiting up
@@ -1532,12 +1733,13 @@ func (s *SearchService) DirectSearch(ctx context.Context, modelRef spi.ModelRef,
 func (s *SearchService) GetAsyncSearchStatus(ctx context.Context, snapshotID string) (*SnapshotStatus, error) {
 	status, err := s.GetAsyncStatus(ctx, snapshotID)
 	if err != nil {
-		return nil, err
+		return nil, JobError(err)
 	}
 	return &SnapshotStatus{
 		SnapshotID:    status.JobID,
 		Status:        status.Status,
 		EntitiesCount: status.Total,
+		FailureReason: status.FailureReason,
 	}, nil
 }
 
@@ -1552,15 +1754,36 @@ func (s *SearchService) GetAsyncSearchResults(ctx context.Context, snapshotID st
 	}
 	resultPage, err := s.GetAsyncResults(ctx, snapshotID, opts)
 	if err != nil {
-		return nil, err
+		return nil, JobError(err)
 	}
 	return resultPage.Results, nil
 }
 
-// CancelAsyncSearch attempts to cancel a running async search job.
+// CancelAsyncSearch cancels a running async search job. A job that has
+// already ended — before the call, or while the cancel was landing — is
+// refused with AlreadyTerminalError, as the HTTP door refuses it.
 func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string) error {
-	_, err := s.CancelAsync(ctx, snapshotID)
-	return err
+	result, err := s.CancelAsync(ctx, snapshotID)
+	if err != nil {
+		return JobError(err)
+	}
+	if !result.Cancelled {
+		return AlreadyTerminalError(snapshotID, result.CurrentStatus)
+	}
+	return nil
+}
+
+// AlreadyTerminalError is the refusal of a cancel of a job that has already
+// ended (400 SEARCH_JOB_ALREADY_TERMINAL), the same on both doors. Its Props
+// carry the job's currentStatus and snapshotId.
+func AlreadyTerminalError(jobID, currentStatus string) *common.AppError {
+	appErr := common.Operational(http.StatusBadRequest, common.ErrCodeSearchJobAlreadyTerminal,
+		fmt.Sprintf("snapshot by id=%s is not running. current status=%s", jobID, currentStatus))
+	appErr.Props = map[string]any{
+		"currentStatus": currentStatus,
+		"snapshotId":    jobID,
+	}
+	return appErr
 }
 
 // validateConditionPaths runs the pre-execution field-path validation
@@ -1664,11 +1887,6 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 		// the two must not diverge on THIS classification. Deliberately NOT
 		// negative-cached: an infra failure says nothing about whether the
 		// path exists.
-		slog.Warn("schema refresh failed during pre-execution validation; reporting infra, not a client fault",
-			"pkg", "search",
-			"entityName", modelRef.EntityName,
-			"modelVersion", modelRef.ModelVersion,
-			"error", refreshErr)
 		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
 			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
 	}
@@ -1893,9 +2111,6 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 		// path" surfaces must not diverge on THIS classification).
 		// Deliberately NOT negative-cached: an infra failure says nothing
 		// about whether the sort field exists.
-		slog.Warn("schema refresh failed during sort-key validation; reporting infra, not a client fault",
-			"pkg", "search", "entityName", modelRef.EntityName,
-			"modelVersion", modelRef.ModelVersion, "error", refreshErr)
 		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
 			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
 	}

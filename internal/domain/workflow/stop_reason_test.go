@@ -45,9 +45,9 @@ func TestStop_NoAutomatedTransitions(t *testing.T) {
 		run   func(*spi.Entity) error
 		want  string
 	}{
-		{"execute", "", func(e *spi.Entity) error { _, err := engine.Execute(ctx, e, ""); return err }, "NEW"},
-		{"manual", "NEW", func(e *spi.Entity) error { _, err := engine.ManualTransition(ctx, e, "go"); return err }, "DONE"},
-		{"loopback", "DONE", func(e *spi.Entity) error { _, err := engine.Loopback(ctx, e); return err }, "DONE"},
+		{"execute", "", func(e *spi.Entity) error { _, err := engine.Execute(ctx, e); return err }, "NEW"},
+		{"manual", "NEW", func(e *spi.Entity) error { _, err := engine.ManualTransition(ctx, e, "go", IfMatch{}); return err }, "DONE"},
+		{"loopback", "DONE", func(e *spi.Entity) error { _, err := engine.Loopback(ctx, e, IfMatch{}); return err }, "DONE"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.door, func(t *testing.T) {
@@ -87,7 +87,7 @@ func TestStop_AllCriteriaRejected_LastPassOnly(t *testing.T) {
 	}
 	engine, factory, txMgr, _, ref := auditEnv(t, map[string]criteriaAnswer{"chk": {matches: false, reason: "too small"}}, wf)
 	entity, txID, txCtx := beginWith(t, txMgr, ref, "e1", 50)
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if entity.Meta.State != "B" {
@@ -141,7 +141,7 @@ func TestStop_ForceSuccess(t *testing.T) {
 
 	entity := makeEntity("e1", ref, map[string]any{"kind": "a"})
 	entity.Meta.State = "ORPHAN"
-	if _, err := engine.Loopback(ctx, entity); err != nil {
+	if _, err := engine.Loopback(ctx, entity, IfMatch{}); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 	events := allEvents(t, factory, ctx, "e1")

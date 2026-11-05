@@ -896,6 +896,13 @@ func (h *callbackHarness) submitAsyncSearchOn(t *testing.T, model string) string
 // tests waiting for it to leave.
 func (h *callbackHarness) asyncJobStatus(t *testing.T, jobID string) string {
 	t.Helper()
+	s, _ := h.asyncJobStatusBody(t, jobID)["searchJobStatus"].(string)
+	return s
+}
+
+// asyncJobStatusBody reads one job's whole status body over the real HTTP door.
+func (h *callbackHarness) asyncJobStatusBody(t *testing.T, jobID string) map[string]any {
+	t.Helper()
 	resp := h.DoAuth(t, http.MethodGet, "/api/search/async/"+jobID+"/status", "", "")
 	body := h.readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
@@ -905,8 +912,22 @@ func (h *callbackHarness) asyncJobStatus(t *testing.T, jobID string) string {
 	if err := json.Unmarshal([]byte(body), &st); err != nil {
 		t.Fatalf("async search status is not JSON: %v; body: %s", err, body)
 	}
-	s, _ := st["searchJobStatus"].(string)
-	return s
+	return st
+}
+
+// asyncJobFailureReason reads the failureReason a job's status serves, and
+// whether the member is present at all.
+func (h *callbackHarness) asyncJobFailureReason(t *testing.T, jobID string) (string, bool) {
+	t.Helper()
+	raw, ok := h.asyncJobStatusBody(t, jobID)["failureReason"]
+	if !ok {
+		return "", false
+	}
+	reason, isString := raw.(string)
+	if !isString {
+		t.Fatalf("failureReason is %T, want a string", raw)
+	}
+	return reason, true
 }
 
 // waitForAsyncTerminal polls the status endpoint until the job leaves RUNNING.
@@ -923,32 +944,13 @@ func (h *callbackHarness) waitForAsyncTerminal(t *testing.T, jobID string, timeo
 	return ""
 }
 
-// persistedJobError reads the message recorded against the job — the string
-// GetJob serves back, and the only place an async failure is reported.
-func persistedJobError(t *testing.T, jobID string) string {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "search-ceiling-reader"))
-	if err != nil {
-		t.Fatalf("open reader pool: %v", err)
-	}
-	defer pool.Close()
-	var msg string
-	if err := pool.QueryRow(ctx, `SELECT error FROM search_jobs WHERE id = $1`, jobID).Scan(&msg); err != nil {
-		t.Fatalf("read search job %s: %v", jobID, err)
-	}
-	return msg
-}
-
-// TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure — the persisted
-// job message is the one deliberate exception to output sanitization: the job is
-// the caller's own work, so it is told what happened and what to do about it.
-// The async status response carries no error-code field, so this string is the
-// caller's entire report. It stays fixed and backend-neutral — a raw driver
-// string here would put SQL, a SQLSTATE and connection detail in a record GetJob
-// serves straight back.
-func TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure(t *testing.T) {
+// TestE2E_AsyncSearch_CeilingExceeded_ServesSanitizedFailureReason — the job is
+// the caller's own work, so the status read tells them what happened and what to
+// do about it, as failureReason. The status carries no error-code field, so this
+// string is the caller's entire report. It stays fixed and backend-neutral — a
+// raw driver string here would put SQL, a SQLSTATE and connection detail in the
+// response.
+func TestE2E_AsyncSearch_CeilingExceeded_ServesSanitizedFailureReason(t *testing.T) {
 	h, model := newSearchCeilingHarness(t)
 
 	jobID := h.submitAsyncSearchOn(t, model)
@@ -956,15 +958,18 @@ func TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure(t *testing.T) {
 		t.Fatalf("async search status = %q, want FAILED — nothing bounded the scan", status)
 	}
 
-	msg := persistedJobError(t, jobID)
+	msg, present := h.asyncJobFailureReason(t, jobID)
+	if !present {
+		t.Fatal("FAILED status carries no failureReason")
+	}
 	const want = "search exceeded the backend's async search ceiling — narrow the query, " +
 		"or have the operator raise or disable the ceiling (see the config.database help topic)"
 	if msg != want {
-		t.Fatalf("job error =\n  %q\nwant\n  %q", msg, want)
+		t.Fatalf("failureReason =\n  %q\nwant\n  %q", msg, want)
 	}
 	for _, leak := range []string{"pgx", "postgres", "SELECT", "SQLSTATE", "57014", "statement_timeout", "host=", "password"} {
 		if strings.Contains(msg, leak) {
-			t.Fatalf("job error leaked internals (%q): %s", leak, msg)
+			t.Fatalf("failureReason leaked internals (%q): %s", leak, msg)
 		}
 	}
 	t.Logf("async search failed with the sanitized message: %s", msg)

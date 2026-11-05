@@ -663,7 +663,8 @@ func TestUpdateCollection_IfMatch_AbsentRegression(t *testing.T) {
 // the segment is durable and the external effect has happened: there is nothing
 // to continue the chunk in, and the loop's cursor still names the committed
 // transaction. Isolating this item would write every later item into that dead
-// transaction. The whole call must fail instead.
+// transaction. The whole call fails instead, with the 412 ENTITY_MODIFIED a
+// single update gives the same conflict, naming the entity.
 //
 // Deterministic, not racy: RegisterProcessor runs the closure synchronously
 // inside the dispatch, and with startNewTxOnDispatch unset that dispatch runs
@@ -740,22 +741,11 @@ func TestUpdateCollection_IfMatch_CBDPostSegmentConflictAbortsChunk(t *testing.T
 		t.Fatalf("CBD dispatch fired %d time(s), want 1; the cascade never reached the apply-result CAS", c)
 	}
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 — a conflict past a committed segment aborts the chunk, it is not per-item isolable; body: %s",
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412 — a conflict past a committed segment aborts the chunk, it is not per-item isolable; body: %s",
 			resp.StatusCode, rbody)
 	}
-	assertErrorCode(t, rbody, "WORKFLOW_FAILED")
-
-	// A 4xx detail is one `CODE: message` line.
-	var pd struct {
-		Detail string `json:"detail"`
-	}
-	if err := json.Unmarshal([]byte(rbody), &pd); err != nil {
-		t.Fatalf("parse problem detail: %v; body: %s", err, rbody)
-	}
-	if strings.Contains(pd.Detail, "\n") {
-		t.Errorf("4xx detail must be a single line, got %q", pd.Detail)
-	}
+	assertPostSegmentEntityModified(t, rbody, id1)
 
 	// The later item must not be persisted. It cannot be: the only transaction
 	// left to write it into was already committed.

@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -463,6 +465,13 @@ func TestExecutor_HeartbeatRecordedWhileQueuedAndScanning(t *testing.T) {
 // under the stale epoch rather than silently succeeding against the wrong
 // claim.
 func TestExecutor_HeartbeatFencingAborts(t *testing.T) {
+	// A takeover is an ordinary end on a cluster: the executor backs off
+	// without logging an ERROR, and records nothing for a claim it lost.
+	logs := &syncBuffer{}
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
 	base := memory.NewStoreFactory()
 	defer base.Close()
 	ctx := tenantCtx("tenant-1")
@@ -528,6 +537,9 @@ func TestExecutor_HeartbeatFencingAborts(t *testing.T) {
 	}
 	if final.Status == "SUCCESSFUL" {
 		t.Fatal("job reached SUCCESSFUL under the original (fenced-out) executor — its writes should have been rejected once ClaimStale bumped the epoch")
+	}
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("a takeover logged an ERROR:\n%s", logs.String())
 	}
 }
 

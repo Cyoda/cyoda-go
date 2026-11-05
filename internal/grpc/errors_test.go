@@ -25,14 +25,14 @@ import (
 func TestBuildErrorFields_OperationalCauseIsLogged(t *testing.T) {
 	records := captureSlog(t)
 
-	cause := errors.New("Begin: could not acquire a database connection within the configured timeout")
+	cause := errors.New("Begin: could not acquire a database connection within CYODA_POSTGRES_ACQUIRE_TIMEOUT")
 	appErr := common.Operational(
 		http.StatusServiceUnavailable,
 		common.ErrCodeStorageUnavailable,
 		"storage is temporarily unavailable — retry",
 	).AsRetryable().WithCause(cause)
 
-	code, message, retryable := buildErrorFields(appErr)
+	code, message, retryable := buildErrorFields(context.Background(), appErr)
 
 	if code != "CLIENT_ERROR" {
 		t.Errorf("code = %q, want CLIENT_ERROR (the envelope class)", code)
@@ -54,20 +54,35 @@ func TestBuildErrorFields_OperationalCauseIsLogged(t *testing.T) {
 	}
 }
 
-// TestBuildErrorFields_OperationalWithoutCauseLogsNothing — the breadcrumb is
-// for errors that carry one. An ordinary 4xx puts its full detail in the
-// message the client already receives, so logging it again would be noise on
-// every bad request.
-func TestBuildErrorFields_OperationalWithoutCauseLogsNothing(t *testing.T) {
+// TestBuildErrorFields_OperationalWithoutCauseLogsOneInfoLine — a client error
+// is logged once at INFO, with or without a cause, as the HTTP door
+// (common.WriteError) logs it.
+func TestBuildErrorFields_OperationalWithoutCauseLogsOneInfoLine(t *testing.T) {
 	records := captureSlog(t)
 
 	appErr := common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound, "model not found")
-	if code, _, _ := buildErrorFields(appErr); code != "CLIENT_ERROR" {
+	if code, _, _ := buildErrorFields(context.Background(), appErr); code != "CLIENT_ERROR" {
 		t.Errorf("code = %q, want CLIENT_ERROR", code)
 	}
 
-	for _, r := range *records {
-		t.Errorf("a causeless operational error logged %q at %v", r.msg, r.level)
+	if len(*records) != 1 || (*records)[0].msg != "operational error" || (*records)[0].level != slog.LevelInfo {
+		t.Errorf("records = %+v, want one INFO operational-error line", *records)
+	}
+}
+
+// TestBuildErrorFields_OperationalCarriesItsLogLevel — the level a site set
+// (WithLogLevel) is the level of the error's one line.
+func TestBuildErrorFields_OperationalCarriesItsLogLevel(t *testing.T) {
+	records := captureSlog(t)
+
+	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is unreachable").
+		WithCause(errors.New("dial refused")).WithLogLevel(slog.LevelError)
+	if code, _, _ := buildErrorFields(context.Background(), appErr); code != "CLIENT_ERROR" {
+		t.Errorf("code = %q, want CLIENT_ERROR", code)
+	}
+
+	if len(*records) != 1 || (*records)[0].level != slog.LevelError {
+		t.Errorf("records = %+v, want one ERROR line", *records)
 	}
 }
 
@@ -81,7 +96,7 @@ func TestBuildErrorFields_HonoursAPinnedTicket(t *testing.T) {
 	const pinned = "11111111-2222-4333-8444-555555555555"
 	appErr := common.Internal("something broke", errors.New("detail for the log")).WithTicket(pinned)
 
-	code, message, _ := buildErrorFields(appErr)
+	code, message, _ := buildErrorFields(context.Background(), appErr)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
@@ -106,7 +121,7 @@ func TestBuildErrorFields_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T)
 	records := captureSlog(t)
 
 	appErr := common.Internal("dispatch request ended before it took the transaction's lock", clientGoneCause())
-	code, message, _ := buildErrorFields(appErr)
+	code, message, _ := buildErrorFields(context.Background(), appErr)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
@@ -140,7 +155,7 @@ func TestBuildErrorFields_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T)
 func TestBuildErrorFields_ClientGoneCancellation_RawError(t *testing.T) {
 	records := captureSlog(t)
 
-	code, message, _ := buildErrorFields(clientGoneCause())
+	code, message, _ := buildErrorFields(context.Background(), clientGoneCause())
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
@@ -167,7 +182,7 @@ func TestBuildErrorFields_InternalFailureWrappingACancellation_KeepsItsTicket(t 
 
 	appErr := common.Internal("workflow aborted by context cancellation",
 		fmt.Errorf("failed to join transaction: %w", context.Canceled))
-	code, message, _ := buildErrorFields(appErr)
+	code, message, _ := buildErrorFields(context.Background(), appErr)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
@@ -190,7 +205,7 @@ func TestBuildErrorFields_InternalFailureWrappingACancellation_KeepsItsTicket(t 
 func TestBuildErrorFields_RawCancellation_KeepsTicket(t *testing.T) {
 	records := captureSlog(t)
 
-	code, message, _ := buildErrorFields(context.Canceled)
+	code, message, _ := buildErrorFields(context.Background(), context.Canceled)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
@@ -198,7 +213,8 @@ func TestBuildErrorFields_RawCancellation_KeepsTicket(t *testing.T) {
 	if !strings.Contains(message, "ticket") {
 		t.Errorf("message = %q, want a ticket — an unmarked cancellation is not a departed client", message)
 	}
-	rec := findRecord(t, records, "unclassified error")
+	// One shape on both doors: a raw error is an internal error.
+	rec := findRecord(t, records, "internal error")
 	if rec.level != slog.LevelError {
 		t.Errorf("level = %v, want ERROR", rec.level)
 	}
@@ -211,7 +227,7 @@ func TestBuildErrorFields_OrdinaryInternalError_StillLogsErrorWithTicket(t *test
 	records := captureSlog(t)
 
 	appErr := common.Internal("something broke", errors.New("db connection failed"))
-	code, message, _ := buildErrorFields(appErr)
+	code, message, _ := buildErrorFields(context.Background(), appErr)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)
@@ -236,7 +252,7 @@ func TestBuildErrorFields_FeatureDeadlineTimeout_Untouched(t *testing.T) {
 	records := captureSlog(t)
 
 	appErr := common.Internal("workflow aborted by context cancellation", context.DeadlineExceeded)
-	code, message, _ := buildErrorFields(appErr)
+	code, message, _ := buildErrorFields(context.Background(), appErr)
 
 	if code != "SERVER_ERROR" {
 		t.Errorf("code = %q, want SERVER_ERROR", code)

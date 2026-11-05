@@ -30,7 +30,7 @@ func TestFlushAndCommitSegment_ExpiredCtxBeforeCommit_FailsClosed(t *testing.T) 
 	defer cancel()
 	<-expiredCtx.Done() // deadline expires before the engine ever runs
 
-	_, err := h.engine.ManualTransition(expiredCtx, h.entity, "segment")
+	_, err := h.engine.ManualTransition(expiredCtx, h.entity, "segment", IfMatch{})
 	if err == nil {
 		t.Fatal("expected the pre-commit ctx check to fail the segment commit")
 	}
@@ -112,7 +112,7 @@ func TestCascadeAutomated_ExpiredOriginalDeadline_PostCBD_ContinuesToFinalState(
 		return nil, nil
 	}
 
-	res, err := h.engine.Execute(shortCtx, h.entity, "")
+	res, err := h.engine.Execute(shortCtx, h.entity)
 	if err != nil {
 		t.Fatalf("cascade aborted despite running on the post-CBD (WithoutCancel) ctx: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestCascadeAutomated_PreCancelledCtx_ReturnsError(t *testing.T) {
 	cancelledCtx, cancel := context.WithCancel(entryCtx)
 	cancel()
 
-	_, err := h.engine.Execute(cancelledCtx, h.entity, "")
+	_, err := h.engine.Execute(cancelledCtx, h.entity)
 	if err == nil {
 		t.Fatal("expected cascadeAutomated to abort on a pre-cancelled ctx")
 	}

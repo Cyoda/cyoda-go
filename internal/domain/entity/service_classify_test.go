@@ -403,16 +403,55 @@ func TestClassifyWorkflowError_NoMatchingMemberMapsTo503(t *testing.T) {
 	}
 }
 
+// TestClassifyEngineError_PostSegmentConflict pins what classifyEngineError
+// claims for 412 and what it leaves to classifyWorkflowError when the
+// post-segment marker is on the chain. The marker is chained onto the store's
+// error, which is a conflict, a unique-key refusal or an aborted transaction.
+func TestClassifyEngineError_PostSegmentConflict(t *testing.T) {
+	const entityID = "9f7f11e2-d8ad-11f1-b5e4-ae468cd3ed18"
+	postSegment := func(cause error) error {
+		return fmt.Errorf("item 0: processor p failed: %w", fmt.Errorf("%w: %w", wfengine.ErrPostSegmentConflict, cause))
+	}
+	cases := []struct {
+		name      string
+		err       error
+		status    int
+		code      string
+		retryable bool
+	}{
+		{"conflict is 412", postSegment(spi.ErrConflict), http.StatusPreconditionFailed, common.ErrCodeEntityModified, false},
+		{"an aborted transaction stays 409", postSegment(fmt.Errorf("%w: %w", spi.ErrConflict, spi.ErrTxAborted)), http.StatusConflict, common.ErrCodeConflict, true},
+		{"a unique-key refusal stays 409", postSegment(spi.ErrUniqueViolation), http.StatusConflict, common.ErrCodeUniqueViolation, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyEngineError(tc.err, entityID)
+			if got.Status != tc.status || got.Code != tc.code || got.Retryable != tc.retryable {
+				t.Fatalf("got %d %s retryable=%t, want %d %s retryable=%t", got.Status, got.Code, got.Retryable, tc.status, tc.code, tc.retryable)
+			}
+			if tc.status != http.StatusPreconditionFailed {
+				return
+			}
+			if got.Props["entityId"] != entityID {
+				t.Fatalf("properties.entityId = %v, want %s", got.Props["entityId"], entityID)
+			}
+			if strings.Contains(got.Message, "processor") || strings.Contains(got.Message, "segment") {
+				t.Fatalf("the engine's text reached the message: %q", got.Message)
+			}
+		})
+	}
+}
+
 // TestPerIDDeleteError_SanitizesStorageDetail — DeleteResult.IDToError is
 // serialised straight into a 200 body (handler.go's deleteResult map), so
 // whatever goes in it is on the wire. A storage failure's own text carries
 // driver wording, SQL wrap-context and a SQLSTATE, none of which a client may
 // see; the detail belongs in the log under a ticket the caller can quote.
-func TestPerIDDeleteError_SanitizesStorageDetail(t *testing.T) {
+func TestDeleteError_SanitizesStorageDetail(t *testing.T) {
 	buf := captureEntitySlog(t)
 
 	raw := errors.New("failed to mark entity deleted: ERROR: canceling statement due to statement timeout (SQLSTATE 57014)")
-	msg := perIDDeleteError("e-1", raw)
+	msg := reportIDError(context.Background(), "e-1", deleteError("e-1", raw))
 
 	for _, leak := range []string{"SQLSTATE", "57014", "canceling statement", "mark entity deleted"} {
 		if strings.Contains(msg, leak) {
@@ -437,13 +476,13 @@ func TestPerIDDeleteError_SanitizesStorageDetail(t *testing.T) {
 // it is the answer the same failure gets on every other door. The cause still
 // stays off the wire: common.StorageUnavailable holds it in WithCause, so the
 // message is client-safe by construction.
-func TestPerIDDeleteError_MarkedStorageOutageKeepsItsCode(t *testing.T) {
+func TestDeleteError_MarkedStorageOutageKeepsItsCode(t *testing.T) {
 	buf := captureEntitySlog(t)
 
 	const cause = "acquire: host=db.internal user=cyoda: context deadline exceeded"
 	raw := fmt.Errorf("failed to mark entity deleted: %w", &markedStorageOutage{detail: cause})
 
-	msg := perIDDeleteError("e-1", raw)
+	msg := reportIDError(context.Background(), "e-1", deleteError("e-1", raw))
 
 	if !strings.Contains(msg, common.ErrCodeStorageUnavailable) {
 		t.Errorf("a marked storage outage lost its domain code: %s", msg)
@@ -486,8 +525,8 @@ func (*markedStorageOutage) StorageUnavailable() bool { return true }
 // TestPerIDDeleteError_KeepsDomainDetail — a not-found is the caller's own
 // business and carries no infrastructure detail, so it stays legible rather
 // than being flattened into a ticket.
-func TestPerIDDeleteError_KeepsDomainDetail(t *testing.T) {
-	msg := perIDDeleteError("e-1", fmt.Errorf("ENTITY_NOT_FOUND: entity e-1 not found: %w", spi.ErrNotFound))
+func TestDeleteError_KeepsDomainDetail(t *testing.T) {
+	msg := reportIDError(context.Background(), "e-1", deleteError("e-1", fmt.Errorf("ENTITY_NOT_FOUND: entity e-1 not found: %w", spi.ErrNotFound)))
 	if !strings.Contains(msg, common.ErrCodeEntityNotFound) {
 		t.Errorf("a not-found lost its domain code: %s", msg)
 	}
@@ -541,5 +580,90 @@ func TestClassifyWorkflowError_TxAbortedIs409(t *testing.T) {
 	}
 	if !errors.Is(got, spi.ErrTxAborted) {
 		t.Fatal("the cause is not attached")
+	}
+}
+
+// TestClassifyWorkflowError_EpochMismatchIsARetryable409 — a store error that
+// reports a lost shard (spi.ErrEpochMismatch) inside a cascade is not a
+// workflow failure: it must not fall through to 400 WORKFLOW_FAILED carrying
+// the store's text.
+func TestClassifyWorkflowError_EpochMismatchIsARetryable409(t *testing.T) {
+	appErr := classifyWorkflowError(fmt.Errorf("tx read record aborted: shard revoked: %w", spi.ErrEpochMismatch))
+	if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeEpochMismatch || !appErr.Retryable {
+		t.Fatalf("got %d/%s/retryable=%v, want 409/%s/true", appErr.Status, appErr.Code, appErr.Retryable, common.ErrCodeEpochMismatch)
+	}
+	if strings.Contains(appErr.Message, "shard revoked") {
+		t.Fatalf("message leaks the store's wording: %q", appErr.Message)
+	}
+}
+
+// TestPerIDDeleteError_EpochMismatchKeepsItsCode — a delete item that failed on
+// a lost shard reports the retryable code, not a ticket.
+func TestDeleteError_EpochMismatchKeepsItsCode(t *testing.T) {
+	msg := reportIDError(context.Background(), "e1", deleteError("e1", fmt.Errorf("transactional delete aborted: shard revoked: %w", spi.ErrEpochMismatch)))
+	if !strings.HasPrefix(msg, common.ErrCodeEpochMismatch+":") {
+		t.Fatalf("message = %q, want the %s code", msg, common.ErrCodeEpochMismatch)
+	}
+}
+
+// An engine refusal answered with an operational error keeps, in the error's
+// log-only Detail, the engine's own text — the processor, the item — and the
+// entity it was for; the deleted service log line was its only record. The
+// passed-through error itself is not changed (it may be shared).
+func TestClassifyEngineError_KeepsTheEngineTextAsDetail(t *testing.T) {
+	inner := common.Operational(http.StatusServiceUnavailable, common.ErrCodeCalloutFailed, "CALLOUT_FAILED: the compute member failed").AsRetryable()
+	got := classifyEngineError(fmt.Errorf("item 3: processor enrich failed: %w", inner), "ent-42")
+	if got.Code != common.ErrCodeCalloutFailed || got.Message != inner.Message {
+		t.Fatalf("classified = %s %q, want the passed-through error", got.Code, got.Message)
+	}
+	if !strings.Contains(got.Detail, "processor enrich failed") || !strings.Contains(got.Detail, "item 3") || !strings.Contains(got.Detail, "ent-42") {
+		t.Errorf("Detail = %q, want the engine text and the entity id", got.Detail)
+	}
+	if inner.Detail != "" {
+		t.Errorf("the passed-through error was changed: Detail = %q", inner.Detail)
+	}
+
+	conflict := classifyEngineError(fmt.Errorf("unique key: %w", spi.ErrUniqueViolation), "ent-43")
+	if conflict.Code != common.ErrCodeUniqueViolation || !strings.Contains(conflict.Detail, "unique key") {
+		t.Errorf("unique violation = %s, Detail %q; want UNIQUE_VIOLATION carrying the store text", conflict.Code, conflict.Detail)
+	}
+}
+
+// A not-found id in a delete is answered in the 200 body's per-id map and
+// logged once, at INFO, as the door's funnel logs a 404.
+func TestDeleteError_NotFoundIsLoggedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	msg := reportIDError(context.Background(), "e-9", deleteError("e-9", fmt.Errorf("get: %w", spi.ErrNotFound)))
+	if !strings.HasPrefix(msg, common.ErrCodeEntityNotFound+": ") {
+		t.Fatalf("message = %q, want ENTITY_NOT_FOUND", msg)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") || !strings.Contains(lines[0], "e-9") {
+		t.Errorf("log = %q, want one INFO line naming the id", lines)
+	}
+}
+
+// A passed-through operational error that already carries a Detail — the
+// store's text behind a conflict — keeps it next to the engine's text.
+func TestClassifyEngineError_KeepsAPassedThroughDetail(t *testing.T) {
+	inner := common.Internal("failed to load workflows", fmt.Errorf("pg: could not serialize access: %w", spi.ErrConflict))
+	got := classifyEngineError(fmt.Errorf("load: %w", inner), "ent-44")
+	if !strings.Contains(got.Detail, "could not serialize access") || !strings.Contains(got.Detail, "ent-44") {
+		t.Errorf("Detail = %q, want the store text and the entity", got.Detail)
+	}
+}
+
+// An operational error with a cause of its own, found deep inside the
+// engine's wrap, keeps the engine's text in Detail: its cause is not the
+// engine's error and does not carry that text.
+func TestClassifyEngineError_DeepCausedErrorKeepsTheEngineText(t *testing.T) {
+	inner := common.Operational(http.StatusServiceUnavailable, common.ErrCodeCalloutFailed, "the compute member failed").WithCause(errors.New("store text"))
+	got := classifyEngineError(fmt.Errorf("processor enrich failed: %w", inner), "ent-45")
+	if !strings.Contains(got.Detail, "processor enrich failed") || !strings.Contains(got.Detail, "ent-45") {
+		t.Errorf("Detail = %q, want the engine text and the entity", got.Detail)
 	}
 }

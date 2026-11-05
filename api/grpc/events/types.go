@@ -1429,10 +1429,14 @@ type EntityDeleteAllRequestJson struct {
 	// Flag indicates whether this message relates to some failure.
 	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
 
-	// Transaction size.
+	// Number of entities to delete per transaction batch. Batches committed before a
+	// failure remain durable, and per-id and batch failures are reported in the
+	// response. Not supported on a request joining an open transaction. Absent means
+	// a single transaction.
 	TransactionSize *int `json:"transactionSize,omitempty" yaml:"transactionSize,omitempty" mapstructure:"transactionSize,omitempty"`
 
-	// Include the list of entity ids deleted in the response
+	// Include the list of entity ids the delete attempted in the response; an id
+	// whose delete failed also appears in the error map.
 	Verbose bool `json:"verbose,omitempty" yaml:"verbose,omitempty" mapstructure:"verbose,omitempty"`
 
 	// Warnings (if applicable).
@@ -5726,6 +5730,14 @@ type SearchSnapshotStatusJson struct {
 
 	// Expiration date of the snapshot.
 	ExpirationDate *time.Time `json:"expirationDate,omitempty" yaml:"expirationDate,omitempty" mapstructure:"expirationDate,omitempty"`
+
+	// Why the snapshot failed. Present only when status is FAILED, and absent for
+	// every other status. For a failure the request itself caused, it is the same
+	// client error a direct search would answer, code first; for any other failure it
+	// names no internal detail: a server-side failure is SERVER_ERROR: internal error
+	// [ticket: <uuid>], its detail logged under the ticket, and a few known causes
+	// carry a fixed text.
+	FailureReason *string `json:"failureReason,omitempty" yaml:"failureReason,omitempty" mapstructure:"failureReason,omitempty"`
 
 	// ID of the snapshot.
 	SnapshotID string `json:"snapshotId" yaml:"snapshotId" mapstructure:"snapshotId"`

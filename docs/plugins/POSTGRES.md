@@ -41,8 +41,10 @@ original `*pgconn.PgError` stays in the error chain for observability.
 
 Every transaction sets `app.current_tenant` via
 `SELECT set_config('app.current_tenant', $1, true)` immediately after
-`BEGIN`, which RLS policies on every table consult to enforce tenant
-isolation at the row level.
+`BEGIN`. The tables' row-level security policies read it, but row-level
+security is not supported and the policies take no effect (see
+"Row-level security" below); tenant isolation is each statement's
+`tenant_id` predicate.
 
 ## Transaction manager
 
@@ -393,10 +395,10 @@ that an enforced invariant rather than a habit), an entity's model
 reference never changes (see below), and an entity created after the
 instant yields no lateral row and drops out.
 
-**Row-level security (RLS):** every table has RLS enabled with a
-policy that compares `tenant_id` against the session variable
-`app.current_tenant`, set via `set_config(..., true)` at transaction
-start:
+**Row-level security (RLS) is not supported.** The migrations enable RLS
+on the tenant tables with a policy that compares `tenant_id` against the
+session variable `app.current_tenant`, set via `set_config(..., true)` at
+transaction start:
 
 ```sql
 ALTER TABLE entities ENABLE ROW LEVEL SECURITY;
@@ -404,21 +406,18 @@ CREATE POLICY tenant_isolation_entities ON entities
     USING (tenant_id = current_setting('app.current_tenant', true));
 ```
 
-**These policies are inert in the posture cyoda-go supports today.** The
-application connects as the table owner, and RLS is `ENABLE`d but not
-`FORCE`d — an owner bypasses every policy. The live mechanism is the explicit
-`WHERE tenant_id = $1` predicate every statement carries; the policies are
-staged for a future hardening step, not a second line of defence you can rely
-on now. A tenant-scoping bug in application code **would** leak data. The
-scheduler's three tables are not under RLS at all; see "Scheduled tasks
-and the scheduler pool".
+**These policies take no effect.** cyoda connects as the table owner, and
+RLS is `ENABLE`d but not `FORCE`d — an owner bypasses every policy. Tenant
+isolation is the explicit `WHERE tenant_id = $1` predicate every statement
+carries, and nothing else: a tenant-scoping bug in application code
+**would** leak data. The scheduler's three tables have no policy at all;
+see "Scheduled tasks and the scheduler pool".
 
-Making them load-bearing needs three things together, not just one: `FORCE ROW
-LEVEL SECURITY`, a non-owner role, and `app.current_tenant` set on the pool
-path for the whole plugin (a `pgxpool` `AfterConnect`/`BeforeAcquire` hook).
-The GUC is set with `set_config(..., true)`, which is transaction-local, so no
-pool-routed statement carries it today — under a non-owner role those reads
-would match no row and answer a confident, wrong "not found".
+Running cyoda as a role that does not own the tables, or forcing RLS, is not
+supported either: `app.current_tenant` is set with `set_config(..., true)`,
+which is transaction-local, so no statement outside a transaction carries
+it, and under an enforced policy those reads would match no row and answer
+a confident, wrong "not found".
 
 **Schema (all tables):**
 
@@ -533,8 +532,8 @@ Options:
   simple-query mode — accepts a small per-query overhead in exchange
   for pooler compatibility.
 
-cyoda uses transaction-scoped `set_config(..., true)` for RLS
-(tenant isolation) and for the commit-phase limits in `cyoda_stamp` — no
+cyoda uses transaction-scoped `set_config(..., true)` for the RLS tenant
+setting (which takes no effect; see "Row-level security") and for the commit-phase limits in `cyoda_stamp` — no
 session-level state fights PgBouncer transaction mode beyond the
 prepared-statement cache. The one session-level lock is the floor mutex
 `(0, 0)` taken inside `cyoda_stamp` and `cyoda_consistency_time`, for

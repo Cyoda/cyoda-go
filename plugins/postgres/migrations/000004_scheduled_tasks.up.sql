@@ -6,12 +6,11 @@
 -- tenant table in this schema: ClaimDue is a trusted, cross-tenant system
 -- read driving the scheduler's due-task claim loop, invoked outside any
 -- per-tenant request context (no app.current_tenant GUC set). Adding a
--- tenant_isolation policy here would silently zero out ClaimDue's result
--- set once RLS enforcement is strengthened (FORCE + non-owner role) for
--- the rest of the schema. Upsert/Delete/ReconcileForEntity remain
+-- tenant_isolation policy here would zero out ClaimDue's result set under
+-- an enforced policy (row-level security is not supported; see migration
+-- 000001). Upsert/Delete/ReconcileForEntity remain
 -- tenant-safe via application-level tenant_id predicates, matching the
--- primary isolation mechanism already relied on for every table in this
--- schema (RLS here is not FORCE-enabled — see migration 000002's notes).
+-- isolation already relied on for every table in this schema.
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
     id               TEXT   PRIMARY KEY,
     tenant_id        TEXT   NOT NULL,

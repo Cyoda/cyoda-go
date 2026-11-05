@@ -113,6 +113,36 @@ info:
     APIs for handling edge message communication and processing.
 
 
+    ## Warnings
+
+
+    A request can raise warnings: conditions that did not fail the operation
+    but that the client should know about, such as an entity run by the
+    default workflow because no imported workflow applies to it, or a compute
+    member's own warnings, prefixed `processor <name>: `, `criteria <name>: `
+    or `function <name>: `. Each warning is one `Cyoda-Warning` response header
+    field line, in the order the warnings were raised, on a success response
+    and an error response alike. A response that raised no warning has no
+    `Cyoda-Warning` header. A gRPC response carries the same warnings in its
+    `warnings` array.
+
+
+    A value is visible ASCII and space only: the warning's UTF-8 text, with
+    every byte of a non-ASCII character, every `%` and a space at either end
+    percent-encoded in upper-case hex. Decode it with a standard
+    percent-decoder; `+` is a plus sign, not a space. A control character
+    (CR, LF, tab, any other C0 or C1 control, DEL) is sent as a space, and
+    invalid UTF-8 as U+FFFD.
+
+
+    A response carries at most 16 warnings, at most 512 bytes in one value
+    and at most 2048 bytes in all values together. A longer value is cut and
+    ends with `%E2%80%A6` (`…`). When warnings were left out, one more value
+    says `further warnings were omitted`. A warning raised after the response
+    has started cannot be sent. With CORS on, `Access-Control-Expose-Headers:
+    Cyoda-Warning` lets a browser script read the header.
+
+
     ## Authentication
 
 
@@ -2423,13 +2453,23 @@ paths:
         Deletes entities for a given model name and version.
         An optional `QueryConditionDto` request body scopes the delete to
         matching entities only; an empty body (or no body) deletes all entities.
-        When `verbose=true` and a condition is given, the response `ids` array
-        lists every deleted entity ID. For a delete-all (empty body), `ids` is
-        always an empty array — enumerating a whole-model wipe is impractical at
-        scale; use statistics only. `deleteResult.numberOfEntitites` is the count
+        When `verbose=true`, the response `ids` array lists every entity ID the
+        delete attempted, an empty body included; an ID whose delete failed
+        also appears in `idToError`. `deleteResult.numberOfEntitites` is the count
         of entities that matched the condition (or all entities when no condition
         is given); `deleteResult.numberOfEntititesRemoved` is the count actually
-        removed (may be lower if individual deletes failed).
+        removed (lower when an entity was already gone, was changed since it was
+        selected, or was in a failed batch).
+        Without `transactionSize` the delete is one transaction and atomic: an
+        entity already gone (a `pointInTime` selection) is reported in
+        `idToError`, and any other failure to delete one entity fails the whole
+        request with its error, deleting nothing. With `transactionSize` each
+        batch is atomic the same way: an entity gone or changed since it was
+        selected is reported in `idToError`, a failed batch deletes nothing and
+        its error is reported for each of its other entities, and the other
+        batches still run. In a request that joins another request's transaction, the
+        delete commits and rolls back nothing itself: the owner's transaction
+        commits or rolls back as a whole.
         A malformed condition body returns `400 INVALID_CONDITION`.
       operationId: deleteEntities
       parameters:
@@ -2536,8 +2576,9 @@ paths:
                   type: group
       responses:
         "200":
-          description: Deletion process was successful. In case there were entities that
-            could not be deletedthe response will contain information about that
+          description: Deletion process was successful. An entity that could not
+            be deleted — already gone, changed since it was selected, or in a
+            failed batch — is reported in `deleteResult.idToError`.
           content:
             application/json:
               schema:
@@ -2837,7 +2878,7 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload, collection too large, unsupported format, or a body holding text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8) outside an item's payload, such as in an `ifMatch` or a `transition`; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a value 256 or more levels below the document root; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType. Nothing is committed."
+          description: "Bad request — BAD_REQUEST: invalid payload, collection too large, unsupported format, or a body holding text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8) outside an item's payload, such as in an `ifMatch` or a `transition`; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a value 256 or more levels below the document root; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: the workflow rejected an item. Nothing is committed."
           content:
             application/problem+json:
               schema:
@@ -2859,6 +2900,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "410":
           $ref: '#/components/responses/TransactionGone'
+        "412":
+          description: "Precondition Failed — ENTITY_MODIFIED: another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. The request fails whole. `properties.entityId` names the entity."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
@@ -3076,6 +3123,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "410":
           $ref: '#/components/responses/TransactionGone'
+        "412":
+          description: "Precondition Failed — ENTITY_MODIFIED: another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. The request fails whole. `properties.entityId` names the entity."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
@@ -3258,7 +3311,7 @@ paths:
         "410":
           $ref: '#/components/responses/TransactionGone'
         "412":
-          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version"
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version, or another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. `properties.entityId` names the entity."
           content:
             application/problem+json:
               schema:
@@ -3390,7 +3443,7 @@ paths:
         "410":
           $ref: '#/components/responses/TransactionGone'
         "412":
-          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version, or another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. `properties.entityId` names the entity."
           content:
             application/problem+json:
               schema:
@@ -3600,7 +3653,7 @@ paths:
         "410":
           $ref: '#/components/responses/TransactionGone'
         "412":
-          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version."
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version, or another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. `properties.entityId` names the entity."
           content:
             application/problem+json:
               schema:
@@ -3742,7 +3795,7 @@ paths:
         "410":
           $ref: '#/components/responses/TransactionGone'
         "412":
-          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version."
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match transactionId no longer matches the current version, or another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. `properties.entityId` names the entity."
           content:
             application/problem+json:
               schema:
@@ -3994,6 +4047,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "410":
           $ref: '#/components/responses/TransactionGone'
+        "412":
+          description: "Precondition Failed — ENTITY_MODIFIED: another transaction changed the entity while a COMMIT_BEFORE_DISPATCH processor's callout ran; the part of the write before the callout stays committed. The request fails whole. `properties.entityId` names the entity."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
@@ -7585,7 +7644,9 @@ paths:
         Attempts to cancel a running async search job. The operation:
         - Only succeeds if the search job is in RUNNING state
         - Returns the cancellation result and final status
-        - Invalidates the search job entry if cancellation succeeds
+        - Records the job CANCELLED and stops it, if it is still running
+        - Answers 400 SEARCH_JOB_ALREADY_TERMINAL if the job has already
+          ended, before the call or while the cancel is landing
       operationId: cancelAsyncSearch
       parameters:
         - name: jobId
@@ -7653,6 +7714,8 @@ paths:
         - Finish timestamp (if completed)
 
         - Expiration date
+
+        - Failure reason (`failureReason`, only when the status is FAILED)
 
 
         Note: The NOT_FOUND status occurs in rare race conditions where the
@@ -9515,11 +9578,13 @@ components:
         response body via the `failed[]` array, not as a `4xx` envelope.
         Inspect `failed[]` to detect them. The `4xx` envelope is reserved
         for chunk-wide failures: malformed JSON, missing entity, validation
-        failure, a non-conflict engine error, and a transaction conflict
+        failure, a non-conflict engine error, a transaction conflict
         (`409 CONFLICT`, retryable) — another transaction committed a
         change to an item's entity after the chunk read it, or a processor's
-        joined callback lost a write race. A conflict is never isolated to
-        its item.
+        joined callback lost a write race — and `412 ENTITY_MODIFIED` when
+        another transaction changed an item's entity while a
+        COMMIT_BEFORE_DISPATCH processor's callout ran. A conflict is never
+        isolated to its item.
 
         `entityIds` contains UUID strings (server is source of truth — the
         server emits []string, not []object).
@@ -9543,7 +9608,11 @@ components:
               description: AppError code (e.g. MODEL_NOT_FOUND, ENTITY_NOT_FOUND).
             message:
               type: string
-              description: Operator-facing failure message; safe for client display.
+              description: >-
+                Failure message, safe for client display: a client error's
+                code-prefixed message, or for a server-side failure the
+                generic SERVER_ERROR text with the ticket its detail is
+                logged under.
             chunkIndex:
               type: integer
               format: int32
@@ -9578,7 +9647,11 @@ components:
                       per-item isolation.
                   message:
                     type: string
-                    description: Operator-facing failure message; safe for client display.
+                    description: >-
+                      Failure message, safe for client display: a client error's
+                      code-prefixed message, or for a server-side failure the
+                      generic SERVER_ERROR text with the ticket its detail is
+                      logged under.
                   itemIndex:
                     type: integer
                     format: int32
@@ -10842,8 +10915,9 @@ components:
             (absent) criterion matches unconditionally. If no active
             workflow matches — and `active=false` workflows are skipped
             entirely during selection — the engine falls back to the
-            embedded default workflow and emits both a body warning and
-            an operator-visible `slog.Warn` line. Workflow-level criteria
+            embedded default workflow and emits both a warning (in a
+            `Cyoda-Warning` header of an HTTP response and in the `warnings`
+            of a gRPC response) and an operator-visible `slog.Warn` line. Workflow-level criteria
             use the same Condition DSL as search and transition-level
             criteria, and a `function` condition is valid at any depth.
           $ref: "#/components/schemas/QueryConditionDto"
@@ -10952,6 +11026,19 @@ components:
           type: string
           format: date-time
           description: When the search job completed (null if still running)
+        failureReason:
+          type: string
+          description: >-
+            Why the search job failed. Present only when `searchJobStatus` is
+            FAILED, and absent for every other status. For a failure the
+            request itself caused, it is the same client error a direct
+            search would answer, code first (for example
+            `INVALID_FIELD_PATH: condition or sort references an invalid field
+            path`); for any other failure it names no internal detail: a
+            server-side failure is `SERVER_ERROR: internal error [ticket:
+            <uuid>]`, its detail logged under the ticket, and a known cause
+            carries a fixed text (for example `search abandoned: executor
+            lost repeatedly`).
       required:
         - calculationTimeMillis
         - createTime

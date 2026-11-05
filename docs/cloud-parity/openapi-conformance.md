@@ -120,7 +120,7 @@ ADR 0003). Each states the direction and what Cloud must mirror.
   schema already marks `modelKey` optional, so this is additive/non-breaking for consumers.)
 - **E2 — conditional `deleteEntities` (HTTP).** `DELETE /entity/{name}/{version}`
   with a `QueryConditionDto` body deletes only matching entities (empty body ⇒
-  all); `verbose=true` returns deleted ids; `numberOfEntitites` (matched) and
+  all); `verbose=true` returns the attempted ids; `numberOfEntitites` (matched) and
   `numberOfEntititesRemoved` (removed) are distinct. Direction: server-gap (closed a
   data-loss defect). Cloud MUST honour the condition — never ignore it.
 - **E3 — `getAllEntities` as-at.** The model-scoped list read honours `pointInTime`

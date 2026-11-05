@@ -5,18 +5,23 @@ import (
 	"sync"
 )
 
-// RequestDiagnostics accumulates warnings and errors during request processing.
+// RequestDiagnostics accumulates warnings during request processing.
 // Thread-safe for concurrent access from multiple goroutines (e.g., async processors).
 type RequestDiagnostics struct {
 	mu       sync.Mutex
 	warnings []string
-	errors   []string
 }
 
 type diagnosticsKey struct{}
 
+// WarningHeader is the HTTP response header that carries a request's warnings,
+// one header field line per warning (internal/httpmw.Warnings); a gRPC
+// response carries them in its `warnings` array.
+const WarningHeader = "Cyoda-Warning"
+
 // WithDiagnostics creates a new context with an empty RequestDiagnostics.
-// Call at the start of every request (HTTP handler or gRPC handler entry).
+// Called once per request: by internal/httpmw.Warnings for an HTTP data route,
+// at each gRPC entry point, and by the peer callout hand-over handler.
 func WithDiagnostics(ctx context.Context) context.Context {
 	return context.WithValue(ctx, diagnosticsKey{}, &RequestDiagnostics{})
 }
@@ -32,18 +37,8 @@ func GetDiagnostics(ctx context.Context) *RequestDiagnostics {
 func AddWarning(ctx context.Context, msg string) {
 	if d := GetDiagnostics(ctx); d != nil {
 		d.mu.Lock()
+		defer d.mu.Unlock()
 		d.warnings = append(d.warnings, msg)
-		d.mu.Unlock()
-	}
-}
-
-// AddError appends an error message to the diagnostics.
-// Safe to call even if diagnostics is not initialized on the context (silent no-op).
-func AddError(ctx context.Context, msg string) {
-	if d := GetDiagnostics(ctx); d != nil {
-		d.mu.Lock()
-		d.errors = append(d.errors, msg)
-		d.mu.Unlock()
 	}
 }
 
@@ -59,20 +54,5 @@ func (d *RequestDiagnostics) GetWarnings() []string {
 	}
 	cp := make([]string, len(d.warnings))
 	copy(cp, d.warnings)
-	return cp
-}
-
-// GetErrors returns accumulated errors, or an empty slice (never nil).
-func (d *RequestDiagnostics) GetErrors() []string {
-	if d == nil {
-		return []string{}
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if len(d.errors) == 0 {
-		return []string{}
-	}
-	cp := make([]string, len(d.errors))
-	copy(cp, d.errors)
 	return cp
 }

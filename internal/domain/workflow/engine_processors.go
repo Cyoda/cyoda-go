@@ -42,12 +42,13 @@ var ErrSavepointInfra = errors.New("savepoint failure")
 // sentinel exists to draw.
 //
 // Chained alongside the conflict, never in place of it, so
-// errors.Is(err, spi.ErrConflict) stays true and the single-entity 412 mapping is
-// unaffected. That 412 is right: the apply-result CAS is a precondition on the
-// request's own entity at the segment boundary — the version TX_pre committed,
-// or TX_post's own write — and another writer changed that entity. It never
-// meets an already-aborted TX_post: the anchor re-read before it would fail
-// first, marked ErrCommitBeforeDispatchInfra.
+// errors.Is(err, spi.ErrConflict) stays true and the entity service answers 412
+// ENTITY_MODIFIED on every write route — create, update, and an item of a
+// collection create or update. That 412 is right: the apply-result CAS is a
+// precondition on the request's own entity at the segment boundary — the
+// version TX_pre committed, or TX_post's own write — and another writer changed
+// that entity. It never meets an already-aborted TX_post: the anchor re-read
+// before it would fail first, marked ErrCommitBeforeDispatchInfra.
 var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
 
 // clientAttributableStoreErr reports whether a store error is an outcome the
@@ -63,8 +64,8 @@ var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
 // specific status; anything else has no client-facing meaning to preserve.
 //
 // The list is what keeps the apply-result CAS honest: an infrastructure
-// failure there must be marked (it is the leak), while a conflict keeps the
-// ErrPostSegmentConflict chain its callers read.
+// failure there must be marked (unmarked, it reaches that catch-all), while a
+// conflict keeps the ErrPostSegmentConflict chain its callers read.
 func clientAttributableStoreErr(err error) bool {
 	return errors.Is(err, spi.ErrConflict) ||
 		errors.Is(err, spi.ErrUniqueViolation) ||
@@ -557,10 +558,8 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		}
 		// Both sentinels stay matchable — ErrConflict for the 412 mapping,
 		// ErrPostSegmentConflict to tell a batching caller this landed on the far
-		// side of TX_pre's commit. Chained rather than errors.Join'd because this
-		// text reaches a 4xx response body verbatim, and a 4xx detail is one
-		// `CODE: message` line (see .claude/rules/error-handling.md); Join would
-		// put a newline through the middle of it.
+		// side of TX_pre's commit. Chained rather than errors.Join'd so the
+		// logged text stays one line.
 		return nil, "", true, fmt.Errorf("%w: %w", ErrPostSegmentConflict, saveErr)
 	}
 

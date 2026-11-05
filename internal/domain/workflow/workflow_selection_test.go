@@ -93,7 +93,7 @@ func TestManualTransition_ResolvesWorkflowByCriterion(t *testing.T) {
 	entity := makeEntity("manual-b", modelRef, map[string]any{"kind": "b"})
 	entity.Meta.State = "VALIDATE"
 
-	if _, err := engine.ManualTransition(ctx, entity, "check"); err != nil {
+	if _, err := engine.ManualTransition(ctx, entity, "check", IfMatch{}); err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
 	if entity.Meta.State != "B_DONE" {
@@ -115,7 +115,7 @@ func TestManualTransition_EmitsWorkflowSelectionAudit(t *testing.T) {
 	entity := makeEntity("manual-audit-b", modelRef, map[string]any{"kind": "b"})
 	entity.Meta.State = "VALIDATE"
 
-	if _, err := engine.ManualTransition(ctx, entity, "check"); err != nil {
+	if _, err := engine.ManualTransition(ctx, entity, "check", IfMatch{}); err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestManualTransition_StateAbsentFromSelectedWorkflow_Fails(t *testing.T) {
 	entity := makeEntity("manual-orphan-a", modelRef, map[string]any{"kind": "a"})
 	entity.Meta.State = "ORPHAN"
 
-	if _, err := engine.ManualTransition(ctx, entity, "check"); err == nil {
+	if _, err := engine.ManualTransition(ctx, entity, "check", IfMatch{}); err == nil {
 		t.Fatalf("ManualTransition succeeded and moved to %q; want an error — "+
 			"ORPHAN is not in the criterion-selected workflow kind-a-wf", entity.Meta.State)
 	}
@@ -179,7 +179,7 @@ func TestLoopback_ResolvesWorkflowByCriterion(t *testing.T) {
 	entity := makeEntity("loopback-b", modelRef, map[string]any{"kind": "b"})
 	entity.Meta.State = "VALIDATE"
 
-	if _, err := engine.Loopback(ctx, entity); err != nil {
+	if _, err := engine.Loopback(ctx, entity, IfMatch{}); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 	if entity.Meta.State != "B_DONE" {
@@ -198,7 +198,7 @@ func TestLoopback_EmitsWorkflowSelectionAudit(t *testing.T) {
 	entity := makeEntity("loopback-audit-b", modelRef, map[string]any{"kind": "b"})
 	entity.Meta.State = "VALIDATE"
 
-	if _, err := engine.Loopback(ctx, entity); err != nil {
+	if _, err := engine.Loopback(ctx, entity, IfMatch{}); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 
@@ -237,7 +237,7 @@ func TestLoopback_StateAbsentFromSelectedWorkflow_IsStable(t *testing.T) {
 	entity := makeEntity("loopback-orphan-a", modelRef, map[string]any{"kind": "a"})
 	entity.Meta.State = "ORPHAN"
 
-	if _, err := engine.Loopback(ctx, entity); err != nil {
+	if _, err := engine.Loopback(ctx, entity, IfMatch{}); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 	if entity.Meta.State != "ORPHAN" {
@@ -455,7 +455,7 @@ func TestManualTransition_CriterionErrorFailsClosed(t *testing.T) {
 	entity := makeEntity("manual-failclosed-1", modelRef, map[string]any{"kind": "a"})
 	entity.Meta.State = "VALIDATE"
 
-	if _, err := engine.ManualTransition(ctx, entity, "check"); err == nil {
+	if _, err := engine.ManualTransition(ctx, entity, "check", IfMatch{}); err == nil {
 		t.Fatal("ManualTransition succeeded; want the criterion-evaluation failure surfaced")
 	} else if errors.Is(err, ErrTransitionNotFound) {
 		t.Errorf("error wraps ErrTransitionNotFound; want a criterion-evaluation failure: %v", err)
@@ -754,7 +754,7 @@ func TestResolveWorkflow_StoreOutageIsSanitizedInfraError(t *testing.T) {
 	entity := makeEntity("store-outage-1", modelRef, map[string]any{"kind": "a"})
 	entity.Meta.State = "VALIDATE"
 
-	_, err := engine.ManualTransition(ctx, entity, "check")
+	_, err := engine.ManualTransition(ctx, entity, "check", IfMatch{})
 	if err == nil {
 		t.Fatal("expected the store outage to fail the transition")
 	}

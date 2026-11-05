@@ -315,13 +315,9 @@ func TestAsyncSearchJob_BareLeafField_RendersInvalidConditionMessage(t *testing.
 		t.Errorf("job error = %q, want it to carry INVALID_CONDITION — an async caller's ONLY report of why the job failed", job.Error)
 	}
 	// Gate 3 / jobFailureMessage's own contract: the classified message is the
-	// client-safe one (AppError.Error()), never the store's internal detail
-	// or the generic fallback a bare sentinel used to collapse into.
+	// client-safe one (AppError.Error()), never the store's internal detail.
 	if strings.Contains(job.Error, "ExpandLeaf") || strings.Contains(job.Error, "parses into no declared type") {
 		t.Errorf("job error leaks internal detail: %q", job.Error)
-	}
-	if job.Error == "search failed unexpectedly" {
-		t.Error("job error is the generic unclassified fallback — the fix did not reach the async path")
 	}
 }
 
@@ -353,36 +349,42 @@ func captureSlog(t *testing.T, f func()) string {
 // backend, so reaching it there IS a genuine inconsistency and must stay a
 // WARN.
 func TestClassifyStoreQueryError_UnevaluableLeafLogSeverity(t *testing.T) {
+	// The classifier logs nothing itself; the level it puts on the error is
+	// the level the door's funnel writes the refusal's one line at.
+	level := func(t *testing.T, err error) slog.Level {
+		t.Helper()
+		if out := captureSlog(t, func() { err = search.ClassifyStoreQueryError(err) }); out != "" {
+			t.Errorf("the classifier logged the refusal itself: %s", out)
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("classified error %v is not an *AppError", err)
+		}
+		return appErr.OperationalLogLevel()
+	}
 	t.Run("spi.ErrUnevaluableLeaf is not logged as an alarm", func(t *testing.T) {
 		err := fmt.Errorf("%w: operand %q for op %q: %v", spi.ErrUnevaluableLeaf, "abc", "GT",
 			errors.New(`ExpandLeaf: operand "abc" parses into no declared type`))
-		out := captureSlog(t, func() { search.ClassifyStoreQueryError(err) })
-		if strings.Contains(out, `"level":"WARN"`) {
-			t.Errorf("expected the documented-normal no-declared-type case NOT to log at WARN, got: %s", out)
+		if got := level(t, err); got != slog.LevelInfo {
+			t.Errorf("level = %v, want INFO for the documented-normal no-declared-type case", got)
 		}
 	})
 
 	t.Run("match.ErrUnevaluableLeaf is not logged as an alarm", func(t *testing.T) {
-		err := fmt.Errorf("predicate match failed: %w", match.ErrUnevaluableLeaf)
-		out := captureSlog(t, func() { search.ClassifyStoreQueryError(err) })
-		if strings.Contains(out, `"level":"WARN"`) {
-			t.Errorf("expected the documented-normal no-declared-type case NOT to log at WARN, got: %s", out)
+		if got := level(t, fmt.Errorf("predicate match failed: %w", match.ErrUnevaluableLeaf)); got != slog.LevelInfo {
+			t.Errorf("level = %v, want INFO for the documented-normal no-declared-type case", got)
 		}
 	})
 
-	t.Run("spi.ErrInvalidPattern still logs at WARN: a genuine boundary/backend disagreement", func(t *testing.T) {
-		err := fmt.Errorf("plugin detail: %w", spi.ErrInvalidPattern)
-		out := captureSlog(t, func() { search.ClassifyStoreQueryError(err) })
-		if !strings.Contains(out, `"level":"WARN"`) {
-			t.Errorf("expected spi.ErrInvalidPattern to keep its WARN — it means the pre-validated pattern and the kernel disagree, got: %s", out)
+	t.Run("spi.ErrInvalidPattern is a WARN: a genuine boundary/backend disagreement", func(t *testing.T) {
+		if got := level(t, fmt.Errorf("plugin detail: %w", spi.ErrInvalidPattern)); got != slog.LevelWarn {
+			t.Errorf("level = %v, want WARN — the pre-validated pattern and the kernel disagree", got)
 		}
 	})
 
-	t.Run("spi.ErrInvalidFilterPath still logs at WARN: unrelated to this fix", func(t *testing.T) {
-		err := fmt.Errorf("plugin detail: %w", spi.ErrInvalidFilterPath)
-		out := captureSlog(t, func() { search.ClassifyStoreQueryError(err) })
-		if !strings.Contains(out, `"level":"WARN"`) {
-			t.Errorf("expected spi.ErrInvalidFilterPath's WARN to be untouched, got: %s", out)
+	t.Run("spi.ErrInvalidFilterPath is a WARN", func(t *testing.T) {
+		if got := level(t, fmt.Errorf("plugin detail: %w", spi.ErrInvalidFilterPath)); got != slog.LevelWarn {
+			t.Errorf("level = %v, want WARN", got)
 		}
 	})
 }

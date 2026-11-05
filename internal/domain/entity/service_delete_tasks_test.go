@@ -450,23 +450,23 @@ func TestDeleteEntitiesConditional_SingleTx_RemovesOnlyTheDeletedEntitiesTasks(t
 	}
 }
 
-func TestDeleteEntitiesConditional_SingleTx_FailedIDKeepsItsTasks(t *testing.T) {
+// A single-transaction delete that fails on one id's fault deletes nothing:
+// every matched entity, and every task, is still there.
+func TestDeleteEntitiesConditional_SingleTx_FailedIDDeletesNothing(t *testing.T) {
 	e := newTaskEnv(t)
 	ids := seedPersons(t, e.h, e.ctx, 3)
 	e.refusingStore(t, 0, ids[2])
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
-	if err != nil {
-		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	if _, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0); err == nil {
+		t.Fatal("DeleteEntitiesConditional succeeded, want the per-id fault to fail the request")
 	}
-	if _, failed := res.IDToError[ids[2]]; !failed {
-		t.Fatalf("IDToError = %v, want an entry for %s", res.IDToError, ids[2])
-	}
-	if n := e.tasksOf(t, ids[1]); n != 0 {
-		t.Errorf("tasks of the deleted entity = %d, want 0", n)
-	}
-	if n := e.tasksOf(t, ids[2]); n != 1 {
-		t.Errorf("tasks of the entity whose delete failed = %d, want 1", n)
+	for _, id := range ids[1:] {
+		if !e.exists(t, id) {
+			t.Errorf("entity %s deleted although the request failed", id)
+		}
+		if n := e.tasksOf(t, id); n != 1 {
+			t.Errorf("tasks of entity %s = %d, want 1", id, n)
+		}
 	}
 }
 
@@ -910,5 +910,179 @@ func TestDeleteTasks_TenantIsTheRequestsNotTheTransactions(t *testing.T) {
 	}
 	if n := e.tasksOf(t, ids[0]); n != 1 {
 		t.Errorf("tasks of %s = %d, want 1: another tenant's request removed them", ids[0], n)
+	}
+}
+
+// faultOnNthDeleteStore fails its nth Delete with a server-side error; every
+// other Delete runs. With n the last delete of a pass, at least one delete is
+// made before the fault, so the test sees whether it is rolled back.
+type faultOnNthDeleteStore struct {
+	spi.EntityStore
+	n, calls int
+}
+
+func (s *faultOnNthDeleteStore) Delete(ctx context.Context, entityID string) error {
+	s.calls++
+	if s.calls == s.n {
+		return errors.New("pg: statement failed on a dropped connection")
+	}
+	return s.EntityStore.Delete(ctx, entityID)
+}
+
+// A single-transaction conditional delete is atomic on every backend, as
+// PostgreSQL forces (a failed statement aborts its transaction): the first
+// per-id fault that is not a write conflict fails the request with its
+// classified error, and the deletes made before it are rolled back.
+func TestDeleteEntitiesConditional_SingleTx_PerIDFaultFailsWhole(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 3)
+	store, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	e.withEntityStore(t, &faultOnNthDeleteStore{EntityStore: store, n: 2})
+
+	_, err = e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeServerError {
+		t.Fatalf("err = %v, want the per-id fault as a server-side failure of the whole request", err)
+	}
+	for _, id := range ids[1:] {
+		if !e.exists(t, id) {
+			t.Errorf("entity %s deleted although the request failed", id)
+		}
+		if n := e.tasksOf(t, id); n != 1 {
+			t.Errorf("tasks of entity %s = %d, want 1", id, n)
+		}
+	}
+}
+
+// A batch is one transaction too, and as atomic: a per-id fault fails its
+// batch, rolling back the deletes made before it, and every id of the batch
+// that resolved nothing on its own is answered the batch's error; the other
+// batches still run.
+func TestDeleteEntitiesConditional_Batched_PerIDFaultFailsItsBatch(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 5) // ages 0..4: four match, two batches of two
+	store, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	e.withEntityStore(t, &faultOnNthDeleteStore{EntityStore: store, n: 2})
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 2)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.RemovedCount != 2 || len(res.IDToError) != 2 {
+		t.Fatalf("Removed=%d IDToError=%v, want 2 removed and the failed batch's 2 ids answered", res.RemovedCount, res.IDToError)
+	}
+	for id, msg := range res.IDToError {
+		if !strings.HasPrefix(msg, "SERVER_ERROR: internal error [ticket: ") {
+			t.Errorf("IDToError[%s] = %q, want the batch's ticketed error", id, msg)
+		}
+		if !e.exists(t, id) {
+			t.Errorf("entity %s of the failed batch was deleted", id)
+		}
+		if n := e.tasksOf(t, id); n != 1 {
+			t.Errorf("tasks of entity %s of the failed batch = %d, want 1", id, n)
+		}
+	}
+}
+
+// modifiedGetStore answers Get for one id with its version moved on, as if
+// the entity changed after it was selected.
+type modifiedGetStore struct {
+	spi.EntityStore
+	modifiedID string
+}
+
+func (s *modifiedGetStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
+	e, err := s.EntityStore.Get(ctx, entityID)
+	if err != nil || entityID != s.modifiedID {
+		return e, err
+	}
+	moved := *e
+	moved.Meta.Version++
+	return &moved, nil
+}
+
+// A failed batch keeps the outcome of an id it resolved on its own: an entity
+// changed since selection is answered ENTITY_MODIFIED, and the batch's error
+// goes only to its other ids. The batch fails at its commit, so every id of
+// it is visited whatever order the selection yields.
+func TestDeleteEntitiesConditional_Batched_FailedBatchKeepsPerIDOutcomes(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 3) // ages 0..2: two match, one batch of two
+	store, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	changed, staged := ids[1], ids[2]
+	failMgr := &failNthCommitTxMgr{TransactionManager: e.txMgr, failOn: map[int]error{2: errors.New("commit boom")}}
+	e.txMgr = failMgr
+	e.withEntityStore(t, &modifiedGetStore{EntityStore: store, modifiedID: changed})
+
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 2)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if failMgr.commits != 2 {
+		t.Fatalf("commits = %d, want 2: the request's selection transaction, then the batch's, refused", failMgr.commits)
+	}
+	if res.RemovedCount != 0 || len(res.IDToError) != 2 {
+		t.Fatalf("Removed=%d IDToError=%v, want nothing removed and both ids answered", res.RemovedCount, res.IDToError)
+	}
+	if msg := res.IDToError[changed]; !strings.HasPrefix(msg, common.ErrCodeEntityModified) {
+		t.Errorf("IDToError[changed] = %q, want its own %s outcome", msg, common.ErrCodeEntityModified)
+	}
+	if msg := res.IDToError[staged]; !strings.HasPrefix(msg, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("IDToError[staged] = %q, want the batch's ticketed error", msg)
+	}
+	for _, id := range []string{changed, staged} {
+		if !e.exists(t, id) {
+			t.Errorf("entity %s of the failed batch was deleted", id)
+		}
+	}
+}
+
+// faultingGetStore fails every Get of one id with a server-side error.
+type faultingGetStore struct {
+	spi.EntityStore
+	failID string
+}
+
+func (s *faultingGetStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
+	if entityID == s.failID {
+		return nil, errors.New("pg: statement failed on a dropped connection")
+	}
+	return s.EntityStore.Get(ctx, entityID)
+}
+
+// A batched pointInTime delete reads each matched entity's current version
+// before any batch runs. A read fault there — not the entity being gone —
+// fails the request: nothing has been deleted yet, so it fails closed, and
+// idToError keeps only the outcomes the rule names.
+func TestDeleteEntitiesConditional_Batched_PointInTime_ResolutionFaultFailsTheRequest(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 3)
+	time.Sleep(2 * time.Millisecond)
+	pit := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	store, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	e.withEntityStore(t, &faultingGetStore{EntityStore: store, failID: ids[2]})
+
+	_, err = e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, &pit, false, 10)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeServerError {
+		t.Fatalf("err = %v, want the read fault as a server-side failure of the request", err)
+	}
+	for _, id := range ids[1:] {
+		if !e.exists(t, id) {
+			t.Errorf("entity %s deleted although the request failed", id)
+		}
 	}
 }

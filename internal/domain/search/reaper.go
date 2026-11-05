@@ -9,6 +9,8 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/google/uuid"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -255,7 +257,7 @@ func ownerCtx(ctx context.Context, job *spi.SearchJob) context.Context {
 func (s *SearchService) failAttemptsExhausted(ctx context.Context, job *spi.SearchJob) bool {
 	if werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobAttemptsExhausted, s.clock.Now(), 0); werr != nil {
 		if fencedRefusal(werr) {
-			slog.Debug("capped job is no longer this claim's to fail", "pkg", "search", "jobID", job.ID, "err", werr)
+			endLostClaim(job.ID, werr)
 			return false
 		}
 		owedWriteFailed(ctx, slog.LevelError, "failed to fail crash-looping search job", job, werr)
@@ -285,13 +287,16 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 	if decErr != nil {
 		// A stored job that cannot be decoded is a defect, not a runtime
 		// condition: fail it at the claimed epoch rather than loop on it.
-		slog.Error("failed to decode claimed search job; failing", "pkg", "search", "jobID", job.ID, "err", decErr)
+		// A server-side failure: recorded with a ticket, as both doors answer
+		// one, and logged once, here, under it.
+		ticket := uuid.New().String()
+		slog.Error("failed to decode claimed search job; failing", "pkg", "search", "jobID", job.ID, "ticket", ticket, "err", decErr)
 		return false, func(ctx context.Context) {
-			werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobFailureFallback, s.clock.Now(), 0)
+			werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, ticketedReason(ticket), s.clock.Now(), 0)
 			switch {
 			case werr == nil:
 			case fencedRefusal(werr):
-				slog.Debug("undecodable job is no longer this claim's to fail", "pkg", "search", "jobID", job.ID, "err", werr)
+				endLostClaim(job.ID, werr)
 			default:
 				owedWriteFailed(ctx, slog.LevelError, "failed to fail undecodable claimed job", job, werr)
 			}
@@ -299,7 +304,7 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 	}
 
 	jobCtx, cancel := context.WithCancelCause(baseCtx)
-	handle := s.registerReclaim(job.ID, cancel, uc, job.Epoch)
+	handle := s.registerReclaim(job.ID, jobCtx, cancel, uc, job.Epoch)
 	s.startHeartbeat(jobCtx, cancel, job.ID, job.Epoch)
 
 	submitErr := s.asyncPool().Submit(func() {
@@ -331,42 +336,48 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 // A job that does not run is deregistered, and is never run over unknown
 // residue (fail closed). Whether it is also released depends on why:
 //   - The clear failed: released (uncounted, fenced like the clear), so a
-//     peer or the next sweep retries it.
+//     peer or the next sweep retries it — unless a shutdown release or a
+//     lost claim settled the job's end first (settleJob).
 //   - The clear was refused (taken by a newer epoch, terminal, or gone):
-//     nothing is this node's to hand back, so no release.
-//   - The job's context ended first: the cause owns the next step. A shutdown
-//     release (errJobReleased) has already released it, and a self-reclaim
-//     (errJobSuperseded) holds it at a newer epoch, so neither is released
-//     again. Any other end — a refused heartbeat, an in-process cancel — gets
-//     the fenced release, which the store refuses if the job is no longer
-//     this epoch's.
+//     nothing is this node's to hand back, so no release; reported as a lost
+//     claim (endLostClaim).
+//   - The job's context ended first: the cause owns the next step. A refused
+//     heartbeat or a cancel on this node (errCancelledHere) means the job is
+//     no longer this claim's: reported as a lost claim, no release. A
+//     shutdown release (errJobReleased) has already released it, and a
+//     self-reclaim (errJobSuperseded) holds it at a newer epoch, so neither is
+//     released again. No other cause cancels a job's context before its end
+//     is settled.
 func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel context.CancelCauseFunc, handle *asyncJobHandle, job *spi.SearchJob) bool {
+	var cerr error
 	if jobCtx.Err() == nil {
-		cerr := s.searchStore.ClearResults(jobCtx, job.ID, job.Epoch)
+		cerr = s.searchStore.ClearResults(jobCtx, job.ID, job.Epoch)
 		switch {
 		case cerr == nil:
 			return true
-		case errors.Is(cerr, spi.ErrAlreadyTerminal):
-			slog.Debug("reclaimed job was settled before it ran", "pkg", "search", "jobID", job.ID)
-			s.dropReclaim(cancel, handle, job)
-			return false
-		case errors.Is(cerr, spi.ErrStaleClaim), errors.Is(cerr, spi.ErrNotFound):
-			slog.Warn("reclaimed job was taken or removed before it ran", "pkg", "search", "jobID", job.ID, "err", cerr)
+		case fencedRefusal(cerr):
+			// Settled, taken or removed before it ran: no longer this
+			// claim's, reported as every lost claim is.
+			settleJob(jobCtx, cancel, job.ID, cerr)
 			s.dropReclaim(cancel, handle, job)
 			return false
 		case jobCtx.Err() == nil:
 			slog.Error("failed to clear results before reclaim; releasing", "pkg", "search", "jobID", job.ID, "err", cerr)
+			if settleJob(jobCtx, cancel, job.ID, errJobEnding) {
+				s.releaseUnrun(context.Background(), job)
+			}
 			s.dropReclaim(cancel, handle, job)
-			s.releaseUnrun(context.Background(), job)
 			return false
 		}
 	}
-	cause := context.Cause(jobCtx)
-	slog.Debug("reclaimed job ended before it ran", "pkg", "search", "jobID", job.ID, "cause", cause)
+	// The job's context ended first. A refused heartbeat or a cancel here is a
+	// lost claim, reported once; a shutdown release (errJobReleased) has
+	// already handed the job back, and a self-reclaim (errJobSuperseded) holds
+	// it at a newer epoch: nothing to release or report. A clear that failed
+	// as the context ended is still logged, once, as unrecorded.
+	settleJob(jobCtx, cancel, job.ID, errJobEnding)
+	logUnrecordedJobFailure(job.ID, cerr)
 	s.dropReclaim(cancel, handle, job)
-	if !errors.Is(cause, errJobReleased) && !errors.Is(cause, errJobSuperseded) {
-		s.releaseUnrun(context.Background(), job)
-	}
 	return false
 }
 
@@ -385,7 +396,7 @@ func (s *SearchService) releaseUnrun(ctx context.Context, job *spi.SearchJob) {
 	switch {
 	case rerr == nil:
 	case fencedRefusal(rerr):
-		slog.Debug("reclaimed job that did not run is no longer this epoch's", "pkg", "search", "jobID", job.ID, "err", rerr)
+		endLostClaim(job.ID, rerr)
 	default:
 		owedWriteFailed(ctx, slog.LevelWarn, "failed to release reclaimed job that did not run", job, rerr)
 	}

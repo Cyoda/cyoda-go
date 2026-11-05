@@ -60,7 +60,8 @@ PostgreSQL transactions are bound to the connection that begins them (`pgx.Tx` i
 The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handle the request locally (token's owner is this node) or reverse-proxy to the owning node. Failure modes:
 
 - Signature mismatch or malformed token — `401 UNAUTHORIZED`. Expired token — `410 TRANSACTION_EXPIRED`.
-- Owner node not in the registry, marked dead by gossip, or unreachable from the proxy — `503 Service Unavailable` (code `TRANSACTION_NODE_UNAVAILABLE`); PostgreSQL has already aborted the connection's transaction on the dead node, so the client retries from scratch. Fail-closed semantics, no orphaned transactions.
+- Owner node not in the registry or marked dead by gossip — `503 Service Unavailable` (code `TRANSACTION_NODE_UNAVAILABLE`); the transaction is lost with its node, and the client retries its operation from scratch. Fail-closed semantics, no orphaned transactions.
+- Owner node unreachable, or no answer from it within `CYODA_PROXY_TIMEOUT` — the same `503`; the owner may be alive and may have run the request, so the outcome of a write is unknown.
 
 `CYODA_HMAC_SECRET` is a deployment secret. All nodes in a cluster must share the same value; it is also the root key for peer-to-peer dispatch authentication (HKDF-derived AEAD), so rotating it requires a cluster-wide restart — see `SECRET ROTATION`.
 

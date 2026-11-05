@@ -7,13 +7,16 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -50,6 +53,10 @@ type txRouteInterceptor struct {
 	joiner        *txjoin.Joiner
 	pool          *proxy.ClientPool
 	localGRPCPort int
+	// proxyTimeout bounds the wait for a forwarded call's owner to begin its
+	// answer (CYODA_PROXY_TIMEOUT), as the HTTP proxy bounds its response
+	// headers.
+	proxyTimeout time.Duration
 
 	// forward seams — overridable in tests.
 	forwardUnary        forwardUnaryFn
@@ -58,7 +65,7 @@ type txRouteInterceptor struct {
 	forwardSearchStream forwardStreamFn
 }
 
-func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, j *txjoin.Joiner, localGRPCPort int, allowLoopback bool) *txRouteInterceptor {
+func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, j *txjoin.Joiner, localGRPCPort int, allowLoopback bool, proxyTimeout time.Duration) *txRouteInterceptor {
 	return &txRouteInterceptor{
 		signer:              signer,
 		registry:            reg,
@@ -66,6 +73,7 @@ func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, self
 		joiner:              j,
 		pool:                proxy.NewClientPool(allowLoopback),
 		localGRPCPort:       localGRPCPort,
+		proxyTimeout:        proxyTimeout,
 		forwardUnary:        proxy.ForwardEntityManage,
 		forwardStream:       proxy.ForwardEntityManageCollection,
 		forwardSearchUnary:  proxy.ForwardEntitySearch,
@@ -108,7 +116,9 @@ func classifyRouteErr(err error) error {
 	case errors.Is(err, token.ErrTokenTampered), errors.Is(err, token.ErrTokenInvalid):
 		return common.Operational(http.StatusUnauthorized, common.ErrCodeUnauthorized, "invalid transaction token")
 	case errors.Is(err, proxy.ErrNodeUnavailable):
-		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is not available")
+		// WARN with the node, as the HTTP proxy logs the same refusal.
+		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is not available").
+			WithCause(err).WithLogLevel(slog.LevelWarn)
 	default:
 		return err
 	}
@@ -124,6 +134,10 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 			return handler(ctx, req)
 		}
 		ce, _ := req.(*cepb.CloudEvent)
+		ctx = withRequestEvent(ctx, rpcName(info.FullMethod), "", "")
+		if ce != nil {
+			ctx = withRequestMessage(ctx, ce)
+		}
 
 		tok := proxy.ExtractGRPCToken(ctx)
 		ni, shouldProxy, err := proxy.ResolveNodeInfo(ctx, i.signer, i.registry, i.selfNodeID, tok)
@@ -138,8 +152,19 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 			if addrErr != nil {
 				return i.unaryErr(ctx, ce, envelope, fmt.Errorf("resolve peer gRPC addr: %w", addrErr))
 			}
-			resp, fwdErr := forward(ctx, i.pool, grpcAddr, ce)
+			fctx, cancel := context.WithTimeout(ctx, i.proxyTimeout)
+			defer cancel()
+			resp, fwdErr := forward(fctx, i.pool, grpcAddr, ce)
 			if fwdErr != nil {
+				if ctx.Err() != nil {
+					return nil, callerGone(ctx, grpcAddr)
+				}
+				switch classifyForwardErr(fwdErr) {
+				case ownerRefused:
+					return nil, fwdErr
+				case ownerNotReached:
+					return i.unaryErr(ctx, ce, envelope, ownerUnreachable(grpcAddr, fwdErr))
+				}
 				return i.unaryErr(ctx, ce, envelope, fwdErr)
 			}
 			return resp, nil
@@ -206,17 +231,19 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 		if !routed {
 			return handler(srv, ss)
 		}
-		ctx := ss.Context()
+		// The request's type and id are known only once its message is read;
+		// a refusal before that names the RPC alone.
+		ctx := withRequestEvent(ss.Context(), rpcName(info.FullMethod), "", "")
 
 		tok := proxy.ExtractGRPCToken(ctx)
 		ni, shouldProxy, err := proxy.ResolveNodeInfo(ctx, i.signer, i.registry, i.selfNodeID, tok)
 		if err != nil {
-			return i.streamErr(ss, "", envelope, classifyRouteErr(err))
+			return i.streamErr(ctx, ss, "", envelope, classifyRouteErr(err))
 		}
 		if shouldProxy {
 			grpcAddr, addrErr := resolveGRPCAddr(ni, i.localGRPCPort)
 			if addrErr != nil {
-				return i.streamErr(ss, "", envelope, fmt.Errorf("resolve peer gRPC addr: %w", addrErr))
+				return i.streamErr(ctx, ss, "", envelope, fmt.Errorf("resolve peer gRPC addr: %w", addrErr))
 			}
 			return i.proxyStream(ctx, ss, forward, envelope, grpcAddr)
 		}
@@ -232,20 +259,21 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 		// that needs the request's identity and the fence.
 		pass, err := i.joiner.Verify(tok)
 		if err != nil {
-			return i.streamErr(ss, "", envelope, err)
+			return i.streamErr(ctx, ss, "", envelope, err)
 		}
 		// How many callbacks may queue for one transaction is bounded, and the
 		// bound is read before the request message is taken off the stream: a
 		// refusal costs this node no buffer. The gate applies the same bound
 		// again when the lock is taken, and that answer is the binding one.
 		if err := i.joiner.CheckRoom(pass); err != nil {
-			return i.streamErr(ss, "", envelope, err)
+			return i.streamErr(ctx, ss, "", envelope, err)
 		}
 		// Receive the request before the lock is taken (see heldStream).
 		var first cepb.CloudEvent
 		if err := ss.RecvMsg(&first); err != nil {
 			return err
 		}
+		ctx = withRequestMessage(ctx, &first)
 		held := &heldStream{ServerStream: ss, ctx: ctx, first: &first, limit: i.joiner.MaxResponseBytes()}
 		var herr error
 		if jerr := i.joiner.RunVerified(ctx, pass, func(joined context.Context) {
@@ -255,12 +283,12 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 			if clientGone(jerr) {
 				return status.FromContextError(jerr).Err()
 			}
-			return i.streamErr(ss, first.Id, envelope, jerr)
+			return i.streamErr(ctx, ss, first.Id, envelope, jerr)
 		}
 		if held.tooLarge() {
 			// Fail closed: nothing of an over-size answer is sent. The lock has
 			// already been given back.
-			return i.streamErr(ss, first.Id, envelope, i.joiner.ResponseTooLargeError())
+			return i.streamErr(ctx, ss, first.Id, envelope, i.joiner.ResponseTooLargeError())
 		}
 		// What the handler wrote is delivered even when it then failed: a joined
 		// chunked collection that fails at chunk n still answers chunks 1…n-1,
@@ -348,17 +376,48 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 	if err := ss.RecvMsg(&ce); err != nil {
 		return err
 	}
-	cs, err := forward(ctx, i.pool, addr, &ce)
+	ctx = withRequestMessage(ctx, &ce)
+	// CYODA_PROXY_TIMEOUT bounds the wait for the owner's first message, as the
+	// HTTP proxy bounds its response headers; a stream the owner has started is
+	// copied to its end however long it runs.
+	fctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	firstWait := time.AfterFunc(i.proxyTimeout, cancel)
+	cs, err := forward(fctx, i.pool, addr, &ce)
 	if err != nil {
-		return i.streamErr(ss, ce.Id, envelope, err)
+		if ctx.Err() != nil {
+			firstWait.Stop()
+			return callerGone(ctx, addr)
+		}
+		if !firstWait.Stop() {
+			return i.streamErr(ctx, ss, ce.Id, envelope, ownerUnreachable(addr, err))
+		}
+		return i.forwardStreamErr(ctx, ss, ce.Id, envelope, addr, err)
 	}
+	first := true
 	for {
 		frame, err := cs.Recv()
+		if first {
+			first = false
+			if err != nil && ctx.Err() != nil {
+				firstWait.Stop()
+				return callerGone(ctx, addr)
+			}
+			// A fired timer has cancelled the forwarded call. A first message
+			// that raced it in is not copied: the rest of the stream is gone,
+			// so the caller gets the 503 whose outcome is unknown.
+			if !firstWait.Stop() {
+				return i.streamErr(ctx, ss, ce.Id, envelope, ownerUnreachable(addr, fmt.Errorf("no answer within the proxy timeout: %w", context.DeadlineExceeded)))
+			}
+			if err != nil && !errors.Is(err, io.EOF) {
+				return i.forwardStreamErr(ctx, ss, ce.Id, envelope, addr, err)
+			}
+		}
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {
-			return err
+			return forwardStreamBroke(ctx, addr, err)
 		}
 		if err := ss.SendMsg(frame); err != nil {
 			return err
@@ -366,11 +425,98 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 	}
 }
 
+// forwardStreamBroke ends a forwarded stream that failed after its first
+// message, when no envelope can follow the frames already sent. The owner's
+// own refusal passes through. Anything else is logged here and ended with a
+// generic status: the hop's transport text names cluster-internal addresses.
+func forwardStreamBroke(ctx context.Context, addr string, err error) error {
+	if ctx.Err() != nil {
+		return callerGone(ctx, addr)
+	}
+	switch classifyForwardErr(err) {
+	case ownerRefused:
+		return err
+	case ownerNotReached:
+		slog.Error("forwarded stream broke", append(requestAttrs(ctx), "target", addr, "error", err)...)
+		return status.Error(codes.Unavailable, "transaction node is unreachable")
+	}
+	slog.Error("forwarded stream broke", append(requestAttrs(ctx), "target", addr, "error", err)...)
+	return status.Error(codes.Internal, "transaction node answer failed")
+}
+
+// forwardOutcome is what an error from a forwarded call says about the owner.
+type forwardOutcome int
+
+const (
+	// forwardFailed: the hop failed in a way that names no cause on the owner's
+	// side — a status the forwarding node's own gRPC client may have built (a
+	// receive limit, a stream reset). The caller gets the ticketed
+	// SERVER_ERROR, and the cause is logged here.
+	forwardFailed forwardOutcome = iota
+	// ownerRefused: one of the refusals the owner's server chain answers with
+	// for the caller's own request. It reaches the caller unchanged, as it
+	// would calling the owner directly.
+	ownerRefused
+	// ownerNotReached: no gRPC status (dial, address guard), or a status the
+	// transport raises when the owner cannot be reached or does not answer in
+	// time.
+	ownerNotReached
+)
+
+func classifyForwardErr(err error) forwardOutcome {
+	st, ok := status.FromError(err)
+	if !ok {
+		return ownerNotReached
+	}
+	switch st.Code() {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.Canceled:
+		return ownerNotReached
+	case codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied, codes.NotFound:
+		return ownerRefused
+	}
+	return forwardFailed
+}
+
+// forwardStreamErr answers a streamed forward that failed before its first
+// message, by classifyForwardErr.
+func (i *txRouteInterceptor) forwardStreamErr(ctx context.Context, ss googlegrpc.ServerStream, reqID string, envelope envelopeFn, addr string, err error) error {
+	switch classifyForwardErr(err) {
+	case ownerRefused:
+		return err
+	case ownerNotReached:
+		return i.streamErr(ctx, ss, reqID, envelope, ownerUnreachable(addr, err))
+	}
+	return i.streamErr(ctx, ss, reqID, envelope, err)
+}
+
+// callerGone ends a forwarded call whose caller went away: not an outage of
+// the owner, so no ERROR and no envelope for nobody — the call ends with the
+// caller's own cancellation.
+func callerGone(ctx context.Context, addr string) error {
+	slog.Debug("client gone before forwarded call completed", append(requestAttrs(ctx), "target", addr)...)
+	return status.FromContextError(ctx.Err()).Err()
+}
+
+// ownerUnreachable answers a forwarded call that did not reach its owner as
+// the HTTP proxy does: 503 TRANSACTION_NODE_UNAVAILABLE, logged once by the
+// envelope funnel with the hop's address and error as its cause — at WARN when
+// the peer address guard refused the owner's address, as the HTTP proxy logs
+// that refusal, and at ERROR for any other failure to reach the owner.
+func ownerUnreachable(addr string, err error) error {
+	level := slog.LevelError
+	if errors.Is(err, peeraddr.ErrForbiddenPeerAddress) {
+		level = slog.LevelWarn
+	}
+	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is unreachable").
+		WithCause(fmt.Errorf("forward to %s: %w", addr, err)).
+		WithLogLevel(level)
+}
+
 // streamErr sends err as the routed RPC's error envelope on the stream. reqID
 // is the already-consumed request id (empty string when no request has been
 // read yet — pre-body token rejections legitimately have no request id).
-func (i *txRouteInterceptor) streamErr(ss googlegrpc.ServerStream, reqID string, envelope envelopeFn, err error) error {
-	respCE, buildErr := envelope(common.WithDiagnostics(ss.Context()), reqID, err)
+func (i *txRouteInterceptor) streamErr(ctx context.Context, ss googlegrpc.ServerStream, reqID string, envelope envelopeFn, err error) error {
+	respCE, buildErr := envelope(common.WithDiagnostics(ctx), reqID, err)
 	if buildErr != nil {
 		slog.Error("failed to build tx-route error envelope", "err", buildErr)
 		return buildErr

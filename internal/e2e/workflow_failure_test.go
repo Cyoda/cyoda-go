@@ -53,7 +53,7 @@ func TestWorkflowFailure_ProcessorError(t *testing.T) {
 	}
 }
 
-// --- Test 2.2: Processor returns error with warnings → warnings propagated ---
+// --- Test 2.2: Processor adds a warning → the HTTP response carries it ---
 
 func TestWorkflowFailure_ProcessorWarnings(t *testing.T) {
 	const model = "e2e-wffail-2"
@@ -89,20 +89,9 @@ func TestWorkflowFailure_ProcessorWarnings(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 
-	// Check warnings in response.
-	var results []map[string]any
-	json.Unmarshal([]byte(body), &results)
-	if len(results) > 0 {
-		warnings, _ := results[0]["warnings"].([]any)
-		hasWarning := false
-		for _, w := range warnings {
-			if ws, ok := w.(string); ok && len(ws) > 0 {
-				hasWarning = true
-			}
-		}
-		if !hasWarning {
-			t.Log("note: warnings may not be in transaction response — check entity response instead")
-		}
+	// The processor's warning reaches the HTTP client.
+	if got := decodedWarnings(t, resp); len(got) != 1 || got[0] != "data quality issue: missing field X" {
+		t.Errorf("%s = %q; want the processor's warning", common.WarningHeader, got)
 	}
 
 	// Entity should still be created.

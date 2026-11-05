@@ -6,10 +6,10 @@ paths:
 
 ## Error Classification
 
-- `AppError` with levels: Operational (4xx), Internal (5xx), Fatal (5xx).
+- `AppError` with levels: Operational (client-visible: 4xx, 501, 503), Internal (5xx), Fatal (5xx).
 - 4xx: full domain detail with error code prefix (`MODEL_NOT_FOUND: model X not found`). The client configured the domain — they should see what went wrong.
 - 5xx: generic message + ticket UUID for correlation. Full detail logged server-side at ERROR with the same ticket.
-- `retryable: true` for transaction conflicts (409).
+- `retryable: true` when the same request can succeed on a fresh attempt: transaction conflicts (409), an unavailable dependency or exhausted capacity (503).
 
 ## Error Codes
 
@@ -17,9 +17,9 @@ Defined in `internal/common/error_codes.go`. Refer to that file — do not maint
 
 ## Warnings & Diagnostics
 
-- Accumulate via `common.AddWarning(ctx, msg)` and `common.AddError(ctx, msg)`.
-- Surfaced in gRPC `warnings` array and HTTP response body.
-- Propagate processor/criteria response warnings and errors to the caller.
+- Accumulate warnings via `common.AddWarning(ctx, msg)`.
+- Surfaced in the gRPC `warnings` array and, on an HTTP data route, in `Cyoda-Warning` response headers, one per warning (`internal/httpmw.Warnings`, which installs the bag; encoding and bounds there). A warning raised after the HTTP response has started is not sent.
+- Propagate processor/criteria/function response warnings to the caller; a member's failure reaches the caller through its callout failure.
 
 ## Rules
 

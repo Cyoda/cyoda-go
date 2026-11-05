@@ -15,7 +15,6 @@ see_also:
   - errors.CONFLICT
   - errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
   - errors.CONSISTENCY_TIME_UNAVAILABLE
-  - errors.IDEMPOTENCY_CONFLICT
   - errors.TRANSACTION_TIMEOUT
   - errors.TRANSITION_NOT_FOUND
   - errors.WORKFLOW_FAILED
@@ -64,6 +63,8 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints requ
 Entities are instances of models. Each entity has a UUID, a model reference (`entityName`, `modelVersion`), and a lifecycle state managed by the workflow engine. Creating an entity requires the referenced model to be in `LOCKED` state. All write operations run within a Cyoda transaction and return a `transactionId` alongside the affected entity IDs.
 
 Body size limit on all write endpoints: 10 MiB.
+
+A response may carry `Cyoda-Warning` headers: one per warning the request raised, such as the default-workflow fallback or a compute member's warning. See `cyoda help errors` (WARNINGS) for the encoding and the bounds.
 
 ## ENDPOINTS
 
@@ -134,7 +135,7 @@ Response: `200 OK`, `application/json`, `EntityTransactionResponse` array — on
 ]
 ```
 
-When the very first chunk fails (no durable progress), the response is the standard `application/problem+json` 4xx error envelope instead.
+When the very first chunk fails (no durable progress), the response is the standard `application/problem+json` error envelope instead (4xx, or 5xx for a server-side failure).
 
 **GET /api/entity/{entityId}** — Read a single entity by UUID
 
@@ -220,8 +221,8 @@ Request body: JSON array of update items:
 
 Failure handling within a chunk:
 
-- **Per-item `ENTITY_MODIFIED` (only when `ifMatch` is supplied):** the item surfaces in `failed[]`; siblings still commit; the chunk's `transactionId` is reported. Per-item ENTITY_MODIFIED conflicts surface inside the `200` response body via the `failed[]` array, **not** as a `4xx` envelope. Inspect `failed[]` to detect them. The `4xx` envelope is reserved for chunk-wide failures, a transaction conflict among them: `409 CONFLICT` (retryable) when another transaction committed a change to an item's entity after the chunk read it, or a processor's joined callback lost a write race. A conflict is never isolated to its item.
-- **Any other per-item failure** (missing entity, validation, non-conflict engine error): the entire chunk rolls back, matching the pre-existing contract. Earlier chunks remain durable; if the first chunk fails the response is a standard `application/problem+json` 4xx envelope.
+- **Per-item `ENTITY_MODIFIED` (only when `ifMatch` is supplied):** the item surfaces in `failed[]`; siblings still commit; the chunk's `transactionId` is reported. Per-item ENTITY_MODIFIED conflicts surface inside the `200` response body via the `failed[]` array, **not** as a `4xx` envelope. Inspect `failed[]` to detect them. The `4xx` envelope is reserved for chunk-wide failures, conflicts among them: `409 CONFLICT` (retryable) when another transaction committed a change to an item's entity after the chunk read it, or a processor's joined callback lost a write race; `412 ENTITY_MODIFIED` when another transaction changed an item's entity while a `COMMIT_BEFORE_DISPATCH` processor's callout ran. A conflict is never isolated to its item.
+- **Any other per-item failure** (missing entity, validation, non-conflict engine error): the entire chunk rolls back, matching the pre-existing contract. Earlier chunks remain durable; if the first chunk fails the response is a standard `application/problem+json` envelope (4xx, or 5xx for a server-side failure).
 
 Each per-item `ENTITY_MODIFIED` is also reflected in the entity's state-machine audit log: the engine emits a paired `STATE_MACHINE_START` plus `TRANSITION_ABORTED` event (with `data.reason = "ENTITY_MODIFIED"`, `data.transition` — absent on a loopback, which has no transition — `data.expectedTxId`, and `data.actualTxId`) so consumers can correlate the failure cleanly without orphaned start events.
 
@@ -322,7 +323,7 @@ Response: `200 OK`, `application/json`:
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
-- `transactionSize` (query, optional): int32 — when set, matched entities (including a delete-all with no condition) are deleted in version-guarded batches of this size instead of one transaction. Batches already committed stay durable if a later batch fails. A per-id version mismatch (the entity changed after selection) or a batch's commit failure is reported per-id in `deleteResult.idToError`, not retried. Rejected with `400` on a request that joins an open transaction. Absent means a single transaction. Without `pointInTime`, the batched delete re-selects before each batch; if matching entities keep being created it is stopped at its batch cap and fails `409 DELETE_NOT_CONVERGED` (retryable), with the batches already committed left deleted.
+- `transactionSize` (query, optional): int32 — when set, matched entities (including a delete-all with no condition) are deleted in version-guarded batches of this size instead of one transaction. Batches already committed stay durable if a later batch fails. A per-id version mismatch (the entity changed after selection) or a batch's failure — one entity's failure fails its whole batch, which deletes nothing — is reported per-id in `deleteResult.idToError`; only a batch that met a write conflict is run again. Rejected with `400` on a request that joins an open transaction. Absent means a single transaction. Without `pointInTime`, the batched delete re-selects before each batch; if matching entities keep being created it is stopped at its batch cap and fails `409 DELETE_NOT_CONVERGED` (retryable), with the batches already committed left deleted.
 - `pointInTime` (query, optional): RFC 3339 — select the entities that existed at this instant (committed state; the ambient transaction is ignored) and delete their current rows. Absent means the current committed state. Must be at or before the consistency time. An entity selected at the instant but already gone is reported in `deleteResult.idToError`.
 - `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every entity ID the delete attempted (an empty body lists them too); an ID whose delete failed also appears in `deleteResult.idToError`; on a large model this enumerates every entity of the model in one response.
 
@@ -344,7 +345,7 @@ Response: `200 OK`, `application/json`:
 }
 ```
 
-`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (may be lower if individual deletes failed). Returns `400 INVALID_CONDITION` on a malformed condition body, `400 INVALID_FIELD_PATH` for a condition path the model does not declare, and `400 CONDITION_TYPE_MISMATCH` when a condition's operator applies to none of the field's declared types, or a comparison or range operand parses into none of the types the operator applies to (see `predicates`), and `400 BAD_REQUEST` for a body over 10 MiB; nothing is deleted in each case.
+`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (lower when an entity was already gone, was changed since it was selected, or was in a failed batch). Without `transactionSize` the delete is one transaction and is atomic: an entity already gone (a `pointInTime` selection) is reported in `idToError`, and any other failure to delete one entity fails the whole request with its error, deleting nothing. With `transactionSize` each batch is atomic the same way: a failed batch deletes nothing and its error is reported in `idToError` for each of its other entities (an entity gone or changed keeps its own entry), and the other batches still run. In a request that joins another request's transaction (a compute node's callback), the delete commits and rolls back nothing itself: the owner's transaction commits or rolls back as a whole. Returns `400 INVALID_CONDITION` on a malformed condition body, `400 INVALID_FIELD_PATH` for a condition path the model does not declare, and `400 CONDITION_TYPE_MISMATCH` when a condition's operator applies to none of the field's declared types, or a comparison or range operand parses into none of the types the operator applies to (see `predicates`), and `400 BAD_REQUEST` for a body over 10 MiB; nothing is deleted in each case.
 
 **GET /api/entity/{entityName}/{modelVersion}** — List all entities for a model (paginated)
 
@@ -739,13 +740,12 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 ## ERRORS
 
 - `errors.ENTITY_NOT_FOUND` — `404` — entity UUID does not exist
-- `errors.ENTITY_MODIFIED` — `412` — `If-Match`-guarded update rejected; supplied transaction ID does not match the entity's current version
+- `errors.ENTITY_MODIFIED` — `412` — `If-Match`-guarded update rejected; supplied transaction ID does not match the entity's current version. Also on every write route when another transaction changed the entity while a `COMMIT_BEFORE_DISPATCH` processor's callout ran
 - `errors.MODEL_NOT_FOUND` — `404` — model referenced during create does not exist
 - `errors.MODEL_NOT_LOCKED` — `409` — model exists but is not in `LOCKED` state; entities cannot be created until the model is locked
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
 - `errors.INCOMPATIBLE_TYPE` — `400` — entity payload's leaf value type is not assignable to the schema's declared DataType for that field; carries `fieldPath`, `expectedType`, `actualType` in `properties`
 - `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable)
-- `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented. Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
 - `errors.UNIQUE_VIOLATION` — `409` — a declared composite unique key already holds this field-value combination
 - `errors.INVALID_UNIQUE_KEY` — `422` — a unique-key field is null, missing, or has an out-of-range value
 - `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the workflow

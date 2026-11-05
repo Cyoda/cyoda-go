@@ -388,12 +388,11 @@ func TestHandler_DiagnosticsOfTheTriesTravelBack(t *testing.T) {
 		result: internalgrpc.LocalResult{TriesUsed: 1, Failure: &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", MemberText: "card declined"}},
 		onRun: func(ctx context.Context) {
 			common.AddWarning(ctx, "processor myProcessor: slow")
-			common.AddError(ctx, "processor myProcessor: card declined")
 		},
 	}
 	resp := postHandOver(t, newHandlerMux(t, runner, auth), auth, validRequest(t, "processor"))
-	if len(resp.Warnings) != 1 || resp.Warnings[0] != "processor myProcessor: slow" || len(resp.Errors) != 1 || resp.Errors[0] != "processor myProcessor: card declined" {
-		t.Errorf("warnings %v, errors %v", resp.Warnings, resp.Errors)
+	if len(resp.Warnings) != 1 || resp.Warnings[0] != "processor myProcessor: slow" {
+		t.Errorf("warnings %v", resp.Warnings)
 	}
 }
 

@@ -1581,6 +1581,11 @@ func TestAsyncSearchJob_PanicIsRecovered(t *testing.T) {
 	if job.Error == "" {
 		t.Error("expected a non-empty job error message")
 	}
+	// A panic is a server-side failure: recorded as both doors answer one,
+	// the generic text and a ticket naming the logged stack.
+	if !strings.HasPrefix(job.Error, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("job error = %q, want the ticketed generic text", job.Error)
+	}
 	if strings.Contains(job.Error, "injected panic") || strings.Contains(job.Error, "goroutine") {
 		t.Errorf("job error message leaks panic/internal detail: %q", job.Error)
 	}

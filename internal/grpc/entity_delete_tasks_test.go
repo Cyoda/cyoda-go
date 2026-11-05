@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -25,12 +26,19 @@ const taskDeleteTenant spi.TenantID = "task-delete-tenant"
 // entity enters OPEN.
 func newTaskDeleteEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context, *memory.StoreFactory, *taskconflict.Plan) {
 	t.Helper()
+	return newTaskDeleteEnvWith(t, func(f spi.StoreFactory) spi.StoreFactory { return f })
+}
+
+// newTaskDeleteEnvWith is newTaskDeleteEnv with the store factory wrapped by
+// wrap, for a test that injects a store fault.
+func newTaskDeleteEnvWith(t *testing.T, wrap func(spi.StoreFactory) spi.StoreFactory) (*CloudEventsServiceImpl, context.Context, *memory.StoreFactory, *taskconflict.Plan) {
+	t.Helper()
 	real := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
 	t.Cleanup(func() { real.Close() })
 	real.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := real.GetTransactionManager()
 	plan := taskconflict.NewPlan()
-	factory := &taskconflict.Factory{StoreFactory: real, Plan: plan}
+	factory := wrap(&taskconflict.Factory{StoreFactory: real, Plan: plan})
 
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "task-delete-user", UserName: "Task Delete",
@@ -258,5 +266,61 @@ func TestRPC_EntityDeleteAll_Verbose_RemovesTasks(t *testing.T) {
 	}
 	if n := personTasks(t, real, ctx, id); n != 0 {
 		t.Errorf("tasks = %d, want 0", n)
+	}
+}
+
+// faultingDeleteFactory hands out entity stores whose nth Delete, counted
+// across them, fails with a server-side error.
+type faultingDeleteFactory struct {
+	spi.StoreFactory
+	n     int
+	calls int
+}
+
+func (f *faultingDeleteFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	s, err := f.StoreFactory.EntityStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &faultingDeleteStore{EntityStore: s, f: f}, nil
+}
+
+type faultingDeleteStore struct {
+	spi.EntityStore
+	f *faultingDeleteFactory
+}
+
+func (s *faultingDeleteStore) Delete(ctx context.Context, entityID string) error {
+	s.f.calls++
+	if s.f.calls == s.f.n {
+		return errors.New("pg: statement failed on a dropped connection")
+	}
+	return s.EntityStore.Delete(ctx, entityID)
+}
+
+// A delete-all in one transaction that meets a per-id fault answers, on the
+// gRPC door as on HTTP, the failure as a server-side error and deletes
+// nothing: the one transaction is atomic on every backend.
+func TestRPC_EntityDeleteAll_SingleTx_PerIDFaultFailsWhole(t *testing.T) {
+	svc, ctx, real, _ := newTaskDeleteEnvWith(t, func(f spi.StoreFactory) spi.StoreFactory {
+		return &faultingDeleteFactory{StoreFactory: f, n: 2}
+	})
+	ids := []string{createPersonRPC(t, svc, ctx), createPersonRPC(t, svc, ctx)}
+
+	typed := deleteAllRPC(t, svc, ctx, map[string]any{"verbose": true})
+	if typed.Success || typed.Error == nil || typed.Error.Code != "SERVER_ERROR" || !strings.Contains(typed.Error.Message, "ticket") {
+		t.Fatalf("answer = success %v, error %+v; want a ticketed SERVER_ERROR", typed.Success, typed.Error)
+	}
+	es, err := real.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	for _, id := range ids {
+		if _, err := es.Get(ctx, id); err != nil {
+			t.Errorf("entity %s gone although the request failed: %v", id, err)
+		}
+		if n := personTasks(t, real, ctx, id); n != 1 {
+			t.Errorf("tasks of %s = %d, want 1", id, n)
+		}
 	}
 }

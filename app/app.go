@@ -53,7 +53,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
-	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -69,8 +68,6 @@ type App struct {
 	fence              *fence.Fence     // one arbiter per process; both callback doors and every callout judge a callback by it
 	joiner             *txjoin.Joiner   // the join layer both callback doors run a request carrying a pass through
 	searchService      *search.SearchService
-	auditService       contract.AuditService
-	clusterService     contract.ClusterService
 	memberRegistry     *internalgrpc.MemberRegistry
 	grpcServer         *internalgrpc.Server
 	handler            http.Handler
@@ -490,9 +487,6 @@ func New(cfg Config) *App {
 
 	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthLatch)
 
-	a.auditService = skeleton.NewAuditService()
-	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
-
 	// Wire external processing dispatcher
 	var extProc contract.ExternalProcessingService
 	// Peer-auth for inter-node dispatch. AES-256-GCM + HKDF-derived key over
@@ -692,10 +686,15 @@ func New(cfg Config) *App {
 	// The hand-written data route below takes the chain the generated routes
 	// take: TxJoin is nested inside authMW so UserContext is available for
 	// tenant checks; RequireM2M runs before TxJoin, so a caller without
-	// ROLE_M2M joins nothing. The /admin routes above are operator-guarded
-	// instead.
+	// ROLE_M2M joins nothing. Warnings sits outside TxJoin and installs the
+	// request's diagnostics bag: every warning the handler raises, a joined
+	// request's included, and every refusal TxJoin writes go out through it
+	// with Cyoda-Warning headers. The /admin routes above are operator-guarded
+	// instead and raise no warning.
 	txJoinMW := httpmw.TxJoin(a.joiner)
-	dataMW := func(h http.Handler) http.Handler { return authMW(internalapi.RequireM2M(txJoinMW(h))) }
+	dataMW := func(h http.Handler) http.Handler {
+		return authMW(internalapi.RequireM2M(httpmw.Warnings(txJoinMW(h))))
+	}
 
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
@@ -745,14 +744,12 @@ func New(cfg Config) *App {
 	// Generated API routes (with auth) — uses chi to avoid ServeMux
 	// wildcard-conflict panics in overlapping /model/… paths. Recovery is
 	// applied once, below, to the fully assembled handler. The chi mux runs
-	// each route's ROLE_M2M check before TxJoin, as dataMW does above.
+	// each route's ROLE_M2M check before Warnings and TxJoin, as dataMW does
+	// above.
 	apiHandler := genapi.HandlerWithOptions(server, genapi.StdHTTPServerOptions{
-		BaseRouter:       internalapi.NewChiMux(queryRules, txJoinMW),
+		BaseRouter:       internalapi.NewChiMux(queryRules, httpmw.Warnings, txJoinMW),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
 	})
-	if cfg.OTelEnabled {
-		apiHandler = otelhttp.NewMiddleware("cyoda")(apiHandler)
-	}
 	mux.Handle("/", authMW(apiHandler))
 
 	// Context path — wrap all routes under configurable prefix
@@ -787,6 +784,14 @@ func New(cfg Config) *App {
 		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback, contextPath)(a.handler)
 	}
 
+	// Every request gets a server span, the hand-registered routes (token,
+	// JWKS, admin, grouped statistics, help, peer routes) as much as the
+	// generated API routes, and a request forwarded to its transaction's owner
+	// as much as one served here.
+	if cfg.OTelEnabled {
+		a.handler = otelhttp.NewMiddleware("cyoda")(a.handler)
+	}
+
 	// CORS sits outside cluster routing so preflights short-circuit at the
 	// receiving node and never get proxied, and outside outerMux so /help,
 	// discovery, and the API surface share one policy. See
@@ -803,7 +808,7 @@ func New(cfg Config) *App {
 
 	// gRPC server — uses inner handler (without context path prefix). The
 	// client store is nil in mock IAM mode, so no member stream is re-checked.
-	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthLatch, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency, clockState, a.ReadinessCheck)
+	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, cfg.Cluster.ProxyTimeout, a.healthLatch, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency, clockState, a.ReadinessCheck)
 
 	a.lifecycle.MarkStarted()
 	return a
@@ -982,8 +987,6 @@ func (a *App) AuthenticationService() contract.AuthenticationService {
 func (a *App) AuthService() *auth.AuthService               { return a.authSvc }
 func (a *App) WorkflowEngine() *workflow.Engine             { return a.workflowEngine }
 func (a *App) SearchService() *search.SearchService         { return a.searchService }
-func (a *App) AuditService() contract.AuditService          { return a.auditService }
-func (a *App) ClusterService() contract.ClusterService      { return a.clusterService }
 func (a *App) GRPCServer() *internalgrpc.Server             { return a.grpcServer }
 func (a *App) MemberRegistry() *internalgrpc.MemberRegistry { return a.memberRegistry }
 func (a *App) TokenSigner() *token.Signer                   { return a.tokenSigner }

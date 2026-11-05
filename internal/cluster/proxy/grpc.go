@@ -41,7 +41,9 @@ func ExtractGRPCToken(ctx context.Context) string {
 //   - Empty token, or a token for self: shouldProxy=false (serve locally).
 //   - Token for a live peer: shouldProxy=true, with the peer's NodeInfo.
 //   - Token for a dead or unknown peer: an error wrapping ErrNodeUnavailable.
-//   - Invalid or expired token: an error.
+//   - Invalid or expired token: an error wrapping the token package's
+//     ErrTokenInvalid, ErrTokenTampered or ErrTokenExpired, which the caller
+//     classifies.
 //
 // The returned NodeInfo is only meaningful when shouldProxy is true.
 func ResolveNodeInfo(ctx context.Context, signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, tok string) (ni contract.NodeInfo, shouldProxy bool, err error) {
@@ -51,7 +53,7 @@ func ResolveNodeInfo(ctx context.Context, signer *token.Signer, reg contract.Nod
 
 	claims, err := signer.Verify(tok)
 	if err != nil {
-		return contract.NodeInfo{}, false, fmt.Errorf("%s: %w", common.ErrCodeBadRequest, err)
+		return contract.NodeInfo{}, false, fmt.Errorf("verify transaction token: %w", err)
 	}
 
 	if claims.NodeID == selfNodeID {

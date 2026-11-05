@@ -45,7 +45,7 @@ func TestEngineResult_FinalTxID_EntryOnNonSegmentingCascade(t *testing.T) {
 	entity.Meta.State = "INITIAL"
 	entity.Meta.TransactionID = inputTxID
 
-	res, err := engine.ManualTransition(txCtx, entity, "GO")
+	res, err := engine.ManualTransition(txCtx, entity, "GO", IfMatch{})
 	if err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestEngineResult_FinalTxID_PostSegmentOnCBDCascade(t *testing.T) {
 		Data: []byte(`{"x":1}`),
 	}
 
-	res, err := engine.Execute(txCtx, entity, "")
+	res, err := engine.Execute(txCtx, entity)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

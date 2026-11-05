@@ -83,8 +83,8 @@ func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 // ExtendSchema's self-wrap, the async-search scan). The owner role bypasses the
 // RLS policies, so the ordinary fixtures cannot see a missing GUC at all — this
 // test runs the compare-and-save through a dedicated non-superuser role — a
-// hardening probe, not the supported posture, which is the table owner
-// (rls_test.go). With the GUC unset the policies evaluate to NULL: the locking
+// probe of the setting, not a supported deployment (row-level security is
+// not supported; rls_test.go). With the GUC unset the policies evaluate to NULL: the locking
 // check reads no row and the write is rejected.
 func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
 	factory := setupEntityTest(t)

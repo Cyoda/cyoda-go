@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"sync"
@@ -47,9 +48,8 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 // attempted; forbidden addresses (loopback when disallowed, link-local,
 // unspecified, multicast) are rejected with peeraddr.ErrForbiddenPeerAddress.
 // ctx bounds the name lookup that guard makes, so a forwarded call whose caller
-// has gone does not wait on a resolver — and, since a forwarded call carries no
-// deadline of its own, peeraddr's own bound for a lookup that precedes a dial is
-// applied on top of it.
+// has gone does not wait on a resolver, and peeraddr's own bound for a lookup
+// that precedes a dial is applied on top of it.
 func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
 	target, err := dialTarget(addr)
 	if err != nil {
@@ -69,9 +69,16 @@ func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, er
 	// Never a proxy: grpc-go's default dialer reads the environment's proxy
 	// settings, and through one the call goes to an address the guard above
 	// never validated.
+	//
+	// No receive limit of the hop's own: the caller gets what the owner
+	// answers, as it would calling the owner directly. The owner bounds a
+	// joined answer (CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES), as it does on
+	// the HTTP proxy, which adds no limit either; grpc-go's 4 MiB client
+	// default would refuse an answer the owner is allowed to send.
 	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithNoProxy())
+		grpc.WithNoProxy(),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(math.MaxInt32)))
 	if err != nil {
 		return nil, err
 	}

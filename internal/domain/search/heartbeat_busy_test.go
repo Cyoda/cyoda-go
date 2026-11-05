@@ -242,6 +242,11 @@ func (b *syncBuffer) String() string {
 // A stale-claim answer is a genuine fencing refusal, not a missed tick, and
 // must still abort the job exactly as before this fix.
 func TestStartHeartbeat_StaleClaimStillAbortsTheJob(t *testing.T) {
+	logs := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	base := memory.NewStoreFactory()
 	defer base.Close()
 	ctx := tenantCtx("tenant-heartbeat-stale")
@@ -257,9 +262,24 @@ func TestStartHeartbeat_StaleClaimStillAbortsTheJob(t *testing.T) {
 	svc, _ := newSlowSearchService(t, ctx, base, store, 15*time.Millisecond, 20*time.Millisecond)
 
 	jobID := submitSlowJob(t, ctx, base, svc, 30)
-	status := pollUntilTerminal(t, svc, ctx, jobID, 5*time.Second)
 
-	if status.Status != "FAILED" {
-		t.Fatalf("status = %q, want FAILED — a stale-claim heartbeat answer must still abort the job", status.Status)
+	// The store's refusal is final, so the executor stops at once and records
+	// nothing: the job is another claim's. It reports the end once, with the
+	// refusal as the cause.
+	deadline := time.Now().Add(5 * time.Second)
+	for svc.RegisteredJobCountForTest() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the executor did not stop after a stale-claim heartbeat answer")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var jobLines []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "jobID="+jobID) {
+			jobLines = append(jobLines, line)
+		}
+	}
+	if len(jobLines) != 1 || !strings.Contains(jobLines[0], lostClaimLine) || !strings.Contains(jobLines[0], "stale claim") {
+		t.Fatalf("lines for the job = %q, want one lost-claim line naming the stale claim", jobLines)
 	}
 }

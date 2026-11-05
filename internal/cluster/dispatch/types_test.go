@@ -37,7 +37,6 @@ func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 		TransitionName: "approve",
 		TxID:           "tx-999",
 		TenantID:       "tenant-abc",
-		Tags:           "gpu",
 		AttributedID:   "alice",
 		AttributedKind: spi.PrincipalUser,
 		ExecutorID:     "C9",
@@ -70,9 +69,6 @@ func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 	}
 	if got.TenantID != req.TenantID {
 		t.Errorf("TenantID = %q, want %q", got.TenantID, req.TenantID)
-	}
-	if got.Tags != req.Tags {
-		t.Errorf("Tags = %q, want %q", got.Tags, req.Tags)
 	}
 	if got.AtUnixMicro == nil || *got.AtUnixMicro != *req.AtUnixMicro {
 		t.Errorf("AtUnixMicro = %v, want %d", got.AtUnixMicro, *req.AtUnixMicro)
@@ -173,7 +169,6 @@ func TestDispatchCalloutRequest_CriteriaJSONRoundTrip(t *testing.T) {
 		ProcessorName:  "check-status",
 		TxID:           "tx-100",
 		TenantID:       "tenant-xyz",
-		Tags:           "cpu",
 		AttributedID:   "bob",
 		AttributedKind: spi.PrincipalUser,
 		ExecutorID:     "system",
@@ -211,9 +206,6 @@ func TestDispatchCalloutRequest_CriteriaJSONRoundTrip(t *testing.T) {
 	}
 	if got.TenantID != "tenant-xyz" {
 		t.Errorf("TenantID = %q, want tenant-xyz", got.TenantID)
-	}
-	if got.Tags != "cpu" {
-		t.Errorf("Tags = %q, want cpu", got.Tags)
 	}
 	if got.AttributedID != "bob" || got.AttributedKind != spi.PrincipalUser {
 		t.Errorf("attributed = %q/%q, want bob/user", got.AttributedID, got.AttributedKind)
@@ -381,7 +373,6 @@ func TestDispatchCalloutResponse_WireNames(t *testing.T) {
 		Result:          json.RawMessage(`{"fireAfterMs":1}`),
 		ResultKind:      "Schedule",
 		Warnings:        []string{"w"},
-		Errors:          []string{"e"},
 	}
 	raw, err := json.Marshal(resp)
 	if err != nil {
@@ -403,7 +394,6 @@ func TestDispatchCalloutResponse_WireNames(t *testing.T) {
 		`"result":{"fireAfterMs":1}`,
 		`"resultKind":"Schedule"`,
 		`"warnings":["w"]`,
-		`"errors":["e"]`,
 	} {
 		if !strings.Contains(string(raw), key) {
 			t.Errorf("wire form lacks %s: %s", key, raw)
@@ -420,7 +410,7 @@ func TestDispatchCalloutResponse_WireNames(t *testing.T) {
 		got.ErrorCode != resp.ErrorCode || got.ErrorStatus != resp.ErrorStatus || !got.ErrorRetryable ||
 		string(got.EntityData) != "x" || !got.NoPayload || got.Matches == nil || !*got.Matches || got.Reason != resp.Reason ||
 		string(got.Result) != string(resp.Result) || got.ResultKind != resp.ResultKind ||
-		len(got.Warnings) != 1 || len(got.Errors) != 1 {
+		len(got.Warnings) != 1 {
 		t.Errorf("round trip lost fields: %+v", got)
 	}
 }

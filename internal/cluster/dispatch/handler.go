@@ -104,7 +104,7 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 	res := h.local.RunLocal(ctx, call, req.TriesLeft)
 
 	diag := common.GetDiagnostics(ctx)
-	resp := responseFromLocal(call, res, diag.GetWarnings(), diag.GetErrors())
+	resp := responseFromLocal(call, res, diag.GetWarnings())
 	slog.Debug("hand-over answered", "pkg", "dispatch", "kind", req.Kind, "requestId", req.RequestID,
 		"owner", req.OwnerNodeID, "outcome", resp.Outcome, "triesUsed", res.TriesUsed)
 	writeSealed(w, h.auth, binding, resp, "requestId", boundLine(req.RequestID), "outcome", resp.Outcome)

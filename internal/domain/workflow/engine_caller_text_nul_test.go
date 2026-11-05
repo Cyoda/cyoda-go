@@ -51,20 +51,16 @@ func TestEngine_CallerTextHoldingNUL_RefusedBeforeAnyEvent(t *testing.T) {
 	}
 
 	for name, run := range map[string]func(ctx context.Context, entity *spi.Entity) error{
-		"transition name on a creation": func(ctx context.Context, entity *spi.Entity) error {
-			_, err := engine.Execute(ctx, entity, "g\x00o")
-			return err
-		},
 		"transition name": func(ctx context.Context, entity *spi.Entity) error {
-			_, err := engine.ManualTransition(ctx, entity, "g\x00o")
+			_, err := engine.ManualTransition(ctx, entity, "g\x00o", IfMatch{})
 			return err
 		},
 		"If-Match on a transition": func(ctx context.Context, entity *spi.Entity) error {
-			_, err := engine.ManualTransitionWithIfMatch(ctx, entity, "go", IfMatch{Expected: "t\x00x", Current: seedTxID})
+			_, err := engine.ManualTransition(ctx, entity, "go", IfMatch{Expected: "t\x00x", Current: seedTxID})
 			return err
 		},
 		"If-Match on a loopback": func(ctx context.Context, entity *spi.Entity) error {
-			_, err := engine.LoopbackWithIfMatch(ctx, entity, IfMatch{Expected: "t\x00x", Current: seedTxID})
+			_, err := engine.Loopback(ctx, entity, IfMatch{Expected: "t\x00x", Current: seedTxID})
 			return err
 		},
 	} {

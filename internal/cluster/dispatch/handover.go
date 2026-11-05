@@ -66,10 +66,6 @@ type HandOverAnswer struct {
 	Attempts  []contract.CalloutAttempt
 	Warnings  []string
 
-	// peerErrors are the answering pnode's error diagnostics; HandOver adds
-	// them to the owner's request diagnostics.
-	peerErrors []string
-
 	// lost marks an answer that never arrived, did not authenticate, or could
 	// not be believed. None of the peer's own text is relayed on such an
 	// answer, whatever the peer sent.
@@ -103,7 +99,6 @@ func newHandOverRequest(ownerNodeID string, call internalgrpc.Callout, triesLeft
 		TransitionName: src.TransitionName,
 		TxID:           call.TxID,
 		TenantID:       string(call.TenantID),
-		Tags:           call.Tags,
 		AttributedID:   call.Identity.Attributed.ID,
 		AttributedKind: call.Identity.Attributed.Kind,
 		ExecutorID:     call.Identity.Executor.ID,
@@ -290,9 +285,9 @@ func unacceptableRequest() *contract.CalloutFailure {
 
 // responseFromLocal is the answer to a hand-over: what the local procedure
 // produced, in the words of the wire.
-func responseFromLocal(call internalgrpc.Callout, res internalgrpc.LocalResult, warnings, errs []string) DispatchCalloutResponse {
+func responseFromLocal(call internalgrpc.Callout, res internalgrpc.LocalResult, warnings []string) DispatchCalloutResponse {
 	used := res.TriesUsed
-	resp := DispatchCalloutResponse{TriesUsed: &used, Warnings: warnings, Errors: errs}
+	resp := DispatchCalloutResponse{TriesUsed: &used, Warnings: warnings}
 	for _, a := range res.Attempts {
 		resp.Attempts = append(resp.Attempts, WireAttempt{MemberID: a.MemberID, Kind: a.Kind.String(), Cause: a.Cause})
 	}
@@ -375,7 +370,7 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 	if used < 0 || used > triesLeft {
 		return lostAnswer()
 	}
-	ans := HandOverAnswer{Connected: true, TriesUsed: used, Warnings: resp.Warnings, peerErrors: resp.Errors}
+	ans := HandOverAnswer{Connected: true, TriesUsed: used, Warnings: resp.Warnings}
 	for _, a := range resp.Attempts {
 		ans.Attempts = append(ans.Attempts, contract.CalloutAttempt{MemberID: a.MemberID, Kind: kindFromWire(a.Kind), Cause: a.Cause})
 	}

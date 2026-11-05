@@ -46,7 +46,7 @@ func TestDefaultFallback_NoWorkflowsImported_EmitsSlogWarn(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "Widget", ModelVersion: "1"}
 	entity := makeEntity("widget-1", modelRef, map[string]any{"k": "v"})
 
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
@@ -109,7 +109,7 @@ func TestDefaultFallback_NoCriterionMatched_EmitsSlogWarn(t *testing.T) {
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"k": schema.String})
 
 	entity := makeEntity("ord-1", modelRef, map[string]any{"k": "v"})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
@@ -145,7 +145,7 @@ func TestDefaultFallback_ManualTransition_NoWorkflowsImported_EmitsSlogWarn(t *t
 	// "UPDATE" is a manual transition in the default workflow's CREATED state.
 	// We don't care whether it succeeds; the fallback log fires before
 	// transition resolution.
-	_, _ = engine.ManualTransition(ctx, entity, "UPDATE")
+	_, _ = engine.ManualTransition(ctx, entity, "UPDATE", IfMatch{})
 
 	var fallbackRecords []map[string]any
 	for _, r := range getRecords() {
@@ -175,7 +175,7 @@ func TestDefaultFallback_Loopback_NoWorkflowsImported_EmitsSlogWarn(t *testing.T
 	entity := makeEntity("widget-loop-1", modelRef, map[string]any{"k": "v"})
 	entity.Meta.State = "CREATED"
 
-	_, _ = engine.Loopback(ctx, entity)
+	_, _ = engine.Loopback(ctx, entity, IfMatch{})
 
 	var fallbackRecords []map[string]any
 	for _, r := range getRecords() {
@@ -202,7 +202,7 @@ func TestDefaultFallback_PreservesBodyWarning(t *testing.T) {
 
 	modelRef := spi.ModelRef{EntityName: "Widget", ModelVersion: "1"}
 	entity := makeEntity("widget-warn-1", modelRef, map[string]any{"k": "v"})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
@@ -215,6 +215,6 @@ func TestDefaultFallback_PreservesBodyWarning(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected a body warning mentioning 'default workflow', got %v", warns)
+		t.Errorf("expected a client warning mentioning 'default workflow', got %v", warns)
 	}
 }

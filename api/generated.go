@@ -816,6 +816,9 @@ type AsyncSearchStatusDto struct {
 	// ExpirationDate When the search job will expire and be automatically deleted
 	ExpirationDate time.Time `json:"expirationDate"`
 
+	// FailureReason Why the search job failed. Present only when `searchJobStatus` is FAILED, and absent for every other status. For a failure the request itself caused, it is the same client error a direct search would answer, code first (for example `INVALID_FIELD_PATH: condition or sort references an invalid field path`); for any other failure it names no internal detail: a server-side failure is `SERVER_ERROR: internal error [ticket: <uuid>]`, its detail logged under the ticket, and a known cause carries a fixed text (for example `search abandoned: executor lost repeatedly`).
+	FailureReason *string `json:"failureReason,omitempty"`
+
 	// FinishTime When the search job completed (null if still running)
 	FinishTime      *time.Time                          `json:"finishTime,omitempty"`
 	SearchJobStatus AsyncSearchStatusDtoSearchJobStatus `json:"searchJobStatus"`
@@ -1189,11 +1192,13 @@ type EntityResultDto struct {
 // response body via the `failed[]` array, not as a `4xx` envelope.
 // Inspect `failed[]` to detect them. The `4xx` envelope is reserved
 // for chunk-wide failures: malformed JSON, missing entity, validation
-// failure, a non-conflict engine error, and a transaction conflict
+// failure, a non-conflict engine error, a transaction conflict
 // (`409 CONFLICT`, retryable) — another transaction committed a
 // change to an item's entity after the chunk read it, or a processor's
-// joined callback lost a write race. A conflict is never isolated to
-// its item.
+// joined callback lost a write race — and `412 ENTITY_MODIFIED` when
+// another transaction changed an item's entity while a
+// COMMIT_BEFORE_DISPATCH processor's callout ran. A conflict is never
+// isolated to its item.
 //
 // `entityIds` contains UUID strings (server is source of truth — the
 // server emits []string, not []object).
@@ -1209,7 +1214,7 @@ type EntityTransactionResponse struct {
 		// Code AppError code (e.g. MODEL_NOT_FOUND, ENTITY_NOT_FOUND).
 		Code string `json:"code"`
 
-		// Message Operator-facing failure message; safe for client display.
+		// Message Failure message, safe for client display: a client error's code-prefixed message, or for a server-side failure the generic SERVER_ERROR text with the ticket its detail is logged under.
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
 
@@ -1231,7 +1236,7 @@ type EntityTransactionResponse struct {
 			// chunk's request slice (per-chunk relative).
 			ItemIndex int32 `json:"itemIndex"`
 
-			// Message Operator-facing failure message; safe for client display.
+			// Message Failure message, safe for client display: a client error's code-prefixed message, or for a server-side failure the generic SERVER_ERROR text with the ticket its detail is logged under.
 			Message string `json:"message"`
 		} `json:"error"`
 	} `json:"failed,omitempty"`
@@ -2075,8 +2080,9 @@ type WorkflowConfigurationDto struct {
 	// (absent) criterion matches unconditionally. If no active
 	// workflow matches — and `active=false` workflows are skipped
 	// entirely during selection — the engine falls back to the
-	// embedded default workflow and emits both a body warning and
-	// an operator-visible `slog.Warn` line. Workflow-level criteria
+	// embedded default workflow and emits both a warning (in a
+	// `Cyoda-Warning` header of an HTTP response and in the `warnings`
+	// of a gRPC response) and an operator-visible `slog.Warn` line. Workflow-level criteria
 	// use the same Condition DSL as search and transition-level
 	// criteria, and a `function` condition is valid at any depth.
 	Criterion *QueryConditionDto `json:"criterion,omitempty"`

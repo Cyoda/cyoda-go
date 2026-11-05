@@ -429,3 +429,37 @@ func TestCORS_InternalPrefixSkippedOnPreflight(t *testing.T) {
 		t.Errorf("status = %d, want %d (downstream sentinel)", rec.Code, http.StatusTeapot)
 	}
 }
+
+// Cyoda-Warning is not a CORS-safelisted response header, so a browser hides
+// it from script unless the response exposes it. It is exposed on every
+// response whose origin the policy allows, and on no other.
+func TestCORS_ExposesTheWarningHeader(t *testing.T) {
+	cases := []struct {
+		name, origin string
+		p            *CORSPolicy
+		want         bool
+	}{
+		{"wildcard", "https://any.example", newCORSPolicy(t, true, true), true},
+		{"allowlist match", "https://app.example", newCORSPolicy(t, true, false, "https://app.example"), true},
+		{"loopback match", "http://localhost:3000", newCORSPolicy(t, true, false), true},
+		{"allowlist miss", "https://evil.example", newCORSPolicy(t, true, false, "https://app.example"), false},
+		{"no origin", "", newCORSPolicy(t, true, false, "https://app.example"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/entity/JSON/m/1", nil)
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			rec := httptest.NewRecorder()
+			CORS(tc.p)(dummyHandler).ServeHTTP(rec, req)
+			got := rec.Header().Get("Access-Control-Expose-Headers")
+			if tc.want && got != "Cyoda-Warning" {
+				t.Fatalf("Access-Control-Expose-Headers = %q; want %q", got, "Cyoda-Warning")
+			}
+			if !tc.want && got != "" {
+				t.Fatalf("Access-Control-Expose-Headers = %q on a response whose origin is not allowed", got)
+			}
+		})
+	}
+}

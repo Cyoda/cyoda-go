@@ -222,28 +222,16 @@ func TestUpdateCollection_PostSegmentConflict_AbortsBatch(t *testing.T) {
 	if n := dispatched.Load(); n != 1 {
 		t.Fatalf("callout fired %d time(s), want 1; the cascade never reached the apply-result CAS", n)
 	}
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("batch returned %v (res %+v), want an AppError; a conflict on the far side of a committed segment aborts the call", err, res)
+	if res != nil {
+		t.Fatalf("batch returned a result %+v beside its error; the call fails whole", res)
 	}
 	// Pinned, because the pre-fix symptom was ALSO an error — a sanitized 500
 	// SERVER_ERROR raised when the terminal commit re-committed an already-
 	// committed txID, arriving only after item 1 had been executed and silently
-	// discarded. 400 WORKFLOW_FAILED reports the item that actually failed.
-	//
-	// Not 412: that asserts nothing happened, but TX_pre committed and the
-	// callout fired. Not 409-retryable: a retry re-fires a non-idempotent
-	// external callout.
-	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeWorkflowFailed {
-		t.Fatalf("batch returned %d %s, want 400 %s", appErr.Status, appErr.Code, common.ErrCodeWorkflowFailed)
-	}
-	// A 4xx carries its domain detail as one `CODE: message` line. This is the
-	// only error in the package whose text reaches a response body verbatim
-	// rather than through a sanitized 5xx, so the sentinel must be chained onto
-	// the conflict, not joined beside it.
-	if strings.Contains(appErr.Message, "\n") {
-		t.Fatalf("4xx detail must be a single line, got %q", appErr.Message)
-	}
+	// discarded. The 412 names the entity another transaction changed, as the
+	// single update does for the same conflict. Not 409-retryable: a retry
+	// re-fires a non-idempotent external callout.
+	assertPostSegmentEntityModified(t, err, segID)
 	if n := touched.Load(); n != 0 {
 		t.Fatalf("item 1 ran %d time(s) after the segment committed; its write could only be lost", n)
 	}
@@ -343,11 +331,10 @@ func TestUpdateCollection_StaleIfMatch_StillIsolates(t *testing.T) {
 }
 
 // TestUpdateEntity_PostSegmentConflict_Still412 pins what the marker must NOT
-// change. A single-entity update has no later items to lose, and a conflict on
-// either side of the commit is a precondition on its own entity, so it answers
-// 412 ENTITY_MODIFIED. That
-// mapping reads errors.Is(err, spi.ErrConflict), which only survives because the
-// marker is joined to the conflict rather than wrapping it away.
+// change. A conflict on either side of the commit is a precondition on the
+// request's own entity, so it answers 412 ENTITY_MODIFIED. That mapping reads
+// errors.Is(err, spi.ErrConflict), which only survives because the marker is
+// chained onto the conflict rather than wrapping it away.
 func TestUpdateEntity_PostSegmentConflict_Still412(t *testing.T) {
 	hn := newTrackingHandler(t)
 	hn.registerManualSegmentingWorkflow(t, rollbackSegmentModel)
@@ -363,12 +350,87 @@ func TestUpdateEntity_PostSegmentConflict_Still412(t *testing.T) {
 		Transition: "segment",
 		IfMatch:    current,
 	})
+	assertPostSegmentEntityModified(t, err, segID)
+}
+
+// TestCreateEntity_PostSegmentConflict_Is412: another transaction changed the
+// new entity between TX_pre's commit and the apply-result compare. The create
+// answers as the single update does for the same conflict — 412 naming the
+// entity, with the engine's own text kept out of the body.
+func TestCreateEntity_PostSegmentConflict_Is412(t *testing.T) {
+	hn := newTrackingHandler(t)
+	hn.registerSegmentingWorkflow(t)
+	var dispatchedIDs []string
+	hn.proc.dispatchProcessor = func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+		dispatchedIDs = append(dispatchedIDs, e.Meta.ID)
+		return nil, nil
+	}
+	hn.failApplyResultCAS()
+
+	res, err := hn.h.CreateEntity(hn.ctx, rollbackWidgetInput())
+
+	if len(dispatchedIDs) != 1 {
+		t.Fatalf("callout fired %d time(s), want 1; the cascade never reached the apply-result CAS", len(dispatchedIDs))
+	}
+	if res != nil {
+		t.Fatalf("create returned a result %+v beside its error", res)
+	}
+	assertPostSegmentEntityModified(t, err, dispatchedIDs[0])
+}
+
+// TestCreateEntityCollection_PostSegmentConflict_Is412: the same conflict on
+// an item of a collection create. The call fails whole — no later item runs,
+// nothing past the committed segment is committed — and the 412 names the item
+// whose entity another transaction changed.
+func TestCreateEntityCollection_PostSegmentConflict_Is412(t *testing.T) {
+	hn := newTrackingHandler(t)
+	hn.registerSegmentingWorkflow(t)
+	var dispatchedIDs []string
+	hn.proc.dispatchProcessor = func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+		dispatchedIDs = append(dispatchedIDs, e.Meta.ID)
+		return nil, nil
+	}
+	hn.failApplyResultCAS()
+
+	item := CollectionItem{
+		ModelName:    rollbackModel.EntityName,
+		ModelVersion: 1,
+		Payload:      json.RawMessage(`{"name":"w"}`),
+	}
+	res, err := hn.h.CreateEntityCollection(hn.ctx, []CollectionItem{item, item})
+
+	if len(dispatchedIDs) != 1 {
+		t.Fatalf("callout fired %d time(s), want 1; the batch must stop at the item that conflicted", len(dispatchedIDs))
+	}
+	if res != nil {
+		t.Fatalf("batch returned a result %+v beside its error; the call fails whole", res)
+	}
+	assertPostSegmentEntityModified(t, err, dispatchedIDs[0])
+	if open := hn.tracker.openTxIDs(); len(open) != 0 {
+		t.Fatalf("the failed batch left %d transaction(s) open: %v", len(open), open)
+	}
+}
+
+// assertPostSegmentEntityModified asserts the answer every write route gives a
+// conflict past a committed COMMIT_BEFORE_DISPATCH segment: the single
+// update's 412, naming entityID, with no engine text in the message.
+func assertPostSegmentEntityModified(t *testing.T, err error, entityID string) {
+	t.Helper()
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {
-		t.Fatalf("update returned %v, want an AppError", err)
+		t.Fatalf("returned %v, want an AppError", err)
 	}
 	if appErr.Status != http.StatusPreconditionFailed || appErr.Code != common.ErrCodeEntityModified {
-		t.Fatalf("update returned %d %s, want 412 %s", appErr.Status, appErr.Code, common.ErrCodeEntityModified)
+		t.Fatalf("returned %d %s (%q), want 412 %s", appErr.Status, appErr.Code, appErr.Message, common.ErrCodeEntityModified)
+	}
+	if want := common.ErrCodeEntityModified + ": entity has been modified since last read"; appErr.Message != want {
+		t.Fatalf("message = %q, want %q", appErr.Message, want)
+	}
+	if appErr.Retryable {
+		t.Fatal("a conflict past a committed segment is not retryable: a retry re-fires the callout")
+	}
+	if got := appErr.Props["entityId"]; got != entityID {
+		t.Fatalf("properties.entityId = %v, want %s", got, entityID)
 	}
 }
 

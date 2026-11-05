@@ -7,6 +7,8 @@ package search_test
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,6 +48,7 @@ func (s *clearOutcomeStore) Release(ctx context.Context, jobID string, epoch int
 func TestReclaimStaleJobs_RefusedClearSendsNoRelease(t *testing.T) {
 	for _, refusal := range []error{spi.ErrStaleClaim, spi.ErrAlreadyTerminal, spi.ErrNotFound} {
 		t.Run(refusal.Error(), func(t *testing.T) {
+			logs := captureJobLogs(t)
 			clock := memory.NewTestClock()
 			factory := memory.NewStoreFactory(memory.WithClock(clock))
 			t.Cleanup(func() { factory.Close() })
@@ -77,8 +80,79 @@ func TestReclaimStaleJobs_RefusedClearSendsNoRelease(t *testing.T) {
 			if got := svc.RegisteredJobCountForTest(); got != 0 {
 				t.Errorf("registry size = %d, want 0: the job that did not run is deregistered", got)
 			}
+			assertOneLostClaimLine(t, logs.String(), "job-refused")
 		})
 	}
+}
+
+// captureJobLogs routes the default logger, at DEBUG, into a buffer for the
+// test's duration.
+func captureJobLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+	logs := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return logs
+}
+
+// assertOneLostClaimLine requires that the only line logged for jobID among
+// out's lines is the one lost-claim report, at INFO.
+func assertOneLostClaimLine(t *testing.T, out, jobID string) {
+	t.Helper()
+	var lines []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "jobID="+jobID) {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], lostClaimLine) || !strings.Contains(lines[0], "level=INFO") {
+		t.Fatalf("lines for %s = %q, want one lost-claim line at INFO", jobID, lines)
+	}
+}
+
+// A reclaimed job cancelled on this node while it waits in the queue ends
+// before its clear with one lost-claim line, and sends no Release: the
+// cancel already settled it.
+func TestReclaimStaleJobs_CancelledBeforeWorkerRunsEndsAsALostClaim(t *testing.T) {
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	t.Cleanup(func() { factory.Close() })
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &clearOutcomeStore{AsyncSearchStore: base}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	createStaleReclaimJob(t, clock, base, "tenant-a", "job-cancel-queued", ref, cond, time.Now())
+
+	pool := search.NewWorkerPool(1, 4)
+	hold := make(chan struct{})
+	if err := pool.Submit(func() { <-hold }); err != nil {
+		t.Fatalf("Submit the holder: %v", err)
+	}
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+		WithAsyncPool(pool).
+		WithHeartbeat(time.Hour)
+	if reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, err %v), want (1, nil)", reenq, err)
+	}
+
+	logs := captureJobLogs(t)
+	if _, err := svc.CancelAsync(tenantCtx("tenant-a"), "job-cancel-queued"); err != nil {
+		t.Fatalf("CancelAsync: %v", err)
+	}
+	close(hold)
+	pool.Drain(context.Background())
+
+	if got := store.clears.Load(); got != 0 {
+		t.Errorf("ClearResults calls = %d, want 0", got)
+	}
+	if got := store.releases.Load(); got != 0 {
+		t.Errorf("Release calls = %d, want 0: the cancel settled the job", got)
+	}
+	assertOneLostClaimLine(t, logs.String(), "job-cancel-queued")
 }
 
 // A reclaimed job released at shutdown while it waits in the queue ends
@@ -138,4 +212,48 @@ func TestReclaimStaleJobs_ReleasedBeforeWorkerRunsSendsNoClear(t *testing.T) {
 	if got, err := base.GetJob(tenantCtx("tenant-a"), "job-queued"); err != nil || got.Status != "RUNNING" {
 		t.Fatalf("GetJob = (%v, %v), want RUNNING", got, err)
 	}
+}
+
+// A reclaimed job settled elsewhere while it waits in this node's queue, then
+// met by the shutdown release, ends with the release's one lost-claim line:
+// its worker, finding the job released, adds none.
+func TestReclaimStaleJobs_SettledThenReleasedWhileQueuedIsOneLine(t *testing.T) {
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	t.Cleanup(func() { factory.Close() })
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &clearOutcomeStore{AsyncSearchStore: base}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	createStaleReclaimJob(t, clock, base, "tenant-a", "job-settled-queued", ref, cond, time.Now())
+
+	pool := search.NewWorkerPool(1, 4)
+	hold := make(chan struct{})
+	if err := pool.Submit(func() { <-hold }); err != nil {
+		t.Fatalf("Submit the holder: %v", err)
+	}
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+		WithAsyncPool(pool).
+		WithHeartbeat(time.Hour)
+	if reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, err %v), want (1, nil)", reenq, err)
+	}
+
+	logs := captureJobLogs(t)
+	if err := base.Cancel(tenantCtx("tenant-a"), "job-settled-queued", time.Now()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if n := svc.ReleaseRegisteredJobs(context.Background()); n != 0 {
+		t.Errorf("ReleaseRegisteredJobs = %d, want 0: the store refused the release", n)
+	}
+	close(hold)
+	pool.Drain(context.Background())
+
+	if got := store.clears.Load(); got != 0 {
+		t.Errorf("ClearResults calls = %d, want 0", got)
+	}
+	assertOneLostClaimLine(t, logs.String(), "job-settled-queued")
 }

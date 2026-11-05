@@ -92,7 +92,7 @@ func (env *cbdCallbackEnv) transition(t *testing.T, id string) (string, *spi.Ent
 		t.Fatalf("Get: %v", err)
 	}
 	entity.Meta.TransactionID = txID
-	result, err := env.engine.ManualTransition(txCtx, entity, "CALLOUT")
+	result, err := env.engine.ManualTransition(txCtx, entity, "CALLOUT", IfMatch{})
 	return txID, entity, result, err
 }
 

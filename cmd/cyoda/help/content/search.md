@@ -10,7 +10,6 @@ see_also:
   - errors.SEARCH_JOB_NOT_FOUND
   - errors.SEARCH_JOB_ALREADY_TERMINAL
   - errors.SEARCH_RESULT_LIMIT
-  - errors.SEARCH_SHARD_TIMEOUT
   - errors.SEARCH_QUEUE_FULL
   - errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
   - errors.CONSISTENCY_TIME_UNAVAILABLE
@@ -254,7 +253,7 @@ Submission is bounded by a fixed-size worker pool (`CYODA_SEARCH_ASYNC_WORKERS`,
 
 Results stream incrementally as the scan runs rather than being materialized in memory and saved all at once. A running job stamps its own liveness on a fixed cadence (`CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, default 15s) starting from the moment it is submitted — including while it is still queued, not only while it is scanning — and the same poll also picks up a cancellation or an externally-recorded terminal status.
 
-If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval), clears any partial results the dead executor left, and re-runs it on a live node as-at its originally stored `pointInTime` — the job still completes `SUCCESSFUL`. It is `FAILED` (with a generic message) only after `CYODA_SEARCH_JOB_MAX_ATTEMPTS` executor losses (default 3): the status is contractual, the message text is not. A graceful node shutdown or restart releases its in-flight jobs immediately for reclaim rather than waiting for them to go stale, so a planned handoff is prompt. The reaper runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (default 15s) plus once at startup — not `CYODA_SEARCH_REAP_INTERVAL`, which drives only the unrelated snapshot-TTL cleanup — so actual detection latency for a crash is up to `CYODA_SEARCH_JOB_STALE_AFTER` + one heartbeat interval (~5m15s at the defaults).
+If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval), clears any partial results the dead executor left, and re-runs it on a live node as-at its originally stored `pointInTime` — the job still completes `SUCCESSFUL`. It is `FAILED` only after `CYODA_SEARCH_JOB_MAX_ATTEMPTS` executor losses (default 3), with the `failureReason` `search abandoned: executor lost repeatedly`. A graceful node shutdown or restart releases its in-flight jobs immediately for reclaim rather than waiting for them to go stale, so a planned handoff is prompt. The reaper runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (default 15s) plus once at startup — not `CYODA_SEARCH_REAP_INTERVAL`, which drives only the unrelated snapshot-TTL cleanup — so actual detection latency for a crash is up to `CYODA_SEARCH_JOB_STALE_AFTER` + one heartbeat interval (~5m15s at the defaults).
 
 **GET /api/search/async/{jobId}/status** — Get async job status
 
@@ -279,8 +278,19 @@ Response: `200 OK`, `application/json`:
 - `calculationTimeMillis`: elapsed search time in milliseconds
 - `finishTime`: RFC 3339 with nanoseconds; absent when status is `RUNNING`
 - `expirationDate`: `createTime + 24h` — job results expire after this time
+- `failureReason`: why the job failed; present only when `searchJobStatus` is `FAILED`, absent for every other status (see below)
 
 A job ends `FAILED` when the search itself failed, when the reaper's reclaim of a dead node's job exhausts `CYODA_SEARCH_JOB_MAX_ATTEMPTS`, or when the model's schema becomes unloadable between submit and execution — the executor re-reads the schema, and a job that cannot validate its condition against it fails rather than finishing `SUCCESSFUL` with a short page.
+
+`failureReason` follows the same rule as an error response. A failure the request itself caused carries the client error a direct search would answer, error code first — for example `INVALID_FIELD_PATH: condition or sort references an invalid field path`. Any other failure carries a text that names no internal detail, and the detail stays in the server log. Among them:
+
+- `SERVER_ERROR: internal error [ticket: <uuid>]` — a server-side failure, its detail logged under the ticket, as an error response gives it
+- `STORAGE_UNAVAILABLE: storage is temporarily unavailable — retry` — storage was unavailable, during the scan or anywhere else in the job
+- `search failed unexpectedly` — every failure of a storage backend that runs async searches itself
+- `search abandoned: executor lost repeatedly` — the attempt cap above
+- `search exceeded the backend's async search ceiling — narrow the query, or have the operator raise or disable the ceiling (see the config.database help topic)` — PostgreSQL's async search ceiling (`CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT`)
+
+The leading error code, when there is one, is stable; the rest of the text is for people, not for parsing. The gRPC `SnapshotGetStatusRequest` answer carries the same text in `status.failureReason`, on the same rule.
 
 **GET /api/search/async/{jobId}** — Retrieve async job results (paginated)
 
@@ -322,7 +332,7 @@ Results are fetched from the stored entity snapshots at the job's `pointInTime`.
 
 - `jobId` (path): UUID
 
-Cancellation succeeds only when the job status is `RUNNING`. If the job has already reached a terminal state (`SUCCESSFUL`, `FAILED`, or `CANCELLED`), the server returns `400 Bad Request`:
+Cancellation succeeds only when the job status is `RUNNING`. If the job has already reached a terminal state (`SUCCESSFUL`, `FAILED`, or `CANCELLED`) — before the call, or while the cancel is landing — the server returns `400 Bad Request`:
 
 ```json
 {
@@ -382,18 +392,17 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 A condition is checked in one fixed order, and the first failing step gives the code: the body must parse (`INVALID_CONDITION`), then the model must exist (`404 MODEL_NOT_FOUND`, before any check of a condition that parses), then structure (`INVALID_CONDITION`, or `INVALID_FIELD_PATH` for a malformed path), then patterns (`INVALID_CONDITION`), then the model's paths (`INVALID_FIELD_PATH`), then types (`CONDITION_TYPE_MISMATCH`, or `INVALID_FIELD_PATH` for a `lifecycle` field that is not a meta field) — the same on direct and async search, conditional delete and grouped stats.
 
 - `errors.MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant (search, async submit)
-- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
+- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist in the caller's tenant (status, results or cancel).
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; body carries `currentStatus` and `snapshotId`
 - `errors.SEARCH_RESULT_LIMIT` — `400` — direct search's matched entity count exceeded the requested `limit`; enforced by the backend's bounded-or-fail `Search`. Async search never returns this code — an oversized `pageSize`/`pageNumber` on result retrieval is `errors.BAD_REQUEST` instead
 - `errors.SEARCH_TIMEOUT` — `408` — direct search's client-supplied `timeoutMillis` elapsed before the result set was collected; retryable, and nothing partial is returned
-- `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
 - `errors.SEARCH_QUEUE_FULL` — `503` — async submit refused for capacity: either the node's worker pool and submit queue are both exhausted, or the tenant is at its in-flight share of this node; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`/`CYODA_SEARCH_ASYNC_MAX_PER_TENANT`
 - `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — a `pointInTime` later than the consistency time (direct search, and async submit with a `pointInTime`); `properties.consistencyTime` carries the current one
 - `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not provide a consistency time in time (a direct search with a `pointInTime`, or an async submit)
 - `errors.INVALID_FIELD_PATH` — `400` — a `jsonPath` is not valid JSON Path syntax (missing `$.` leader, bracket-quoted access, empty/trailing segment, disallowed character), or references field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field, or an `array` clause's path does not end in `[*]` or has another `[*]` before it; the response detail names each offending path and why
 - `errors.CONDITION_TYPE_MISMATCH` — `400` — a comparison or range operand fits none of the declared types the operator applies to, or the operator applies to none of them: a string or pattern operator on a field with no text type (a number, boolean, UUID or date/time, `creationDate`/`lastUpdateTime` included), an ordering or range operator on a field with no ordered type (a boolean or UUID), or a range operator on a field whose only ordered type is `CHARACTER`; see `predicates`
 - `errors.INVALID_CONDITION` — `400` — a body that does not parse as a condition, or a condition that fails a structural or shape check rather than a path or type check: an unknown or missing `operatorType`, an operator written twice (two of `operatorType`, `operator`, `operation`), a member name its clause does not declare (another letter case included) or written twice, a missing or `null` operand on an operator that takes one (every operator except `IS_NULL` and `NOT_NULL`), an object/complex operand, a `BETWEEN`/`BETWEEN_INCLUSIVE` value that is not a two-element array of two non-null scalar bounds, an array operand on an operator other than `BETWEEN`/`BETWEEN_INCLUSIVE`, a malformed `LIKE`/`MATCHES_PATTERN` operand, an `array` clause that has no `operatorType` or tests no position (`values` missing, empty or all `null`), an object entry in an `array` clause's `values`, a condition that tests more than 10,000 entries (an `array` clause counts one per entry in `values`, `null` entries included; a `function` clause counts one plus the entries of its pre-check; every other clause counts one), or a `function` clause at any depth (criteria only — see `predicates`)
-- `errors.BAD_REQUEST` — `400` — an unreadable request body, invalid limit/pageSize/pageNumber (a body that does not parse as a condition is `errors.INVALID_CONDITION`, not this), result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
+- `errors.BAD_REQUEST` — `400` — an unreadable request body, invalid limit/pageSize/pageNumber (a body that does not parse as a condition is `errors.INVALID_CONDITION`, not this), result retrieval on a job that has not finished `SUCCESSFUL`
 - `errors.SERVER_ERROR` — `500` — the target model's schema could not be loaded or parsed, so the condition could not be checked against it. The request fails with a ticket id and no result set rather than skipping validation: without declared types, comparison and ordering leaves match nothing, so the answer would be a short page indistinguishable from a complete one. HTTP and gRPC fail alike — over gRPC it is an envelope error, never an empty stream. A condition built only of `lifecycle` clauses needs no schema and is unaffected
 
 ## EXAMPLES
@@ -488,7 +497,6 @@ curl -s -X PUT \
 - errors.SEARCH_JOB_NOT_FOUND
 - errors.SEARCH_JOB_ALREADY_TERMINAL
 - errors.SEARCH_RESULT_LIMIT
-- errors.SEARCH_SHARD_TIMEOUT
 - errors.SEARCH_QUEUE_FULL
 - errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
 - errors.CONSISTENCY_TIME_UNAVAILABLE

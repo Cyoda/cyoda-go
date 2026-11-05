@@ -31,6 +31,7 @@ func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb
 		return nil, status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entityModelManage", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
 	// Model and workflow administration never runs inside a transaction. A
@@ -91,7 +92,6 @@ func (s *CloudEventsServiceImpl) handleModelImport(ctx context.Context, ceID str
 		Data:         dataBytes,
 	})
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelImportError(ctx, ceID, err)
 	}
 
@@ -116,7 +116,6 @@ func (s *CloudEventsServiceImpl) handleModelExport(ctx context.Context, ceID str
 
 	result, err := s.modelHandler.ExportModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), converter)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelExportError(ctx, ceID, err)
 	}
 
@@ -159,7 +158,6 @@ func (s *CloudEventsServiceImpl) handleModelTransition(ctx context.Context, ceID
 	}
 
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelTransitionError(ctx, ceID, err)
 	}
 
@@ -182,7 +180,6 @@ func (s *CloudEventsServiceImpl) handleModelDelete(ctx context.Context, ceID str
 	}
 
 	if err := s.modelHandler.DeleteModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version)); err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelDeleteError(ctx, ceID, err)
 	}
 
@@ -203,7 +200,6 @@ func (s *CloudEventsServiceImpl) handleModelGetAll(ctx context.Context, ceID str
 	}
 	models, err := s.modelHandler.ListModels(ctx)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelGetAllError(ctx, ceID, err)
 	}
 
@@ -241,7 +237,6 @@ func (s *CloudEventsServiceImpl) handleModelSetUniqueKeys(ctx context.Context, c
 
 	result, err := s.modelHandler.SetUniqueKeys(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), keys)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelSetUniqueKeysError(ctx, ceID, err)
 	}
 

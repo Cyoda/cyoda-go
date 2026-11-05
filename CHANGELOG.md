@@ -6,6 +6,53 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A conditional delete without `transactionSize` is atomic on every
+  backend.** When deleting one matched entity failed (other than a write
+  conflict, or the entity being already gone), PostgreSQL aborted the
+  transaction and the request was retried and answered a retryable `409
+  CONFLICT`, while memory and SQLite deleted the other entities and answered
+  `200` with the failure in `idToError`. Every backend now fails the request
+  with that failure's own error and deletes nothing. A `pointInTime`
+  selection's already-gone entity is still reported in `idToError`. With
+  `transactionSize` each batch is atomic the same way (PostgreSQL answered
+  every later id of the batch a spurious failure, or retried the batch as a
+  conflict): a failed batch deletes nothing, its error is reported for each
+  of its other entities (an entity gone or changed keeps its own entry), and
+  the other batches still run. A `pointInTime`
+  batched delete whose read of a matched entity's current version fails
+  (other than the entity being gone) fails the request before any batch
+  runs; it answered a per-id failure. In a request that joins another
+  request's transaction, the delete commits and rolls back nothing itself:
+  the owner's transaction commits or rolls back as a whole. On memory, a
+  transaction that deletes an entity another transaction deleted after its
+  snapshot now loses a write race, as
+  on SQLite and PostgreSQL, rather than answering it as already gone; on
+  SQLite, a failed read inside a transaction is no longer reported as the
+  entity being gone. On memory and SQLite, an entity a transaction already
+  deleted is gone to it, as on PostgreSQL: deleting it again is "not found"
+  (a joined `pointInTime` delete reports it in `idToError`, where it was
+  counted as removed), and a delete-all in that transaction leaves its first
+  delete, and the user it names, as it was.
+
+- **gRPC: a `SnapshotCancelRequest` for a snapshot that has already ended is
+  refused,** as `PUT /search/async/{jobId}/cancel` refuses it: `success`
+  false, `error.code` `CLIENT_ERROR` with a `SEARCH_JOB_ALREADY_TERMINAL:`
+  message, and `status` the snapshot's own full status (`failureReason` for
+  a `FAILED` snapshot). Before, it answered `success` true. On both doors, a
+  job that finishes while the cancel is landing is answered the same way;
+  before, HTTP answered it as cancelled (`CANCELLED`) while the job's status
+  said `SUCCESSFUL` or `FAILED`, and gRPC answered `success` true.
+
+- **A change to the entity during a `COMMIT_BEFORE_DISPATCH` callout answers
+  `412 ENTITY_MODIFIED` on every write route.** Another transaction changing
+  the entity between the processor's segment commit and the application of
+  its result now answers create and create collection (HTTP and gRPC) and
+  the HTTP update collection as it answers a single update: `412
+  ENTITY_MODIFIED`, not retryable, `properties.entityId` naming the entity,
+  and a fixed message. Before, those answered `400 WORKFLOW_FAILED` with the
+  engine's text, which named internal transaction ids. A collection request
+  still fails whole.
+
 - **`CYODA_PROXY_TIMEOUT` must be greater than zero;** startup fails
   otherwise. It also bounds a platform clock confirmation round and each
   status ask of `GET /platform/cluster`.
@@ -21,6 +68,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the store's physical clock, and stale-job reclaim no longer falls back to
   `CreateTime`. Out-of-tree plugins must implement the first two and follow
   the third; see `COMPATIBILITY.md`.
+
+- **Storage plugins: a transaction's own delete is its latest state.**
+  `Delete` answers `ErrNotFound` for an entity the transaction already
+  deleted, and `DeleteAll` leaves an entity whose latest state in the
+  transaction is deleted, with its delete and the attribution recorded with
+  it, as it is; the `spitest` cases
+  `Transaction/DeleteThenDelete`, `Transaction/DeleteThenDeleteAll` and
+  `Transaction/DeleteSaveDelete` check it. Out-of-tree plugins must pass
+  them; see `COMPATIBILITY.md`.
 
 - **Storage plugins: `StoreFactory.Ping(ctx) error`.** It reports whether the
   store answers, returns within `ctx` (an error once `ctx` is done) and
@@ -1230,6 +1286,32 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **An async search that failed says why.** The async search status carries
+  an optional `failureReason`, present only when the status is `FAILED`:
+  `failureReason` on HTTP `GET /search/async/{jobId}/status`, and
+  `status.failureReason` on the gRPC `SnapshotGetStatusRequest` answer. A
+  failure the request caused carries the client error a direct search would
+  answer, error code first; a server-side failure carries
+  `SERVER_ERROR: internal error [ticket: <uuid>]`, its detail logged under the
+  ticket; a known cause carries a fixed text (for example `search
+  abandoned: executor lost repeatedly`). Before, a
+  caller saw `FAILED` and no reason. See `cyoda help search`.
+
+- **HTTP responses carry warnings in `Cyoda-Warning` headers.** A warning a
+  request raises — the default-workflow fallback, a compute member's warning,
+  prefixed with the callout's kind and name — was returned only in the gRPC
+  `warnings` array; an HTTP response now carries each one in a
+  `Cyoda-Warning` response header field line, in the order raised, on
+  success and error responses alike. A value is percent-encoded UTF-8 (a
+  control character is sent as a space), so a compute member's text cannot
+  end the header line. At most 16 warnings, 512 bytes per value and 2048
+  bytes in all; a cut value ends with an encoded `…`, and one more value,
+  `further warnings were omitted`, marks a cut set. A warning raised after
+  the response has started is not sent. A request forwarded to its
+  transaction's owner carries the owner's headers, and CORS exposes the
+  header (`Access-Control-Expose-Headers: Cyoda-Warning`). See
+  `cyoda help errors`.
+
 - **A controllable platform clock, a test feature (off by default).** With
   `CYODA_CLOCK_CONTROL_ENABLED=true`, a platform operator can set the clock
   to a past or future time, change its rate, or move it forward through
@@ -1517,6 +1599,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **`CYODA_DEBUG` is removed from `cyoda help config`.** The help listed it
+  as reserved; the server never read it.
+
+- **Seven error codes the server never answers are removed** from the
+  code set and from `cyoda help errors`: `TX_REQUIRED`, `TX_CONFLICT`,
+  `TX_COORDINATOR_NOT_CONFIGURED`, `TX_NO_STATE`,
+  `CLUSTER_NODE_NOT_REGISTERED`, `IDEMPOTENCY_CONFLICT` and
+  `SEARCH_SHARD_TIMEOUT`. No response carried any of them.
+
 - OpenAPI: `TokenResponseDto` no longer declares `refresh_token` or `scope`,
   which `POST /tenants/{tenant}/oauth/token` never sends; `expires_in` has the maximum 3600
   and `issued_token_type` the one value it takes,
@@ -1711,6 +1802,68 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **gRPC: a snapshot the caller does not have, or results of one that has
+  not finished, is the caller's error,** as it is on HTTP. A
+  `SnapshotGetStatusRequest`, `SnapshotGetRequest` or `SnapshotCancelRequest`
+  for an unknown snapshot answers `CLIENT_ERROR` with a
+  `SEARCH_JOB_NOT_FOUND:` message (HTTP `404`), and a `SnapshotGetRequest`
+  for a snapshot that has not finished `SUCCESSFUL` answers `CLIENT_ERROR`
+  with `BAD_REQUEST:` (HTTP `400`). Before, both answered a ticketed
+  `SERVER_ERROR`. A failed request is also logged once, on both doors, at
+  its class's level: a client error one INFO line, a server-side failure one
+  ERROR line with its ticket. Where the site that refused knows the event is
+  more or less notable (an unreachable transaction owner at ERROR, a tenant at
+  its async cap, a node that is not live, an owner address the peer address
+  guard forbids or a search condition a backend and the request boundary
+  disagree on at WARN), that one line is at its level instead, and no second
+  line is written. On gRPC the line names the request (`rpc`, `type`,
+  `ceId`). Before, gRPC logged a client error at ERROR, or not at all when it
+  carried no cause, and a server-side failure twice; a write the workflow
+  engine refused (a 412, a 409, a superseded chain) logged an ERROR before the
+  funnel's line, and the refusals above logged two lines on both doors. An
+  error answered inside a 200 body — a failed later chunk of a chunked HTTP
+  collection, a per-id delete failure — is logged the same way. Before, such
+  a chunk was logged only when the workflow engine refused it, a per-id
+  delete failure only when it was a storage outage or a server-side failure,
+  and a server-side failure in a chunk answered its internal message; it now
+  answers the generic text with its ticket.
+
+- **A schema extension is kept on every backend when its model is unlocked,
+  re-imported or deleted.** On PostgreSQL, unlocking a model discarded the
+  fields its entities had added while it was locked: the model's schema went
+  back to the imported one. On SQLite, unlocking kept them, but a later
+  import could be ignored (after a second lock and unlock, the export showed
+  the schema from before the import), and a model imported under the name and
+  version of a deleted model got the deleted model's added fields. Now, on
+  every backend, unlocking keeps the schema the model had while locked, an
+  import gives exactly the merged schema, and a deleted model leaves nothing
+  behind. The in-memory backend already worked this way.
+
+- **A gRPC request answers a store's conflict or unique-key refusal as HTTP
+  does.** A lost write race, a unique-key violation or a unique-key field
+  that is null, reported on a raw error, answered gRPC with a ticketed
+  `SERVER_ERROR` while HTTP answered `409 CONFLICT` (retryable),
+  `409 UNIQUE_VIOLATION` or `422 INVALID_UNIQUE_KEY`. gRPC now gives the same
+  code.
+
+- **A gRPC call forwarded to its transaction's owner answers `503
+  TRANSACTION_NODE_UNAVAILABLE` when the owner cannot be reached, as HTTP
+  does.** A dial or transport failure answered a ticketed `SERVER_ERROR`, and
+  an owner that never answered held the call until the caller gave up.
+  `CYODA_PROXY_TIMEOUT` now bounds the wait on gRPC as on HTTP: a unary call's
+  response, or a streamed call's first message. The owner's own refusals
+  reach the caller unchanged; any other failure of the hop answers a
+  ticketed `SERVER_ERROR`. A forwarded answer larger than 4 MiB, which the
+  owner may send up to `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`, no longer
+  fails on the hop.
+
+- **A storage backend that loses a transaction's shard answers `409
+  EPOCH_MISMATCH`, retryable.** The commercial cassandra plugin reports it
+  when the shard a transaction ran on changes owner, after rolling the
+  transaction back. It reached the caller as a ticketed `500`, or inside a
+  workflow as `400 WORKFLOW_FAILED` with the store's text. The stock backends
+  never report it.
 
 - **A gRPC `EntityTransitionRequest` no longer writes an older copy of the
   entity's data over a concurrent write.** It read the data outside the

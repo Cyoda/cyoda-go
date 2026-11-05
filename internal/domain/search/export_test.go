@@ -10,13 +10,24 @@ import (
 // the production binary while making them visible to external tests
 // in the search_test package.
 
+// testJobContext gives a test-registered job a context of its own, as a
+// submitted job has: the returned cancel ends it and calls the test's cancel.
+func testJobContext(cancel context.CancelCauseFunc) (context.Context, context.CancelCauseFunc) {
+	jobCtx, end := context.WithCancelCause(context.Background())
+	return jobCtx, func(cause error) {
+		end(cause)
+		cancel(cause)
+	}
+}
+
 // RegisterJobForTest exposes registerJob so an external test can drive the
 // per-tenant registry directly, without a submit round-trip. Used to pin the
 // accounting invariants (one slot per registered job, no double-count on a
 // duplicate jobID) structurally rather than through the single call site that
 // happens to guarantee unique ids today.
 func (s *SearchService) RegisterJobForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext) bool {
-	_, ok := s.registerJob(jobID, cancel, uc, 1)
+	jobCtx, both := testJobContext(cancel)
+	_, ok := s.registerJob(jobID, jobCtx, both, uc, 1)
 	return ok
 }
 
@@ -71,14 +82,6 @@ func (s *SearchService) ResolveSortKeysForTest(ctx context.Context, modelRef spi
 	return s.resolveSortKeys(ctx, modelRef, keys)
 }
 
-// JobFailureFallback returns the sanitised message written into a job
-// record on an unattributable failure — the constant the executor's own
-// failure paths (service.go) use. Exposed so external tests can assert
-// against the constant itself rather than duplicating its literal text.
-func JobFailureFallback() string {
-	return jobFailureFallback
-}
-
 // JobAttemptsExhausted returns the caller-facing message the reclaim sweep
 // writes when it abandons a job past the attempt cap. Exposed so external
 // tests assert against the constant rather than duplicating its text.
@@ -111,7 +114,8 @@ type AsyncJobHandleForTest = *asyncJobHandle
 // just a bool, so a test can later present that exact handle instance to
 // DeregisterJobHandleForTest.
 func (s *SearchService) RegisterJobHandleForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext) AsyncJobHandleForTest {
-	h, _ := s.registerJob(jobID, cancel, uc, 1)
+	jobCtx, both := testJobContext(cancel)
+	h, _ := s.registerJob(jobID, jobCtx, both, uc, 1)
 	return h
 }
 
@@ -120,7 +124,8 @@ func (s *SearchService) RegisterJobHandleForTest(jobID string, cancel context.Ca
 // for a jobID that already has one, at a given epoch, without a full
 // ReclaimStaleJobs round-trip through a store.
 func (s *SearchService) RegisterReclaimForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) AsyncJobHandleForTest {
-	return s.registerReclaim(jobID, cancel, uc, epoch)
+	jobCtx, both := testJobContext(cancel)
+	return s.registerReclaim(jobID, jobCtx, both, uc, epoch)
 }
 
 // DeregisterJobHandleForTest exposes deregisterJobHandle for a specific

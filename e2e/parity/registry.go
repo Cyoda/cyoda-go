@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 256 scenarios in this package: the entries of its literal
+// allTests holds 259 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go, ifmatch_callback_self_write.go).
 // TestParityScenarioCount (registry_count_test.go) checks the number: change
@@ -286,6 +286,8 @@ var allTests = []NamedTest{
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 	{"SchemaNumericFoldCarveout", RunSchemaNumericFoldCarveout},
+	{"SchemaExtensionSurvivesUnlockAndReimport", RunSchemaExtensionSurvivesUnlockAndReimport},
+	{"SchemaExtensionDoesNotOutliveModel", RunSchemaExtensionDoesNotOutliveModel},
 
 	// Type admission (design §4-9): one traversal judging each value against
 	// the stored model, rather than converting the document to a throwaway
@@ -458,6 +460,11 @@ var allTests = []NamedTest{
 	// tie-break — set+pairwise-key assertions, no cross-engine sequence
 	// compare (see async_ordering.go's doc comment).
 	{"AsyncOrderingRespected", RunAsyncOrderingRespected},
+
+	// The async status serves failureReason only for a FAILED job; a
+	// SUCCESSFUL one carries none (see async_failure_reason.go for why the
+	// FAILED half is covered outside parity).
+	{"AsyncStatusNoFailureReasonUnlessFailed", RunAsyncStatusNoFailureReasonUnlessFailed},
 
 	// GET /scheduled-tasks: paging, filters and tenant isolation of the
 	// scheduled-task query.

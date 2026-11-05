@@ -68,7 +68,7 @@ func TestEngine_CriterionFailureAfterSegment_RollsBackOpenSegment(t *testing.T) 
 			h.registerFailingCriterion("gatekeeper", errors.New("compute node unavailable"))
 
 			entryTxID, entryCtx := h.begin(t)
-			_, err := h.engine.Execute(entryCtx, h.entity, "")
+			_, err := h.engine.Execute(entryCtx, h.entity)
 			if err == nil {
 				t.Fatal("expected the criterion failure to surface")
 			}
@@ -102,7 +102,7 @@ func TestEngine_PanicAfterSegment_RollsBackOpenSegment(t *testing.T) {
 				t.Error("guard swallowed the panic; recovery is the door's job, not the engine's")
 			}
 		}()
-		_, _ = h.engine.Execute(entryCtx, h.entity, "")
+		_, _ = h.engine.Execute(entryCtx, h.entity)
 	}()
 
 	openTxID := h.lastSegmentTxID(t)
@@ -126,7 +126,7 @@ func TestEngine_PanicInsideSegmentingFrames_RollsBackOpenSegment(t *testing.T) {
 		h.registerPanickingProcessorAfterCBD("boom-proc")
 
 		entryTxID, entryCtx := h.begin(t)
-		expectPanic(t, func() { _, _ = h.engine.Execute(entryCtx, h.entity, "") })
+		expectPanic(t, func() { _, _ = h.engine.Execute(entryCtx, h.entity) })
 
 		h.assertSegmentReleased(t, entryTxID)
 	})
@@ -140,7 +140,8 @@ func TestEngine_PanicInsideSegmentingFrames_RollsBackOpenSegment(t *testing.T) {
 		h.panicOnAuditEvent = spi.SMEventTransitionMade
 
 		entryTxID, entryCtx := h.begin(t)
-		expectPanic(t, func() { _, _ = h.engine.Execute(entryCtx, h.entity, "segment") })
+		h.entity.Meta.State = "A"
+		expectPanic(t, func() { _, _ = h.engine.ManualTransition(entryCtx, h.entity, "segment", IfMatch{}) })
 
 		h.assertSegmentReleased(t, entryTxID)
 	})
@@ -191,7 +192,7 @@ func TestExecuteCommitBeforeDispatch_EveryFailurePathRollsBack(t *testing.T) {
 			tc.fail(h)
 
 			entryTxID, entryCtx := h.begin(t)
-			if _, err := h.engine.Execute(entryCtx, h.entity, ""); err == nil {
+			if _, err := h.engine.Execute(entryCtx, h.entity); err == nil {
 				t.Fatal("expected a failure")
 			}
 			openTxID := h.lastSegmentTxID(t)
@@ -257,9 +258,10 @@ func TestCBD_FirstFlushStoreFailure_IsMarkedInfra(t *testing.T) {
 	}
 }
 
-// TestCBD_ApplyResultStoreFailure_IsMarkedInfra — the apply-result CAS chains
-// ErrPostSegmentConflict, whose text reaches a 4xx body verbatim — so a raw
-// store error there must be marked infra, or it leaks.
+// TestCBD_ApplyResultStoreFailure_IsMarkedInfra — a raw store error at the
+// apply-result CAS is not a conflict, so the entity service's 412 does not
+// claim it; unmarked, it would reach the catch-all 400 WORKFLOW_FAILED with its
+// text verbatim. It must be marked infra, or it leaks.
 func TestCBD_ApplyResultStoreFailure_IsMarkedInfra(t *testing.T) {
 	h := newSegmentGuardHarness(t, "memory")
 	h.registerCBDProcessor("segmenter")
@@ -296,7 +298,7 @@ func TestEngine_CriterionAfterSegment_CarriesCurrentSegmentTxID(t *testing.T) {
 	})
 
 	entryTxID, entryCtx := h.begin(t)
-	if _, err := h.engine.Execute(entryCtx, h.entity, ""); err != nil {
+	if _, err := h.engine.Execute(entryCtx, h.entity); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
@@ -645,7 +647,7 @@ func (h *segmentGuardHarness) fireSegment(t *testing.T) error {
 	h.makeSegmentTransitionManual()
 	_, entryCtx := h.begin(t)
 	h.entity.Meta.State = "A"
-	_, err := h.engine.ManualTransition(entryCtx, h.entity, "segment")
+	_, err := h.engine.ManualTransition(entryCtx, h.entity, "segment", IfMatch{})
 	return err
 }
 

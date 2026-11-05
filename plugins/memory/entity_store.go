@@ -618,27 +618,32 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		if tx.Closed {
 			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
-		// Check existence: buffer first, then committed store. Wrap the
-		// entityMu hold in an IIFE so the unlock runs via defer.
+		// An entity this transaction already deleted is gone to it, as Get
+		// sees.
+		if tx.Deletes[entityID] {
+			return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+		}
+		// Check existence: buffer first, then the transaction's snapshot, as
+		// every backend does. An entity the snapshot sees, deleted and
+		// committed by another transaction since, is staged: the commit
+		// then loses the write race (spi.ErrConflict), not this call. Wrap
+		// the entityMu hold in an IIFE so the unlock runs via defer.
 		if buffered, inBuffer := tx.Buffer[entityID]; !inBuffer {
-			var versions []entityVersion
+			var snapErr error
 			func() {
 				s.factory.entityMu.RLock()
 				defer s.factory.entityMu.RUnlock()
-				versions = s.factory.entityData[s.tenant][entityID]
+				_, snapErr = s.getSnapshotVersion(entityID, tx.SnapshotTime)
 			}()
-			if len(versions) == 0 {
-				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
-			}
-			latest := versions[len(versions)-1]
-			if latest.deleted {
-				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+			if snapErr != nil {
+				return snapErr
 			}
 		} else {
-			// entityID is a same-tx buffered create/update with no prior
-			// committed version. Commit's delete flush evicts it from
-			// tx.Buffer below without ever separately flushing it, so the
-			// tombstone that flush appends is the ONLY committed version —
+			// entityID is a write this transaction buffered. Delete
+			// evicts it from tx.Buffer below, so Commit's delete flush
+			// never flushes it separately; when the entity has no
+			// committed version the tombstone that flush appends is its
+			// ONLY one —
 			// stage its model now so that flush can stamp it (see
 			// deletedBufferModels's field doc); otherwise a later
 			// Save/CompareAndSave against this id could never tell what
@@ -727,6 +732,11 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		attribution := spi.WriteAttribution{Attributed: a, Executor: e}
 
 		for _, ent := range mainEntities {
+			// An entity this transaction already deleted keeps that delete
+			// and its attribution, as PostgreSQL's DeleteAll skips it.
+			if tx.Deletes[ent.Meta.ID] {
+				continue
+			}
 			tx.Deletes[ent.Meta.ID] = true
 			delete(tx.Buffer, ent.Meta.ID)
 			tx.WriteSet[ent.Meta.ID] = true

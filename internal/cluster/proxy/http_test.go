@@ -1,9 +1,11 @@
 package proxy_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -178,6 +180,34 @@ func TestHTTPProxy_TokenForDeadNode_Returns503(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+}
+
+// A token for a node that is not live is one log line, at WARN, naming the
+// node: the refusal's own line, not a WARN and an INFO.
+func TestHTTPProxy_TokenForDeadNode_IsOneLogLine(t *testing.T) {
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:9998", Alive: false},
+	)
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-790", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-790", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler())
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=WARN") || !strings.Contains(lines[0], "node-2") {
+		t.Errorf("log = %q, want one WARN line naming the node", lines)
 	}
 }
 
@@ -507,5 +537,79 @@ func TestHTTPProxy_Administration_RefusedBeforeVerifyOrProxy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A caller that goes away while its request is proxied is not an outage of the
+// owner: the failed proxy is not logged at ERROR.
+func TestHTTPProxy_CallerGoneDuringProxyIsNotAnOutage(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer owner.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: owner.URL, Alive: true},
+	)
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-gone", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-gone", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil).WithContext(ctx)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	time.AfterFunc(50*time.Millisecond, cancel)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if strings.Contains(logBuf.String(), "level=ERROR") {
+		t.Fatalf("a departed caller was logged as an error:\n%s", logBuf.String())
+	}
+}
+
+// A request forwarded to its transaction's owner gets the owner's warnings: the
+// proxy relays each Cyoda-Warning field line unchanged and in order.
+func TestHTTPProxy_RelaysTheOwnersWarnings(t *testing.T) {
+	want := []string{"first", "no workflows imported for model %E2%80%94 using default workflow", "further warnings were omitted"}
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, v := range want {
+			w.Header().Add(common.WarningHeader, v)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer remote.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true},
+	)
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-w", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-w", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/entity/JSON/m/1", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	got := rec.Result().Header.Values(common.WarningHeader)
+	if len(got) != len(want) {
+		t.Fatalf("%s = %q; want %q", common.WarningHeader, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s = %q; want %q", common.WarningHeader, got, want)
+		}
 	}
 }

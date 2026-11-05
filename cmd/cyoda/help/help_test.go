@@ -442,7 +442,7 @@ var envVarPattern = regexp.MustCompile(`CYODA_[A-Z][A-Z0-9_]*`)
 
 // Test-only env var prefixes — referenced in tests but not meant to be
 // documented in config/*.md.
-var testOnlyEnvPrefixes = []string{"CYODA_TEST_", "CYODA_MARKER", "CYODA_DEBUG_"}
+var testOnlyEnvPrefixes = []string{"CYODA_TEST_", "CYODA_MARKER"}
 
 // testOnlyEnvSuffix marks env vars that are deliberately-undocumented test-only
 // escape hatches (e.g. CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING, which reopens

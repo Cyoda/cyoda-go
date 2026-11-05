@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -70,24 +71,15 @@ func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeI
 
 			addr, alive, err := registry.Lookup(r.Context(), claims.NodeID)
 			if err != nil {
-				slog.Error("registry lookup failed",
-					"pkg", "proxy",
-					"nodeID", claims.NodeID,
-					"error", err,
-				)
-				common.WriteError(w, r, common.Internal("registry lookup failed", err))
+				common.WriteError(w, r, common.Internal("registry lookup failed", fmt.Errorf("registry lookup of node %s: %w", claims.NodeID, err)))
 				return
 			}
 			if !alive || addr == "" {
-				slog.Warn("transaction node unavailable",
-					"pkg", "proxy",
-					"nodeID", claims.NodeID,
-				)
 				common.WriteError(w, r, common.Operational(
 					http.StatusServiceUnavailable,
 					common.ErrCodeTransactionNodeUnavailable,
 					"transaction node is not available",
-				))
+				).WithCause(fmt.Errorf("transaction node %s is not live", claims.NodeID)).WithLogLevel(slog.LevelWarn))
 				return
 			}
 
@@ -97,26 +89,21 @@ func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeI
 }
 
 func handleTokenError(w http.ResponseWriter, r *http.Request, err error) {
-	switch {
-	case errors.Is(err, token.ErrTokenExpired):
+	if errors.Is(err, token.ErrTokenExpired) {
 		common.WriteError(w, r, common.Operational(
 			http.StatusGone,
 			common.ErrCodeTransactionExpired,
 			"transaction token has expired",
 		))
-	case errors.Is(err, token.ErrTokenTampered), errors.Is(err, token.ErrTokenInvalid):
-		common.WriteError(w, r, common.Operational(
-			http.StatusUnauthorized,
-			common.ErrCodeUnauthorized,
-			"invalid transaction token",
-		))
-	default:
-		common.WriteError(w, r, common.Operational(
-			http.StatusUnauthorized,
-			common.ErrCodeUnauthorized,
-			"transaction token verification failed",
-		))
+		return
 	}
+	// Verify refuses a token as expired, tampered or invalid; the last two
+	// answer alike.
+	common.WriteError(w, r, common.Operational(
+		http.StatusUnauthorized,
+		common.ErrCodeUnauthorized,
+		"invalid transaction token",
+	))
 }
 
 func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http.RoundTripper, allowLoopback bool) {
@@ -131,16 +118,11 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 	lookupCtx, cancel := context.WithTimeout(r.Context(), peeraddr.LookupTimeout)
 	defer cancel()
 	if err := peeraddr.Validate(lookupCtx, addr, allowLoopback); err != nil {
-		slog.Warn("proxy target address rejected by SSRF guard",
-			"pkg", "proxy",
-			"addr", addr,
-			"error", err,
-		)
 		common.WriteError(w, r, common.Operational(
 			http.StatusServiceUnavailable,
 			common.ErrCodeTransactionNodeUnavailable,
 			"transaction node address is not reachable",
-		))
+		).WithCause(fmt.Errorf("proxy target address %s rejected by SSRF guard: %w", addr, err)).WithLogLevel(slog.LevelWarn))
 		return
 	}
 
@@ -149,12 +131,7 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 	}
 	target, err := url.Parse(addr)
 	if err != nil {
-		slog.Error("invalid proxy target URL",
-			"pkg", "proxy",
-			"addr", addr,
-			"error", err,
-		)
-		common.WriteError(w, r, common.Internal("invalid proxy target", err))
+		common.WriteError(w, r, common.Internal("invalid proxy target", fmt.Errorf("proxy target URL %q: %w", addr, err)))
 		return
 	}
 
@@ -166,16 +143,19 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 		Director:  makeProxyDirector(target),
 		Transport: transport,
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
-			slog.Error("proxy request failed",
-				"pkg", "proxy",
-				"target", addr,
-				"error", err,
-			)
+			// One line, at the level of what happened: the caller going away
+			// cancels the proxied request and is routine (DEBUG), not an
+			// outage of the owner; an owner that could not be reached is an
+			// ERROR.
+			level, cause := slog.LevelError, fmt.Errorf("proxy request to %s failed: %w", addr, err)
+			if req.Context().Err() != nil {
+				level, cause = slog.LevelDebug, fmt.Errorf("client gone before the request proxied to %s completed: %w", addr, err)
+			}
 			common.WriteError(rw, req, common.Operational(
 				http.StatusServiceUnavailable,
 				common.ErrCodeTransactionNodeUnavailable,
 				"transaction node is unreachable",
-			))
+			).WithCause(cause).WithLogLevel(level))
 		},
 	}
 

@@ -200,13 +200,10 @@ func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelS
 	return nil
 }
 
-// classifyBeginErr maps a transaction-Begin failure to a status code.
-//
-// common.Internal now recognises the storage-unavailability marker itself, so
-// this is no longer the only thing standing between a 503 and an opaque 500. It
-// is kept as the named entry point every Begin site calls, and because the
-// message it would otherwise pass — "failed to begin transaction" — is not what
-// a transient pool outage should be reported as.
+// classifyBeginErr maps a transaction-Begin failure to a status code. It is
+// the named entry point every Begin site calls; a transient pool outage keeps
+// its own 503 rather than the "failed to begin transaction" message
+// common.Internal would otherwise give it.
 func classifyBeginErr(err error) *common.AppError {
 	if appErr := common.StorageUnavailable(err); appErr != nil {
 		return appErr
@@ -603,7 +600,8 @@ func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityN
 	// StreamDeleteResult: single object with entityModelClassId, deleteResult,
 	// and optional ids (verbose). numberOfEntitites = matched, ...Removed =
 	// actually deleted (decoupled — a condition may match more than it removes
-	// if a per-id delete fails). Reconciled to the per-finding policy (design §2).
+	// when an entity is gone or changed since selection, or in a failed
+	// batch). Reconciled to the per-finding policy (design §2).
 	deleteResult := map[string]any{
 		"idToError":                result.IDToError,
 		"numberOfEntitites":        result.MatchedCount,
@@ -838,7 +836,7 @@ func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, 
 				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
 					Code:       appErr.Code,
-					Message:    appErr.Message,
+					Message:    common.ReportError(ctx, appErr, "pkg", "entity", "chunkIndex", chunkIdx),
 					ChunkIndex: chunkIdx,
 				},
 			})
@@ -1044,7 +1042,7 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
 					Code:       appErr.Code,
-					Message:    appErr.Message,
+					Message:    common.ReportError(opCtx, appErr, "pkg", "entity", "path", r.URL.Path, "chunkIndex", chunkIdx),
 					ChunkIndex: chunkIdx,
 				},
 			})

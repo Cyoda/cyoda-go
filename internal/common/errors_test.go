@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -203,6 +204,83 @@ func TestWriteError_OperationalLogsCause(t *testing.T) {
 	}
 }
 
+// TestWriteError_OperationalCarriesItsLogLevel — a site that sets the level
+// of an operational error's line (WithLogLevel) gets that one line at that
+// level, and no INFO line besides.
+func TestWriteError_OperationalCarriesItsLogLevel(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+
+	common.WriteError(w, r, common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is not available").
+		WithCause(errors.New("node-2 is not live")).WithLogLevel(slog.LevelWarn))
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"level":"WARN"`) || !strings.Contains(lines[0], "node-2 is not live") {
+		t.Errorf("log = %q, want one WARN line carrying the cause", lines)
+	}
+}
+
+// TestReportError_LogsOnceAndReturnsTheClientText — an error answered outside
+// a problem response (an error element in a 200 body) is logged exactly as
+// WriteError logs it, and the client gets what WriteError would give: the
+// message of an operational error, the generic ticketed text of an internal
+// one, its ticket naming the one ERROR line.
+func TestReportError_LogsOnceAndReturnsTheClientText(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	t.Run("operational", func(t *testing.T) {
+		buf := captureSlog(t)
+		refusal := common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound, "MODEL_NOT_FOUND: model m.1 not found")
+		refusal.Detail = "engine text"
+		if got := common.ReportError(context.Background(), refusal, "chunkIndex", 2); got != refusal.Message {
+			t.Errorf("client text = %q, want the message", got)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], `"level":"INFO"`) || !strings.Contains(lines[0], `"chunkIndex":2`) || !strings.Contains(lines[0], "engine text") {
+			t.Errorf("log = %q, want one INFO line with the attrs and the detail", lines)
+		}
+	})
+	t.Run("internal", func(t *testing.T) {
+		buf := captureSlog(t)
+		got := common.ReportError(context.Background(), common.Internal("workflow segment boundary failed", errors.New("pgx: commit failed")))
+		m := regexp.MustCompile(`^SERVER_ERROR: internal error \[ticket: ([0-9a-f-]{36})\]$`).FindStringSubmatch(got)
+		if m == nil {
+			t.Fatalf("client text = %q, want the generic ticketed text", got)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], `"level":"ERROR"`) || !strings.Contains(lines[0], m[1]) || !strings.Contains(lines[0], "pgx: commit failed") {
+			t.Errorf("log = %q, want one ERROR line under the ticket with the detail", lines)
+		}
+	})
+}
+
+// TestReportError_IsSanitizedInVerboseMode — an error answered inside a 2xx
+// body (a chunk element, a per-id delete map, which gRPC sends as it is)
+// never carries an internal error's Detail, in any error-response mode.
+func TestReportError_IsSanitizedInVerboseMode(t *testing.T) {
+	common.SetErrorResponseMode("verbose")
+	t.Cleanup(func() { common.SetErrorResponseMode("sanitized") })
+	captureSlog(t)
+	got := common.ReportError(context.Background(), common.Internal("entity delete failed", errors.New("pg: connection to host db-1 refused")))
+	if strings.Contains(got, "db-1") || !strings.HasPrefix(got, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("client text = %q, want the generic ticketed text", got)
+	}
+}
+
+// TestWriteError_LeavesTheErrorsPropsUntouched — writing an error adds its
+// code and retry flag to the response's properties, not to the error, which
+// may be shared.
+func TestWriteError_LeavesTheErrorsPropsUntouched(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	appErr := common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
+	appErr.Props = map[string]any{"entityId": "e-1"}
+	common.WriteError(httptest.NewRecorder(), httptest.NewRequest("GET", "/test", nil), appErr)
+	if len(appErr.Props) != 1 {
+		t.Errorf("Props = %v, want the error's own entityId only", appErr.Props)
+	}
+}
+
 // captureSlog redirects the default logger into a buffer for the duration of
 // the test. DEBUG and above are captured so a test can assert a log line was
 // (or was not) emitted at DEBUG.
@@ -281,12 +359,12 @@ func TestSetErrorResponseModeConcurrent(t *testing.T) {
 			common.SetErrorResponseMode("sanitized")
 		}()
 	}
-	// Concurrent readers via SanitizeErrorMessage (which reads the mode)
+	// Concurrent readers via WriteError (which reads the mode)
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = common.SanitizeErrorMessage(errors.New("test"))
+			common.WriteError(httptest.NewRecorder(), httptest.NewRequest("GET", "/test", nil), common.Internal("test", errors.New("test")))
 		}()
 	}
 	wg.Wait()
@@ -294,17 +372,25 @@ func TestSetErrorResponseModeConcurrent(t *testing.T) {
 }
 
 func TestSetErrorResponseModeRoundTrip(t *testing.T) {
+	captureSlog(t)
+	detail := func() string {
+		w := httptest.NewRecorder()
+		common.WriteError(w, httptest.NewRequest("GET", "/test", nil), common.Internal("failed", errors.New("raw detail")))
+		var pd common.ProblemDetail
+		if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return pd.Detail
+	}
 	common.SetErrorResponseMode("verbose")
-	// In verbose mode, SanitizeErrorMessage should return the raw error.
-	msg := common.SanitizeErrorMessage(errors.New("raw detail"))
-	if msg != "raw detail" {
-		t.Errorf("expected 'raw detail' in verbose mode, got %q", msg)
+	// In verbose mode, a problem response carries an internal error's detail.
+	if got := detail(); got != "raw detail" {
+		t.Errorf("expected 'raw detail' in verbose mode, got %q", got)
 	}
 
 	common.SetErrorResponseMode("sanitized")
-	msg = common.SanitizeErrorMessage(errors.New("raw detail"))
-	if msg != "SERVER_ERROR: internal server error" {
-		t.Errorf("expected generic message in sanitized mode, got %q", msg)
+	if got := detail(); !strings.HasPrefix(got, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("expected the generic ticketed text in sanitized mode, got %q", got)
 	}
 }
 
@@ -338,12 +424,6 @@ func TestErrCodeSearchJobNotFound(t *testing.T) {
 func TestErrCodeSearchJobAlreadyTerminal(t *testing.T) {
 	if common.ErrCodeSearchJobAlreadyTerminal != "SEARCH_JOB_ALREADY_TERMINAL" {
 		t.Errorf("got %q", common.ErrCodeSearchJobAlreadyTerminal)
-	}
-}
-
-func TestErrCodeSearchShardTimeout(t *testing.T) {
-	if common.ErrCodeSearchShardTimeout != "SEARCH_SHARD_TIMEOUT" {
-		t.Errorf("got %q", common.ErrCodeSearchShardTimeout)
 	}
 }
 
@@ -475,10 +555,8 @@ func TestOperational_NotRetryableByDefault(t *testing.T) {
 // TestOperational_AsRetryable_FlipsRetryableBit pins the contract:
 // the three axes (status, code, retryable) are independent and any
 // 4xx with any code can be flagged retryable via the fluent
-// AsRetryable() opt-in. A retryable conflict with a specific
-// dictionary code (e.g. retryable TX_CONFLICT — distinct from the
-// generic CONFLICT) was previously unreachable without bare-field
-// mutation; AsRetryable() closes that gap.
+// AsRetryable() opt-in, so a code other than the generic CONFLICT can
+// be answered retryable without setting the field directly.
 func TestOperational_AsRetryable_FlipsRetryableBit(t *testing.T) {
 	err := common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 	if err.Status != http.StatusConflict {
@@ -752,5 +830,33 @@ func TestTxAbortedConflict(t *testing.T) {
 	}
 	if got := common.TxAbortedConflict(nil); got != nil {
 		t.Fatalf("nil was answered %+v", got)
+	}
+}
+
+// TestInternal_EpochMismatchIsARetryable409 — a store that lost ownership of a
+// shard mid-transaction (spi.ErrEpochMismatch) has rolled the transaction back,
+// so the same request can succeed on a fresh attempt. It must not reach the
+// caller as an opaque 500, and the store's own wording stays in the log.
+func TestInternal_EpochMismatchIsARetryable409(t *testing.T) {
+	cause := fmt.Errorf("transactional save aborted: shard revoked: %w", spi.ErrEpochMismatch)
+	e := common.Internal("failed to save entity", cause)
+
+	if e.Status != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", e.Status)
+	}
+	if e.Code != common.ErrCodeEpochMismatch {
+		t.Fatalf("code = %q, want %q", e.Code, common.ErrCodeEpochMismatch)
+	}
+	if !e.Retryable {
+		t.Fatal("EPOCH_MISMATCH must be retryable")
+	}
+	if e.Level != common.LevelOperational {
+		t.Fatalf("level = %v, want Operational", e.Level)
+	}
+	if e.Err == nil {
+		t.Fatal("the cause was dropped from the log")
+	}
+	if strings.Contains(e.Message, "shard revoked") {
+		t.Fatalf("the client-facing message leaked the store's wording: %q", e.Message)
 	}
 }
