@@ -1429,10 +1429,14 @@ type EntityDeleteAllRequestJson struct {
 	// Flag indicates whether this message relates to some failure.
 	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
 
-	// Transaction size.
+	// Number of entities to delete per transaction batch. Batches committed before a
+	// failure remain durable, and per-id and batch failures are reported in the
+	// response. Not supported on a request joining an open transaction. Absent means
+	// a single transaction.
 	TransactionSize *int `json:"transactionSize,omitempty" yaml:"transactionSize,omitempty" mapstructure:"transactionSize,omitempty"`
 
-	// Include the list of entity ids deleted in the response
+	// Include the list of entity ids the delete attempted in the response; an id
+	// whose delete failed also appears in the error map.
 	Verbose bool `json:"verbose,omitempty" yaml:"verbose,omitempty" mapstructure:"verbose,omitempty"`
 
 	// Warnings (if applicable).

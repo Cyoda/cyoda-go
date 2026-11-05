@@ -639,10 +639,11 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 				return snapErr
 			}
 		} else {
-			// entityID is a write this transaction buffered. Commit's
-			// delete flush evicts it from tx.Buffer below without ever
-			// separately flushing it, so when the entity has no committed
-			// version the tombstone that flush appends is its ONLY one —
+			// entityID is a write this transaction buffered. Delete
+			// evicts it from tx.Buffer below, so Commit's delete flush
+			// never flushes it separately; when the entity has no
+			// committed version the tombstone that flush appends is its
+			// ONLY one —
 			// stage its model now so that flush can stamp it (see
 			// deletedBufferModels's field doc); otherwise a later
 			// Save/CompareAndSave against this id could never tell what

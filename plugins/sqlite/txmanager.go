@@ -187,13 +187,13 @@ type transactionManager struct {
 	// committed before this transaction, the SELECT flushToSQLite's delete
 	// loop runs against `entities` finds no row at all (sql.ErrNoRows) — a
 	// same-transaction create-then-delete whose create was never separately
-	// flushed. Without this side channel that shape wrote NOTHING (the old
-	// code `continue`d past it): no entities row, no entity_versions row —
-	// so a later Save reusing the same id under a different model found no
-	// committed row to check against and silently accepted the model
-	// change (the exact defect spi.ErrEntityModelMismatch exists to close).
-	// flushToSQLite now uses this to still write the create+tombstone as
-	// one committed row when the SELECT comes back empty. Protected by mu.
+	// flushed. Without this side channel that shape would write NOTHING:
+	// no entities row, no entity_versions row — so a later Save reusing the
+	// same id under a different model would find no committed row to check
+	// against and silently accept the model change (the defect
+	// spi.ErrEntityModelMismatch exists to close). flushToSQLite uses this
+	// to write the create+tombstone as one committed row when the SELECT
+	// comes back empty. Protected by mu.
 	// Not savepoint-scoped like supersededSaves: a RollbackToSavepoint that
 	// restores id to tx.Buffer also removes it from tx.Deletes, so a stale
 	// entry here is simply never read again. Cleaned up after commit or
