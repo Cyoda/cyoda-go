@@ -1607,8 +1607,9 @@ it is bumped by a genuine staleness claim and left untouched by a
 routine handoff. Both are tenant-scoped — `search_jobs` has the composite
 primary key `(tenant_id, id)` and `search_job_results` carries `tenant_id`
 with a composite foreign key back to it, `ON DELETE CASCADE` — and both
-carry RLS policies, defence in depth behind each statement's `tenant_id`
-predicate.
+carry row-level security policies, which take no effect: row-level
+security is not supported (§10.2), and each statement's `tenant_id`
+predicate is the isolation.
 
 **Design principles (DD-10, DD-11, DD-12):** results tables store entity
 IDs only, never entity data (re-read from the entity store as at the job's
@@ -2523,7 +2524,7 @@ Architecture:
 
 - **nginx:** Round-robin load balancer, with an HTTP upstream and a separate HTTP/2 upstream for gRPC. It forwards every path except `/health`, which nginx answers itself, to the node pool, including `/internal/*` — the dispatch endpoint's own AEAD authentication (§4.2) is what protects it, not the load balancer's path set. Restricting external exposure to `/api/*` is the deployment's responsibility.
 - **Gossip:** Each node runs a memberlist listener (`CYODA_GOSSIP_ADDR`; port 7946 in every container). The first min(N, 3) nodes are the seeds (`CYODA_SEED_NODES`) every node joins through.
-- **Shared PostgreSQL:** All nodes connect to the same PostgreSQL instance. `REPEATABLE READ` plus application-layer SI+FCW validation keep concurrent writes from different nodes consistent (see [docs/CONSISTENCY.md](CONSISTENCY.md)). Tenant isolation is the application's `tenant_id` predicate; the row-level security policies on the tenant tables are defence in depth and apply only to a role that does not own the tables.
+- **Shared PostgreSQL:** All nodes connect to the same PostgreSQL instance. `REPEATABLE READ` plus application-layer SI+FCW validation keep concurrent writes from different nodes consistent (see [docs/CONSISTENCY.md](CONSISTENCY.md)). Tenant isolation is each statement's `tenant_id` predicate. Row-level security is not supported: the migrations create policies on the tenant tables, but cyoda connects as the tables' owner and does not force them, so they take no effect (see [docs/plugins/POSTGRES.md](plugins/POSTGRES.md)).
 - **Shared secrets:** All nodes share the same HMAC secret, which signs transaction tokens, encrypts gossip and keys the dispatch AEAD (HKDF), and the same JWT signing key. That key is the bootstrap signing key: its KID, derived from its public key, is the same on every node, and it seals the issued signing key pairs held in the store.
 
 **Scripts:**
