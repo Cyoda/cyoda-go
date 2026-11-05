@@ -369,6 +369,64 @@ type asyncJobHandle struct {
 	// shutdown-time Release (ReleaseRegisteredJobs) fences against the same
 	// epoch the executor itself is running at.
 	epoch int64
+
+	// handBackMu orders the shutdown release against an executor or reclaim
+	// that settled the job's end but could not carry it out, so that exactly
+	// one of them hands the job back — and only at shutdown, as the shutdown
+	// release would have had it reached the job first.
+	handBackMu   sync.Mutex
+	shuttingDown bool // the shutdown release has reached this job
+	unfinished   bool // its settled end could not be carried out
+}
+
+// markUnfinished records that the end this job's executor or reclaim settled
+// could not be carried out — the job is still this node's claim and nobody
+// recorded or released it — and reports whether the shutdown release has
+// already passed it, leaving the hand-back to the caller.
+func (h *asyncJobHandle) markUnfinished() bool {
+	h.handBackMu.Lock()
+	defer h.handBackMu.Unlock()
+	h.unfinished = true
+	return h.shuttingDown
+}
+
+// markShuttingDown records that the shutdown release has reached this job and
+// reports whether its settled end had already been found unfinished, leaving
+// the hand-back to the release.
+func (h *asyncJobHandle) markShuttingDown() bool {
+	h.handBackMu.Lock()
+	defer h.handBackMu.Unlock()
+	h.shuttingDown = true
+	return h.unfinished
+}
+
+// unfinishedEnd is called when the end this job's executor or reclaim settled
+// could not be carried out (its write failed for a reason other than a store
+// refusal, already logged). Outside a shutdown the job goes stale and is
+// reclaimed, a counted attempt, which bounds a write that keeps failing. At
+// shutdown it is handed back now, uncounted, as the release does for every
+// job it reaches first.
+func (s *SearchService) unfinishedEnd(handle *asyncJobHandle, jobID string) {
+	if handle.markUnfinished() {
+		s.handBack(context.Background(), jobID, handle)
+	}
+}
+
+// handBack issues the shutdown-time Release (uncounted, fenced by the job's
+// epoch) and reports whether it landed. A refusal means the job was settled,
+// claimed elsewhere or removed meanwhile: reported once as a lost claim.
+func (s *SearchService) handBack(ctx context.Context, jobID string, entry *asyncJobHandle) bool {
+	relCtx := spi.WithUserContext(context.WithoutCancel(ctx), entry.uc)
+	err := s.searchStore.Release(relCtx, jobID, entry.epoch)
+	switch {
+	case err == nil:
+		return true
+	case fencedRefusal(err):
+		endLostClaim(jobID, err)
+	default:
+		slog.Error("failed to release async search job at shutdown", "pkg", "search", "jobID", jobID, "err", err)
+	}
+	return false
 }
 
 // defaultAsyncPoolWorkers/defaultAsyncPoolQueue size the built-in pool
@@ -628,14 +686,10 @@ func (s *SearchService) deregisterJobHandle(jobID string, h *asyncJobHandle) {
 	}
 }
 
-// tenantOf is the per-tenant cap's bucket key. SubmitAsync rejects a
-// missing UserContext before it ever registers anything, so the empty
-// tenant is unreachable from there; it is defined anyway so the accounting
-// stays total for any other caller.
+// tenantOf is the per-tenant cap's bucket key. Every registered job carries
+// its tenant's UserContext: SubmitAsync rejects a missing one, and a reclaim
+// builds the job tenant's.
 func tenantOf(uc *spi.UserContext) spi.TenantID {
-	if uc == nil {
-		return ""
-	}
 	return uc.Tenant.ID
 }
 
@@ -691,29 +745,17 @@ func (s *SearchService) ReleaseRegisteredJobs(ctx context.Context) int {
 
 	released := 0
 	for jobID, entry := range entries {
+		unfinished := entry.markShuttingDown()
 		entry.cancel(errJobReleased)
-		if !errors.Is(context.Cause(entry.ctx), errJobReleased) {
+		if !unfinished && !errors.Is(context.Cause(entry.ctx), errJobReleased) {
 			// Its end was already decided — by its executor or reclaim, a
 			// cancel here, or the store's refusal — and whoever decided it
-			// carries it out and reports it.
+			// carries it out and reports it (handing it back if it cannot).
 			continue
 		}
-		relCtx := ctx
-		if entry.uc != nil {
-			relCtx = spi.WithUserContext(context.WithoutCancel(ctx), entry.uc)
+		if s.handBack(ctx, jobID, entry) {
+			released++
 		}
-		if err := s.searchStore.Release(relCtx, jobID, entry.epoch); err != nil {
-			if fencedRefusal(err) {
-				// Settled, claimed elsewhere or removed while this node still
-				// held it; its executor, cancelled as released, reports
-				// nothing.
-				endLostClaim(jobID, err)
-				continue
-			}
-			slog.Error("failed to release async search job at shutdown", "pkg", "search", "jobID", jobID, "err", err)
-			continue
-		}
-		released++
 	}
 	return released
 }
@@ -1283,13 +1325,13 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// write must land: writeAsyncFailure strips cancellation itself
 			// (keeping the UserContext value), so a store that aborts
 			// in-flight work on ctx.Err() still accepts it.
-			s.writeAsyncFailure(jobCtx, cancel, jobID, epoch, fixedReason(ticketedReason(ticket)), s.clock.Now(), 0)
+			s.writeAsyncFailure(jobCtx, handle, jobID, epoch, fixedReason(ticketedReason(ticket)), s.clock.Now(), 0)
 		}
 	}()
 
 	modelStore, err := s.factory.ModelStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, cancel, jobID, epoch, failureReason(jobID, err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 	// Fail the job rather than answering without the schema. This load is
@@ -1308,7 +1350,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// gets the ticketed generic text, and its Message and Detail are logged
 		// under the ticket.
 		appErr := common.Internal("failed to load model schema for condition validation", fieldsErr)
-		s.writeAsyncFailure(jobCtx, cancel, jobID, epoch, failureReason(jobID, appErr), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, appErr), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1316,7 +1358,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// Ordinary error handling, not a designed branch: a condition that
 		// translated at submission translates here (schema changes after
 		// locking are additive). Anything else is an unexpected failure.
-		s.writeAsyncFailure(jobCtx, cancel, jobID, epoch, failureReason(jobID, common.Internal("failed to translate search condition", translateErr)), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, common.Internal("failed to translate search condition", translateErr)), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 
@@ -1328,7 +1370,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	entityStore, err := s.factory.EntityStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, cancel, jobID, epoch, failureReason(jobID, err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 
@@ -1432,7 +1474,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		settleJob(jobCtx, cancel, jobID, errJobEnding)
 		return
 	case prodErr != nil:
-		s.writeAsyncFailure(jobCtx, cancel, jobID, epoch, failureReason(jobID, prodErr), finishTime, calcTimeMs)
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, prodErr), finishTime, calcTimeMs)
 		return
 	case saveErr != nil:
 		if fencedRefusal(saveErr) {
@@ -1442,14 +1484,16 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			settleJob(jobCtx, cancel, jobID, saveErr)
 			return
 		}
-		s.writeAsyncFailure(jobCtx, cancel, jobID, epoch, failureReason(jobID, saveErr), finishTime, calcTimeMs)
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, saveErr), finishTime, calcTimeMs)
 		return
 	}
 
 	// Settle the end first, so that a heartbeat refusal or a shutdown release
 	// landing from now on leaves the job to this write; then write on
 	// context.WithoutCancel, since settleJob has just cancelled jobCtx. The
-	// UserContext (and so the tenant scope) is preserved.
+	// UserContext (and so the tenant scope) is preserved. Settling also stops
+	// the heartbeat: a write that hangs past the stale threshold lets the job
+	// be reclaimed rather than look alive.
 	if !settleJob(jobCtx, cancel, jobID, errJobEnding) {
 		return
 	}
@@ -1459,6 +1503,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
+		s.unfinishedEnd(handle, jobID)
 	}
 }
 
@@ -1474,8 +1519,8 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 // no caller wants it cancellable — settleJob has just cancelled ctx itself.
 // Stripping cancellation keeps the UserContext (and so the tenant scope)
 // intact.
-func (s *SearchService) writeAsyncFailure(ctx context.Context, cancel context.CancelCauseFunc, jobID string, epoch int64, reason func() string, finishTime time.Time, calcTimeMs int64) {
-	if !settleJob(ctx, cancel, jobID, errJobEnding) {
+func (s *SearchService) writeAsyncFailure(ctx context.Context, handle *asyncJobHandle, jobID string, epoch int64, reason func() string, finishTime time.Time, calcTimeMs int64) {
+	if !settleJob(ctx, handle.cancel, jobID, errJobEnding) {
 		// Released or superseded (the next claim's), or ended on the store's
 		// own answer that the job is settled, claimed elsewhere or removed —
 		// whichever step was failing. That answer is final, so it needs no
@@ -1494,6 +1539,7 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, cancel context.Ca
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
+		s.unfinishedEnd(handle, jobID)
 	}
 }
 

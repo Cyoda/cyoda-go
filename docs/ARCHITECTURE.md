@@ -1597,9 +1597,10 @@ drains the worker pool up to a bounded budget, giving in-flight jobs a
 chance to finish normally, then calls `ReleaseRegisteredJobs` for whatever
 is still registered: each is cancelled in-process and `Release`d
 (epoch-fenced) in the store — **released for reclaim, not failed** — unless
-its end was already decided: its executor was recording the outcome, or the
-job had been cancelled, settled or taken over, which is reported once as a
-lost claim. A peer,
+its end was already decided: its executor was recording the outcome (if that
+recording then fails, the executor hands the job back itself), or the job had
+been cancelled, settled or taken over, which is reported once as a lost
+claim. A peer,
 or this same node on its own restart-time startup sweep, claims and
 re-executes it promptly rather than waiting for the stale-heartbeat
 timeout, so a graceful shutdown or rolling restart hands work off within

@@ -67,7 +67,7 @@ func TestWriteAsyncFailure_ReleasedJobRendersNoReason(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(errJobReleased)
 	rendered := false
-	(&SearchService{}).writeAsyncFailure(ctx, cancel, "job-r", 1, func() string { rendered = true; return "x" }, time.Now(), 0)
+	(&SearchService{}).writeAsyncFailure(ctx, &asyncJobHandle{cancel: cancel, ctx: ctx}, "job-r", 1, func() string { rendered = true; return "x" }, time.Now(), 0)
 	if rendered {
 		t.Fatal("the reason of a released job was rendered")
 	}

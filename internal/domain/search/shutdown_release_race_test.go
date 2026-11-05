@@ -185,3 +185,79 @@ func TestReleaseRegisteredJobs_ExecutorDecidingDuringTheLoop(t *testing.T) {
 		})
 	}
 }
+
+// failingTerminalWrite holds the first terminal status write until hold is
+// closed, then fails it with an error that is not a store refusal, as a
+// dropped connection does. It counts the Release calls that land.
+type failingTerminalWrite struct {
+	spi.AsyncSearchStore
+	entered  chan struct{}
+	hold     chan struct{}
+	mu       sync.Mutex
+	releases int
+}
+
+func (s *failingTerminalWrite) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, count int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
+	s.entered <- struct{}{}
+	<-s.hold
+	return fmt.Errorf("update job %s: connection reset", jobID)
+}
+
+func (s *failingTerminalWrite) Release(ctx context.Context, jobID string, epoch int64) error {
+	err := s.AsyncSearchStore.Release(ctx, jobID, epoch)
+	if err == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.releases++
+	}
+	return err
+}
+
+// A shutdown release that meets a job whose executor is recording its outcome
+// leaves the job to that recording. If the recording then fails for any
+// reason but a store refusal, the job is still this node's claim and nobody
+// recorded it: it is handed back (released) once, as the shutdown would have
+// handed back any job it reached first, not left to go stale.
+func TestReleaseRegisteredJobs_FailedRecordingDuringShutdownIsHandedBack(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-release-failed-write")
+	ref := spi.ModelRef{EntityName: "releasefailedwrite", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+	saveEntity(t, ctx, base, ref, "e000", []byte(`{}`))
+	inner, _ := base.AsyncSearchStore(context.Background())
+	store := &failingTerminalWrite{AsyncSearchStore: inner, entered: make(chan struct{}, 1), hold: make(chan struct{})}
+	pool := search.NewWorkerPool(1, 4)
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
+		WithAsyncPool(pool).
+		WithHeartbeat(time.Hour)
+
+	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}, search.SearchOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	select {
+	case <-store.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the job never reached its terminal write")
+	}
+	logs := captureJobLogs(t)
+	if n := svc.ReleaseRegisteredJobs(context.Background()); n != 0 {
+		t.Errorf("ReleaseRegisteredJobs = %d, want 0: the job's executor was recording its outcome", n)
+	}
+	close(store.hold)
+	pool.Drain(context.Background())
+
+	store.mu.Lock()
+	releases := store.releases
+	store.mu.Unlock()
+	if releases != 1 {
+		t.Errorf("landed Release calls = %d, want 1: the unrecorded job is handed back once", releases)
+	}
+	if strings.Contains(logs.String(), lostClaimLine) {
+		t.Errorf("a lost claim was reported for a job still this node's:\n%s", logs.String())
+	}
+	if job, err := inner.GetJob(ctx, jobID); err != nil || job.Status != "RUNNING" {
+		t.Errorf("job = (%v, %v), want RUNNING and released for the next claim", job, err)
+	}
+}
