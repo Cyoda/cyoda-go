@@ -68,6 +68,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `CreateTime`. Out-of-tree plugins must implement the first two and follow
   the third; see `COMPATIBILITY.md`.
 
+- **Storage plugins: a transaction's own delete is its latest state.**
+  `Delete` answers `ErrNotFound` for an entity the transaction already
+  deleted, and `DeleteAll` leaves such an entity, its delete and the
+  attribution recorded with it, as they are; the `spitest` cases
+  `Transaction/DeleteThenDelete`, `Transaction/DeleteThenDeleteAll` and
+  `Transaction/DeleteSaveDelete` check it. Out-of-tree plugins must pass
+  them; see `COMPATIBILITY.md`.
+
 - **Storage plugins: `StoreFactory.Ping(ctx) error`.** It reports whether the
   store answers, returns within `ctx` (an error once `ctx` is done) and
   returns an error after `Close`. `GET /platform/cluster` reads it as each
