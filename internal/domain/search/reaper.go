@@ -345,8 +345,8 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 //     no longer this claim's: reported as a lost claim, no release. A
 //     shutdown release (errJobReleased) has already released it, and a
 //     self-reclaim (errJobSuperseded) holds it at a newer epoch, so neither is
-//     released again. Any other end gets the fenced release, which the store
-//     refuses if the job is no longer this epoch's.
+//     released again. No other cause cancels a job's context before its
+//     outcome is decided.
 func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel context.CancelCauseFunc, handle *asyncJobHandle, job *spi.SearchJob) bool {
 	if jobCtx.Err() == nil {
 		cerr := s.searchStore.ClearResults(jobCtx, job.ID, job.Epoch)
@@ -374,11 +374,11 @@ func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel con
 		s.dropReclaim(cancel, handle, job)
 		return false
 	}
+	// A shutdown release (errJobReleased) has already handed the job back, and
+	// a self-reclaim (errJobSuperseded) holds it at a newer epoch: nothing to
+	// release.
 	slog.Debug("reclaimed job ended before it ran", "pkg", "search", "jobID", job.ID, "cause", cause)
 	s.dropReclaim(cancel, handle, job)
-	if !errors.Is(cause, errJobReleased) && !errors.Is(cause, errJobSuperseded) {
-		s.releaseUnrun(context.Background(), job)
-	}
 	return false
 }
 

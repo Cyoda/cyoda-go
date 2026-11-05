@@ -186,6 +186,56 @@ func TestAsyncSearch_CancelDuringEarlyStepsEndsAsALostClaim(t *testing.T) {
 	if _, err := svc.CancelAsync(ctx, jobID); err != nil {
 		t.Fatalf("CancelAsync: %v", err)
 	}
+	pool.Drain(context.Background()) // the executor has ended
+	assertOneLostClaimLine(t, logs.String(), jobID)
+}
+
+// unreadableJobStore fails every job read once armed, as a store does when its
+// main pool is exhausted.
+type unreadableJobStore struct {
+	spi.AsyncSearchStore
+	armed atomic.Bool
+}
+
+func (s *unreadableJobStore) GetJob(ctx context.Context, jobID string) (*spi.SearchJob, error) {
+	if s.armed.Load() {
+		return nil, fmt.Errorf("get job %s: pool exhausted", jobID)
+	}
+	return s.AsyncSearchStore.GetJob(ctx, jobID)
+}
+
+// A lost claim is decided from the store's own refusal, not from a read of the
+// job afterwards: a cancel seen by the heartbeat while job reads fail is still
+// one INFO lost-claim line, with no ERROR and no ticket.
+func TestAsyncSearch_LostClaimNeedsNoJobRead(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-lost-claim-noread")
+	ref := spi.ModelRef{EntityName: "lostclaimnoread", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+	for i := 0; i < 400; i++ {
+		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%03d", i), []byte(`{}`))
+	}
+	ies := wrapIterate(t, base, ctx, func(it spi.Iterator) spi.Iterator {
+		return &delayIterator{Iterator: it, delay: 2 * time.Millisecond}
+	})
+	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
+	inner, _ := base.AsyncSearchStore(context.Background())
+	store := &unreadableJobStore{AsyncSearchStore: inner}
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+		WithAsyncPool(newTinyPool(t)).
+		WithHeartbeat(10 * time.Millisecond)
+
+	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}, search.SearchOptions{Limit: 1000})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	logs := captureJobLogs(t)
+	store.armed.Store(true)
+	if err := inner.Cancel(ctx, jobID, time.Now()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(logs.String(), "jobID="+jobID) {
 		if time.Now().After(deadline) {

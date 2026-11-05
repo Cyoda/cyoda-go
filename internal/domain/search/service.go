@@ -1382,13 +1382,14 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	switch {
 	case jobCtx.Err() != nil:
-		// Cancelled — in-process CancelRunning, or a heartbeat the store
-		// refused (a cross-node cancel or other terminal status, a lost
-		// claim). writeAsyncFailure tells which: a job no longer this
-		// executor's is reported once (endLostClaim) and not recorded; its
-		// own RUNNING claim was interrupted, a server-side failure.
-		s.writeAsyncFailure(jobCtx, jobID, epoch, failureReason(jobID,
-			common.Internal("async search job interrupted", context.Cause(jobCtx))), finishTime, calcTimeMs)
+		// Cancelled: by the heartbeat on the store's refusal, by a cancel on
+		// this node (errCancelledHere), or by a release or self-reclaim. The
+		// cause says which, and none leaves a failure of this executor's to
+		// record: a refusal (or a cancel here) is a lost claim, reported once;
+		// a released or superseded job is the next claim's.
+		if cause := context.Cause(jobCtx); fencedRefusal(cause) {
+			endLostClaim(jobID, cause)
+		}
 		return
 	case prodErr != nil:
 		s.writeAsyncFailure(jobCtx, jobID, epoch, failureReason(jobID, prodErr), finishTime, calcTimeMs)
@@ -1421,23 +1422,23 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	}
 }
 
-// writeAsyncFailure records jobID FAILED via an epoch-fenced write. A write
-// the store refuses because the job is no longer this executor's (settled,
-// claimed elsewhere, removed) is reported by endLostClaim, not treated as a
-// failure of the caller — the correct state is already recorded.
+// writeAsyncFailure records jobID FAILED via an epoch-fenced write, for every
+// failure path of an executor. It first reads the job context's cause: a
+// release or self-reclaim leaves the job to the next claim, and a store
+// refusal (or a cancel here, which wraps one) means the job ended under the
+// executor — reported once by endLostClaim and not recorded. A write the
+// store then refuses for the same reason is reported the same way.
 //
 // The write runs on context.WithoutCancel(ctx), and that is decided HERE
-// rather than at each of the six call sites: this is a terminal write by
-// definition, so no caller wants it cancellable. Two of the call sites are
-// reached only after `jobCtx.Err() != nil` evaluated false, which makes them a
-// TOCTOU — the heartbeat goroutine cancels jobCtx from another goroutine (a
-// Heartbeat that the store refuses as terminal, stale or gone), and a
-// cancel landing between the check and the write aborts it, leaving a finished
-// job RUNNING until the stale-job reaper fails it with a generic message
-// instead of the real reason recorded here. Stripping cancellation keeps the
-// UserContext (and so the tenant scope) intact; wrapping an already-stripped
-// context again is a no-op, so the cancellation-recovery call site loses
-// nothing by it.
+// rather than at each call site: this is a terminal write by definition, so
+// no caller wants it cancellable. Some call sites are reached only after
+// `jobCtx.Err() != nil` evaluated false, which makes them a TOCTOU — the
+// heartbeat goroutine cancels jobCtx from another goroutine, and a cancel
+// landing between the check and the write would otherwise abort it, leaving
+// the job RUNNING until the stale-job reaper fails it with a generic message.
+// The cause check above covers the same window: a cancel that lands before it
+// is read there. Stripping cancellation keeps the UserContext (and so the
+// tenant scope) intact.
 func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epoch int64, reason func() string, finishTime time.Time, calcTimeMs int64) {
 	if c := context.Cause(ctx); errors.Is(c, errJobReleased) || errors.Is(c, errJobSuperseded) {
 		// Released for reclaim, or superseded by this node's own self-reclaim:
@@ -1448,10 +1449,13 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epo
 		// there, but the cause is still readable from ctx itself.
 		return
 	}
-	if ctx.Err() != nil && s.noLongerOurs(ctx, jobID, epoch) {
-		// The job's context ended — whichever step was failing — because the
-		// job was settled, claimed elsewhere or removed: not a failure of
-		// this executor's to record.
+	if cause := context.Cause(ctx); fencedRefusal(cause) {
+		// The job's context ended — whichever step was failing — on the
+		// store's own answer that the job is settled, claimed elsewhere or
+		// removed (or a cancel here, which wraps that answer). The answer is
+		// final, so it needs no read: not a failure of this executor's to
+		// record.
+		endLostClaim(jobID, cause)
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
@@ -1467,23 +1471,6 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epo
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
 	}
-}
-
-// noLongerOurs reads the job once, after its executor's context ended, and
-// reports whether it is no longer this executor's to record — settled,
-// claimed at another epoch, or removed — reporting that once if so
-// (endLostClaim). A read that fails leaves the job this executor's.
-func (s *SearchService) noLongerOurs(ctx context.Context, jobID string, epoch int64) bool {
-	job, err := s.searchStore.GetJob(context.WithoutCancel(ctx), jobID)
-	switch {
-	case errors.Is(err, spi.ErrNotFound):
-		endLostClaim(jobID, err)
-		return true
-	case err == nil && (job.Status != "RUNNING" || job.Epoch != epoch):
-		endLostClaim(jobID, context.Cause(ctx))
-		return true
-	}
-	return false
 }
 
 // GetAsyncStatus returns the current status of an async search job.
