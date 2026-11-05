@@ -164,12 +164,20 @@ func ticketedReason(ticket string) string {
 	return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
 }
 
-// lostClaim ends an executor whose job is no longer its to record: settled
-// (cancelled, or a takeover's own terminal write), claimed by another
-// executor, or removed. An ordinary end on a cluster, so it records nothing
-// and logs one DEBUG line; whoever settled or claimed the job says why.
-func lostClaim(jobID string) {
-	slog.Debug("async search job is no longer this executor's to record; stopping", "pkg", "search", "jobID", jobID)
+// endLostClaim ends an executor whose job is no longer its to record —
+// settled (cancelled, or a takeover's own terminal write), claimed by another
+// executor, or removed — and records nothing. It is the one report of that
+// event, whichever path met it first (the heartbeat, a result write, the
+// terminal write). A claim taken from a live executor is logged at WARN: the
+// claimant judged this executor's heartbeats stale. A cancel or a removal is
+// an ordinary end, logged at DEBUG.
+func endLostClaim(jobID string, cause error, claimedElsewhere bool) {
+	level := slog.LevelDebug
+	if claimedElsewhere {
+		level = slog.LevelWarn
+	}
+	slog.Log(context.Background(), level, "async search job is no longer this executor's to record; stopping",
+		"pkg", "search", "jobID", jobID, "cause", cause)
 }
 
 // failureReason defers jobFailureMessage until writeAsyncFailure knows the
@@ -1128,7 +1136,9 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 // (ErrAlreadyTerminal), was reclaimed at a newer epoch (ErrStaleClaim) or is
 // gone (ErrNotFound). So a cancel written by any node, a completion, and a
 // lost claim all end the job here in one statement, and jobCtx is cancelled
-// on any such fencing refusal (fencedRefusal).
+// on any such fencing refusal (fencedRefusal), with the refusal as its cause.
+// The heartbeat logs nothing for it: the executor reports the end once
+// (endLostClaim).
 //
 // The tick issues no other store statement. A backend may run Heartbeat on a
 // pool of its own so that a main pool exhausted by entity transactions cannot
@@ -1157,14 +1167,10 @@ func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.Ca
 			case <-ticker.C:
 				hbErr := s.searchStore.Heartbeat(jobCtx, jobID, epoch)
 				switch {
-				case errors.Is(hbErr, spi.ErrAlreadyTerminal):
-					// Cancelled (by any node) or otherwise settled: an
-					// ordinary end, not a fault.
-					slog.Debug("async search job is terminal; stopping its executor", "pkg", "search", "jobID", jobID)
-					cancel(hbErr)
-					return
 				case fencedRefusal(hbErr):
-					slog.Warn("async search heartbeat refused: the job is no longer this node's claim; aborting it", "pkg", "search", "jobID", jobID, "err", hbErr)
+					// Settled, claimed by another executor, or removed: the
+					// executor ends, and reports why once (endLostClaim), with
+					// this refusal as the cause.
 					cancel(hbErr)
 					return
 				case jobCtx.Err() != nil:
@@ -1375,13 +1381,22 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	case jobCtx.Err() != nil:
 		// Cancelled — in-process CancelRunning, or a heartbeat the store
 		// refused (a cross-node cancel or other terminal status, a lost
-		// claim). context.WithoutCancel so the recovery READ below
-		// is not itself aborted by the same cancellation (the write that
-		// follows strips cancellation on its own).
+		// claim). The read below tells which: a job no longer this
+		// executor's is reported once (endLostClaim) and not recorded.
+		// context.WithoutCancel so the recovery READ below is not itself
+		// aborted by the same cancellation (the write that follows strips
+		// cancellation on its own).
 		recoveryCtx := context.WithoutCancel(jobCtx)
 		job, getErr := s.searchStore.GetJob(recoveryCtx, jobID)
-		if errors.Is(getErr, spi.ErrNotFound) || (getErr == nil && (job.Status != "RUNNING" || job.Epoch != epoch)) {
-			lostClaim(jobID)
+		switch {
+		case errors.Is(getErr, spi.ErrNotFound):
+			endLostClaim(jobID, getErr, false)
+			return
+		case getErr == nil && job.Status != "RUNNING":
+			endLostClaim(jobID, context.Cause(jobCtx), false)
+			return
+		case getErr == nil && job.Epoch != epoch:
+			endLostClaim(jobID, context.Cause(jobCtx), true)
 			return
 		}
 		// Still this executor's RUNNING claim, or the read failed: the job
@@ -1403,7 +1418,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// A result write refused because the job was cancelled, claimed
 			// by another executor or removed: usually the first sign of it,
 			// before the heartbeat's next tick.
-			lostClaim(jobID)
+			endLostClaim(jobID, saveErr, errors.Is(saveErr, spi.ErrStaleClaim))
 			return
 		}
 		s.writeAsyncFailure(jobCtx, jobID, epoch, failureReason(jobID, saveErr), finishTime, calcTimeMs)
@@ -1418,19 +1433,18 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	// leave a finished job RUNNING until the stale-job reaper failed it. The
 	// UserContext (and so the tenant scope) is preserved.
 	if err := s.searchStore.UpdateJobStatus(context.WithoutCancel(jobCtx), jobID, epoch, "SUCCESSFUL", count, "", finishTime, calcTimeMs); err != nil {
-		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
-			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)
+		if fencedRefusal(err) {
+			endLostClaim(jobID, err, errors.Is(err, spi.ErrStaleClaim))
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
 	}
 }
 
-// writeAsyncFailure records jobID FAILED via an epoch-fenced write. A lost
-// race against the job's own (or a takeover's) terminal write
-// (ErrAlreadyTerminal/ErrStaleClaim) is expected and logged at Warn, not
-// treated as a failure of the caller — the correct state is already
-// recorded.
+// writeAsyncFailure records jobID FAILED via an epoch-fenced write. A write
+// the store refuses because the job is no longer this executor's (settled,
+// claimed elsewhere, removed) is reported by endLostClaim, not treated as a
+// failure of the caller — the correct state is already recorded.
 //
 // The write runs on context.WithoutCancel(ctx), and that is decided HERE
 // rather than at each of the six call sites: this is a terminal write by
@@ -1461,8 +1475,8 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epo
 	// failure happens.) A write that then loses its race leaves a logged
 	// ticket that no record carries.
 	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, reason(), finishTime, calcTimeMs); err != nil {
-		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
-			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)
+		if fencedRefusal(err) {
+			endLostClaim(jobID, err, errors.Is(err, spi.ErrStaleClaim))
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
