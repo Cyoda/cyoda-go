@@ -406,14 +406,8 @@ func (h *Handler) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobI
 	}
 
 	if !result.Cancelled {
-		// Job was already completed (SUCCESSFUL/FAILED) — Cloud returns 400.
-		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeSearchJobAlreadyTerminal,
-			fmt.Sprintf("snapshot by id=%s is not running. current status=%s", jobId.String(), result.CurrentStatus))
-		appErr.Props = map[string]any{
-			"currentStatus": result.CurrentStatus,
-			"snapshotId":    jobId.String(),
-		}
-		common.WriteError(w, r, appErr)
+		// The job has already ended — Cloud returns 400.
+		common.WriteError(w, r, AlreadyTerminalError(jobId.String(), result.CurrentStatus))
 		return
 	}
 

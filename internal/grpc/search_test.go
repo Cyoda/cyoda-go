@@ -1207,3 +1207,59 @@ func TestDirectSearch_SchemaLoadFails_ServerErrorEnvelope(t *testing.T) {
 		t.Fatalf("Error = %+v, want Code=SERVER_ERROR", typed.Error)
 	}
 }
+
+// Cancelling a snapshot that has already finished is refused, as the HTTP
+// door refuses it (400 SEARCH_JOB_ALREADY_TERMINAL): success false, the same
+// error, and the status the snapshot ended with.
+func TestEntitySearch_SnapshotCancel_AlreadyTerminal(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"surname": "Smith"})
+
+	submitCE := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "snap-done-1",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	})
+	submitResp, err := svc.EntitySearch(ctx, submitCE)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	var submitTyped events.EntitySnapshotSearchResponseJson
+	validateResponse(t, submitResp, &submitTyped)
+	snapshotID := submitTyped.Status.SnapshotID
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st, err := svc.searchService.GetAsyncStatus(ctx, snapshotID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if st.Status == "SUCCESSFUL" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("snapshot status = %s, want SUCCESSFUL", st.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelResp, err := svc.EntitySearch(ctx, makeCE(SnapshotCancelRequest, map[string]any{
+		"id":         "cancel-done-1",
+		"snapshotId": snapshotID,
+	}))
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, cancelResp, &typed)
+	if typed.Success {
+		t.Fatal("success = true for a cancel of a finished snapshot, want false")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" || !strings.HasPrefix(typed.Error.Message, "SEARCH_JOB_ALREADY_TERMINAL: ") {
+		t.Fatalf("error = %+v, want CLIENT_ERROR with a SEARCH_JOB_ALREADY_TERMINAL message", typed.Error)
+	}
+	if typed.Status.Status != events.SearchSnapshotStatusJsonStatusSUCCESSFUL || typed.Status.SnapshotID != snapshotID {
+		t.Errorf("status = %+v, want the snapshot's own SUCCESSFUL status", typed.Status)
+	}
+}

@@ -6,6 +6,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **gRPC: a `SnapshotCancelRequest` for a snapshot that has already ended is
+  refused,** as `PUT /search/async/{jobId}/cancel` refuses it: `success`
+  false, `error.code` `CLIENT_ERROR` with a `SEARCH_JOB_ALREADY_TERMINAL:`
+  message, and `status` the status the snapshot ended with. Before, it
+  answered `success` true. On both doors, a job that finishes while the
+  cancel is landing is answered the same way; before, the answer said
+  `CANCELLED` while the job's status said `SUCCESSFUL` or `FAILED`.
+
 - **A change to the entity during a `COMMIT_BEFORE_DISPATCH` callout answers
   `412 ENTITY_MODIFIED` on every write route.** Another transaction changing
   the entity between the processor's segment commit and the application of

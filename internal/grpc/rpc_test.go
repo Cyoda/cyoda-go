@@ -1568,6 +1568,18 @@ func TestRPC_SnapshotCancel(t *testing.T) {
 
 	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
 
+	// Hold the sole worker so the snapshot is still RUNNING when the cancel
+	// arrives: a finished one is refused (SEARCH_JOB_ALREADY_TERMINAL).
+	pool := search.NewWorkerPool(1, 1)
+	svc.searchService.WithAsyncPool(pool)
+	release := occupySoleWorker(t, pool)
+	defer func() {
+		release()
+		drainCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		pool.Drain(drainCtx)
+	}()
+
 	// Submit async search to get a snapshot ID.
 	searchCE := makeCE(EntitySnapshotSearchRequest, map[string]any{
 		"id":    "test",

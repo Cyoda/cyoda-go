@@ -1721,10 +1721,31 @@ func (s *SearchService) GetAsyncSearchResults(ctx context.Context, snapshotID st
 	return resultPage.Results, nil
 }
 
-// CancelAsyncSearch attempts to cancel a running async search job.
+// CancelAsyncSearch cancels a running async search job. A job that has
+// already ended — before the call, or while the cancel was landing — is
+// refused with AlreadyTerminalError, as the HTTP door refuses it.
 func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string) error {
-	_, err := s.CancelAsync(ctx, snapshotID)
-	return err
+	result, err := s.CancelAsync(ctx, snapshotID)
+	if err != nil {
+		return err
+	}
+	if !result.Cancelled {
+		return AlreadyTerminalError(snapshotID, result.CurrentStatus)
+	}
+	return nil
+}
+
+// AlreadyTerminalError is the refusal of a cancel of a job that has already
+// ended (400 SEARCH_JOB_ALREADY_TERMINAL), the same on both doors. Its Props
+// carry the job's currentStatus and snapshotId.
+func AlreadyTerminalError(jobID, currentStatus string) *common.AppError {
+	appErr := common.Operational(http.StatusBadRequest, common.ErrCodeSearchJobAlreadyTerminal,
+		fmt.Sprintf("snapshot by id=%s is not running. current status=%s", jobID, currentStatus))
+	appErr.Props = map[string]any{
+		"currentStatus": currentStatus,
+		"snapshotId":    jobID,
+	}
+	return appErr
 }
 
 // validateConditionPaths runs the pre-execution field-path validation

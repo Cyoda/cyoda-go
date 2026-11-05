@@ -343,6 +343,30 @@ func snapshotSearchError(ctx context.Context, ceID string, err error) (*cepb.Clo
 	return NewCloudEvent(EntitySnapshotSearchResponse, resp)
 }
 
+// snapshotCancelRefused builds the answer to a cancel of a snapshot that has
+// already ended: the error envelope, carrying the status the snapshot ended
+// with (from the refusal's Props) instead of the generic FAILED.
+func snapshotCancelRefused(ctx context.Context, ceID string, appErr *common.AppError) (*cepb.CloudEvent, error) {
+	code, msg, retryable := buildErrorFields(appErr)
+	snapshotID, _ := appErr.Props["snapshotId"].(string)
+	current, _ := appErr.Props["currentStatus"].(string)
+	resp := events.EntitySnapshotSearchResponseJson{
+		ID:       ceID,
+		Success:  false,
+		Warnings: ctxWarnings(ctx),
+		Status: events.SearchSnapshotStatusJson{
+			SnapshotID: snapshotID,
+			Status:     events.SearchSnapshotStatusJsonStatus(current),
+		},
+		Error: &events.EntitySnapshotSearchResponseJsonError{
+			Code:      code,
+			Message:   msg,
+			Retryable: retryable,
+		},
+	}
+	return NewCloudEvent(EntitySnapshotSearchResponse, resp)
+}
+
 // entityStatsError builds a schema-valid EntityStatsResponse error.
 func entityStatsError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
 	code, msg, retryable := buildErrorFields(err)
