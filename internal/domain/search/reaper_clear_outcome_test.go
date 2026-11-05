@@ -213,3 +213,47 @@ func TestReclaimStaleJobs_ReleasedBeforeWorkerRunsSendsNoClear(t *testing.T) {
 		t.Fatalf("GetJob = (%v, %v), want RUNNING", got, err)
 	}
 }
+
+// A reclaimed job settled elsewhere while it waits in this node's queue, then
+// met by the shutdown release, ends with the release's one lost-claim line:
+// its worker, finding the job released, adds none.
+func TestReclaimStaleJobs_SettledThenReleasedWhileQueuedIsOneLine(t *testing.T) {
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	t.Cleanup(func() { factory.Close() })
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &clearOutcomeStore{AsyncSearchStore: base}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	createStaleReclaimJob(t, clock, base, "tenant-a", "job-settled-queued", ref, cond, time.Now())
+
+	pool := search.NewWorkerPool(1, 4)
+	hold := make(chan struct{})
+	if err := pool.Submit(func() { <-hold }); err != nil {
+		t.Fatalf("Submit the holder: %v", err)
+	}
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+		WithAsyncPool(pool).
+		WithHeartbeat(time.Hour)
+	if reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, err %v), want (1, nil)", reenq, err)
+	}
+
+	logs := captureJobLogs(t)
+	if err := base.Cancel(tenantCtx("tenant-a"), "job-settled-queued", time.Now()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if n := svc.ReleaseRegisteredJobs(context.Background()); n != 0 {
+		t.Errorf("ReleaseRegisteredJobs = %d, want 0: the store refused the release", n)
+	}
+	close(hold)
+	pool.Drain(context.Background())
+
+	if got := store.clears.Load(); got != 0 {
+		t.Errorf("ClearResults calls = %d, want 0", got)
+	}
+	assertOneLostClaimLine(t, logs.String(), "job-settled-queued")
+}

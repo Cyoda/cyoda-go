@@ -336,7 +336,8 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 // A job that does not run is deregistered, and is never run over unknown
 // residue (fail closed). Whether it is also released depends on why:
 //   - The clear failed: released (uncounted, fenced like the clear), so a
-//     peer or the next sweep retries it.
+//     peer or the next sweep retries it — unless a shutdown release or a
+//     lost claim settled the job's end first (settleJob).
 //   - The clear was refused (taken by a newer epoch, terminal, or gone):
 //     nothing is this node's to hand back, so no release; reported as a lost
 //     claim (endLostClaim).
@@ -345,8 +346,8 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 //     no longer this claim's: reported as a lost claim, no release. A
 //     shutdown release (errJobReleased) has already released it, and a
 //     self-reclaim (errJobSuperseded) holds it at a newer epoch, so neither is
-//     released again. No other cause cancels a job's context before its
-//     outcome is decided.
+//     released again. No other cause cancels a job's context before its end
+//     is settled.
 func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel context.CancelCauseFunc, handle *asyncJobHandle, job *spi.SearchJob) bool {
 	if jobCtx.Err() == nil {
 		cerr := s.searchStore.ClearResults(jobCtx, job.ID, job.Epoch)
@@ -356,28 +357,23 @@ func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel con
 		case fencedRefusal(cerr):
 			// Settled, taken or removed before it ran: no longer this
 			// claim's, reported as every lost claim is.
-			endLostClaim(job.ID, cerr)
+			settleJob(jobCtx, cancel, job.ID, cerr)
 			s.dropReclaim(cancel, handle, job)
 			return false
 		case jobCtx.Err() == nil:
 			slog.Error("failed to clear results before reclaim; releasing", "pkg", "search", "jobID", job.ID, "err", cerr)
+			if settleJob(jobCtx, cancel, job.ID, errJobEnding) {
+				s.releaseUnrun(context.Background(), job)
+			}
 			s.dropReclaim(cancel, handle, job)
-			s.releaseUnrun(context.Background(), job)
 			return false
 		}
 	}
-	cause := context.Cause(jobCtx)
-	if fencedRefusal(cause) {
-		// The heartbeat found the job settled, taken or removed before it
-		// ran: no longer this claim's, so nothing to release either.
-		endLostClaim(job.ID, cause)
-		s.dropReclaim(cancel, handle, job)
-		return false
-	}
-	// A shutdown release (errJobReleased) has already handed the job back, and
-	// a self-reclaim (errJobSuperseded) holds it at a newer epoch: nothing to
-	// release.
-	slog.Debug("reclaimed job ended before it ran", "pkg", "search", "jobID", job.ID, "cause", cause)
+	// The job's context ended first. A refused heartbeat or a cancel here is a
+	// lost claim, reported once; a shutdown release (errJobReleased) has
+	// already handed the job back, and a self-reclaim (errJobSuperseded) holds
+	// it at a newer epoch: nothing to release or report.
+	settleJob(jobCtx, cancel, job.ID, errJobEnding)
 	s.dropReclaim(cancel, handle, job)
 	return false
 }

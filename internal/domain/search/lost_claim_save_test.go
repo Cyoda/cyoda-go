@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -258,6 +259,22 @@ func (g *gateIterator) Next() bool {
 	return g.Iterator.Next()
 }
 
+// refusedHeartbeatSignal closes refused at the first Heartbeat the store
+// refuses.
+type refusedHeartbeatSignal struct {
+	spi.AsyncSearchStore
+	once    sync.Once
+	refused chan struct{}
+}
+
+func (s *refusedHeartbeatSignal) Heartbeat(ctx context.Context, jobID string, epoch int64) error {
+	err := s.AsyncSearchStore.Heartbeat(ctx, jobID, epoch)
+	if err != nil {
+		s.once.Do(func() { close(s.refused) })
+	}
+	return err
+}
+
 // A job settled elsewhere while this node still runs it is a lost claim when
 // the node shuts down, too: the shutdown release reports it with the one INFO
 // lost-claim line — and when the executor has already seen the refusal, the
@@ -285,7 +302,8 @@ func TestReleaseRegisteredJobs_LostClaimIsOneLine(t *testing.T) {
 				return &gateIterator{Iterator: it, gate: gate, entered: entered}
 			})
 			factory := &iterableFactory{StoreFactory: base, entityStore: ies}
-			store, _ := base.AsyncSearchStore(context.Background())
+			inner, _ := base.AsyncSearchStore(context.Background())
+			store := &refusedHeartbeatSignal{AsyncSearchStore: inner, refused: make(chan struct{})}
 			pool := search.NewWorkerPool(1, 4)
 			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 				WithAsyncPool(pool).
@@ -304,9 +322,15 @@ func TestReleaseRegisteredJobs_LostClaimIsOneLine(t *testing.T) {
 			if err := store.Cancel(ctx, jobID, time.Now()); err != nil {
 				t.Fatalf("Cancel: %v", err)
 			}
-			time.Sleep(100 * time.Millisecond) // the short heartbeat ticks and is refused
-			if n := svc.ReleaseRegisteredJobs(context.Background()); n != 1 {
-				t.Fatalf("ReleaseRegisteredJobs = %d, want 1", n)
+			if tc.heartbeat < time.Hour {
+				select {
+				case <-store.refused:
+				case <-time.After(5 * time.Second):
+					t.Fatal("the heartbeat was never refused")
+				}
+			}
+			if n := svc.ReleaseRegisteredJobs(context.Background()); n != 0 {
+				t.Errorf("ReleaseRegisteredJobs = %d, want 0: nothing was released", n)
 			}
 			close(gate)
 			pool.Drain(context.Background())
