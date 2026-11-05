@@ -754,12 +754,12 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 				return fmt.Errorf("Delete %s: %w", entityID, err)
 			}
 		} else {
-			// entityID is a same-tx buffered create/update with no prior
-			// committed row. flushToSQLite's delete loop evicts it from
-			// tx.Buffer below without ever separately flushing it, so
-			// without staging it here that flush would find no `entities`
-			// row to soft-delete and skip writing anything at all — see
-			// deletedBufferedEntities's field doc.
+			// entityID is a write this transaction buffered.
+			// flushToSQLite's delete loop evicts it from tx.Buffer below
+			// without ever separately flushing it, so when the entity has
+			// no committed row, without staging it here that flush would
+			// find no `entities` row to soft-delete and skip writing
+			// anything at all — see deletedBufferedEntities's field doc.
 			s.tm.stageDeletedBufferedEntity(tx.ID, entityID, buffered)
 		}
 		tx.Deletes[entityID] = true
