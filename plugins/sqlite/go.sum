@@ -4,6 +4,8 @@ github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261105174303-02286aa774af h1:J
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261105174303-02286aa774af/go.mod h1:AjUU/919ziLBvx3Ohsq5NYtaVWfxEL1EFi1NWignu9M=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261105175924-bf0c43caeb0f h1:UZ5ghbcqrOg1dc1qvDUp6NnoANVRytZQpUwd0vJL5aE=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261105175924-bf0c43caeb0f/go.mod h1:AjUU/919ziLBvx3Ohsq5NYtaVWfxEL1EFi1NWignu9M=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261105181324-e20ba02ed635 h1:wW1Q6j7780EQuZCUQuPV4xs6nHsZnFcH8sFItZ8/+so=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261105181324-e20ba02ed635/go.mod h1:AjUU/919ziLBvx3Ohsq5NYtaVWfxEL1EFi1NWignu9M=
 github.com/dustin/go-humanize v1.0.0 h1:VSnTsYCnlFHaM2/igO1h6X3HA71jcobQuxemgkq4zYo=
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/gofrs/flock v0.13.1 h1:jjREztyBeSKBZYAC+mgc1laB+xsgy4kYMf3FbKF2UBo=

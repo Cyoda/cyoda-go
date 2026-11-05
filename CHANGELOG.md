@@ -70,8 +70,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **Storage plugins: a transaction's own delete is its latest state.**
   `Delete` answers `ErrNotFound` for an entity the transaction already
-  deleted, and `DeleteAll` leaves such an entity, its delete and the
-  attribution recorded with it, as they are; the `spitest` cases
+  deleted, and `DeleteAll` leaves an entity whose latest state in the
+  transaction is deleted, with its delete and the attribution recorded with
+  it, as it is; the `spitest` cases
   `Transaction/DeleteThenDelete`, `Transaction/DeleteThenDeleteAll` and
   `Transaction/DeleteSaveDelete` check it. Out-of-tree plugins must pass
   them; see `COMPATIBILITY.md`.
