@@ -546,3 +546,42 @@ func TestHTTPProxy_CallerGoneDuringProxyIsNotAnOutage(t *testing.T) {
 		t.Fatalf("a departed caller was logged as an error:\n%s", logBuf.String())
 	}
 }
+
+// A request forwarded to its transaction's owner gets the owner's warnings: the
+// proxy relays each Cyoda-Warning field line unchanged and in order.
+func TestHTTPProxy_RelaysTheOwnersWarnings(t *testing.T) {
+	want := []string{"first", "no workflows imported for model %E2%80%94 using default workflow", "further warnings were omitted"}
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, v := range want {
+			w.Header().Add(common.WarningHeader, v)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer remote.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true},
+	)
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-w", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-w", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/entity/JSON/m/1", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	got := rec.Result().Header.Values(common.WarningHeader)
+	if len(got) != len(want) {
+		t.Fatalf("%s = %q; want %q", common.WarningHeader, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s = %q; want %q", common.WarningHeader, got, want)
+		}
+	}
+}

@@ -14,8 +14,14 @@ type RequestDiagnostics struct {
 
 type diagnosticsKey struct{}
 
+// WarningHeader is the HTTP response header that carries a request's warnings,
+// one header field line per warning (internal/httpmw.Warnings); a gRPC
+// response carries them in its `warnings` array.
+const WarningHeader = "Cyoda-Warning"
+
 // WithDiagnostics creates a new context with an empty RequestDiagnostics.
-// Call at the start of every request (HTTP handler or gRPC handler entry).
+// Called once per request: by internal/httpmw.Warnings for an HTTP data route,
+// at each gRPC entry point, and by the peer callout hand-over handler.
 func WithDiagnostics(ctx context.Context) context.Context {
 	return context.WithValue(ctx, diagnosticsKey{}, &RequestDiagnostics{})
 }

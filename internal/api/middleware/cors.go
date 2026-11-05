@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // Static preflight-response values per spec.
@@ -92,6 +94,9 @@ func CORS(p *CORSPolicy) func(http.Handler) http.Handler {
 
 			if origin != "" && allowed != "" {
 				w.Header().Set("Access-Control-Allow-Origin", allowed)
+				// Cyoda-Warning is not a CORS-safelisted response header:
+				// without this a browser hides the warnings from script.
+				w.Header().Set("Access-Control-Expose-Headers", common.WarningHeader)
 			}
 			next.ServeHTTP(w, r)
 		})

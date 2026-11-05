@@ -565,7 +565,7 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 	}
 
 	// No imported workflow matched the entity — fall back to the embedded
-	// default, which NewEngine always installs. Both channels (body warning +
+	// default, which NewEngine always installs. Both channels (client warning +
 	// slog.Warn) fire.
 	common.AddWarning(ctx, "no imported workflow matched entity — using default workflow")
 	e.logDefaultFallback(ctx, entity, "no_criterion_matched")
@@ -614,14 +614,11 @@ func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditS
 // executing the entity and have nothing to key to on a read.
 //
 // It deliberately does NOT suppress the operator-facing
-// default-substitution WARN. Emitting one per read is more log volume than
-// an execution path produces, and that was reason enough to consider
-// silencing it — but common.AddWarning cannot compensate here: the
-// diagnostics bag is installed only on the gRPC entry points
-// (internal/grpc/*), the transitions endpoints are HTTP-only, and
-// common.WriteJSON emits a bare array with no warnings field. Silencing the
-// log would leave a read that answered from the default workflow with no
-// signal on any channel at all.
+// default-substitution WARN, although one per read is more log volume than an
+// execution path produces: the warning common.AddWarning raises reaches the
+// client (the transitions endpoints are HTTP-only, and carry it in a
+// Cyoda-Warning header), while the log line is the operator's channel, which
+// every door that substitutes the default feeds alike.
 func (e *Engine) resolveWorkflowForQuery(ctx context.Context, entity *spi.Entity) (*spi.WorkflowDefinition, error) {
 	wf, _, err := e.resolveWorkflowWith(ctx, entity, discardedAuditStore{}, "")
 	return wf, err
@@ -648,7 +645,7 @@ func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, au
 		return nil, false, common.Internal("failed to load workflows", err)
 	}
 
-	// No workflows defined → use embedded default. Body warning surfaces to
+	// No workflows defined → use embedded default. The warning surfaces to
 	// the client; slog.Warn surfaces to operators.
 	if len(workflows) == 0 {
 		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
@@ -1022,14 +1019,11 @@ func (e *Engine) resolveAuditTxID(entity *spi.Entity) string {
 //   - "no_criterion_matched":  workflows exist but none matched the entity
 //     (selectWorkflow tail).
 //
-// Read paths log too (see resolveWorkflowForQuery): on the HTTP-only
-// transitions endpoints this line is the ONLY channel the substitution
-// surfaces on, since the diagnostics bag common.AddWarning writes to is
-// installed on the gRPC entry points only.
+// Read paths log too (see resolveWorkflowForQuery).
 //
-// The body-level warning via common.AddWarning is raised on every path for
-// client-facing surfacing wherever a diagnostics bag exists; this log line
-// is purely additive for operational observability.
+// The warning via common.AddWarning is raised on every path for the client:
+// in the gRPC `warnings` array and in an HTTP response's Cyoda-Warning headers.
+// This log line is the operator's channel beside it.
 func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, reason string) {
 	slog.WarnContext(ctx, "default workflow substituted",
 		slog.String("pkg", "workflow"),

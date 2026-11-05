@@ -145,7 +145,7 @@ HTTP and gRPC callbacks.
   load — use `COMMIT_BEFORE_DISPATCH` instead.
 - Both modes add the processor's `warnings` to the request through
   `common.AddWarning`; a gRPC response returns them in `warnings`, an HTTP
-  response carries none. A processor's failure reaches the caller as the
+  response in `Cyoda-Warning` headers. A processor's failure reaches the caller as the
   operation's error.
 
 ---

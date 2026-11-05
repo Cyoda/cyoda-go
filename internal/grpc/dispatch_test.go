@@ -991,9 +991,9 @@ func TestDispatchCalloutToMember_KindDrivenAuthType(t *testing.T) {
 
 // TestDispatchProcessor_WarningPropagatesName guards that response warnings
 // surface to the client keyed by the processor NAME, not the opaque request
-// ID. These strings appear in the gRPC warnings array and HTTP body
-// (.claude/rules/error-handling.md); a refactor must not swap the name for a
-// UUID.
+// ID. These strings appear in the gRPC warnings array and the HTTP
+// Cyoda-Warning headers (.claude/rules/error-handling.md); a refactor must not
+// swap the name for a UUID.
 func TestDispatchProcessor_WarningPropagatesName(t *testing.T) {
 	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
 	ctx := common.WithDiagnostics(testContext())

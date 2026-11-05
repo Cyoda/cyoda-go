@@ -1249,6 +1249,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   no internal detail (for example `search failed unexpectedly`). Before, a
   caller saw `FAILED` and no reason. See `cyoda help search`.
 
+- **HTTP responses carry warnings in `Cyoda-Warning` headers.** A warning a
+  request raises — the default-workflow fallback, a compute member's warning,
+  prefixed with the callout's kind and name — was returned only in the gRPC
+  `warnings` array; an HTTP response now carries each one in a
+  `Cyoda-Warning` response header field line, in the order raised, on
+  success and error responses alike. A value is percent-encoded UTF-8 (a
+  control character is sent as a space), so a compute member's text cannot
+  end the header line. At most 16 warnings, 512 bytes per value and 2048
+  bytes in all; a cut value ends with an encoded `…`, and one more value,
+  `further warnings were omitted`, marks a cut set. A warning raised after
+  the response has started is not sent. A request forwarded to its
+  transaction's owner carries the owner's headers, and CORS exposes the
+  header (`Access-Control-Expose-Headers: Cyoda-Warning`). See
+  `cyoda help errors`.
+
 - **A controllable platform clock, a test feature (off by default).** With
   `CYODA_CLOCK_CONTROL_ENABLED=true`, a platform operator can set the clock
   to a past or future time, change its rate, or move it forward through

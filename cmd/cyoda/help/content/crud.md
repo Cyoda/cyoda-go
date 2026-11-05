@@ -64,6 +64,8 @@ Entities are instances of models. Each entity has a UUID, a model reference (`en
 
 Body size limit on all write endpoints: 10 MiB.
 
+A response may carry `Cyoda-Warning` headers: one per warning the request raised, such as the default-workflow fallback or a compute member's warning. See `cyoda help errors` (WARNINGS) for the encoding and the bounds.
+
 ## ENDPOINTS
 
 **POST /api/entity/{format}/{entityName}/{modelVersion}** — Create a single entity

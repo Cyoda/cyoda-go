@@ -56,6 +56,24 @@ A `500` from an unexpected server error includes a `ticket` UUID for server-side
 
 `CYODA_ERROR_RESPONSE_MODE` controls the detail level of an unexpected server error. `sanitized` (default): generic message plus `ticket` UUID. `verbose`: internal error detail included in the response body; intended for development environments only.
 
+## WARNINGS
+
+A warning is a condition that did not fail the operation but that the client should know about: an entity run by the default workflow because no imported workflow applies to it, or a compute member's own warnings, prefixed with the callout's kind and name (`processor <name>: `, `criteria <name>: `, `function <name>: `). A gRPC response carries them in its `warnings` array.
+
+An HTTP response carries each warning in a `Cyoda-Warning` response header, one header field line per warning, in the order the warnings were raised. Success and error responses carry them alike. A response that raised no warning has no `Cyoda-Warning` header.
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
+```
+
+- **Encoding.** A value is visible ASCII and space only. It is the warning's UTF-8 text, with every byte of a non-ASCII character, every `%` and a space at either end percent-encoded in upper-case hex. Decode it with a standard percent-decoder; `+` is a plus sign, not a space. A control character (CR, LF, tab, any other C0 or C1 control, DEL) is sent as a space, and invalid UTF-8 as U+FFFD.
+- **Bounds.** At most 16 warnings, at most 512 bytes in one value and at most 2048 bytes in all values together, so the header block fits a proxy's response-header buffer (nginx's `proxy_buffer_size` is 4 KiB on most platforms). A longer value is cut and ends with `%E2%80%A6` (`…`). When warnings were left out, one more value says `further warnings were omitted`. The gRPC `warnings` array is not cut to these bounds.
+- **Timing.** The warnings are added when the response starts. A warning raised after that cannot be sent.
+- **Cluster.** A request forwarded to the node that owns its transaction carries the owner's `Cyoda-Warning` headers unchanged.
+- **Browsers.** With CORS on, `Access-Control-Expose-Headers: Cyoda-Warning` lets a script read the header (see `cyoda help config cors`).
+
 ## ERROR CODE INDEX
 
 - `errors.BAD_REQUEST` — `400` — not retryable — request body, query parameter, or header is malformed or structurally invalid

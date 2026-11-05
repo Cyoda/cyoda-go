@@ -2080,9 +2080,9 @@ type WorkflowConfigurationDto struct {
 	// (absent) criterion matches unconditionally. If no active
 	// workflow matches — and `active=false` workflows are skipped
 	// entirely during selection — the engine falls back to the
-	// embedded default workflow and emits both a warning (in the
-	// `warnings` of a gRPC response; an HTTP response carries none)
-	// and an operator-visible `slog.Warn` line. Workflow-level criteria
+	// embedded default workflow and emits both a warning (in a
+	// `Cyoda-Warning` header of an HTTP response and in the `warnings`
+	// of a gRPC response) and an operator-visible `slog.Warn` line. Workflow-level criteria
 	// use the same Condition DSL as search and transition-level
 	// criteria, and a `function` condition is valid at any depth.
 	Criterion *QueryConditionDto `json:"criterion,omitempty"`

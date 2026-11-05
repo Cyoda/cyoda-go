@@ -550,7 +550,7 @@ When a model has more than one imported workflow definition, the engine picks th
 2. Skip any workflow whose `active` flag is `false`. Inactive workflows are invisible to selection, regardless of their criterion.
 3. For each active workflow, evaluate `criterion` against the entity payload and lifecycle metadata. A `null` (absent) criterion matches unconditionally — the workflow is selected immediately.
 4. The first active workflow whose criterion matches is selected. Subsequent workflows in the array are not consulted.
-5. If no active workflow matches — which includes the case where every active workflow has a criterion and none of them passes — the engine falls back to the embedded **default workflow**. The substitution surfaces on two channels: a warning in the `warnings` of a gRPC response (an HTTP response carries none) and an operator-visible `slog.Warn` line (`reason=no_criterion_matched`).
+5. If no active workflow matches — which includes the case where every active workflow has a criterion and none of them passes — the engine falls back to the embedded **default workflow**. The substitution surfaces on two channels: a warning to the client (a `Cyoda-Warning` header on an HTTP response, the `warnings` of a gRPC response; see `cyoda help errors`) and an operator-visible `slog.Warn` line (`reason=no_criterion_matched`).
 
 Place a `null`-criterion (or otherwise unconditional) workflow last in the import array if you want it to act as a catch-all. Any active workflows declared after it are unreachable for the same reason an unguarded automated transition shadows successors at the transition level.
 

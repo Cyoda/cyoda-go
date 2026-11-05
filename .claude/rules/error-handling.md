@@ -18,7 +18,7 @@ Defined in `internal/common/error_codes.go`. Refer to that file — do not maint
 ## Warnings & Diagnostics
 
 - Accumulate warnings via `common.AddWarning(ctx, msg)`.
-- Surfaced in the gRPC `warnings` array; HTTP responses carry none.
+- Surfaced in the gRPC `warnings` array and, on an HTTP data route, in `Cyoda-Warning` response headers, one per warning (`internal/httpmw.Warnings`, which installs the bag; encoding and bounds there). A warning raised after the HTTP response has started is not sent.
 - Propagate processor/criteria/function response warnings to the caller; a member's failure reaches the caller through its callout failure.
 
 ## Rules

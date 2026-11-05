@@ -113,6 +113,36 @@ info:
     APIs for handling edge message communication and processing.
 
 
+    ## Warnings
+
+
+    A request can raise warnings: conditions that did not fail the operation
+    but that the client should know about, such as an entity run by the
+    default workflow because no imported workflow applies to it, or a compute
+    member's own warnings, prefixed `processor <name>: `, `criteria <name>: `
+    or `function <name>: `. Each warning is one `Cyoda-Warning` response header
+    field line, in the order the warnings were raised, on a success response
+    and an error response alike. A response that raised no warning has no
+    `Cyoda-Warning` header. A gRPC response carries the same warnings in its
+    `warnings` array.
+
+
+    A value is visible ASCII and space only: the warning's UTF-8 text, with
+    every byte of a non-ASCII character, every `%` and a space at either end
+    percent-encoded in upper-case hex. Decode it with a standard
+    percent-decoder; `+` is a plus sign, not a space. A control character
+    (CR, LF, tab, any other C0 or C1 control, DEL) is sent as a space, and
+    invalid UTF-8 as U+FFFD.
+
+
+    A response carries at most 16 warnings, at most 512 bytes in one value
+    and at most 2048 bytes in all values together. A longer value is cut and
+    ends with `%E2%80%A6` (`…`). When warnings were left out, one more value
+    says `further warnings were omitted`. A warning raised after the response
+    has started cannot be sent. With CORS on, `Access-Control-Expose-Headers:
+    Cyoda-Warning` lets a browser script read the header.
+
+
     ## Authentication
 
 
@@ -10864,9 +10894,9 @@ components:
             (absent) criterion matches unconditionally. If no active
             workflow matches — and `active=false` workflows are skipped
             entirely during selection — the engine falls back to the
-            embedded default workflow and emits both a warning (in the
-            `warnings` of a gRPC response; an HTTP response carries none)
-            and an operator-visible `slog.Warn` line. Workflow-level criteria
+            embedded default workflow and emits both a warning (in a
+            `Cyoda-Warning` header of an HTTP response and in the `warnings`
+            of a gRPC response) and an operator-visible `slog.Warn` line. Workflow-level criteria
             use the same Condition DSL as search and transition-level
             criteria, and a `function` condition is valid at any depth.
           $ref: "#/components/schemas/QueryConditionDto"

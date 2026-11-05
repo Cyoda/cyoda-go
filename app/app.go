@@ -686,10 +686,15 @@ func New(cfg Config) *App {
 	// The hand-written data route below takes the chain the generated routes
 	// take: TxJoin is nested inside authMW so UserContext is available for
 	// tenant checks; RequireM2M runs before TxJoin, so a caller without
-	// ROLE_M2M joins nothing. The /admin routes above are operator-guarded
-	// instead.
+	// ROLE_M2M joins nothing. Warnings sits outside TxJoin and installs the
+	// request's diagnostics bag: every warning the handler raises, a joined
+	// request's included, and every refusal TxJoin writes go out through it
+	// with Cyoda-Warning headers. The /admin routes above are operator-guarded
+	// instead and raise no warning.
 	txJoinMW := httpmw.TxJoin(a.joiner)
-	dataMW := func(h http.Handler) http.Handler { return authMW(internalapi.RequireM2M(txJoinMW(h))) }
+	dataMW := func(h http.Handler) http.Handler {
+		return authMW(internalapi.RequireM2M(httpmw.Warnings(txJoinMW(h))))
+	}
 
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
@@ -739,9 +744,10 @@ func New(cfg Config) *App {
 	// Generated API routes (with auth) — uses chi to avoid ServeMux
 	// wildcard-conflict panics in overlapping /model/… paths. Recovery is
 	// applied once, below, to the fully assembled handler. The chi mux runs
-	// each route's ROLE_M2M check before TxJoin, as dataMW does above.
+	// each route's ROLE_M2M check before Warnings and TxJoin, as dataMW does
+	// above.
 	apiHandler := genapi.HandlerWithOptions(server, genapi.StdHTTPServerOptions{
-		BaseRouter:       internalapi.NewChiMux(queryRules, txJoinMW),
+		BaseRouter:       internalapi.NewChiMux(queryRules, httpmw.Warnings, txJoinMW),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
 	})
 	mux.Handle("/", authMW(apiHandler))

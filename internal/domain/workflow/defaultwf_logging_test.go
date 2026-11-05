@@ -215,6 +215,6 @@ func TestDefaultFallback_PreservesBodyWarning(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected a body warning mentioning 'default workflow', got %v", warns)
+		t.Errorf("expected a client warning mentioning 'default workflow', got %v", warns)
 	}
 }
