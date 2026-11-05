@@ -101,6 +101,9 @@ func buildErrorFields(ctx context.Context, err error) (code, message string, ret
 			// WithCause and keeps it out of the client-facing message; the log
 			// line is then its only breadcrumb.
 			attrs := append(requestAttrs(ctx), "code", appErr.Code, "message", appErr.Message)
+			if appErr.Detail != "" {
+				attrs = append(attrs, "detail", appErr.Detail)
+			}
 			if appErr.Err != nil {
 				attrs = append(attrs, "cause", appErr.Err.Error())
 			}

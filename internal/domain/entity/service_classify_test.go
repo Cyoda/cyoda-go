@@ -605,3 +605,26 @@ func TestPerIDDeleteError_EpochMismatchKeepsItsCode(t *testing.T) {
 		t.Fatalf("message = %q, want the %s code", msg, common.ErrCodeEpochMismatch)
 	}
 }
+
+// An engine refusal answered with an operational error keeps, in the error's
+// log-only Detail, the engine's own text — the processor, the item — and the
+// entity it was for; the deleted service log line was its only record. The
+// passed-through error itself is not changed (it may be shared).
+func TestClassifyEngineError_KeepsTheEngineTextAsDetail(t *testing.T) {
+	inner := common.Operational(http.StatusServiceUnavailable, common.ErrCodeCalloutFailed, "CALLOUT_FAILED: the compute member failed").AsRetryable()
+	got := classifyEngineError(fmt.Errorf("item 3: processor enrich failed: %w", inner), "ent-42")
+	if got.Code != common.ErrCodeCalloutFailed || got.Message != inner.Message {
+		t.Fatalf("classified = %s %q, want the passed-through error", got.Code, got.Message)
+	}
+	if !strings.Contains(got.Detail, "processor enrich failed") || !strings.Contains(got.Detail, "item 3") || !strings.Contains(got.Detail, "ent-42") {
+		t.Errorf("Detail = %q, want the engine text and the entity id", got.Detail)
+	}
+	if inner.Detail != "" {
+		t.Errorf("the passed-through error was changed: Detail = %q", inner.Detail)
+	}
+
+	conflict := classifyEngineError(fmt.Errorf("unique key: %w", spi.ErrUniqueViolation), "ent-43")
+	if conflict.Code != common.ErrCodeUniqueViolation || !strings.Contains(conflict.Detail, "unique key") {
+		t.Errorf("unique violation = %s, Detail %q; want UNIQUE_VIOLATION carrying the store text", conflict.Code, conflict.Detail)
+	}
+}

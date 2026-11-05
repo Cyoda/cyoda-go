@@ -2785,7 +2785,18 @@ func classifyEngineError(err error, entityID string) *common.AppError {
 		appErr.Props = map[string]any{"entityId": entityID}
 		return appErr
 	}
-	return classifyWorkflowError(err)
+	appErr := classifyWorkflowError(err)
+	if appErr.Level != common.LevelOperational {
+		return appErr
+	}
+	// The engine's own text — which processor or function, which item — and
+	// the entity are the refusal's only record: the door's funnel logs Detail
+	// and never answers it. A copy, because a passed-through error may be
+	// shared, and Detail rather than a cause, so nothing new joins the
+	// answer's unwrap chain.
+	withText := *appErr
+	withText.Detail = fmt.Sprintf("entity %s: %s", entityID, err.Error())
+	return &withText
 }
 
 // engineConflictIsTransactionConflict reports whether an engine error that

@@ -1784,7 +1784,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `ceId`). Before, gRPC logged a client error at ERROR, or not at all when it
   carried no cause, and a server-side failure twice; a write the workflow
   engine refused (a 412, a 409, a superseded chain) logged an ERROR before the
-  funnel's line, and the refusals above logged two lines on both doors.
+  funnel's line, and the refusals above logged two lines on both doors. A
+  failed later chunk of a chunked HTTP collection, answered as an error
+  element in a 200 body, is logged the same way; it logged nothing, and a
+  server-side failure there now answers the generic text with its ticket
+  instead of its internal message.
 
 - **A schema extension is kept on every backend when its model is unlocked,
   re-imported or deleted.** On PostgreSQL, unlocking a model discarded the

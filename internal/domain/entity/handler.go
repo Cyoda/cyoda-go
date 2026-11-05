@@ -835,7 +835,7 @@ func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, 
 				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
 					Code:       appErr.Code,
-					Message:    appErr.Message,
+					Message:    common.ReportError(ctx, appErr, "pkg", "entity", "chunkIndex", chunkIdx),
 					ChunkIndex: chunkIdx,
 				},
 			})
@@ -1041,7 +1041,7 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
 					Code:       appErr.Code,
-					Message:    appErr.Message,
+					Message:    common.ReportError(opCtx, appErr, "pkg", "entity", "path", r.URL.Path, "chunkIndex", chunkIdx),
 					ChunkIndex: chunkIdx,
 				},
 			})

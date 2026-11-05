@@ -195,6 +195,9 @@ func TestGRPCWorkflowRefusal_LoggedOnce(t *testing.T) {
 		lines = append(lines, logs.lines(level)...)
 	}
 	if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") || !strings.Contains(lines[0], "operational error") {
-		t.Errorf("log lines = %q, want the funnel's one INFO line", lines)
+		t.Fatalf("log lines = %q, want the funnel's one INFO line", lines)
+	}
+	if !strings.Contains(lines[0], "cause=") || !strings.Contains(lines[0], entityID) {
+		t.Errorf("the line lacks the engine's refusal or the entity: %s", lines[0])
 	}
 }

@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -146,6 +147,12 @@ func (e *AppError) OperationalLogLevel() slog.Level {
 	return slog.LevelInfo
 }
 
+// withDetail sets a just-constructed error's log-only Detail to err's text.
+func withDetail(e *AppError, err error) *AppError {
+	e.Detail = err.Error()
+	return e
+}
+
 // WithTicket pins the correlation UUID the response will carry, for callers
 // that have already logged the full detail under it. Without this the writer
 // mints its own, and the identifier the client is handed names no log line —
@@ -263,14 +270,18 @@ func Internal(message string, err error) *AppError {
 	if appErr := EpochMismatch(err); appErr != nil {
 		return appErr
 	}
+	// The three sentinel answers below keep the store's text as Detail, which
+	// is logged and never answered. It is not attached as a cause: a cause
+	// would put the sentinel in the answer's unwrap chain, where a caller
+	// classifying an unwrapped conflict would read it again.
 	if err != nil && errors.Is(err, spi.ErrUniqueViolation) {
-		return Operational(http.StatusConflict, ErrCodeUniqueViolation, "a composite unique key constraint was violated")
+		return withDetail(Operational(http.StatusConflict, ErrCodeUniqueViolation, "a composite unique key constraint was violated"), err)
 	}
 	if err != nil && errors.Is(err, spi.ErrPartialUniqueKey) {
-		return Operational(http.StatusUnprocessableEntity, ErrCodeInvalidUniqueKey, "one or more unique key fields are null or invalid")
+		return withDetail(Operational(http.StatusUnprocessableEntity, ErrCodeInvalidUniqueKey, "one or more unique key fields are null or invalid"), err)
 	}
 	if err != nil && errors.Is(err, spi.ErrConflict) {
-		return Operational(http.StatusConflict, ErrCodeConflict, "transaction conflict — retry").AsRetryable()
+		return withDetail(Operational(http.StatusConflict, ErrCodeConflict, "transaction conflict — retry").AsRetryable(), err)
 	}
 	detail := ""
 	if err != nil {
@@ -396,85 +407,8 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 		Status:   appErr.Status,
 		Instance: path,
 	}
-
-	switch appErr.Level {
-	case LevelOperational:
-		attrs := []any{
-			"status", appErr.Status,
-			"message", appErr.Message,
-			"path", path,
-		}
-		// Most operational errors put full domain detail in Message, which the
-		// client is entitled to see. The exception is one whose cause is
-		// infrastructure rather than domain — a storage failure carrying
-		// connection detail such as host, user and database (the password is
-		// redacted by the driver) — where the cause is attached via WithCause and
-		// kept out of the response. The log is then its only breadcrumb.
-		if appErr.Err != nil {
-			attrs = append(attrs, "cause", appErr.Err.Error())
-		}
-		slog.Log(r.Context(), appErr.OperationalLogLevel(), "operational error", attrs...)
-		pd.Detail = appErr.Message
-
-	case LevelInternal:
-		if isClientGoneCancellation(appErr) {
-			// Routine: the client disconnected, nothing was wrong on this end,
-			// and there is nobody to quote a ticket to. No ticket is minted.
-			// The gRPC funnel (internal/grpc/errors.go) logs this same event
-			// under the same message and the same fields, so the two collate;
-			// path is this door's own addition.
-			slog.Debug("client gone before request completed",
-				"code", appErr.Code,
-				"message", appErr.Message,
-				"detail", appErr.Detail,
-				"path", path,
-			)
-			if getErrorResponseMode() == "verbose" {
-				pd.Detail = appErr.Detail
-			} else {
-				pd.Detail = "SERVER_ERROR: internal error"
-			}
-			break
-		}
-		ticket := appErr.ticketOr()
-		// Detail may hold infrastructure detail (a storage error's connection
-		// detail such as host, user and database; the driver redacts the
-		// password). It goes to the log only, and to the response only in the
-		// verbose error-response mode (CYODA_ERROR_RESPONSE_MODE, development
-		// only; see `cyoda help config`).
-		slog.Error("internal error",
-			"ticket", ticket,
-			"message", appErr.Message,
-			"detail", appErr.Detail,
-			"path", path,
-		)
-		pd.Ticket = ticket
-		if getErrorResponseMode() == "verbose" {
-			pd.Detail = appErr.Detail
-		} else {
-			pd.Detail = fmt.Sprintf("SERVER_ERROR: internal error [ticket: %s]", ticket)
-		}
-
-	case LevelFatal:
-		ticket := appErr.ticketOr()
-		// Detail may hold infrastructure detail (a storage error's connection
-		// detail such as host, user and database; the driver redacts the
-		// password). It goes to the log only, and to the response only in the
-		// verbose error-response mode (CYODA_ERROR_RESPONSE_MODE, development
-		// only; see `cyoda help config`).
-		slog.Error("FATAL error",
-			"ticket", ticket,
-			"message", appErr.Message,
-			"detail", appErr.Detail,
-			"path", path,
-		)
-		pd.Ticket = ticket
-		if getErrorResponseMode() == "verbose" {
-			pd.Detail = appErr.Detail
-		} else {
-			pd.Detail = fmt.Sprintf("SERVER_ERROR: internal error [ticket: %s]", ticket)
-		}
-	}
+	pd.Ticket = logAppError(r.Context(), appErr, "path", path)
+	pd.Detail = clientText(appErr, pd.Ticket)
 
 	if appErr.Props != nil {
 		pd.Props = appErr.Props
@@ -492,6 +426,81 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 	if err := json.NewEncoder(w).Encode(pd); err != nil {
 		slog.Debug("failed to encode response", "error", err)
 	}
+}
+
+// logAppError writes an error's one log line, by its class, and returns the
+// ticket an internal or fatal error is logged under ("" for an operational
+// error or a client that went away). It is the funnel every door shares:
+// WriteError, and ReportError for an error answered outside a problem
+// response. attrs name where the error was answered (an HTTP path, a chunk).
+func logAppError(ctx context.Context, appErr *AppError, attrs ...any) (ticket string) {
+	switch appErr.Level {
+	case LevelOperational:
+		// Most operational errors put full domain detail in Message, which the
+		// client is entitled to see. The exception is one whose cause is
+		// infrastructure rather than domain — a storage failure carrying
+		// connection detail such as host, user and database (the password is
+		// redacted by the driver) — where the cause is attached via WithCause and
+		// kept out of the response, or whose engine text is kept as Detail. The
+		// log is then its only breadcrumb; neither is ever answered.
+		line := append([]any{"status", appErr.Status, "message", appErr.Message}, attrs...)
+		if appErr.Detail != "" {
+			line = append(line, "detail", appErr.Detail)
+		}
+		if appErr.Err != nil {
+			line = append(line, "cause", appErr.Err.Error())
+		}
+		slog.Log(ctx, appErr.OperationalLogLevel(), "operational error", line...)
+		return ""
+	case LevelInternal:
+		if isClientGoneCancellation(appErr) {
+			// Routine: the client disconnected, nothing was wrong on this end,
+			// and there is nobody to quote a ticket to. No ticket is minted.
+			// The gRPC funnel (internal/grpc/errors.go) logs this same event
+			// under the same message and the same fields, so the two collate.
+			slog.Debug("client gone before request completed",
+				append([]any{"code", appErr.Code, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
+			return ""
+		}
+		ticket = appErr.ticketOr()
+		// Detail may hold infrastructure detail (a storage error's connection
+		// detail such as host, user and database; the driver redacts the
+		// password). It goes to the log only, and to the response only in the
+		// verbose error-response mode (CYODA_ERROR_RESPONSE_MODE, development
+		// only; see `cyoda help config`).
+		slog.Error("internal error",
+			append([]any{"ticket", ticket, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
+		return ticket
+	default: // LevelFatal
+		ticket = appErr.ticketOr()
+		slog.Error("FATAL error",
+			append([]any{"ticket", ticket, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
+		return ticket
+	}
+}
+
+// clientText is what a client is told about appErr: an operational error's
+// message; for an internal or fatal one, the generic text with its ticket (or
+// without one for a client that went away), or its Detail in the verbose
+// error-response mode.
+func clientText(appErr *AppError, ticket string) string {
+	if appErr.Level == LevelOperational {
+		return appErr.Message
+	}
+	if getErrorResponseMode() == "verbose" {
+		return appErr.Detail
+	}
+	if ticket == "" {
+		return "SERVER_ERROR: internal error"
+	}
+	return fmt.Sprintf("SERVER_ERROR: internal error [ticket: %s]", ticket)
+}
+
+// ReportError logs an error answered outside a problem response — an error
+// element in a 2xx collection body — exactly as WriteError logs it, and
+// returns the text the client is given for it, as WriteError would give it.
+func ReportError(ctx context.Context, appErr *AppError, attrs ...any) string {
+	return clientText(appErr, logAppError(ctx, appErr, attrs...))
 }
 
 // SanitizeErrorMessage returns a client-safe error message.

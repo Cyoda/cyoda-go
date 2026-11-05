@@ -3,8 +3,10 @@ package entity_test
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -319,4 +321,57 @@ func countEntitiesForModel(t *testing.T, base, entityName string, version int) i
 		t.Fatalf("stats: missing/non-numeric count: %v", stats)
 	}
 	return int(count)
+}
+
+// A later chunk's failure, answered as an error element in a 200 body, is
+// logged once, as a door's funnel logs a refused request: one line at its
+// class level, naming the chunk.
+func TestCreateCollection_LaterChunkFailureIsLoggedOnce(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "CreateChunkLogGood", 1, `{"name":"x"}`)
+	parts := []string{
+		`{"model":{"name":"CreateChunkLogGood","version":1},"payload":"{\"name\":\"a\"}"}`,
+		`{"model":{"name":"CreateChunkLogGood","version":1},"payload":"{\"name\":\"b\"}"}`,
+		`{"model":{"name":"CreateChunkLogMissing","version":1},"payload":"{\"name\":\"never\"}"}`,
+	}
+	var buf syncLogBuffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	resp, err := http.Post(srv.URL+"/entity/JSON?transactionWindow=2", "application/json", strings.NewReader("["+strings.Join(parts, ",")+"]"))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	rbody := readBody(t, resp)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(rbody), `"chunkIndex":1`) {
+		t.Fatalf("status = %d, body = %s; want 200 with chunk 1 failed", resp.StatusCode, rbody)
+	}
+	var refusals []string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "chunkIndex=1") {
+			refusals = append(refusals, line)
+		}
+	}
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "level=INFO") || !strings.Contains(refusals[0], "MODEL_NOT_FOUND") {
+		t.Errorf("lines for the failed chunk = %q, want one INFO line naming its code", refusals)
+	}
+}
+
+type syncLogBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncLogBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncLogBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

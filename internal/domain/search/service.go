@@ -182,9 +182,10 @@ type asyncScanScoper interface {
 // any error a client is shown; nothing else stands between this text and the
 // wire.
 //
-// It logs the failure once, with jobID: at INFO, with its cause, for an
-// operational failure (one the request caused, a storage outage, a lost race),
-// and at ERROR, with the detail and the ticket, for a server-side one.
+// It logs the failure once, with jobID: for an operational failure (one the
+// request caused, a storage outage, a lost race) at the error's level — INFO
+// unless the refusing site set another — with its detail and cause, and at
+// ERROR, with the detail and the ticket, for a server-side one.
 func jobFailureMessage(jobID string, err error) string {
 	var ceiling searchCeilingExceeded
 	if errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
@@ -200,6 +201,9 @@ func jobFailureMessage(jobID string, err error) string {
 	}
 	if appErr.Level == common.LevelOperational {
 		attrs := []any{"pkg", "search", "jobID", jobID, "reason", appErr.Error()}
+		if appErr.Detail != "" {
+			attrs = append(attrs, "detail", appErr.Detail)
+		}
 		if appErr.Err != nil {
 			attrs = append(attrs, "cause", appErr.Err.Error())
 		}
@@ -951,7 +955,8 @@ func untranslatableCondition(translateErr error) *common.AppError {
 //     it at WARN claimed a system inconsistency on every ordinary hit of the
 //     single most common cause, drowning out the rarer, genuinely anomalous
 //     ones (a malformed NOT node, an out-of-grammar path) the sentinel cannot
-//     be told apart from — so this one logs at DEBUG instead.
+//     be told apart from — so this one is logged at the client-error class
+//     level, INFO, by the door's funnel.
 //
 // match.ErrUnevaluableLeaf and match.ErrUnsupportedOperator are
 // internal/match's OWN Prepare (predicate.Condition side, a different
@@ -979,9 +984,10 @@ func untranslatableCondition(translateErr error) *common.AppError {
 //
 // match.ErrUnevaluableLeaf and spi.ErrUnevaluableLeaf share both a name and
 // an error message ("unevaluable leaf") by design — two evaluators, one
-// disposition — so the two cases below are logged with an explicit "source"
-// field: a caller reaching for the wrong sentinel in a log-line search would
-// otherwise have no way to tell which evaluator actually rejected the leaf.
+// disposition — so the two cases below name their evaluator in the cause the
+// funnel logs: a caller reaching for the wrong sentinel in a log-line search
+// would otherwise have no way to tell which evaluator actually rejected the
+// leaf.
 //
 // Exported so callers outside this package that drive a store with an
 // engine-translated Filter (entity's grouped-stats service and conditional
@@ -1007,7 +1013,7 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 		// a documented-normal 400, not a boundary/backend inconsistency.
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
-			"condition contains a leaf the backend cannot evaluate").WithCause(err)
+			"condition contains a leaf the backend cannot evaluate").WithCause(fmt.Errorf("rejected by spi.Prepare: %w", err))
 	case errors.Is(err, spi.ErrInvalidPattern):
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
@@ -1023,7 +1029,7 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 		// just as often.
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
-			"condition contains a leaf the evaluator cannot evaluate").WithCause(err)
+			"condition contains a leaf the evaluator cannot evaluate").WithCause(fmt.Errorf("rejected by match.Prepare: %w", err))
 	case errors.Is(err, match.ErrUnsupportedOperator):
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
@@ -1846,11 +1852,6 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 		// the two must not diverge on THIS classification. Deliberately NOT
 		// negative-cached: an infra failure says nothing about whether the
 		// path exists.
-		slog.Warn("schema refresh failed during pre-execution validation; reporting infra, not a client fault",
-			"pkg", "search",
-			"entityName", modelRef.EntityName,
-			"modelVersion", modelRef.ModelVersion,
-			"error", refreshErr)
 		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
 			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
 	}
@@ -2075,9 +2076,6 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 		// path" surfaces must not diverge on THIS classification).
 		// Deliberately NOT negative-cached: an infra failure says nothing
 		// about whether the sort field exists.
-		slog.Warn("schema refresh failed during sort-key validation; reporting infra, not a client fault",
-			"pkg", "search", "entityName", modelRef.EntityName,
-			"modelVersion", modelRef.ModelVersion, "error", refreshErr)
 		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
 			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
 	}

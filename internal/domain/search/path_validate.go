@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -345,9 +344,6 @@ func ValidateKnownPaths(
 		// caller that did that would report a model-store outage as the
 		// caller's own mistake, in exactly the peer-added-field window this
 		// refresh exists to serve.
-		slog.Warn("schema refresh failed during field-path validation; reporting infra, not a client fault",
-			"pkg", "search", "entityName", ref.EntityName,
-			"modelVersion", ref.ModelVersion, "error", refreshErr)
 		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
 			ErrPathRefreshInfra, ref.EntityName, ref.ModelVersion, refreshErr)
 	case freshFields != nil:

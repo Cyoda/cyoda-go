@@ -13,8 +13,8 @@ import (
 // other text an event carries is checked where it enters — a workflow at
 // import, a compute answer at dispatch, a collection body at its handler — so
 // this is the last entry. Every run that takes caller text calls it first
-// (Execute, manualTransition, loopback), so it covers every door, a joined
-// write included.
+// (ManualTransition, Loopback; Execute takes none), so it covers every door,
+// a joined write included.
 func refuseNULCallerText(transitionName string, ifMatch IfMatch) error {
 	if strings.ContainsRune(transitionName, 0) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "the transition name holds U+0000")

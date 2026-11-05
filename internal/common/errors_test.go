@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -219,6 +220,39 @@ func TestWriteError_OperationalCarriesItsLogLevel(t *testing.T) {
 	if len(lines) != 1 || !strings.Contains(lines[0], `"level":"WARN"`) || !strings.Contains(lines[0], "node-2 is not live") {
 		t.Errorf("log = %q, want one WARN line carrying the cause", lines)
 	}
+}
+
+// TestReportError_LogsOnceAndReturnsTheClientText — an error answered outside
+// a problem response (an error element in a 200 body) is logged exactly as
+// WriteError logs it, and the client gets what WriteError would give: the
+// message of an operational error, the generic ticketed text of an internal
+// one, its ticket naming the one ERROR line.
+func TestReportError_LogsOnceAndReturnsTheClientText(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	t.Run("operational", func(t *testing.T) {
+		buf := captureSlog(t)
+		refusal := common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound, "MODEL_NOT_FOUND: model m.1 not found")
+		refusal.Detail = "engine text"
+		if got := common.ReportError(context.Background(), refusal, "chunkIndex", 2); got != refusal.Message {
+			t.Errorf("client text = %q, want the message", got)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], `"level":"INFO"`) || !strings.Contains(lines[0], `"chunkIndex":2`) || !strings.Contains(lines[0], "engine text") {
+			t.Errorf("log = %q, want one INFO line with the attrs and the detail", lines)
+		}
+	})
+	t.Run("internal", func(t *testing.T) {
+		buf := captureSlog(t)
+		got := common.ReportError(context.Background(), common.Internal("workflow segment boundary failed", errors.New("pgx: commit failed")))
+		m := regexp.MustCompile(`^SERVER_ERROR: internal error \[ticket: ([0-9a-f-]{36})\]$`).FindStringSubmatch(got)
+		if m == nil {
+			t.Fatalf("client text = %q, want the generic ticketed text", got)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], `"level":"ERROR"`) || !strings.Contains(lines[0], m[1]) || !strings.Contains(lines[0], "pgx: commit failed") {
+			t.Errorf("log = %q, want one ERROR line under the ticket with the detail", lines)
+		}
+	})
 }
 
 // captureSlog redirects the default logger into a buffer for the duration of
