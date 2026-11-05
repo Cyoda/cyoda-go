@@ -25,6 +25,10 @@ import (
 // shortProxyTimeout is the CYODA_PROXY_TIMEOUT of the tests that reach it.
 const shortProxyTimeout = 50 * time.Millisecond
 
+// gapProxyTimeout is the CYODA_PROXY_TIMEOUT of a test whose first frame must
+// arrive within it: wide enough that a stalled runner does not miss it.
+const gapProxyTimeout = 250 * time.Millisecond
+
 // forwardingInterceptor builds an interceptor on node-A holding a pass for a
 // transaction owned by node-B, which the registry lists alive.
 func forwardingInterceptor(t *testing.T, proxyTimeout time.Duration) (*txRouteInterceptor, context.Context) {
@@ -160,11 +164,11 @@ func TestTxRouteInterceptor_StreamOwnerSilentPastProxyTimeoutUnavailable(t *test
 // The proxy timeout bounds only the wait for the first message: a stream whose
 // owner started answering in time is copied to its end, however long it runs.
 func TestTxRouteInterceptor_StreamPastFirstMessageNotCut(t *testing.T) {
-	ic, ctx := forwardingInterceptor(t, shortProxyTimeout)
+	ic, ctx := forwardingInterceptor(t, gapProxyTimeout)
 	ic.forwardStream = func(ctx context.Context, _ *proxy.ClientPool, _ string, _ *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
 		return &blockingClientStream{ctx: ctx,
 			frames: []*cepb.CloudEvent{{Id: "f1"}, {Id: "f2"}},
-			delays: []time.Duration{0, 4 * shortProxyTimeout}}, nil
+			delays: []time.Duration{0, 3 * gapProxyTimeout}}, nil
 	}
 	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-stream-long"}}}
 	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {

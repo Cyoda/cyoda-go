@@ -72,8 +72,9 @@ func TestAsyncSearch_LostClaimEndsWithOneLine(t *testing.T) {
 			for i := 0; i < 400; i++ {
 				saveEntity(t, ctx, base, ref, fmt.Sprintf("e%03d", i), []byte(`{}`))
 			}
+			scan := newScanStarted()
 			ies := wrapIterate(t, base, ctx, func(it spi.Iterator) spi.Iterator {
-				return &delayIterator{Iterator: it, delay: 2 * time.Millisecond}
+				return scan.wrap(&delayIterator{Iterator: it, delay: 2 * time.Millisecond})
 			})
 			factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 			store, _ := base.AsyncSearchStore(context.Background())
@@ -85,7 +86,7 @@ func TestAsyncSearch_LostClaimEndsWithOneLine(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SubmitAsync: %v", err)
 			}
-			time.Sleep(100 * time.Millisecond)
+			scan.wait(t)
 			settledAt := len(logs.String())
 			c.settle(t, store, ctx, jobID)
 
@@ -218,8 +219,9 @@ func TestAsyncSearch_LostClaimNeedsNoJobRead(t *testing.T) {
 	for i := 0; i < 400; i++ {
 		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%03d", i), []byte(`{}`))
 	}
+	scan := newScanStarted()
 	ies := wrapIterate(t, base, ctx, func(it spi.Iterator) spi.Iterator {
-		return &delayIterator{Iterator: it, delay: 2 * time.Millisecond}
+		return scan.wrap(&delayIterator{Iterator: it, delay: 2 * time.Millisecond})
 	})
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 	inner, _ := base.AsyncSearchStore(context.Background())
@@ -233,7 +235,7 @@ func TestAsyncSearch_LostClaimNeedsNoJobRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitAsync: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	scan.wait(t)
 	logs := captureJobLogs(t)
 	store.armed.Store(true)
 	if err := inner.Cancel(ctx, jobID, time.Now()); err != nil {
@@ -241,6 +243,38 @@ func TestAsyncSearch_LostClaimNeedsNoJobRead(t *testing.T) {
 	}
 	pool.Drain(context.Background()) // the executor has ended
 	assertOneLostClaimLine(t, logs.String(), jobID)
+}
+
+// scanStarted is closed by the first Next of a job's scan, so a test acts on
+// a job that is running rather than one still queued.
+type scanStarted struct {
+	once    sync.Once
+	started chan struct{}
+}
+
+func newScanStarted() *scanStarted { return &scanStarted{started: make(chan struct{})} }
+
+func (s *scanStarted) wrap(it spi.Iterator) spi.Iterator {
+	return &startSignalIterator{Iterator: it, scan: s}
+}
+
+func (s *scanStarted) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the job's scan did not start")
+	}
+}
+
+type startSignalIterator struct {
+	spi.Iterator
+	scan *scanStarted
+}
+
+func (i *startSignalIterator) Next() bool {
+	i.scan.once.Do(func() { close(i.scan.started) })
+	return i.Iterator.Next()
 }
 
 // gateIterator blocks every Next until gate is closed, ignoring the job's
