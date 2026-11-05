@@ -164,6 +164,14 @@ func ticketedReason(ticket string) string {
 	return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
 }
 
+// lostClaim ends an executor whose job is no longer its to record: settled
+// (cancelled, or a takeover's own terminal write), claimed by another
+// executor, or removed. An ordinary end on a cluster, so it records nothing
+// and logs one DEBUG line; whoever settled or claimed the job says why.
+func lostClaim(jobID string) {
+	slog.Debug("async search job is no longer this executor's to record; stopping", "pkg", "search", "jobID", jobID)
+}
+
 // failureReason defers jobFailureMessage until writeAsyncFailure knows the
 // record will be written.
 func failureReason(jobID string, err error) func() string {
@@ -1372,10 +1380,8 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// follows strips cancellation on its own).
 		recoveryCtx := context.WithoutCancel(jobCtx)
 		job, getErr := s.searchStore.GetJob(recoveryCtx, jobID)
-		if getErr == nil && (job.Status != "RUNNING" || job.Epoch != epoch) {
-			// Settled (cancelled, or a takeover's own terminal write) or
-			// claimed by another executor: not this executor's to record. An
-			// ordinary end on a cluster — the heartbeat already said why.
+		if errors.Is(getErr, spi.ErrNotFound) || (getErr == nil && (job.Status != "RUNNING" || job.Epoch != epoch)) {
+			lostClaim(jobID)
 			return
 		}
 		// Still this executor's RUNNING claim, or the read failed: the job
@@ -1393,6 +1399,13 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		s.writeAsyncFailure(jobCtx, jobID, epoch, failureReason(jobID, prodErr), finishTime, calcTimeMs)
 		return
 	case saveErr != nil:
+		if fencedRefusal(saveErr) {
+			// A result write refused because the job was cancelled, claimed
+			// by another executor or removed: usually the first sign of it,
+			// before the heartbeat's next tick.
+			lostClaim(jobID)
+			return
+		}
 		s.writeAsyncFailure(jobCtx, jobID, epoch, failureReason(jobID, saveErr), finishTime, calcTimeMs)
 		return
 	}

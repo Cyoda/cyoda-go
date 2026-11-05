@@ -242,6 +242,11 @@ func (b *syncBuffer) String() string {
 // A stale-claim answer is a genuine fencing refusal, not a missed tick, and
 // must still abort the job exactly as before this fix.
 func TestStartHeartbeat_StaleClaimStillAbortsTheJob(t *testing.T) {
+	logs := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	base := memory.NewStoreFactory()
 	defer base.Close()
 	ctx := tenantCtx("tenant-heartbeat-stale")
@@ -266,5 +271,16 @@ func TestStartHeartbeat_StaleClaimStillAbortsTheJob(t *testing.T) {
 	// is recorded as a server-side failure, ticketed.
 	if !strings.HasPrefix(status.FailureReason, "SERVER_ERROR: internal error [ticket: ") {
 		t.Fatalf("reason = %q, want the ticketed generic text", status.FailureReason)
+	}
+	// The cause logged under the ticket is the heartbeat's refusal, not a bare
+	// "context canceled".
+	var ticketed string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "level=ERROR") && strings.Contains(line, "ticket=") {
+			ticketed = line
+		}
+	}
+	if !strings.Contains(ticketed, "stale claim") {
+		t.Fatalf("the ticketed ERROR does not carry the heartbeat's refusal:\n%s", logs.String())
 	}
 }
