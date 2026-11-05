@@ -44,8 +44,8 @@ func (s *firstReleaseBlocks) Release(ctx context.Context, jobID string, epoch in
 	return err
 }
 
-// perJobGateIterator blocks each job's scan on its own gate. The job is told
-// apart by the entity store's iteration order: the first scan gets gates[0].
+// gatedScans hands each job's scan its own gate, in the order the scans
+// start: the first scan gets gates[0].
 type gatedScans struct {
 	mu    sync.Mutex
 	gates []chan struct{}
@@ -91,7 +91,7 @@ func TestReleaseRegisteredJobs_ExecutorDecidingDuringTheLoop(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := memory.NewStoreFactory()
-			defer base.Close()
+			t.Cleanup(func() { base.Close() }) // registered first, so it runs after the openers below
 			ctx := tenantCtx("tenant-release-race")
 			ref := spi.ModelRef{EntityName: "releaserace", ModelVersion: "1"}
 			saveMinimalModel(t, ctx, base, ref)
@@ -101,13 +101,17 @@ func TestReleaseRegisteredJobs_ExecutorDecidingDuringTheLoop(t *testing.T) {
 			scans := &gatedScans{gates: []chan struct{}{make(chan struct{}), make(chan struct{})}}
 			started := make(chan struct{}, 2)
 			ies := wrapIterate(t, base, ctx, func(it spi.Iterator) spi.Iterator {
+				// Take the gate before signalling the start, so the next job
+				// cannot be submitted, and take this gate, in between.
+				gate := scans.take()
 				started <- struct{}{}
-				return &onceGateIterator{Iterator: it, gate: scans.take()}
+				return &onceGateIterator{Iterator: it, gate: gate}
 			})
 			factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 			inner, _ := base.AsyncSearchStore(context.Background())
 			store := &firstReleaseBlocks{AsyncSearchStore: inner, first: make(chan string, 1), hold: make(chan struct{}), released: map[string]error{}}
 			pool := search.NewWorkerPool(2, 4)
+			t.Cleanup(func() { pool.Drain(context.Background()) })
 			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 				WithAsyncPool(pool).
 				WithHeartbeat(time.Hour)
