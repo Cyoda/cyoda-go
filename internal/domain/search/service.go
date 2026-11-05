@@ -119,11 +119,12 @@ type asyncScanScoper interface {
 // storage failure, a driver error, an unclassified wrapper — collapses to a
 // fixed string with the detail left in the log.
 //
-// No status surface serves this string today: neither SearchJobStatus nor
-// SnapshotStatus carries a failure message, so an async caller sees FAILED and
-// no reason. Hold it to the response contract regardless — it is a persisted,
-// servable artefact, and the day a status surface does carry it must not be
-// the day its sanitisation is first considered.
+// The string reaches the caller: every status read of a FAILED job serves it
+// as the job's failure reason (SearchJobStatus.FailureReason and
+// SnapshotStatus.FailureReason — HTTP failureReason, and the gRPC snapshot
+// status's failureReason). It is therefore held to the response contract like
+// any error a client is shown; nothing else stands between this text and the
+// wire.
 func jobFailureMessage(err error) string {
 	var ceiling searchCeilingExceeded
 	if errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
@@ -168,6 +169,9 @@ type SearchJobStatus struct {
 	CreateTime time.Time
 	FinishTime *time.Time
 	CalcTimeMs int64
+	// FailureReason is the reason a FAILED job recorded (see
+	// jobFailureMessage). Empty for every other status.
+	FailureReason string
 }
 
 // SnapshotStatus is a transport-friendly summary of an async search job's state.
@@ -180,6 +184,9 @@ type SnapshotStatus struct {
 	// even though OSS backends never set it.
 	Status        string
 	EntitiesCount int
+	// FailureReason is the reason a FAILED job recorded. Empty for every
+	// other status.
+	FailureReason string
 }
 
 // SearchService provides synchronous and asynchronous entity search over
@@ -1410,14 +1417,20 @@ func (s *SearchService) GetAsyncStatus(ctx context.Context, jobID string) (Searc
 		return SearchJobStatus{}, jobLookupErr(jobID, err)
 	}
 
-	return SearchJobStatus{
+	status := SearchJobStatus{
 		JobID:      job.ID,
 		Status:     job.Status,
 		Total:      job.ResultCount,
 		CreateTime: job.CreateTime,
 		FinishTime: job.FinishTime,
 		CalcTimeMs: job.CalcTimeMs,
-	}, nil
+	}
+	// Only a failed job has a reason; a message on any other record is not
+	// one and is not served as one.
+	if job.Status == "FAILED" {
+		status.FailureReason = job.Error
+	}
+	return status, nil
 }
 
 // AsyncResultsPage holds a page of async search results along with the total count.
@@ -1537,6 +1550,7 @@ func (s *SearchService) GetAsyncSearchStatus(ctx context.Context, snapshotID str
 		SnapshotID:    status.JobID,
 		Status:        status.Status,
 		EntitiesCount: status.Total,
+		FailureReason: status.FailureReason,
 	}, nil
 }
 

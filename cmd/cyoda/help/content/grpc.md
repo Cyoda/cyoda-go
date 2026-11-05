@@ -194,7 +194,7 @@ The full CloudEvent envelope for an ack:
 - `EntitySearchRequest` / `EntityResponse`
 - `SnapshotCancelRequest` / `EntitySnapshotSearchResponse`
 - `SnapshotGetRequest` / `EntitySnapshotSearchResponse`
-- `SnapshotGetStatusRequest` / `EntitySnapshotSearchResponse`
+- `SnapshotGetStatusRequest` / `EntitySnapshotSearchResponse` — `status.failureReason` says why a `FAILED` snapshot failed, and is absent for every other status (`cyoda help search`)
 - `EntityStatsGetRequest` / `EntityStatsResponse`
 - `EntityStatsByStateGetRequest` / `EntityStatsByStateResponse`
 - `EntityChangesMetadataGetRequest` / `EntityChangesMetadataResponse`

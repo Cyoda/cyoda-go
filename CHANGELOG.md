@@ -1240,6 +1240,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **An async search that failed says why.** The async search status carries
+  an optional `failureReason`, present only when the status is `FAILED`:
+  `failureReason` on HTTP `GET /search/async/{jobId}/status`, and
+  `status.failureReason` on the gRPC `SnapshotGetStatusRequest` answer. A
+  failure the request caused carries the client error a direct search would
+  answer, error code first; any other failure carries a fixed text that names
+  no internal detail (for example `search failed unexpectedly`). Before, a
+  caller saw `FAILED` and no reason. See `cyoda help search`.
+
 - **A controllable platform clock, a test feature (off by default).** With
   `CYODA_CLOCK_CONTROL_ENABLED=true`, a platform operator can set the clock
   to a past or future time, change its rate, or move it forward through

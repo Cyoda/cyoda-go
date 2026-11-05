@@ -253,7 +253,7 @@ Submission is bounded by a fixed-size worker pool (`CYODA_SEARCH_ASYNC_WORKERS`,
 
 Results stream incrementally as the scan runs rather than being materialized in memory and saved all at once. A running job stamps its own liveness on a fixed cadence (`CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, default 15s) starting from the moment it is submitted — including while it is still queued, not only while it is scanning — and the same poll also picks up a cancellation or an externally-recorded terminal status.
 
-If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval), clears any partial results the dead executor left, and re-runs it on a live node as-at its originally stored `pointInTime` — the job still completes `SUCCESSFUL`. It is `FAILED` (with a generic message) only after `CYODA_SEARCH_JOB_MAX_ATTEMPTS` executor losses (default 3): the status is contractual, the message text is not. A graceful node shutdown or restart releases its in-flight jobs immediately for reclaim rather than waiting for them to go stale, so a planned handoff is prompt. The reaper runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (default 15s) plus once at startup — not `CYODA_SEARCH_REAP_INTERVAL`, which drives only the unrelated snapshot-TTL cleanup — so actual detection latency for a crash is up to `CYODA_SEARCH_JOB_STALE_AFTER` + one heartbeat interval (~5m15s at the defaults).
+If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval), clears any partial results the dead executor left, and re-runs it on a live node as-at its originally stored `pointInTime` — the job still completes `SUCCESSFUL`. It is `FAILED` only after `CYODA_SEARCH_JOB_MAX_ATTEMPTS` executor losses (default 3), with the `failureReason` `search abandoned: executor lost repeatedly`. A graceful node shutdown or restart releases its in-flight jobs immediately for reclaim rather than waiting for them to go stale, so a planned handoff is prompt. The reaper runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (default 15s) plus once at startup — not `CYODA_SEARCH_REAP_INTERVAL`, which drives only the unrelated snapshot-TTL cleanup — so actual detection latency for a crash is up to `CYODA_SEARCH_JOB_STALE_AFTER` + one heartbeat interval (~5m15s at the defaults).
 
 **GET /api/search/async/{jobId}/status** — Get async job status
 
@@ -278,8 +278,18 @@ Response: `200 OK`, `application/json`:
 - `calculationTimeMillis`: elapsed search time in milliseconds
 - `finishTime`: RFC 3339 with nanoseconds; absent when status is `RUNNING`
 - `expirationDate`: `createTime + 24h` — job results expire after this time
+- `failureReason`: why the job failed; present only when `searchJobStatus` is `FAILED`, absent for every other status (see below)
 
 A job ends `FAILED` when the search itself failed, when the reaper's reclaim of a dead node's job exhausts `CYODA_SEARCH_JOB_MAX_ATTEMPTS`, or when the model's schema becomes unloadable between submit and execution — the executor re-reads the schema, and a job that cannot validate its condition against it fails rather than finishing `SUCCESSFUL` with a short page.
+
+`failureReason` follows the same rule as an error response. A failure the request itself caused carries the client error a direct search would answer, error code first — for example `INVALID_FIELD_PATH: condition or sort references an invalid field path`. Any other failure carries a fixed text that names no internal detail, and the detail stays in the server log. Among them:
+
+- `SERVER_ERROR: <step>` or `STORAGE_UNAVAILABLE: storage is temporarily unavailable — retry` — a classified server-side failure
+- `search failed unexpectedly` — an unclassified failure (a driver error, a recovered panic)
+- `search abandoned: executor lost repeatedly` — the attempt cap above
+- `search exceeded the backend's async search ceiling — narrow the query, or have the operator raise or disable the ceiling (see the config.database help topic)` — PostgreSQL's async search ceiling (`CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT`)
+
+The leading error code, when there is one, is stable; the rest of the text is for people, not for parsing. The gRPC `SnapshotGetStatusRequest` answer carries the same text in `status.failureReason`, on the same rule.
 
 **GET /api/search/async/{jobId}** — Retrieve async job results (paginated)
 

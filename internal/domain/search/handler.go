@@ -441,6 +441,10 @@ func buildStatusResponse(status SearchJobStatus) map[string]any {
 	if status.FinishTime != nil {
 		resp["finishTime"] = status.FinishTime.UTC().Format(time.RFC3339Nano)
 	}
+	// Set by the service for a FAILED job only.
+	if status.FailureReason != "" {
+		resp["failureReason"] = status.FailureReason
+	}
 	return resp
 }
 

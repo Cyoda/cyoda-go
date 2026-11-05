@@ -5727,6 +5727,12 @@ type SearchSnapshotStatusJson struct {
 	// Expiration date of the snapshot.
 	ExpirationDate *time.Time `json:"expirationDate,omitempty" yaml:"expirationDate,omitempty" mapstructure:"expirationDate,omitempty"`
 
+	// Why the snapshot failed. Present only when status is FAILED, and absent for
+	// every other status. For a failure the request itself caused, it is the same
+	// client error a direct search would answer, code first; for a server-side
+	// failure it is a fixed text that names no internal detail.
+	FailureReason *string `json:"failureReason,omitempty" yaml:"failureReason,omitempty" mapstructure:"failureReason,omitempty"`
+
 	// ID of the snapshot.
 	SnapshotID string `json:"snapshotId" yaml:"snapshotId" mapstructure:"snapshotId"`
 

@@ -29,6 +29,10 @@
       "type": "integer",
       "existingJavaType": "java.lang.Long",
       "description": "Number of entities collected."
+    },
+    "failureReason": {
+      "type": "string",
+      "description": "Why the snapshot failed. Present only when status is FAILED, and absent for every other status. For a failure the request itself caused, it is the same client error a direct search would answer, code first; for a server-side failure it is a fixed text that names no internal detail."
     }
   },
   "required": [

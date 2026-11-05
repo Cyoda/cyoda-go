@@ -260,19 +260,30 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetStatusRequest(ctx context.Cont
 	}
 
 	diag := common.GetDiagnostics(ctx)
-	count := snapStatus.EntitiesCount
 	resp := events.EntitySnapshotSearchResponseJson{
 		ID:       ce.Id,
 		Success:  true,
 		Warnings: diag.GetWarnings(),
-		Status: events.SearchSnapshotStatusJson{
-			SnapshotID:    snapStatus.SnapshotID,
-			Status:        events.SearchSnapshotStatusJsonStatus(snapStatus.Status),
-			EntitiesCount: &count,
-		},
+		Status:   snapshotStatusJSON(snapStatus),
 	}
 	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", EntitySnapshotSearchResponse, "ceId", ce.Id, "success", true)
 	return NewCloudEvent(EntitySnapshotSearchResponse, resp)
+}
+
+// snapshotStatusJSON renders a job's status for the wire. failureReason is
+// carried only when the service set one, which it does for a FAILED job alone.
+func snapshotStatusJSON(st *search.SnapshotStatus) events.SearchSnapshotStatusJson {
+	count := st.EntitiesCount
+	out := events.SearchSnapshotStatusJson{
+		SnapshotID:    st.SnapshotID,
+		Status:        events.SearchSnapshotStatusJsonStatus(st.Status),
+		EntitiesCount: &count,
+	}
+	if st.FailureReason != "" {
+		reason := st.FailureReason
+		out.FailureReason = &reason
+	}
+	return out
 }
 
 func (s *CloudEventsServiceImpl) handleSnapshotCancelRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
@@ -295,16 +306,11 @@ func (s *CloudEventsServiceImpl) handleSnapshotCancelRequest(ctx context.Context
 	}
 
 	diag := common.GetDiagnostics(ctx)
-	count := snapStatus.EntitiesCount
 	resp := events.EntitySnapshotSearchResponseJson{
 		ID:       ce.Id,
 		Success:  true,
 		Warnings: diag.GetWarnings(),
-		Status: events.SearchSnapshotStatusJson{
-			SnapshotID:    snapStatus.SnapshotID,
-			Status:        events.SearchSnapshotStatusJsonStatus(snapStatus.Status),
-			EntitiesCount: &count,
-		},
+		Status:   snapshotStatusJSON(snapStatus),
 	}
 	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", EntitySnapshotSearchResponse, "ceId", ce.Id, "success", true)
 	return NewCloudEvent(EntitySnapshotSearchResponse, resp)

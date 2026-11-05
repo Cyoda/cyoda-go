@@ -446,7 +446,7 @@ How an abort surfaces depends on whether retrying could plausibly work:
 
 - **Transient contention → `503 STORAGE_UNAVAILABLE`, retryable.** An operation that cannot get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — one that opens a transaction (every entity write, an async search's scan and result writes), or one needing a second connection while the caller's transaction holds one (a point-in-time read, an async-search job record or a key-value statement in a transaction) — and an operation whose transaction PostgreSQL already aborted for exceeding `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. A second attempt may well succeed. At COMMIT only PostgreSQL's own report of the idle abort is retryable: a COMMIT that meets a closed connection has an unknown outcome and answers `500` with a ticket.
 - **Statement ceiling exceeded → `500` with a ticket, not retryable.** A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT`. Re-running work that just exceeded its ceiling will exceed it again, so advertising a retry would be a lie. The exception is the store producing a consistency time: that wait answers a retryable `503 CONSISTENCY_TIME_UNAVAILABLE`.
-- **Async scan ceiling exceeded → recorded on the job, never an HTTP status.** A scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` fails the job it belongs to: the job goes `FAILED` and its record holds a fixed message. No read serves that message, so the caller sees `FAILED`. No ticket is minted, because there is no response to attach one to.
+- **Async scan ceiling exceeded → recorded on the job, never an HTTP status.** A scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` fails the job it belongs to: the job goes `FAILED` and its record holds a fixed message, which every status read of the job serves as its `failureReason`. No ticket is minted, because the failure happens after the submit response.
 
 The server log names the ceiling when PostgreSQL reports it — `statement_timeout`, `idle_in_transaction_session_timeout` when the server's report reaches the driver, and `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` for an async scan — which is what turns an otherwise unexplained failure into a diagnosable one. An acquire timeout is logged as a failure to get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT`. See `cmd/cyoda/help/content/errors/STORAGE_UNAVAILABLE.md` for the caller-facing statement of the retryable/non-retryable split.
 
@@ -1481,6 +1481,17 @@ it, an executor that stalls past the stale bound, gets reaped by another
 node's claim, and then recovers could overwrite a `FAILED` job with
 `SUCCESSFUL`.
 
+**Failure reason.** A `FAILED` job's `errMsg` (`SearchJob.Error`) reaches the
+client: the status read serves it as `failureReason` on HTTP
+(`AsyncSearchStatusDto`) and as `status.failureReason` on the gRPC
+`SnapshotGetStatusRequest` answer, and serves no reason for any other status.
+The engine writes only client-safe text there
+(`internal/domain/search.jobFailureMessage`): a classified error's own
+message, which is code first, or a fixed text. A driver error or a recovered
+panic is recorded as `search failed unexpectedly`, and its detail stays in
+the log. A `SelfExecutingSearchStore` writes the field itself, and owes the
+same rule.
+
 **Orphan handling: heartbeat, claim, and epoch fencing.** The owning node
 heartbeats a running job on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, starting
 the moment it is submitted (including while queued, not only while
@@ -1531,8 +1542,7 @@ Re-execution is bounded: `SearchJob.StaleClaims` counts only staleness
 claims (never a graceful `Release`), and once it reaches
 `CYODA_SEARCH_JOB_MAX_ATTEMPTS` (default 3 — the initial run plus two
 retries) the reaper fails the job instead of reclaiming it again, with the
-persisted message `search abandoned: executor lost repeatedly`. The status
-(`FAILED`) is contractual; the message text is not. A repeatedly
+failure reason `search abandoned: executor lost repeatedly`. A repeatedly
 crash-looping executor therefore cannot re-execute a job forever, and a
 healthy handoff chain (release, not staleness) never advances a job toward
 that cap. The reclaim sweep runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s

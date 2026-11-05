@@ -95,6 +95,26 @@ func TestClient_GetAsyncSearchStatus_GET(t *testing.T) {
 	}
 }
 
+func TestClient_GetAsyncSearchStatusBody_FailureReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"searchJobStatus":"FAILED","createTime":"2026-04-25T12:00:00.000Z","entitiesCount":0,"calculationTimeMillis":5,"expirationDate":"2026-04-26T12:00:00.000Z","failureReason":"search failed unexpectedly"}`))
+	}))
+	defer srv.Close()
+
+	st, err := NewClient(srv.URL, "tok").GetAsyncSearchStatusBody(t, "job-abc-123")
+	if err != nil {
+		t.Fatalf("GetAsyncSearchStatusBody: %v", err)
+	}
+	if st.SearchJobStatus != "FAILED" {
+		t.Errorf("status: got %q want FAILED", st.SearchJobStatus)
+	}
+	if st.FailureReason == nil || *st.FailureReason != "search failed unexpectedly" {
+		t.Errorf("failureReason: got %v want %q", st.FailureReason, "search failed unexpectedly")
+	}
+}
+
 func TestClient_SubmitAsyncSearch_POST(t *testing.T) {
 	var gotMethod, gotPath, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

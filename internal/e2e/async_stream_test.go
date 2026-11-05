@@ -855,8 +855,8 @@ func TestE2E_AsyncSearch_AttemptCap_Fails(t *testing.T) {
 	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "FAILED" {
 		t.Fatalf("status = %s, want FAILED (attempt cap not enforced)", status)
 	}
-	if msg := persistedJobErrorFor(t, jobID); msg != "search abandoned: executor lost repeatedly" {
-		t.Errorf("persisted error = %q, want the attempts-exhausted message", msg)
+	if msg, present := h.asyncJobFailureReason(t, jobID); !present || msg != "search abandoned: executor lost repeatedly" {
+		t.Errorf("failureReason = %q (present %v), want the attempts-exhausted message", msg, present)
 	}
 }
 
@@ -1019,27 +1019,6 @@ func backdateJobLiveness(t *testing.T, jobID string, age time.Duration) {
 		jobID, age.Microseconds()); err != nil {
 		t.Fatalf("backdate search job %s: %v", jobID, err)
 	}
-}
-
-// persistedJobErrorFor mirrors storage_ceilings_e2e_test.go's
-// persistedJobError (kept package-private there without exporting) so this
-// file can read the job's persisted error message directly, independent of
-// which harness/app instance submitted it — the row is visible to any
-// connection against the shared Postgres backend.
-func persistedJobErrorFor(t *testing.T, jobID string) string {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "async-stream-job-reader"))
-	if err != nil {
-		t.Fatalf("open reader pool: %v", err)
-	}
-	defer pool.Close()
-	var msg string
-	if err := pool.QueryRow(ctx, `SELECT error FROM search_jobs WHERE id = $1`, jobID).Scan(&msg); err != nil {
-		t.Fatalf("read search job %s: %v", jobID, err)
-	}
-	return msg
 }
 
 // persistedJobResultCount reads the result_count a completed job recorded,
