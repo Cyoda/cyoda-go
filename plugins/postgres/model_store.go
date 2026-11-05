@@ -446,9 +446,8 @@ func (s *modelStore) inWriteTx(ctx context.Context, op string, body func(q Queri
 
 	// Set the RLS tenant, as every other transaction this plugin opens does
 	// (TransactionManager.Begin, the async-search scan). The owner role
-	// bypasses the policies today, but under a non-owner, RLS-subject role —
-	// the hardening target rls_test.go describes, not a supported deployment —
-	// an unset GUC would filter every row the body needs.
+	// bypasses the policies (row-level security is not supported), and keeping
+	// the setting on every transaction keeps the plugin's transactions alike.
 	if _, err := tx.Exec(ctx,
 		"SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
 		return fmt.Errorf("failed to set tenant for %s: %w", op, err)

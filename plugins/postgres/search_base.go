@@ -139,7 +139,8 @@ func (s *entityStore) searchBaseQuery(entityName, modelVersion string, pit *time
 // (which is what a read outside a transaction already is) is in exactly this
 // position. Tenant isolation on this path is the `WHERE tenant_id = $1`
 // predicate the PIT queries all carry, which migration 000001 names as the
-// primary mechanism; RLS is enabled-not-forced defence-in-depth on top.
+// isolation; row-level security is not supported, and its policies take no
+// effect for the owning role.
 //
 // Not joining the caller's transaction makes an in-transaction read hold two
 // connections at once, so the acquire is bounded: see unjoinedQuerier, which is

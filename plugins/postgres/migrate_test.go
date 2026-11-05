@@ -71,8 +71,8 @@ func TestMigrate_AppliesSchema(t *testing.T) {
 	}
 
 	// Verify RLS is enabled but NOT forced (migration 000002 removes FORCE).
-	// FORCE is deferred to Plan 5 when SET LOCAL is wired at transaction start.
-	// Application-level WHERE tenant_id = $1 is the primary isolation mechanism.
+	// Row-level security is not supported: the policies take no effect for the
+	// owning role, and WHERE tenant_id = $1 is the isolation.
 	// Only check tables that have RLS configured (initial schema tables).
 	rlsTables := []string{"entities", "entity_versions", "sm_audit_events", "models", "kv_store", "messages", "submit_times"}
 	for _, table := range rlsTables {
@@ -86,7 +86,7 @@ func TestMigrate_AppliesSchema(t *testing.T) {
 			t.Errorf("RLS not enabled on table %s", table)
 		}
 		if rlsForced {
-			t.Errorf("FORCE RLS should NOT be set on table %s (deferred to Plan 5)", table)
+			t.Errorf("FORCE RLS should NOT be set on table %s (row-level security is not supported)", table)
 		}
 	}
 

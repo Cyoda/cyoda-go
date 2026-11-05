@@ -7,22 +7,19 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
-// TestRLS_PoliciesExist verifies that RLS policies are defined on all tables.
-// FORCE ROW LEVEL SECURITY is not set (deferred to Plan 5 when SET LOCAL is
-// wired at transaction start). The table owner bypasses RLS without FORCE.
+// TestRLS_PoliciesExist verifies that the migrations define RLS policies on
+// the tenant tables, and do not FORCE them.
 //
-// The supported posture today is the table owner, with application-level
-// WHERE tenant_id = $1 as the primary isolation and RLS as inert
-// defence-in-depth beneath it. A non-owner, RLS-subject role is the intended
-// hardening target, NOT a supported deployment: every transaction-scoped path
-// sets app.current_tenant and would work under it, but no POOL-routed
-// statement carries that GUC (set_config's is_local flag scopes it to a
-// transaction), so under a non-owner role the pool paths would see a NULL
-// setting and return nothing — silently for a read, and wrongly for
+// Row-level security is not supported. cyoda connects as the table owner,
+// which bypasses the policies without FORCE, and the isolation is the
+// application-level WHERE tenant_id = $1. A non-owner, RLS-subject role is not
+// supported either: every transaction-scoped path sets app.current_tenant, but
+// no POOL-routed statement carries that setting (set_config's is_local flag
+// scopes it to a transaction), so under such a role the pool paths would see a
+// NULL setting and return nothing — silently for a read, and wrongly for
 // TransactionManager.getSubmitTimeFromTable, which would report a committed
-// transaction as not found. Enabling the mode means setting the tenant on the
-// pool path plugin-wide first. The non-owner probe roles some tests create
-// exist to prove the transaction-scoped paths are already GUC-correct.
+// transaction as not found. The non-owner probe roles some tests create check
+// the transaction-scoped paths only.
 func TestRLS_PoliciesExist(t *testing.T) {
 	pool := newTestPool(t)
 
