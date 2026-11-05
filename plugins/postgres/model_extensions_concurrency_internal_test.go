@@ -181,9 +181,9 @@ func TestExtendSchema_MissingModel_UnwiredApplyFunc_ErrNotFound(t *testing.T) {
 // a missing set_config is invisible. Row-level security is not supported
 // (rls_test.go), but every transaction of the plugin sets the tenant; to
 // check that this one does, this test runs ExtendSchema through a
-// dedicated non-superuser role, for which ENABLE ROW LEVEL SECURITY applies. An unset GUC evaluates the policies to
-// NULL and the write-claim UPDATE sees zero rows: fail-closed
-// ErrNotFound instead of an extension.
+// dedicated non-superuser role, for which ENABLE ROW LEVEL SECURITY
+// applies. An unset GUC evaluates the policies to NULL and the write-claim
+// UPDATE sees zero rows: fail-closed ErrNotFound instead of an extension.
 func TestExtendSchema_SelfWrap_SetsTenantGUCForRLS(t *testing.T) {
 	fx := newPGFixture(t)
 	fx.store.applyFunc = setUnionApplyFunc
