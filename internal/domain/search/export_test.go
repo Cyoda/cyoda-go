@@ -71,14 +71,6 @@ func (s *SearchService) ResolveSortKeysForTest(ctx context.Context, modelRef spi
 	return s.resolveSortKeys(ctx, modelRef, keys)
 }
 
-// JobFailureFallback returns the sanitised message written into a job
-// record on an unattributable failure — the constant the executor's own
-// failure paths (service.go) use. Exposed so external tests can assert
-// against the constant itself rather than duplicating its literal text.
-func JobFailureFallback() string {
-	return jobFailureFallback
-}
-
 // JobAttemptsExhausted returns the caller-facing message the reclaim sweep
 // writes when it abandons a job past the attempt cap. Exposed so external
 // tests assert against the constant rather than duplicating its text.

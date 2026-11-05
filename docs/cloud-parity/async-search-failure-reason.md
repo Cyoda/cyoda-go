@@ -27,9 +27,8 @@ The status of an async search carries an optional `failureReason` (string).
     as an error response does — for example `STORAGE_UNAVAILABLE: storage is
     temporarily unavailable — retry` — with its cause logged.
   - A known cause carries a fixed text — `search abandoned: executor lost
-    repeatedly` (a job whose executor was lost too many times), the ceiling
-    text, or `search failed unexpectedly` (a recovered panic). The detail
-    goes to the server log. No driver message, query text, stack trace
+    repeatedly` (a job whose executor was lost too many times) or the ceiling
+    text. The detail goes to the server log. No driver message, query text, stack trace
     or connection detail appears in it.
   - A storage backend that runs async searches itself records its own text,
     which cyoda-go has not sanitised; for such a backend every failed job

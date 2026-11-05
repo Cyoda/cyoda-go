@@ -84,15 +84,16 @@ const searchCeilingMessage = "search exceeded the backend's async search ceiling
 	"narrow the query, or have the operator raise or disable the ceiling " +
 	"(see the config.database help topic)"
 
-// jobFailureFallback replaces any failure described in terms the caller has no
-// business seeing — a driver error, a recovered panic. That text is operator
-// information, and the job record is caller-facing.
+// jobFailureFallback is the reason served for every failed job of a store
+// that executes its own searches (spi.SelfExecutingSearchStore): such a store
+// writes its own failure text, which cyoda-go has not classified, so that
+// text is not served.
 const jobFailureFallback = "search failed unexpectedly"
 
 // jobAttemptsExhausted is the caller-facing failure text for a job the reclaim
 // sweep abandons after its executor was lost (StaleClaims) more times than the
-// configured attempt cap allows. Distinct from jobFailureFallback so a caller
-// can tell a crash-looping job from a one-off internal failure.
+// configured attempt cap allows. Distinct from a ticketed server-side failure,
+// so a caller can tell a crash-looping job from a one-off internal failure.
 const jobAttemptsExhausted = "search abandoned: executor lost repeatedly"
 
 // searchCeilingExceeded is the marker a backend attaches when the async-search
@@ -114,10 +115,11 @@ type asyncScanScoper interface {
 // jobFailureMessage is what gets written into the job record when an async
 // search fails.
 //
-// It follows the same 4xx/5xx split as every other response: a classified
-// client error carries its own already-safe text, and everything else — a
-// storage failure, a driver error, an unclassified wrapper — collapses to a
-// fixed string with the detail left in the log.
+// It classifies the failure as the doors do (common.Internal for a raw
+// error): an operational error — one the request caused, a storage outage, a
+// lost race, a lost shard — carries its own client-safe text, code first, and
+// anything else is a server-side failure, recorded as the generic text with a
+// ticket and its detail logged under the ticket.
 //
 // The string reaches the caller: every status read of a FAILED job serves it
 // as the job's failure reason (SearchJobStatus.FailureReason and
@@ -153,6 +155,12 @@ func jobFailureMessage(jobID string, err error) string {
 	ticket := uuid.New().String()
 	slog.Error("async search job failed", "pkg", "search", "jobID", jobID, "ticket", ticket,
 		"message", appErr.Message, "detail", appErr.Detail)
+	return ticketedReason(ticket)
+}
+
+// ticketedReason is the recorded reason of a server-side failure, as both
+// doors answer one: the generic text and the ticket its detail is logged under.
+func ticketedReason(ticket string) string {
 	return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
 }
 
@@ -1202,8 +1210,9 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	// its own defect (Gate 3: no panic value or stack leaves the log).
 	defer func() {
 		if rec := recover(); rec != nil {
+			ticket := uuid.New().String()
 			slog.Error("panic recovered in async search job", "pkg", "search",
-				"jobID", jobID, "err", fmt.Errorf("panic: %v", rec),
+				"jobID", jobID, "ticket", ticket, "err", fmt.Errorf("panic: %v", rec),
 				"stack", string(debug.Stack()))
 			// Same latch as the HTTP and gRPC doors: this executor runs the
 			// same engine and store code, so a panic here is the same
@@ -1215,7 +1224,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// must land regardless — writeAsyncFailure strips cancellation
 			// itself (keeping the UserContext value), so a store that aborts
 			// in-flight work on ctx.Err() still accepts it.
-			s.writeAsyncFailure(jobCtx, jobID, epoch, fixedReason(jobFailureFallback), s.clock.Now(), 0)
+			s.writeAsyncFailure(jobCtx, jobID, epoch, fixedReason(ticketedReason(ticket)), s.clock.Now(), 0)
 		}
 	}()
 
@@ -1233,10 +1242,9 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	// the job would record a short result set as SUCCESSFUL.
 	fields, fieldsErr := loadFieldsMap(jobCtx, modelStore, modelRef)
 	if fieldsErr != nil {
-		// Classify before recording. A raw error falls through
-		// jobFailureMessage to the generic fallback, so a tenant whose model
-		// store is down would read an actionable code on /search/direct and
-		// "search failed unexpectedly" here, for one and the same outage.
+		// Classify before recording, naming the step: jobFailureMessage
+		// would classify a raw error the same way, and the explicit wrap
+		// only gives the log line its message.
 		// common.Internal always returns a non-nil *AppError; the job record
 		// gets the ticketed generic text, and its Message and Detail are logged
 		// under the ticket.
@@ -1280,11 +1288,10 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	})
 	if iterErr != nil {
 		// Classify exactly as the synchronous door does. The job record
-		// is the only report an async caller gets, and jobFailureMessage
-		// renders an operational *AppError's client-safe text while collapsing
-		// anything else to the generic fallback — so an unclassified
-		// sentinel turned a client's own malformed request into
-		// "search failed unexpectedly". Reaching a plugin's path
+		// is the only report an async caller gets, and only
+		// ClassifyStoreQueryError knows the store-query sentinels that are the
+		// client's own malformed request (a 400); without it they would be
+		// recorded as a server-side failure. Reaching a plugin's path
 		// rejection at all means the boundary grammar and that plugin
 		// disagree; the caller is still owed the 400.
 		prodErr = iterErr
@@ -1376,7 +1383,8 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// (its Err() is unconditionally nil) — recoveryCtx would silently
 		// defeat the guard. writeAsyncFailure strips cancellation itself
 		// right after the guard, so passing jobCtx costs nothing here.
-		s.writeAsyncFailure(jobCtx, jobID, epoch, fixedReason(jobFailureFallback), finishTime, calcTimeMs)
+		s.writeAsyncFailure(jobCtx, jobID, epoch, failureReason(jobID,
+			common.Internal("async search job interrupted", errors.Join(context.Cause(jobCtx), getErr))), finishTime, calcTimeMs)
 		return
 	case prodErr != nil:
 		s.writeAsyncFailure(jobCtx, jobID, epoch, failureReason(jobID, prodErr), finishTime, calcTimeMs)
@@ -1432,7 +1440,8 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epo
 	}
 	ctx = context.WithoutCancel(ctx)
 	// Rendered only now, past the release check: rendering logs the failure
-	// and may mint a ticket, which must name a record that is written.
+	// and may mint a ticket, so a released job logs none. A write that then
+	// loses its race leaves a logged ticket that no record carries.
 	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, reason(), finishTime, calcTimeMs); err != nil {
 		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
 			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)

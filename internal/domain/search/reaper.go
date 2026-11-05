@@ -9,6 +9,8 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/google/uuid"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -285,9 +287,12 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 	if decErr != nil {
 		// A stored job that cannot be decoded is a defect, not a runtime
 		// condition: fail it at the claimed epoch rather than loop on it.
-		slog.Error("failed to decode claimed search job; failing", "pkg", "search", "jobID", job.ID, "err", decErr)
+		// A server-side failure: recorded with a ticket, as both doors answer
+		// one, and logged once, here, under it.
+		ticket := uuid.New().String()
+		slog.Error("failed to decode claimed search job; failing", "pkg", "search", "jobID", job.ID, "ticket", ticket, "err", decErr)
 		return false, func(ctx context.Context) {
-			werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobFailureFallback, s.clock.Now(), 0)
+			werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, ticketedReason(ticket), s.clock.Now(), 0)
 			switch {
 			case werr == nil:
 			case fencedRefusal(werr):

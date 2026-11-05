@@ -1492,8 +1492,9 @@ caused records its client error's own message, code first. A storage outage,
 a lost write race or a lost shard records its own code (for example
 `STORAGE_UNAVAILABLE: …`), its cause in the log. Any other failure records
 `SERVER_ERROR: internal error [ticket: <uuid>]`, its message and detail
-logged under the ticket. A few fixed texts name a known cause: the attempt
-cap, the ceiling, and `search failed unexpectedly` for a recovered panic.
+logged under the ticket; a recovered panic and an undecodable job are
+recorded the same way. Two fixed texts name a known cause: the attempt cap
+and the ceiling.
 A `SelfExecutingSearchStore` writes the field itself, not through
 `jobFailureMessage`, so the status read does not serve its text: a failed job
 of such a store reports `search failed unexpectedly`.
