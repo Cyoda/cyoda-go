@@ -452,23 +452,23 @@ func TestDeleteEntitiesConditional_SingleTx_RemovesOnlyTheDeletedEntitiesTasks(t
 	}
 }
 
-func TestDeleteEntitiesConditional_SingleTx_FailedIDKeepsItsTasks(t *testing.T) {
+// A single-transaction delete that fails on one id's fault deletes nothing:
+// every matched entity, and every task, is still there.
+func TestDeleteEntitiesConditional_SingleTx_FailedIDDeletesNothing(t *testing.T) {
 	e := newTaskEnv(t)
 	ids := seedPersons(t, e.h, e.ctx, 3)
 	e.refusingStore(t, 0, ids[2])
 
-	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
-	if err != nil {
-		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	if _, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0); err == nil {
+		t.Fatal("DeleteEntitiesConditional succeeded, want the per-id fault to fail the request")
 	}
-	if _, failed := res.IDToError[ids[2]]; !failed {
-		t.Fatalf("IDToError = %v, want an entry for %s", res.IDToError, ids[2])
-	}
-	if n := e.tasksOf(t, ids[1]); n != 0 {
-		t.Errorf("tasks of the deleted entity = %d, want 0", n)
-	}
-	if n := e.tasksOf(t, ids[2]); n != 1 {
-		t.Errorf("tasks of the entity whose delete failed = %d, want 1", n)
+	for _, id := range ids[1:] {
+		if !e.exists(t, id) {
+			t.Errorf("entity %s deleted although the request failed", id)
+		}
+		if n := e.tasksOf(t, id); n != 1 {
+			t.Errorf("tasks of entity %s = %d, want 1", id, n)
+		}
 	}
 }
 
@@ -934,11 +934,36 @@ func (s *faultThenConflictStore) Delete(ctx context.Context, entityID string) er
 	return s.EntityStore.Delete(ctx, entityID)
 }
 
-// A delete attempt that a conflict runs again answers nothing: the id it
-// failed is deleted by the attempt that stands, and the failure is logged
-// once, marked discarded — on the single-transaction and the batched path.
+// A single-transaction conditional delete is atomic on every backend, as
+// PostgreSQL forces (a failed statement aborts its transaction): the first
+// per-id fault that is not a write conflict fails the request with its
+// classified error, and nothing is deleted.
+func TestDeleteEntitiesConditional_SingleTx_PerIDFaultFailsWhole(t *testing.T) {
+	e := newTaskEnv(t)
+	ids := seedPersons(t, e.h, e.ctx, 3)
+	store, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	e.withEntityStore(t, &faultThenConflictStore{EntityStore: store})
+
+	_, err = e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeServerError {
+		t.Fatalf("err = %v, want the per-id fault as a server-side failure of the whole request", err)
+	}
+	for _, id := range ids[1:] {
+		if !e.exists(t, id) {
+			t.Errorf("entity %s deleted although the request failed", id)
+		}
+	}
+}
+
+// A batched delete's attempt that a conflict runs again answers nothing: the
+// id it failed is deleted by the attempt that stands, and the failure is
+// logged once, marked discarded.
 func TestDeleteEntitiesConditional_DiscardedAttemptIsLoggedNotAnswered(t *testing.T) {
-	for name, batchSize := range map[string]int{"single transaction": 0, "batched": 10} {
+	for name, batchSize := range map[string]int{"batched": 10} {
 		t.Run(name, func(t *testing.T) {
 			e := newTaskEnv(t)
 			seedPersons(t, e.h, e.ctx, 3)

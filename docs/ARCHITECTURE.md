@@ -2265,7 +2265,7 @@ type ProblemDetail struct {
 
 Props always include `errorCode`. The optional `retryable` boolean is `true` only when the same request can succeed on a fresh attempt as sent: transaction conflicts (serialization aborts 40001/40P01, a lost write race), a storage or compute dependency that is unavailable (the transaction owner being unavailable is not: `TRANSACTION_NODE_UNAVAILABLE` is not retryable), a node or queue with no capacity left, and a compute node's failure that the compute node reports as retryable. Permanent business-logic conflicts (locked-state mismatches, ETag/If-Match preconditions, cardinality precondition failures) are non-retryable: replaying the same request without an external state change cannot succeed.
 
-In `verbose` mode (`CYODA_ERROR_RESPONSE_MODE=verbose`), internal error details are included in responses. In `sanitized` mode (default), only the ticket UUID is exposed.
+In `verbose` mode (`CYODA_ERROR_RESPONSE_MODE=verbose`, development only), an internal error's detail is the `detail` of its problem response. In `sanitized` mode (default), the problem response carries the generic text and the ticket UUID. An error answered inside a `200` body — a collection's chunk element, a delete's per-id entry, on either door — and every gRPC answer carry the sanitized text in both modes.
 
 ### 8.3 Error Code Taxonomy
 

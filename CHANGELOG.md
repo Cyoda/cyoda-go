@@ -1766,6 +1766,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A conditional delete without `transactionSize` is atomic on every
+  backend.** When deleting one matched entity failed (other than a write
+  conflict, or the entity being already gone), PostgreSQL aborted the
+  transaction and the request was retried and answered a retryable `409
+  CONFLICT`, while memory and SQLite deleted the other entities and answered
+  `200` with the failure in `idToError`. Every backend now fails the request
+  with that failure's own error and deletes nothing. A `pointInTime`
+  selection's already-gone entity is still reported in `idToError`, and
+  `transactionSize` still reports failures per id.
+
 - **gRPC: a snapshot the caller does not have, or results of one that has
   not finished, is the caller's error,** as it is on HTTP. A
   `SnapshotGetStatusRequest`, `SnapshotGetRequest` or `SnapshotCancelRequest`

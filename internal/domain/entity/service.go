@@ -1247,23 +1247,20 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName stri
 	}
 
 	var result *DeleteResult
-	var idFailures map[string]*common.AppError
+	var gone map[string]*common.AppError
 	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
-		r, failures, err := h.deleteConditionalSingleTx(ctx, ref, cond, pointInTime, verbose)
+		r, notFound, err := h.deleteConditionalSingleTx(ctx, ref, cond, pointInTime, verbose)
 		if err != nil {
-			// Not answered: a conflict runs it again, anything else fails
-			// the request whole.
-			logDiscardedDeleteFailures(ctx, failures)
 			return err
 		}
-		result, idFailures = r, failures
+		result, gone = r, notFound
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	// Reported only now, from the attempt that stands.
-	for id, appErr := range idFailures {
+	for id, appErr := range gone {
 		result.IDToError[id] = common.ReportError(ctx, appErr, "pkg", "entity", "entityId", id)
 	}
 	return result, nil
@@ -1287,9 +1284,10 @@ func requireModel(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelR
 // tasks of the ids actually deleted, commit. Every attempt builds its own
 // result, so a retried attempt never counts an id twice.
 func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRef, cond predicate.Condition, pointInTime *time.Time, verbose bool) (*DeleteResult, map[string]*common.AppError, error) {
-	// Per-id outcomes, classified and not yet reported: the caller reports
+	// Ids already gone when deleted — a pointInTime selection reads past
+	// committed state — classified and not yet reported: the caller reports
 	// them only if this attempt is the one answered.
-	failures := map[string]*common.AppError{}
+	notFound := map[string]*common.AppError{}
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, nil, classifyBeginErr(err)
@@ -1365,8 +1363,17 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 				if errors.Is(err, spi.ErrConflict) {
 					return conflictError(err)
 				}
-				failures[id] = deleteError(id, err)
-				continue
+				// An id already gone is its own outcome, and leaves the
+				// transaction usable on every backend.
+				if errors.Is(err, spi.ErrNotFound) {
+					notFound[id] = deleteError(id, err)
+					continue
+				}
+				// Any other fault fails the whole request: the one
+				// transaction is atomic on every backend, as PostgreSQL
+				// forces (a failed statement aborts it). Per-id faults are
+				// the batched mode's.
+				return deleteError(id, err)
 			}
 			deleted = append(deleted, id)
 			result.RemovedCount++
@@ -1383,10 +1390,10 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 		}
 		return nil
 	}(); appErr != nil {
-		return nil, failures, appErr
+		return nil, nil, appErr
 	}
 
-	return result, failures, nil
+	return result, notFound, nil
 }
 
 // batchTarget names one matched entity plus the CURRENT version recorded
@@ -1731,9 +1738,8 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 		return nil
 	})
 	// A conflict that outlasted the retries leaves its attempt standing: its
-	// per-id outcomes and the batch's conflict are answered below. Any other
-	// error, or a conflict with no attempt behind it, fails the request.
-	if err != nil && (!errors.Is(err, spi.ErrConflict) || last.failure == nil) {
+	// per-id outcomes and the batch's conflict are answered below.
+	if err != nil && !errors.Is(err, spi.ErrConflict) {
 		return err
 	}
 

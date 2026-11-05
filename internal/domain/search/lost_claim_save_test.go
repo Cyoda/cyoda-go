@@ -2,6 +2,7 @@ package search_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -336,5 +337,71 @@ func TestReleaseRegisteredJobs_LostClaimIsOneLine(t *testing.T) {
 			pool.Drain(context.Background())
 			assertOneLostClaimLine(t, logs.String(), jobID)
 		})
+	}
+}
+
+// cancellingFaultIterator cancels its job (as a cross-node cancel the
+// heartbeat meets would) on its first Next, then ends the scan with a
+// server-side fault.
+type cancellingFaultIterator struct {
+	spi.Iterator
+	cancel func()
+	once   sync.Once
+}
+
+func (c *cancellingFaultIterator) Next() bool {
+	c.once.Do(c.cancel)
+	return false
+}
+
+func (c *cancellingFaultIterator) Err() error {
+	return errors.New("decode row: corrupt page at block 7")
+}
+
+// A scan fault that meets a job already ended under its executor — the cancel
+// landed before the executor's final check — is not recorded, but it is
+// logged once, marked discarded, as when the cancel lands after that check.
+func TestAsyncSearch_FaultUnderAnEndedJobIsLoggedOnce(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-fault-ended")
+	ref := spi.ModelRef{EntityName: "faultended", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{}`))
+	var svc *search.SearchService
+	var jobID string
+	ready := make(chan struct{})
+	ies := wrapIterate(t, base, ctx, func(it spi.Iterator) spi.Iterator {
+		return &cancellingFaultIterator{Iterator: it, cancel: func() {
+			<-ready
+			if _, err := svc.CancelAsync(ctx, jobID); err != nil {
+				t.Errorf("CancelAsync: %v", err)
+			}
+		}}
+	})
+	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
+	store, _ := base.AsyncSearchStore(context.Background())
+	pool := search.NewWorkerPool(1, 4)
+	svc = search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+		WithAsyncPool(pool).
+		WithHeartbeat(time.Hour)
+	logs := captureJobLogs(t)
+
+	var err error
+	jobID, err = svc.SubmitAsync(ctx, ref, &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}, search.SearchOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	close(ready)
+	pool.Drain(context.Background())
+
+	var faults []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "corrupt page") {
+			faults = append(faults, line)
+		}
+	}
+	if len(faults) != 1 || !strings.Contains(faults[0], "level=ERROR") || !strings.Contains(faults[0], "attempt=discarded") {
+		t.Errorf("lines for the fault = %q, want one ERROR line marked discarded", faults)
 	}
 }

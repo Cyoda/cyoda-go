@@ -503,7 +503,7 @@ func clientText(appErr *AppError, ticket string, verbose bool) string {
 // sanitized mode, in every mode. Such a body also reaches gRPC as it is
 // (a delete's per-id map), where no answer carries an internal Detail.
 func ReportError(ctx context.Context, appErr *AppError, attrs ...any) string {
-	return clientText(appErr, LogError(ctx, appErr, attrs...), false)
+	return SanitizedText(appErr, LogError(ctx, appErr, attrs...))
 }
 
 // SanitizedText is what a client is told about appErr outside a problem

@@ -257,7 +257,7 @@ func ownerCtx(ctx context.Context, job *spi.SearchJob) context.Context {
 func (s *SearchService) failAttemptsExhausted(ctx context.Context, job *spi.SearchJob) bool {
 	if werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobAttemptsExhausted, s.clock.Now(), 0); werr != nil {
 		if fencedRefusal(werr) {
-			slog.Debug("capped job is no longer this claim's to fail", "pkg", "search", "jobID", job.ID, "err", werr)
+			endLostClaim(job.ID, werr)
 			return false
 		}
 		owedWriteFailed(ctx, slog.LevelError, "failed to fail crash-looping search job", job, werr)
@@ -296,7 +296,7 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 			switch {
 			case werr == nil:
 			case fencedRefusal(werr):
-				slog.Debug("undecodable job is no longer this claim's to fail", "pkg", "search", "jobID", job.ID, "err", werr)
+				endLostClaim(job.ID, werr)
 			default:
 				owedWriteFailed(ctx, slog.LevelError, "failed to fail undecodable claimed job", job, werr)
 			}
@@ -349,8 +349,9 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 //     released again. No other cause cancels a job's context before its end
 //     is settled.
 func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel context.CancelCauseFunc, handle *asyncJobHandle, job *spi.SearchJob) bool {
+	var cerr error
 	if jobCtx.Err() == nil {
-		cerr := s.searchStore.ClearResults(jobCtx, job.ID, job.Epoch)
+		cerr = s.searchStore.ClearResults(jobCtx, job.ID, job.Epoch)
 		switch {
 		case cerr == nil:
 			return true
@@ -372,8 +373,10 @@ func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel con
 	// The job's context ended first. A refused heartbeat or a cancel here is a
 	// lost claim, reported once; a shutdown release (errJobReleased) has
 	// already handed the job back, and a self-reclaim (errJobSuperseded) holds
-	// it at a newer epoch: nothing to release or report.
+	// it at a newer epoch: nothing to release or report. A clear that failed
+	// as the context ended is still logged, once, as unrecorded.
 	settleJob(jobCtx, cancel, job.ID, errJobEnding)
+	logUnrecordedJobFailure(job.ID, cerr)
 	s.dropReclaim(cancel, handle, job)
 	return false
 }

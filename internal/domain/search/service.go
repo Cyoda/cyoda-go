@@ -249,13 +249,17 @@ type jobFailure struct {
 
 // logUnrecordedJobFailure logs a server-side failure whose job ended without
 // it being recorded — released, superseded, or settled elsewhere — once,
-// under a ticket nothing records, marked discarded. A client error behind
-// such an end is not an event of its own.
+// under a ticket nothing records, marked discarded. An operational failure
+// behind such an end (a client error, a storage outage, a lost race) is
+// answered by no one and logged by the operation that met it, if at all: it
+// is not an event of its own here.
 func logUnrecordedJobFailure(jobID string, err error) {
 	// A step that failed because the job's own context ended reports that
 	// end, not a fault. (The job context carries no deadline, so a deadline
-	// here is a statement's own, and is one.)
-	if err == nil || errors.Is(err, context.Canceled) {
+	// here is a statement's own, and is one.) A ceiling breach is the
+	// request's own outcome, as recorded.
+	var ceiling searchCeilingExceeded
+	if err == nil || errors.Is(err, context.Canceled) || errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
 		return
 	}
 	var appErr *common.AppError
@@ -1498,8 +1502,14 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// this node (errCancelledHere), or by a release or self-reclaim. The
 		// cause says which, and none leaves a failure of this executor's to
 		// record: a refusal (or a cancel here) is a lost claim, reported once;
-		// a released or superseded job is the next claim's.
+		// a released or superseded job is the next claim's. A server-side
+		// fault the scan or the result save met is still logged, once, as
+		// unrecorded — whether the cancel landed before this check or after.
 		settleJob(jobCtx, cancel, jobID, errJobEnding)
+		logUnrecordedJobFailure(jobID, prodErr)
+		if !fencedRefusal(saveErr) {
+			logUnrecordedJobFailure(jobID, saveErr)
+		}
 		return
 	case prodErr != nil:
 		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, prodErr), finishTime, calcTimeMs)
@@ -1559,8 +1569,8 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, handle *asyncJobH
 	ctx = context.WithoutCancel(ctx)
 	// Rendered only now, past the release check: a reason built by
 	// failureReason logs the failure and may mint a ticket, so a released job
-	// records none for it. (The panic and decode paths log their ticket where the
-	// failure happens.) A write that then loses its race leaves a logged
+	// records none for it. (The panic path logs its ticket where the failure
+	// happens, and passes a fixedReason.) A write that then loses its race leaves a logged
 	// ticket that no record carries.
 	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, reason.render(), finishTime, calcTimeMs); err != nil {
 		if fencedRefusal(err) {
