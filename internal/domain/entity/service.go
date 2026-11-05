@@ -972,66 +972,35 @@ type DeleteResult struct {
 	IDs           []string
 }
 
-// perIDDeleteError renders one item's delete failure for DeleteResult.IDToError.
+// perIDDeleteError renders one item's delete failure for DeleteResult.IDToError
+// and logs it once, as a door's funnel logs a refused request
+// (common.ReportError).
 //
 // That map is serialised into a 200 response body, so whatever goes in it is on
 // the wire — and a storage failure's own text carries driver wording, the SQL
 // this layer wrapped it with, and a SQLSTATE. None of that is the caller's to
-// see. The same split the rest of the API uses applies per item: a domain error
-// keeps its detail and a classified storage outage keeps its code; anything else
-// is logged under a ticket and the caller gets the ticket to quote.
-func perIDDeleteError(entityID string, err error) string {
-	var appErr *common.AppError
-	if errors.As(err, &appErr) && appErr.Level == common.LevelOperational {
-		return appErr.Message // client-safe by construction
-	}
-	// A raw error carrying the storage layer's transient-unavailability marker is
-	// classified, not unexplained: flattening it into a ticket would tell the
-	// caller this item is hopeless when a retry in a moment is the right move, and
-	// would differ from the answer the same failure gets on every other door. The
-	// cause still stays off the wire — StorageUnavailable holds it in WithCause,
-	// so Message is client-safe by construction.
-	//
-	// Which makes the log its ONLY breadcrumb, and this branch returns before the
-	// ticketed slog.Error below. The caller (DeleteEntitiesConditional) does not
-	// log a per-item failure either, so without this line WHY storage was
-	// unavailable is recorded nowhere. Usually the same outage also fails
-	// scope.Commit(), which logs — but that is a coincidence of timing, not a
-	// guarantee. Same message and field name as common.WriteError's operational
-	// branch and the gRPC door's, so all three read alike in an aggregator.
-	if suErr := common.StorageUnavailable(err); suErr != nil {
-		slog.Info("operational error", "pkg", "entity", "entityId", entityID,
-			"code", suErr.Code, "message", suErr.Message, "cause", err.Error())
-		return suErr.Message
-	}
-	if emErr := common.EpochMismatch(err); emErr != nil {
-		slog.Info("operational error", "pkg", "entity", "entityId", entityID,
-			"code", emErr.Code, "message", emErr.Message, "cause", err.Error())
-		return emErr.Message
-	}
-	if errors.Is(err, spi.ErrNotFound) {
-		return fmt.Sprintf("%s: entity id=%s not found", common.ErrCodeEntityNotFound, entityID)
-	}
-	return mintDeleteTicket(entityID, err)
+// see. The same split the rest of the API uses applies per item
+// (deleteError): a domain error keeps its detail and a classified storage
+// outage keeps its code; anything else is logged under a ticket and the caller
+// gets the ticket to quote.
+func perIDDeleteError(ctx context.Context, entityID string, err error) string {
+	return common.ReportError(ctx, deleteError(entityID, err), "pkg", "entity", "entityId", entityID)
 }
 
-// mintDeleteTicket mints a correlation ticket, logs err at ERROR under it
-// (same "pkg"/"ticket"/"detail" shape as common.WriteError's internal branch,
-// so the two read alike in an aggregator), and renders the client-safe
-// ticketed message to fold into DeleteResult.IDToError. entityID is the
-// affected id, or "" when one ticket covers every id a batch-level failure
-// touches (deleteOneBatch's commit-failure fold-in mints ONE ticket for the
-// whole batch, not one per id — the underlying cause is the same for all of
-// them).
-func mintDeleteTicket(entityID string, err error) string {
-	ticket := uuid.New().String()
-	attrs := []any{"pkg", "entity", "ticket", ticket}
-	if entityID != "" {
-		attrs = append(attrs, "entityId", entityID)
+// deleteError classifies one item's delete failure as both doors classify a
+// failure: an AppError as it is; a missing entity as 404 ENTITY_NOT_FOUND;
+// anything else through common.Internal, which keeps a storage outage, an
+// epoch mismatch or a lost race its own operational code and makes the rest a
+// server-side failure.
+func deleteError(entityID string, err error) *common.AppError {
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return appErr
 	}
-	attrs = append(attrs, "detail", err.Error())
-	slog.Error("entity delete failed", attrs...)
-	return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
+	if errors.Is(err, spi.ErrNotFound) {
+		return common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("entity id=%s not found", entityID))
+	}
+	return common.Internal("entity delete failed", err)
 }
 
 // deleteSelectionPlan is how a conditional delete selects entities once
@@ -1372,7 +1341,7 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 				if errors.Is(err, spi.ErrConflict) {
 					return conflictError(err)
 				}
-				result.IDToError[id] = perIDDeleteError(id, err)
+				result.IDToError[id] = perIDDeleteError(ctx, id, err)
 				continue
 			}
 			deleted = append(deleted, id)
@@ -1462,7 +1431,7 @@ func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore sp
 			// was already removed between the as-at match and now) is
 			// this id's problem alone, not the whole request's; the
 			// resolution pass continues with the remaining ids.
-			result.IDToError[id] = perIDDeleteError(id, gErr)
+			result.IDToError[id] = perIDDeleteError(ctx, id, gErr)
 			continue
 		}
 		targets = append(targets, batchTarget{id: id, baselineVersion: cur.Meta.Version})
@@ -1705,7 +1674,7 @@ type batchAttempt struct {
 	removed []string
 	// idErrors are per-id outcomes that do not fail the batch: a missing
 	// entity, a version changed since resolution, a failed delete.
-	idErrors map[string]string
+	idErrors map[string]*common.AppError
 	// failure is the batch's own failure — its task removal or its commit —
 	// or nil when the batch committed.
 	failure *common.AppError
@@ -1737,25 +1706,19 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 		return err
 	}
 
-	for id, msg := range last.idErrors {
-		result.IDToError[id] = msg
+	// Reported only now, from the attempt that stands: a conflict retries the
+	// batch, and an earlier attempt's per-id outcomes are not answered.
+	for id, appErr := range last.idErrors {
+		result.IDToError[id] = common.ReportError(ctx, appErr, "pkg", "entity", "entityId", id)
 	}
 	if last.failure == nil {
 		result.RemovedCount += len(last.removed)
 		return nil
 	}
-	// Operational (4xx-class) failures — a conflict above all — are
-	// client-safe by construction: fold the message as-is. Anything else
-	// gets ONE ticket for the whole batch, its cause logged under it, and
-	// the ticketed client-safe message — never the raw AppError.Message.
-	msg := last.failure.Message
-	if last.failure.Level != common.LevelOperational {
-		cause := error(last.failure)
-		if last.failure.Err != nil {
-			cause = last.failure.Err
-		}
-		msg = mintDeleteTicket("", cause)
-	}
+	// One report for the whole batch — the cause is the same for every id it
+	// touches: an operational failure's message, or ONE ticket under which
+	// the cause is logged, never the raw AppError.Message.
+	msg := common.ReportError(ctx, last.failure, "pkg", "entity", "batchSize", len(chunk))
 	for _, t := range chunk {
 		if _, resolved := last.idErrors[t.id]; !resolved {
 			result.IDToError[t.id] = msg
@@ -1768,7 +1731,7 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 // deletes it if its version still equals the resolution baseline, removes
 // the tasks of the ids it deleted, and commits.
 func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (batchAttempt, error) {
-	a := batchAttempt{idErrors: map[string]string{}}
+	a := batchAttempt{idErrors: map[string]*common.AppError{}}
 
 	scope, err := h.beginScope(ctx)
 	if err != nil {
@@ -1806,12 +1769,12 @@ func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (
 				if errors.Is(gErr, spi.ErrConflict) {
 					return conflictError(gErr)
 				}
-				a.idErrors[t.id] = perIDDeleteError(t.id, gErr)
+				a.idErrors[t.id] = deleteError(t.id, gErr)
 				continue
 			}
 			if cur.Meta.Version != t.baselineVersion {
-				a.idErrors[t.id] = fmt.Sprintf("%s: entity id=%s modified after delete resolution; not deleted",
-					common.ErrCodeEntityModified, t.id)
+				a.idErrors[t.id] = common.Operational(http.StatusPreconditionFailed, common.ErrCodeEntityModified,
+					fmt.Sprintf("entity id=%s modified after delete resolution; not deleted", t.id))
 				continue
 			}
 			if dErr := entityStore.Delete(txCtx, t.id); dErr != nil {
@@ -1820,7 +1783,7 @@ func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (
 				if errors.Is(dErr, spi.ErrConflict) {
 					return conflictError(dErr)
 				}
-				a.idErrors[t.id] = perIDDeleteError(t.id, dErr)
+				a.idErrors[t.id] = deleteError(t.id, dErr)
 				continue
 			}
 			a.removed = append(a.removed, t.id)
@@ -2792,10 +2755,18 @@ func classifyEngineError(err error, entityID string) *common.AppError {
 	// The engine's own text — which processor or function, which item — and
 	// the entity are the refusal's only record: the door's funnel logs Detail
 	// and never answers it. A copy, because a passed-through error may be
-	// shared, and Detail rather than a cause, so nothing new joins the
-	// answer's unwrap chain.
+	// shared (its Props map is copied by WriteError before it adds to it),
+	// and Detail rather than a cause, so nothing new joins the answer's
+	// unwrap chain. A Detail the error already carries is kept.
 	withText := *appErr
 	withText.Detail = fmt.Sprintf("entity %s: %s", entityID, err.Error())
+	if appErr.Err != nil {
+		// The cause, logged with it, already carries the engine's text.
+		withText.Detail = "entity " + entityID
+	}
+	if appErr.Detail != "" {
+		withText.Detail += "; " + appErr.Detail
+	}
 	return &withText
 }
 

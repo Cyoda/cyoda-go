@@ -3,6 +3,7 @@ package entity_test
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -540,4 +541,48 @@ func doCreateAndGetID(t *testing.T, base, entityName string, version int, payloa
 	}
 	id, _ := ids[0].(string)
 	return id
+}
+
+// A later chunk's failure on update, answered as an error element in a 200
+// body, is logged once, naming the chunk, as on create.
+func TestUpdateCollection_LaterChunkFailureIsLoggedOnce(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "UpdChunkLog", 1, `{"name":"x","v":0}`)
+	good := []string{
+		doCreateAndGetID(t, srv.URL, "UpdChunkLog", 1, `{"name":"a","v":1}`),
+		doCreateAndGetID(t, srv.URL, "UpdChunkLog", 1, `{"name":"b","v":2}`),
+	}
+	parts := []string{
+		fmt.Sprintf(`{"id":"%s","payload":"{\"name\":\"a2\",\"v\":10}"}`, good[0]),
+		fmt.Sprintf(`{"id":"%s","payload":"{\"name\":\"b2\",\"v\":20}"}`, good[1]),
+		`{"id":"00000000-0000-0000-0000-000000000098","payload":"{\"name\":\"never\",\"v\":0}"}`,
+	}
+	var buf syncLogBuffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/entity/JSON?transactionWindow=2", strings.NewReader("["+strings.Join(parts, ",")+"]"))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	rbody := readBody(t, resp)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(rbody), `"chunkIndex":1`) {
+		t.Fatalf("status = %d, body = %s; want 200 with chunk 1 failed", resp.StatusCode, rbody)
+	}
+	var refusals []string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "chunkIndex=1") {
+			refusals = append(refusals, line)
+		}
+	}
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "level=INFO") {
+		t.Errorf("lines for the failed chunk = %q, want one INFO line", refusals)
+	}
 }

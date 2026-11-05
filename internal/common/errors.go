@@ -395,9 +395,10 @@ func isClientGoneCancellation(appErr *AppError) bool {
 // exists to prevent (internal/httpmw/txjoin_mw.go's writeJoinError explains
 // why for the joined door, but every HTTP door funnels through here).
 //
-// SECURITY NOTE: The Detail field (from err.Error()) may contain connection
-// strings or secrets when real persistence is added. Review logging of Detail
-// before connecting to external datastores.
+// Detail goes to the log, and to the response only for an internal or fatal
+// error in the verbose error-response mode (development only). A storage
+// error's text there carries host, user and database; the driver redacts the
+// password.
 func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 	path := r.URL.Path
 
@@ -407,13 +408,13 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 		Status:   appErr.Status,
 		Instance: path,
 	}
-	pd.Ticket = logAppError(r.Context(), appErr, "path", path)
+	pd.Ticket = LogError(r.Context(), appErr, "path", path)
 	pd.Detail = clientText(appErr, pd.Ticket)
 
-	if appErr.Props != nil {
-		pd.Props = appErr.Props
-	} else {
-		pd.Props = make(map[string]any)
+	// A copy: the error, and its Props map, may be shared.
+	pd.Props = make(map[string]any, len(appErr.Props)+2)
+	for k, v := range appErr.Props {
+		pd.Props[k] = v
 	}
 	pd.Props["errorCode"] = appErr.Code
 
@@ -428,12 +429,13 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 	}
 }
 
-// logAppError writes an error's one log line, by its class, and returns the
+// LogError writes an error's one log line, by its class, and returns the
 // ticket an internal or fatal error is logged under ("" for an operational
 // error or a client that went away). It is the funnel every door shares:
-// WriteError, and ReportError for an error answered outside a problem
-// response. attrs name where the error was answered (an HTTP path, a chunk).
-func logAppError(ctx context.Context, appErr *AppError, attrs ...any) (ticket string) {
+// WriteError, ReportError for an error answered outside a problem response,
+// and the gRPC envelope funnel. attrs name where the error was answered (an
+// HTTP path, a chunk, a gRPC request).
+func LogError(ctx context.Context, appErr *AppError, attrs ...any) (ticket string) {
 	switch appErr.Level {
 	case LevelOperational:
 		// Most operational errors put full domain detail in Message, which the
@@ -443,7 +445,7 @@ func logAppError(ctx context.Context, appErr *AppError, attrs ...any) (ticket st
 		// redacted by the driver) — where the cause is attached via WithCause and
 		// kept out of the response, or whose engine text is kept as Detail. The
 		// log is then its only breadcrumb; neither is ever answered.
-		line := append([]any{"status", appErr.Status, "message", appErr.Message}, attrs...)
+		line := append([]any{"status", appErr.Status, "code", appErr.Code, "message", appErr.Message}, attrs...)
 		if appErr.Detail != "" {
 			line = append(line, "detail", appErr.Detail)
 		}
@@ -469,7 +471,7 @@ func logAppError(ctx context.Context, appErr *AppError, attrs ...any) (ticket st
 		// verbose error-response mode (CYODA_ERROR_RESPONSE_MODE, development
 		// only; see `cyoda help config`).
 		slog.Error("internal error",
-			append([]any{"ticket", ticket, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
+			append([]any{"ticket", ticket, "code", appErr.Code, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
 		return ticket
 	default: // LevelFatal
 		ticket = appErr.ticketOr()
@@ -500,7 +502,7 @@ func clientText(appErr *AppError, ticket string) string {
 // element in a 2xx collection body — exactly as WriteError logs it, and
 // returns the text the client is given for it, as WriteError would give it.
 func ReportError(ctx context.Context, appErr *AppError, attrs ...any) string {
-	return clientText(appErr, logAppError(ctx, appErr, attrs...))
+	return clientText(appErr, LogError(ctx, appErr, attrs...))
 }
 
 // SanitizeErrorMessage returns a client-safe error message.

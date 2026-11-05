@@ -213,7 +213,8 @@ func TestBuildErrorFields_RawCancellation_KeepsTicket(t *testing.T) {
 	if !strings.Contains(message, "ticket") {
 		t.Errorf("message = %q, want a ticket — an unmarked cancellation is not a departed client", message)
 	}
-	rec := findRecord(t, records, "unclassified error")
+	// One shape on both doors: a raw error is an internal error.
+	rec := findRecord(t, records, "internal error")
 	if rec.level != slog.LevelError {
 		t.Errorf("level = %v, want ERROR", rec.level)
 	}

@@ -255,6 +255,19 @@ func TestReportError_LogsOnceAndReturnsTheClientText(t *testing.T) {
 	})
 }
 
+// TestWriteError_LeavesTheErrorsPropsUntouched — writing an error adds its
+// code and retry flag to the response's properties, not to the error, which
+// may be shared.
+func TestWriteError_LeavesTheErrorsPropsUntouched(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	appErr := common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
+	appErr.Props = map[string]any{"entityId": "e-1"}
+	common.WriteError(httptest.NewRecorder(), httptest.NewRequest("GET", "/test", nil), appErr)
+	if len(appErr.Props) != 1 {
+		t.Errorf("Props = %v, want the error's own entityId only", appErr.Props)
+	}
+}
+
 // captureSlog redirects the default logger into a buffer for the duration of
 // the test. DEBUG and above are captured so a test can assert a log line was
 // (or was not) emitted at DEBUG.

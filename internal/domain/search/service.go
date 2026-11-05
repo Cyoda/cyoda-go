@@ -182,10 +182,11 @@ type asyncScanScoper interface {
 // any error a client is shown; nothing else stands between this text and the
 // wire.
 //
-// It logs the failure once, with jobID: for an operational failure (one the
-// request caused, a storage outage, a lost race) at the error's level — INFO
-// unless the refusing site set another — with its detail and cause, and at
-// ERROR, with the detail and the ticket, for a server-side one.
+// It logs the failure once, with jobID, through the funnel both doors share
+// (common.LogError): an operational failure (one the request caused, a
+// storage outage, a lost race) at the error's level — INFO unless the refusing
+// site set another — with its detail and cause, and a server-side one at
+// ERROR, with the detail, under the ticket the record names.
 func jobFailureMessage(jobID string, err error) string {
 	var ceiling searchCeilingExceeded
 	if errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
@@ -199,20 +200,16 @@ func jobFailureMessage(jobID string, err error) string {
 	if !errors.As(err, &appErr) {
 		appErr = common.Internal("async search failed", err)
 	}
+	// The one line, through the funnel both doors share.
+	ticket := common.LogError(context.Background(), appErr, "pkg", "search", "jobID", jobID)
 	if appErr.Level == common.LevelOperational {
-		attrs := []any{"pkg", "search", "jobID", jobID, "reason", appErr.Error()}
-		if appErr.Detail != "" {
-			attrs = append(attrs, "detail", appErr.Detail)
-		}
-		if appErr.Err != nil {
-			attrs = append(attrs, "cause", appErr.Err.Error())
-		}
-		slog.Log(context.Background(), appErr.OperationalLogLevel(), "async search job failed", attrs...)
 		return appErr.Error()
 	}
-	ticket := uuid.New().String()
-	slog.Error("async search job failed", "pkg", "search", "jobID", jobID, "ticket", ticket,
-		"message", appErr.Message, "detail", appErr.Detail)
+	if ticket == "" {
+		// A failure marked as a departed client: the job has no client of
+		// its own, so its record names none either.
+		return common.ErrCodeServerError + ": internal error"
+	}
 	return ticketedReason(ticket)
 }
 

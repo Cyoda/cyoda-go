@@ -1214,7 +1214,7 @@ type EntityTransactionResponse struct {
 		// Code AppError code (e.g. MODEL_NOT_FOUND, ENTITY_NOT_FOUND).
 		Code string `json:"code"`
 
-		// Message Operator-facing failure message; safe for client display.
+		// Message Failure message, safe for client display: a client error's code-prefixed message, or for a server-side failure the generic SERVER_ERROR text with the ticket its detail is logged under.
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
 
@@ -1236,7 +1236,7 @@ type EntityTransactionResponse struct {
 			// chunk's request slice (per-chunk relative).
 			ItemIndex int32 `json:"itemIndex"`
 
-			// Message Operator-facing failure message; safe for client display.
+			// Message Failure message, safe for client display: a client error's code-prefixed message, or for a server-side failure the generic SERVER_ERROR text with the ticket its detail is logged under.
 			Message string `json:"message"`
 		} `json:"error"`
 	} `json:"failed,omitempty"`

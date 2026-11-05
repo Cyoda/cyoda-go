@@ -9597,7 +9597,11 @@ components:
               description: AppError code (e.g. MODEL_NOT_FOUND, ENTITY_NOT_FOUND).
             message:
               type: string
-              description: Operator-facing failure message; safe for client display.
+              description: >-
+                Failure message, safe for client display: a client error's
+                code-prefixed message, or for a server-side failure the
+                generic SERVER_ERROR text with the ticket its detail is
+                logged under.
             chunkIndex:
               type: integer
               format: int32
@@ -9632,7 +9636,11 @@ components:
                       per-item isolation.
                   message:
                     type: string
-                    description: Operator-facing failure message; safe for client display.
+                    description: >-
+                      Failure message, safe for client display: a client error's
+                      code-prefixed message, or for a server-side failure the
+                      generic SERVER_ERROR text with the ticket its detail is
+                      logged under.
                   itemIndex:
                     type: integer
                     format: int32

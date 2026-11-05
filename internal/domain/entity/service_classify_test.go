@@ -451,7 +451,7 @@ func TestPerIDDeleteError_SanitizesStorageDetail(t *testing.T) {
 	buf := captureEntitySlog(t)
 
 	raw := errors.New("failed to mark entity deleted: ERROR: canceling statement due to statement timeout (SQLSTATE 57014)")
-	msg := perIDDeleteError("e-1", raw)
+	msg := perIDDeleteError(context.Background(), "e-1", raw)
 
 	for _, leak := range []string{"SQLSTATE", "57014", "canceling statement", "mark entity deleted"} {
 		if strings.Contains(msg, leak) {
@@ -482,7 +482,7 @@ func TestPerIDDeleteError_MarkedStorageOutageKeepsItsCode(t *testing.T) {
 	const cause = "acquire: host=db.internal user=cyoda: context deadline exceeded"
 	raw := fmt.Errorf("failed to mark entity deleted: %w", &markedStorageOutage{detail: cause})
 
-	msg := perIDDeleteError("e-1", raw)
+	msg := perIDDeleteError(context.Background(), "e-1", raw)
 
 	if !strings.Contains(msg, common.ErrCodeStorageUnavailable) {
 		t.Errorf("a marked storage outage lost its domain code: %s", msg)
@@ -526,7 +526,7 @@ func (*markedStorageOutage) StorageUnavailable() bool { return true }
 // business and carries no infrastructure detail, so it stays legible rather
 // than being flattened into a ticket.
 func TestPerIDDeleteError_KeepsDomainDetail(t *testing.T) {
-	msg := perIDDeleteError("e-1", fmt.Errorf("ENTITY_NOT_FOUND: entity e-1 not found: %w", spi.ErrNotFound))
+	msg := perIDDeleteError(context.Background(), "e-1", fmt.Errorf("ENTITY_NOT_FOUND: entity e-1 not found: %w", spi.ErrNotFound))
 	if !strings.Contains(msg, common.ErrCodeEntityNotFound) {
 		t.Errorf("a not-found lost its domain code: %s", msg)
 	}
@@ -600,7 +600,7 @@ func TestClassifyWorkflowError_EpochMismatchIsARetryable409(t *testing.T) {
 // TestPerIDDeleteError_EpochMismatchKeepsItsCode — a delete item that failed on
 // a lost shard reports the retryable code, not a ticket.
 func TestPerIDDeleteError_EpochMismatchKeepsItsCode(t *testing.T) {
-	msg := perIDDeleteError("e1", fmt.Errorf("transactional delete aborted: shard revoked: %w", spi.ErrEpochMismatch))
+	msg := perIDDeleteError(context.Background(), "e1", fmt.Errorf("transactional delete aborted: shard revoked: %w", spi.ErrEpochMismatch))
 	if !strings.HasPrefix(msg, common.ErrCodeEpochMismatch+":") {
 		t.Fatalf("message = %q, want the %s code", msg, common.ErrCodeEpochMismatch)
 	}
@@ -626,5 +626,33 @@ func TestClassifyEngineError_KeepsTheEngineTextAsDetail(t *testing.T) {
 	conflict := classifyEngineError(fmt.Errorf("unique key: %w", spi.ErrUniqueViolation), "ent-43")
 	if conflict.Code != common.ErrCodeUniqueViolation || !strings.Contains(conflict.Detail, "unique key") {
 		t.Errorf("unique violation = %s, Detail %q; want UNIQUE_VIOLATION carrying the store text", conflict.Code, conflict.Detail)
+	}
+}
+
+// A not-found id in a delete is answered in the 200 body's per-id map and
+// logged once, at INFO, as the door's funnel logs a 404.
+func TestPerIDDeleteError_NotFoundIsLoggedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	msg := perIDDeleteError(context.Background(), "e-9", fmt.Errorf("get: %w", spi.ErrNotFound))
+	if !strings.HasPrefix(msg, common.ErrCodeEntityNotFound+": ") {
+		t.Fatalf("message = %q, want ENTITY_NOT_FOUND", msg)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") || !strings.Contains(lines[0], "e-9") {
+		t.Errorf("log = %q, want one INFO line naming the id", lines)
+	}
+}
+
+// A passed-through operational error that already carries a Detail — the
+// store's text behind a conflict — keeps it next to the engine's text.
+func TestClassifyEngineError_KeepsAPassedThroughDetail(t *testing.T) {
+	inner := common.Internal("failed to load workflows", fmt.Errorf("pg: could not serialize access: %w", spi.ErrConflict))
+	got := classifyEngineError(fmt.Errorf("load: %w", inner), "ent-44")
+	if !strings.Contains(got.Detail, "could not serialize access") || !strings.Contains(got.Detail, "ent-44") {
+		t.Errorf("Detail = %q, want the store text and the entity", got.Detail)
 	}
 }

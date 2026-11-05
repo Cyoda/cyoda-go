@@ -4,33 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 
-	"github.com/google/uuid"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
-
-// isClientGoneCancellation reports whether err is the request's own client
-// having gone away while a layer waited on it — the same single question
-// common.WriteError's HTTP-side check asks: did the layer that was waiting on
-// the client mark the cause common.ErrClientGone?
-//
-// A cancellation on the chain does not answer it.
-// internal/domain/txjoin/txjoin.go detaches a joined request's context with
-// context.WithoutCancel once it holds the transaction, so a compute member
-// going away mid-statement cannot take the connection with it — and
-// classifyWorkflowError (internal/domain/entity/service.go) still wraps any
-// context.Canceled it sees as a ticketed common.Internal, by its own comment,
-// because the cancellation may be unrelated to this (detached, still-live)
-// request. Quietening that would put a genuine fault at DEBUG with no ticket,
-// below the default level, leaving it no trace at all.
-func isClientGoneCancellation(err error) bool {
-	return errors.Is(err, common.ErrClientGone)
-}
 
 const nilUUID = "00000000-0000-0000-0000-000000000000"
 
@@ -74,96 +54,46 @@ func requestAttrs(ctx context.Context) []any {
 }
 
 // buildErrorFields extracts code, message, and retryable flag from an error,
-// and logs the failure once, at the level its class gets on the HTTP door
-// (common.WriteError), with the request it answers (requestAttrs). For
-// operational AppErrors the client-safe message is returned directly and
-// logged at the error's level (OperationalLogLevel: INFO unless the refusing
-// site set another). For internal/fatal AppErrors and raw errors a ticket UUID is
-// generated and the detail is logged server-side only, at ERROR — unless the
-// cause is marked as the client having gone away mid-request
-// (isClientGoneCancellation), in which case no ticket is minted and the log is
-// at DEBUG.
+// and logs the failure once through the funnel both doors share
+// (common.LogError), naming the request it answers (requestAttrs). An
+// operational AppError answers its client-safe message, logged at its level
+// (INFO unless the refusing site set another); an internal or fatal one, or a
+// raw error that does not classify as operational, answers the generic text
+// with the ticket its detail is logged under at ERROR — unless the cause is
+// marked as the client having gone away mid-request (common.ErrClientGone),
+// which is logged at DEBUG with no ticket. A cancellation on the chain alone
+// does not mark it: a joined request's context is detached once it holds the
+// transaction, so a ctx.Canceled may be unrelated to this, still-live
+// request, and stays a ticketed fault.
 func buildErrorFields(ctx context.Context, err error) (code, message string, retryable *bool) {
 	var appErr *common.AppError
-	if errors.As(err, &appErr) {
-		if appErr.Level == common.LevelOperational {
-			code = "CLIENT_ERROR"
-			message = appErr.Message // Already "CODE: detail"
-			if appErr.Retryable {
-				r := true
-				retryable = &r
-			}
-			// Logged as common.WriteError's operational branch logs it — at
-			// INFO unless the error carries its own level — under the same
-			// message, so the two doors read alike in a log aggregator. An
-			// operational error whose cause is INFRASTRUCTURE rather than
-			// domain (a storage failure, say) attaches that cause with
-			// WithCause and keeps it out of the client-facing message; the log
-			// line is then its only breadcrumb.
-			attrs := append(requestAttrs(ctx), "code", appErr.Code, "message", appErr.Message)
-			if appErr.Detail != "" {
-				attrs = append(attrs, "detail", appErr.Detail)
-			}
-			if appErr.Err != nil {
-				attrs = append(attrs, "cause", appErr.Err.Error())
-			}
-			slog.Log(ctx, appErr.OperationalLogLevel(), "operational error", attrs...)
-			return
-		}
-		// The client having gone away mid-request is not a server fault:
-		// nothing was wrong, and there is nobody to quote a ticket to. This is
-		// exactly the moment (a compute member failing over) an operator wants
-		// a clean log, so no ticket is minted.
-		// The HTTP funnel (common.WriteError) logs this same event under the
-		// same message and the same fields, so the two collate; it adds the
-		// request path where this door adds the request event.
-		if isClientGoneCancellation(appErr.Err) {
-			slog.Debug("client gone before request completed",
-				append(requestAttrs(ctx), "code", appErr.Code, "message", appErr.Message, "detail", appErr.Detail)...)
-			code = "SERVER_ERROR"
-			message = "SERVER_ERROR: internal error"
-			return
-		}
-		// Internal/Fatal — reuse the caller's pinned ticket when it has one
-		// (it has already logged the detail under it; a second one would name
-		// nothing), otherwise mint.
-		ticket := appErr.Ticket
-		if ticket == "" {
-			ticket = uuid.New().String()
-		}
-		slog.Error("internal error", append(requestAttrs(ctx), "ticket", ticket, "code", appErr.Code, "detail", appErr.Detail)...)
-		code = "SERVER_ERROR"
-		message = fmt.Sprintf("SERVER_ERROR: internal error [ticket: %s]", ticket)
-		return
+	if !errors.As(err, &appErr) {
+		// A raw error carrying a store sentinel or marker — a transient
+		// storage outage, a lost write race, a unique-key refusal, a lost
+		// shard — is NOT unclassified. Several service methods return one on
+		// a raw error rather than a pre-classified AppError, and the HTTP door
+		// classifies it through common.Internal. Classifying it here the same
+		// way keeps one failure from reading as "retry shortly" on one door
+		// and "your request is hopeless" on the other; anything else is a
+		// server-side failure, and a departed client stays a departed client
+		// (common.Internal keeps the cause, which carries the marker).
+		appErr = common.Internal("unclassified error", err)
 	}
-	// A raw error carrying a store sentinel or marker — a transient storage
-	// outage, a lost write race, a unique-key refusal, a lost shard — is NOT
-	// unclassified. Several service methods return one on a raw error rather
-	// than a pre-classified AppError, and the HTTP door classifies it through
-	// common.Internal. Classifying it here the same way keeps one failure from
-	// reading as "retry shortly" on one door and "your request is hopeless" on
-	// the other. Re-entering through the operational branch also keeps the
-	// cause in the log and out of the envelope, exactly as the HTTP door does.
-	// Every one of this file's envelopes funnels through here, so this is the
-	// only place the check belongs.
-	if appErr := common.Internal("", err); appErr.Level == common.LevelOperational {
-		return buildErrorFields(ctx, appErr)
+	// The one log line, as the HTTP door writes it, naming the request.
+	ticket := common.LogError(ctx, appErr, requestAttrs(ctx)...)
+	if appErr.Level == common.LevelOperational {
+		if appErr.Retryable {
+			r := true
+			retryable = &r
+		}
+		return "CLIENT_ERROR", appErr.Message, retryable // Already "CODE: detail"
 	}
-	// A departed client that never passed through an *AppError is still a
-	// departed client, not an unclassified failure. Same message as the branch
-	// above; a raw error has no code or message of its own to carry.
-	if isClientGoneCancellation(err) {
-		slog.Debug("client gone before request completed", append(requestAttrs(ctx), "detail", err.Error())...)
-		code = "SERVER_ERROR"
-		message = "SERVER_ERROR: internal error"
-		return
+	if ticket == "" {
+		// The client went away: nothing was wrong, and nobody to quote a
+		// ticket to.
+		return "SERVER_ERROR", "SERVER_ERROR: internal error", nil
 	}
-	// Raw error — should not happen
-	ticket := uuid.New().String()
-	slog.Error("unclassified error", append(requestAttrs(ctx), "ticket", ticket, "detail", err.Error())...)
-	code = "SERVER_ERROR"
-	message = fmt.Sprintf("SERVER_ERROR: internal error [ticket: %s]", ticket)
-	return
+	return "SERVER_ERROR", fmt.Sprintf("SERVER_ERROR: internal error [ticket: %s]", ticket), nil
 }
 
 // ctxWarnings returns accumulated diagnostics warnings from the context.
