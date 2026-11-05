@@ -318,7 +318,7 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 		s.deregisterJobHandle(job.ID, handle)
 		// Release (uncounted) so a peer with capacity, or this node's next
 		// sweep, takes it without waiting for staleness.
-		return false, func(ctx context.Context) { _ = s.releaseUnrun(ctx, job) }
+		return false, func(ctx context.Context) { s.releaseUnrun(ctx, job) }
 	}
 	return true, nil
 }
@@ -362,8 +362,8 @@ func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel con
 			return false
 		case jobCtx.Err() == nil:
 			slog.Error("failed to clear results before reclaim; releasing", "pkg", "search", "jobID", job.ID, "err", cerr)
-			if settleJob(jobCtx, cancel, job.ID, errJobEnding) && s.releaseUnrun(context.Background(), job) {
-				s.unfinishedEnd(handle, job.ID)
+			if settleJob(jobCtx, cancel, job.ID, errJobEnding) {
+				s.releaseUnrun(context.Background(), job)
 			}
 			s.dropReclaim(cancel, handle, job)
 			return false
@@ -388,10 +388,7 @@ func (s *SearchService) dropReclaim(cancel context.CancelCauseFunc, handle *asyn
 // releaseUnrun hands a reclaimed job that did not run back for the next claim,
 // uncounted and fenced by its claimed epoch. A refusal means the job is no
 // longer this epoch's to hand back — an ordinary outcome, not a fault.
-//
-// It reports whether the release was neither landed nor refused (it failed,
-// already logged): the job is then still this claim's, released by nobody.
-func (s *SearchService) releaseUnrun(ctx context.Context, job *spi.SearchJob) (failed bool) {
+func (s *SearchService) releaseUnrun(ctx context.Context, job *spi.SearchJob) {
 	rerr := s.searchStore.Release(ownerCtx(ctx, job), job.ID, job.Epoch)
 	switch {
 	case rerr == nil:
@@ -399,9 +396,7 @@ func (s *SearchService) releaseUnrun(ctx context.Context, job *spi.SearchJob) (f
 		endLostClaim(job.ID, rerr)
 	default:
 		owedWriteFailed(ctx, slog.LevelWarn, "failed to release reclaimed job that did not run", job, rerr)
-		return true
 	}
-	return false
 }
 
 // decodeStoredJob reconstructs the condition and search options SubmitAsync

@@ -188,12 +188,15 @@ func TestReleaseRegisteredJobs_ExecutorDecidingDuringTheLoop(t *testing.T) {
 
 // failingTerminalWrite holds the first terminal status write until hold is
 // closed, then fails it with an error that is not a store refusal, as a
-// dropped connection does. It counts the Release calls that land.
+// dropped connection does. Once closed is set (the store is closing, as
+// App.Shutdown closes it after the release), Release fails too. It counts
+// the Release calls that land.
 type failingTerminalWrite struct {
 	spi.AsyncSearchStore
 	entered  chan struct{}
 	hold     chan struct{}
 	mu       sync.Mutex
+	closed   bool
 	releases int
 }
 
@@ -204,20 +207,22 @@ func (s *failingTerminalWrite) UpdateJobStatus(ctx context.Context, jobID string
 }
 
 func (s *failingTerminalWrite) Release(ctx context.Context, jobID string, epoch int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("release job %s: closed pool", jobID)
+	}
 	err := s.AsyncSearchStore.Release(ctx, jobID, epoch)
 	if err == nil {
-		s.mu.Lock()
-		defer s.mu.Unlock()
 		s.releases++
 	}
 	return err
 }
 
 // A shutdown release that meets a job whose executor is recording its outcome
-// leaves the job to that recording. If the recording then fails for any
-// reason but a store refusal, the job is still this node's claim and nobody
-// recorded it: it is handed back (released) once, as the shutdown would have
-// handed back any job it reached first, not left to go stale.
+// still releases it, before the store closes: if the recording then fails for
+// any reason but a store refusal, the job is already handed back, not left
+// RUNNING with nobody to release it.
 func TestReleaseRegisteredJobs_FailedRecordingDuringShutdownIsHandedBack(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
@@ -242,9 +247,12 @@ func TestReleaseRegisteredJobs_FailedRecordingDuringShutdownIsHandedBack(t *test
 		t.Fatal("the job never reached its terminal write")
 	}
 	logs := captureJobLogs(t)
-	if n := svc.ReleaseRegisteredJobs(context.Background()); n != 0 {
-		t.Errorf("ReleaseRegisteredJobs = %d, want 0: the job's executor was recording its outcome", n)
+	if n := svc.ReleaseRegisteredJobs(context.Background()); n != 1 {
+		t.Errorf("ReleaseRegisteredJobs = %d, want 1", n)
 	}
+	store.mu.Lock()
+	store.closed = true // the store closes after the release, as at shutdown
+	store.mu.Unlock()
 	close(store.hold)
 	pool.Drain(context.Background())
 
@@ -252,7 +260,7 @@ func TestReleaseRegisteredJobs_FailedRecordingDuringShutdownIsHandedBack(t *test
 	releases := store.releases
 	store.mu.Unlock()
 	if releases != 1 {
-		t.Errorf("landed Release calls = %d, want 1: the unrecorded job is handed back once", releases)
+		t.Errorf("landed Release calls = %d, want 1: the job is handed back before the store closes", releases)
 	}
 	if strings.Contains(logs.String(), lostClaimLine) {
 		t.Errorf("a lost claim was reported for a job still this node's:\n%s", logs.String())

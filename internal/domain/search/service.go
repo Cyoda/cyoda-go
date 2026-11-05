@@ -58,7 +58,8 @@ var errCancelledHere = fmt.Errorf("async search job cancelled on this node: %w",
 // errJobEnding is the cause a job's own executor, or its reclaim, cancels the
 // job with when it decides the outcome itself: before its terminal write, or
 // before releasing a reclaimed job it will not run. From then on the end is
-// its to record, and the shutdown release leaves the job alone.
+// its to record and report; the shutdown release still hands the job back,
+// silently, in case the recording fails once the store has closed.
 var errJobEnding = errors.New("async search job ending on this node")
 
 // settleJob cancels the job's context with cause and reports whether the end
@@ -369,60 +370,23 @@ type asyncJobHandle struct {
 	// shutdown-time Release (ReleaseRegisteredJobs) fences against the same
 	// epoch the executor itself is running at.
 	epoch int64
-
-	// handBackMu orders the shutdown release against an executor or reclaim
-	// that settled the job's end but could not carry it out, so that exactly
-	// one of them hands the job back — and only at shutdown, as the shutdown
-	// release would have had it reached the job first.
-	handBackMu   sync.Mutex
-	shuttingDown bool // the shutdown release has reached this job
-	unfinished   bool // its settled end could not be carried out
-}
-
-// markUnfinished records that the end this job's executor or reclaim settled
-// could not be carried out — the job is still this node's claim and nobody
-// recorded or released it — and reports whether the shutdown release has
-// already passed it, leaving the hand-back to the caller.
-func (h *asyncJobHandle) markUnfinished() bool {
-	h.handBackMu.Lock()
-	defer h.handBackMu.Unlock()
-	h.unfinished = true
-	return h.shuttingDown
-}
-
-// markShuttingDown records that the shutdown release has reached this job and
-// reports whether its settled end had already been found unfinished, leaving
-// the hand-back to the release.
-func (h *asyncJobHandle) markShuttingDown() bool {
-	h.handBackMu.Lock()
-	defer h.handBackMu.Unlock()
-	h.shuttingDown = true
-	return h.unfinished
-}
-
-// unfinishedEnd is called when the end this job's executor or reclaim settled
-// could not be carried out (its write failed for a reason other than a store
-// refusal, already logged). Outside a shutdown the job goes stale and is
-// reclaimed, a counted attempt, which bounds a write that keeps failing. At
-// shutdown it is handed back now, uncounted, as the release does for every
-// job it reaches first.
-func (s *SearchService) unfinishedEnd(handle *asyncJobHandle, jobID string) {
-	if handle.markUnfinished() {
-		s.handBack(context.Background(), jobID, handle)
-	}
 }
 
 // handBack issues the shutdown-time Release (uncounted, fenced by the job's
 // epoch) and reports whether it landed. A refusal means the job was settled,
-// claimed elsewhere or removed meanwhile: reported once as a lost claim.
-func (s *SearchService) handBack(ctx context.Context, jobID string, entry *asyncJobHandle) bool {
+// claimed elsewhere or removed meanwhile; it is reported as a lost claim only
+// when the release is the job's last word (reportRefusal) — a job whose
+// executor is recording its outcome reports its own end.
+func (s *SearchService) handBack(ctx context.Context, jobID string, entry *asyncJobHandle, reportRefusal bool) bool {
 	relCtx := spi.WithUserContext(context.WithoutCancel(ctx), entry.uc)
 	err := s.searchStore.Release(relCtx, jobID, entry.epoch)
 	switch {
 	case err == nil:
 		return true
 	case fencedRefusal(err):
-		endLostClaim(jobID, err)
+		if reportRefusal {
+			endLostClaim(jobID, err)
+		}
 	default:
 		slog.Error("failed to release async search job at shutdown", "pkg", "search", "jobID", jobID, "err", err)
 	}
@@ -745,17 +709,26 @@ func (s *SearchService) ReleaseRegisteredJobs(ctx context.Context) int {
 
 	released := 0
 	for jobID, entry := range entries {
-		unfinished := entry.markShuttingDown()
 		entry.cancel(errJobReleased)
-		if !unfinished && !errors.Is(context.Cause(entry.ctx), errJobReleased) {
-			// Its end was already decided — by its executor or reclaim, a
-			// cancel here, or the store's refusal — and whoever decided it
-			// carries it out and reports it (handing it back if it cannot).
-			continue
+		switch cause := context.Cause(entry.ctx); {
+		case errors.Is(cause, errJobReleased):
+			if s.handBack(ctx, jobID, entry, true) {
+				released++
+			}
+		case errors.Is(cause, errJobEnding):
+			// Its executor or reclaim is recording (or releasing) the job's
+			// end. Released anyway, now, while the store is still open: a
+			// recording that lands afterwards still finishes the job (Release
+			// keeps the epoch), one that fails leaves it handed back, and one
+			// a peer's claim overtakes is refused and reported by the
+			// executor. A refusal here means the recording landed first.
+			if s.handBack(ctx, jobID, entry, false) {
+				released++
+			}
 		}
-		if s.handBack(ctx, jobID, entry) {
-			released++
-		}
+		// Any other cause — a cancel here or the store's refusal — ended the
+		// job before the release: nothing is this node's to hand back, and
+		// whoever met it reports it.
 	}
 	return released
 }
@@ -1489,7 +1462,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	}
 
 	// Settle the end first, so that a heartbeat refusal or a shutdown release
-	// landing from now on leaves the job to this write; then write on
+	// landing from now on leaves the outcome to this write; then write on
 	// context.WithoutCancel, since settleJob has just cancelled jobCtx. The
 	// UserContext (and so the tenant scope) is preserved. Settling also stops
 	// the heartbeat: a write that hangs past the stale threshold lets the job
@@ -1503,7 +1476,6 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
-		s.unfinishedEnd(handle, jobID)
 	}
 }
 
@@ -1539,7 +1511,6 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, handle *asyncJobH
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
-		s.unfinishedEnd(handle, jobID)
 	}
 }
 

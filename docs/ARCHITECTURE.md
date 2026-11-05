@@ -1589,18 +1589,22 @@ tenant can still saturate the running set, but its queue occupancy is bounded,
 so the remaining queue capacity always belongs to other tenants.
 
 **Cancellation and shutdown.** `CancelAsync` records `CANCELLED` in the store
-(`Cancel(ctx, jobID, finishTime)`), then cancels the job in-process through
-`SearchService`'s per-job registry if this node runs or queues it.
+(`Cancel(ctx, jobID, finishTime)`, idempotent on a job that has already
+ended), then reads the job: only if its status is `CANCELLED` is the cancel
+reported and the job cancelled in-process through `SearchService`'s per-job
+registry, if this node runs or queues it. A job that ended first, or while the
+cancel was landing, is refused with `SEARCH_JOB_ALREADY_TERMINAL` on both
+doors.
 On any other node the job's next heartbeat is refused as terminal, which ends
 it. Node shutdown (`App.Shutdown`)
 drains the worker pool up to a bounded budget, giving in-flight jobs a
 chance to finish normally, then calls `ReleaseRegisteredJobs` for whatever
 is still registered: each is cancelled in-process and `Release`d
-(epoch-fenced) in the store — **released for reclaim, not failed** — unless
-its end was already decided: its executor was recording the outcome (if that
-recording then fails, the executor hands the job back itself), or the job had
-been cancelled, settled or taken over, which is reported once as a lost
-claim. A peer,
+(epoch-fenced) in the store — **released for reclaim, not failed**. A job
+whose executor is recording its outcome is released too: `Release` keeps the
+epoch, so a recording that lands afterwards still finishes it, and one that
+fails leaves it handed back. A job already cancelled, settled or taken over is
+not released; that end is reported once as a lost claim. A peer,
 or this same node on its own restart-time startup sweep, claims and
 re-executes it promptly rather than waiting for the stale-heartbeat
 timeout, so a graceful shutdown or rolling restart hands work off within

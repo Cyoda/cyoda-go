@@ -7633,7 +7633,9 @@ paths:
         Attempts to cancel a running async search job. The operation:
         - Only succeeds if the search job is in RUNNING state
         - Returns the cancellation result and final status
-        - Invalidates the search job entry if cancellation succeeds
+        - Records the job CANCELLED and stops it, if it is still running
+        - Answers 400 SEARCH_JOB_ALREADY_TERMINAL if the job has already
+          ended, before the call or while the cancel is landing
       operationId: cancelAsyncSearch
       parameters:
         - name: jobId

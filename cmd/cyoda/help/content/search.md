@@ -332,7 +332,7 @@ Results are fetched from the stored entity snapshots at the job's `pointInTime`.
 
 - `jobId` (path): UUID
 
-Cancellation succeeds only when the job status is `RUNNING`. If the job has already reached a terminal state (`SUCCESSFUL`, `FAILED`, or `CANCELLED`), the server returns `400 Bad Request`:
+Cancellation succeeds only when the job status is `RUNNING`. If the job has already reached a terminal state (`SUCCESSFUL`, `FAILED`, or `CANCELLED`) — before the call, or while the cancel is landing — the server returns `400 Bad Request`:
 
 ```json
 {
