@@ -5728,7 +5728,12 @@ type SearchSnapshotStatusJson struct {
 	// Number of entities collected.
 	EntitiesCount *int `json:"entitiesCount,omitempty" yaml:"entitiesCount,omitempty" mapstructure:"entitiesCount,omitempty"`
 
-	// Expiration date of the snapshot.
+	// When the snapshot stops being readable: its finish time plus
+	// CYODA_SEARCH_SNAPSHOT_TTL. From then on a request for it is refused with
+	// SEARCH_JOB_NOT_FOUND. While the snapshot is RUNNING, a lower bound (now plus
+	// the TTL), final once it ends. cyoda-go sets it on the answers to
+	// SnapshotGetStatusRequest and SnapshotCancelRequest; the answer to the submit
+	// and an error for no snapshot leave it out.
 	ExpirationDate *time.Time `json:"expirationDate,omitempty" yaml:"expirationDate,omitempty" mapstructure:"expirationDate,omitempty"`
 
 	// Why the snapshot failed. Present only when status is FAILED, and absent for

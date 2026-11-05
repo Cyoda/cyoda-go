@@ -23,7 +23,7 @@
     "expirationDate": {
       "type": "string",
       "format": "date-time",
-      "description": "Expiration date of the snapshot."
+      "description": "When the snapshot stops being readable: its finish time plus CYODA_SEARCH_SNAPSHOT_TTL. From then on a request for it is refused with SEARCH_JOB_NOT_FOUND. While the snapshot is RUNNING, a lower bound (now plus the TTL), final once it ends. cyoda-go sets it on the answers to SnapshotGetStatusRequest and SnapshotCancelRequest; the answer to the submit and an error for no snapshot leave it out."
     },
     "entitiesCount": {
       "type": "integer",

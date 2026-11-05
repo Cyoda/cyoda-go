@@ -54,7 +54,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_OTEL_ENABLED", Topic: "admin", Type: "bool", Default: "false", Description: "Enable OpenTelemetry tracing and metrics."},
 
 	// --- search ---
-	{Name: "CYODA_SEARCH_SNAPSHOT_TTL", Topic: "search", Type: "duration", Default: "1h", Description: "Search snapshot TTL."},
+	{Name: "CYODA_SEARCH_SNAPSHOT_TTL", Topic: "search", Type: "duration", Default: "1h", Description: "How long a finished async search job stays readable (its expirationDate is finish time + this TTL)."},
 	{Name: "CYODA_SEARCH_REAP_INTERVAL", Topic: "search", Type: "duration", Default: "5m", Description: "Search snapshot reap interval."},
 	{Name: "CYODA_SEARCH_MAX_SORT_KEYS", Topic: "search", Type: "int", Default: "16", Description: "Maximum number of sort keys per search request; values <= 0 clamp to the default."},
 	{Name: "CYODA_STATS_GROUP_MAX", Topic: "search", Type: "int", Default: "10000", Description: "Cardinality ceiling for grouped-stats results; also caps the request limit parameter. Values <= 0 clamp to the default."},

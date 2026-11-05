@@ -1618,7 +1618,12 @@ shutdown neither leaves a job stuck `RUNNING` forever nor terminates it as
 background reaper goroutine runs on `CYODA_SEARCH_REAP_INTERVAL` (default
 5m) and deletes *terminal* jobs whose finish time lies more than
 `CYODA_SEARCH_SNAPSHOT_TTL` (default 1h) before the store's business clock —
-`DD-12`. The PostgreSQL implementation uses `CASCADE` on the
+`DD-12`. The search service holds the TTL and runs the reap with it
+(`SearchService.ReapExpiredSnapshots`), and every read of a job (status,
+results, cancel) answers `SEARCH_JOB_NOT_FOUND` from the job's finish time
+plus that TTL on, whether or not the reap has run. The status's
+`expirationDate` is that instant (now + TTL, a lower bound, while the job
+runs), so a client never finds a job gone before the date it was given. The PostgreSQL implementation uses `CASCADE` on the
 foreign key from `search_job_results` to `search_jobs`.
 
 **PostgreSQL schema.** Two tables in
@@ -2499,7 +2504,7 @@ Startup fails on an invalid value.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_SEARCH_SNAPSHOT_TTL` | `1h` | TTL for async search job results |
+| `CYODA_SEARCH_SNAPSHOT_TTL` | `1h` | How long a finished async search job stays readable; its `expirationDate` |
 | `CYODA_SEARCH_REAP_INTERVAL` | `5m` | Frequency of the search **snapshot-TTL** reaper only (deletes terminal jobs past `CYODA_SEARCH_SNAPSHOT_TTL`); does not drive the stale/reclaim sweep |
 | `CYODA_SEARCH_MAX_SORT_KEYS` | `16` | Max `sort`/`orderBy` keys per search request |
 | `CYODA_STATS_GROUP_MAX` | `10000` | Cardinality ceiling of grouped statistics: more distinct groups is `422 GROUP_CARDINALITY_EXCEEDED`, and a request `limit` above it is `400 INVALID_LIMIT`. A value `<= 0` falls back to the default |

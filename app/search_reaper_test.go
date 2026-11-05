@@ -100,7 +100,7 @@ func TestReapExpiredSnapshotsTick_HealthyStoreLeavesHealthAlone(t *testing.T) {
 
 	latch := health.NewLatch()
 
-	reapExpiredSnapshotsTick(context.Background(), realAsync, time.Hour, latch)
+	reapExpiredSnapshotsTick(context.Background(), newReclaimService(t, factory, realAsync), latch)
 
 	if latch.Tripped() {
 		t.Error("healthLatch tripped after an uneventful snapshot reaper tick")
@@ -112,7 +112,6 @@ func TestReapExpiredSnapshotsTick_HealthyStoreLeavesHealthAlone(t *testing.T) {
 func reaperTestConfig() *Config {
 	return &Config{
 		SearchReapInterval:         10 * time.Millisecond,
-		SearchSnapshotTTL:          time.Hour,
 		SearchJobHeartbeatInterval: 20 * time.Millisecond,
 		SearchJobStaleAfter:        5 * time.Minute,
 		SearchJobMaxAttempts:       1,
@@ -211,7 +210,7 @@ func TestSearchReapers_BlockedReapDoesNotStopClaims(t *testing.T) {
 	svc := newReclaimService(t, factory, store)
 	latch := health.NewLatch()
 
-	stop := startSearchReapers(reaperTestConfig(), svc, store, latch)
+	stop := startSearchReapers(reaperTestConfig(), svc, latch)
 	t.Cleanup(stop)
 	t.Cleanup(store.release) // runs before stop
 
@@ -240,7 +239,7 @@ func TestSearchReapers_StopEndsBlockedReap(t *testing.T) {
 	svc := newReclaimService(t, factory, store)
 	latch := health.NewLatch()
 
-	stop := startSearchReapers(reaperTestConfig(), svc, store, latch)
+	stop := startSearchReapers(reaperTestConfig(), svc, latch)
 	select {
 	case <-store.reaping:
 	case <-time.After(2 * time.Second):
@@ -289,7 +288,7 @@ func TestSearchReapers_StopEndsAndAwaitsBlockedSecondPass(t *testing.T) {
 	// Stale, and at its cap on the first claim (maxAttempts 1).
 	createReapTestJob(t, base, "job-capped")
 	clock.Advance(time.Hour)
-	stop := startSearchReapers(reaperTestConfig(), svc, store, latch)
+	stop := startSearchReapers(reaperTestConfig(), svc, latch)
 	select {
 	case <-store.failing:
 	case <-time.After(2 * time.Second):

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,6 +15,8 @@ func validConfig() Config {
 		SearchJobHeartbeatInterval: 15 * time.Second,
 		SearchJobStaleAfter:        5 * time.Minute,
 		SearchJobMaxAttempts:       3,
+		SearchSnapshotTTL:          time.Hour,
+		SearchReapInterval:         5 * time.Minute,
 		GRPC:                       GRPCConfig{KeepAliveInterval: 10, KeepAliveTimeout: 30},
 		Callout:                    validCalloutConfig(),
 		Cluster:                    validDispatchConfig(),
@@ -43,6 +46,10 @@ func TestConfig_Validate(t *testing.T) {
 		{"non-positive heartbeat", func(c *Config) { c.SearchJobHeartbeatInterval = 0 }},
 		{"stale-after too close to heartbeat", func(c *Config) { c.SearchJobStaleAfter = 20 * time.Second }},
 		{"zero max attempts", func(c *Config) { c.SearchJobMaxAttempts = 0 }},
+		{"zero snapshot TTL", func(c *Config) { c.SearchSnapshotTTL = 0 }},
+		{"negative snapshot TTL", func(c *Config) { c.SearchSnapshotTTL = -time.Second }},
+		{"zero reap interval", func(c *Config) { c.SearchReapInterval = 0 }},
+		{"negative reap interval", func(c *Config) { c.SearchReapInterval = -time.Second }},
 		{"answer limit above its upper bound", func(c *Config) { c.Callout.ResponseTimeout = 2 * time.Minute }},
 		{"negative patience", func(c *Config) { c.Cluster.DispatchWaitTimeout = -time.Second }},
 		{"zero pass allowance", func(c *Config) { c.Callout.PassAllowance = 0 }},
@@ -92,5 +99,14 @@ func TestValidateSearchJobMaxAttempts(t *testing.T) {
 	}
 	if err := ValidateSearchJobMaxAttempts(0); err == nil {
 		t.Fatal("0 must be rejected")
+	}
+}
+
+func TestValidateSearchSnapshot_NamesTheSetting(t *testing.T) {
+	if err := ValidateSearchSnapshot(0, time.Minute); err == nil || !strings.Contains(err.Error(), "CYODA_SEARCH_SNAPSHOT_TTL") {
+		t.Errorf("zero TTL: %v; want an error naming CYODA_SEARCH_SNAPSHOT_TTL", err)
+	}
+	if err := ValidateSearchSnapshot(time.Hour, 0); err == nil || !strings.Contains(err.Error(), "CYODA_SEARCH_REAP_INTERVAL") {
+		t.Errorf("zero reap interval: %v; want an error naming CYODA_SEARCH_REAP_INTERVAL", err)
 	}
 }

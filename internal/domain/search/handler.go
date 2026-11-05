@@ -409,7 +409,7 @@ func buildStatusResponse(status SearchJobStatus) map[string]any {
 		"createTime":            status.CreateTime.UTC().Format(time.RFC3339Nano),
 		"entitiesCount":         status.Total,
 		"calculationTimeMillis": status.CalcTimeMs,
-		"expirationDate":        status.CreateTime.Add(24 * time.Hour).UTC().Format(time.RFC3339Nano),
+		"expirationDate":        status.ExpirationDate.UTC().Format(time.RFC3339Nano),
 	}
 	if status.FinishTime != nil {
 		resp["finishTime"] = status.FinishTime.UTC().Format(time.RFC3339Nano)

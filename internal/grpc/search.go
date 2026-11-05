@@ -272,10 +272,12 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetStatusRequest(ctx context.Cont
 // carried only when the service set one, which it does for a FAILED job alone.
 func snapshotStatusJSON(st *search.SnapshotStatus) events.SearchSnapshotStatusJson {
 	count := st.EntitiesCount
+	expires := st.ExpirationDate.UTC()
 	out := events.SearchSnapshotStatusJson{
-		SnapshotID:    st.SnapshotID,
-		Status:        events.SearchSnapshotStatusJsonStatus(st.Status),
-		EntitiesCount: &count,
+		SnapshotID:     st.SnapshotID,
+		Status:         events.SearchSnapshotStatusJsonStatus(st.Status),
+		EntitiesCount:  &count,
+		ExpirationDate: &expires,
 	}
 	if st.FailureReason != "" {
 		reason := st.FailureReason

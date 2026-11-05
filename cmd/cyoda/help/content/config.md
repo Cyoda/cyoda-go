@@ -98,8 +98,8 @@ loads `.env`, `.env.postgres` and `.env.otel` from the working directory.
 
 ### Search internals
 
-- `CYODA_SEARCH_SNAPSHOT_TTL` (duration, default: `1h`) — search snapshot TTL.
-- `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`) — search snapshot reap interval: how often terminal jobs older than `CYODA_SEARCH_SNAPSHOT_TTL` are deleted. It does not drive the stale/reclaim sweep, which runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (see `CYODA_SEARCH_JOB_STALE_AFTER`). The snapshot reap runs on its own goroutine, so a reap waiting for a database connection never delays the reclaim sweep.
+- `CYODA_SEARCH_SNAPSHOT_TTL` (duration, default: `1h`, must be > 0) — how long a finished async search job stays readable. Its status reports `expirationDate` = finish time + this TTL; from then on its status, results and cancel answer `404 SEARCH_JOB_NOT_FOUND`.
+- `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`, must be > 0) — search snapshot reap interval: how often terminal jobs older than `CYODA_SEARCH_SNAPSHOT_TTL` are deleted. It does not drive the stale/reclaim sweep, which runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (see `CYODA_SEARCH_JOB_STALE_AFTER`). The snapshot reap runs on its own goroutine, so a reap waiting for a database connection never delays the reclaim sweep.
 - `CYODA_SEARCH_MAX_SORT_KEYS` (int, default: `16`) — maximum number of `sort` keys per search request. Requests exceeding this cap are rejected with `400 INVALID_FIELD_PATH`. Values `<= 0` are clamped to the default.
 - `CYODA_SEARCH_ASYNC_WORKERS` (int, default: `8`) — async-search worker pool size. Config is a QA'd artefact: values `< 1` fail startup rather than being clamped.
 - `CYODA_SEARCH_ASYNC_QUEUE` (int, default: `256`) — async-search submit queue capacity beyond the running workers. Once both are exhausted, submission fails with `503 SEARCH_QUEUE_FULL` (retryable). Values `< 0` fail startup.

@@ -774,6 +774,9 @@ func (c Config) Validate() error {
 	if err := ValidateSearchJobHeartbeat(c.SearchJobHeartbeatInterval); err != nil {
 		return err
 	}
+	if err := ValidateSearchSnapshot(c.SearchSnapshotTTL, c.SearchReapInterval); err != nil {
+		return err
+	}
 	if err := ValidateSearchJobStaleAfter(c.SearchJobStaleAfter, c.SearchJobHeartbeatInterval); err != nil {
 		return err
 	}
@@ -849,6 +852,21 @@ func ValidateSearchAsync(c SearchAsyncConfig) error {
 func ValidateSearchJobHeartbeat(interval time.Duration) error {
 	if interval <= 0 {
 		return fmt.Errorf("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL must be > 0, got %s", interval)
+	}
+	return nil
+}
+
+// ValidateSearchSnapshot rejects a non-positive snapshot TTL or reap
+// interval. A finished job is readable for the TTL, and its expirationDate
+// reports it, so a non-positive one has no meaning; the search service would
+// substitute its own default for it. time.NewTicker panics on a non-positive
+// reap interval.
+func ValidateSearchSnapshot(ttl, reapInterval time.Duration) error {
+	if ttl <= 0 {
+		return fmt.Errorf("CYODA_SEARCH_SNAPSHOT_TTL must be > 0, got %s", ttl)
+	}
+	if reapInterval <= 0 {
+		return fmt.Errorf("CYODA_SEARCH_REAP_INTERVAL must be > 0, got %s", reapInterval)
 	}
 	return nil
 }
