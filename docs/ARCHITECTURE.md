@@ -1609,8 +1609,8 @@ against `SearchJob.StaleClaims`, so a clean rolling restart chain never
 pushes a job toward the attempt cap. A job whose executor is recording its
 outcome is released too: `Release` keeps the epoch, so a recording that lands
 afterwards still finishes it, and one that fails leaves it handed back. A job
-that has already ended elsewhere (cancelled, or finished on another node) or
-been taken over is not released; that end is reported once as a lost claim. A
+already cancelled (on any node), finished by a node that took it over, or
+taken over is not released; that end is reported once as a lost claim. A
 shutdown neither leaves a job stuck `RUNNING` forever nor terminates it as
 `FAILED`.
 

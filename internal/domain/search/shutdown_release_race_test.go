@@ -232,6 +232,8 @@ func TestReleaseRegisteredJobs_FailedRecordingDuringShutdownIsHandedBack(t *test
 	saveEntity(t, ctx, base, ref, "e000", []byte(`{}`))
 	inner, _ := base.AsyncSearchStore(context.Background())
 	store := &failingTerminalWrite{AsyncSearchStore: inner, entered: make(chan struct{}, 1), hold: make(chan struct{})}
+	letWrite := sync.OnceFunc(func() { close(store.hold) })
+	t.Cleanup(letWrite) // a failed wait must not leave the worker blocked
 	pool := search.NewWorkerPool(1, 4)
 	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
@@ -253,7 +255,7 @@ func TestReleaseRegisteredJobs_FailedRecordingDuringShutdownIsHandedBack(t *test
 	store.mu.Lock()
 	store.closed = true // the store closes after the release, as at shutdown
 	store.mu.Unlock()
-	close(store.hold)
+	letWrite()
 	pool.Drain(context.Background())
 
 	store.mu.Lock()
@@ -298,6 +300,8 @@ func TestReleaseRegisteredJobs_RecordingAfterTheReleaseFinishesTheJob(t *testing
 	}
 	inner, _ := base.AsyncSearchStore(context.Background())
 	store := &heldTerminalWrite{AsyncSearchStore: inner, entered: make(chan struct{}, 1), hold: make(chan struct{})}
+	letWrite := sync.OnceFunc(func() { close(store.hold) })
+	t.Cleanup(letWrite) // a failed wait must not leave the worker blocked
 	pool := search.NewWorkerPool(1, 4)
 	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
@@ -316,7 +320,7 @@ func TestReleaseRegisteredJobs_RecordingAfterTheReleaseFinishesTheJob(t *testing
 	if n := svc.ReleaseRegisteredJobs(context.Background()); n != 1 {
 		t.Errorf("ReleaseRegisteredJobs = %d, want 1", n)
 	}
-	close(store.hold)
+	letWrite()
 	pool.Drain(context.Background())
 
 	job, err := inner.GetJob(ctx, jobID)

@@ -683,10 +683,12 @@ func (s *SearchService) CancelRunning(jobID string) bool {
 }
 
 // ReleaseRegisteredJobs cancels every in-flight (queued or executing) job on
-// this node with errJobReleased and issues a fenced store Release for each,
-// so a peer (or this node's next startup sweep) reclaims and re-runs it
-// promptly instead of waiting for the heartbeat to age out. Returns the count
-// released. Called by App.Shutdown after the drain budget: jobs that finished
+// this node with errJobReleased and issues a fenced store Release for each
+// that is still this node's claim, so a peer (or this node's next startup
+// sweep) reclaims and re-runs it promptly instead of waiting for the
+// heartbeat to age out. Returns the count of releases that landed; it
+// includes jobs whose executor was recording the outcome, which may then
+// finish. Called by App.Shutdown after the drain budget: jobs that finished
 // within the budget are already gone from the registry.
 //
 // The store Release is issued right after cancelling, without waiting for the
