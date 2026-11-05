@@ -2,12 +2,14 @@ package search
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
@@ -39,19 +41,34 @@ func TestJobFailureMessage_ServerSideFailureIsTicketed(t *testing.T) {
 	}
 }
 
-// An unclassified failure records the fixed fallback and logs its detail once,
-// at ERROR, with the job id.
-func TestJobFailureMessage_UnclassifiedFailureIsLoggedOnce(t *testing.T) {
+// A raw, unclassified failure is classified as the doors classify it: a
+// server-side failure, recorded with a ticket and logged once, at ERROR, with
+// the job id and the detail.
+func TestJobFailureMessage_RawErrorIsTicketed(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	if got := jobFailureMessage("job-9", errors.New("driver: connection reset")); got != jobFailureFallback {
-		t.Fatalf("reason = %q, want %q", got, jobFailureFallback)
+	got := jobFailureMessage("job-9", errors.New("driver: connection reset"))
+	if !strings.HasPrefix(got, "SERVER_ERROR: internal error [ticket: ") {
+		t.Fatalf("reason = %q, want the ticketed generic text", got)
 	}
 	out := buf.String()
 	if strings.Count(out, "\n") != 1 || !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "job-9") || !strings.Contains(out, "driver: connection reset") {
 		t.Fatalf("want one ERROR line with the job id and detail:\n%s", out)
+	}
+}
+
+// A job released for reclaim (or superseded) records no failure, so its
+// reason is never rendered: no ticket is minted, and nothing is logged, for a
+// record that is not written.
+func TestWriteAsyncFailure_ReleasedJobRendersNoReason(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(errJobReleased)
+	rendered := false
+	(&SearchService{}).writeAsyncFailure(ctx, "job-r", 1, func() string { rendered = true; return "x" }, time.Now(), 0)
+	if rendered {
+		t.Fatal("the reason of a released job was rendered")
 	}
 }

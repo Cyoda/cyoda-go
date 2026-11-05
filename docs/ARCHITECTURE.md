@@ -444,7 +444,7 @@ Four of the five are set on the server side, so PostgreSQL enforces them whether
 
 How an abort surfaces depends on whether retrying could plausibly work:
 
-- **Transient contention → `503 STORAGE_UNAVAILABLE`, retryable.** An operation that cannot get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — one that opens a transaction (every entity write, an async search's scan and result writes), or one needing a second connection while the caller's transaction holds one (a point-in-time read, an async-search job record or a key-value statement in a transaction) — and an operation whose transaction PostgreSQL already aborted for exceeding `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. A second attempt may well succeed. At COMMIT only PostgreSQL's own report of the idle abort is retryable: a COMMIT that meets a closed connection has an unknown outcome and answers `500` with a ticket.
+- **Transient contention → `503 STORAGE_UNAVAILABLE`, retryable.** An operation that cannot get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — one that opens a transaction (every entity write; an async search's scan and result writes, whose job then records `STORAGE_UNAVAILABLE` as its failure reason), or one needing a second connection while the caller's transaction holds one (a point-in-time read, an async-search job record or a key-value statement in a transaction) — and an operation whose transaction PostgreSQL already aborted for exceeding `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. A second attempt may well succeed. At COMMIT only PostgreSQL's own report of the idle abort is retryable: a COMMIT that meets a closed connection has an unknown outcome and answers `500` with a ticket.
 - **Statement ceiling exceeded → `500` with a ticket, not retryable.** A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT`. Re-running work that just exceeded its ceiling will exceed it again, so advertising a retry would be a lie. The exception is the store producing a consistency time: that wait answers a retryable `503 CONSISTENCY_TIME_UNAVAILABLE`.
 - **Async scan ceiling exceeded → recorded on the job, never an HTTP status.** A scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` fails the job it belongs to: the job goes `FAILED` and its record holds a fixed message, which every status read of the job serves as its `failureReason`. The message names the ceiling and no internal detail, so it carries no ticket.
 
@@ -1486,13 +1486,15 @@ client: the status read serves it as `failureReason` on HTTP
 (`AsyncSearchStatusDto`) and as `status.failureReason` on the gRPC
 `SnapshotGetStatusRequest` answer, and serves no reason for any other status.
 The engine writes only client-safe text there
-(`internal/domain/search.jobFailureMessage`), and logs each failure once with
-the job id: a failure the request caused records its client error's own
-message, code first; a server-side failure records `SERVER_ERROR: internal error [ticket: <uuid>]`, its message and
-detail logged under the ticket, as both doors answer it; an unclassified one
-(a driver error, a recovered panic) records the fixed `search failed
-unexpectedly`, its detail in the log; a few fixed texts name a known cause
-(the attempt cap, the ceiling). A `SelfExecutingSearchStore` writes the field itself, not through
+(`internal/domain/search.jobFailureMessage`). It classifies the error as the
+doors do and logs each failure once, with the job id. A failure the request
+caused records its client error's own message, code first. A storage outage,
+a lost write race or a lost shard records its own code (for example
+`STORAGE_UNAVAILABLE: …`), its cause in the log. Any other failure records
+`SERVER_ERROR: internal error [ticket: <uuid>]`, its message and detail
+logged under the ticket. A few fixed texts name a known cause: the attempt
+cap, the ceiling, and `search failed unexpectedly` for a recovered panic.
+A `SelfExecutingSearchStore` writes the field itself, not through
 `jobFailureMessage`, so the status read does not serve its text: a failed job
 of such a store reports `search failed unexpectedly`.
 
@@ -2736,7 +2738,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 |------------|-------|-------------|
 | **PG statement timeout** | Default 5m (`CYODA_POSTGRES_STATEMENT_TIMEOUT`) | PostgreSQL aborts any single statement that exceeds it. The abort is **not** retryable — re-running the statement would exceed the same ceiling — so it surfaces as a `500` with a ticket, not a `503` (§3.4). Async-search scans run under their own `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` (default 30m) and fail the job instead. |
 | **PG idle-in-transaction timeout** | Default 5m (`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`) | PostgreSQL aborts a transaction whose connection sits idle past it — which is what a transaction waiting on an external callout is doing. It bounds each idle gap inside a transaction, not the transaction's total lifetime; the callout deadline below must fit under it. |
-| **Pool acquire timeout** | Default 10s (`CYODA_POSTGRES_ACQUIRE_TIMEOUT`) | An operation that cannot get a connection within it fails fast with `503 STORAGE_UNAVAILABLE` rather than queueing behind a saturated pool. Applies to an operation that opens a transaction — every entity create, update, patch and delete, and an async search's scan and result writes — and to one needing a *second* connection while the caller's transaction holds one: a point-in-time read, an async-search job record or a key-value statement issued inside a transaction. A statement issued outside a transaction is not bounded — an entity read, list, search, statistics or change-history read, an audit read, and a model, workflow, message or key-value read or write — so ordinary pool contention does not fail it; it waits until a connection is returned or the client disconnects. |
+| **Pool acquire timeout** | Default 10s (`CYODA_POSTGRES_ACQUIRE_TIMEOUT`) | An operation that cannot get a connection within it fails fast with `503 STORAGE_UNAVAILABLE` rather than queueing behind a saturated pool. Applies to an operation that opens a transaction — every entity create, update, patch and delete, and an async search's scan and result writes (whose job records `STORAGE_UNAVAILABLE`) — and to one needing a *second* connection while the caller's transaction holds one: a point-in-time read, an async-search job record or a key-value statement issued inside a transaction. A statement issued outside a transaction is not bounded — an entity read, list, search, statistics or change-history read, an audit read, and a model, workflow, message or key-value read or write — so ordinary pool contention does not fail it; it waits until a connection is returned or the client disconnects. |
 | **Connection hold time** | Duration of entire flow chain (BEGIN → workflow → compute dispatch → callbacks → COMMIT) | Each in-flight transaction consumes one PG connection for its full lifetime. With 25 connections per node and 10 nodes, the cluster supports ~250 concurrent transactions. |
 | **Proxy timeout** | Default 30s (`CYODA_PROXY_TIMEOUT`) | A request forwarded to the transaction's owner fails with `503 TRANSACTION_NODE_UNAVAILABLE` when the owner's answer does not begin within it: the response headers on HTTP, the response of a unary gRPC call, the first message of a server-streaming gRPC call. |
 | **Callout deadline** | tries × answer limit + patience + hand-over allowance; 155s at the defaults | Fixed when the callout starts. No try or hand-over begins after it and one in progress is cut off at it, so the *time* a callout can take is bounded even though a lost hand-over answer can make the number of tries exceed the setting (§4.3). |

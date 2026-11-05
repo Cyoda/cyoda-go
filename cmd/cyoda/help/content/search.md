@@ -282,11 +282,11 @@ Response: `200 OK`, `application/json`:
 
 A job ends `FAILED` when the search itself failed, when the reaper's reclaim of a dead node's job exhausts `CYODA_SEARCH_JOB_MAX_ATTEMPTS`, or when the model's schema becomes unloadable between submit and execution — the executor re-reads the schema, and a job that cannot validate its condition against it fails rather than finishing `SUCCESSFUL` with a short page.
 
-`failureReason` follows the same rule as an error response. A failure the request itself caused carries the client error a direct search would answer, error code first — for example `INVALID_FIELD_PATH: condition or sort references an invalid field path`. Any other failure carries a fixed text that names no internal detail, and the detail stays in the server log. Among them:
+`failureReason` follows the same rule as an error response. A failure the request itself caused carries the client error a direct search would answer, error code first — for example `INVALID_FIELD_PATH: condition or sort references an invalid field path`. Any other failure carries a text that names no internal detail, and the detail stays in the server log. Among them:
 
 - `SERVER_ERROR: internal error [ticket: <uuid>]` — a server-side failure, its detail logged under the ticket, as an error response gives it
-- `STORAGE_UNAVAILABLE: storage is temporarily unavailable — retry` — storage was unavailable
-- `search failed unexpectedly` — an unclassified failure (a driver error, a recovered panic), and every failure of a storage backend that runs async searches itself
+- `STORAGE_UNAVAILABLE: storage is temporarily unavailable — retry` — storage was unavailable, during the scan or anywhere else in the job
+- `search failed unexpectedly` — a recovered panic, and every failure of a storage backend that runs async searches itself
 - `search abandoned: executor lost repeatedly` — the attempt cap above
 - `search exceeded the backend's async search ceiling — narrow the query, or have the operator raise or disable the ceiling (see the config.database help topic)` — PostgreSQL's async search ceiling (`CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT`)
 

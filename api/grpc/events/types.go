@@ -5731,8 +5731,8 @@ type SearchSnapshotStatusJson struct {
 	// every other status. For a failure the request itself caused, it is the same
 	// client error a direct search would answer, code first; for any other failure it
 	// names no internal detail: a server-side failure is SERVER_ERROR: internal error
-	// [ticket: <uuid>], its detail logged under the ticket, and an unclassified one
-	// is a fixed text.
+	// [ticket: <uuid>], its detail logged under the ticket, and a few known causes
+	// carry a fixed text.
 	FailureReason *string `json:"failureReason,omitempty" yaml:"failureReason,omitempty" mapstructure:"failureReason,omitempty"`
 
 	// ID of the snapshot.

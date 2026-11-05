@@ -23,11 +23,13 @@ The status of an async search carries an optional `failureReason` (string).
   - A server-side failure carries `SERVER_ERROR: internal error [ticket:
     <uuid>]`, as an error response does, with its detail logged under the
     ticket.
-  - Any other failure carries a fixed text that names no internal detail —
-    for example `search failed unexpectedly`, `search abandoned: executor lost
-    repeatedly` (a job whose executor was lost too many times), or
-    `STORAGE_UNAVAILABLE: storage is temporarily unavailable — retry`. The
-    detail goes to the server log. No driver message, query text, stack trace
+  - A storage outage, a lost write race or a lost shard carries its own code,
+    as an error response does — for example `STORAGE_UNAVAILABLE: storage is
+    temporarily unavailable — retry` — with its cause logged.
+  - A known cause carries a fixed text — `search abandoned: executor lost
+    repeatedly` (a job whose executor was lost too many times), the ceiling
+    text, or `search failed unexpectedly` (a recovered panic). The detail
+    goes to the server log. No driver message, query text, stack trace
     or connection detail appears in it.
   - A storage backend that runs async searches itself records its own text,
     which cyoda-go has not sanitised; for such a backend every failed job

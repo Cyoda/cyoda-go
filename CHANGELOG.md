@@ -1247,8 +1247,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   failure the request caused carries the client error a direct search would
   answer, error code first; a server-side failure carries
   `SERVER_ERROR: internal error [ticket: <uuid>]`, its detail logged under the
-  ticket; an unclassified one carries a fixed text (for example `search
-  failed unexpectedly`). Before, a
+  ticket; a few known causes carry a fixed text (for example `search
+  failed unexpectedly` for a recovered panic). Before, a
   caller saw `FAILED` and no reason. See `cyoda help search`.
 
 - **HTTP responses carry warnings in `Cyoda-Warning` headers.** A warning a
