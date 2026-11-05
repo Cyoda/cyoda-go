@@ -304,7 +304,7 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 	}
 
 	jobCtx, cancel := context.WithCancelCause(baseCtx)
-	handle := s.registerReclaim(job.ID, cancel, uc, job.Epoch)
+	handle := s.registerReclaim(job.ID, jobCtx, cancel, uc, job.Epoch)
 	s.startHeartbeat(jobCtx, cancel, job.ID, job.Epoch)
 
 	submitErr := s.asyncPool().Submit(func() {

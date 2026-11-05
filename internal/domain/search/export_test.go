@@ -16,7 +16,7 @@ import (
 // duplicate jobID) structurally rather than through the single call site that
 // happens to guarantee unique ids today.
 func (s *SearchService) RegisterJobForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext) bool {
-	_, ok := s.registerJob(jobID, cancel, uc, 1)
+	_, ok := s.registerJob(jobID, context.Background(), cancel, uc, 1)
 	return ok
 }
 
@@ -103,7 +103,7 @@ type AsyncJobHandleForTest = *asyncJobHandle
 // just a bool, so a test can later present that exact handle instance to
 // DeregisterJobHandleForTest.
 func (s *SearchService) RegisterJobHandleForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext) AsyncJobHandleForTest {
-	h, _ := s.registerJob(jobID, cancel, uc, 1)
+	h, _ := s.registerJob(jobID, context.Background(), cancel, uc, 1)
 	return h
 }
 
@@ -112,7 +112,7 @@ func (s *SearchService) RegisterJobHandleForTest(jobID string, cancel context.Ca
 // for a jobID that already has one, at a given epoch, without a full
 // ReclaimStaleJobs round-trip through a store.
 func (s *SearchService) RegisterReclaimForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) AsyncJobHandleForTest {
-	return s.registerReclaim(jobID, cancel, uc, epoch)
+	return s.registerReclaim(jobID, context.Background(), cancel, uc, epoch)
 }
 
 // DeregisterJobHandleForTest exposes deregisterJobHandle for a specific

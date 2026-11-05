@@ -39,7 +39,7 @@ var ErrSearchJobNotComplete = errors.New("search job is not complete")
 // errJobReleased is the cancellation cause set when a job is released
 // (graceful shutdown handoff). The executor writes no terminal status for a
 // job cancelled with this cause: a peer, or this node's next sweep, reclaims
-// it. Every other cancellation cause keeps recording a terminal status.
+// it.
 var errJobReleased = errors.New("async search job released for reclaim")
 
 // errJobSuperseded cancels a stale in-process executor when this same node
@@ -324,12 +324,16 @@ type asyncJobHandle struct {
 	// cancel cancels the job's own context (jobCtx), which is what the
 	// heartbeat ticker and the executor's scan/save loop both observe. It
 	// is the ONLY cancellation source a job has: the pool deliberately
-	// keeps none of its own (see jobFunc in pool.go). CancelCauseFunc so
-	// ReleaseRegisteredJobs can cancel with errJobReleased, distinguishing
-	// a graceful-shutdown handoff from every other cancellation (user
-	// cancel, heartbeat fencing, cross-node terminal write), which pass
-	// nil and keep recording a terminal status as before.
+	// keeps none of its own (see jobFunc in pool.go). Before the job's
+	// outcome is decided it is called only with a cause that says what
+	// ended it, and the executor acts on that cause alone: the store's
+	// refusal (the heartbeat), errCancelledHere (CancelRunning),
+	// errJobReleased (ReleaseRegisteredJobs) or errJobSuperseded
+	// (registerReclaim).
 	cancel context.CancelCauseFunc
+	// ctx is jobCtx itself, so ReleaseRegisteredJobs can read a cause
+	// already set.
+	ctx context.Context
 	// uc is the submitting user's tenant context, needed to build a fresh
 	// (non-cancelled) ctx for a shutdown-time fenced Release after cancel has
 	// already been called on jobCtx.
@@ -485,7 +489,7 @@ func (s *SearchService) heartbeatEvery() time.Duration {
 // deregister then leaves the tenant permanently one slot short. Submit's fresh
 // time-UUIDs make that unreachable today, which is a property of the caller,
 // not of this function.
-func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) (*asyncJobHandle, bool) {
+func (s *SearchService) registerJob(jobID string, ctx context.Context, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) (*asyncJobHandle, bool) {
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
 	if s.registry == nil {
@@ -501,7 +505,7 @@ func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc
 	if s.maxPerTenant > 0 && s.tenantInFlight[tenant] >= s.maxPerTenant {
 		return nil, false
 	}
-	h := &asyncJobHandle{cancel: cancel, uc: uc, epoch: epoch}
+	h := &asyncJobHandle{cancel: cancel, ctx: ctx, uc: uc, epoch: epoch}
 	s.registry[jobID] = h
 	s.tenantInFlight[tenant]++
 	return h, true
@@ -512,8 +516,8 @@ func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc
 // cluster-wide) and, if this node still has a stale handle for the job (its
 // own paused executor), cancels that handle with errJobSuperseded and replaces
 // it. Returns the new handle.
-func (s *SearchService) registerReclaim(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) *asyncJobHandle {
-	h := &asyncJobHandle{cancel: cancel, uc: uc, epoch: epoch}
+func (s *SearchService) registerReclaim(jobID string, ctx context.Context, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) *asyncJobHandle {
+	h := &asyncJobHandle{cancel: cancel, ctx: ctx, uc: uc, epoch: epoch}
 	// IIFE so the lock is released via defer before old.cancel() runs below —
 	// same reasoning as CancelRunning/ReleaseRegisteredJobs: cancel() can
 	// synchronously wake the old executor or its heartbeat goroutine, either
@@ -662,13 +666,22 @@ func (s *SearchService) ReleaseRegisteredJobs(ctx context.Context) int {
 
 	for jobID, entry := range entries {
 		entry.cancel(errJobReleased)
+		if fencedRefusal(context.Cause(entry.ctx)) {
+			// The job had already ended under this node — cancelled here, or
+			// refused to its heartbeat — before the release: nothing is this
+			// node's to hand back, and its executor reports the end.
+			continue
+		}
 		relCtx := ctx
 		if entry.uc != nil {
 			relCtx = spi.WithUserContext(context.WithoutCancel(ctx), entry.uc)
 		}
 		if err := s.searchStore.Release(relCtx, jobID, entry.epoch); err != nil {
-			if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
-				slog.Warn("async search job release lost the race; already settled or reclaimed", "pkg", "search", "jobID", jobID, "err", err)
+			if fencedRefusal(err) {
+				// Settled, claimed elsewhere or removed while this node still
+				// held it; its executor, cancelled as released, reports
+				// nothing.
+				endLostClaim(jobID, err)
 				continue
 			}
 			slog.Error("failed to release async search job at shutdown", "pkg", "search", "jobID", jobID, "err", err)
@@ -1097,7 +1110,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// handed to the pool: the submitter owns the queue entry, so both span
 	// the queued state, not just execution.
 	jobCtx, cancel := context.WithCancelCause(bgCtx)
-	handle, ok := s.registerJob(jobID, cancel, uc, 1)
+	handle, ok := s.registerJob(jobID, jobCtx, cancel, uc, 1)
 	if !ok {
 		// This tenant already holds its full share of this node's async
 		// capacity. Same disposition as a pool rejection below — the job
@@ -1237,9 +1250,10 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// it — the node reports 503 on /health and /readyz and stops
 			// taking client traffic.
 			s.healthLatch.Trip()
-			// jobCtx may or may not be cancelled at this point, but the write
-			// must land regardless — writeAsyncFailure strips cancellation
-			// itself (keeping the UserContext value), so a store that aborts
+			// jobCtx may or may not be cancelled at this point. Unless its cause
+			// leaves the job to another claim (writeAsyncFailure decides), the
+			// write must land: writeAsyncFailure strips cancellation itself
+			// (keeping the UserContext value), so a store that aborts
 			// in-flight work on ctx.Err() still accepts it.
 			s.writeAsyncFailure(jobCtx, jobID, epoch, fixedReason(ticketedReason(ticket)), s.clock.Now(), 0)
 		}
@@ -1440,16 +1454,16 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 // is read there. Stripping cancellation keeps the UserContext (and so the
 // tenant scope) intact.
 func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epoch int64, reason func() string, finishTime time.Time, calcTimeMs int64) {
-	if c := context.Cause(ctx); errors.Is(c, errJobReleased) || errors.Is(c, errJobSuperseded) {
+	// Read before WithoutCancel below: cancellation propagation is stripped
+	// there, but the cause is still readable from ctx itself.
+	switch cause := context.Cause(ctx); {
+	case errors.Is(cause, errJobReleased), errors.Is(cause, errJobSuperseded):
 		// Released for reclaim, or superseded by this node's own self-reclaim:
 		// a peer, this node's next sweep, or the replacing executor re-runs
 		// it. Recording FAILED here would defeat the handoff, and the old
-		// executor's writes are fenced by epoch regardless. Must be checked
-		// before WithoutCancel below — cancellation propagation is stripped
-		// there, but the cause is still readable from ctx itself.
+		// executor's writes are fenced by epoch regardless.
 		return
-	}
-	if cause := context.Cause(ctx); fencedRefusal(cause) {
+	case fencedRefusal(cause):
 		// The job's context ended — whichever step was failing — on the
 		// store's own answer that the job is settled, claimed elsewhere or
 		// removed (or a cancel here, which wraps that answer). The answer is

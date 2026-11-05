@@ -222,8 +222,9 @@ func TestAsyncSearch_LostClaimNeedsNoJobRead(t *testing.T) {
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 	inner, _ := base.AsyncSearchStore(context.Background())
 	store := &unreadableJobStore{AsyncSearchStore: inner}
+	pool := search.NewWorkerPool(1, 4)
 	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
-		WithAsyncPool(newTinyPool(t)).
+		WithAsyncPool(pool).
 		WithHeartbeat(10 * time.Millisecond)
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}, search.SearchOptions{Limit: 1000})
@@ -236,13 +237,80 @@ func TestAsyncSearch_LostClaimNeedsNoJobRead(t *testing.T) {
 	if err := inner.Cancel(ctx, jobID, time.Now()); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(logs.String(), "jobID="+jobID) {
-		if time.Now().After(deadline) {
-			t.Fatal("the executor logged nothing for the cancelled job")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	time.Sleep(100 * time.Millisecond)
+	pool.Drain(context.Background()) // the executor has ended
 	assertOneLostClaimLine(t, logs.String(), jobID)
+}
+
+// gateIterator blocks every Next until gate is closed, ignoring the job's
+// context, as a store read that does not watch it does.
+type gateIterator struct {
+	spi.Iterator
+	gate    chan struct{}
+	entered chan struct{}
+}
+
+func (g *gateIterator) Next() bool {
+	select {
+	case g.entered <- struct{}{}:
+	default:
+	}
+	<-g.gate
+	return g.Iterator.Next()
+}
+
+// A job settled elsewhere while this node still runs it is a lost claim when
+// the node shuts down, too: the shutdown release reports it with the one INFO
+// lost-claim line — and when the executor has already seen the refusal, the
+// release adds nothing to its report.
+func TestReleaseRegisteredJobs_LostClaimIsOneLine(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		heartbeat time.Duration
+	}{
+		{"executor has not seen it", time.Hour},
+		{"heartbeat already saw it", 10 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := memory.NewStoreFactory()
+			defer base.Close()
+			ctx := tenantCtx("tenant-release-lost")
+			ref := spi.ModelRef{EntityName: "releaselost", ModelVersion: "1"}
+			saveMinimalModel(t, ctx, base, ref)
+			for i := 0; i < 5; i++ {
+				saveEntity(t, ctx, base, ref, fmt.Sprintf("e%03d", i), []byte(`{}`))
+			}
+			gate := make(chan struct{})
+			entered := make(chan struct{}, 1)
+			ies := wrapIterate(t, base, ctx, func(it spi.Iterator) spi.Iterator {
+				return &gateIterator{Iterator: it, gate: gate, entered: entered}
+			})
+			factory := &iterableFactory{StoreFactory: base, entityStore: ies}
+			store, _ := base.AsyncSearchStore(context.Background())
+			pool := search.NewWorkerPool(1, 4)
+			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+				WithAsyncPool(pool).
+				WithHeartbeat(tc.heartbeat)
+
+			jobID, err := svc.SubmitAsync(ctx, ref, &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}, search.SearchOptions{Limit: 10})
+			if err != nil {
+				t.Fatalf("SubmitAsync: %v", err)
+			}
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the job never reached its scan")
+			}
+			logs := captureJobLogs(t)
+			if err := store.Cancel(ctx, jobID, time.Now()); err != nil {
+				t.Fatalf("Cancel: %v", err)
+			}
+			time.Sleep(100 * time.Millisecond) // the short heartbeat ticks and is refused
+			if n := svc.ReleaseRegisteredJobs(context.Background()); n != 1 {
+				t.Fatalf("ReleaseRegisteredJobs = %d, want 1", n)
+			}
+			close(gate)
+			pool.Drain(context.Background())
+			assertOneLostClaimLine(t, logs.String(), jobID)
+		})
+	}
 }
