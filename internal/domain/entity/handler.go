@@ -600,7 +600,8 @@ func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityN
 	// StreamDeleteResult: single object with entityModelClassId, deleteResult,
 	// and optional ids (verbose). numberOfEntitites = matched, ...Removed =
 	// actually deleted (decoupled — a condition may match more than it removes
-	// if a per-id delete fails). Reconciled to the per-finding policy (design §2).
+	// when an entity is gone or changed since selection, or in a failed
+	// batch). Reconciled to the per-finding policy (design §2).
 	deleteResult := map[string]any{
 		"idToError":                result.IDToError,
 		"numberOfEntitites":        result.MatchedCount,

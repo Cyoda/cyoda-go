@@ -972,14 +972,22 @@ type DeleteResult struct {
 	IDs           []string
 }
 
+// reportIDError logs one id's delete outcome once and renders it for
+// DeleteResult.IDToError, which a 200 body carries on both doors.
+func reportIDError(ctx context.Context, entityID string, appErr *common.AppError) string {
+	return common.ReportError(ctx, appErr, "pkg", "entity", "entityId", entityID)
+}
+
 // deleteError classifies one item's delete failure as both doors classify a
 // failure: an AppError as it is; a missing entity as 404 ENTITY_NOT_FOUND;
 // anything else through common.Internal, which keeps a storage outage, an
 // epoch mismatch or a lost race its own operational code and makes the rest a
 // server-side failure, naming the entity in what it logs.
 //
-// What it answers is on the wire: a 404's text, or WriteError's and
-// ReportError's sanitized text, never a store's own wording.
+// What it answers is on the wire: a 404's text, or the sanitized text
+// (ReportError's always; WriteError's in the sanitized error-response mode,
+// while the development-only verbose mode answers an internal error's
+// Detail, the store's own wording among it).
 func deleteError(entityID string, err error) *common.AppError {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
@@ -1236,7 +1244,7 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName stri
 	}
 	// Reported only now, from the attempt that stands.
 	for id, appErr := range gone {
-		result.IDToError[id] = common.ReportError(ctx, appErr, "pkg", "entity", "entityId", id)
+		result.IDToError[id] = reportIDError(ctx, id, appErr)
 	}
 	return result, nil
 }
@@ -1438,7 +1446,7 @@ func (h *Handler) resolveBatchTargetsOnePass(ctx context.Context, entityStore sp
 			// other read fault fails the request: nothing has been deleted
 			// yet, so failing closed costs nothing.
 			if errors.Is(gErr, spi.ErrNotFound) {
-				result.IDToError[id] = common.ReportError(ctx, deleteError(id, gErr), "pkg", "entity", "entityId", id)
+				result.IDToError[id] = reportIDError(ctx, id, deleteError(id, gErr))
 				continue
 			}
 			return nil, deleteError(id, gErr)
@@ -1723,7 +1731,7 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 	// Reported only now, from the attempt that stands: a conflict retries the
 	// batch, and an earlier attempt's per-id outcomes are not answered.
 	for id, appErr := range last.idErrors {
-		result.IDToError[id] = common.ReportError(ctx, appErr, "pkg", "entity", "entityId", id)
+		result.IDToError[id] = reportIDError(ctx, id, appErr)
 	}
 	if last.failure == nil {
 		result.RemovedCount += len(last.removed)

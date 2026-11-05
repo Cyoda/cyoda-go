@@ -471,7 +471,7 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchIsTicketed(t *testing.T) {
 
 	for id, msg := range result.IDToError {
 		if !strings.Contains(msg, "[ticket: ") {
-			t.Errorf("IDToError[%s] = %q, want a ticketed message like perIDDeleteError's internal branch", id, msg)
+			t.Errorf("IDToError[%s] = %q, want the failed batch's ticketed message", id, msg)
 		}
 		if strings.Contains(msg, "commit boom") || strings.Contains(msg, "SQLSTATE") {
 			t.Errorf("IDToError[%s] = %q, leaks the raw commit cause onto the wire", id, msg)

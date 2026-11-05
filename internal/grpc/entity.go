@@ -514,8 +514,9 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 
 // deleteAllErrorsByID converts a DeleteResult.IDToError map into the
 // schema's ErrorsByID shape (map[string]interface{}). The batched
-// (transactionSize>0) delete-all path folds per-id and per-batch-commit
-// failures into IDToError and still returns Success:true — RemovedCount can
+// delete-all folds per-id outcomes (an entity gone or changed since
+// selection) and every failed batch's ids into IDToError and still returns
+// Success:true — RemovedCount can
 // be less than MatchedCount — so the caller must be able to see which ids
 // failed and why, the same way the HTTP door's idToError field already does.
 // An empty/nil input returns nil so the omitempty field is left off the

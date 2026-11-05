@@ -2468,9 +2468,10 @@ paths:
         batch is atomic the same way: an entity gone or changed since it was
         selected is reported in `idToError`, a failed batch deletes nothing and
         its error is reported for each of its entities, and the other batches
-        still run. In a request that joins another request's transaction,
-        nothing is committed by the delete itself: the owner's transaction
-        commits or not as a whole.
+        still run. In a request that joins another request's transaction, the
+        delete commits and rolls back nothing itself: what it deleted before
+        a failure stays in the owner's transaction, which commits or not as
+        a whole.
         A malformed condition body returns `400 INVALID_CONDITION`.
       operationId: deleteEntities
       parameters:

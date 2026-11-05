@@ -743,10 +743,10 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		}
 		// Check existence: buffer first, then committed store.
 		if buffered, inBuffer := tx.Buffer[entityID]; !inBuffer {
-			// Check snapshot visibility.
-			_, err := s.getSnapshot(ctx, entityID, tx.SnapshotTime)
-			if err != nil {
-				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+			// Check snapshot visibility. Only an absent entity is "not
+			// found"; any other read failure is reported as it is.
+			if _, err := s.getSnapshot(ctx, entityID, tx.SnapshotTime); err != nil {
+				return fmt.Errorf("Delete %s: %w", entityID, err)
 			}
 		} else {
 			// entityID is a same-tx buffered create/update with no prior
@@ -977,9 +977,16 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 		if _, ok := tx.Buffer[entityID]; ok {
 			return true, nil
 		}
-		// Fall back to snapshot.
+		// Fall back to snapshot. Only an absent entity does not exist; any
+		// other read failure is reported as it is.
 		_, err := s.getSnapshot(ctx, entityID, tx.SnapshotTime)
-		return err == nil, nil
+		if errors.Is(err, spi.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("Exists %s: %w", entityID, err)
+		}
+		return true, nil
 	}
 
 	// Non-transaction.

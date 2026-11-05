@@ -618,21 +618,20 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		if tx.Closed {
 			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
-		// Check existence: buffer first, then committed store. Wrap the
-		// entityMu hold in an IIFE so the unlock runs via defer.
+		// Check existence: buffer first, then the transaction's snapshot, as
+		// every backend does. An entity the snapshot sees, deleted and
+		// committed by another transaction since, is staged: the commit
+		// then loses the write race (spi.ErrConflict), not this call. Wrap
+		// the entityMu hold in an IIFE so the unlock runs via defer.
 		if buffered, inBuffer := tx.Buffer[entityID]; !inBuffer {
-			var versions []entityVersion
+			var snapErr error
 			func() {
 				s.factory.entityMu.RLock()
 				defer s.factory.entityMu.RUnlock()
-				versions = s.factory.entityData[s.tenant][entityID]
+				_, snapErr = s.getSnapshotVersion(entityID, tx.SnapshotTime)
 			}()
-			if len(versions) == 0 {
-				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
-			}
-			latest := versions[len(versions)-1]
-			if latest.deleted {
-				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+			if snapErr != nil {
+				return snapErr
 			}
 		} else {
 			// entityID is a same-tx buffered create/update with no prior

@@ -447,11 +447,11 @@ func TestClassifyEngineError_PostSegmentConflict(t *testing.T) {
 // whatever goes in it is on the wire. A storage failure's own text carries
 // driver wording, SQL wrap-context and a SQLSTATE, none of which a client may
 // see; the detail belongs in the log under a ticket the caller can quote.
-func TestPerIDDeleteError_SanitizesStorageDetail(t *testing.T) {
+func TestDeleteError_SanitizesStorageDetail(t *testing.T) {
 	buf := captureEntitySlog(t)
 
 	raw := errors.New("failed to mark entity deleted: ERROR: canceling statement due to statement timeout (SQLSTATE 57014)")
-	msg := reportDeleteError("e-1", raw)
+	msg := reportIDError(context.Background(), "e-1", deleteError("e-1", raw))
 
 	for _, leak := range []string{"SQLSTATE", "57014", "canceling statement", "mark entity deleted"} {
 		if strings.Contains(msg, leak) {
@@ -476,13 +476,13 @@ func TestPerIDDeleteError_SanitizesStorageDetail(t *testing.T) {
 // it is the answer the same failure gets on every other door. The cause still
 // stays off the wire: common.StorageUnavailable holds it in WithCause, so the
 // message is client-safe by construction.
-func TestPerIDDeleteError_MarkedStorageOutageKeepsItsCode(t *testing.T) {
+func TestDeleteError_MarkedStorageOutageKeepsItsCode(t *testing.T) {
 	buf := captureEntitySlog(t)
 
 	const cause = "acquire: host=db.internal user=cyoda: context deadline exceeded"
 	raw := fmt.Errorf("failed to mark entity deleted: %w", &markedStorageOutage{detail: cause})
 
-	msg := reportDeleteError("e-1", raw)
+	msg := reportIDError(context.Background(), "e-1", deleteError("e-1", raw))
 
 	if !strings.Contains(msg, common.ErrCodeStorageUnavailable) {
 		t.Errorf("a marked storage outage lost its domain code: %s", msg)
@@ -525,8 +525,8 @@ func (*markedStorageOutage) StorageUnavailable() bool { return true }
 // TestPerIDDeleteError_KeepsDomainDetail — a not-found is the caller's own
 // business and carries no infrastructure detail, so it stays legible rather
 // than being flattened into a ticket.
-func TestPerIDDeleteError_KeepsDomainDetail(t *testing.T) {
-	msg := reportDeleteError("e-1", fmt.Errorf("ENTITY_NOT_FOUND: entity e-1 not found: %w", spi.ErrNotFound))
+func TestDeleteError_KeepsDomainDetail(t *testing.T) {
+	msg := reportIDError(context.Background(), "e-1", deleteError("e-1", fmt.Errorf("ENTITY_NOT_FOUND: entity e-1 not found: %w", spi.ErrNotFound)))
 	if !strings.Contains(msg, common.ErrCodeEntityNotFound) {
 		t.Errorf("a not-found lost its domain code: %s", msg)
 	}
@@ -599,8 +599,8 @@ func TestClassifyWorkflowError_EpochMismatchIsARetryable409(t *testing.T) {
 
 // TestPerIDDeleteError_EpochMismatchKeepsItsCode — a delete item that failed on
 // a lost shard reports the retryable code, not a ticket.
-func TestPerIDDeleteError_EpochMismatchKeepsItsCode(t *testing.T) {
-	msg := reportDeleteError("e1", fmt.Errorf("transactional delete aborted: shard revoked: %w", spi.ErrEpochMismatch))
+func TestDeleteError_EpochMismatchKeepsItsCode(t *testing.T) {
+	msg := reportIDError(context.Background(), "e1", deleteError("e1", fmt.Errorf("transactional delete aborted: shard revoked: %w", spi.ErrEpochMismatch)))
 	if !strings.HasPrefix(msg, common.ErrCodeEpochMismatch+":") {
 		t.Fatalf("message = %q, want the %s code", msg, common.ErrCodeEpochMismatch)
 	}
@@ -631,13 +631,13 @@ func TestClassifyEngineError_KeepsTheEngineTextAsDetail(t *testing.T) {
 
 // A not-found id in a delete is answered in the 200 body's per-id map and
 // logged once, at INFO, as the door's funnel logs a 404.
-func TestPerIDDeleteError_NotFoundIsLoggedOnce(t *testing.T) {
+func TestDeleteError_NotFoundIsLoggedOnce(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	msg := reportDeleteError("e-9", fmt.Errorf("get: %w", spi.ErrNotFound))
+	msg := reportIDError(context.Background(), "e-9", deleteError("e-9", fmt.Errorf("get: %w", spi.ErrNotFound)))
 	if !strings.HasPrefix(msg, common.ErrCodeEntityNotFound+": ") {
 		t.Fatalf("message = %q, want ENTITY_NOT_FOUND", msg)
 	}
@@ -666,10 +666,4 @@ func TestClassifyEngineError_DeepCausedErrorKeepsTheEngineText(t *testing.T) {
 	if !strings.Contains(got.Detail, "processor enrich failed") || !strings.Contains(got.Detail, "ent-45") {
 		t.Errorf("Detail = %q, want the engine text and the entity", got.Detail)
 	}
-}
-
-// reportDeleteError renders one id's delete failure as the per-id map
-// answers it.
-func reportDeleteError(entityID string, err error) string {
-	return common.ReportError(context.Background(), deleteError(entityID, err), "pkg", "entity", "entityId", entityID)
 }
