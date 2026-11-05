@@ -64,18 +64,19 @@ of running it as one transaction / one store call.
   as-at that instant, and each one's current version is read before any
   batch runs (a read fault other than the entity being gone fails the
   request); without it, the matching ids are re-selected from committed
-  state before each batch. Ids are then deleted in successive independent transactions of at most N
-  ids each. Each batch re-reads every id's current version and deletes only
+  state before each batch. Ids are then deleted in successive independent
+  transactions of at most N ids each. Each batch re-reads every id's current version and deletes only
   if it still equals the resolution-time baseline; a version mismatch (the
   entity changed after resolution) or an entity already gone is recorded in
   `deleteResult.idToError`, not retried. A batch is one transaction and
   atomic: any other failure to delete one of its entities fails the batch, as
-  does a failed commit, and the batch then maps every id it attempted into
-  `idToError` rather than counting them as removed. Without
-  `transactionSize` the whole delete is one atomic transaction: only an
-  entity already gone is recorded per id, and any other failure fails the
-  request, deleting nothing. Batches already committed before a later failure stay committed —
-  a deliberate, opt-in partial-commit contract. `deleteAllErrorsByID` on the
+  does a failed commit, and the batch then maps the failure to every other id
+  it attempted in `idToError` (an id already gone or changed keeps its own
+  entry) rather than counting them as removed. Without `transactionSize` the
+  whole delete is one atomic transaction: only an entity already gone is
+  recorded per id, and any other failure fails the request, deleting nothing.
+  Batches already committed before a later failure stay committed — a
+  deliberate, opt-in partial-commit contract. `deleteAllErrorsByID` on the
   gRPC delete-all response now carries these per-id failures for the first
   time (`transactionSize` sent).
 - `deleteMessages`: the id list is chunked into successive `DeleteBatch`
