@@ -12,7 +12,8 @@ import (
 // Bounds on the warnings one HTTP response carries. They are header field
 // lines, and a proxy refuses a response whose header block is larger than its
 // buffer (nginx's proxy_buffer_size is 4 KiB on most platforms), so the whole
-// set stays well inside that: at most 2 KiB of values plus their field names.
+// set stays well inside that: at most 2 KiB of values, plus the marker of a cut
+// set and the field names.
 // The gRPC `warnings` array is not bounded by these.
 const (
 	// maxHeaderWarnings is the most warnings one response carries.

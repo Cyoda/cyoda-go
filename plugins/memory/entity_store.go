@@ -618,6 +618,11 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 		if tx.Closed {
 			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
+		// An entity this transaction already deleted is gone to it, as Get
+		// sees.
+		if tx.Deletes[entityID] {
+			return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+		}
 		// Check existence: buffer first, then the transaction's snapshot, as
 		// every backend does. An entity the snapshot sees, deleted and
 		// committed by another transaction since, is staged: the commit

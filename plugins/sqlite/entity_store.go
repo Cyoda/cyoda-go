@@ -741,7 +741,12 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		if tx.Closed {
 			return fmt.Errorf("Delete: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
-		// Check existence: buffer first, then committed store.
+		// An entity this transaction already deleted is gone to it, as Get
+		// sees.
+		if tx.Deletes[entityID] {
+			return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+		}
+		// Check existence: buffer first, then the transaction's snapshot.
 		if buffered, inBuffer := tx.Buffer[entityID]; !inBuffer {
 			// Check snapshot visibility. Only an absent entity is "not
 			// found"; any other read failure is reported as it is.
