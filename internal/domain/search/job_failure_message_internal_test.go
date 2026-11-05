@@ -116,3 +116,24 @@ func TestWriteAsyncFailure_ReleasedJobRendersNoReason(t *testing.T) {
 		t.Errorf("a client error behind a released job was logged: %s", buf.String())
 	}
 }
+
+// ceilingFault stands for a backend's async search ceiling breach.
+type ceilingFault struct{}
+
+func (ceilingFault) Error() string               { return "statement exceeded the async search ceiling" }
+func (ceilingFault) SearchCeilingExceeded() bool { return true }
+
+// A ceiling breach behind a job that ended unrecorded is the request's own
+// outcome, as recorded (INFO), not a server-side fault: nothing is logged for
+// it as discarded.
+func TestLogUnrecordedJobFailure_CeilingIsNotAFault(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	logUnrecordedJobFailure("job-c", fmt.Errorf("scan: %w", ceilingFault{}))
+	if buf.Len() != 0 {
+		t.Errorf("a ceiling breach was logged as a fault: %s", buf.String())
+	}
+}

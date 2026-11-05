@@ -2459,7 +2459,14 @@ paths:
         scale; use statistics only. `deleteResult.numberOfEntitites` is the count
         of entities that matched the condition (or all entities when no condition
         is given); `deleteResult.numberOfEntititesRemoved` is the count actually
-        removed (may be lower if individual deletes failed).
+        removed (lower when an entity was already gone, or a batch failed).
+        Without `transactionSize` the delete is one transaction and atomic: an
+        entity already gone (a `pointInTime` selection) is reported in
+        `idToError`, and any other failure to delete one entity fails the whole
+        request with its error, deleting nothing. With `transactionSize` each
+        batch is atomic the same way: a failed batch deletes nothing and its
+        error is reported for each of its entities in `idToError`, and the
+        other batches still run.
         A malformed condition body returns `400 INVALID_CONDITION`.
       operationId: deleteEntities
       parameters:
@@ -2566,8 +2573,9 @@ paths:
                   type: group
       responses:
         "200":
-          description: Deletion process was successful. In case there were entities that
-            could not be deletedthe response will contain information about that
+          description: Deletion process was successful. An entity that could not
+            be deleted — already gone, or in a failed batch — is reported in
+            `deleteResult.idToError`.
           content:
             application/json:
               schema:

@@ -1,11 +1,9 @@
 package entity
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -915,21 +913,18 @@ func TestDeleteTasks_TenantIsTheRequestsNotTheTransactions(t *testing.T) {
 	}
 }
 
-// faultThenConflictStore fails its first Delete with a server-side error and
-// its second with a write conflict; every later Delete runs. So a delete's
-// first attempt has one id failed and is then run again.
-type faultThenConflictStore struct {
+// faultOnNthDeleteStore fails its nth Delete with a server-side error; every
+// other Delete runs. With n the last delete of a pass, at least one delete is
+// made before the fault, so the test sees whether it is rolled back.
+type faultOnNthDeleteStore struct {
 	spi.EntityStore
-	calls int
+	n, calls int
 }
 
-func (s *faultThenConflictStore) Delete(ctx context.Context, entityID string) error {
+func (s *faultOnNthDeleteStore) Delete(ctx context.Context, entityID string) error {
 	s.calls++
-	switch s.calls {
-	case 1:
+	if s.calls == s.n {
 		return errors.New("pg: statement failed on a dropped connection")
-	case 2:
-		return fmt.Errorf("concurrent write: %w", spi.ErrConflict)
 	}
 	return s.EntityStore.Delete(ctx, entityID)
 }
@@ -937,7 +932,7 @@ func (s *faultThenConflictStore) Delete(ctx context.Context, entityID string) er
 // A single-transaction conditional delete is atomic on every backend, as
 // PostgreSQL forces (a failed statement aborts its transaction): the first
 // per-id fault that is not a write conflict fails the request with its
-// classified error, and nothing is deleted.
+// classified error, and the deletes made before it are rolled back.
 func TestDeleteEntitiesConditional_SingleTx_PerIDFaultFailsWhole(t *testing.T) {
 	e := newTaskEnv(t)
 	ids := seedPersons(t, e.h, e.ctx, 3)
@@ -945,7 +940,7 @@ func TestDeleteEntitiesConditional_SingleTx_PerIDFaultFailsWhole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	e.withEntityStore(t, &faultThenConflictStore{EntityStore: store})
+	e.withEntityStore(t, &faultOnNthDeleteStore{EntityStore: store, n: 2})
 
 	_, err = e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 0)
 	var appErr *common.AppError
@@ -956,43 +951,37 @@ func TestDeleteEntitiesConditional_SingleTx_PerIDFaultFailsWhole(t *testing.T) {
 		if !e.exists(t, id) {
 			t.Errorf("entity %s deleted although the request failed", id)
 		}
+		if n := e.tasksOf(t, id); n != 1 {
+			t.Errorf("tasks of entity %s = %d, want 1", id, n)
+		}
 	}
 }
 
-// A batched delete's attempt that a conflict runs again answers nothing: the
-// id it failed is deleted by the attempt that stands, and the failure is
-// logged once, marked discarded.
-func TestDeleteEntitiesConditional_DiscardedAttemptIsLoggedNotAnswered(t *testing.T) {
-	for name, batchSize := range map[string]int{"batched": 10} {
-		t.Run(name, func(t *testing.T) {
-			e := newTaskEnv(t)
-			seedPersons(t, e.h, e.ctx, 3)
-			store, err := e.real.EntityStore(e.ctx)
-			if err != nil {
-				t.Fatalf("EntityStore: %v", err)
-			}
-			e.withEntityStore(t, &faultThenConflictStore{EntityStore: store})
-			var buf bytes.Buffer
-			prev := slog.Default()
-			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-			t.Cleanup(func() { slog.SetDefault(prev) })
+// A batch is one transaction too, and as atomic: a per-id fault fails its
+// batch, rolling back the deletes made before it, and every id of the batch
+// is answered the batch's error; the other batches still run.
+func TestDeleteEntitiesConditional_Batched_PerIDFaultFailsItsBatch(t *testing.T) {
+	e := newTaskEnv(t)
+	seedPersons(t, e.h, e.ctx, 5) // ages 0..4: four match, two batches of two
+	store, err := e.real.EntityStore(e.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	e.withEntityStore(t, &faultOnNthDeleteStore{EntityStore: store, n: 2})
 
-			res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, batchSize)
-			if err != nil {
-				t.Fatalf("DeleteEntitiesConditional: %v", err)
-			}
-			if res.RemovedCount != 2 || len(res.IDToError) != 0 {
-				t.Errorf("Removed=%d IDToError=%v, want 2 and none: the discarded attempt answers nothing", res.RemovedCount, res.IDToError)
-			}
-			var faults []string
-			for _, line := range strings.Split(buf.String(), "\n") {
-				if strings.Contains(line, "dropped connection") {
-					faults = append(faults, line)
-				}
-			}
-			if len(faults) != 1 || !strings.Contains(faults[0], "level=ERROR") || !strings.Contains(faults[0], "attempt=discarded") {
-				t.Errorf("lines for the fault = %q, want one ERROR line marked discarded", faults)
-			}
-		})
+	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 2)
+	if err != nil {
+		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if res.RemovedCount != 2 || len(res.IDToError) != 2 {
+		t.Fatalf("Removed=%d IDToError=%v, want 2 removed and the failed batch's 2 ids answered", res.RemovedCount, res.IDToError)
+	}
+	for id, msg := range res.IDToError {
+		if !strings.HasPrefix(msg, "SERVER_ERROR: internal error [ticket: ") {
+			t.Errorf("IDToError[%s] = %q, want the batch's ticketed error", id, msg)
+		}
+		if !e.exists(t, id) {
+			t.Errorf("entity %s of the failed batch was deleted", id)
+		}
 	}
 }

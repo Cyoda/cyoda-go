@@ -1773,8 +1773,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   CONFLICT`, while memory and SQLite deleted the other entities and answered
   `200` with the failure in `idToError`. Every backend now fails the request
   with that failure's own error and deletes nothing. A `pointInTime`
-  selection's already-gone entity is still reported in `idToError`, and
-  `transactionSize` still reports failures per id.
+  selection's already-gone entity is still reported in `idToError`. With
+  `transactionSize` each batch is atomic the same way (PostgreSQL answered
+  every later id of the batch a spurious failure, or retried the batch as a
+  conflict): a failed batch deletes nothing, its error is reported for each
+  of its entities, and the other batches still run.
 
 - **gRPC: a snapshot the caller does not have, or results of one that has
   not finished, is the caller's error,** as it is on HTTP. A

@@ -657,25 +657,6 @@ func TestClassifyEngineError_KeepsAPassedThroughDetail(t *testing.T) {
 	}
 }
 
-// A delete attempt that a conflict discards answers nothing, but a server-side
-// failure in it happened: it is logged once, at ERROR, marked as discarded;
-// its client errors — re-evaluated by the next attempt — are not.
-func TestLogDiscardedDeleteFailures_LogsServerSideOnly(t *testing.T) {
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-
-	logDiscardedDeleteFailures(context.Background(), map[string]*common.AppError{
-		"e-1": deleteError("e-1", fmt.Errorf("get: %w", spi.ErrNotFound)),
-		"e-2": deleteError("e-2", errors.New("pg: statement failed")),
-	})
-	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], "e-2") || !strings.Contains(lines[0], "discarded") {
-		t.Errorf("log = %q, want one ERROR line for e-2, marked discarded", lines)
-	}
-}
-
 // An operational error with a cause of its own, found deep inside the
 // engine's wrap, keeps the engine's text in Detail: its cause is not the
 // engine's error and does not carry that text.

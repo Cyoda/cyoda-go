@@ -987,19 +987,6 @@ func perIDDeleteError(ctx context.Context, entityID string, err error) string {
 	return common.ReportError(ctx, deleteError(entityID, err), "pkg", "entity", "entityId", entityID)
 }
 
-// logDiscardedDeleteFailures logs the per-id failures of a delete attempt that
-// is not answered — one a conflict ran again, or one whose transaction failed.
-// Its client errors are not events of their own (the next attempt
-// re-evaluates them, or the request fails whole), but a server-side failure in
-// it happened, and is logged once, under a ticket nothing answers.
-func logDiscardedDeleteFailures(ctx context.Context, failures map[string]*common.AppError) {
-	for id, appErr := range failures {
-		if appErr.Level != common.LevelOperational {
-			common.LogError(ctx, appErr, "pkg", "entity", "entityId", id, "attempt", "discarded")
-		}
-	}
-}
-
 // deleteError classifies one item's delete failure as both doors classify a
 // failure: an AppError as it is; a missing entity as 404 ENTITY_NOT_FOUND;
 // anything else through common.Internal, which keeps a storage outage, an
@@ -1703,11 +1690,12 @@ type batchAttempt struct {
 	// removed are the ids whose delete was staged. They are durable only
 	// when failure is nil.
 	removed []string
-	// idErrors are per-id outcomes that do not fail the batch: a missing
-	// entity, a version changed since resolution, a failed delete.
+	// idErrors are per-id outcomes that do not fail the batch: an entity
+	// gone, or with a version changed, since resolution. Any other per-id
+	// fault fails the batch.
 	idErrors map[string]*common.AppError
-	// failure is the batch's own failure — its task removal or its commit —
-	// or nil when the batch committed.
+	// failure is the batch's own failure — one id's fault, its task removal or
+	// its commit — or nil when the batch committed.
 	failure *common.AppError
 }
 
@@ -1723,9 +1711,6 @@ type batchAttempt struct {
 func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, result *DeleteResult) error {
 	var last batchAttempt
 	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
-		// An attempt that runs again replaces the one before it, which is
-		// then not answered.
-		logDiscardedDeleteFailures(ctx, last.idErrors)
 		last = batchAttempt{}
 		a, err := h.deleteOneBatchOnce(ctx, chunk)
 		if err != nil {
@@ -1806,8 +1791,15 @@ func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (
 				if errors.Is(gErr, spi.ErrConflict) {
 					return conflictError(gErr)
 				}
-				a.idErrors[t.id] = deleteError(t.id, gErr)
-				continue
+				// An id gone since resolution is its own outcome. Any other
+				// fault fails the batch: its one transaction is atomic on
+				// every backend, as PostgreSQL forces (a failed statement
+				// aborts it).
+				if errors.Is(gErr, spi.ErrNotFound) {
+					a.idErrors[t.id] = deleteError(t.id, gErr)
+					continue
+				}
+				return deleteError(t.id, gErr)
 			}
 			if cur.Meta.Version != t.baselineVersion {
 				a.idErrors[t.id] = common.Operational(http.StatusPreconditionFailed, common.ErrCodeEntityModified,
@@ -1820,8 +1812,11 @@ func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (
 				if errors.Is(dErr, spi.ErrConflict) {
 					return conflictError(dErr)
 				}
-				a.idErrors[t.id] = deleteError(t.id, dErr)
-				continue
+				if errors.Is(dErr, spi.ErrNotFound) {
+					a.idErrors[t.id] = deleteError(t.id, dErr)
+					continue
+				}
+				return deleteError(t.id, dErr)
 			}
 			a.removed = append(a.removed, t.id)
 		}
