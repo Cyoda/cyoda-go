@@ -15,11 +15,11 @@ SEARCH_JOB_NOT_FOUND — the referenced asynchronous search job does not exist i
 
 ## SYNOPSIS
 
-HTTP: `404` `Not Found`. Retryable: `no`.
+HTTP: `404` `Not Found`. gRPC: `success` false, `error.code` `CLIENT_ERROR`, message prefix `SEARCH_JOB_NOT_FOUND:`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Polling a search job by ID returns this error when the job ID is unknown or belongs to a different tenant. Jobs are tenant-scoped; a valid job ID from one tenant is not visible to another.
+Reading a search job's status or results, or cancelling it, returns this error when the job ID is unknown or belongs to a different tenant — over HTTP and over gRPC (`SnapshotGetStatusRequest`, `SnapshotGetRequest`, `SnapshotCancelRequest`). Jobs are tenant-scoped; a valid job ID from one tenant is not visible to another.
 
 Not retryable. The job ID and tenant credentials must match the values used at job submission time.
 

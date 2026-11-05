@@ -14,9 +14,9 @@ import (
 func TestJobLookupError_PassesAppErrorThrough(t *testing.T) {
 	inner := common.Internal("failed to read an async search result",
 		fmt.Errorf("entity id-2: %w", spi.ErrNotFound))
-	got := jobLookupError(fmt.Errorf("page: %w", inner))
+	got := JobError(fmt.Errorf("page: %w", inner))
 	if got != inner {
-		t.Fatalf("jobLookupError wrapped the AppError: got %q, want %q", got.Message, inner.Message)
+		t.Fatalf("JobError wrapped the AppError: got %q, want %q", got.Message, inner.Message)
 	}
 	if errors.Is(got, ErrSearchJobNotFound) {
 		t.Errorf("result-read failure reported as a missing job")

@@ -1669,7 +1669,7 @@ func (s *SearchService) DirectSearch(ctx context.Context, modelRef spi.ModelRef,
 func (s *SearchService) GetAsyncSearchStatus(ctx context.Context, snapshotID string) (*SnapshotStatus, error) {
 	status, err := s.GetAsyncStatus(ctx, snapshotID)
 	if err != nil {
-		return nil, err
+		return nil, JobError(err)
 	}
 	return &SnapshotStatus{
 		SnapshotID:    status.JobID,
@@ -1690,7 +1690,7 @@ func (s *SearchService) GetAsyncSearchResults(ctx context.Context, snapshotID st
 	}
 	resultPage, err := s.GetAsyncResults(ctx, snapshotID, opts)
 	if err != nil {
-		return nil, err
+		return nil, JobError(err)
 	}
 	return resultPage.Results, nil
 }
@@ -1701,7 +1701,7 @@ func (s *SearchService) GetAsyncSearchResults(ctx context.Context, snapshotID st
 func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string) error {
 	result, err := s.CancelAsync(ctx, snapshotID)
 	if err != nil {
-		return err
+		return JobError(err)
 	}
 	if !result.Cancelled {
 		return AlreadyTerminalError(snapshotID, result.CurrentStatus)

@@ -64,7 +64,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
 				err = appErr
 			}
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransactionError(ctx, ce.Id, err)
 		}
 
@@ -115,7 +114,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
 				err = appErr
 			}
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransactionError(ctx, ce.Id, err)
 		}
 
@@ -170,7 +168,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
 				err = appErr
 			}
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransactionError(ctx, ce.Id, err)
 		}
 		diag := common.GetDiagnostics(ctx)
@@ -195,7 +192,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 
 		result, err := s.entityHandler.DeleteEntity(ctx, req.EntityID)
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityDeleteError(ctx, ce.Id, req.EntityID, err)
 		}
 
@@ -226,7 +222,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			Transition: req.Transition,
 		})
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransitionError(ctx, ce.Id, err)
 		}
 
@@ -308,7 +303,6 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
 				err = appErr
 			}
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			respCE, ceErr := entityTransactionError(ctx, ce.Id, err)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -391,7 +385,6 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 				if appErr := common.ClassifyRequestTimeout(opCtx, loopErr, common.ErrCodeTransactionTimeout); appErr != nil {
 					loopErr = appErr
 				}
-				slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", loopErr.Error())
 				respCE, ceErr := entityTransactionError(ctx, ce.Id, loopErr)
 				if ceErr != nil {
 					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -414,7 +407,6 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 				if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
 					err = appErr
 				}
-				slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
 				respCE, ceErr := entityTransactionError(ctx, ce.Id, err)
 				if ceErr != nil {
 					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -482,7 +474,6 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 
 		delRes, err := s.entityHandler.DeleteEntitiesConditional(ctx, req.Model.Name, int(req.Model.Version), nil, req.PointInTime, req.Verbose, size)
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			respCE, ceErr := entityDeleteAllError(ctx, ce.Id, err)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)

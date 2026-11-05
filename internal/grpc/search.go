@@ -115,7 +115,6 @@ func (s *CloudEventsServiceImpl) handleEntityGetRequest(ctx context.Context, ce 
 		PointInTime: req.PointInTime,
 	})
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", EntityGetRequest, "ceId", ce.Id, "error", err.Error())
 		return entityResponseError(ctx, ce.Id, err)
 	}
 
@@ -146,7 +145,6 @@ func (s *CloudEventsServiceImpl) handleConsistencyTimeGetRequest(ctx context.Con
 
 	c, err := s.cons.Fresh(ctx)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", EntityConsistencyTimeGetRequest, "ceId", ce.Id, "error", err.Error())
 		return consistencyTimeError(ctx, ce.Id, err)
 	}
 
@@ -225,7 +223,6 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 		if errors.Is(err, search.ErrQueueFull) {
 			err = search.QueueFullError()
 		}
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", EntitySnapshotSearchRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}
 
@@ -255,7 +252,6 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetStatusRequest(ctx context.Cont
 
 	snapStatus, err := s.searchService.GetAsyncSearchStatus(ctx, req.SnapshotID)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", SnapshotGetStatusRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}
 
@@ -299,20 +295,17 @@ func (s *CloudEventsServiceImpl) handleSnapshotCancelRequest(ctx context.Context
 		// snapshot) rather than the generic one.
 		snapStatus, serr := s.searchService.GetAsyncSearchStatus(ctx, req.SnapshotID)
 		if serr != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", SnapshotCancelRequest, "ceId", ce.Id, "error", serr.Error())
 			return snapshotSearchError(ctx, ce.Id, serr)
 		}
 		return snapshotCancelRefused(ctx, ce.Id, appErr, snapshotStatusJSON(snapStatus))
 	}
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", SnapshotCancelRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}
 
 	// After cancel, fetch updated status.
 	snapStatus, err := s.searchService.GetAsyncSearchStatus(ctx, req.SnapshotID)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", SnapshotCancelRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}
 
@@ -348,7 +341,6 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 	// attacker-supplied PageNumber up to MaxInt would propagate to the
 	// service layer and panic with a slice-bounds error.
 	if vErr := pagination.ValidateOffset(int64(pageNumber), int64(pageSize)); vErr != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityGetAllRequest, "ceId", ce.Id, "error", vErr.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, vErr)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -361,7 +353,6 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 		PageNumber: int32(pageNumber),
 	}, req.PointInTime)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityGetAllRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -425,7 +416,6 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		// request was invalid.
 		if *req.Limit < 1 {
 			vErr := common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid limit: must be at least 1")
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", vErr.Error())
 			errCE, ceErr := entityResponseError(ctx, ce.Id, vErr)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -451,7 +441,6 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 	// observes zero behavior change.
 	opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TimeoutMillis, "timeoutMillis")
 	if terr != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", terr.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, terr)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -469,7 +458,6 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeSearchTimeout); appErr != nil {
 			err = appErr
 		}
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -532,7 +520,6 @@ func (s *CloudEventsServiceImpl) handleEntityStatsGetRequest(ctx context.Context
 	if req.Model != nil && req.Model.Name != "" {
 		stat, err := s.entityHandler.GetStatisticsForModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), req.PointInTime)
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsGetRequest, "ceId", ce.Id, "error", err.Error())
 			errCE, ceErr := entityStatsError(ctx, ce.Id, err)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -561,7 +548,6 @@ func (s *CloudEventsServiceImpl) handleEntityStatsGetRequest(ctx context.Context
 	// All models.
 	stats, err := s.entityHandler.GetStatistics(ctx, req.PointInTime)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsGetRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityStatsError(ctx, ce.Id, err)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -609,7 +595,6 @@ func (s *CloudEventsServiceImpl) handleEntityStatsByStateGetRequest(ctx context.
 		var err error
 		results, err = s.entityHandler.GetStatisticsByStateForModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), statesFilter, req.PointInTime)
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsByStateGetRequest, "ceId", ce.Id, "error", err.Error())
 			errCE, ceErr := entityStatsByStateError(ctx, ce.Id, err)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -620,7 +605,6 @@ func (s *CloudEventsServiceImpl) handleEntityStatsByStateGetRequest(ctx context.
 		var err error
 		results, err = s.entityHandler.GetStatisticsByState(ctx, statesFilter, req.PointInTime)
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsByStateGetRequest, "ceId", ce.Id, "error", err.Error())
 			errCE, ceErr := entityStatsByStateError(ctx, ce.Id, err)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -662,7 +646,6 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 
 	entries, err := s.entityHandler.GetChangesMetadata(ctx, req.EntityID, req.PointInTime)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityChangesMetadataGetRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityChangesMetadataError(ctx, ce.Id, err)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -772,7 +755,6 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 	// already validates here; the gRPC entry point did not, leaving the
 	// same offset = pageNumber*pageSize multiplication exposed.
 	if vErr := pagination.ValidateOffset(int64(req.PageNumber), int64(req.PageSize)); vErr != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", SnapshotGetRequest, "ceId", ce.Id, "error", vErr.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, vErr)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -782,7 +764,6 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 
 	results, err := s.searchService.GetAsyncSearchResults(ctx, req.SnapshotID, req.PageNumber, req.PageSize)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", SnapshotGetRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
