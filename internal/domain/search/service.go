@@ -671,6 +671,15 @@ func (s *SearchService) deregisterJobHandle(jobID string, h *asyncJobHandle) {
 	}
 }
 
+// tenantAtCapError is the refusal of a submission from a tenant holding its
+// full share of this node's async capacity: the queue-full 503, logged once
+// at WARN by the door's funnel with the tenant and the cap as its cause.
+func (s *SearchService) tenantAtCapError(uc *spi.UserContext) *common.AppError {
+	return QueueFullError().
+		WithCause(fmt.Errorf("tenant %s at its in-flight cap (%d)", uc.Tenant.ID, s.maxPerTenant)).
+		WithLogLevel(slog.LevelWarn)
+}
+
 // tenantOf is the per-tenant cap's bucket key. Every registered job carries
 // its tenant's UserContext: SubmitAsync rejects a missing one, and a reclaim
 // builds the job tenant's.
@@ -1087,9 +1096,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// hides it. registerJob below remains the authority; this can only
 	// short-circuit to the same rejection it would have reached.
 	if s.tenantAtCap(uc) {
-		slog.Warn("async search submission rejected: tenant at its in-flight cap",
-			"pkg", "search", "tenant", uc.Tenant.ID, "maxPerTenant", s.maxPerTenant)
-		return "", QueueFullError()
+		return "", s.tenantAtCapError(uc)
 	}
 
 	// The job's instant: the caller's, fenced, or a fresh consistency time.
@@ -1188,9 +1195,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		if delErr := s.searchStore.DeleteJob(bgCtx, jobID); delErr != nil {
 			slog.Error("failed to delete search job after per-tenant cap rejection", "pkg", "search", "jobID", jobID, "err", delErr)
 		}
-		slog.Warn("async search submission rejected: tenant at its in-flight cap",
-			"pkg", "search", "tenant", uc.Tenant.ID, "maxPerTenant", s.maxPerTenant)
-		return "", QueueFullError()
+		return "", s.tenantAtCapError(uc)
 	}
 	s.startHeartbeat(jobCtx, cancel, jobID, 1)
 

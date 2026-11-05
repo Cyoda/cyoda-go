@@ -70,6 +70,22 @@ func TestBuildErrorFields_OperationalWithoutCauseLogsOneInfoLine(t *testing.T) {
 	}
 }
 
+// TestBuildErrorFields_OperationalCarriesItsLogLevel — the level a site set
+// (WithLogLevel) is the level of the error's one line.
+func TestBuildErrorFields_OperationalCarriesItsLogLevel(t *testing.T) {
+	records := captureSlog(t)
+
+	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is unreachable").
+		WithCause(errors.New("dial refused")).WithLogLevel(slog.LevelError)
+	if code, _, _ := buildErrorFields(context.Background(), appErr); code != "CLIENT_ERROR" {
+		t.Errorf("code = %q, want CLIENT_ERROR", code)
+	}
+
+	if len(*records) != 1 || (*records)[0].level != slog.LevelError {
+		t.Errorf("records = %+v, want one ERROR line", *records)
+	}
+}
+
 // TestBuildErrorFields_HonoursAPinnedTicket — an AppError may arrive with its
 // ticket already pinned, because the caller has already logged the full detail
 // under it (the panic recovery middlewares do exactly this). Minting a second

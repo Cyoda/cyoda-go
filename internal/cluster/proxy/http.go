@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -79,15 +80,11 @@ func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeI
 				return
 			}
 			if !alive || addr == "" {
-				slog.Warn("transaction node unavailable",
-					"pkg", "proxy",
-					"nodeID", claims.NodeID,
-				)
 				common.WriteError(w, r, common.Operational(
 					http.StatusServiceUnavailable,
 					common.ErrCodeTransactionNodeUnavailable,
 					"transaction node is not available",
-				))
+				).WithCause(fmt.Errorf("transaction node %s is not live", claims.NodeID)).WithLogLevel(slog.LevelWarn))
 				return
 			}
 
@@ -126,16 +123,11 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 	lookupCtx, cancel := context.WithTimeout(r.Context(), peeraddr.LookupTimeout)
 	defer cancel()
 	if err := peeraddr.Validate(lookupCtx, addr, allowLoopback); err != nil {
-		slog.Warn("proxy target address rejected by SSRF guard",
-			"pkg", "proxy",
-			"addr", addr,
-			"error", err,
-		)
 		common.WriteError(w, r, common.Operational(
 			http.StatusServiceUnavailable,
 			common.ErrCodeTransactionNodeUnavailable,
 			"transaction node address is not reachable",
-		))
+		).WithCause(fmt.Errorf("proxy target address %s rejected by SSRF guard: %w", addr, err)).WithLogLevel(slog.LevelWarn))
 		return
 	}
 
@@ -163,20 +155,18 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
 			// The caller going away cancels the proxied request: not an
 			// outage of the owner, so not an ERROR.
+			// One line, at the level of what happened: the client going away
+			// is routine (DEBUG), an owner that could not be reached is an
+			// ERROR.
+			level, cause := slog.LevelError, fmt.Errorf("proxy request to %s failed: %w", addr, err)
 			if req.Context().Err() != nil {
-				slog.Debug("client gone before proxied request completed", "pkg", "proxy", "target", addr)
-			} else {
-				slog.Error("proxy request failed",
-					"pkg", "proxy",
-					"target", addr,
-					"error", err,
-				)
+				level, cause = slog.LevelDebug, fmt.Errorf("client gone before the request proxied to %s completed: %w", addr, err)
 			}
 			common.WriteError(rw, req, common.Operational(
 				http.StatusServiceUnavailable,
 				common.ErrCodeTransactionNodeUnavailable,
 				"transaction node is unreachable",
-			))
+			).WithCause(cause).WithLogLevel(level))
 		},
 	}
 

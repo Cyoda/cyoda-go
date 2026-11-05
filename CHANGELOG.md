@@ -1766,17 +1766,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
-- **gRPC: a snapshot the caller does not have, or results of one still
-  running, is the caller's error,** as it is on HTTP. A
+- **gRPC: a snapshot the caller does not have, or results of one that has
+  not finished, is the caller's error,** as it is on HTTP. A
   `SnapshotGetStatusRequest`, `SnapshotGetRequest` or `SnapshotCancelRequest`
   for an unknown snapshot answers `CLIENT_ERROR` with a
   `SEARCH_JOB_NOT_FOUND:` message (HTTP `404`), and a `SnapshotGetRequest`
-  for a running snapshot answers `CLIENT_ERROR` with `BAD_REQUEST:` (HTTP
-  `400`). Before, both answered a ticketed `SERVER_ERROR`. A failed gRPC
-  request is also logged once, at the level its class gets on HTTP, and the
-  line names the request (`rpc`, `type`, `ceId`): a client error one INFO
-  line (it logged an ERROR, or nothing when it carried no cause), a
-  server-side failure one ERROR line with its ticket (it logged two).
+  for a snapshot that has not finished `SUCCESSFUL` answers `CLIENT_ERROR`
+  with `BAD_REQUEST:` (HTTP `400`). Before, both answered a ticketed
+  `SERVER_ERROR`. A failed request is also logged once, on both doors, at
+  its class's level: a client error one INFO line, a server-side failure one
+  ERROR line with its ticket. Where the site that refused knows the event is
+  more or less notable (an unreachable transaction owner at ERROR, a tenant at
+  its async cap or a node that is not live at WARN, a superseded callback at
+  DEBUG), that one line is at its level instead, and no second line is
+  written. On gRPC the line names the request (`rpc`, `type`, `ceId`).
+  Before, gRPC logged a client error at ERROR, or not at all when it carried
+  no cause, and a server-side failure twice; the refusals above logged two
+  lines on both doors.
 
 - **A schema extension is kept on every backend when its model is unlocked,
   re-imported or deleted.** On PostgreSQL, unlocking a model discarded the

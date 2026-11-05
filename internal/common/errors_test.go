@@ -203,6 +203,24 @@ func TestWriteError_OperationalLogsCause(t *testing.T) {
 	}
 }
 
+// TestWriteError_OperationalCarriesItsLogLevel — a site that sets the level
+// of an operational error's line (WithLogLevel) gets that one line at that
+// level, and no INFO line besides.
+func TestWriteError_OperationalCarriesItsLogLevel(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+
+	common.WriteError(w, r, common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is not available").
+		WithCause(errors.New("node-2 is not live")).WithLogLevel(slog.LevelWarn))
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"level":"WARN"`) || !strings.Contains(lines[0], "node-2 is not live") {
+		t.Errorf("log = %q, want one WARN line carrying the cause", lines)
+	}
+}
+
 // captureSlog redirects the default logger into a buffer for the duration of
 // the test. DEBUG and above are captured so a test can assert a log line was
 // (or was not) emitted at DEBUG.

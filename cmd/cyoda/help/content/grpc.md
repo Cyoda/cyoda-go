@@ -191,14 +191,14 @@ The full CloudEvent envelope for an ack:
 - `PlatformClockGetRequest` / `PlatformClockResponse` — this node's platform time (`now`), `rate` (platform seconds per real second) and `controllable`, the same values `GET /platform/clock` answers; read only, changing the clock is HTTP-only; like every `CloudEventsService` operation the read requires `ROLE_M2M`, which HTTP `GET /platform/clock` does not; `controllable` is true only on a node started with clock control (`cyoda help config clock`). Payload fields: `cyoda help cloudevents json`.
 - `EntityGetAllRequest` / `EntityResponse` (streamed via entitySearchCollection)
 - `EntitySnapshotSearchRequest` / `EntitySnapshotSearchResponse`
-- `EntitySearchRequest` / `EntityResponse`
+- `EntitySearchRequest` / `EntityResponse` (streamed via entitySearchCollection)
 - `SnapshotCancelRequest` / `EntitySnapshotSearchResponse` — a snapshot that has already ended, before the call or while the cancel is landing, is refused: `success` false, `error.code` `CLIENT_ERROR` with message prefix `SEARCH_JOB_ALREADY_TERMINAL:`, and `status` the snapshot's full status (`failureReason` for a `FAILED` one); see `cyoda help errors SEARCH_JOB_ALREADY_TERMINAL`
-- `SnapshotGetRequest` / `EntityResponse` (streamed via entitySearchCollection) — results of a snapshot still running are refused with `CLIENT_ERROR` and a `BAD_REQUEST:` message prefix
+- `SnapshotGetRequest` / `EntityResponse` (streamed via entitySearchCollection) — results of a snapshot that has not finished `SUCCESSFUL` are refused with `CLIENT_ERROR` and a `BAD_REQUEST:` message prefix
 - `SnapshotGetStatusRequest` / `EntitySnapshotSearchResponse` — `status.failureReason` says why a `FAILED` snapshot failed, and is absent for every other status (`cyoda help search`)
 - A snapshot request for a snapshot the caller does not have (unknown, or another tenant's) is refused with `CLIENT_ERROR` and a `SEARCH_JOB_NOT_FOUND:` message prefix; see `cyoda help errors SEARCH_JOB_NOT_FOUND`
-- `EntityStatsGetRequest` / `EntityStatsResponse`
-- `EntityStatsByStateGetRequest` / `EntityStatsByStateResponse`
-- `EntityChangesMetadataGetRequest` / `EntityChangesMetadataResponse`
+- `EntityStatsGetRequest` / `EntityStatsResponse` (streamed via entitySearchCollection)
+- `EntityStatsByStateGetRequest` / `EntityStatsByStateResponse` (streamed via entitySearchCollection)
+- `EntityChangesMetadataGetRequest` / `EntityChangesMetadataResponse` (streamed via entitySearchCollection)
 
 ## COMPUTE MEMBER PROTOCOL
 

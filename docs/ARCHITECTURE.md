@@ -2243,6 +2243,8 @@ const (
 | Internal | 500 | Generic message + ticket UUID | ERROR with ticket + full detail |
 | Fatal | 500 | Generic message + ticket UUID | ERROR "FATAL" with ticket; the panic value and stack are on the `panic recovered` ERROR line under the same ticket |
 
+Each failure is one log line, written by the door's funnel (`common.WriteError` on HTTP, `buildErrorFields` on gRPC, where the line also names the request's `rpc`, `type` and `ceId`). An Operational error is logged at INFO unless the site that refused set another level with `WithLogLevel` — an unreachable transaction owner at ERROR, a tenant at its async cap or a node that is not live at WARN, a superseded callback at DEBUG — and that site logs nothing itself; a cause attached with `WithCause` is logged and never answered.
+
 Internal and Fatal are indistinguishable to the client — both yield a generic 500 and a ticket. They differ in the log line. An Internal error whose cause is the request's client having gone away is logged at DEBUG and carries no ticket. `InternalWithCode` sends a specific `errorCode` in place of `SERVER_ERROR` (for example `SCHEDULE_FUNCTION_INVALID_RESULT`, or the code a peer node reports for a callout hand-over). The HTTP panic-recovery middleware mints a Fatal `AppError`; the gRPC interceptors mark the node unhealthy the same way but return `codes.Internal` with a ticket-bearing message directly, without going through `AppError` (§3.4).
 
 ### 8.2 RFC 9457 Problem Details

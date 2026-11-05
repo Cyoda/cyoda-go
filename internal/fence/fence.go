@@ -16,6 +16,7 @@ package fence
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -207,8 +208,9 @@ func (f *Fence) Admit(ctx context.Context, pairs []Pair) (context.Context, error
 		return released, true
 	}()
 	if !ok {
-		slog.Debug("callback refused on entry: its pass is no longer current", "pkg", "fence")
-		return ctx, NewSupersededError()
+		return ctx, NewSupersededError().
+			WithCause(fmt.Errorf("callback refused on entry: its pass is no longer current: %w", ErrSuperseded)).
+			WithLogLevel(slog.LevelDebug)
 	}
 	for _, r := range released {
 		r.cancel(ErrSuperseded)
@@ -246,8 +248,9 @@ func Check(ctx context.Context) error {
 		return true
 	}()
 	if !current {
-		slog.Debug("joined chain refused: its pass is no longer current", "pkg", "fence")
-		return NewSupersededError()
+		return NewSupersededError().
+			WithCause(fmt.Errorf("joined chain refused: its pass is no longer current: %w", ErrSuperseded)).
+			WithLogLevel(slog.LevelDebug)
 	}
 	return nil
 }

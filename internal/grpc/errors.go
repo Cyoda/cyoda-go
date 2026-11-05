@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -45,6 +46,24 @@ func withRequestEvent(ctx context.Context, rpc, eventType, ceID string) context.
 	return context.WithValue(ctx, requestEventKey{}, requestEvent{rpc: rpc, eventType: eventType, ceID: ceID})
 }
 
+// withRequestMessage records the request message's type and id under the RPC
+// already recorded on ctx, for a path that reads the message after its entry.
+func withRequestMessage(ctx context.Context, ce *cepb.CloudEvent) context.Context {
+	ev, _ := ctx.Value(requestEventKey{}).(requestEvent)
+	return withRequestEvent(ctx, ev.rpc, ce.Type, ce.Id)
+}
+
+// rpcName is the log name of a CloudEventsService method — its last path
+// segment with a lower-case first letter, as the RPC entries name it
+// ("/…CloudEventsService/EntityManage" → "entityManage").
+func rpcName(fullMethod string) string {
+	name := fullMethod[strings.LastIndex(fullMethod, "/")+1:]
+	if name == "" {
+		return name
+	}
+	return strings.ToLower(name[:1]) + name[1:]
+}
+
 // requestAttrs are the log fields naming the request ctx answers.
 func requestAttrs(ctx context.Context) []any {
 	attrs := []any{"pkg", "grpc"}
@@ -73,9 +92,9 @@ func buildErrorFields(ctx context.Context, err error) (code, message string, ret
 				r := true
 				retryable = &r
 			}
-			// Logged at INFO as common.WriteError's operational branch logs
-			// it, under the same message and field names, so the two doors
-			// read alike in a log aggregator. An operational error whose cause
+			// Logged as common.WriteError's operational branch logs it — at
+			// INFO unless the error carries its own level — under the same
+			// message, so the two doors read alike in a log aggregator. An operational error whose cause
 			// is INFRASTRUCTURE rather than domain (a storage failure, say)
 			// attaches that cause with WithCause and keeps it out of the
 			// client-facing message; the log line is then its only breadcrumb.
@@ -83,7 +102,7 @@ func buildErrorFields(ctx context.Context, err error) (code, message string, ret
 			if appErr.Err != nil {
 				attrs = append(attrs, "cause", appErr.Err.Error())
 			}
-			slog.Info("operational error", attrs...)
+			slog.Log(ctx, appErr.OperationalLogLevel(), "operational error", attrs...)
 			return
 		}
 		// The client having gone away mid-request is not a server fault:

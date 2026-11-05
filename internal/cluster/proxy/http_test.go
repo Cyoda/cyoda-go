@@ -183,6 +183,34 @@ func TestHTTPProxy_TokenForDeadNode_Returns503(t *testing.T) {
 	}
 }
 
+// A token for a node that is not live is one log line, at WARN, naming the
+// node: the refusal's own line, not a WARN and an INFO.
+func TestHTTPProxy_TokenForDeadNode_IsOneLogLine(t *testing.T) {
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:9998", Alive: false},
+	)
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-790", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-790", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler())
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=WARN") || !strings.Contains(lines[0], "node-2") {
+		t.Errorf("log = %q, want one WARN line naming the node", lines)
+	}
+}
+
 func TestHTTPProxy_ExpiredToken_Returns410(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
 	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})

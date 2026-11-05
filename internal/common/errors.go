@@ -79,6 +79,12 @@ type AppError struct {
 	// so the client-visible ticket and that log line are the same identifier.
 	// Empty is the normal case: the writer mints one.
 	Ticket string
+	// LogLevel, when set, is the level an operational error's one log line is
+	// written at instead of INFO. A site that knows the event is more notable
+	// (an unreachable transaction owner) or less (a refusal routine to the
+	// protocol) sets it with WithLogLevel, attaches its detail with
+	// WithCause, and logs nothing itself: the funnel writes the one line.
+	LogLevel *slog.Level
 }
 
 func (e *AppError) Error() string { return e.Message }
@@ -121,6 +127,23 @@ func (e *AppError) AsRetryable() *AppError {
 func (e *AppError) WithCause(err error) *AppError {
 	e.Err = err
 	return e
+}
+
+// WithLogLevel sets the level of an operational error's one log line (see
+// LogLevel). Mutates the receiver, like WithCause; call only on a
+// just-constructed error.
+func (e *AppError) WithLogLevel(level slog.Level) *AppError {
+	e.LogLevel = &level
+	return e
+}
+
+// OperationalLogLevel is the level an operational error is logged at: its
+// LogLevel when set, INFO otherwise.
+func (e *AppError) OperationalLogLevel() slog.Level {
+	if e.LogLevel != nil {
+		return *e.LogLevel
+	}
+	return slog.LevelInfo
 }
 
 // WithTicket pins the correlation UUID the response will carry, for callers
@@ -390,7 +413,7 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 		if appErr.Err != nil {
 			attrs = append(attrs, "cause", appErr.Err.Error())
 		}
-		slog.Info("operational error", attrs...)
+		slog.Log(r.Context(), appErr.OperationalLogLevel(), "operational error", attrs...)
 		pd.Detail = appErr.Message
 
 	case LevelInternal:

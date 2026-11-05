@@ -121,6 +121,9 @@ func TestGRPCFailure_LoggedOnceAtItsClassLevel(t *testing.T) {
 		if got := append(logs.lines("ERROR"), logs.lines("WARN")...); len(got) != 0 {
 			t.Errorf("a client error logged above INFO: %q", got)
 		}
+		if got := logs.lines("INFO"); len(got) != 1 || !strings.Contains(got[0], "operational error") {
+			t.Errorf("INFO lines = %q, want one operational-error line", got)
+		}
 	})
 
 	t.Run("server-side failure", func(t *testing.T) {
