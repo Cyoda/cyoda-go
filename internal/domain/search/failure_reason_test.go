@@ -82,3 +82,38 @@ func TestAsyncStatus_FailureReason(t *testing.T) {
 		})
 	}
 }
+
+// selfExecutingStatusStore marks a real store as one that executes its own
+// searches, so the reason on its job records was written by the plugin.
+type selfExecutingStatusStore struct{ spi.AsyncSearchStore }
+
+func (selfExecutingStatusStore) SelfExecuting() {}
+
+// A store that executes its own searches writes its own failure text, which
+// cyoda-go has not sanitised and may carry driver or internal detail. The
+// served reason is then the fixed fallback, never the plugin's text.
+func TestAsyncStatus_SelfExecutingStoreReasonIsNotServedVerbatim(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	inner, _ := factory.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), selfExecutingStatusStore{inner}, newTestConsistency(t, factory), platformclock.Real())
+	ctx := tenantCtx("tenant-failure-reason-self")
+
+	const leak = "write pages: gocql: no hosts available in the pool (10.0.0.7:9042)"
+	settledJob(t, ctx, inner, "55555555-5555-5555-5555-555555555555", "FAILED", leak)
+
+	st, err := svc.GetAsyncStatus(ctx, "55555555-5555-5555-5555-555555555555")
+	if err != nil {
+		t.Fatalf("GetAsyncStatus: %v", err)
+	}
+	if st.FailureReason == "" || st.FailureReason == leak {
+		t.Fatalf("FailureReason = %q, want the fixed fallback, not the plugin's text", st.FailureReason)
+	}
+	snap, err := svc.GetAsyncSearchStatus(ctx, "55555555-5555-5555-5555-555555555555")
+	if err != nil {
+		t.Fatalf("GetAsyncSearchStatus: %v", err)
+	}
+	if snap.FailureReason != st.FailureReason {
+		t.Fatalf("snapshot reason %q differs from status reason %q", snap.FailureReason, st.FailureReason)
+	}
+}

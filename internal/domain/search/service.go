@@ -1429,6 +1429,13 @@ func (s *SearchService) GetAsyncStatus(ctx context.Context, jobID string) (Searc
 	// one and is not served as one.
 	if job.Status == "FAILED" {
 		status.FailureReason = job.Error
+		// A store that executes its own searches wrote that text itself, not
+		// through jobFailureMessage: it may carry driver or internal detail, so
+		// the caller gets the fixed fallback instead. Fail closed until the
+		// SPI gives a plugin a way to state a client-safe reason.
+		if _, ok := s.searchStore.(spi.SelfExecutingSearchStore); ok {
+			status.FailureReason = jobFailureFallback
+		}
 	}
 	return status, nil
 }

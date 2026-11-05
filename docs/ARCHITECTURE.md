@@ -1489,8 +1489,9 @@ The engine writes only client-safe text there
 (`internal/domain/search.jobFailureMessage`): a classified error's own
 message, which is code first, or a fixed text. A driver error or a recovered
 panic is recorded as `search failed unexpectedly`, and its detail stays in
-the log. A `SelfExecutingSearchStore` writes the field itself, and owes the
-same rule.
+the log. A `SelfExecutingSearchStore` writes the field itself, not through
+`jobFailureMessage`, so the status read does not serve its text: a failed job
+of such a store reports `search failed unexpectedly`.
 
 **Orphan handling: heartbeat, claim, and epoch fencing.** The owning node
 heartbeats a running job on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, starting
