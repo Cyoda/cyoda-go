@@ -1777,12 +1777,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   its class's level: a client error one INFO line, a server-side failure one
   ERROR line with its ticket. Where the site that refused knows the event is
   more or less notable (an unreachable transaction owner at ERROR, a tenant at
-  its async cap or a node that is not live at WARN, a superseded callback at
-  DEBUG), that one line is at its level instead, and no second line is
-  written. On gRPC the line names the request (`rpc`, `type`, `ceId`).
-  Before, gRPC logged a client error at ERROR, or not at all when it carried
-  no cause, and a server-side failure twice; the refusals above logged two
-  lines on both doors.
+  its async cap, a node that is not live, an owner address the peer address
+  guard forbids or a search condition a backend and the request boundary
+  disagree on at WARN), that one line is at its level instead, and no second
+  line is written. On gRPC the line names the request (`rpc`, `type`,
+  `ceId`). Before, gRPC logged a client error at ERROR, or not at all when it
+  carried no cause, and a server-side failure twice; a write the workflow
+  engine refused (a 412, a 409, a superseded chain) logged an ERROR before the
+  funnel's line, and the refusals above logged two lines on both doors.
 
 - **A schema extension is kept on every backend when its model is unlocked,
   re-imported or deleted.** On PostgreSQL, unlocking a model discarded the

@@ -203,7 +203,7 @@ func jobFailureMessage(jobID string, err error) string {
 		if appErr.Err != nil {
 			attrs = append(attrs, "cause", appErr.Err.Error())
 		}
-		slog.Info("async search job failed", attrs...)
+		slog.Log(context.Background(), appErr.OperationalLogLevel(), "async search job failed", attrs...)
 		return appErr.Error()
 	}
 	ticket := uuid.New().String()
@@ -887,10 +887,10 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // .ParseCondition builds only the five clause types, and a FunctionCondition
 // is refused earlier), so a caller loses no diagnostic detail here.
 func untranslatableCondition(translateErr error) *common.AppError {
-	slog.Warn("condition cleared validation but could not be translated",
-		"pkg", "search", "err", translateErr)
 	return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-		"condition cannot be translated to a backend predicate").WithCause(translateErr)
+		"condition cannot be translated to a backend predicate").
+		WithCause(fmt.Errorf("condition cleared validation but could not be translated: %w", translateErr)).
+		WithLogLevel(slog.LevelWarn)
 }
 
 // ClassifyStoreQueryError maps the cross-backend sentinels a storage plugin
@@ -996,34 +996,31 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 			common.ErrCodeSearchResultLimit,
 			"matched result count exceeds the configured limit").WithCause(err)
 	case errors.Is(err, spi.ErrInvalidFilterPath):
-		slog.Warn("storage backend rejected a path the boundary grammar accepted",
-			"pkg", "search", "err", err)
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidFieldPath,
-			"condition or sort references an invalid field path").WithCause(err)
+			"condition or sort references an invalid field path").
+			WithCause(fmt.Errorf("storage backend rejected a path the boundary grammar accepted: %w", err)).
+			WithLogLevel(slog.LevelWarn)
 	case errors.Is(err, spi.ErrUnevaluableLeaf):
-		// DEBUG, not WARN — see this function's doc comment: the dominant
-		// cause here (a field with no declared type) is a documented-normal
-		// 400, not a boundary/backend inconsistency.
-		slog.Debug("search condition leaf rejected by the evaluator: commonly a field with no declared type",
-			"pkg", "search", "source", "spi.Prepare", "err", err)
+		// The class default (INFO), not WARN — see this function's doc
+		// comment: the dominant cause here (a field with no declared type) is
+		// a documented-normal 400, not a boundary/backend inconsistency.
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
 			"condition contains a leaf the backend cannot evaluate").WithCause(err)
 	case errors.Is(err, spi.ErrInvalidPattern):
-		slog.Warn("storage backend could not compile a condition pattern the boundary accepted",
-			"pkg", "search", "source", "spi.ValidateLeafPattern", "err", err)
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
-			"condition contains a pattern operand the backend cannot compile").WithCause(err)
+			"condition contains a pattern operand the backend cannot compile").
+			WithCause(fmt.Errorf("storage backend could not compile a condition pattern the boundary accepted: %w", err)).
+			WithLogLevel(slog.LevelWarn)
 	case errors.Is(err, match.ErrUnevaluableLeaf):
-		// DEBUG, not WARN — same reasoning as the spi.ErrUnevaluableLeaf arm
-		// above: a NOT condition can route the identical no-declared-type
-		// leaf through this evaluator instead of spi.Prepare depending on
-		// translatability alone (the query PLAN, not the input), so the same
-		// documented-normal case reaches this arm just as often.
-		slog.Debug("search condition leaf rejected by the residual evaluator: commonly a field with no declared type",
-			"pkg", "search", "source", "match.Prepare", "err", err)
+		// The class default (INFO), not WARN — same reasoning as the
+		// spi.ErrUnevaluableLeaf arm above: a NOT condition can route the
+		// identical no-declared-type leaf through this evaluator instead of
+		// spi.Prepare depending on translatability alone (the query PLAN, not
+		// the input), so the same documented-normal case reaches this arm
+		// just as often.
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
 			"condition contains a leaf the evaluator cannot evaluate").WithCause(err)

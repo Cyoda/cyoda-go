@@ -77,7 +77,8 @@ func requestAttrs(ctx context.Context) []any {
 // and logs the failure once, at the level its class gets on the HTTP door
 // (common.WriteError), with the request it answers (requestAttrs). For
 // operational AppErrors the client-safe message is returned directly and
-// logged at INFO. For internal/fatal AppErrors and raw errors a ticket UUID is
+// logged at the error's level (OperationalLogLevel: INFO unless the refusing
+// site set another). For internal/fatal AppErrors and raw errors a ticket UUID is
 // generated and the detail is logged server-side only, at ERROR — unless the
 // cause is marked as the client having gone away mid-request
 // (isClientGoneCancellation), in which case no ticket is minted and the log is
@@ -94,10 +95,11 @@ func buildErrorFields(ctx context.Context, err error) (code, message string, ret
 			}
 			// Logged as common.WriteError's operational branch logs it — at
 			// INFO unless the error carries its own level — under the same
-			// message, so the two doors read alike in a log aggregator. An operational error whose cause
-			// is INFRASTRUCTURE rather than domain (a storage failure, say)
-			// attaches that cause with WithCause and keeps it out of the
-			// client-facing message; the log line is then its only breadcrumb.
+			// message, so the two doors read alike in a log aggregator. An
+			// operational error whose cause is INFRASTRUCTURE rather than
+			// domain (a storage failure, say) attaches that cause with
+			// WithCause and keeps it out of the client-facing message; the log
+			// line is then its only breadcrumb.
 			attrs := append(requestAttrs(ctx), "code", appErr.Code, "message", appErr.Message)
 			if appErr.Err != nil {
 				attrs = append(attrs, "cause", appErr.Err.Error())

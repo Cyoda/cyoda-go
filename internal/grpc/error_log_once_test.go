@@ -152,3 +152,49 @@ func TestGRPCFailure_LoggedOnceAtItsClassLevel(t *testing.T) {
 		wantRequestIdentity(t, got[0], "test-req-1")
 	})
 }
+
+// A write refused by the workflow engine — here a stale If-Match, answered
+// 412 ENTITY_MODIFIED — is one log line, the funnel's INFO line, not an
+// ERROR from the entity service first.
+func TestGRPCWorkflowRefusal_LoggedOnce(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "A", "amount": 1})
+	createResp, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+		"id": "c1", "dataFormat": "JSON",
+		"payload": map[string]any{"model": map[string]any{"name": "person", "version": 1}, "data": map[string]any{"name": "A", "amount": 1}},
+	}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	txInfo := parseResponsePayload(t, createResp)["transactionInfo"].(map[string]any)
+	entityID := txInfo["entityIds"].([]any)[0].(string)
+	createTxID := txInfo["transactionId"].(string)
+	patch := func(id string, amount int) *events.EntityTransactionResponseJson {
+		resp, err := svc.EntityManage(ctx, makeCE(EntityPatchRequest, map[string]any{
+			"id": id, "patchFormat": "MERGE_PATCH",
+			"payload": map[string]any{"entityId": entityID, "patch": map[string]any{"amount": amount}, "ifMatch": createTxID},
+		}))
+		if err != nil {
+			t.Fatalf("patch: %v", err)
+		}
+		var typed events.EntityTransactionResponseJson
+		validateResponse(t, resp, &typed)
+		return &typed
+	}
+	if first := patch("p1", 31); !first.Success {
+		t.Fatalf("first patch: %+v", first.Error)
+	}
+
+	logs := captureLogs(t)
+	stale := patch("p2", 99)
+	if stale.Success || stale.Error == nil || !strings.Contains(stale.Error.Message, "ENTITY_MODIFIED") {
+		t.Fatalf("stale patch = success %v, error %+v; want ENTITY_MODIFIED", stale.Success, stale.Error)
+	}
+	var lines []string
+	for _, level := range []string{"ERROR", "WARN", "INFO"} {
+		lines = append(lines, logs.lines(level)...)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") || !strings.Contains(lines[0], "operational error") {
+		t.Errorf("log lines = %q, want the funnel's one INFO line", lines)
+	}
+}

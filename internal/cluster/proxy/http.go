@@ -71,12 +71,7 @@ func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeI
 
 			addr, alive, err := registry.Lookup(r.Context(), claims.NodeID)
 			if err != nil {
-				slog.Error("registry lookup failed",
-					"pkg", "proxy",
-					"nodeID", claims.NodeID,
-					"error", err,
-				)
-				common.WriteError(w, r, common.Internal("registry lookup failed", err))
+				common.WriteError(w, r, common.Internal("registry lookup failed", fmt.Errorf("registry lookup of node %s: %w", claims.NodeID, err)))
 				return
 			}
 			if !alive || addr == "" {
@@ -136,12 +131,7 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 	}
 	target, err := url.Parse(addr)
 	if err != nil {
-		slog.Error("invalid proxy target URL",
-			"pkg", "proxy",
-			"addr", addr,
-			"error", err,
-		)
-		common.WriteError(w, r, common.Internal("invalid proxy target", err))
+		common.WriteError(w, r, common.Internal("invalid proxy target", fmt.Errorf("proxy target URL %q: %w", addr, err)))
 		return
 	}
 
@@ -153,10 +143,9 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 		Director:  makeProxyDirector(target),
 		Transport: transport,
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
-			// The caller going away cancels the proxied request: not an
-			// outage of the owner, so not an ERROR.
-			// One line, at the level of what happened: the client going away
-			// is routine (DEBUG), an owner that could not be reached is an
+			// One line, at the level of what happened: the caller going away
+			// cancels the proxied request and is routine (DEBUG), not an
+			// outage of the owner; an owner that could not be reached is an
 			// ERROR.
 			level, cause := slog.LevelError, fmt.Errorf("proxy request to %s failed: %w", addr, err)
 			if req.Context().Err() != nil {

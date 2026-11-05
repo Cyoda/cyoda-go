@@ -16,6 +16,7 @@ import (
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -115,7 +116,9 @@ func classifyRouteErr(err error) error {
 	case errors.Is(err, token.ErrTokenTampered), errors.Is(err, token.ErrTokenInvalid):
 		return common.Operational(http.StatusUnauthorized, common.ErrCodeUnauthorized, "invalid transaction token")
 	case errors.Is(err, proxy.ErrNodeUnavailable):
-		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is not available")
+		// WARN with the node, as the HTTP proxy logs the same refusal.
+		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is not available").
+			WithCause(err).WithLogLevel(slog.LevelWarn)
 	default:
 		return err
 	}
@@ -131,8 +134,9 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 			return handler(ctx, req)
 		}
 		ce, _ := req.(*cepb.CloudEvent)
+		ctx = withRequestEvent(ctx, rpcName(info.FullMethod), "", "")
 		if ce != nil {
-			ctx = withRequestEvent(ctx, rpcName(info.FullMethod), ce.Type, ce.Id)
+			ctx = withRequestMessage(ctx, ce)
 		}
 
 		tok := proxy.ExtractGRPCToken(ctx)
@@ -433,10 +437,10 @@ func forwardStreamBroke(ctx context.Context, addr string, err error) error {
 	case ownerRefused:
 		return err
 	case ownerNotReached:
-		slog.Error("forwarded stream broke", "pkg", "grpc", "target", addr, "error", err)
+		slog.Error("forwarded stream broke", append(requestAttrs(ctx), "target", addr, "error", err)...)
 		return status.Error(codes.Unavailable, "transaction node is unreachable")
 	}
-	slog.Error("forwarded stream broke", "pkg", "grpc", "target", addr, "error", err)
+	slog.Error("forwarded stream broke", append(requestAttrs(ctx), "target", addr, "error", err)...)
 	return status.Error(codes.Internal, "transaction node answer failed")
 }
 
@@ -489,17 +493,23 @@ func (i *txRouteInterceptor) forwardStreamErr(ctx context.Context, ss googlegrpc
 // the owner, so no ERROR and no envelope for nobody — the call ends with the
 // caller's own cancellation.
 func callerGone(ctx context.Context, addr string) error {
-	slog.Debug("client gone before forwarded call completed", "pkg", "grpc", "target", addr)
+	slog.Debug("client gone before forwarded call completed", append(requestAttrs(ctx), "target", addr)...)
 	return status.FromContextError(ctx.Err()).Err()
 }
 
 // ownerUnreachable answers a forwarded call that did not reach its owner as
-// the HTTP proxy does: 503 TRANSACTION_NODE_UNAVAILABLE, logged once at ERROR
-// by the envelope funnel with the hop's address and error as its cause.
+// the HTTP proxy does: 503 TRANSACTION_NODE_UNAVAILABLE, logged once by the
+// envelope funnel with the hop's address and error as its cause — at WARN when
+// the peer address guard refused the owner's address, as the HTTP proxy logs
+// that refusal, and at ERROR for any other failure to reach the owner.
 func ownerUnreachable(addr string, err error) error {
+	level := slog.LevelError
+	if errors.Is(err, peeraddr.ErrForbiddenPeerAddress) {
+		level = slog.LevelWarn
+	}
 	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is unreachable").
 		WithCause(fmt.Errorf("forward to %s: %w", addr, err)).
-		WithLogLevel(slog.LevelError)
+		WithLogLevel(level)
 }
 
 // streamErr sends err as the routed RPC's error envelope on the stream. reqID

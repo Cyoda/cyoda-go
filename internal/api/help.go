@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -21,13 +22,8 @@ import (
 func dispatchHelpAction(w http.ResponseWriter, r *http.Request, topic, actionName string, entry help.ActionEntry) {
 	var buf bytes.Buffer
 	if rc := entry.Handler(&buf); rc != 0 {
-		slog.Error("help: action handler reported failure",
-			"pkg", "api",
-			"topic", topic,
-			"action", actionName,
-			"exitCode", rc)
-		common.WriteError(w, r, common.Internal(
-			"help action handler failed", nil))
+		common.WriteError(w, r, common.Internal("help action handler failed",
+			fmt.Errorf("help topic %s action %s exited %d", topic, actionName, rc)))
 		return
 	}
 	w.Header().Set("Content-Type", entry.ContentType)

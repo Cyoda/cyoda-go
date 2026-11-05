@@ -192,3 +192,34 @@ func TestRPC_DirectSearch_UnevaluableLeaf_ValidTypedField_200(t *testing.T) {
 		t.Fatalf("expected success=true for a declared-type field, got error: %v", typed.Error)
 	}
 }
+
+// The refusal of a condition leaf the backend cannot evaluate is one log
+// line — the funnel's INFO line, carrying the evaluator's error as its cause —
+// and not a DEBUG line from the search service besides.
+func TestRPC_DirectSearch_UnevaluableLeaf_LoggedOnce(t *testing.T) {
+	svc, ctx, factory := newTestEnvWithFactory(t)
+	saveBareLeafModelGRPC(t, ctx, factory, "widget", "1", "score")
+	logs := captureLogs(t)
+
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(makeCE(EntitySearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "widget", "version": 1},
+		"condition": map[string]any{
+			"type": "simple", "jsonPath": "$.score", "operatorType": "EQUALS", "value": 5,
+		},
+	}), stream); err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if got := logs.lines("DEBUG"); len(got) != 0 {
+		for _, l := range got {
+			if strings.Contains(l, "leaf rejected") {
+				t.Errorf("the search service logged the refusal itself: %s", l)
+			}
+		}
+	}
+	got := logs.lines("INFO")
+	if len(got) != 1 || !strings.Contains(got[0], "operational error") || !strings.Contains(got[0], "cause=") {
+		t.Errorf("INFO lines = %q, want the funnel's one line with the cause", got)
+	}
+}

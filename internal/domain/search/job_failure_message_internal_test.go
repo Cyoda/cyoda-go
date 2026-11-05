@@ -41,6 +41,23 @@ func TestJobFailureMessage_ServerSideFailureIsTicketed(t *testing.T) {
 	}
 }
 
+// A client error that carries its own log level (a boundary/backend
+// disagreement at WARN) is logged once at that level on the async path too,
+// as both doors' funnels log it.
+func TestJobFailureMessage_ClientErrorKeepsItsLogLevel(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	refusal := common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, "condition contains a pattern operand the backend cannot compile").
+		WithCause(errors.New("pattern disagreement")).WithLogLevel(slog.LevelWarn)
+	jobFailureMessage("job-9", refusal)
+	if n := strings.Count(buf.String(), "\n"); n != 1 || !strings.Contains(buf.String(), "level=WARN") {
+		t.Fatalf("log = %q, want one WARN line", buf.String())
+	}
+}
+
 // A raw, unclassified failure is classified as the doors classify it: a
 // server-side failure, recorded with a ticket and logged once, at ERROR, with
 // the job id and the detail.

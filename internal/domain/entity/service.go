@@ -312,7 +312,6 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// txID. CreateEntity has no prior version, so no IfMatch is involved.
 	result, err := h.engine.Execute(txCtx, entity)
 	if err != nil {
-		slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID)
 		return nil, classifyEngineError(err, entity.Meta.ID)
 	}
 	// FIRST statement after the error check. It cannot go before it: the engine
@@ -2075,7 +2074,6 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		// apply per item.
 		result, err := h.engine.Execute(currentCtx, entity)
 		if err != nil {
-			slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID, "itemIndex", i)
 			return nil, classifyEngineError(fmt.Errorf("item %d: %w", i, err), entity.Meta.ID)
 		}
 		// Advance the loop's TX to whichever segment is now open. For
@@ -2313,7 +2311,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	if input.Transition == "" {
 		res, lbErr := h.engine.Loopback(txCtx, updated, ifMatch)
 		if lbErr != nil {
-			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
 			return nil, classifyEngineError(lbErr, input.EntityID)
 		}
 		// FIRST statement after the error check: the engine returns a nil
@@ -2323,7 +2320,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	} else {
 		res, mtErr := h.engine.ManualTransition(txCtx, updated, input.Transition, ifMatch)
 		if mtErr != nil {
-			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
 			return nil, classifyEngineError(mtErr, input.EntityID)
 		}
 		// FIRST statement after the error check: the engine returns a nil
@@ -2654,7 +2650,6 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				})
 				continue
 			}
-			slog.Error("workflow execution failed", "error", engineErr.Error(), "entityId", updated.Meta.ID, "transition", item.transition)
 			return nil, classifyEngineError(fmt.Errorf("item %d: %w", i, engineErr), updated.Meta.ID)
 		}
 		// Advance the loop's TX to whichever segment is now open. For
@@ -2786,7 +2781,7 @@ func classifyEngineError(err error, entityID string) *common.AppError {
 		appErr := common.Operational(
 			http.StatusPreconditionFailed,
 			common.ErrCodeEntityModified,
-			"entity has been modified since last read")
+			"entity has been modified since last read").WithCause(err)
 		appErr.Props = map[string]any{"entityId": entityID}
 		return appErr
 	}
