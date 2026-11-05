@@ -987,6 +987,19 @@ func perIDDeleteError(ctx context.Context, entityID string, err error) string {
 	return common.ReportError(ctx, deleteError(entityID, err), "pkg", "entity", "entityId", entityID)
 }
 
+// logDiscardedDeleteFailures logs the per-id failures of a delete attempt that
+// is not answered — one a conflict ran again, or one whose transaction failed.
+// Its client errors are not events of their own (the next attempt
+// re-evaluates them, or the request fails whole), but a server-side failure in
+// it happened, and is logged once, under a ticket nothing answers.
+func logDiscardedDeleteFailures(ctx context.Context, failures map[string]*common.AppError) {
+	for id, appErr := range failures {
+		if appErr.Level != common.LevelOperational {
+			common.LogError(ctx, appErr, "pkg", "entity", "entityId", id, "attempt", "discarded")
+		}
+	}
+}
+
 // deleteError classifies one item's delete failure as both doors classify a
 // failure: an AppError as it is; a missing entity as 404 ENTITY_NOT_FOUND;
 // anything else through common.Internal, which keeps a storage outage, an
@@ -1234,16 +1247,24 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName stri
 	}
 
 	var result *DeleteResult
+	var idFailures map[string]*common.AppError
 	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
-		r, err := h.deleteConditionalSingleTx(ctx, ref, cond, pointInTime, verbose)
+		r, failures, err := h.deleteConditionalSingleTx(ctx, ref, cond, pointInTime, verbose)
 		if err != nil {
+			// Not answered: a conflict runs it again, anything else fails
+			// the request whole.
+			logDiscardedDeleteFailures(ctx, failures)
 			return err
 		}
-		result = r
+		result, idFailures = r, failures
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Reported only now, from the attempt that stands.
+	for id, appErr := range idFailures {
+		result.IDToError[id] = common.ReportError(ctx, appErr, "pkg", "entity", "entityId", id)
 	}
 	return result, nil
 }
@@ -1265,10 +1286,13 @@ func requireModel(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelR
 // conditional delete: select, delete each matched id, remove the scheduled
 // tasks of the ids actually deleted, commit. Every attempt builds its own
 // result, so a retried attempt never counts an id twice.
-func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRef, cond predicate.Condition, pointInTime *time.Time, verbose bool) (*DeleteResult, error) {
+func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRef, cond predicate.Condition, pointInTime *time.Time, verbose bool) (*DeleteResult, map[string]*common.AppError, error) {
+	// Per-id outcomes, classified and not yet reported: the caller reports
+	// them only if this attempt is the one answered.
+	failures := map[string]*common.AppError{}
 	scope, err := h.beginScope(ctx)
 	if err != nil {
-		return nil, classifyBeginErr(err)
+		return nil, nil, classifyBeginErr(err)
 	}
 	defer scope.Release()
 
@@ -1276,20 +1300,20 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 
 	modelStore, err := h.factory.ModelStore(txCtx)
 	if err != nil {
-		return nil, common.Internal("failed to access model store", err)
+		return nil, nil, common.Internal("failed to access model store", err)
 	}
 	if err := requireModel(txCtx, modelStore, ref); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
-		return nil, common.Internal("failed to access entity store", err)
+		return nil, nil, common.Internal("failed to access entity store", err)
 	}
 
 	plan, planErr := h.planDeleteSelection(txCtx, modelStore, ref, cond)
 	if planErr != nil {
-		return nil, planErr
+		return nil, nil, planErr
 	}
 
 	// Select ALL matching ids via a streamed Iterate drain, scoped to
@@ -1303,9 +1327,9 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 		// server fault — common.Internal would bury it as a 500 + ticket.
 		var appErr *common.AppError
 		if errors.As(err, &appErr) {
-			return nil, appErr
+			return nil, nil, appErr
 		}
-		return nil, common.Internal("failed to select entities for delete", err)
+		return nil, nil, common.Internal("failed to select entities for delete", err)
 	}
 
 	result := &DeleteResult{
@@ -1341,7 +1365,7 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 				if errors.Is(err, spi.ErrConflict) {
 					return conflictError(err)
 				}
-				result.IDToError[id] = perIDDeleteError(ctx, id, err)
+				failures[id] = deleteError(id, err)
 				continue
 			}
 			deleted = append(deleted, id)
@@ -1359,10 +1383,10 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 		}
 		return nil
 	}(); appErr != nil {
-		return nil, appErr
+		return nil, failures, appErr
 	}
 
-	return result, nil
+	return result, failures, nil
 }
 
 // batchTarget names one matched entity plus the CURRENT version recorded
@@ -1692,6 +1716,10 @@ type batchAttempt struct {
 func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, result *DeleteResult) error {
 	var last batchAttempt
 	err := common.RetryOnTaskConflict(ctx, spi.GetTransaction(ctx) == nil, func() error {
+		// An attempt that runs again replaces the one before it, which is
+		// then not answered.
+		logDiscardedDeleteFailures(ctx, last.idErrors)
+		last = batchAttempt{}
 		a, err := h.deleteOneBatchOnce(ctx, chunk)
 		if err != nil {
 			return err
@@ -2760,8 +2788,9 @@ func classifyEngineError(err error, entityID string) *common.AppError {
 	// unwrap chain. A Detail the error already carries is kept.
 	withText := *appErr
 	withText.Detail = fmt.Sprintf("entity %s: %s", entityID, err.Error())
-	if appErr.Err != nil {
-		// The cause, logged with it, already carries the engine's text.
+	if appErr.Err != nil && appErr.Err == err {
+		// The cause is the engine's own error, logged with it: Detail need
+		// only name the entity.
 		withText.Detail = "entity " + entityID
 	}
 	if appErr.Detail != "" {

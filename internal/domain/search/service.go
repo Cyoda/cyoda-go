@@ -190,6 +190,8 @@ type asyncScanScoper interface {
 func jobFailureMessage(jobID string, err error) string {
 	var ceiling searchCeilingExceeded
 	if errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
+		// Its own line: the ceiling is a reason only an async job records,
+		// with no error code of its own for the funnel's line to carry.
 		slog.Info("async search job failed", "pkg", "search", "jobID", jobID, "reason", searchCeilingMessage)
 		return searchCeilingMessage
 	}
@@ -200,15 +202,15 @@ func jobFailureMessage(jobID string, err error) string {
 	if !errors.As(err, &appErr) {
 		appErr = common.Internal("async search failed", err)
 	}
+	if appErr.Level != common.LevelOperational && errors.Is(appErr, common.ErrClientGone) {
+		// A job has no client of its own to have gone away: a failure marked
+		// so is a server-side fault here, recorded and logged under a ticket.
+		appErr = common.Internal("async search failed", errors.New(err.Error()))
+	}
 	// The one line, through the funnel both doors share.
 	ticket := common.LogError(context.Background(), appErr, "pkg", "search", "jobID", jobID)
 	if appErr.Level == common.LevelOperational {
 		return appErr.Error()
-	}
-	if ticket == "" {
-		// A failure marked as a departed client: the job has no client of
-		// its own, so its record names none either.
-		return common.ErrCodeServerError + ": internal error"
 	}
 	return ticketedReason(ticket)
 }

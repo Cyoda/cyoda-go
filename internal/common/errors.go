@@ -388,9 +388,9 @@ func isClientGoneCancellation(appErr *AppError) bool {
 
 // WriteError writes an AppError as an RFC 9457 Problem Details JSON response.
 // For INTERNAL and FATAL errors, a ticket UUID is generated for correlation —
-// except when the cause is the client having gone away mid-request (see
-// isClientGoneCancellation): nothing was wrong, there is nobody to quote a
-// ticket to, and that is logged at DEBUG with no ticket. The status written is
+// except when an INTERNAL error's cause is the client having gone away
+// mid-request (see isClientGoneCancellation): nothing was wrong, there is
+// nobody to quote a ticket to, and that is logged at DEBUG with no ticket. The status written is
 // unchanged either way — an implicit 200 is what writing a status at all
 // exists to prevent (internal/httpmw/txjoin_mw.go's writeJoinError explains
 // why for the joined door, but every HTTP door funnels through here).
@@ -409,7 +409,7 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 		Instance: path,
 	}
 	pd.Ticket = LogError(r.Context(), appErr, "path", path)
-	pd.Detail = clientText(appErr, pd.Ticket)
+	pd.Detail = clientText(appErr, pd.Ticket, getErrorResponseMode() == "verbose")
 
 	// A copy: the error, and its Props map, may be shared.
 	pd.Props = make(map[string]any, len(appErr.Props)+2)
@@ -458,8 +458,6 @@ func LogError(ctx context.Context, appErr *AppError, attrs ...any) (ticket strin
 		if isClientGoneCancellation(appErr) {
 			// Routine: the client disconnected, nothing was wrong on this end,
 			// and there is nobody to quote a ticket to. No ticket is minted.
-			// The gRPC funnel (internal/grpc/errors.go) logs this same event
-			// under the same message and the same fields, so the two collate.
 			slog.Debug("client gone before request completed",
 				append([]any{"code", appErr.Code, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
 			return ""
@@ -476,20 +474,20 @@ func LogError(ctx context.Context, appErr *AppError, attrs ...any) (ticket strin
 	default: // LevelFatal
 		ticket = appErr.ticketOr()
 		slog.Error("FATAL error",
-			append([]any{"ticket", ticket, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
+			append([]any{"ticket", ticket, "code", appErr.Code, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
 		return ticket
 	}
 }
 
 // clientText is what a client is told about appErr: an operational error's
 // message; for an internal or fatal one, the generic text with its ticket (or
-// without one for a client that went away), or its Detail in the verbose
-// error-response mode.
-func clientText(appErr *AppError, ticket string) string {
+// without one for a client that went away), or its Detail when verbose (the
+// verbose error-response mode, for a problem response only).
+func clientText(appErr *AppError, ticket string, verbose bool) string {
 	if appErr.Level == LevelOperational {
 		return appErr.Message
 	}
-	if getErrorResponseMode() == "verbose" {
+	if verbose {
 		return appErr.Detail
 	}
 	if ticket == "" {
@@ -500,9 +498,11 @@ func clientText(appErr *AppError, ticket string) string {
 
 // ReportError logs an error answered outside a problem response — an error
 // element in a 2xx collection body — exactly as WriteError logs it, and
-// returns the text the client is given for it, as WriteError would give it.
+// returns the text the client is given for it: as WriteError gives it in the
+// sanitized mode, in every mode. Such a body also reaches gRPC as it is
+// (a delete's per-id map), where no answer carries an internal Detail.
 func ReportError(ctx context.Context, appErr *AppError, attrs ...any) string {
-	return clientText(appErr, LogError(ctx, appErr, attrs...))
+	return clientText(appErr, LogError(ctx, appErr, attrs...), false)
 }
 
 // SanitizeErrorMessage returns a client-safe error message.

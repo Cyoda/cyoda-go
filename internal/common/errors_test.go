@@ -255,6 +255,19 @@ func TestReportError_LogsOnceAndReturnsTheClientText(t *testing.T) {
 	})
 }
 
+// TestReportError_IsSanitizedInVerboseMode — an error answered inside a 2xx
+// body (a chunk element, a per-id delete map, which gRPC sends as it is)
+// never carries an internal error's Detail, in any error-response mode.
+func TestReportError_IsSanitizedInVerboseMode(t *testing.T) {
+	common.SetErrorResponseMode("verbose")
+	t.Cleanup(func() { common.SetErrorResponseMode("sanitized") })
+	captureSlog(t)
+	got := common.ReportError(context.Background(), common.Internal("entity delete failed", errors.New("pg: connection to host db-1 refused")))
+	if strings.Contains(got, "db-1") || !strings.HasPrefix(got, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("client text = %q, want the generic ticketed text", got)
+	}
+}
+
 // TestWriteError_LeavesTheErrorsPropsUntouched — writing an error adds its
 // code and retry flag to the response's properties, not to the error, which
 // may be shared.
