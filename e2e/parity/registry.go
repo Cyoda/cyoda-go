@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 257 scenarios in this package: the entries of its literal
+// allTests holds 259 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go, ifmatch_callback_self_write.go).
 // TestParityScenarioCount (registry_count_test.go) checks the number: change
@@ -286,6 +286,8 @@ var allTests = []NamedTest{
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 	{"SchemaNumericFoldCarveout", RunSchemaNumericFoldCarveout},
+	{"SchemaExtensionSurvivesUnlockAndReimport", RunSchemaExtensionSurvivesUnlockAndReimport},
+	{"SchemaExtensionDoesNotOutliveModel", RunSchemaExtensionDoesNotOutliveModel},
 
 	// Type admission (design §4-9): one traversal judging each value against
 	// the stored model, rather than converting the document to a throwaway

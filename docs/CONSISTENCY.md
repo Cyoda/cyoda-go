@@ -233,19 +233,29 @@ savepoint fold cannot honour — see invariant 1's closing sentence):
 contract requires writers to **drain before** `Unlock` is invoked —
 no `ExtendSchema` may be in flight at the moment `Unlock` runs.
 
-Plugins enforce this defensively: Postgres' `Unlock` and `Save` both
-`DELETE` any lingering `model_schema_extensions` rows for the ref.
-Under a development-mode flag (`postgres.SetDebugMode(true)`), a
-non-zero delete count is treated as a fatal operator-contract
-violation and returned as an error. In production the same event
-logs a `WARN` and continues — the Save or Unlock itself is the
-authoritative schema state at that moment.
+The extensions committed while the model was LOCKED are part of its
+schema. `Unlock` keeps them: the Postgres and SQLite plugins fold the
+extension log into the stored schema and clear the log in one
+transaction, so a `Get` returns the same schema before and after
+`Unlock`; the memory plugin applies each extension in place and has no
+log to fold.
+
+`Save` replaces the schema wholesale and `Delete` removes the model, and
+each clears the ref's extension log in the same transaction: a `Get`
+after `Save` returns the saved schema alone, and a model saved under the
+reference of a deleted one starts from its saved schema. Through the
+state machine the log is already empty at that point, so the Postgres
+and SQLite plugins log a `WARN` with the count when either finds rows
+there — a writer bypassed the state machine. Under a development-mode
+flag (`postgres.SetDebugMode(true)`), Postgres' `Save` returns the same
+event as an error instead.
 
 Operator misuse — issuing `Unlock` while writers are still in flight
-— is undefined behavior at the SPI level (a concurrent writer's
-commit is racing with the `Unlock`'s delete). The assertion exists
-to catch such misuse loudly in development rather than have it
-manifest as silent data loss in production.
+— is undefined behavior at the SPI level. On Postgres, `Unlock` takes
+the same write-claim on the `models` row as `ExtendSchema`: a delta
+committed before `Unlock` is folded, and a writer that runs after it
+appends its delta to the log of an UNLOCKED model, where the next `Save`
+or `Delete` clears it with the `WARN`.
 
 ## 3c. In-transaction `Search` is a predicate read
 

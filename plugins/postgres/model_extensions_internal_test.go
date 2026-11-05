@@ -490,8 +490,8 @@ func TestExtendSchema_SaveOnLock(t *testing.T) {
 
 // TestExtendSchema_UnlockDoesNotWriteSavepoint — §5.2 asymmetry.
 // Unlock must not write a savepoint. The test is slightly awkward
-// because Unlock clears the extension log entirely (operator-contract
-// drain); we assert that after the lock→unlock sequence the savepoint
+// because Unlock folds the extension log into the stored schema and
+// clears it; we assert that after the lock→unlock sequence the savepoint
 // log is no different from the "was never locked" state — i.e. empty.
 func TestExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
 	fx := newPGFixture(t)
@@ -512,8 +512,8 @@ func TestExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
 	if err := fx.store.Unlock(fx.ctx, ref); err != nil {
 		t.Fatalf("Unlock: %v", err)
 	}
-	// Unlock drains the extension log (including savepoints) per the
-	// operator contract — so lastSavepointSeq drops to 0. The assertion
+	// Unlock clears the extension log (including savepoints) — so
+	// lastSavepointSeq drops to 0. The assertion
 	// is that Unlock did NOT *add* a new savepoint: the post-unlock
 	// savepoint seq is strictly not greater than the pre-unlock seq.
 	seqAfterUnlock, err := fx.store.lastSavepointSeq(fx.ctx, ref)

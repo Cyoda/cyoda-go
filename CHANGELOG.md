@@ -1752,6 +1752,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A schema extension is kept on every backend when its model is unlocked,
+  re-imported or deleted.** On PostgreSQL, unlocking a model discarded the
+  fields its entities had added while it was locked: the model's schema went
+  back to the imported one. On SQLite, unlocking kept them, but a later
+  import could be ignored (after a second lock and unlock, the export showed
+  the schema from before the import), and a model imported under the name and
+  version of a deleted model got the deleted model's added fields. Now, on
+  every backend, unlocking keeps the schema the model had while locked, an
+  import gives exactly the merged schema, and a deleted model leaves nothing
+  behind. The in-memory backend already worked this way.
+
 - **A gRPC request answers a store's conflict or unique-key refusal as HTTP
   does.** A lost write race, a unique-key violation or a unique-key field
   that is null, reported on a raw error, answered gRPC with a ticketed
