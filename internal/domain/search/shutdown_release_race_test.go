@@ -126,13 +126,27 @@ func TestReleaseRegisteredJobs_ExecutorDecidingDuringTheLoop(t *testing.T) {
 					t.Fatal("a job never reached its scan")
 				}
 			}
-			// The scan gates follow submission order: ids[i] holds gates[i].
-			gateOf := map[string]chan struct{}{ids[0]: scans.gates[0], ids[1]: scans.gates[1]}
+			// The scan gates follow submission order: ids[i] holds gates[i]. Each
+			// gate, and the held release, opens at most once, and on cleanup if
+			// a failed wait ends the test first, so nothing is left blocked.
+			openGate := map[string]func(){}
+			for i, id := range ids {
+				gate := scans.gates[i]
+				openGate[id] = sync.OnceFunc(func() { close(gate) })
+				t.Cleanup(openGate[id])
+			}
+			letRelease := sync.OnceFunc(func() { close(store.hold) })
+			t.Cleanup(letRelease)
 
 			logs := captureJobLogs(t)
 			counted := make(chan int, 1)
 			go func() { counted <- svc.ReleaseRegisteredJobs(context.Background()) }()
-			held := <-store.first
+			var held string
+			select {
+			case held = <-store.first:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the shutdown release never reached a job")
+			}
 			other := ids[0]
 			if other == held {
 				other = ids[1]
@@ -142,7 +156,7 @@ func TestReleaseRegisteredJobs_ExecutorDecidingDuringTheLoop(t *testing.T) {
 					t.Fatalf("Cancel: %v", err)
 				}
 			}
-			close(gateOf[other])
+			openGate[other]()
 			deadline := time.Now().Add(5 * time.Second)
 			for svc.RegisteredJobCountForTest() != 1 {
 				if time.Now().After(deadline) {
@@ -150,9 +164,9 @@ func TestReleaseRegisteredJobs_ExecutorDecidingDuringTheLoop(t *testing.T) {
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
-			close(store.hold)
+			letRelease()
 			n := <-counted
-			close(gateOf[held])
+			openGate[held]()
 			pool.Drain(context.Background())
 
 			if n != 1 {
@@ -206,6 +220,18 @@ func (s *failingTerminalWrite) UpdateJobStatus(ctx context.Context, jobID string
 	return fmt.Errorf("update job %s: connection reset", jobID)
 }
 
+func (s *failingTerminalWrite) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+}
+
+func (s *failingTerminalWrite) landedReleases() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.releases
+}
+
 func (s *failingTerminalWrite) Release(ctx context.Context, jobID string, epoch int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,16 +278,11 @@ func TestReleaseRegisteredJobs_FailedRecordingDuringShutdownIsHandedBack(t *test
 	if n := svc.ReleaseRegisteredJobs(context.Background()); n != 1 {
 		t.Errorf("ReleaseRegisteredJobs = %d, want 1", n)
 	}
-	store.mu.Lock()
-	store.closed = true // the store closes after the release, as at shutdown
-	store.mu.Unlock()
+	store.close() // the store closes after the release, as at shutdown
 	letWrite()
 	pool.Drain(context.Background())
 
-	store.mu.Lock()
-	releases := store.releases
-	store.mu.Unlock()
-	if releases != 1 {
+	if releases := store.landedReleases(); releases != 1 {
 		t.Errorf("landed Release calls = %d, want 1: the job is handed back before the store closes", releases)
 	}
 	if strings.Contains(logs.String(), lostClaimLine) {

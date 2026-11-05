@@ -684,7 +684,8 @@ func (s *SearchService) CancelRunning(jobID string) bool {
 
 // ReleaseRegisteredJobs cancels every in-flight (queued or executing) job on
 // this node with errJobReleased and issues a fenced store Release for each
-// that is still this node's claim, so a peer (or this node's next startup
+// whose end it did not find already decided (the store refuses one that is no
+// longer this node's claim), so a peer (or this node's next startup
 // sweep) reclaims and re-runs it promptly instead of waiting for the
 // heartbeat to age out. Returns the count of releases that landed; it
 // includes jobs whose executor was recording the outcome, which may then
