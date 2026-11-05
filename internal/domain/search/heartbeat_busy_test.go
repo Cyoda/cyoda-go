@@ -262,4 +262,9 @@ func TestStartHeartbeat_StaleClaimStillAbortsTheJob(t *testing.T) {
 	if status.Status != "FAILED" {
 		t.Fatalf("status = %q, want FAILED — a stale-claim heartbeat answer must still abort the job", status.Status)
 	}
+	// The record is still this executor's RUNNING claim, so the interruption
+	// is recorded as a server-side failure, ticketed.
+	if !strings.HasPrefix(status.FailureReason, "SERVER_ERROR: internal error [ticket: ") {
+		t.Fatalf("reason = %q, want the ticketed generic text", status.FailureReason)
+	}
 }

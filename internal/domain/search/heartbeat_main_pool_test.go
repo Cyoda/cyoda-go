@@ -368,6 +368,10 @@ func TestReclaimStaleJobs_BlockedWriteForUnrunJob_DoesNotDelayRunnableJob(t *tes
 			t.Errorf("%s status = %q, want %s", id, status.Status, want)
 		}
 	}
+	// A job that does not decode is a server-side failure: ticketed.
+	if st := pollUntilTerminal(t, svc, ctx, "b-undecodable", 5*time.Second); !strings.HasPrefix(st.FailureReason, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("b-undecodable reason = %q, want the ticketed generic text", st.FailureReason)
+	}
 }
 
 // secondPassStore counts the second-pass FAILED writes waiting on the main

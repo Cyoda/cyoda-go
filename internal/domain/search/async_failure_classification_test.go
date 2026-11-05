@@ -23,10 +23,9 @@ import (
 // The job record is the only report an async caller ever gets. The sync path
 // runs every store error through search.ClassifyStoreQueryError, so a
 // path a plugin refuses comes back as 400 INVALID_FIELD_PATH; the async
-// executor assigned the iterate error straight to the producer error, so
-// jobFailureMessage found no AppError and wrote the generic
-// "search failed unexpectedly" — the same request, the same cause, reported as
-// a server fault on one door and a client error on the other. Reaching this at
+// executor must classify the iterate error the same way, or the same request
+// and cause would be a server fault on one door and a client error on the
+// other. Reaching this at
 // all means the boundary grammar and a plugin disagree, which is a defect on
 // its own; what the caller is told about their request must not depend on
 // which door they used.

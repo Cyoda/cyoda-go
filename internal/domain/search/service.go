@@ -1153,11 +1153,11 @@ func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.Ca
 					// Cancelled (by any node) or otherwise settled: an
 					// ordinary end, not a fault.
 					slog.Debug("async search job is terminal; stopping its executor", "pkg", "search", "jobID", jobID)
-					cancel(nil)
+					cancel(hbErr)
 					return
 				case fencedRefusal(hbErr):
 					slog.Warn("async search heartbeat refused: the job is no longer this node's claim; aborting it", "pkg", "search", "jobID", jobID, "err", hbErr)
-					cancel(nil)
+					cancel(hbErr)
 					return
 				case jobCtx.Err() != nil:
 					// The job ended (or was released) while the stamp was in
@@ -1372,11 +1372,14 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// follows strips cancellation on its own).
 		recoveryCtx := context.WithoutCancel(jobCtx)
 		job, getErr := s.searchStore.GetJob(recoveryCtx, jobID)
-		if getErr == nil && job.Status == "CANCELLED" {
-			// The store already stamped the terminal write (Cancel, or a
-			// takeover's own terminal write) — nothing left to record.
+		if getErr == nil && (job.Status != "RUNNING" || job.Epoch != epoch) {
+			// Settled (cancelled, or a takeover's own terminal write) or
+			// claimed by another executor: not this executor's to record. An
+			// ordinary end on a cluster — the heartbeat already said why.
 			return
 		}
+		// Still this executor's RUNNING claim, or the read failed: the job
+		// was interrupted, a server-side failure.
 		// jobCtx, not recoveryCtx: writeAsyncFailure's own release-cause
 		// guard reads context.Cause(ctx) before stripping cancellation, and
 		// context.Cause on a WithoutCancel derivative always reports nil
@@ -1439,9 +1442,11 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epo
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
-	// Rendered only now, past the release check: rendering logs the failure
-	// and may mint a ticket, so a released job logs none. A write that then
-	// loses its race leaves a logged ticket that no record carries.
+	// Rendered only now, past the release check: a reason built by
+	// failureReason logs the failure and may mint a ticket, so a released job
+	// logs none for it. (The panic and decode paths log their ticket where the
+	// failure happens.) A write that then loses its race leaves a logged
+	// ticket that no record carries.
 	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, reason(), finishTime, calcTimeMs); err != nil {
 		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
 			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)

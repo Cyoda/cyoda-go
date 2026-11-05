@@ -315,13 +315,9 @@ func TestAsyncSearchJob_BareLeafField_RendersInvalidConditionMessage(t *testing.
 		t.Errorf("job error = %q, want it to carry INVALID_CONDITION — an async caller's ONLY report of why the job failed", job.Error)
 	}
 	// Gate 3 / jobFailureMessage's own contract: the classified message is the
-	// client-safe one (AppError.Error()), never the store's internal detail
-	// or the generic fallback a bare sentinel used to collapse into.
+	// client-safe one (AppError.Error()), never the store's internal detail.
 	if strings.Contains(job.Error, "ExpandLeaf") || strings.Contains(job.Error, "parses into no declared type") {
 		t.Errorf("job error leaks internal detail: %q", job.Error)
-	}
-	if job.Error == "search failed unexpectedly" {
-		t.Error("job error is the generic unclassified fallback — the fix did not reach the async path")
 	}
 }
 
