@@ -20,10 +20,9 @@ const lostClaimLine = "async search job is no longer this executor's to record"
 
 // A job that stops being this executor's while it runs — cancelled on
 // another node, claimed by another executor, or removed — ends the executor
-// with exactly one log line, whichever path sees it first (the heartbeat, a
-// result write, the terminal write), and no ERROR: an ordinary end on a
-// cluster. A claim taken from a live executor is logged at WARN (the claimant
-// judged its heartbeats stale); a cancel or a removal at DEBUG.
+// with exactly one log line for the job, at INFO, whichever path sees it
+// first (the heartbeat, a result write, the terminal write): an ordinary end
+// on a cluster, reported the same way however it is met.
 func TestAsyncSearch_LostClaimEndsWithOneLine(t *testing.T) {
 	cancelOnOtherNode := func(t *testing.T, store spi.AsyncSearchStore, ctx context.Context, jobID string) {
 		if err := store.Cancel(ctx, jobID, time.Now()); err != nil {
@@ -45,13 +44,13 @@ func TestAsyncSearch_LostClaimEndsWithOneLine(t *testing.T) {
 		name      string
 		heartbeat time.Duration
 		settle    func(*testing.T, spi.AsyncSearchStore, context.Context, string)
-		wantLevel string
 	}{
-		{"cancelled, seen by a result write", time.Hour, cancelOnOtherNode, "DEBUG"},
-		{"claimed elsewhere, seen by a result write", time.Hour, claimElsewhere, "WARN"},
-		{"removed, seen by a result write", time.Hour, remove, "DEBUG"},
-		{"cancelled, seen by the heartbeat", 10 * time.Millisecond, cancelOnOtherNode, "DEBUG"},
-		{"claimed elsewhere, seen by the heartbeat", 10 * time.Millisecond, claimElsewhere, "WARN"},
+		{"cancelled, seen by a result write", time.Hour, cancelOnOtherNode},
+		{"claimed elsewhere, seen by a result write", time.Hour, claimElsewhere},
+		{"removed, seen by a result write", time.Hour, remove},
+		{"cancelled, seen by the heartbeat", 10 * time.Millisecond, cancelOnOtherNode},
+		{"claimed elsewhere, seen by the heartbeat", 10 * time.Millisecond, claimElsewhere},
+		{"removed, seen by the heartbeat", 10 * time.Millisecond, remove},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			logs := &syncBuffer{}
@@ -81,6 +80,7 @@ func TestAsyncSearch_LostClaimEndsWithOneLine(t *testing.T) {
 				t.Fatalf("SubmitAsync: %v", err)
 			}
 			time.Sleep(100 * time.Millisecond)
+			settledAt := len(logs.String())
 			c.settle(t, store, ctx, jobID)
 
 			deadline := time.Now().Add(5 * time.Second)
@@ -92,20 +92,18 @@ func TestAsyncSearch_LostClaimEndsWithOneLine(t *testing.T) {
 			}
 			time.Sleep(100 * time.Millisecond) // let anything that would follow it land
 
-			out := logs.String()
-			if n := strings.Count(out, lostClaimLine); n != 1 {
-				t.Fatalf("the lost claim was reported %d times, want once:\n%s", n, out)
-			}
-			for _, line := range strings.Split(out, "\n") {
-				if strings.Contains(line, lostClaimLine) && !strings.Contains(line, "level="+c.wantLevel) {
-					t.Fatalf("lost claim logged as %q, want level %s", line, c.wantLevel)
+			// Every line about this job after the event, whatever its text.
+			var jobLines []string
+			for _, line := range strings.Split(logs.String()[settledAt:], "\n") {
+				if strings.Contains(line, "jobID="+jobID) {
+					jobLines = append(jobLines, line)
 				}
 			}
-			if strings.Contains(out, "level=ERROR") {
-				t.Fatalf("a lost claim logged an ERROR:\n%s", out)
+			if len(jobLines) != 1 {
+				t.Fatalf("the lost claim produced %d lines for the job, want one:\n%s", len(jobLines), strings.Join(jobLines, "\n"))
 			}
-			if c.wantLevel == "DEBUG" && strings.Contains(out, "level=WARN") {
-				t.Fatalf("an ordinary end logged a WARN:\n%s", out)
+			if !strings.Contains(jobLines[0], lostClaimLine) || !strings.Contains(jobLines[0], "level=INFO") {
+				t.Fatalf("lost claim logged as %q, want the lost-claim line at INFO", jobLines[0])
 			}
 		})
 	}

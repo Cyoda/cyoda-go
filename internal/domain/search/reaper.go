@@ -351,12 +351,10 @@ func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel con
 		switch {
 		case cerr == nil:
 			return true
-		case errors.Is(cerr, spi.ErrAlreadyTerminal):
-			slog.Debug("reclaimed job was settled before it ran", "pkg", "search", "jobID", job.ID)
-			s.dropReclaim(cancel, handle, job)
-			return false
-		case errors.Is(cerr, spi.ErrStaleClaim), errors.Is(cerr, spi.ErrNotFound):
-			slog.Warn("reclaimed job was taken or removed before it ran", "pkg", "search", "jobID", job.ID, "err", cerr)
+		case fencedRefusal(cerr):
+			// Settled, taken or removed before it ran: no longer this
+			// claim's, reported as every lost claim is.
+			endLostClaim(job.ID, cerr)
 			s.dropReclaim(cancel, handle, job)
 			return false
 		case jobCtx.Err() == nil:
@@ -367,6 +365,13 @@ func (s *SearchService) clearReclaimedResults(jobCtx context.Context, cancel con
 		}
 	}
 	cause := context.Cause(jobCtx)
+	if fencedRefusal(cause) {
+		// The heartbeat found the job settled, taken or removed before it
+		// ran: no longer this claim's, so nothing to release either.
+		endLostClaim(job.ID, cause)
+		s.dropReclaim(cancel, handle, job)
+		return false
+	}
 	slog.Debug("reclaimed job ended before it ran", "pkg", "search", "jobID", job.ID, "cause", cause)
 	s.dropReclaim(cancel, handle, job)
 	if !errors.Is(cause, errJobReleased) && !errors.Is(cause, errJobSuperseded) {

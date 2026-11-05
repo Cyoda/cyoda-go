@@ -168,15 +168,12 @@ func ticketedReason(ticket string) string {
 // settled (cancelled, or a takeover's own terminal write), claimed by another
 // executor, or removed — and records nothing. It is the one report of that
 // event, whichever path met it first (the heartbeat, a result write, the
-// terminal write). A claim taken from a live executor is logged at WARN: the
-// claimant judged this executor's heartbeats stale. A cancel or a removal is
-// an ordinary end, logged at DEBUG.
-func endLostClaim(jobID string, cause error, claimedElsewhere bool) {
-	level := slog.LevelDebug
-	if claimedElsewhere {
-		level = slog.LevelWarn
-	}
-	slog.Log(context.Background(), level, "async search job is no longer this executor's to record; stopping",
+// terminal write, the pre-run clear of a reclaimed job), logged at INFO: an
+// ordinary end on a cluster. One level for every such end, because which of
+// them it was depends on timing (a takeover whose new owner has already
+// finished reads as settled), and the cause names the store's answer.
+func endLostClaim(jobID string, cause error) {
+	slog.Info("async search job is no longer this executor's to record; stopping",
 		"pkg", "search", "jobID", jobID, "cause", cause)
 }
 
@@ -1390,13 +1387,10 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		job, getErr := s.searchStore.GetJob(recoveryCtx, jobID)
 		switch {
 		case errors.Is(getErr, spi.ErrNotFound):
-			endLostClaim(jobID, getErr, false)
+			endLostClaim(jobID, getErr)
 			return
-		case getErr == nil && job.Status != "RUNNING":
-			endLostClaim(jobID, context.Cause(jobCtx), false)
-			return
-		case getErr == nil && job.Epoch != epoch:
-			endLostClaim(jobID, context.Cause(jobCtx), true)
+		case getErr == nil && (job.Status != "RUNNING" || job.Epoch != epoch):
+			endLostClaim(jobID, context.Cause(jobCtx))
 			return
 		}
 		// Still this executor's RUNNING claim, or the read failed: the job
@@ -1418,7 +1412,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// A result write refused because the job was cancelled, claimed
 			// by another executor or removed: usually the first sign of it,
 			// before the heartbeat's next tick.
-			endLostClaim(jobID, saveErr, errors.Is(saveErr, spi.ErrStaleClaim))
+			endLostClaim(jobID, saveErr)
 			return
 		}
 		s.writeAsyncFailure(jobCtx, jobID, epoch, failureReason(jobID, saveErr), finishTime, calcTimeMs)
@@ -1434,7 +1428,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	// UserContext (and so the tenant scope) is preserved.
 	if err := s.searchStore.UpdateJobStatus(context.WithoutCancel(jobCtx), jobID, epoch, "SUCCESSFUL", count, "", finishTime, calcTimeMs); err != nil {
 		if fencedRefusal(err) {
-			endLostClaim(jobID, err, errors.Is(err, spi.ErrStaleClaim))
+			endLostClaim(jobID, err)
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
@@ -1476,7 +1470,7 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epo
 	// ticket that no record carries.
 	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, reason(), finishTime, calcTimeMs); err != nil {
 		if fencedRefusal(err) {
-			endLostClaim(jobID, err, errors.Is(err, spi.ErrStaleClaim))
+			endLostClaim(jobID, err)
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
