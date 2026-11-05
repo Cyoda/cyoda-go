@@ -11,7 +11,7 @@ import (
 
 // An AppError that GetAsyncResults already classified reaches the door as
 // itself, not wrapped in a second "job lookup failed" internal error.
-func TestJobLookupError_PassesAppErrorThrough(t *testing.T) {
+func TestJobError_PassesAppErrorThrough(t *testing.T) {
 	inner := common.Internal("failed to read an async search result",
 		fmt.Errorf("entity id-2: %w", spi.ErrNotFound))
 	got := JobError(fmt.Errorf("page: %w", inner))

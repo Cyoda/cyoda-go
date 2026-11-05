@@ -139,7 +139,7 @@ func TestSearchStorageOutage_BothDoorsAgree(t *testing.T) {
 func TestBuildErrorFields_RawStorageUnavailableMarker(t *testing.T) {
 	raw := fmt.Errorf("failed to get result IDs: %w", &storageOutageError{detail: storageOutageDetail})
 
-	code, message, retryable := buildErrorFields(raw)
+	code, message, retryable := buildErrorFields(context.Background(), raw)
 	if code != "CLIENT_ERROR" {
 		t.Errorf("code = %q, want CLIENT_ERROR", code)
 	}
@@ -164,7 +164,7 @@ func TestBuildErrorFields_RawStorageUnavailableMarker(t *testing.T) {
 	}
 
 	// An unmarked raw error keeps the ticketed SERVER_ERROR path.
-	plainCode, _, plainRetryable := buildErrorFields(errors.New("something unclassified"))
+	plainCode, _, plainRetryable := buildErrorFields(context.Background(), errors.New("something unclassified"))
 	if plainCode != "SERVER_ERROR" || plainRetryable != nil {
 		t.Errorf("unmarked raw error = %q/retryable=%v, want SERVER_ERROR/nil", plainCode, plainRetryable)
 	}
@@ -174,7 +174,7 @@ func TestBuildErrorFields_RawStorageUnavailableMarker(t *testing.T) {
 // shard answers the same retryable EPOCH_MISMATCH on gRPC as on HTTP.
 func TestBuildErrorFields_RawEpochMismatch(t *testing.T) {
 	raw := fmt.Errorf("commit aborted: shard revoked: %w", spi.ErrEpochMismatch)
-	code, message, retryable := buildErrorFields(raw)
+	code, message, retryable := buildErrorFields(context.Background(), raw)
 	if code != "CLIENT_ERROR" {
 		t.Errorf("code = %q, want CLIENT_ERROR", code)
 	}
@@ -200,7 +200,7 @@ func TestBuildErrorFields_RawSentinelsMatchHTTP(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			httpErr := common.Internal("op failed", raw)
-			code, message, retryable := buildErrorFields(raw)
+			code, message, retryable := buildErrorFields(context.Background(), raw)
 			if code != "CLIENT_ERROR" || !strings.HasPrefix(message, httpErr.Code+":") {
 				t.Fatalf("gRPC = %q/%q, want CLIENT_ERROR with the HTTP door's %s", code, message, httpErr.Code)
 			}

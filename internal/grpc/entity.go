@@ -31,6 +31,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return nil, status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entityManage", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
 	switch eventType {
@@ -251,6 +252,7 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		return status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entityManageCollection", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
 	switch eventType {

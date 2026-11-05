@@ -1,8 +1,8 @@
 package grpc
 
 // One failure answered over gRPC is one log line, at the level its class
-// gets on the HTTP door: a client error with no cause logs nothing above
-// INFO, a server-side failure one ERROR line with its ticket.
+// gets on the HTTP door — a client error one INFO line, a server-side failure
+// one ERROR line with its ticket — and the line names the request it answers.
 
 import (
 	"bytes"
@@ -62,6 +62,17 @@ func (unreadableJobs) GetJob(context.Context, string) (*spi.SearchJob, error) {
 	return nil, errors.New("job store read failed")
 }
 
+// wantRequestIdentity requires that line names the gRPC request it answers:
+// the package, the RPC, the request's event type and its CloudEvent id.
+func wantRequestIdentity(t *testing.T, line, ceID string) {
+	t.Helper()
+	for _, want := range []string{"pkg=grpc", "rpc=entitySearch", "type=" + SnapshotGetStatusRequest, "ceId=" + ceID} {
+		if !strings.Contains(line, want) {
+			t.Errorf("log line lacks %s: %s", want, line)
+		}
+	}
+}
+
 func TestGRPCFailure_LoggedOnceAtItsClassLevel(t *testing.T) {
 	t.Run("client error", func(t *testing.T) {
 		factory := memory.NewStoreFactory()
@@ -78,6 +89,31 @@ func TestGRPCFailure_LoggedOnceAtItsClassLevel(t *testing.T) {
 			t.Fatalf("EntitySearch: %v", err)
 		}
 		var typed events.EntitySnapshotSearchResponseJson
+		validateResponse(t, resp, &typed)
+		if typed.Success || typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
+			t.Fatalf("answer = success %v, error %+v; want a CLIENT_ERROR", typed.Success, typed.Error)
+		}
+		if got := append(logs.lines("ERROR"), logs.lines("WARN")...); len(got) != 0 {
+			t.Errorf("a client error logged above INFO: %q", got)
+		}
+		got := logs.lines("INFO")
+		if len(got) != 1 || !strings.Contains(got[0], "operational error") {
+			t.Fatalf("INFO lines = %q, want one operational-error line", got)
+		}
+		wantRequestIdentity(t, got[0], "test-req-1")
+	})
+
+	t.Run("client error answered as one before", func(t *testing.T) {
+		svc, ctx := newTestEnv(t)
+		logs := captureLogs(t)
+
+		resp, err := svc.EntitySearch(ctx, makeCE(EntityGetRequest, map[string]any{
+			"id": "get-missing", "entityId": "aaaaaaaa-0000-0000-0000-00000000cafe",
+		}))
+		if err != nil {
+			t.Fatalf("EntitySearch: %v", err)
+		}
+		var typed events.EntityResponseJson
 		validateResponse(t, resp, &typed)
 		if typed.Success || typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" {
 			t.Fatalf("answer = success %v, error %+v; want a CLIENT_ERROR", typed.Success, typed.Error)
@@ -108,7 +144,8 @@ func TestGRPCFailure_LoggedOnceAtItsClassLevel(t *testing.T) {
 		}
 		got := logs.lines("ERROR")
 		if len(got) != 1 || !strings.Contains(got[0], "ticket=") {
-			t.Errorf("ERROR lines = %q, want one, carrying the ticket", got)
+			t.Fatalf("ERROR lines = %q, want one, carrying the ticket", got)
 		}
+		wantRequestIdentity(t, got[0], "test-req-1")
 	})
 }

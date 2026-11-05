@@ -36,6 +36,7 @@ func (s *CloudEventsServiceImpl) EntitySearch(ctx context.Context, ce *cepb.Clou
 		return nil, status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entitySearch", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entitySearch", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
 	switch eventType {
@@ -73,6 +74,7 @@ func (s *CloudEventsServiceImpl) EntitySearchCollection(ce *cepb.CloudEvent, str
 		return status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entitySearchCollection", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entitySearchCollection", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
 	switch eventType {

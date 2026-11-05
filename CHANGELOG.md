@@ -1773,9 +1773,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `SEARCH_JOB_NOT_FOUND:` message (HTTP `404`), and a `SnapshotGetRequest`
   for a running snapshot answers `CLIENT_ERROR` with `BAD_REQUEST:` (HTTP
   `400`). Before, both answered a ticketed `SERVER_ERROR`. A failed gRPC
-  request is also logged once, at the level its class gets on HTTP: a client
-  error no longer logs an ERROR line, and a server-side failure logs one ERROR
-  line with its ticket, not two.
+  request is also logged once, at the level its class gets on HTTP, and the
+  line names the request (`rpc`, `type`, `ceId`): a client error one INFO
+  line (it logged an ERROR, or nothing when it carried no cause), a
+  server-side failure one ERROR line with its ticket (it logged two).
 
 - **A schema extension is kept on every backend when its model is unlocked,
   re-imported or deleted.** On PostgreSQL, unlocking a model discarded the

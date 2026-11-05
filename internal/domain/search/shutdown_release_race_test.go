@@ -101,8 +101,9 @@ func TestReleaseRegisteredJobs_ExecutorDecidingDuringTheLoop(t *testing.T) {
 			scans := &gatedScans{gates: []chan struct{}{make(chan struct{}), make(chan struct{})}}
 			started := make(chan struct{}, 2)
 			ies := wrapIterate(t, base, ctx, func(it spi.Iterator) spi.Iterator {
-				// Take the gate before signalling the start, so the next job
-				// cannot be submitted, and take this gate, in between.
+				// Take the gate before signalling the start: the next job is
+				// submitted only after the signal, so it cannot take this gate
+				// first.
 				gate := scans.take()
 				started <- struct{}{}
 				return &onceGateIterator{Iterator: it, gate: gate}

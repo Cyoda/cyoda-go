@@ -31,27 +31,6 @@ const (
 	DefaultDirectSearchLimit = 1000
 )
 
-// JobError classifies an async-search job operation's error for both doors.
-// Results of a job not yet complete are 400 BAD_REQUEST; job-not-found is
-// 404 SEARCH_JOB_NOT_FOUND; an error that already is a *common.AppError (a
-// classified failure from the service, such as a refused point in time)
-// passes through unchanged; any other error is treated as an internal
-// failure, which routes a storage outage to a retryable 503 and everything
-// else to a 500 with a ticket.
-func JobError(err error) *common.AppError {
-	if errors.Is(err, ErrSearchJobNotComplete) {
-		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err))
-	}
-	if errors.Is(err, ErrSearchJobNotFound) {
-		return common.Operational(http.StatusNotFound, common.ErrCodeSearchJobNotFound, err.Error())
-	}
-	var appErr *common.AppError
-	if errors.As(err, &appErr) {
-		return appErr
-	}
-	return common.Internal("job lookup failed", err)
-}
-
 // submitAsyncError maps a SubmitAsync error to the response to write.
 // ErrQueueFull — the async-search worker pool's queue is at capacity —
 // maps to the shared retryable 503 (QueueFullError, pool.go), checked

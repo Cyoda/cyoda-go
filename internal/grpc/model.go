@@ -31,6 +31,7 @@ func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb
 		return nil, status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entityModelManage", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
 	// Model and workflow administration never runs inside a transaction. A
