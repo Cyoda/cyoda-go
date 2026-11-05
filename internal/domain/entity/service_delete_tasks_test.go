@@ -1009,7 +1009,8 @@ func (s *modifiedGetStore) Get(ctx context.Context, entityID string) (*spi.Entit
 
 // A failed batch keeps the outcome of an id it resolved on its own: an entity
 // changed since selection is answered ENTITY_MODIFIED, and the batch's error
-// goes only to its other ids.
+// goes only to its other ids. The batch fails at its commit, so every id of
+// it is visited whatever order the selection yields.
 func TestDeleteEntitiesConditional_Batched_FailedBatchKeepsPerIDOutcomes(t *testing.T) {
 	e := newTaskEnv(t)
 	ids := seedPersons(t, e.h, e.ctx, 3) // ages 0..2: two match, one batch of two
@@ -1017,12 +1018,17 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchKeepsPerIDOutcomes(t *test
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	changed, faulted := ids[1], ids[2]
-	e.withEntityStore(t, &faultOnNthDeleteStore{EntityStore: &modifiedGetStore{EntityStore: store, modifiedID: changed}, n: 1})
+	changed, staged := ids[1], ids[2]
+	failMgr := &failNthCommitTxMgr{TransactionManager: e.txMgr, failOn: map[int]error{2: errors.New("commit boom")}}
+	e.txMgr = failMgr
+	e.withEntityStore(t, &modifiedGetStore{EntityStore: store, modifiedID: changed})
 
 	res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
+	}
+	if failMgr.commits != 2 {
+		t.Fatalf("commits = %d, want 2: the request's selection transaction, then the batch's, refused", failMgr.commits)
 	}
 	if res.RemovedCount != 0 || len(res.IDToError) != 2 {
 		t.Fatalf("Removed=%d IDToError=%v, want nothing removed and both ids answered", res.RemovedCount, res.IDToError)
@@ -1030,10 +1036,10 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchKeepsPerIDOutcomes(t *test
 	if msg := res.IDToError[changed]; !strings.HasPrefix(msg, common.ErrCodeEntityModified) {
 		t.Errorf("IDToError[changed] = %q, want its own %s outcome", msg, common.ErrCodeEntityModified)
 	}
-	if msg := res.IDToError[faulted]; !strings.HasPrefix(msg, "SERVER_ERROR: internal error [ticket: ") {
-		t.Errorf("IDToError[faulted] = %q, want the batch's ticketed error", msg)
+	if msg := res.IDToError[staged]; !strings.HasPrefix(msg, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("IDToError[staged] = %q, want the batch's ticketed error", msg)
 	}
-	for _, id := range []string{changed, faulted} {
+	for _, id := range []string{changed, staged} {
 		if !e.exists(t, id) {
 			t.Errorf("entity %s of the failed batch was deleted", id)
 		}
