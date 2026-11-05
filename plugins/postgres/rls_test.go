@@ -46,8 +46,7 @@ func TestRLS_PoliciesExist(t *testing.T) {
 	// Two tables are deliberately not enrolled: scheduled_tasks and
 	// scheduled_task_marks are read and written by ClaimDue, GiveBackIdle and
 	// the sweeps, which are cross-tenant and run with no tenant set, so scoping
-	// them to one tenant would break the scheduler the moment enforcement is
-	// strengthened (FORCE + a non-owner role).
+	// them to one tenant would break the scheduler under an enforced policy.
 	// TestPostgres_ScheduledTaskTables_NotRLSEnrolled pins them from the other
 	// side; the two tests must agree.
 	exempt := map[string]string{
