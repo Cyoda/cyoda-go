@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -78,14 +79,40 @@ func TestJobFailureMessage_RawErrorIsTicketed(t *testing.T) {
 }
 
 // A job released for reclaim (or superseded) records no failure, so its
-// reason is never rendered: no ticket is minted, and nothing is logged, for a
-// record that is not written.
+// reason is never rendered: no recorded reason is minted. A server-side fault
+// behind it did happen, and is logged once, marked discarded; a client error
+// behind it is not an event of its own.
 func TestWriteAsyncFailure_ReleasedJobRendersNoReason(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(errJobReleased)
 	rendered := false
-	(&SearchService{}).writeAsyncFailure(ctx, &asyncJobHandle{cancel: cancel, ctx: ctx}, "job-r", 1, func() string { rendered = true; return "x" }, time.Now(), 0)
+	failure := failureReason("job-r", errors.New("driver: connection reset"))
+	render := failure.render
+	failure.render = func() string { rendered = true; return render() }
+	(&SearchService{}).writeAsyncFailure(ctx, &asyncJobHandle{cancel: cancel, ctx: ctx}, "job-r", 1, failure, time.Now(), 0)
 	if rendered {
 		t.Fatal("the reason of a released job was rendered")
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], "attempt=discarded") || !strings.Contains(lines[0], "connection reset") {
+		t.Errorf("log = %q, want the fault logged once, marked discarded", lines)
+	}
+
+	buf.Reset()
+	(&SearchService{}).writeAsyncFailure(ctx, &asyncJobHandle{cancel: cancel, ctx: ctx}, "job-r3", 1, failureReason("job-r3", fmt.Errorf("load model: %w", context.Canceled)), time.Now(), 0)
+	if buf.Len() != 0 {
+		t.Errorf("a step failed by the job's own cancellation was logged as a fault: %s", buf.String())
+	}
+
+	buf.Reset()
+	client := common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, "condition or sort references an invalid field path")
+	(&SearchService{}).writeAsyncFailure(ctx, &asyncJobHandle{cancel: cancel, ctx: ctx}, "job-r2", 1, failureReason("job-r2", client), time.Now(), 0)
+	if buf.Len() != 0 {
+		t.Errorf("a client error behind a released job was logged: %s", buf.String())
 	}
 }

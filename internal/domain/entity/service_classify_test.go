@@ -675,3 +675,14 @@ func TestLogDiscardedDeleteFailures_LogsServerSideOnly(t *testing.T) {
 		t.Errorf("log = %q, want one ERROR line for e-2, marked discarded", lines)
 	}
 }
+
+// An operational error with a cause of its own, found deep inside the
+// engine's wrap, keeps the engine's text in Detail: its cause is not the
+// engine's error and does not carry that text.
+func TestClassifyEngineError_DeepCausedErrorKeepsTheEngineText(t *testing.T) {
+	inner := common.Operational(http.StatusServiceUnavailable, common.ErrCodeCalloutFailed, "the compute member failed").WithCause(errors.New("store text"))
+	got := classifyEngineError(fmt.Errorf("processor enrich failed: %w", inner), "ent-45")
+	if !strings.Contains(got.Detail, "processor enrich failed") || !strings.Contains(got.Detail, "ent-45") {
+		t.Errorf("Detail = %q, want the engine text and the entity", got.Detail)
+	}
+}

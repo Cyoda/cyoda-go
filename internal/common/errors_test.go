@@ -359,12 +359,12 @@ func TestSetErrorResponseModeConcurrent(t *testing.T) {
 			common.SetErrorResponseMode("sanitized")
 		}()
 	}
-	// Concurrent readers via SanitizeErrorMessage (which reads the mode)
+	// Concurrent readers via WriteError (which reads the mode)
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = common.SanitizeErrorMessage(errors.New("test"))
+			common.WriteError(httptest.NewRecorder(), httptest.NewRequest("GET", "/test", nil), common.Internal("test", errors.New("test")))
 		}()
 	}
 	wg.Wait()
@@ -372,17 +372,25 @@ func TestSetErrorResponseModeConcurrent(t *testing.T) {
 }
 
 func TestSetErrorResponseModeRoundTrip(t *testing.T) {
+	captureSlog(t)
+	detail := func() string {
+		w := httptest.NewRecorder()
+		common.WriteError(w, httptest.NewRequest("GET", "/test", nil), common.Internal("failed", errors.New("raw detail")))
+		var pd common.ProblemDetail
+		if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return pd.Detail
+	}
 	common.SetErrorResponseMode("verbose")
-	// In verbose mode, SanitizeErrorMessage should return the raw error.
-	msg := common.SanitizeErrorMessage(errors.New("raw detail"))
-	if msg != "raw detail" {
-		t.Errorf("expected 'raw detail' in verbose mode, got %q", msg)
+	// In verbose mode, a problem response carries an internal error's detail.
+	if got := detail(); got != "raw detail" {
+		t.Errorf("expected 'raw detail' in verbose mode, got %q", got)
 	}
 
 	common.SetErrorResponseMode("sanitized")
-	msg = common.SanitizeErrorMessage(errors.New("raw detail"))
-	if msg != "SERVER_ERROR: internal server error" {
-		t.Errorf("expected generic message in sanitized mode, got %q", msg)
+	if got := detail(); !strings.HasPrefix(got, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("expected the generic ticketed text in sanitized mode, got %q", got)
 	}
 }
 

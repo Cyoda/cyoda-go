@@ -3,7 +3,6 @@ package grpc
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
@@ -79,20 +78,15 @@ func buildErrorFields(ctx context.Context, err error) (code, message string, ret
 		appErr = common.Internal("unclassified error", err)
 	}
 	// The one log line, as the HTTP door writes it, naming the request.
-	ticket := common.LogError(ctx, appErr, requestAttrs(ctx)...)
+	message = common.SanitizedText(appErr, common.LogError(ctx, appErr, requestAttrs(ctx)...))
 	if appErr.Level == common.LevelOperational {
 		if appErr.Retryable {
 			r := true
 			retryable = &r
 		}
-		return "CLIENT_ERROR", appErr.Message, retryable // Already "CODE: detail"
+		return "CLIENT_ERROR", message, retryable
 	}
-	if ticket == "" {
-		// The client went away: nothing was wrong, and nobody to quote a
-		// ticket to.
-		return "SERVER_ERROR", "SERVER_ERROR: internal error", nil
-	}
-	return "SERVER_ERROR", fmt.Sprintf("SERVER_ERROR: internal error [ticket: %s]", ticket), nil
+	return "SERVER_ERROR", message, nil
 }
 
 // ctxWarnings returns accumulated diagnostics warnings from the context.

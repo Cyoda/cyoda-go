@@ -1,9 +1,11 @@
 package entity
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -910,5 +912,62 @@ func TestDeleteTasks_TenantIsTheRequestsNotTheTransactions(t *testing.T) {
 	}
 	if n := e.tasksOf(t, ids[0]); n != 1 {
 		t.Errorf("tasks of %s = %d, want 1: another tenant's request removed them", ids[0], n)
+	}
+}
+
+// faultThenConflictStore fails its first Delete with a server-side error and
+// its second with a write conflict; every later Delete runs. So a delete's
+// first attempt has one id failed and is then run again.
+type faultThenConflictStore struct {
+	spi.EntityStore
+	calls int
+}
+
+func (s *faultThenConflictStore) Delete(ctx context.Context, entityID string) error {
+	s.calls++
+	switch s.calls {
+	case 1:
+		return errors.New("pg: statement failed on a dropped connection")
+	case 2:
+		return fmt.Errorf("concurrent write: %w", spi.ErrConflict)
+	}
+	return s.EntityStore.Delete(ctx, entityID)
+}
+
+// A delete attempt that a conflict runs again answers nothing: the id it
+// failed is deleted by the attempt that stands, and the failure is logged
+// once, marked discarded — on the single-transaction and the batched path.
+func TestDeleteEntitiesConditional_DiscardedAttemptIsLoggedNotAnswered(t *testing.T) {
+	for name, batchSize := range map[string]int{"single transaction": 0, "batched": 10} {
+		t.Run(name, func(t *testing.T) {
+			e := newTaskEnv(t)
+			seedPersons(t, e.h, e.ctx, 3)
+			store, err := e.real.EntityStore(e.ctx)
+			if err != nil {
+				t.Fatalf("EntityStore: %v", err)
+			}
+			e.withEntityStore(t, &faultThenConflictStore{EntityStore: store})
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			res, err := e.h.DeleteEntitiesConditional(e.ctx, "Person", 1, ageAtLeastOne, nil, false, batchSize)
+			if err != nil {
+				t.Fatalf("DeleteEntitiesConditional: %v", err)
+			}
+			if res.RemovedCount != 2 || len(res.IDToError) != 0 {
+				t.Errorf("Removed=%d IDToError=%v, want 2 and none: the discarded attempt answers nothing", res.RemovedCount, res.IDToError)
+			}
+			var faults []string
+			for _, line := range strings.Split(buf.String(), "\n") {
+				if strings.Contains(line, "dropped connection") {
+					faults = append(faults, line)
+				}
+			}
+			if len(faults) != 1 || !strings.Contains(faults[0], "level=ERROR") || !strings.Contains(faults[0], "attempt=discarded") {
+				t.Errorf("lines for the fault = %q, want one ERROR line marked discarded", faults)
+			}
+		})
 	}
 }

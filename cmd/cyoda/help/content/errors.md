@@ -54,7 +54,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 
 A `500` from an unexpected server error includes a `ticket` UUID for server-side log correlation; other 5xx responses, such as `503`, carry none. Share this value when reporting issues.
 
-`CYODA_ERROR_RESPONSE_MODE` controls the detail level of an unexpected server error. `sanitized` (default): generic message plus `ticket` UUID. `verbose`: internal error detail included in the response body; intended for development environments only.
+`CYODA_ERROR_RESPONSE_MODE` controls the detail level of an unexpected server error. `sanitized` (default): generic message plus `ticket` UUID. `verbose`: internal error detail included in a problem response's body (an error inside a `200` body — a collection's chunk element, a delete's per-id entry — stays sanitized); intended for development environments only.
 
 ## WARNINGS
 

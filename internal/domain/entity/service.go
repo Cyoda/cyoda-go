@@ -1730,7 +1730,10 @@ func (h *Handler) deleteOneBatch(ctx context.Context, chunk []batchTarget, resul
 		}
 		return nil
 	})
-	if err != nil && !errors.Is(err, spi.ErrConflict) {
+	// A conflict that outlasted the retries leaves its attempt standing: its
+	// per-id outcomes and the batch's conflict are answered below. Any other
+	// error, or a conflict with no attempt behind it, fails the request.
+	if err != nil && (!errors.Is(err, spi.ErrConflict) || last.failure == nil) {
 		return err
 	}
 

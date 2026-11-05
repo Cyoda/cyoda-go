@@ -202,11 +202,6 @@ func jobFailureMessage(jobID string, err error) string {
 	if !errors.As(err, &appErr) {
 		appErr = common.Internal("async search failed", err)
 	}
-	if appErr.Level != common.LevelOperational && errors.Is(appErr, common.ErrClientGone) {
-		// A job has no client of its own to have gone away: a failure marked
-		// so is a server-side fault here, recorded and logged under a ticket.
-		appErr = common.Internal("async search failed", errors.New(err.Error()))
-	}
 	// The one line, through the funnel both doors share.
 	ticket := common.LogError(context.Background(), appErr, "pkg", "search", "jobID", jobID)
 	if appErr.Level == common.LevelOperational {
@@ -236,12 +231,41 @@ func endLostClaim(jobID string, cause error) {
 
 // failureReason defers jobFailureMessage until writeAsyncFailure knows the
 // record will be written.
-func failureReason(jobID string, err error) func() string {
-	return func() string { return jobFailureMessage(jobID, err) }
+func failureReason(jobID string, err error) jobFailure {
+	return jobFailure{render: func() string { return jobFailureMessage(jobID, err) }, err: err}
 }
 
-// fixedReason is a reason that needs no rendering.
-func fixedReason(msg string) func() string { return func() string { return msg } }
+// fixedReason is a reason that needs no rendering, for a failure its site
+// has already logged.
+func fixedReason(msg string) jobFailure { return jobFailure{render: func() string { return msg }} }
+
+// jobFailure is a failure an executor may record: render builds the recorded
+// reason, logging the failure; err is the failure itself, for one the job's
+// end leaves unrecorded (nil when the site logged it).
+type jobFailure struct {
+	render func() string
+	err    error
+}
+
+// logUnrecordedJobFailure logs a server-side failure whose job ended without
+// it being recorded — released, superseded, or settled elsewhere — once,
+// under a ticket nothing records, marked discarded. A client error behind
+// such an end is not an event of its own.
+func logUnrecordedJobFailure(jobID string, err error) {
+	// A step that failed because the job's own context ended reports that
+	// end, not a fault. (The job context carries no deadline, so a deadline
+	// here is a statement's own, and is one.)
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		appErr = common.Internal("async search failed", err)
+	}
+	if appErr.Level != common.LevelOperational {
+		common.LogError(context.Background(), appErr, "pkg", "search", "jobID", jobID, "attempt", "discarded")
+	}
+}
 
 // SearchOptions controls search behavior.
 type SearchOptions struct {
@@ -1522,21 +1546,23 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 // no caller wants it cancellable — settleJob has just cancelled ctx itself.
 // Stripping cancellation keeps the UserContext (and so the tenant scope)
 // intact.
-func (s *SearchService) writeAsyncFailure(ctx context.Context, handle *asyncJobHandle, jobID string, epoch int64, reason func() string, finishTime time.Time, calcTimeMs int64) {
+func (s *SearchService) writeAsyncFailure(ctx context.Context, handle *asyncJobHandle, jobID string, epoch int64, reason jobFailure, finishTime time.Time, calcTimeMs int64) {
 	if !settleJob(ctx, handle.cancel, jobID, errJobEnding) {
 		// Released or superseded (the next claim's), or ended on the store's
 		// own answer that the job is settled, claimed elsewhere or removed —
 		// whichever step was failing. That answer is final, so it needs no
-		// read: not a failure of this executor's to record.
+		// read: not a failure of this executor's to record. A server-side
+		// fault behind it is still logged, once, as unrecorded.
+		logUnrecordedJobFailure(jobID, reason.err)
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
 	// Rendered only now, past the release check: a reason built by
 	// failureReason logs the failure and may mint a ticket, so a released job
-	// logs none for it. (The panic and decode paths log their ticket where the
+	// records none for it. (The panic and decode paths log their ticket where the
 	// failure happens.) A write that then loses its race leaves a logged
 	// ticket that no record carries.
-	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, reason(), finishTime, calcTimeMs); err != nil {
+	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, reason.render(), finishTime, calcTimeMs); err != nil {
 		if fencedRefusal(err) {
 			endLostClaim(jobID, err)
 			return

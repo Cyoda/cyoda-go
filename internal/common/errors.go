@@ -390,8 +390,9 @@ func isClientGoneCancellation(appErr *AppError) bool {
 // For INTERNAL and FATAL errors, a ticket UUID is generated for correlation —
 // except when an INTERNAL error's cause is the client having gone away
 // mid-request (see isClientGoneCancellation): nothing was wrong, there is
-// nobody to quote a ticket to, and that is logged at DEBUG with no ticket. The status written is
-// unchanged either way — an implicit 200 is what writing a status at all
+// nobody to quote a ticket to, and that is logged at DEBUG with no ticket.
+// The status written is unchanged either way — an implicit 200 is what
+// writing a status at all
 // exists to prevent (internal/httpmw/txjoin_mw.go's writeJoinError explains
 // why for the joined door, but every HTTP door funnels through here).
 //
@@ -505,24 +506,12 @@ func ReportError(ctx context.Context, appErr *AppError, attrs ...any) string {
 	return clientText(appErr, LogError(ctx, appErr, attrs...), false)
 }
 
-// SanitizeErrorMessage returns a client-safe error message.
-// For AppError: returns Message (which is always client-safe).
-// For raw errors: in sanitized mode returns a generic message;
-// in verbose mode returns err.Error().
-func SanitizeErrorMessage(err error) string {
-	if err == nil {
-		return ""
-	}
-	var appErr *AppError
-	if errors.As(err, &appErr) {
-		// AppError.Message is already client-safe by design.
-		return appErr.Message
-	}
-	// Raw error — could contain internal state.
-	if getErrorResponseMode() == "verbose" {
-		return err.Error()
-	}
-	return "SERVER_ERROR: internal server error"
+// SanitizedText is what a client is told about appErr outside a problem
+// response, given the ticket LogError returned: the operational message, or
+// the generic text with the ticket (without one for a client that went
+// away). For the gRPC envelope, which has no verbose mode.
+func SanitizedText(appErr *AppError, ticket string) string {
+	return clientText(appErr, ticket, false)
 }
 
 // WriteJSON writes a JSON success response with the given status code.
