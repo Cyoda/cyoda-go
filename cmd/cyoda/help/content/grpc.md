@@ -194,7 +194,7 @@ The full CloudEvent envelope for an ack:
 - `EntitySearchRequest` / `EntityResponse` (streamed via entitySearchCollection)
 - `SnapshotCancelRequest` / `EntitySnapshotSearchResponse` — a snapshot that has already ended, before the call or while the cancel is landing, is refused: `success` false, `error.code` `CLIENT_ERROR` with message prefix `SEARCH_JOB_ALREADY_TERMINAL:`, and `status` the snapshot's full status (`failureReason` for a `FAILED` one); see `cyoda help errors SEARCH_JOB_ALREADY_TERMINAL`
 - `SnapshotGetRequest` / `EntityResponse` (streamed via entitySearchCollection) — results of a snapshot that has not finished `SUCCESSFUL` are refused with `CLIENT_ERROR` and a `BAD_REQUEST:` message prefix
-- `SnapshotGetStatusRequest` / `EntitySnapshotSearchResponse` — `status.failureReason` says why a `FAILED` snapshot failed, and is absent for every other status (`cyoda help search`)
+- `SnapshotGetStatusRequest` / `EntitySnapshotSearchResponse` — `status.failureReason` says why a `FAILED` snapshot failed, and is absent for every other status; `status.expirationDate` is when the snapshot stops being readable (`cyoda help search`)
 - A snapshot request for a snapshot the caller does not have (unknown, expired, or another tenant's) is refused with `CLIENT_ERROR` and a `SEARCH_JOB_NOT_FOUND:` message prefix; see `cyoda help errors SEARCH_JOB_NOT_FOUND`
 - `EntityStatsGetRequest` / `EntityStatsResponse` (streamed via entitySearchCollection)
 - `EntityStatsByStateGetRequest` / `EntityStatsByStateResponse` (streamed via entitySearchCollection)

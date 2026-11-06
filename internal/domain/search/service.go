@@ -27,7 +27,7 @@ import (
 
 // ErrSearchJobNotFound is returned by the async-job lookup paths
 // (GetAsyncStatus, GetAsyncResults, CancelAsync) when the job UUID is not
-// known. Handlers map this to HTTP 404 + SEARCH_JOB_NOT_FOUND — callers
+// known, or the job is past its expiration (see liveJob). Handlers map this to HTTP 404 + SEARCH_JOB_NOT_FOUND — callers
 // can use errors.Is to branch.
 var ErrSearchJobNotFound = errors.New("search job not found")
 

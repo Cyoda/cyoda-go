@@ -43,18 +43,22 @@ TTL also stayed readable until the next reap, and the gRPC status never set
 
 ## Cloud today
 
-Cloud conforms on HTTP, except for the running-job refusal below.
+Cloud's HTTP door conforms on the date and the refusal, except for the
+running-job refusal below.
 `SearchUsageEntityService.saveNewReport` stamps `expirationTimestamp` = submit
-time + `maxAllowedTimeAliveForUnusedSnapshots` (the duration property
-`com.cyoda.tdb.search.maxAllowedTimeAliveForSnapshots`, default 1 day, in
-milliseconds);
+time + `maxAllowedTimeAliveForUnusedSnapshots` (that field holds, in
+milliseconds, the duration property
+`com.cyoda.tdb.search.maxAllowedTimeAliveForSnapshots`, default 1 day);
 `getDistributedReportId` refuses a snapshot from that instant on, on
 status, cancel and results (`EntitySearchFacade`), with
 `TreeNodeSnapshotNotFoundException`; and the status reports the same
 timestamp as `expirationDate` on both doors (`CloudEventCommons.kt`). Its
 date is fixed at submit, which satisfies the date rules above. Its `NOT_FOUND`
 status (`ReportWrapperService`, a report missing behind a live snapshot) is
-allowed by the rule above. On HTTP the exception answers 404.
+allowed by the rule above. On HTTP the exception answers 404, but its problem
+detail carries only `properties.snapshotId` (`TdbRestControllerAdvice`), with
+no `properties.errorCode`. To align, Cloud sets `properties.errorCode`
+`SEARCH_JOB_NOT_FOUND` on that 404.
 
 gRPC does not. `CloudEventsApiGrpcService` maps
 `TreeNodeSnapshotNotFoundException` to `Status.NOT_FOUND` and ends the call
@@ -73,7 +77,7 @@ expiry while it runs" for a job running longer than
 `maxAllowedTimeAliveForSnapshots`. To align, Cloud refuses for expiry only a
 snapshot whose report has ended.
 
-Both items: CP-3994.
+All three items: CP-3994.
 
 ## Storage backends
 
