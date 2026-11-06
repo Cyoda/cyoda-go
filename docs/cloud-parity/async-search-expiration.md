@@ -49,7 +49,7 @@ Cloud conforms on HTTP. `SearchUsageEntityService.saveNewReport` stamps
 status, cancel and results (`EntitySearchFacade`), with
 `TreeNodeSnapshotNotFoundException`; and the status reports the same
 timestamp as `expirationDate` on both doors (`CloudEventCommons.kt`). Its
-date is fixed at submit, which satisfies the rules above. Its `NOT_FOUND`
+date is fixed at submit, which satisfies the date rules above. Its `NOT_FOUND`
 status (`ReportWrapperService`, a report missing behind a live snapshot) is
 allowed by the rule above. On HTTP the exception answers 404.
 
@@ -62,6 +62,13 @@ snapshot as for an expired one. cyoda-go answers both with an
 for an unknown or expired snapshot with that envelope: `success` false,
 `error.code` `CLIENT_ERROR`, `error.message` starting
 `SEARCH_JOB_NOT_FOUND: `, not retryable.
+
+Cloud also refuses a snapshot that is still running once its expiration has
+passed: `getDistributedReportId` checks the timestamp whatever the report's
+status (only the cleaner skips running reports). That breaks "not refused for
+expiry while it runs" for a job running longer than
+`maxAllowedTimeAliveForSnapshots`. To align, Cloud refuses for expiry only a
+snapshot whose report has ended.
 
 ## Tests
 

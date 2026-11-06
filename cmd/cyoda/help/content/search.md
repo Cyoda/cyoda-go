@@ -268,7 +268,7 @@ Response: `200 OK`, `application/json`:
   "entitiesCount": 42,
   "calculationTimeMillis": 145,
   "finishTime": "2025-08-01T10:00:00.145000000Z",
-  "expirationDate": "2025-08-02T10:00:00.000000000Z"
+  "expirationDate": "2025-08-01T11:00:00.145000000Z"
 }
 ```
 
