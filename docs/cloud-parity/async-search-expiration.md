@@ -45,8 +45,9 @@ TTL also stayed readable until the next reap, and the gRPC status never set
 
 Cloud conforms on HTTP, except for the running-job refusal below.
 `SearchUsageEntityService.saveNewReport` stamps `expirationTimestamp` = submit
-time + `maxAllowedTimeAliveForUnusedSnapshots` (the property
-`search.maxAllowedTimeAliveForSnapshots` in milliseconds);
+time + `maxAllowedTimeAliveForUnusedSnapshots` (the duration property
+`com.cyoda.tdb.search.maxAllowedTimeAliveForSnapshots`, default 1 day, in
+milliseconds);
 `getDistributedReportId` refuses a snapshot from that instant on, on
 status, cancel and results (`EntitySearchFacade`), with
 `TreeNodeSnapshotNotFoundException`; and the status reports the same
@@ -95,6 +96,8 @@ before its v0.9.0 bump).
   (`RunPlatformClockAsyncSearchExpiry`, memory/sqlite/postgres): the date is
   `finishTime` + TTL, and after the platform clock moves past it, status,
   results and cancel answer 404 with the reaper idle.
+- No separate `internal/e2e` test: the parity scenario drives the full HTTP
+  stack on PostgreSQL, and the expiry needs the platform clock it sets up.
 - Config: `app/config_validate_test.go` (a non-positive
   `CYODA_SEARCH_SNAPSHOT_TTL` or `CYODA_SEARCH_REAP_INTERVAL` is a startup
   error).
