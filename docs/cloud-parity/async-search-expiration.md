@@ -70,6 +70,17 @@ expiry while it runs" for a job running longer than
 `maxAllowedTimeAliveForSnapshots`. To align, Cloud refuses for expiry only a
 snapshot whose report has ended.
 
+Both items: CP-3994.
+
+## Storage backends
+
+The in-tree backends remove a job only on `DeleteJob` or `ReapExpired`, and
+stamp a finish time on every terminal write. The SPI states both
+(Cyoda/cyoda-go-spi#76). The commercial backend does not yet: a job cancelled
+before any shard finished has no finish time, a failed job's finish time can
+move, and its rows expire on a timer of their own (Cyoda/cyoda-go-cassandra#120,
+before its v0.9.0 bump).
+
 ## Tests
 
 - Unit: `internal/domain/search/snapshot_expiry_test.go` — finish + TTL for a
