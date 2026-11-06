@@ -2564,6 +2564,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Security
 
+- Bumped `github.com/klauspost/compress` `v1.19.1` → `v1.20.2` (root; the
+  postgres plugin from `v1.18.7`) to clear GO-2026-6865, a panic on
+  two-block frames that govulncheck reaches from the HTTP stack.
+
 - **Conditional delete (`DELETE /entity/{entityName}/{modelVersion}`) reads
   at most 10 MiB of condition body**, as every other entity write endpoint
   does; a larger body is `400 BAD_REQUEST` and deletes nothing. Before, the
