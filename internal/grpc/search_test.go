@@ -1262,6 +1262,9 @@ func TestEntitySearch_SnapshotCancel_AlreadyTerminal(t *testing.T) {
 	if typed.Status.Status != events.SearchSnapshotStatusJsonStatusSUCCESSFUL || typed.Status.SnapshotID != snapshotID {
 		t.Errorf("status = %+v, want the snapshot's own SUCCESSFUL status", typed.Status)
 	}
+	if typed.Status.ExpirationDate == nil {
+		t.Error("status.expirationDate absent from the refused cancel's own status")
+	}
 }
 
 // The gRPC snapshot status carries expirationDate, the job's finish time plus

@@ -43,8 +43,10 @@ TTL also stayed readable until the next reap, and the gRPC status never set
 
 ## Cloud today
 
-Cloud conforms on HTTP. `SearchUsageEntityService.saveNewReport` stamps
-`expirationTimestamp` = submit time + `maxAllowedTimeAliveForUnusedSnapshots`;
+Cloud conforms on HTTP, except for the running-job refusal below.
+`SearchUsageEntityService.saveNewReport` stamps `expirationTimestamp` = submit
+time + `maxAllowedTimeAliveForUnusedSnapshots` (the property
+`search.maxAllowedTimeAliveForSnapshots` in milliseconds);
 `getDistributedReportId` refuses a snapshot from that instant on, on
 status, cancel and results (`EntitySearchFacade`), with
 `TreeNodeSnapshotNotFoundException`; and the status reports the same
@@ -76,7 +78,7 @@ Both items: CP-3994.
 
 The in-tree backends remove a job only on `DeleteJob` or `ReapExpired`, and
 stamp a finish time on every terminal write. The SPI states both
-(Cyoda/cyoda-go-spi#76). The commercial backend does not yet: a job cancelled
+(Cyoda/cyoda-go-spi#76, pinned). The commercial backend does not yet: a job cancelled
 before any shard finished has no finish time, a failed job's finish time can
 move, and its rows expire on a timer of their own (Cyoda/cyoda-go-cassandra#120,
 before its v0.9.0 bump).
