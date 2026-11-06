@@ -573,28 +573,39 @@ func (s *SearchService) ttl() time.Duration {
 	return defaultSnapshotTTL
 }
 
-// expiration is when job stops being readable: its finish time plus the
-// snapshot TTL, the age ReapExpired measures. A job without a finish time
-// (still running) cannot expire before it finishes, so now + TTL is a lower
-// bound on its expiration, and the value reported for it.
-func (s *SearchService) expiration(job *spi.SearchJob, now time.Time) time.Time {
-	if job.FinishTime != nil {
-		return job.FinishTime.Add(s.ttl())
+// expiration is when job stops being readable. For a terminal job it is the
+// finish time plus the snapshot TTL, the age ReapExpired measures, and the
+// job is refused from then on (expired is true at or past it). A running job
+// is never refused; its expiration is a lower bound, createTime + TTL. The
+// executor stamps the finish time before it writes the terminal status, so a
+// read in that gap sees RUNNING with the finish already behind it: now + TTL
+// could be later than the date the job ends with, and createTime + TTL never
+// is. A terminal job without a finish time has no expiration: the read fails
+// closed (every writer here stamps one; a store that drops it is at fault).
+func (s *SearchService) expiration(job *spi.SearchJob, now time.Time) (expires time.Time, expired bool, err error) {
+	if job.Status == "RUNNING" {
+		return job.CreateTime.Add(s.ttl()), false, nil
 	}
-	return now.Add(s.ttl())
+	if job.FinishTime == nil {
+		return time.Time{}, false, fmt.Errorf("search job %s is %s without a finish time", job.ID, job.Status)
+	}
+	expires = job.FinishTime.Add(s.ttl())
+	return expires, !now.Before(expires), nil
 }
 
-// liveJob reads a job for a caller. A job at or past its expiration is not
-// found, whether or not the reaper has deleted it yet, so the expirationDate
-// a status reports is exactly when reads of the job stop.
+// liveJob reads a job for a caller. A terminal job at or past its expiration
+// is not found, whether or not the reaper has deleted it yet, so the
+// expirationDate a status reports is when reads of the job stop.
 func (s *SearchService) liveJob(ctx context.Context, jobID string) (*spi.SearchJob, time.Time, error) {
 	job, err := s.searchStore.GetJob(ctx, jobID)
 	if err != nil {
 		return nil, time.Time{}, jobLookupErr(jobID, err)
 	}
-	now := s.clock.Now()
-	expires := s.expiration(job, now)
-	if !now.Before(expires) {
+	expires, expired, err := s.expiration(job, s.clock.Now())
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if expired {
 		return nil, time.Time{}, fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
 	}
 	return job, expires, nil

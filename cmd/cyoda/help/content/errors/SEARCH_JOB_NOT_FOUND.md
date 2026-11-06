@@ -1,6 +1,6 @@
 ---
 topic: errors.SEARCH_JOB_NOT_FOUND
-title: "SEARCH_JOB_NOT_FOUND — search job does not exist"
+title: "SEARCH_JOB_NOT_FOUND — search job does not exist or has expired"
 stability: stable
 see_also:
   - errors

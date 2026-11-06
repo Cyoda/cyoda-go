@@ -813,7 +813,7 @@ type AsyncSearchStatusDto struct {
 	// EntitiesCount Number of entities found by the search
 	EntitiesCount int64 `json:"entitiesCount"`
 
-	// ExpirationDate When the search job stops being readable: its finish time plus `CYODA_SEARCH_SNAPSHOT_TTL`. From then on its status, results and cancel answer 404 SEARCH_JOB_NOT_FOUND. While the job is RUNNING, a lower bound (now plus the TTL), final once the job ends.
+	// ExpirationDate When the search job stops being readable: its finish time plus `CYODA_SEARCH_SNAPSHOT_TTL`. From then on its status, results and cancel answer 404 SEARCH_JOB_NOT_FOUND. While the job is RUNNING, a lower bound, createTime plus the TTL; final once the job ends.
 	ExpirationDate time.Time `json:"expirationDate"`
 
 	// FailureReason Why the search job failed. Present only when `searchJobStatus` is FAILED, and absent for every other status. For a failure the request itself caused, it is the same client error a direct search would answer, code first (for example `INVALID_FIELD_PATH: condition or sort references an invalid field path`); for any other failure it names no internal detail: a server-side failure is `SERVER_ERROR: internal error [ticket: <uuid>]`, its detail logged under the ticket, and a known cause carries a fixed text (for example `search abandoned: executor lost repeatedly`).

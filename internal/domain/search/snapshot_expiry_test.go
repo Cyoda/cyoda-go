@@ -57,21 +57,45 @@ func TestAsyncStatus_ExpirationDate_IsFinishPlusTTL(t *testing.T) {
 	}
 }
 
-// A running job has no finish time yet. It cannot expire before it finishes,
-// so now + TTL is a lower bound on its expiration.
-func TestAsyncStatus_ExpirationDate_RunningIsNowPlusTTL(t *testing.T) {
+// A running job has no finish time yet. The executor stamps the finish time
+// before it writes the terminal status, so a read in between still sees
+// RUNNING with a finish already behind it: now + TTL would overstate the
+// expiration. createTime + TTL never does, and does not move between reads.
+// A running job is never refused as expired, even past that bound.
+func TestAsyncStatus_ExpirationDate_RunningIsCreatePlusTTL(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	jobID := uuid.New().String()
-	clk := &clockAt{now: expiryCreate.Add(5 * time.Minute)}
 	job := &spi.SearchJob{ID: jobID, Status: "RUNNING", CreateTime: expiryCreate}
-	svc := expiryService(&stubSearchStore{job: job}, clk, time.Hour)
 
-	st, err := svc.GetAsyncStatus(ctx, jobID)
-	if err != nil {
-		t.Fatalf("GetAsyncStatus: %v", err)
+	for _, now := range []time.Time{expiryCreate.Add(5 * time.Minute), expiryCreate.Add(3 * time.Hour)} {
+		svc := expiryService(&stubSearchStore{job: job}, &clockAt{now: now}, time.Hour)
+		st, err := svc.GetAsyncStatus(ctx, jobID)
+		if err != nil {
+			t.Fatalf("now %s: GetAsyncStatus: %v", now, err)
+		}
+		if want := expiryCreate.Add(time.Hour); !st.ExpirationDate.Equal(want) {
+			t.Fatalf("now %s: ExpirationDate = %s; want createTime + TTL = %s", now, st.ExpirationDate, want)
+		}
 	}
-	if want := clk.now.Add(time.Hour); !st.ExpirationDate.Equal(want) {
-		t.Fatalf("ExpirationDate = %s; want now + TTL = %s", st.ExpirationDate, want)
+}
+
+// A terminal job without a finish time has no expiration to report. The
+// read fails rather than serve a date that is not the job's.
+func TestAsyncStatus_TerminalWithoutFinishTime_Fails(t *testing.T) {
+	ctx := tenantCtx("tenant-1")
+	jobID := uuid.New().String()
+	job := &spi.SearchJob{ID: jobID, Status: "CANCELLED", CreateTime: expiryCreate}
+	svc := expiryService(&stubSearchStore{job: job}, &clockAt{now: expiryCreate.Add(time.Minute)}, time.Hour)
+
+	for name, call := range serviceCalls(svc, ctx, jobID) {
+		err := call()
+		if err == nil {
+			t.Errorf("%s: no error for a terminal job without a finish time", name)
+			continue
+		}
+		if errors.Is(err, search.ErrSearchJobNotFound) {
+			t.Errorf("%s: %v; want an internal failure, not not-found", name, err)
+		}
 	}
 }
 

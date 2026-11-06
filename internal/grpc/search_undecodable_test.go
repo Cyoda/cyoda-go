@@ -87,7 +87,8 @@ type snapshotResultsStoreG struct {
 }
 
 func (s *snapshotResultsStoreG) GetJob(_ context.Context, jobID string) (*spi.SearchJob, error) {
-	return &spi.SearchJob{ID: jobID, Status: "SUCCESSFUL", ResultCount: len(s.ids)}, nil
+	finish := time.Now()
+	return &spi.SearchJob{ID: jobID, Status: "SUCCESSFUL", ResultCount: len(s.ids), FinishTime: &finish}, nil
 }
 
 func (s *snapshotResultsStoreG) GetResultIDs(_ context.Context, _ string, _, _ int) ([]string, int, error) {

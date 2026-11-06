@@ -1622,8 +1622,12 @@ background reaper goroutine runs on `CYODA_SEARCH_REAP_INTERVAL` (default
 (`SearchService.ReapExpiredSnapshots`), and every read of a job (status,
 results, cancel) answers `SEARCH_JOB_NOT_FOUND` from the job's finish time
 plus that TTL on, whether or not the reap has run. The status's
-`expirationDate` is that instant (now + TTL, a lower bound, while the job
-runs), so a client never finds a job gone before the date it was given. The PostgreSQL implementation uses `CASCADE` on the
+`expirationDate` is that instant. While the job runs it is a lower bound,
+create time + TTL: the executor stamps the finish time before it writes the
+terminal status, so now + TTL could be later than the date the job ends
+with. A terminal job without a finish time fails the read. Up to the clock
+skew between nodes, a client never finds a job gone before the date it was
+given. The PostgreSQL implementation uses `CASCADE` on the
 foreign key from `search_job_results` to `search_jobs`.
 
 **PostgreSQL schema.** Two tables in

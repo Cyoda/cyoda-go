@@ -11,17 +11,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   deleted `CYODA_SEARCH_SNAPSHOT_TTL` (default `1h`) after it finished, so a
   client that trusted the date got `404 SEARCH_JOB_NOT_FOUND` for up to 23
   hours of its advertised life. `expirationDate` is now `finishTime` +
-  `CYODA_SEARCH_SNAPSHOT_TTL`, and a lower bound (now + the TTL) while the job
-  is `RUNNING`. From that instant on the job's status, results and cancel
-  answer `404 SEARCH_JOB_NOT_FOUND` on every backend, whether or not the
-  reap (every `CYODA_SEARCH_REAP_INTERVAL`) has deleted it yet; before, a
-  job stayed readable until the next reap. The reap and the date read one
-  TTL. The gRPC snapshot status now carries `expirationDate` too (it was
-  never set). `CYODA_SEARCH_SNAPSHOT_TTL` and `CYODA_SEARCH_REAP_INTERVAL`
-  must be > 0: a zero or negative value is a startup error (a zero TTL made
-  every finished job reapable at once; a zero interval crashed the server once it started).
-  cyoda-go never answers the `NOT_FOUND` status; the docs no longer say it
-  does on some backends.
+  `CYODA_SEARCH_SNAPSHOT_TTL`, and a lower bound (`createTime` + the TTL)
+  while the job is `RUNNING`. From that instant on the job's status, results
+  and cancel answer `404 SEARCH_JOB_NOT_FOUND` on every backend, whether or
+  not the reap (every `CYODA_SEARCH_REAP_INTERVAL`) has deleted it yet;
+  before, a job stayed readable until the next reap. The reap and the date
+  read one TTL. The gRPC snapshot status now carries `expirationDate` too
+  (it was never set). `CYODA_SEARCH_SNAPSHOT_TTL` and
+  `CYODA_SEARCH_REAP_INTERVAL` must be > 0: a zero or negative value is a
+  startup error (a zero TTL made every finished job reapable at once; a zero
+  interval crashed the server once it started). cyoda-go never answers the
+  `NOT_FOUND` status; the docs no longer say it does on some backends.
 
 - **A conditional delete without `transactionSize` is atomic on every
   backend.** When deleting one matched entity failed (other than a write

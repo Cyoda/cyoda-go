@@ -76,6 +76,13 @@ func (s *stubSearchStore) GetResultIDs(_ context.Context, _ string, _, _ int) ([
 	return nil, 0, s.resultIDsErr
 }
 
+// finishedNow is a terminal job's finish time, just now by the real clock the
+// stub service reads, so the job is well within its snapshot TTL.
+func finishedNow() *time.Time {
+	t := time.Now()
+	return &t
+}
+
 func stubService(store spi.AsyncSearchStore) *search.SearchService {
 	// factory and uuid generator are untouched on every path exercised here.
 	return search.NewSearchService(nil, nil, store, newFixedConsistency(), platformclock.Real())
@@ -210,7 +217,7 @@ func TestGetAsyncSearchResults_StorageOutage_Returns503(t *testing.T) {
 func TestGetAsyncSearchResults_ResultIDsStorageOutage_Returns503(t *testing.T) {
 	jobID := uuid.New()
 	store := &stubSearchStore{
-		job:          &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL"},
+		job:          &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL", FinishTime: finishedNow()},
 		resultIDsErr: storageOutage("GetResultIDs"),
 	}
 	w := callResults(t, stubService(store), jobID)
@@ -224,7 +231,7 @@ func TestGetAsyncSearchResults_ResultIDsStorageOutage_Returns503(t *testing.T) {
 func TestGetAsyncSearchResults_JobVanishesMidRead_Returns404(t *testing.T) {
 	jobID := uuid.New()
 	store := &stubSearchStore{
-		job:                 &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL"},
+		job:                 &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL", FinishTime: finishedNow()},
 		resultIDsErr:        fmt.Errorf("search job %q not found", jobID),
 		vanishAfterFirstGet: true,
 	}
@@ -241,7 +248,7 @@ func TestGetAsyncSearchResults_JobVanishesMidRead_Returns404(t *testing.T) {
 func TestGetAsyncSearchResults_StoreDownDuringResultIDs_StaysRetryable(t *testing.T) {
 	jobID := uuid.New()
 	store := &stubSearchStore{
-		job:          &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL"},
+		job:          &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL", FinishTime: finishedNow()},
 		resultIDsErr: storageOutage("GetResultIDs"),
 	}
 	w := callResults(t, stubService(store), jobID)
@@ -300,7 +307,7 @@ type resultIDsStore struct {
 }
 
 func (s *resultIDsStore) GetJob(_ context.Context, jobID string) (*spi.SearchJob, error) {
-	return &spi.SearchJob{ID: jobID, Status: "SUCCESSFUL", ResultCount: len(s.ids)}, nil
+	return &spi.SearchJob{ID: jobID, Status: "SUCCESSFUL", ResultCount: len(s.ids), FinishTime: finishedNow()}, nil
 }
 
 func (s *resultIDsStore) GetResultIDs(_ context.Context, _ string, _, _ int) ([]string, int, error) {

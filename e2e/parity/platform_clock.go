@@ -461,9 +461,9 @@ func RunPlatformClockPastStartAsyncSearch(t *testing.T, fixture BackendFixture) 
 
 // RunPlatformClockAsyncSearchExpiry: a finished async search's
 // expirationDate is its finishTime plus CYODA_SEARCH_SNAPSHOT_TTL, and from
-// that instant on its status and results answer 404 SEARCH_JOB_NOT_FOUND. The
-// reaper is set never to run here, so the 404 is the read's own refusal, not
-// a deletion that happened to land first.
+// that instant on its status, results and cancel answer 404
+// SEARCH_JOB_NOT_FOUND. The reaper is set never to run here, so the 404 is
+// the read's own refusal, not a deletion that happened to land first.
 func RunPlatformClockAsyncSearchExpiry(t *testing.T, fixture BackendFixture) {
 	const ttl = 2 * time.Minute
 	s := newClockStack(t, fixture, map[string]string{
@@ -509,10 +509,16 @@ func RunPlatformClockAsyncSearchExpiry(t *testing.T, fixture BackendFixture) {
 	}
 
 	s.clock(t, http.MethodPost, fmt.Sprintf(`{"advanceByMs":%d}`, (ttl+time.Minute).Milliseconds()))
-	for _, path := range []string{"/api/search/async/" + jobID + "/status", "/api/search/async/" + jobID} {
-		status, raw := s.do(t, s.tenant, http.MethodGet, path, "")
+	// Cancel too: a finished job answers 400 SEARCH_JOB_ALREADY_TERMINAL
+	// until it expires, and 404 from then on.
+	for _, req := range []struct{ method, path string }{
+		{http.MethodGet, "/api/search/async/" + jobID + "/status"},
+		{http.MethodGet, "/api/search/async/" + jobID},
+		{http.MethodPut, "/api/search/async/" + jobID + "/cancel"},
+	} {
+		status, raw := s.do(t, s.tenant, req.method, req.path, "")
 		if status != http.StatusNotFound || !strings.Contains(string(raw), "SEARCH_JOB_NOT_FOUND") {
-			t.Fatalf("GET %s past expirationDate: %d %s; want 404 SEARCH_JOB_NOT_FOUND", path, status, raw)
+			t.Fatalf("%s %s past expirationDate: %d %s; want 404 SEARCH_JOB_NOT_FOUND", req.method, req.path, status, raw)
 		}
 	}
 }

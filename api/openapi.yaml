@@ -7722,7 +7722,8 @@ paths:
         time plus `CYODA_SEARCH_SNAPSHOT_TTL`. From that instant on, its status,
         results and cancel answer 404 SEARCH_JOB_NOT_FOUND, whether or not the
         background reaper has deleted it yet. While the job is RUNNING the
-        date is a lower bound (now plus the TTL), final once the job ends.
+        date is a lower bound, its create time plus the TTL: the job stays
+        readable at least until then. The date is final once the job ends.
 
 
         cyoda-go never answers the NOT_FOUND status: a job that does not exist,
@@ -11021,7 +11022,7 @@ components:
             When the search job stops being readable: its finish time plus
             `CYODA_SEARCH_SNAPSHOT_TTL`. From then on its status, results and
             cancel answer 404 SEARCH_JOB_NOT_FOUND. While the job is RUNNING,
-            a lower bound (now plus the TTL), final once the job ends.
+            a lower bound, createTime plus the TTL; final once the job ends.
         entitiesCount:
           type: integer
           format: int64
