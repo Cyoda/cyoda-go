@@ -7614,7 +7614,7 @@ paths:
                 $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: >-
-            Search job not found or expired. A request carrying an `X-Tx-Token` is also
+            Search job not found, or past its expiration date. A request carrying an `X-Tx-Token` is also
             answered 404 when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -7672,7 +7672,7 @@ paths:
                 $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: >-
-            Search job not found. A request carrying an `X-Tx-Token` is also answered 404
+            Search job not found, or past its expiration date. A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -7718,9 +7718,18 @@ paths:
         - Failure reason (`failureReason`, only when the status is FAILED)
 
 
-        Note: The NOT_FOUND status occurs in rare race conditions where the
-        search job exists when the endpoint is called but is deleted during data
-        retrieval.
+        The expiration date is when the job stops being readable: its finish
+        time plus `CYODA_SEARCH_SNAPSHOT_TTL`. From that instant on, its status,
+        results and cancel answer 404 SEARCH_JOB_NOT_FOUND, whether or not the
+        background reaper has deleted it yet. While the job is RUNNING the
+        date is a lower bound, its create time plus the TTL: the job stays
+        readable at least until then. The date is final once the job ends.
+
+
+        cyoda-go never answers the NOT_FOUND status: a job that does not exist,
+        or has expired, answers 404 SEARCH_JOB_NOT_FOUND. The value is in the
+        enum for Cyoda Cloud, which can answer it when a job is deleted while
+        its status is read; treat it as the 404.
       operationId: getAsyncSearchStatus
       parameters:
         - name: jobId
@@ -7749,7 +7758,7 @@ paths:
                 $ref: '#/components/schemas/ProblemDetail'
         "404":
           description: >-
-            Search job not found. A request carrying an `X-Tx-Token` is also answered 404
+            Search job not found, or past its expiration date. A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -11009,7 +11018,11 @@ components:
         expirationDate:
           type: string
           format: date-time
-          description: When the search job will expire and be automatically deleted
+          description: >-
+            When the search job stops being readable: its finish time plus
+            `CYODA_SEARCH_SNAPSHOT_TTL`. From then on its status, results and
+            cancel answer 404 SEARCH_JOB_NOT_FOUND. While the job is RUNNING,
+            a lower bound, createTime plus the TTL; final once the job ends.
         entitiesCount:
           type: integer
           format: int64

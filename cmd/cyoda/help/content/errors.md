@@ -130,7 +130,7 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 - `errors.PRECONDITION_REQUIRED` — `428` — not retryable — a PATCH request has no `If-Match` header, or an empty one
 - `errors.SCHEDULE_FUNCTION_INVALID_RESULT` — `500` — not retryable — a scheduled transition's arm-time function answered, but its result cannot be read as a schedule
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
-- `errors.SEARCH_JOB_NOT_FOUND` — `404` — not retryable — referenced search job does not exist in the current tenant
+- `errors.SEARCH_JOB_NOT_FOUND` — `404` — not retryable — referenced search job does not exist in the current tenant, or has expired
 - `errors.SEARCH_QUEUE_FULL` — `503` — retryable — async-search worker pool has no free worker and its submit queue is at capacity
 - `errors.SEARCH_RESULT_LIMIT` — `400` — not retryable — direct search's matched entity count exceeded the requested `limit` (a cap on the matched set, not a page size)
 - `errors.SEARCH_TIMEOUT` — `408` — retryable — client-requested search timeout expired before the result set was collected

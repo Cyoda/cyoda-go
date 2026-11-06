@@ -452,7 +452,8 @@ func New(cfg Config) *App {
 		WithHealthLatch(a.healthLatch).
 		WithAsyncPool(a.searchPool).
 		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
-		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
+		WithHeartbeat(cfg.SearchJobHeartbeatInterval).
+		WithSnapshotTTL(cfg.SearchSnapshotTTL)
 
 	// Cluster membership. The node joins before any background loop starts
 	// (the search reapers and the scheduler below), so with clock control on
@@ -485,7 +486,7 @@ func New(cfg Config) *App {
 		}
 	}
 
-	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthLatch)
+	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, a.healthLatch)
 
 	// Wire external processing dispatcher
 	var extProc contract.ExternalProcessingService
@@ -844,7 +845,7 @@ func latchOnPanic(healthLatch *health.Latch, site string) {
 // Both run under one context, which stop cancels: a statement still waiting
 // for a connection gives up, and the second pass sends nothing more. stop then
 // waits for both goroutines and for the second pass.
-func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncSearchStore, healthLatch *health.Latch) (stop func()) {
+func startSearchReapers(cfg *Config, svc *search.SearchService, healthLatch *health.Latch) (stop func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -853,7 +854,7 @@ func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncS
 		for {
 			select {
 			case <-ticker.C:
-				reapExpiredSnapshotsTick(ctx, store, cfg.SearchSnapshotTTL, healthLatch)
+				reapExpiredSnapshotsTick(ctx, svc, healthLatch)
 			case <-ctx.Done():
 				return
 			}
@@ -882,11 +883,12 @@ func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncS
 	}
 }
 
-// reapExpiredSnapshotsTick deletes terminal jobs past the snapshot TTL. Runs
-// on SearchReapInterval. Panic-latches health like the other engine-work sites.
-func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL time.Duration, healthLatch *health.Latch) {
+// reapExpiredSnapshotsTick deletes terminal jobs past the snapshot TTL the
+// service holds, the TTL their expirationDate reports. Runs on
+// SearchReapInterval. Panic-latches health like the other engine-work sites.
+func reapExpiredSnapshotsTick(ctx context.Context, svc *search.SearchService, healthLatch *health.Latch) {
 	defer latchOnPanic(healthLatch, "search snapshot reaper")
-	reaped, err := store.ReapExpired(ctx, snapshotTTL)
+	reaped, err := svc.ReapExpiredSnapshots(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return // the sweeps are stopping

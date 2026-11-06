@@ -268,16 +268,16 @@ Response: `200 OK`, `application/json`:
   "entitiesCount": 42,
   "calculationTimeMillis": 145,
   "finishTime": "2025-08-01T10:00:00.145000000Z",
-  "expirationDate": "2025-08-02T10:00:00.000000000Z"
+  "expirationDate": "2025-08-01T11:00:00.145000000Z"
 }
 ```
 
-- `searchJobStatus`: `"RUNNING"`, `"SUCCESSFUL"`, `"FAILED"`, `"CANCELLED"`, or `"NOT_FOUND"` (snapshot expired or not found on commercial backends)
+- `searchJobStatus`: `"RUNNING"`, `"SUCCESSFUL"`, `"FAILED"` or `"CANCELLED"`. cyoda-go never answers `"NOT_FOUND"`: a job that does not exist or has expired answers `404 SEARCH_JOB_NOT_FOUND`. The value is in the contract for Cyoda Cloud, which can answer it for a job deleted while its status is read; treat it as the `404`.
 - `createTime`: RFC 3339 with nanoseconds
 - `entitiesCount`: total matching entities (0 while running)
 - `calculationTimeMillis`: elapsed search time in milliseconds
 - `finishTime`: RFC 3339 with nanoseconds; absent when status is `RUNNING`
-- `expirationDate`: `createTime + 24h` — job results expire after this time
+- `expirationDate`: when the job stops being readable — `finishTime` + `CYODA_SEARCH_SNAPSHOT_TTL` (default `1h`). From that instant on, the job's status, results and cancel answer `404 SEARCH_JOB_NOT_FOUND`, whether or not the background reap (every `CYODA_SEARCH_REAP_INTERVAL`) has deleted it yet. While the job is `RUNNING` it is a lower bound, `createTime` + the TTL: the job stays readable at least until then, and is never refused while it runs. The date is final once the job ends. Nodes stamp these times with their own clocks, so in a cluster the instant can differ by the clock skew between nodes. The gRPC answers to `SnapshotGetStatusRequest` and `SnapshotCancelRequest` (a refused cancel included) carry the same value in `status.expirationDate`.
 - `failureReason`: why the job failed; present only when `searchJobStatus` is `FAILED`, absent for every other status (see below)
 
 A job ends `FAILED` when the search itself failed, when the reaper's reclaim of a dead node's job exhausts `CYODA_SEARCH_JOB_MAX_ATTEMPTS`, or when the model's schema becomes unloadable between submit and execution — the executor re-reads the schema, and a job that cannot validate its condition against it fails rather than finishing `SUCCESSFUL` with a short page.
@@ -392,7 +392,7 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 A condition is checked in one fixed order, and the first failing step gives the code: the body must parse (`INVALID_CONDITION`), then the model must exist (`404 MODEL_NOT_FOUND`, before any check of a condition that parses), then structure (`INVALID_CONDITION`, or `INVALID_FIELD_PATH` for a malformed path), then patterns (`INVALID_CONDITION`), then the model's paths (`INVALID_FIELD_PATH`), then types (`CONDITION_TYPE_MISMATCH`, or `INVALID_FIELD_PATH` for a `lifecycle` field that is not a meta field) — the same on direct and async search, conditional delete and grouped stats.
 
 - `errors.MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant (search, async submit)
-- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist in the caller's tenant (status, results or cancel).
+- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist in the caller's tenant, or the job is past its `expirationDate` (status, results or cancel).
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; body carries `currentStatus` and `snapshotId`
 - `errors.SEARCH_RESULT_LIMIT` — `400` — direct search's matched entity count exceeded the requested `limit`; enforced by the backend's bounded-or-fail `Search`. Async search never returns this code — an oversized `pageSize`/`pageNumber` on result retrieval is `errors.BAD_REQUEST` instead
 - `errors.SEARCH_TIMEOUT` — `408` — direct search's client-supplied `timeoutMillis` elapsed before the result set was collected; retryable, and nothing partial is returned

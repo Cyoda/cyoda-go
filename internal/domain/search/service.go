@@ -27,7 +27,7 @@ import (
 
 // ErrSearchJobNotFound is returned by the async-job lookup paths
 // (GetAsyncStatus, GetAsyncResults, CancelAsync) when the job UUID is not
-// known. Handlers map this to HTTP 404 + SEARCH_JOB_NOT_FOUND — callers
+// known, or the job is past its expiration (see liveJob). Handlers map this to HTTP 404 + SEARCH_JOB_NOT_FOUND — callers
 // can use errors.Is to branch.
 var ErrSearchJobNotFound = errors.New("search job not found")
 
@@ -301,6 +301,9 @@ type SearchJobStatus struct {
 	CreateTime time.Time
 	FinishTime *time.Time
 	CalcTimeMs int64
+	// ExpirationDate is when the job stops being readable (see
+	// SearchService.expiration).
+	ExpirationDate time.Time
 	// FailureReason is the reason a FAILED job recorded (see
 	// jobFailureMessage). Empty for every other status.
 	FailureReason string
@@ -309,13 +312,16 @@ type SearchJobStatus struct {
 // SnapshotStatus is a transport-friendly summary of an async search job's state.
 type SnapshotStatus struct {
 	SnapshotID string
-	// Status is one of: RUNNING, SUCCESSFUL, FAILED, CANCELLED, NOT_FOUND.
-	// NOT_FOUND is emitted by the commercial self-executing search store on
-	// snapshot-expiry races (documented in the getAsyncSearchStatus spec); it
-	// is intentionally retained in the contract — do NOT remove this value
-	// even though OSS backends never set it.
+	// Status is one of: RUNNING, SUCCESSFUL, FAILED, CANCELLED. The contract's
+	// enum also has NOT_FOUND, which Cyoda Cloud can answer for a job deleted
+	// while its status is read; no store here records it, and a missing or
+	// expired job is ErrSearchJobNotFound instead. The value stays in the
+	// contract, which grows by addition only.
 	Status        string
 	EntitiesCount int
+	// ExpirationDate is when the job stops being readable (see
+	// SearchService.expiration).
+	ExpirationDate time.Time
 	// FailureReason is the reason a FAILED job recorded. Empty for every
 	// other status.
 	FailureReason string
@@ -361,6 +367,10 @@ type SearchService struct {
 	// the zero value when WithHeartbeat is never called) falls back to
 	// defaultHeartbeatInterval via heartbeatEvery().
 	heartbeatInterval time.Duration
+
+	// snapshotTTL is how long a finished job stays readable, set by
+	// WithSnapshotTTL. <= 0 falls back to defaultSnapshotTTL via ttl().
+	snapshotTTL time.Duration
 
 	// maxPerTenant caps how many async-search jobs one tenant may have in
 	// flight on this node — queued and executing together, since the
@@ -461,6 +471,10 @@ const (
 	// wired-in production interval via WithHeartbeat, this one only ever
 	// applies when WithHeartbeat is skipped entirely.
 	defaultHeartbeatInterval = 5 * time.Second
+	// defaultSnapshotTTL is ttl()'s fallback when WithSnapshotTTL is never
+	// called or is called with a non-positive value. It equals app.Config's
+	// CYODA_SEARCH_SNAPSHOT_TTL default, which production wires in.
+	defaultSnapshotTTL = time.Hour
 )
 
 // NewSearchService creates a SearchService backed by the given store factory.
@@ -540,6 +554,68 @@ func (s *SearchService) WithAsyncMaxPerTenant(n int) *SearchService {
 func (s *SearchService) WithHeartbeat(interval time.Duration) *SearchService {
 	s.heartbeatInterval = interval
 	return s
+}
+
+// WithSnapshotTTL sets how long a finished job stays readable: from its
+// finish time plus ttl on, every read of the job answers not found, and
+// ReapExpiredSnapshots deletes it. ttl <= 0 restores defaultSnapshotTTL.
+// Returns the receiver for chaining after NewSearchService.
+func (s *SearchService) WithSnapshotTTL(ttl time.Duration) *SearchService {
+	s.snapshotTTL = ttl
+	return s
+}
+
+// ttl returns the configured snapshot TTL, or defaultSnapshotTTL.
+func (s *SearchService) ttl() time.Duration {
+	if s.snapshotTTL > 0 {
+		return s.snapshotTTL
+	}
+	return defaultSnapshotTTL
+}
+
+// expiration is when job stops being readable. For a terminal job it is the
+// finish time plus the snapshot TTL, the age ReapExpired measures, and the
+// job is refused from then on (expired is true at or past it). A running job
+// is never refused; its expiration is a lower bound, createTime + TTL. The
+// executor stamps the finish time before it writes the terminal status, so a
+// read in that gap sees RUNNING with the finish already behind it: now + TTL
+// could be later than the date the job ends with, and createTime + TTL never
+// is. A terminal job without a finish time has no expiration: the read fails
+// closed (every writer here stamps one; a store that drops it is at fault).
+func (s *SearchService) expiration(job *spi.SearchJob, now time.Time) (expires time.Time, expired bool, err error) {
+	if job.Status == "RUNNING" {
+		return job.CreateTime.Add(s.ttl()), false, nil
+	}
+	if job.FinishTime == nil {
+		return time.Time{}, false, fmt.Errorf("search job %s is %s without a finish time", job.ID, job.Status)
+	}
+	expires = job.FinishTime.Add(s.ttl())
+	return expires, !now.Before(expires), nil
+}
+
+// liveJob reads a job for a caller. A terminal job at or past its expiration
+// is not found, whether or not the reaper has deleted it yet, so the
+// expirationDate a status reports is when reads of the job stop.
+func (s *SearchService) liveJob(ctx context.Context, jobID string) (*spi.SearchJob, time.Time, error) {
+	job, err := s.searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, time.Time{}, jobLookupErr(jobID, err)
+	}
+	expires, expired, err := s.expiration(job, s.clock.Now())
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if expired {
+		return nil, time.Time{}, fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
+	}
+	return job, expires, nil
+}
+
+// ReapExpiredSnapshots deletes the finished jobs past the snapshot TTL, the
+// same TTL their expirationDate reports. Cross-tenant, like
+// spi.AsyncSearchStore.ReapExpired.
+func (s *SearchService) ReapExpiredSnapshots(ctx context.Context) (int, error) {
+	return s.searchStore.ReapExpired(ctx, s.ttl())
 }
 
 // asyncPool returns the wired pool, lazily constructing a small built-in
@@ -1583,18 +1659,19 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, handle *asyncJobH
 
 // GetAsyncStatus returns the current status of an async search job.
 func (s *SearchService) GetAsyncStatus(ctx context.Context, jobID string) (SearchJobStatus, error) {
-	job, err := s.searchStore.GetJob(ctx, jobID)
+	job, expires, err := s.liveJob(ctx, jobID)
 	if err != nil {
-		return SearchJobStatus{}, jobLookupErr(jobID, err)
+		return SearchJobStatus{}, err
 	}
 
 	status := SearchJobStatus{
-		JobID:      job.ID,
-		Status:     job.Status,
-		Total:      job.ResultCount,
-		CreateTime: job.CreateTime,
-		FinishTime: job.FinishTime,
-		CalcTimeMs: job.CalcTimeMs,
+		JobID:          job.ID,
+		Status:         job.Status,
+		Total:          job.ResultCount,
+		CreateTime:     job.CreateTime,
+		FinishTime:     job.FinishTime,
+		CalcTimeMs:     job.CalcTimeMs,
+		ExpirationDate: expires,
 	}
 	// Only a failed job has a reason; a message on any other record is not
 	// one and is not served as one.
@@ -1619,9 +1696,9 @@ type AsyncResultsPage struct {
 
 // GetAsyncResults returns the results of a completed async search job.
 func (s *SearchService) GetAsyncResults(ctx context.Context, jobID string, opts ResultOptions) (AsyncResultsPage, error) {
-	job, err := s.searchStore.GetJob(ctx, jobID)
+	job, _, err := s.liveJob(ctx, jobID)
 	if err != nil {
-		return AsyncResultsPage{}, jobLookupErr(jobID, err)
+		return AsyncResultsPage{}, err
 	}
 
 	if job.Status != "SUCCESSFUL" {
@@ -1677,9 +1754,9 @@ type CancelResult struct {
 // CancelAsync attempts to cancel a running async search job.
 // Returns a CancelResult indicating whether the job was cancelled and its current status.
 func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelResult, error) {
-	job, err := s.searchStore.GetJob(ctx, jobID)
+	job, _, err := s.liveJob(ctx, jobID)
 	if err != nil {
-		return CancelResult{}, jobLookupErr(jobID, err)
+		return CancelResult{}, err
 	}
 
 	if job.Status != "RUNNING" {
@@ -1736,10 +1813,11 @@ func (s *SearchService) GetAsyncSearchStatus(ctx context.Context, snapshotID str
 		return nil, JobError(err)
 	}
 	return &SnapshotStatus{
-		SnapshotID:    status.JobID,
-		Status:        status.Status,
-		EntitiesCount: status.Total,
-		FailureReason: status.FailureReason,
+		SnapshotID:     status.JobID,
+		Status:         status.Status,
+		EntitiesCount:  status.Total,
+		ExpirationDate: status.ExpirationDate,
+		FailureReason:  status.FailureReason,
 	}, nil
 }
 

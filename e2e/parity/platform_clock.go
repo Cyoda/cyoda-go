@@ -459,6 +459,70 @@ func RunPlatformClockPastStartAsyncSearch(t *testing.T, fixture BackendFixture) 
 	}
 }
 
+// RunPlatformClockAsyncSearchExpiry: a finished async search's
+// expirationDate is its finishTime plus CYODA_SEARCH_SNAPSHOT_TTL, and from
+// that instant on its status, results and cancel answer 404
+// SEARCH_JOB_NOT_FOUND. The reaper is set never to run here, so the 404 is
+// the read's own refusal, not a deletion that happened to land first.
+func RunPlatformClockAsyncSearchExpiry(t *testing.T, fixture BackendFixture) {
+	const ttl = 2 * time.Minute
+	s := newClockStack(t, fixture, map[string]string{
+		"CYODA_SEARCH_REAP_INTERVAL": "24h",
+		"CYODA_SEARCH_SNAPSHOT_TTL":  ttl.String(),
+	})
+	s.startAt(t, clockParityStart)
+
+	model := "clkparity-expiry-" + uuid.NewString()[:8]
+	s.setupModel(t, model, "")
+	if _, err := s.c.CreateEntity(t, model, 1, clockSampleDoc); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	jobID, err := s.c.SubmitAsyncSearch(t, model, 1, `{"type":"group","operator":"AND","conditions":[]}`)
+	if err != nil {
+		t.Fatalf("SubmitAsyncSearch: %v", err)
+	}
+	deadline := time.Now().Add(clockFireWait) // realtime: test poll deadline
+	var st client.AsyncSearchStatus
+	for {
+		st, err = s.c.GetAsyncSearchStatusBody(t, jobID)
+		if err != nil {
+			t.Fatalf("GetAsyncSearchStatusBody: %v", err)
+		}
+		if st.SearchJobStatus == "SUCCESSFUL" {
+			break
+		}
+		if st.SearchJobStatus != "RUNNING" || time.Now().After(deadline) { // realtime: test poll deadline
+			t.Fatalf("job status %s; want SUCCESSFUL within %s", st.SearchJobStatus, clockFireWait)
+		}
+		time.Sleep(50 * time.Millisecond) // poll interval
+	}
+	if st.FinishTime == nil {
+		t.Fatalf("SUCCESSFUL status without finishTime: %+v", st)
+	}
+	if want := st.FinishTime.Add(ttl); !st.ExpirationDate.Equal(want) {
+		t.Fatalf("expirationDate = %s; want finishTime + %s = %s", st.ExpirationDate, ttl, want)
+	}
+
+	// Still readable before the expiration date.
+	if status, raw := s.do(t, s.tenant, http.MethodGet, "/api/search/async/"+jobID, ""); status != http.StatusOK {
+		t.Fatalf("results before expiration: %d %s", status, raw)
+	}
+
+	s.clock(t, http.MethodPost, fmt.Sprintf(`{"advanceByMs":%d}`, (ttl+time.Minute).Milliseconds()))
+	// Cancel too: a finished job answers 400 SEARCH_JOB_ALREADY_TERMINAL
+	// until it expires, and 404 from then on.
+	for _, req := range []struct{ method, path string }{
+		{http.MethodGet, "/api/search/async/" + jobID + "/status"},
+		{http.MethodGet, "/api/search/async/" + jobID},
+		{http.MethodPut, "/api/search/async/" + jobID + "/cancel"},
+	} {
+		status, raw := s.do(t, s.tenant, req.method, req.path, "")
+		if status != http.StatusNotFound || !strings.Contains(string(raw), "SEARCH_JOB_NOT_FOUND") {
+			t.Fatalf("%s %s past expirationDate: %d %s; want 404 SEARCH_JOB_NOT_FOUND", req.method, req.path, status, raw)
+		}
+	}
+}
+
 // RunPlatformClockChangeListsNodes: every kind of change — a set, a rate
 // change and a move — answers the nodes that hold the new setting; on a single
 // node that is the node itself, "local".

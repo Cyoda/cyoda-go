@@ -153,10 +153,11 @@ Per-finding contract decisions from the stats/audit/search reconciliation slice.
   is authoritative for now; cyoda-go will close the gap when the feature is implemented.
 - **S3 — `NOT_FOUND` async search-job status (retained).** The `searchJobStatus` field
   in `GET /api/search/async/{jobId}/status` responses may carry the value `NOT_FOUND`.
-  This is retained in the contract because the commercial self-executing search store
-  emits it. Direction: needs-decision → retained (commercial store compatibility). Cloud
-  MUST continue to emit `NOT_FOUND` where applicable; cyoda-go tolerates it on inbound
-  status payloads.
+  It stays in the contract, which grows by addition only. No cyoda-go backend records
+  it: a job that does not exist or has expired answers `404 SEARCH_JOB_NOT_FOUND`.
+  Cloud can answer it for a report missing behind a live snapshot, and a client treats
+  it as that 404; cyoda-go tolerates it on inbound status payloads. See
+  `async-search-expiration.md`.
 
 ## Model/workflow reconciliations (2026-07)
 

@@ -1262,4 +1262,63 @@ func TestEntitySearch_SnapshotCancel_AlreadyTerminal(t *testing.T) {
 	if typed.Status.Status != events.SearchSnapshotStatusJsonStatusSUCCESSFUL || typed.Status.SnapshotID != snapshotID {
 		t.Errorf("status = %+v, want the snapshot's own SUCCESSFUL status", typed.Status)
 	}
+	if typed.Status.ExpirationDate == nil {
+		t.Error("status.expirationDate absent from the refused cancel's own status")
+	}
+}
+
+// The gRPC snapshot status carries expirationDate, the job's finish time plus
+// the snapshot TTL (the service's default here), as the HTTP status does.
+func TestEntitySearch_SnapshotGetStatus_ExpirationDate(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"surname": "Smith"})
+
+	submitResp, err := svc.EntitySearch(ctx, makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "snap-exp-1",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	var submitTyped events.EntitySnapshotSearchResponseJson
+	validateResponse(t, submitResp, &submitTyped)
+	snapshotID := submitTyped.Status.SnapshotID
+	deadline := time.Now().Add(5 * time.Second) // realtime: test poll deadline
+	var finish time.Time
+	for {
+		st, err := svc.searchService.GetAsyncStatus(ctx, snapshotID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if st.Status == "SUCCESSFUL" {
+			finish = *st.FinishTime
+			break
+		}
+		if time.Now().After(deadline) { // realtime: test poll deadline
+			t.Fatalf("snapshot status = %s, want SUCCESSFUL", st.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	statusResp, err := svc.EntitySearch(ctx, makeCE(SnapshotGetStatusRequest, map[string]any{
+		"id":         "status-exp-1",
+		"snapshotId": snapshotID,
+	}))
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, statusResp, &typed)
+	if !typed.Success {
+		t.Fatalf("status answer failed: %+v", typed.Error)
+	}
+	if typed.Status.ExpirationDate == nil {
+		t.Fatal("status.expirationDate absent")
+	}
+	if want := finish.Add(time.Hour); !typed.Status.ExpirationDate.Equal(want) {
+		t.Fatalf("status.expirationDate = %s; want finish + 1h = %s", typed.Status.ExpirationDate, want)
+	}
 }

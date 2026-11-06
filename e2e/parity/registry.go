@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 259 scenarios in this package: the entries of its literal
+// allTests holds 260 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go, ifmatch_callback_self_write.go).
 // TestParityScenarioCount (registry_count_test.go) checks the number: change
@@ -490,6 +490,7 @@ var allTests = []NamedTest{
 	{"PlatformClockAdvanceOneDay", RunPlatformClockAdvanceOneDay},
 	{"PlatformClockBeforeRecordedTime409", RunPlatformClockBeforeRecordedTime409},
 	{"PlatformClockPastStartAsyncSearch", RunPlatformClockPastStartAsyncSearch},
+	{"PlatformClockAsyncSearchExpiry", RunPlatformClockAsyncSearchExpiry},
 	{"PlatformClockChangeListsNodes", RunPlatformClockChangeListsNodes},
 	// The cluster status read, platform operator only.
 	{"PlatformClusterStatus", RunPlatformClusterStatus},
