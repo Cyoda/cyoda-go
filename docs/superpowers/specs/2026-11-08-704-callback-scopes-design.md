@@ -92,6 +92,14 @@ From #704 (rulings 2026-11-05 to 2026-11-08) and the decisions of 2026-11-08:
 - **D-D.** Marks live on scopes. A processor scope stops a mark from climbing
   further.
 - **D-E.** #705 is out of scope.
+- **D-F.** A sibling callback that arrives while another callback of the
+  transaction is paused in a callout of its own is refused at once with
+  `503 TRANSACTION_BUSY`, retryable (5.3). The help tells compute nodes to send
+  the callbacks of one transaction in series. On a serialising backend
+  (memory, SQLite, PostgreSQL) parallel callbacks gain nothing: they are served
+  one at a time, and a callback whose write runs a workflow with a callout
+  pauses, so its siblings are refused until it is answered. Only a
+  location-independent backend runs them concurrently.
 
 ## Design
 
@@ -322,7 +330,7 @@ an unordered `select` (`internal/txgate/txgate.go:107,129`) cannot express it.
   refused at that moment. A queued sibling would hold its request, and the
   compute node's connection, for the whole of the nested callout. With a
   bounded client connection pool that stops the nested callout's own callbacks
-  from being sent. **Pending decision; see the end of this document.**
+  from being sent. (Decision D-F.)
 - While no scope is paused, requests queue for the slot as today, with the
   waiter cap (`CYODA_CALLOUT_JOINED_MAX_WAITERS`) unchanged.
 - **Resume.**
@@ -587,7 +595,7 @@ on another pnode when its enclosing scope is superseded or marked.
 | Owner's message | names the code the failed callback got (same tenant) |
 | Joined request's message | "the transaction, or the part of it this request would run in, can only be rolled back" |
 
-**New, pending decision: `TRANSACTION_BUSY`** (`503`, retryable). A sibling
+**New: `TRANSACTION_BUSY`** (`503`, retryable; D-F). A sibling
 callback refused while another callback of the transaction is paused in a
 callout of its own (5.3).
 
@@ -629,7 +637,7 @@ callout of its own (5.3).
 - `TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner`: re-read against the
   rows. A non-retryable failed joined write now makes the owner fail.
 - `TestCallback_ConcurrentCallbacks_Serialise`: still serialises. Siblings of a
-  paused callback get `503 TRANSACTION_BUSY` (if decided).
+  paused callback get `503 TRANSACTION_BUSY`.
 - `TestCallback_CommitBeforeDispatchInJoinedTransaction_Refused` and
   `RunCallbackJoinedCommitBeforeDispatchRefused`:
   - the refused write is now discarded, and as a non-retryable failure of a
@@ -649,7 +657,7 @@ Joined requests, both doors. Scope rows apply to every route that opens a scope
 | Request | Condition | Status | Code | Retryable |
 |---|---|---|---|---|
 | any joined request | parent or ancestor scope marked | 409 | `TRANSACTION_ROLLBACK_ONLY` | no |
-| any joined request | another callback paused, request not its descendant | 503 | `TRANSACTION_BUSY` (pending) | yes |
+| any joined request | another callback paused, request not its descendant | 503 | `TRANSACTION_BUSY` | yes |
 | any joined request | transaction broken or session ended | 404 | `TRANSACTION_NOT_FOUND` | no |
 | any joined request | owner not live / not reachable before send | 503 | `TRANSACTION_NODE_UNAVAILABLE` | yes |
 | any joined request | proxied, failed after send | 503 | `TRANSACTION_NODE_UNAVAILABLE` | no |
@@ -719,7 +727,11 @@ Notes on the matrix:
 - `cmd/cyoda/help/content/cluster.md:165,169`: "served one at a time", the
   waiting queue, the wait-and-keep sentence.
 - `cmd/cyoda/help/content/grpc.md:240-243`: one after another; "What the
-  workflow did before it stays in the joined transaction".
+  workflow did before it stays in the joined transaction". The compute-node
+  guidance says: send the callbacks of one transaction in series; on a
+  serialising backend parallel callbacks are served one at a time, and a
+  sibling of a callback whose write is waiting on a callout of its own is
+  refused with the retryable `503 TRANSACTION_BUSY`.
 - `cmd/cyoda/help/content/grpc.md:471-480`: write outcome after a `503`.
 - `cmd/cyoda/help/content/workflows.md`: `ASYNC_NEW_TX`, failed callbacks.
 - Error topics:
@@ -795,16 +807,3 @@ Notes on the matrix:
 9. Contract 0: a nil coordinator with a nil error means "not capable", so that
    a forwarding wrapper can answer for a factory that is not capable.
 
-## Pending decision
-
-**Siblings of a paused callback (5.3).** While callback A is paused in a callout
-of its own, a sibling callback B (not A's descendant) cannot take the
-transaction without breaking A's savepoint.
-
-- **Option 1 (recommended): refuse B at once, `503 TRANSACTION_BUSY`,
-  retryable.** B holds nothing; a compute node with a bounded connection pool can
-  still send A's nested callbacks. B retries once A is answered.
-- **Option 2: B waits in the queue until A finishes.** No new code. But B holds
-  its request and connection for the whole nested callout. With a bounded client
-  pool, A's nested callbacks may not be sendable at all; then A's nested callout
-  runs into its time limit and fails, and the same happens on every retry.
