@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
@@ -82,18 +83,28 @@ type HopRecord struct {
 }
 
 // ReadHopRecord returns the record written under marker in recordModel,
-// failing the test unless there is exactly one.
+// failing the test unless there is exactly one. The record may land after the
+// owner has answered: a mark ends the owner's callout at once, while the
+// compute node goes on to record and answer. It is waited for, bounded.
 func ReadHopRecord(t *testing.T, c *client.Client, recordModel, marker string) HopRecord {
 	t.Helper()
-	all, err := c.ListEntitiesByModel(t, recordModel, 1)
-	if err != nil {
-		t.Fatalf("list %s: %v", recordModel, err)
-	}
 	var found []client.EntityResult
-	for _, e := range all {
-		if e.Data["marker"] == marker {
-			found = append(found, e)
+	deadline := time.Now().Add(15 * time.Second) // realtime: test poll deadline
+	for {
+		all, err := c.ListEntitiesByModel(t, recordModel, 1)
+		if err != nil {
+			t.Fatalf("list %s: %v", recordModel, err)
 		}
+		found = found[:0]
+		for _, e := range all {
+			if e.Data["marker"] == marker {
+				found = append(found, e)
+			}
+		}
+		if len(found) > 0 || time.Now().After(deadline) { // realtime: test poll deadline
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if len(found) != 1 {
 		t.Fatalf("%d records of the callback's answer under %q; want 1 (the processor did not run, or ran twice)", len(found), marker)
