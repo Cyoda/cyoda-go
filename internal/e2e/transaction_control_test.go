@@ -335,87 +335,92 @@ func TestTransactionControl_WriteOps_TransactionTimeout408(t *testing.T) {
 
 // --- Cell 3 (+ extra): joined-request 400 across write, delete, AND search ---
 //
-// The extra cell (beyond the brief) was surfaced by review of task 11: the
-// spec's joined-rejection matrix row covers write, search, and delete, but
-// the brief's item 3 only listed write+delete. This test drives all three
-// from inside the SAME callback-harness processor, echoing the tx token on
-// each — the same technique callback_txjoin_test.go uses for the write leg.
-
+// A transaction-control parameter on a request that joins a transaction is
+// refused 400, naming the parameter, on a create, a conditional delete and a
+// direct search. Each is the only callback of its own owner operation, because
+// the answer decides what happens to the owner:
+//
+//   - the create and the delete are writes: a non-retryable failure of a
+//     joined write makes the owner's transaction rollback-only, so the owner is
+//     refused 409 TRANSACTION_ROLLBACK_ONLY naming BAD_REQUEST, and nothing of
+//     it is committed;
+//   - the search is a read: its 4xx keeps its scope, and the owner commits.
+//
+// One callback per owner also keeps each 400 observable: after a failed write
+// the mark ends the callout, and a later request on its pass is refused as
+// superseded instead.
 func TestTransactionControl_JoinedRequests400(t *testing.T) {
 	h := newCallbackHarness(t)
 
 	const secondary = "e2e-txctl-joined-secondary"
 	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
 
-	type joinedResult struct {
-		createStatus, deleteStatus, searchStatus int
-		createBody, deleteBody, searchBody       string
-	}
-	resultsCh := make(chan joinedResult, 1)
+	for _, tc := range []struct {
+		name, method, path, body, param string
+		write                           bool
+	}{
+		{"create", http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1?transactionTimeoutMillis=5000", secondary),
+			`{"name":"x","amount":1,"status":"draft"}`, "transactionTimeoutMillis", true},
+		{"deleteEntities", http.MethodDelete, fmt.Sprintf("/api/entity/%s/1?transactionSize=2", secondary),
+			txctlSimpleCond, "transactionSize", true},
+		{"search", http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1?timeoutMillis=5000", secondary),
+			txctlSimpleCond, "timeoutMillis", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proc := "txctl-joined400-" + tc.name
+			primary := "e2e-txctl-joined-primary-" + tc.name
+			resultCh := make(chan callbackResult, 1)
+			h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
+				res, err := rc.h.callback(tc.method, tc.path, tc.body, rc.token)
+				if err != nil {
+					return nil, fmt.Errorf("callback transport error: %w", err)
+				}
+				resultCh <- res
+				return nil, nil
+			})
+			h.SetupModelWithWorkflow(t, primary, fmt.Sprintf(`{
+				"importMode": "REPLACE",
+				"workflows": [{
+					"version": "1.1", "name": "%s-wf", "initialState": "NONE", "active": true,
+					"states": {
+						"NONE": {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
+							"processors": [{"type": "externalized", "name": "%s", "executionMode": "SYNC",
+								"config": {"attachEntity": true, "calculationNodesTags": ""}}]
+						}]},
+						"ACTIVE": {}
+					}
+				}]
+			}`, primary, proc))
 
-	h.RegisterProc("txctl-joined400", func(rc *reqCtx) (map[string]any, error) {
-		createRes, cErr := rc.h.callback(http.MethodPost,
-			fmt.Sprintf("/api/entity/JSON/%s/1?transactionTimeoutMillis=5000", secondary),
-			`{"name":"x","amount":1,"status":"draft"}`, rc.token)
-		deleteRes, dErr := rc.h.callback(http.MethodDelete,
-			fmt.Sprintf("/api/entity/%s/1?transactionSize=2", secondary),
-			txctlSimpleCond, rc.token)
-		searchRes, sErr := rc.h.callback(http.MethodPost,
-			fmt.Sprintf("/api/search/direct/%s/1?timeoutMillis=5000", secondary),
-			txctlSimpleCond, rc.token)
-		if cErr != nil || dErr != nil || sErr != nil {
-			return nil, fmt.Errorf("callback transport error: create=%v delete=%v search=%v", cErr, dErr, sErr)
-		}
-		resultsCh <- joinedResult{
-			createStatus: createRes.StatusCode, createBody: createRes.Body,
-			deleteStatus: deleteRes.StatusCode, deleteBody: deleteRes.Body,
-			searchStatus: searchRes.StatusCode, searchBody: searchRes.Body,
-		}
-		return nil, nil
-	})
+			_, status, body := h.CreateEntity(t, primary, 1, workflowSampleModel)
 
-	const primary = "e2e-txctl-joined-primary"
-	primaryWF := `{
-		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": "txctl-joined-primary-wf", "initialState": "NONE", "active": true,
-			"states": {
-				"NONE": {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "externalized", "name": "txctl-joined400", "executionMode": "SYNC",
-						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
-				}]},
-				"ACTIVE": {}
+			var res callbackResult
+			select {
+			case res = <-resultCh:
+			case <-time.After(10 * time.Second):
+				t.Fatal("timeout waiting for the joined callback")
 			}
-		}]
-	}`
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+			if res.StatusCode != http.StatusBadRequest {
+				t.Fatalf("joined %s with %s: status = %d, want 400; body: %s", tc.name, tc.param, res.StatusCode, res.Body)
+			}
+			if !strings.Contains(res.Body, tc.param) {
+				t.Errorf("joined %s 400 body does not mention %s: %s", tc.name, tc.param, res.Body)
+			}
 
-	_, status, body := h.CreateEntity(t, primary, 1, workflowSampleModel)
-	if status != http.StatusOK {
-		t.Fatalf("primary create: expected 200, got %d: %s", status, body)
-	}
-
-	var res joinedResult
-	select {
-	case res = <-resultsCh:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timeout waiting for the joined-callback results")
-	}
-
-	if res.createStatus != http.StatusBadRequest {
-		t.Errorf("joined create with transactionTimeoutMillis: status = %d, want 400; body: %s", res.createStatus, res.createBody)
-	} else if !strings.Contains(res.createBody, "transactionTimeoutMillis") {
-		t.Errorf("joined create 400 body does not mention the param: %s", res.createBody)
-	}
-	if res.deleteStatus != http.StatusBadRequest {
-		t.Errorf("joined deleteEntities with transactionSize: status = %d, want 400; body: %s", res.deleteStatus, res.deleteBody)
-	} else if !strings.Contains(res.deleteBody, "transactionSize") {
-		t.Errorf("joined delete 400 body does not mention the param: %s", res.deleteBody)
-	}
-	if res.searchStatus != http.StatusBadRequest {
-		t.Errorf("joined search with timeoutMillis: status = %d, want 400; body: %s", res.searchStatus, res.searchBody)
-	} else if !strings.Contains(res.searchBody, "timeoutMillis") {
-		t.Errorf("joined search 400 body does not mention the param: %s", res.searchBody)
+			if !tc.write {
+				if status != http.StatusOK {
+					t.Fatalf("primary create = %d, want 200: a joined read's 400 keeps its scope; body: %s", status, body)
+				}
+				return
+			}
+			pd := assertProblem(t, status, body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
+			if !strings.Contains(pd.Detail, "BAD_REQUEST") {
+				t.Errorf("owner detail = %q; want it to name the callback's BAD_REQUEST", pd.Detail)
+			}
+			if n := h.countEntities(t, primary); n != 0 {
+				t.Errorf("%d primary entities committed; want none", n)
+			}
+		})
 	}
 }
 

@@ -2,7 +2,6 @@ package e2e_test
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -265,69 +264,6 @@ func TestCallbackScope_FailedRead404_TransactionGoesOn(t *testing.T) {
 	}
 	if n := h.countEntities(t, m.p); n != 1 {
 		t.Errorf("%d p entities committed; want 1", n)
-	}
-}
-
-// TestCallbackScope_LaterRequestOnRollbackOnly_409: after a failed joined
-// write, every later joined request of the transaction — a read as much as a
-// write, on either door — is refused at once with 409 TRANSACTION_ROLLBACK_ONLY,
-// not retryable.
-func TestCallbackScope_LaterRequestOnRollbackOnly_409(t *testing.T) {
-	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
-	m := newScopeModels(t, h, "cs-later", "SYNC")
-	targetID, _ := committedTarget(t, h, "cs-later-target-"+randSuffix(t))
-	h.AttachCnode(t, cnodeSpec{name: "x", tags: []string{m.tagX}, script: scriptAlways(answerFailVerdict("x refused", false))})
-
-	type later struct {
-		httpGet, httpPost callbackResult
-		grpcGet, grpcPost txEnvelope
-		errs              []error
-	}
-	got := make(chan later, 1)
-	h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{m.tagP}, script: func(_ context.Context, call receivedCallout, rc *reqCtx) cnodeReply {
-		var l later
-		if res, err := rc.CreateEntity(m.x, 1, scopeXPayload); err != nil || res.StatusCode != http.StatusBadRequest {
-			l.errs = append(l.errs, fmt.Errorf("the failing write: %d %s %v", res.StatusCode, res.Body, err))
-		}
-		var err error
-		if l.httpGet, err = rc.GetEntity(targetID); err != nil {
-			l.errs = append(l.errs, err)
-		}
-		if l.httpPost, err = rc.CreateEntity(m.x, 1, scopeXPayload); err != nil {
-			l.errs = append(l.errs, err)
-		}
-		if l.grpcGet, err = h.ReplayGetGRPC(call.Pass(), targetID); err != nil {
-			l.errs = append(l.errs, err)
-		}
-		if l.grpcPost, err = h.ReplayCreateGRPC(call.Pass(), m.x, 1, scopeXPayload); err != nil {
-			l.errs = append(l.errs, err)
-		}
-		got <- l
-		return answerOK()
-	}})
-
-	owner := h.CreateEntityRaw(m.p, 1, workflowSampleModel)
-
-	var l later
-	select {
-	case l = <-got:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the callbacks never returned")
-	}
-	for _, err := range l.errs {
-		t.Error(err)
-	}
-	t.Run("http-read", func(t *testing.T) {
-		assertRefusal(t, l.httpGet.StatusCode, l.httpGet.Body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
-	})
-	t.Run("http-write", func(t *testing.T) {
-		assertRefusal(t, l.httpPost.StatusCode, l.httpPost.Body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
-	})
-	t.Run("grpc-read", func(t *testing.T) { assertRollbackOnlyEnvelope(t, "grpc-read", l.grpcGet, nil) })
-	t.Run("grpc-write", func(t *testing.T) { assertRollbackOnlyEnvelope(t, "grpc-write", l.grpcPost, nil) })
-	assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
-	if n := h.countEntities(t, m.x); n != 0 {
-		t.Errorf("%d x entities committed; want none", n)
 	}
 }
 

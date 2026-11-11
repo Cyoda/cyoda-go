@@ -33,7 +33,6 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		{Status: 410, Code: "CALLOUT_SUPERSEDED"},        // TestCalloutFence_LateCallback
 		{Status: 410, Code: "TRANSACTION_EXPIRED"},       // TestCallbackErr_LoudFailCodes/Expired_410
 		{Status: 413, Code: "JOINED_RESPONSE_TOO_LARGE"}, // TestCallbackBounds_AnswerOverTheCeiling_413
-		{Status: 409, Code: "TRANSACTION_ROLLBACK_ONLY"}, // TestCallbackScope_LaterRequestOnRollbackOnly_409/http-read
 		{Status: 503, Code: "TOO_MANY_JOINED_REQUESTS"},  // TestCallbackBounds_TooManyQueuedCallbacks_503
 		{Status: 503, Code: "STORAGE_UNAVAILABLE"},       // TestE2E_TornConnection_AuditAndTrustedKeys503/getOneEntity
 	},
@@ -122,7 +121,7 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		{Status: 503, Code: "DISPATCH_TIMEOUT"},                 // TestCalloutErrors_OneAttemptIsNotWrapped
 		{Status: 503, Code: "NO_COMPUTE_MEMBER_FOR_TAG"},        // TestProcessorNoMember_Returns503
 		{Status: 503, Code: "STORAGE_UNAVAILABLE"},              // TestE2E_SaturatedPool_HTTPReturns503/create
-		{Status: 409, Code: "TRANSACTION_ROLLBACK_ONLY"},        // TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_HTTP: the owner; TestCallbackScope_LaterRequestOnRollbackOnly_409: a later callback
+		{Status: 409, Code: "TRANSACTION_ROLLBACK_ONLY"},        // TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_HTTP: the owner
 		{Status: 503, Code: "TRANSACTION_BUSY"},                 // TestCallbackScope_SiblingOfPausedCallbackBusy
 	},
 	"createCollection": {

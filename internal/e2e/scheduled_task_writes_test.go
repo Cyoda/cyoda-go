@@ -118,8 +118,10 @@ func TestScheduledTaskWrites_UpdateRacingOneClaim_409ThenRetrySucceeds(t *testin
 }
 
 // A delete that joined another request's transaction is not retried on the
-// server. Its conflict reaches the joined caller, and the owner's
-// transaction does not commit.
+// server. Its conflict means the transaction lost a write race: the joined
+// caller is answered 409 CONFLICT, not retryable, because it cannot succeed in
+// that transaction; the owner is answered the retryable 409 CONFLICT, because
+// its operation can succeed in a fresh one. Nothing commits.
 func TestScheduledTaskWrites_DeleteEntity_Joined_NotRetried(t *testing.T) {
 	h := newCallbackHarness(t)
 	const target = "e2e-stw-joined-target"
@@ -179,11 +181,14 @@ func TestScheduledTaskWrites_DeleteEntity_Joined_NotRetried(t *testing.T) {
 	if got.StatusCode != http.StatusConflict {
 		t.Fatalf("joined delete answered %d %s, want 409", got.StatusCode, got.Body)
 	}
-	if pd := decodeProblem(t, got.Body); pd.errorCode() != common.ErrCodeConflict || !pd.retryable() {
-		t.Errorf("joined delete errorCode=%q retryable=%v, want CONFLICT retryable", pd.errorCode(), pd.retryable())
+	if pd := decodeProblem(t, got.Body); pd.errorCode() != common.ErrCodeConflict || pd.retryable() {
+		t.Errorf("joined delete errorCode=%q retryable=%v, want CONFLICT not retryable", pd.errorCode(), pd.retryable())
 	}
-	if outer.status == http.StatusOK {
-		t.Errorf("primary create = 200, want a failure: its transaction met the conflict")
+	if outer.err != nil || outer.status != http.StatusConflict {
+		t.Fatalf("primary create = %d %s %v, want 409: its transaction lost the race", outer.status, outer.body, outer.err)
+	}
+	if pd := decodeProblem(t, outer.body); pd.errorCode() != common.ErrCodeConflict || !pd.retryable() {
+		t.Errorf("primary create errorCode=%q retryable=%v, want CONFLICT retryable", pd.errorCode(), pd.retryable())
 	}
 	if _, code := h.GetEntityState(t, targetID); code != http.StatusOK {
 		t.Errorf("target GET = %d, want 200: nothing the joined delete did may commit", code)

@@ -435,8 +435,6 @@ const txLifeAbsentEntityID = "00000000-0000-4000-8000-0000000004a3"
 // processor, asserted on the test goroutine afterwards.
 type joinedCallbackOutcome struct {
 	deleteStatus int
-	createStatus int
-	createBody   string
 }
 
 // TestE2E_JoinedCallbackFailure_OwnerRollbackOnly is coverage row 3's E2E
@@ -448,19 +446,21 @@ type joinedCallbackOutcome struct {
 // live and armed. The 404 is a non-retryable failure of a joined write, so the
 // request's callback scope is discarded and the owner's transaction made
 // rollback-only — by the coordination, never by the joined write's own scope,
-// which must decline to touch a transaction it does not own:
+// which must decline to touch a transaction it does not own. The owner, whose
+// processor answers success regardless, is refused 409
+// TRANSACTION_ROLLBACK_ONLY naming the callback's ENTITY_NOT_FOUND, and nothing
+// of its operation is committed.
 //
-//   - a SECOND joined write, issued after the failure, is refused at once with
-//     409 TRANSACTION_ROLLBACK_ONLY — the transaction is still there to refuse
-//     it, not gone (TRANSACTION_NOT_FOUND);
-//   - the owner, whose processor carries on regardless, is refused 409
-//     TRANSACTION_ROLLBACK_ONLY naming the callback's ENTITY_NOT_FOUND, and
-//     nothing of its operation is committed.
+// No later joined request is asserted here. The mark cancels the callout the
+// failed write ran under, and the owner ends it at once, so a later request
+// on its pass is refused 410 CALLOUT_SUPERSEDED — or 404 once the owner has
+// rolled back. Which one depends on timing. The 409 refusal of a request under
+// a marked scope is pinned at both doors by TestTxJoin_FailedWriteMakesTheTransactionRollbackOnly
+// and TestTxRoute_RawHandlerErrorMarks.
 func TestE2E_JoinedCallbackFailure_OwnerRollbackOnly(t *testing.T) {
 	h := newCallbackHarness(t)
 
 	const primary = "txlife-owner"
-	const secondary = "txlife-owner-child"
 	outcome := make(chan joinedCallbackOutcome, 1)
 
 	h.RegisterProc("txlife-owner-proc", func(rc *reqCtx) (map[string]any, error) {
@@ -471,13 +471,6 @@ func TestE2E_JoinedCallbackFailure_OwnerRollbackOnly(t *testing.T) {
 			return nil, fmt.Errorf("callback delete: %w", err)
 		}
 		out.deleteStatus = del.StatusCode
-
-		// The transaction is rollback-only now: a later joined write is refused.
-		created, err := rc.CreateEntity(secondary, 1, txLifeSample)
-		if err != nil {
-			return nil, fmt.Errorf("callback create: %w", err)
-		}
-		out.createStatus, out.createBody = created.StatusCode, created.Body
 
 		outcome <- out
 		return nil, nil // the owner's cascade carries on regardless
@@ -497,7 +490,6 @@ func TestE2E_JoinedCallbackFailure_OwnerRollbackOnly(t *testing.T) {
 		}]
 	}`
 	h.setupModelSampleWithWorkflow(t, primary, txLifeSample, primaryWF)
-	h.setupModelSampleWithWorkflow(t, secondary, txLifeSample, workflowV1)
 
 	_, status, body := h.CreateEntity(t, primary, 1, txLifeSample)
 	pd := assertProblem(t, status, body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
@@ -515,11 +507,7 @@ func TestE2E_JoinedCallbackFailure_OwnerRollbackOnly(t *testing.T) {
 	if out.deleteStatus != http.StatusNotFound {
 		t.Fatalf("joined delete status = %d, want 404 from inside the flow; the test must fail AFTER beginScope", out.deleteStatus)
 	}
-	assertProblem(t, out.createStatus, out.createBody, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
 	if n := h.countEntities(t, primary); n != 0 {
 		t.Errorf("%d owner entities committed; want none", n)
-	}
-	if n := h.countEntities(t, secondary); n != 0 {
-		t.Errorf("%d joined entities committed; want none", n)
 	}
 }
