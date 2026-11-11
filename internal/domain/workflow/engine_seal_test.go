@@ -107,17 +107,43 @@ func TestEngine_FlushAndCommitSegment_SealsTxPre(t *testing.T) {
 	}
 }
 
-// TestEngine_CommitRun_Seals: a scheduled run's transaction is sealed before
-// its commit; a rollback-only one is not committed — the refusal is the fire's
-// failure.
-func TestEngine_CommitRun_Seals(t *testing.T) {
-	s := newSealEnv(t)
-	s.markRoot(t)
+// TestEngine_FireScheduled_RootMarked_Fails: a callback of the fire's SYNC
+// processor failed a write. The run seals before its final writes; the
+// refusal is the fire's failure, nothing of the fire is committed, and the
+// coordination forgets the transaction.
+func TestEngine_FireScheduled_RootMarked_Fails(t *testing.T) {
+	var env *runEnv
+	var fireTxID string
+	ext := &scriptedExtProc{processor: func(ctx context.Context, _ spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
+		fireTxID = txID
+		coord := env.engine.coord
+		_, end := coord.BeginCallout(ctx, txID, "fire-callout")
+		defer end()
+		coord.Advance("fire-callout", 1)
+		joined, err := env.txMgr.Join(env.ctx, txID)
+		if err != nil {
+			return nil, err
+		}
+		sc, _, err := coord.Enter(joined, txID, []txcoord.Pair{{Callout: "fire-callout", Major: 1}}, txcoord.Write, 0)
+		if err != nil {
+			return nil, err
+		}
+		sc.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+		return nil, nil
+	}}
+	env = newRunEnv(t, ext)
+	task := env.claimed(t, "seal-fire-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
 
-	requireRollbackOnly(t, s.e.commitRun(s.ctx, s.txID))
-	s.assertForgotten(t)
-	if err := s.tm.Rollback(s.ctx, s.txID); err != nil {
-		t.Fatalf("the run's transaction is not open for its rollback (was it committed?): %v", err)
+	report, _ := env.run(task)
+
+	requireRollbackOnly(t, report.Err)
+	if got := env.state(t, "seal-fire-e1"); got != "OPEN" {
+		t.Fatalf("state = %q; want OPEN — the refused fire commits nothing", got)
+	}
+	finish, err := env.engine.coord.Seal(env.ctx, fireTxID)
+	finish()
+	if err != nil {
+		t.Fatalf("the coordination still holds the fire's transaction: a new seal answered %v", err)
 	}
 }
 
