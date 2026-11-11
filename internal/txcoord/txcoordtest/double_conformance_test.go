@@ -24,17 +24,5 @@ func TestDouble_Conformance(t *testing.T) {
 		Factory:      factory,
 		AdvanceClock: clock.Advance,
 		Now:          clock.Now,
-		Skip: map[string]string{
-			// Two of these cases commit the entity they conflict over after
-			// the case's transaction began. A transaction reads at the snapshot
-			// Begin took (spi.TransactionState.SnapshotTime), so the memory
-			// plugin cannot see it. CompleteRefusalOrder's cases are not
-			// separately skippable. double_test.go runs all three with the
-			// entity committed first.
-			"Coordination/ScopeConflict":        seededAfterBegin,
-			"Coordination/CompleteRefusalOrder": seededAfterBegin,
-		},
 	})
 }
-
-const seededAfterBegin = "the case commits its entity after its transaction began, which a snapshot taken at Begin cannot see"

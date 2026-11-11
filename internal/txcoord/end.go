@@ -70,8 +70,10 @@ func (f *failure) answer() *common.AppError {
 type ending interface {
 	// standing reads rows 1 and 4: superseded is the cause of the 410 when a
 	// pass of the scope is no longer current (nil otherwise); marked reports a
-	// mark on the scope or an ancestor, with its code when it is known.
-	standing() (superseded error, code string, marked bool)
+	// mark on the scope or an ancestor, with its code. failed is set when the
+	// standing could not be read: the request then ends as a failed
+	// completion.
+	standing() (superseded error, code string, marked bool, failed error)
 	// lostRace asks the transaction manager whether the transaction lost a
 	// write race.
 	lostRace() bool
@@ -90,7 +92,10 @@ type ending interface {
 // handler's own), the mark to set on the parent (nil for none), and the cause
 // that leaves the transaction broken (nil when it is not).
 func decide(e ending, class RequestClass, f *failure) (*common.AppError, *parentMark, error) {
-	superseded, code, marked := e.standing()
+	superseded, code, marked, failed := e.standing()
+	if failed != nil {
+		f = completionFailure(failed)
+	}
 	// Row 1: its pass is no longer current. No mark is passed up: the owner
 	// has moved on.
 	if superseded != nil {
@@ -164,12 +169,12 @@ func (s *scope) End(o *common.Outcome) *common.AppError {
 
 // standing implements ending. The gate serialises the scope's descendants, so
 // nothing marks the scope while it ends.
-func (s *scope) standing() (error, string, bool) {
+func (s *scope) standing() (error, string, bool, error) {
 	if err := fence.Check(s.ctx); err != nil {
-		return err, "", false
+		return err, "", false, nil
 	}
 	code, marked := s.markedCode()
-	return nil, code, marked
+	return nil, code, marked, nil
 }
 
 // lostRace implements ending.

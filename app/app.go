@@ -422,9 +422,7 @@ func New(cfg Config) *App {
 	// same state. A backend that coordinates transactions itself gets the
 	// durable one, and its transactions are location-independent: their
 	// passes name no owner, and any pnode serves their callbacks.
-	coord, locationIndependent, err := txcoord.Select(startupCtx, a.storeFactory, func() txcoord.Coordination {
-		return txcoord.New(a.transactionManager)
-	})
+	coord, locationIndependent, err := txcoord.Select(startupCtx, a.storeFactory, a.transactionManager)
 	if err != nil {
 		slog.Error("startup failure",
 			"phase", "transaction-coordination",
@@ -533,7 +531,7 @@ func New(cfg Config) *App {
 		var peers callout.PeerRouter
 		if cfg.Cluster.Enabled {
 			peerRouter, err := clusterdispatch.NewPeerRouter(a.nodeRegistry, a.selfNodeID,
-				clusterdispatch.NewRandomSelector(), forwarder, observability.Meter())
+				clusterdispatch.NewRandomSelector(), forwarder, observability.Meter(), locationIndependent)
 			if err != nil {
 				slog.Error("failed to construct the peer router", "pkg", "cluster", "err", err)
 				os.Exit(1)

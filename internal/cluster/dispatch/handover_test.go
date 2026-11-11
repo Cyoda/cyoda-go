@@ -65,7 +65,7 @@ func TestNewHandOverRequest(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			call := ownerCallout(t, kind)
 			call.RepeatSafe = kind != "processor"
-			req, err := newHandOverRequest("owner-node", call, 3, 7)
+			req, err := newHandOverRequest("owner-node", false, call, 3, 7)
 			if err != nil {
 				t.Fatalf("newHandOverRequest: %v", err)
 			}
@@ -130,7 +130,7 @@ func TestNewHandOverRequest_RefusesWhatCannotBeHandedOver(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			call := ownerCallout(t, "processor")
 			tt.mutate(&call)
-			if _, err := newHandOverRequest("owner-node", call, tt.tries, tt.major); err == nil {
+			if _, err := newHandOverRequest("owner-node", false, call, tt.tries, tt.major); err == nil {
 				t.Fatal("expected an error")
 			}
 		})
@@ -139,7 +139,7 @@ func TestNewHandOverRequest_RefusesWhatCannotBeHandedOver(t *testing.T) {
 
 func validRequest(t *testing.T, kind string) DispatchCalloutRequest {
 	t.Helper()
-	req, err := newHandOverRequest("owner-node", ownerCallout(t, kind), 2, 5)
+	req, err := newHandOverRequest("owner-node", false, ownerCallout(t, kind), 2, 5)
 	if err != nil {
 		t.Fatalf("newHandOverRequest: %v", err)
 	}

@@ -56,13 +56,18 @@ const peerDiagnosticsOmittedWarning = "further diagnostics from the peer node we
 type PeerRouter struct {
 	registry   contract.NodeRegistry
 	selfNodeID string
-	selector   PeerSelector
-	forwarder  DispatchForwarder
-	handovers  metric.Int64Counter
+	// locationIndependent: the backend coordinates transactions itself, so a
+	// hand-over names no owner, as the passes do not.
+	locationIndependent bool
+	selector            PeerSelector
+	forwarder           DispatchForwarder
+	handovers           metric.Int64Counter
 }
 
 // NewPeerRouter constructs a PeerRouter. A nil meter records nothing.
-func NewPeerRouter(registry contract.NodeRegistry, selfNodeID string, selector PeerSelector, forwarder DispatchForwarder, meter metric.Meter) (*PeerRouter, error) {
+// locationIndependent is true when the storage backend coordinates
+// transactions itself (txcoord.Select): its hand-overs then name no owner.
+func NewPeerRouter(registry contract.NodeRegistry, selfNodeID string, selector PeerSelector, forwarder DispatchForwarder, meter metric.Meter, locationIndependent bool) (*PeerRouter, error) {
 	if meter == nil {
 		meter = noop.NewMeterProvider().Meter("")
 	}
@@ -71,7 +76,7 @@ func NewPeerRouter(registry contract.NodeRegistry, selfNodeID string, selector P
 	if err != nil {
 		return nil, fmt.Errorf("failed to create the hand-over counter: %w", err)
 	}
-	return &PeerRouter{registry: registry, selfNodeID: selfNodeID, selector: selector, forwarder: forwarder, handovers: handovers}, nil
+	return &PeerRouter{registry: registry, selfNodeID: selfNodeID, locationIndependent: locationIndependent, selector: selector, forwarder: forwarder, handovers: handovers}, nil
 }
 
 // Peers returns the alive pnodes other than self that advertise any of tagsCSV
@@ -132,7 +137,7 @@ func (r *PeerRouter) HandOver(ctx context.Context, peer contract.NodeInfo, call 
 func (r *PeerRouter) handOver(ctx context.Context, peer contract.NodeInfo, call internalgrpc.Callout, triesLeft int, major uint32) (HandOverAnswer, string) {
 	// Built afresh for every try: the entity travels as it stands now, never as
 	// an earlier try serialised it.
-	req, err := newHandOverRequest(r.selfNodeID, call, triesLeft, major)
+	req, err := newHandOverRequest(r.selfNodeID, r.locationIndependent, call, triesLeft, major)
 	if err != nil {
 		slog.Warn("callout cannot be handed over", "pkg", "dispatch", "kind", call.Kind.String(), "name", call.Name, "requestId", call.RequestID, "err", err)
 		return provedBeforeConnecting(err), contract.Terminal.String()

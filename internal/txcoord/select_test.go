@@ -22,41 +22,43 @@ func (f *coordFactory) TransactionCoordinator(context.Context) (spi.TransactionC
 	return f.co, f.err
 }
 
-// inProcessSpy is the in-process builder Select is given; it records that it
-// was called.
-func inProcessSpy(f spi.StoreFactory, called *bool) func() Coordination {
-	return func() Coordination {
-		*called = true
-		tm, _ := f.TransactionManager(context.Background())
-		return New(tm)
+// givenTM is the transaction manager the caller hands Select: a decorator of
+// the factory's, as app.go's traced one is.
+func givenTM(t *testing.T, f spi.StoreFactory) spi.TransactionManager {
+	t.Helper()
+	inner, err := f.TransactionManager(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
+	return &recTM{TransactionManager: inner}
 }
 
 // TestSelect_PicksDurableWhenCapable: a factory that offers a coordinator
-// gets the durable coordination, and its transactions are
-// location-independent.
+// gets the durable coordination over the transaction manager it was given,
+// and its transactions are location-independent.
 func TestSelect_PicksDurableWhenCapable(t *testing.T) {
 	f := txcoordtest.NewFactory(memory.NewStoreFactory())
 	t.Cleanup(func() { _ = f.Close() })
-	var called bool
-	c, locationIndependent, err := Select(context.Background(), f, inProcessSpy(f, &called))
+	tm := givenTM(t, f)
+	c, locationIndependent, err := Select(context.Background(), f, tm)
 	if err != nil {
 		t.Fatalf("Select: %v", err)
 	}
-	if _, ok := c.(*durable); !ok {
+	d, ok := c.(*durable)
+	if !ok {
 		t.Fatalf("coordination = %T; want the durable one", c)
+	}
+	if d.txMgr != tm {
+		t.Error("the durable coordination does not use the transaction manager it was given")
 	}
 	if !locationIndependent {
 		t.Error("a capable backend's transactions are location-independent")
-	}
-	if called {
-		t.Error("the in-process coordination was built for a capable backend")
 	}
 }
 
 // TestSelect_InProcessOnNilCoordinator: a factory that does not offer the
 // capability, or offers it and answers (nil, nil), gets the in-process
-// coordination.
+// coordination over the transaction manager it was given.
 func TestSelect_InProcessOnNilCoordinator(t *testing.T) {
 	for name, f := range map[string]spi.StoreFactory{
 		"nil coordinator": &coordFactory{StoreFactory: memory.NewStoreFactory()},
@@ -64,13 +66,17 @@ func TestSelect_InProcessOnNilCoordinator(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Cleanup(func() { _ = f.Close() })
-			var called bool
-			c, locationIndependent, err := Select(context.Background(), f, inProcessSpy(f, &called))
+			tm := givenTM(t, f)
+			c, locationIndependent, err := Select(context.Background(), f, tm)
 			if err != nil {
 				t.Fatalf("Select: %v", err)
 			}
-			if _, ok := c.(*inProcess); !ok || !called {
-				t.Fatalf("coordination = %T (built in-process: %v); want the in-process one", c, called)
+			p, ok := c.(*inProcess)
+			if !ok {
+				t.Fatalf("coordination = %T; want the in-process one", c)
+			}
+			if p.txMgr != tm {
+				t.Error("the in-process coordination does not use the transaction manager it was given")
 			}
 			if locationIndependent {
 				t.Error("an in-process backend's transactions are not location-independent")
@@ -83,11 +89,10 @@ func TestSelect_InProcessOnNilCoordinator(t *testing.T) {
 // it coordinates transactions does not get a coordination at all.
 func TestSelect_CoordinatorErrorFailsStartUp(t *testing.T) {
 	sentinel := errors.New("the coordinator could not be reached")
-	f := &coordFactory{StoreFactory: memory.NewStoreFactory(), co: nil, err: sentinel}
+	f := &coordFactory{StoreFactory: memory.NewStoreFactory(), err: sentinel}
 	t.Cleanup(func() { _ = f.Close() })
-	var called bool
-	c, _, err := Select(context.Background(), f, inProcessSpy(f, &called))
-	if !errors.Is(err, sentinel) || c != nil || called {
-		t.Fatalf("Select = (%v, %v), in-process built: %v; want (nil, the error), none built", c, err, called)
+	c, _, err := Select(context.Background(), f, givenTM(t, f))
+	if !errors.Is(err, sentinel) || c != nil {
+		t.Fatalf("Select = (%v, %v); want (nil, the error)", c, err)
 	}
 }

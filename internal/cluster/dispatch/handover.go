@@ -74,8 +74,14 @@ type HandOverAnswer struct {
 
 // newHandOverRequest puts call on the wire for a peer that may make triesLeft
 // tries under fencing number major, with the identity the owner computed for
-// it. An error means the callout cannot be handed over at all — to any peer.
-func newHandOverRequest(ownerNodeID string, call internalgrpc.Callout, triesLeft int, major uint32) (DispatchCalloutRequest, error) {
+// it. It names selfNodeID as the owner, except on a location-independent
+// backend, whose passes name no owner. An error means the callout cannot be
+// handed over at all — to any peer.
+func newHandOverRequest(selfNodeID string, locationIndependent bool, call internalgrpc.Callout, triesLeft int, major uint32) (DispatchCalloutRequest, error) {
+	ownerNodeID := selfNodeID
+	if locationIndependent {
+		ownerNodeID = ""
+	}
 	src := call.Source
 	switch {
 	case src.Entity == nil:
@@ -120,9 +126,7 @@ func newHandOverRequest(ownerNodeID string, call internalgrpc.Callout, triesLeft
 	for _, p := range call.Outer {
 		req.Outer = append(req.Outer, WirePair{Callout: p.Callout, Major: p.Major, Minor: p.Minor})
 	}
-	// The owner always names itself; only the receiving pnode may accept a
-	// hand-over that names no owner.
-	if err := req.validate(false); err != nil {
+	if err := req.validate(locationIndependent); err != nil {
 		return DispatchCalloutRequest{}, err
 	}
 	return req, nil

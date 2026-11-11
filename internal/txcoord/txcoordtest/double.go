@@ -21,6 +21,14 @@
 // ancestors hold no write of their own; otherwise they are refused rather than
 // answered without those writes. Outside a scope the double is the memory
 // plugin unchanged.
+//
+// The double serialises its own operations, completions included, under one
+// lock. The root's own writes (on a context with no scope) go to the memory
+// plugin directly, outside that lock: the double holds for an owner that does
+// not write while a scope of its transaction completes, which is how
+// cyoda-go's owner behaves (its chain waits in the callout). A test that
+// writes on the root while scopes complete concurrently is outside what the
+// double models.
 package txcoordtest
 
 import (
@@ -28,6 +36,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"maps"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -95,12 +105,14 @@ type callout struct {
 }
 
 type scope struct {
-	tx     *txState
-	parent *scope // nil for the root
-	pairs  []spi.CalloutPair
-	marked bool
-	ended  bool
-	writes map[string]*write // by entity id: the scope's own and its completed children's
+	tx        *txState
+	parent    *scope // nil for the root
+	pairs     []spi.CalloutPair
+	marked    bool
+	code      string // the code of the scope's first mark
+	ended     bool
+	completed bool
+	writes    map[string]*write // by entity id: the scope's own and its completed children's
 }
 
 type write struct {
@@ -186,14 +198,15 @@ func (s *scope) supersededLocked() bool {
 	return false
 }
 
-// markedLocked reports whether s or an ancestor is marked. mu must be held.
-func (s *scope) markedLocked() bool {
+// markedLocked returns the refusal for the nearest marked scope on the chain
+// from s (s itself first), nil when none is marked. mu must be held.
+func (s *scope) markedLocked() error {
 	for n := s; n != nil; n = n.parent {
 		if n.marked {
-			return true
+			return &spi.RollbackOnlyError{FailedCode: n.code}
 		}
 	}
-	return false
+	return nil
 }
 
 // under reports whether s is a or a descendant of a.
@@ -249,8 +262,8 @@ func (c *coordinator) OpenScope(ctx context.Context, txID string, pairs []spi.Ca
 		return ctx, spi.ErrCalloutSuperseded
 	}
 	parent := tx.callouts[pairs[0].Callout].scope
-	if parent.markedLocked() {
-		return ctx, spi.ErrTxRollbackOnly
+	if err := parent.markedLocked(); err != nil {
+		return ctx, err
 	}
 	for _, p := range pairs {
 		if co := tx.callouts[p.Callout]; p.Minor > co.minor {
@@ -287,13 +300,10 @@ func (c *coordinator) CheckScope(ctx context.Context) error {
 // refusalLocked is CompleteScope's refusal of s, before the conflict check.
 // mu must be held.
 func (s *scope) refusalLocked() error {
-	switch {
-	case s.supersededLocked():
+	if s.supersededLocked() {
 		return spi.ErrCalloutSuperseded
-	case s.markedLocked():
-		return spi.ErrTxRollbackOnly
 	}
-	return nil
+	return s.markedLocked()
 }
 
 // CompleteScope implements spi.TransactionCoordinator.
@@ -335,29 +345,49 @@ func (c *coordinator) CompleteScope(ctx context.Context) error {
 			s.tx.completed = append(s.tx.completed, record{id: id, from: w.from, by: s})
 		}
 	}
-	s.ended = true
+	s.ended, s.completed = true, true
 	return nil
 }
 
-// applyLocked writes s's buffer into the memory transaction ctx carries.
-// mu must be held.
+// applyLocked writes s's buffer into the memory transaction ctx carries, all
+// of it or none: the writes go in under a savepoint of the memory
+// transaction, which a failure rolls back to. mu must be held.
 func (c *coordinator) applyLocked(ctx context.Context, s *scope) error {
+	tm, err := c.inner.TransactionManager(ctx)
+	if err != nil {
+		return err
+	}
 	es, err := c.inner.EntityStore(ctx)
 	if err != nil {
 		return err
 	}
-	for id, w := range s.writes {
-		if w.entity == nil {
-			if err := es.Delete(ctx, id); err != nil && !errors.Is(err, spi.ErrNotFound) {
+	sp, err := tm.Savepoint(ctx, s.tx.id)
+	if err != nil {
+		return err
+	}
+	apply := func() error {
+		// In id order, so that a run is repeatable.
+		for _, id := range slices.Sorted(maps.Keys(s.writes)) {
+			w := s.writes[id]
+			if w.entity == nil {
+				if err := es.Delete(ctx, id); err != nil && !errors.Is(err, spi.ErrNotFound) {
+					return err
+				}
+				continue
+			}
+			if _, err := es.Save(ctx, w.entity); err != nil {
 				return err
 			}
-			continue
 		}
-		if _, err := es.Save(ctx, w.entity); err != nil {
-			return err
-		}
+		return nil
 	}
-	return nil
+	if err := apply(); err != nil {
+		if rbErr := tm.RollbackToSavepoint(ctx, s.tx.id, sp); rbErr != nil {
+			return errors.Join(err, rbErr)
+		}
+		return err
+	}
+	return tm.ReleaseSavepoint(ctx, s.tx.id, sp)
 }
 
 // discardLocked drops s's writes, and forgets the completions of the scopes
@@ -374,19 +404,23 @@ func (s *scope) discardLocked() {
 	s.tx.completed = kept
 }
 
-// DiscardScope implements spi.TransactionCoordinator. On a scope that has
-// already ended (a refused completion discards it) it removes nothing more,
-// and with rollbackOnly it still marks the parent.
-func (c *coordinator) DiscardScope(ctx context.Context, rollbackOnly bool) error {
+// DiscardScope implements spi.TransactionCoordinator. On a scope whose
+// completion was refused (which discarded it) it removes nothing more, and
+// with a failed code it still marks the parent. It refuses a scope that
+// completed.
+func (c *coordinator) DiscardScope(ctx context.Context, failedCode string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s := c.scopeOn(ctx)
 	if s == nil {
 		return errors.New("failed to discard a scope: the context carries none")
 	}
+	if s.completed {
+		return errors.New("failed to discard a scope: it has completed")
+	}
 	s.discardLocked()
-	if rollbackOnly {
-		s.parent.marked = true
+	if failedCode != "" && !s.parent.marked {
+		s.parent.marked, s.parent.code = true, failedCode
 	}
 	return nil
 }
@@ -397,10 +431,7 @@ func (c *coordinator) Seal(_ context.Context, txID string) error {
 	defer c.mu.Unlock()
 	tx := c.txLocked(txID)
 	tx.sealed = true
-	if tx.root.marked {
-		return spi.ErrTxRollbackOnly
-	}
-	return nil
+	return tx.root.markedLocked()
 }
 
 // --- the entity store inside a scope ---

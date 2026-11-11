@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -81,9 +82,19 @@ func (s *durableScope) check() error {
 	case errors.Is(err, spi.ErrCalloutSuperseded):
 		return supersededBy(err)
 	case errors.Is(err, spi.ErrTxRollbackOnly):
-		return rollbackOnly(s.ctx, s.c.txMgr, s.txID, "")
+		return rollbackOnly(s.ctx, s.c.txMgr, s.txID, failedCodeOf(err))
 	}
 	return fmt.Errorf("failed to check a scope of the transaction: %w", errors.Join(ErrScopeInfra, err))
+}
+
+// failedCodeOf is the code a coordinator's refusal for a mark names: the
+// FailedCode of its *spi.RollbackOnlyError, "" when it carries none.
+func failedCodeOf(err error) string {
+	var refused *spi.RollbackOnlyError
+	if errors.As(err, &refused) {
+		return refused.FailedCode
+	}
+	return ""
 }
 
 // supersededBy is the 410 for a refusal the backend made with
@@ -239,7 +250,7 @@ func (c *durable) Seal(ctx context.Context, txID string) (func(), error) {
 	case err == nil:
 		return finish, nil
 	case errors.Is(err, spi.ErrTxRollbackOnly):
-		return finish, sealRefusal(ctx, c.txMgr, txID, nil, true, "")
+		return finish, sealRefusal(ctx, c.txMgr, txID, nil, true, failedCodeOf(err))
 	}
 	return finish, sealRefusal(ctx, c.txMgr, txID, fmt.Errorf("failed to seal the transaction: %w", err), false, "")
 }
@@ -248,9 +259,12 @@ func (c *durable) Seal(ctx context.Context, txID string) (func(), error) {
 func (c *durable) Enter(ctx context.Context, txID string, pairs []fence.Pair, class RequestClass, _ int) (Scope, context.Context, error) {
 	// From here the request is detached from its client's cancellation: it
 	// ends by finishing or by being refused.
-	sctx, err := c.co.OpenScope(context.WithoutCancel(ctx), txID, toSPIPairs(pairs))
+	detached := context.WithoutCancel(ctx)
+	sctx, err := c.co.OpenScope(detached, txID, toSPIPairs(pairs))
 	if err != nil {
-		return nil, ctx, c.openRefusal(sctx, txID, err)
+		// The context a refusing coordinator returns may be nil: the refusal
+		// is judged on the joined context.
+		return nil, ctx, c.openRefusal(detached, txID, err)
 	}
 	s := &durableScope{c: c, kind: callbackKind, class: class, txID: txID, own: append([]fence.Pair(nil), pairs...)}
 	s.ctx = context.WithValue(sctx, scopeKey{}, s)
@@ -306,7 +320,10 @@ func (c *durable) AtCapacity(string, int) bool { return false }
 // holds nothing of the transaction, and is never rewritten.
 func (s *durableScope) End(o *common.Outcome) *common.AppError {
 	if s.class == Outside {
-		_ = s.c.co.CompleteScope(s.ctx)
+		if err := s.c.co.CompleteScope(s.ctx); err != nil {
+			slog.Warn("the scope of a request that writes outside the transaction could not be completed",
+				"pkg", "txcoord", "txId", s.txID, "err", err)
+		}
 		return nil
 	}
 	answer, _, broken := decide(s, s.class, failureOf(o))
@@ -329,17 +346,19 @@ func (d *discardFailure) Error() string {
 func (d *discardFailure) Unwrap() error { return d.err }
 
 // standing implements ending. Row 1 comes before row 4 in the backend's own
-// order (CheckScope). A refusal the backend does not name decides nothing
-// here: the completion that follows reports it.
-func (s *durableScope) standing() (error, string, bool) {
+// order (CheckScope). An error the backend does not name is a failed
+// completion: the request cannot be judged to have succeeded.
+func (s *durableScope) standing() (error, string, bool, error) {
 	err := s.c.co.CheckScope(s.ctx)
 	switch {
+	case err == nil:
+		return nil, "", false, nil
 	case errors.Is(err, spi.ErrCalloutSuperseded):
-		return fmt.Errorf("%w: %w", fence.ErrSuperseded, err), "", false
+		return fmt.Errorf("%w: %w", fence.ErrSuperseded, err), "", false, nil
 	case errors.Is(err, spi.ErrTxRollbackOnly):
-		return nil, "", true
+		return nil, failedCodeOf(err), true, nil
 	}
-	return nil, "", false
+	return nil, "", false, fmt.Errorf("failed to check a scope of the transaction: %w", err)
 }
 
 // lostRace implements ending.
@@ -356,11 +375,12 @@ func (s *durableScope) complete(class RequestClass) (*common.AppError, *parentMa
 		// Row 1.
 		return supersededBy(err), nil, nil
 	case errors.Is(err, spi.ErrTxRollbackOnly):
-		// Row 4: a write passes the mark up, which only DiscardScope does.
+		// Row 4: a write passes the mark up, which only DiscardScope does,
+		// with the code the refusal names.
 		var mark *parentMark
 		var broken error
 		if class == Write {
-			mark = &parentMark{}
+			mark = &parentMark{code: failedCodeOf(err)}
 			broken = s.discard(mark)
 		}
 		return common.TransactionRollbackOnlyJoined(), mark, broken
@@ -370,9 +390,18 @@ func (s *durableScope) complete(class RequestClass) (*common.AppError, *parentMa
 	return decide(s, class, completionFailure(err))
 }
 
-// discard implements ending: DiscardScope, which marks the parent itself.
+// discard implements ending: DiscardScope, which marks the parent itself with
+// the mark's code. A mark always passes a code: the backend marks nothing on
+// an empty one.
 func (s *durableScope) discard(mark *parentMark) error {
-	if err := s.c.co.DiscardScope(s.ctx, mark != nil); err != nil {
+	code := ""
+	if mark != nil {
+		code = mark.code
+		if code == "" {
+			code = common.ErrCodeTransactionRollbackOnly
+		}
+	}
+	if err := s.c.co.DiscardScope(s.ctx, code); err != nil {
 		return &discardFailure{err: err}
 	}
 	return nil
@@ -382,7 +411,7 @@ func (s *durableScope) discard(mark *parentMark) error {
 // it: the scope is discarded without passing one up.
 func (s *durableScope) Close(procErr error) error {
 	if procErr != nil {
-		if err := s.c.co.DiscardScope(s.ctx, false); err != nil {
+		if err := s.c.co.DiscardScope(s.ctx, ""); err != nil {
 			return fmt.Errorf("failed to discard a processor scope: %w", errors.Join(ErrScopeInfra, err))
 		}
 		return procErr
@@ -394,7 +423,7 @@ func (s *durableScope) Close(procErr error) error {
 	case errors.Is(err, spi.ErrCalloutSuperseded):
 		return supersededBy(err)
 	case errors.Is(err, spi.ErrTxRollbackOnly):
-		return rollbackOnly(s.ctx, s.c.txMgr, s.txID, "")
+		return rollbackOnly(s.ctx, s.c.txMgr, s.txID, failedCodeOf(err))
 	case errors.Is(err, spi.ErrScopeConflict):
 		return scopeConflict(err)
 	}

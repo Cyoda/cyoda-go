@@ -20,9 +20,10 @@ func TestAppWiresTheOwnersLoopInBothModes(t *testing.T) {
 		"the Coordinator is built":                regexp.MustCompile(`extProc = callout\.New\(`),
 		"the tracing decorator wraps the outside": regexp.MustCompile(`(?s)extProc = callout\.New\(.*extProc = observability\.NewTracingExternalProcessingService\(extProc,`),
 		"the peer router is held as the interface, so a single node has an untyped nil": regexp.MustCompile(`var peers callout\.PeerRouter`),
-		"one transaction coordination per process, chosen for the backend":              regexp.MustCompile(`(?s)txcoord\.Select\(startupCtx, a\.storeFactory, func\(\) txcoord\.Coordination \{\s*return txcoord\.New\(a\.transactionManager\)\s*\}\).*a\.coord = coord`),
+		"one transaction coordination per process, chosen for the backend":              regexp.MustCompile(`(?s)txcoord\.Select\(startupCtx, a\.storeFactory, a\.transactionManager\).*a\.coord = coord`),
 		"the dispatcher mints passes by the backend's location independence":            regexp.MustCompile(`NewProcessorDispatcher\([^\n]*, locationIndependent\)`),
 		"the hand-over server accepts an ownerless hand-over by it":                     regexp.MustCompile(`NewDispatchHandler\(localDispatcher, peerAuth, locationIndependent\)`),
+		"the peer router hands over with no owner by it":                                regexp.MustCompile(`(?s)NewPeerRouter\(a\.nodeRegistry, a\.selfNodeID,.{0,200}?observability\.Meter\(\), locationIndependent\)`),
 		"the owner's loop registers its callouts with it":                               regexp.MustCompile(`callout\.New\(localDispatcher, a\.memberRegistry, peers, a\.coord,`),
 		"the engine opens its processor scopes in it":                                   regexp.MustCompile(`workflow\.WithCoordination\(a\.coord\)`),
 		"the join layer opens its callback scopes in it":                                regexp.MustCompile(`txjoin\.NewJoiner\(a\.tokenSigner, a\.transactionManager, a\.coord,`),
@@ -42,14 +43,15 @@ func TestAppWiresTheOwnersLoopInBothModes(t *testing.T) {
 			t.Errorf("app.go still has: %s (%s)", name, re)
 		}
 	}
-	// One coordination per process: the owner's loop, the engine, the join
-	// layer and the callback doors judge a callback by the same state. app.go
-	// builds no fence or gate of its own.
+	// One coordination per process, chosen by Select: the owner's loop, the
+	// engine, the join layer and the callback doors judge a callback by the
+	// same state. app.go builds no fence or gate of its own.
 	for _, n := range []struct {
 		re   *regexp.Regexp
 		want int
 	}{
-		{regexp.MustCompile(`txcoord\.New\(`), 1},
+		{regexp.MustCompile(`txcoord\.New\(`), 0},
+		{regexp.MustCompile(`txcoord\.Select\(`), 1},
 		{regexp.MustCompile(`fence\.New\(`), 0},
 		{regexp.MustCompile(`txgate\.New\(\)`), 0},
 	} {

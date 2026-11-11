@@ -483,7 +483,7 @@ type TransactionCoordinator interface {
     OpenChildScope(ctx context.Context) (context.Context, error)
     CheckScope(ctx context.Context) error
     CompleteScope(ctx context.Context) error
-    DiscardScope(ctx context.Context, rollbackOnly bool) error
+    DiscardScope(ctx context.Context, failedCode string) error
 
     Seal(ctx context.Context, txID string) error
 }
@@ -493,6 +493,12 @@ var (
     ErrTxRollbackOnly    = errors.New("transaction is rollback-only")
     ErrScopeConflict     = errors.New("scope conflicts with another scope of the transaction")
 )
+
+// RollbackOnlyError is every refusal for a mark. It matches
+// ErrTxRollbackOnly under errors.Is.
+type RollbackOnlyError struct {
+    FailedCode string
+}
 ```
 
 **Contract text** (in the SPI's doc comments, each line pinned by an spitest case):
@@ -509,6 +515,12 @@ var (
    - `CompleteScope` makes the scope's writes part of its parent scope.
    - A later discard of the parent, or of any ancestor, removes them.
    - `DiscardScope` removes the scope's writes and those of every scope under it.
+   - `DiscardScope` of a scope whose completion was refused is allowed. The
+     refused completion has already discarded the scope, so it removes nothing
+     more: no write made since, by the transaction or by any other scope. With
+     a non-empty failed code it still marks the parent.
+   - A coordinator may refuse `DiscardScope` after a successful `CompleteScope`
+     of the same scope.
 3. **Visibility.** A completed scope's writes are visible to later reads of its
    parent and of the parent's later scopes, from any pnode.
 4. **Fencing numbers.**
@@ -529,19 +541,32 @@ var (
      ends discarded by its own `CompleteScope`, which refuses with
      `ErrCalloutSuperseded`.
 6. **Completion order.** `CompleteScope` refuses, in this order:
-   - `ErrCalloutSuperseded` when a pair of the scope is not current;
-   - `ErrTxRollbackOnly` when the scope or an ancestor is marked;
+   - `ErrCalloutSuperseded` when a pair of the scope is not current, or the
+     transaction is sealed;
+   - a `*RollbackOnlyError` when the scope or an ancestor is marked;
    - `ErrScopeConflict` when a completed scope of the same transaction wrote an
      entity this scope wrote, from the same version.
    - A refused completion discards the scope.
 7. **Rollback-only.**
-   - `DiscardScope(ctx, true)` marks the scope's parent.
-   - `OpenScope` refuses with `ErrTxRollbackOnly` when the parent or an ancestor
-     is marked.
-   - `CheckScope` reports `ErrCalloutSuperseded` and `ErrTxRollbackOnly` as
+   - `DiscardScope(ctx, "")` marks nothing.
+   - `DiscardScope(ctx, code)` with a non-empty code marks the scope's parent
+     and records the code for it. The code names the failure: for a scope whose
+     completion was refused for a mark, the refusal's `FailedCode`; otherwise
+     the code the scope's failed request was answered with.
+   - The code of a scope's first mark stands; a later mark of the same scope
+     keeps it.
+   - Every refusal for a mark is a `*RollbackOnlyError`. Its `FailedCode` is the
+     code recorded for the nearest marked scope on the chain the refusal checks:
+     for `CheckScope` and `CompleteScope` the scope itself or, when it is not
+     marked, its nearest marked ancestor; for `OpenScope` the parent or its
+     nearest marked ancestor; for `Seal` the root.
+   - `OpenScope` refuses with a `*RollbackOnlyError` when the parent or an
+     ancestor is marked.
+   - `CheckScope` reports `ErrCalloutSuperseded` and the `*RollbackOnlyError` as
      `CompleteScope` would, without completing.
 8. **Seal.**
-   - `Seal` fails with `ErrTxRollbackOnly` when the root is marked.
+   - `Seal` fails with a `*RollbackOnlyError`, carrying the root's code, when
+     the root is marked.
    - After it returns, `OpenScope` refuses and `CompleteScope` refuses with
      `ErrCalloutSuperseded`.
    - Commit after a successful Seal commits the root and every completed scope.
@@ -564,7 +589,11 @@ on another pnode when its enclosing scope is superseded or marked.
   `TransactionCoordinator`:
   - no gate and no stack rule;
   - `Pause` is a no-op, and its resume is a `CheckScope`;
-  - the waits are not needed (contract 5).
+  - the waits are not needed (contract 5);
+  - a mark passes the failed request's code: a write's failure passes the code
+    it was answered with, and a scope refused completion for a mark passes the
+    refusal's `FailedCode`. The owner's `409 TRANSACTION_ROLLBACK_ONLY` names
+    the code `Seal` reports.
 - It is chosen at start-up when the store factory implements the capability.
   `CachingStoreFactory` forwards it by hand
   (`internal/cluster/modelcache/factory.go:87-92`).
@@ -572,11 +601,16 @@ on another pnode when its enclosing scope is superseded or marked.
   - `mintPass` leaves the owner out of the pass (`internal/grpc/dispatch.go:92-96`).
   - Both proxies serve a pass without an owner locally
     (`internal/cluster/proxy/http.go:66-69`, `internal/cluster/proxy/grpc.go:49-75`).
-  - A hand-over request accepts an empty owner (`internal/cluster/dispatch/handover.go:169`).
+  - The peer router leaves the owner out of a hand-over, as the passes do
+    (`internal/cluster/dispatch/peer_router.go`), and a location-independent
+    pnode accepts a hand-over that names no owner
+    (`internal/cluster/dispatch/handover.go`). A pnode that is not
+    location-independent refuses it.
 - **Tests.**
   - No in-tree plugin implements the capability. cyoda-go's side is tested
-    against a test double: a coordinator over the memory plugin that serialises
-    scopes but follows the contract text.
+    against a test double: a coordinator over the memory plugin that keeps each
+    scope's writes in a buffer of its own until the scope completes, and passes
+    the `Coordination/*` spitest suite.
   - That covers selection, forwarding, routing with no owner (an e2e with two
     pnodes, the callback reaching the non-owner), and the adapter's mapping of
     each SPI error.
