@@ -22,6 +22,14 @@
 // selective admission, and keeps a scope's writes, with its descendants',
 // contiguous (the stack rule): while a scope waits in a callout of its own, only
 // its descendants are admitted.
+//
+// The durable implementation (NewDurable) serves a backend that coordinates
+// transactions itself (spi.TransactionCoordinationCapable): the backend keeps
+// the scopes, marks and fencing numbers, so any pnode serves any
+// transaction's callbacks, and they may run concurrently. It has no gate and
+// no stack rule, and nothing waits: a scope still in progress when its callout
+// moves on is refused completion by the backend. Select picks one of the two
+// at start-up.
 package txcoord
 
 import (
@@ -47,7 +55,11 @@ const (
 	Outside
 )
 
-// Coordination is the coordination of every transaction of one pnode.
+// Coordination is the coordination of every transaction of one pnode. The
+// waits, the gate and the queue below are the in-process implementation's
+// (New). The durable one (NewDurable) has none of them: nothing waits, nothing
+// queues, and a scope still in progress when its callout moves on or the
+// transaction is sealed is refused completion instead.
 type Coordination interface {
 	// BeginCallout registers callout calloutID on txID under the scope on ctx
 	// (the root of txID when ctx carries none, or one of another transaction)
@@ -116,12 +128,17 @@ type Scope interface {
 }
 
 // ErrScopeInfra marks a scope whose savepoint could not be taken, released or
-// undone: the transaction is unusable, which is not the processor's fault.
+// undone, or, on a backend that coordinates transactions itself, a scope or
+// callout the backend could not be asked about: the transaction is unusable,
+// which is not the processor's fault.
 var ErrScopeInfra = errors.New("transaction scope could not be ended")
 
+// scopeKey is the context key of the scope a chain runs in: an in-process
+// *scope, or a durableNode.
 type scopeKey struct{}
 
-// scopeFrom returns the scope ctx carries, nil when it carries none.
+// scopeFrom returns the in-process scope ctx carries, nil when it carries
+// none.
 func scopeFrom(ctx context.Context) *scope {
 	s, _ := ctx.Value(scopeKey{}).(*scope)
 	return s
@@ -143,12 +160,17 @@ func scopeFrom(ctx context.Context) *scope {
 // long as its scope is paused. A Pause on a chain whose gate a Pause has
 // already released, before that one's resume, is therefore a caller's
 // mistake; it is a silent no-op that releases nothing.
+//
+// On a backend that coordinates transactions itself there is no gate: Pause
+// lets nothing go, and resume is Check(ctx).
 func Pause(ctx context.Context) (resume func() error) {
-	s := scopeFrom(ctx)
-	if s == nil {
-		return func() error { return nil }
+	switch s := ctx.Value(scopeKey{}).(type) {
+	case *scope:
+		return s.c.pause(s)
+	case durableNode:
+		return func() error { return s.check() }
 	}
-	return s.c.pause(s)
+	return func() error { return nil }
 }
 
 // Check reports, for the scope on ctx and its ancestors: 410 CALLOUT_SUPERSEDED
@@ -157,9 +179,17 @@ func Pause(ctx context.Context) (resume func() error) {
 // common.TransactionRollbackOnly(code). On the context BeginCallout returned,
 // it reports on the scope the callout was begun from, the root included. nil
 // for a ctx with no scope.
+//
+// On a backend that coordinates transactions itself, it asks the backend
+// (CheckScope); a refusal the backend does not name carries ErrScopeInfra.
 func Check(ctx context.Context) error {
-	s := scopeFrom(ctx)
-	if s == nil {
+	var s *scope
+	switch n := ctx.Value(scopeKey{}).(type) {
+	case *scope:
+		s = n
+	case durableNode:
+		return n.check()
+	default:
 		return nil
 	}
 	if s.kind == rootKind {
@@ -189,6 +219,9 @@ func NewSupersededError() *common.AppError { return fence.NewSupersededError() }
 // processor scope on ctx) was admitted under: the outer of a callout begun from
 // it. Nil otherwise.
 func Pairs(ctx context.Context) []fence.Pair {
+	if n, ok := ctx.Value(scopeKey{}).(durableNode); ok {
+		return n.pairs()
+	}
 	for s := scopeFrom(ctx); s != nil; s = s.parent {
 		if s.kind == callbackKind {
 			return append([]fence.Pair(nil), s.pairs...)

@@ -38,3 +38,16 @@ func TestTxCoordErrors(t *testing.T) {
 		t.Errorf("message %q does not name the failed code", m)
 	}
 }
+
+// TestTransactionRollbackOnly_UnknownCode: a backend that coordinates the
+// transaction itself does not say which code the failed request got; the
+// message then names none rather than an empty one.
+func TestTransactionRollbackOnly_UnknownCode(t *testing.T) {
+	m := TransactionRollbackOnly("").Message
+	if strings.Contains(m, "failed with ,") || strings.Contains(m, "with  ") {
+		t.Errorf("message %q names an empty code", m)
+	}
+	if !strings.Contains(m, "can only be rolled back") {
+		t.Errorf("message %q does not say the transaction can only be rolled back", m)
+	}
+}

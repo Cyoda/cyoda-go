@@ -120,7 +120,9 @@ func newHandOverRequest(ownerNodeID string, call internalgrpc.Callout, triesLeft
 	for _, p := range call.Outer {
 		req.Outer = append(req.Outer, WirePair{Callout: p.Callout, Major: p.Major, Minor: p.Minor})
 	}
-	if err := req.validate(); err != nil {
+	// The owner always names itself; only the receiving pnode may accept a
+	// hand-over that names no owner.
+	if err := req.validate(false); err != nil {
 		return DispatchCalloutRequest{}, err
 	}
 	return req, nil
@@ -148,7 +150,12 @@ func newHandOverRequest(ownerNodeID string, call internalgrpc.Callout, triesLeft
 // since the receiving pnode attaches them as received and has nothing to
 // substitute for one that is missing. So is the callout's platform time: the
 // receiving pnode sends it on every try and never substitutes its own clock's.
-func (req *DispatchCalloutRequest) validate() error {
+//
+// The owner may be left out only when noOwnerAccepted: on a location-independent
+// backend any pnode serves the transaction's callbacks, so the passes name no
+// owner. Elsewhere a pass without an owner could not be routed to the pnode
+// that holds the transaction, so the hand-over is refused.
+func (req *DispatchCalloutRequest) validate(noOwnerAccepted bool) error {
 	switch {
 	case req.TenantID == "":
 		return errors.New("tenantID is empty")
@@ -166,7 +173,7 @@ func (req *DispatchCalloutRequest) validate() error {
 		return errors.New("answerLimitMs is below 1")
 	case req.AnswerLimitMs > maxAnswerLimitMs:
 		return errors.New("answerLimitMs does not fit a duration")
-	case req.OwnerNodeID == "":
+	case req.OwnerNodeID == "" && !noOwnerAccepted:
 		return errors.New("ownerNodeID is empty")
 	case req.Major < 1:
 		return errors.New("major is below 1")

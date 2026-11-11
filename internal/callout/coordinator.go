@@ -481,6 +481,8 @@ func calloutDeadlinePassed(ctx context.Context) bool {
 //     refusal, as txcoord.Check reports it on the callout's context: the lost
 //     race (spi.ErrTxAborted, the retryable conflict) when the transaction has
 //     lost one, otherwise 409 TRANSACTION_ROLLBACK_ONLY;
+//   - stopped because the backend that coordinates the transaction could not
+//     be asked (txcoord.ErrScopeInfra) is that failure;
 //   - the caller going away, or its transactionTimeoutMillis, is ctxErr,
 //     marked as the caller's departure.
 //
@@ -498,6 +500,10 @@ func ended(cctx context.Context, ctxErr error) error {
 	case errors.Is(cause, common.ErrRollbackOnly):
 		// A mark never clears, so the check reports it.
 		return txcoord.Check(cctx)
+	case errors.Is(cause, txcoord.ErrScopeInfra):
+		// The backend that coordinates the transaction could not be asked
+		// whether the scope may go on: the callout fails closed.
+		return cause
 	}
 	return common.ClientGone(ctxErr)
 }

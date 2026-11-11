@@ -112,7 +112,8 @@ type Callout struct {
 	// RepeatSafe: the work may be given to another cnode after a hand-off.
 	RepeatSafe bool
 	// OwnerNodeID is the pnode that holds the transaction; a cnode's callbacks
-	// are routed there.
+	// are routed there, except on a location-independent backend, whose passes
+	// name no owner.
 	OwnerNodeID string
 	// Number gives the fencing number of each try. RunLocal calls Next once
 	// before every try, before it mints that try's pass.

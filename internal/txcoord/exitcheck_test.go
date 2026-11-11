@@ -7,7 +7,9 @@ package txcoord
 // pairs a pass carries (fence.Pair).
 //
 // The scan reads the import lists of every non-test .go file of the root
-// module; test files may build a gate or a fence of their own.
+// module; test files may build a gate or a fence of their own. The same scan
+// holds the transaction-coordination test double (txcoordtest) out of
+// production code: only test files import it.
 
 import (
 	"go/parser"
@@ -21,6 +23,10 @@ import (
 )
 
 const modulePath = "github.com/cyoda-platform/cyoda-go"
+
+// testDoublePath is the test double of the optional SPI capability: no
+// production file imports it.
+const testDoublePath = modulePath + "/internal/txcoord/txcoordtest"
 
 // leafImporters is, for each leaf package, the packages that may import it.
 var leafImporters = map[string][]string{
@@ -87,6 +93,10 @@ func TestOnlyTxcoordUsesGateAndFence(t *testing.T) {
 			if err != nil {
 				return err
 			}
+			if ipath == testDoublePath {
+				offenders = append(offenders, rel+" imports the test double "+ipath)
+				continue
+			}
 			allowed, leaf := leafImporters[ipath]
 			if !leaf {
 				continue
@@ -109,7 +119,7 @@ func TestOnlyTxcoordUsesGateAndFence(t *testing.T) {
 	}
 	if len(offenders) > 0 {
 		slices.Sort(offenders)
-		t.Fatalf("only txcoord uses the gate, and only txcoord and the pass token use the fence:\n%s", strings.Join(offenders, "\n"))
+		t.Fatalf("only txcoord uses the gate, only txcoord and the pass token use the fence, and only tests use the test double:\n%s", strings.Join(offenders, "\n"))
 	}
 }
 

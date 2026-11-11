@@ -274,40 +274,60 @@ func (c *inProcess) Seal(ctx context.Context, txID string) (func(), error) {
 			delete(c.txs, txID)
 		}
 	}
+	return finish, sealRefusal(ctx, c.txMgr, txID, broken, marked, code)
+}
+
+// sealRefusal is Seal's answer for a transaction that is broken (broken, the
+// cause) or whose root is marked (code, the failed request's code when it is
+// known): the lost race first, then the broken cause, then the mark. nil when
+// it is neither.
+func sealRefusal(ctx context.Context, txMgr spi.TransactionManager, txID string, broken error, marked bool, code string) error {
 	if broken == nil && !marked {
-		return finish, nil
+		return nil
 	}
-	if c.lostRace(ctx, txID) {
+	if lostRace(ctx, txMgr, txID) {
 		if broken != nil {
-			return finish, fmt.Errorf("the transaction lost a write race and is unusable (%v): %w", broken, spi.ErrTxAborted)
+			return fmt.Errorf("the transaction lost a write race and is unusable (%v): %w", broken, spi.ErrTxAborted)
 		}
-		return finish, lostRaceError(code)
+		return lostRaceError(code)
 	}
 	if broken != nil {
-		return finish, fmt.Errorf("the transaction is unusable: %w", broken)
+		return fmt.Errorf("the transaction is unusable: %w", broken)
 	}
-	return finish, common.TransactionRollbackOnly(code)
+	return common.TransactionRollbackOnly(code)
 }
 
 // lostRace asks the transaction manager; an error reads as not lost, so that
 // the caller reports what it would have reported without asking.
-func (c *inProcess) lostRace(ctx context.Context, txID string) bool {
-	lost, err := c.txMgr.LostRace(context.WithoutCancel(ctx), txID)
+func lostRace(ctx context.Context, txMgr spi.TransactionManager, txID string) bool {
+	lost, err := txMgr.LostRace(context.WithoutCancel(ctx), txID)
 	return err == nil && lost
 }
 
+func (c *inProcess) lostRace(ctx context.Context, txID string) bool {
+	return lostRace(ctx, c.txMgr, txID)
+}
+
 // lostRaceError is the owner's report of a marked scope in a transaction that
-// lost a write race: the conflict, with the mark as context.
+// lost a write race: the conflict, with the mark as context. failedCode is
+// empty when the storage backend coordinates the transaction itself.
 func lostRaceError(failedCode string) error {
+	if failedCode == "" {
+		return fmt.Errorf("the transaction lost a write race; a request that joined it failed: %w", spi.ErrTxAborted)
+	}
 	return fmt.Errorf("the transaction lost a write race; a request that joined it failed with %s: %w", failedCode, spi.ErrTxAborted)
 }
 
 // rollbackOnly is the refusal for a marked chain, the lost race first.
-func (c *inProcess) rollbackOnly(ctx context.Context, txID, failedCode string) error {
-	if c.lostRace(ctx, txID) {
+func rollbackOnly(ctx context.Context, txMgr spi.TransactionManager, txID, failedCode string) error {
+	if lostRace(ctx, txMgr, txID) {
 		return lostRaceError(failedCode)
 	}
 	return common.TransactionRollbackOnly(failedCode)
+}
+
+func (c *inProcess) rollbackOnly(ctx context.Context, txID, failedCode string) error {
+	return rollbackOnly(ctx, c.txMgr, txID, failedCode)
 }
 
 // lostRaceAnswer is a joined request's answer in a transaction that lost a

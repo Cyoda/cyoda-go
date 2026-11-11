@@ -25,9 +25,10 @@ import (
 const TxTokenHeader = "X-Tx-Token"
 
 // HTTPRouting returns middleware that routes requests to the correct cluster
-// node based on the transaction token. Requests without a token, or with a
-// token targeting the local node, are served locally. Requests targeting a
-// remote node are reverse-proxied transparently.
+// node based on the transaction token. Requests without a token, with a token
+// targeting the local node, or with a token that names no owner (a
+// location-independent transaction, which any node serves) are served locally.
+// Requests targeting a remote node are reverse-proxied transparently.
 //
 // A request that cannot reach the owner is answered 503
 // TRANSACTION_NODE_UNAVAILABLE, retryable only with proof that nothing was
@@ -74,7 +75,9 @@ func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeI
 				return
 			}
 
-			if claims.NodeID == selfNodeID {
+			// A pass that names no owner is one of a location-independent
+			// transaction: any pnode serves it.
+			if claims.NodeID == selfNodeID || claims.NodeID == "" {
 				next.ServeHTTP(w, r)
 				return
 			}

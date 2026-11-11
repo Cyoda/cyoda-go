@@ -51,7 +51,7 @@ func handOverEntity(t *testing.T, entity []byte, answer []byte) (got []byte, bac
 	auth := newTestPeerAuth(t)
 	runner := &echoRunner{answer: answer}
 	mux := http.NewServeMux()
-	dispatch.NewDispatchHandler(runner, auth).Register(mux)
+	dispatch.NewDispatchHandler(runner, auth, false).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -161,7 +161,7 @@ func TestHandOver_AnEntityAtTheStorableLimitIsSent(t *testing.T) {
 	auth := newTestPeerAuth(t)
 	runner := &echoRunner{answer: []byte(`{"ok":1}`)}
 	mux := http.NewServeMux()
-	dispatch.NewDispatchHandler(runner, auth).Register(mux)
+	dispatch.NewDispatchHandler(runner, auth, false).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 

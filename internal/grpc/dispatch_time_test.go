@@ -15,7 +15,7 @@ import (
 func TestDispatch_CalloutCarriesItsPlatformTime(t *testing.T) {
 	at := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
 	reg := NewMemberRegistry()
-	d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), nil, time.Second, time.Second, time.Second)
+	d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), nil, time.Second, time.Second, time.Second, false)
 
 	for name, call := range calloutsOfEveryKind(t) {
 		t.Run(name, func(t *testing.T) {
@@ -34,7 +34,7 @@ func TestDispatch_CalloutCarriesItsPlatformTime(t *testing.T) {
 // time of its own to put in its place.
 func TestDispatch_CalloutWithoutPlatformTimeIsRefused(t *testing.T) {
 	reg := NewMemberRegistry()
-	d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), nil, time.Second, time.Second, time.Second)
+	d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), nil, time.Second, time.Second, time.Second, false)
 
 	for name, call := range calloutsOfEveryKind(t) {
 		t.Run(name, func(t *testing.T) {

@@ -34,20 +34,27 @@ type ProcessorDispatcher struct {
 	answerLimitDefault time.Duration
 	answerLimitMax     time.Duration
 	passAllowance      time.Duration
+	// locationIndependent is set when the storage backend coordinates
+	// transactions itself, so that any pnode serves a transaction's
+	// callbacks: the passes this dispatcher mints then name no owner.
+	locationIndependent bool
 }
 
 // NewProcessorDispatcher creates a new ProcessorDispatcher. It holds no node
 // identity and no platform clock of its own: the owner a pass names, and the
 // platform time every request carries, are the callout's, whichever pnode is
-// running the try.
-func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, answerLimitDefault, answerLimitMax, passAllowance time.Duration) *ProcessorDispatcher {
+// running the try. locationIndependent is true when the storage backend
+// coordinates transactions itself (txcoord.Select): the passes then name no
+// owner, and any pnode serves their callbacks.
+func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, answerLimitDefault, answerLimitMax, passAllowance time.Duration, locationIndependent bool) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
-		registry:           registry,
-		selector:           selector,
-		signer:             signer,
-		answerLimitDefault: answerLimitDefault,
-		answerLimitMax:     answerLimitMax,
-		passAllowance:      passAllowance,
+		registry:            registry,
+		selector:            selector,
+		signer:              signer,
+		answerLimitDefault:  answerLimitDefault,
+		answerLimitMax:      answerLimitMax,
+		passAllowance:       passAllowance,
+		locationIndependent: locationIndependent,
 	}
 }
 
@@ -82,18 +89,18 @@ func (d *ProcessorDispatcher) ResolveAnswerLimit(responseTimeoutMs int64) (time.
 // plus an allowance for routing and for clocks that differ between pnodes. A
 // callout outside a transaction carries no pass.
 //
-// A callout inside a transaction that names no owner is refused here, before
-// the hand-off, rather than minting a pass whose callbacks could never be
-// routed.
+// On a location-independent backend the pass names no owner: any pnode serves
+// the transaction's callbacks, so they are served where they land.
 func (d *ProcessorDispatcher) mintPass(call Callout, major, minor uint32) (string, error) {
 	if call.TxID == "" {
 		return "", nil
 	}
-	if call.OwnerNodeID == "" {
-		return "", fmt.Errorf("failed to mint transaction pass: the callout names no owner")
+	owner := call.OwnerNodeID
+	if d.locationIndependent {
+		owner = ""
 	}
 	pass, err := d.signer.Issue(token.Claims{
-		NodeID:    call.OwnerNodeID,
+		NodeID:    owner,
 		TxRef:     call.TxID,
 		ExpiresAt: time.Now().Add(call.AnswerLimit + d.passAllowance).Unix(), // realtime: pass expiry is a security deadline checked against the server's real clock
 		Callout:   call.RequestID,

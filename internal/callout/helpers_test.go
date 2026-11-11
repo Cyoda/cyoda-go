@@ -74,7 +74,7 @@ func newEnvOver(t *testing.T, cfg Config, tm spi.TransactionManager) *env {
 	reg := internalgrpc.NewMemberRegistry()
 	coord := txcoord.New(tm)
 	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-		signer, 30*time.Second, 60*time.Second, 30*time.Second)
+		signer, 30*time.Second, 60*time.Second, 30*time.Second, false)
 	if cfg.SelfNodeID == "" {
 		cfg.SelfNodeID = "node-owner"
 	}

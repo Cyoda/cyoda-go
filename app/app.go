@@ -419,9 +419,22 @@ func New(cfg Config) *App {
 	a.memberRegistry = internalgrpc.NewMemberRegistry()
 	// One transaction coordination per process: both callback doors, the
 	// engine, the entity service and every callout judge a callback by the
-	// same state.
-	a.coord = txcoord.New(a.transactionManager)
-	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance)
+	// same state. A backend that coordinates transactions itself gets the
+	// durable one, and its transactions are location-independent: their
+	// passes name no owner, and any pnode serves their callbacks.
+	coord, locationIndependent, err := txcoord.Select(startupCtx, a.storeFactory, func() txcoord.Coordination {
+		return txcoord.New(a.transactionManager)
+	})
+	if err != nil {
+		slog.Error("startup failure",
+			"phase", "transaction-coordination",
+			"backend", plugin.Name(),
+			"error", err.Error())
+		os.Exit(1)
+	}
+	a.coord = coord
+	slog.Info("transaction coordination selected", "pkg", "app", "locationIndependent", locationIndependent)
+	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance, locationIndependent)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
 		slog.Error("startup failure",
@@ -772,7 +785,7 @@ func New(cfg Config) *App {
 	// off: with it off (testClock nil) every push is refused, so a change
 	// fails on that node rather than passing it by.
 	if cfg.Cluster.Enabled {
-		clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth).Register(rootMux)
+		clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth, locationIndependent).Register(rootMux)
 		clusterdispatch.NewClockHandler(peerAuth, platformclock.NewHolder(testClock)).Register(rootMux)
 		clusterdispatch.NewStatusHandler(peerAuth, statusSelf).Register(rootMux)
 	}

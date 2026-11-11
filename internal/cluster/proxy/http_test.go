@@ -782,3 +782,29 @@ func TestHTTPRouting_DialRefusedAfterSend_NotRetryable(t *testing.T) {
 		t.Fatalf("a dial error after the owner received the request must not be retryable; body: %s", rec.Body.String())
 	}
 }
+
+// TestHTTPRouting_PassWithoutOwnerServedLocally: a pass that names no owner is
+// one of a location-independent transaction, which any pnode serves. It is
+// served where it lands, never proxied and never refused as a node that is
+// not live.
+func TestHTTPRouting_PassWithoutOwnerServedLocally(t *testing.T) {
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:8888", Alive: true},
+	)
+	tok, err := signer.Issue(token.Claims{TxRef: "tx-li", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-li", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler())
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "local" {
+		t.Fatalf("got %d %q; want 200 \"local\"", rec.Code, rec.Body.String())
+	}
+}

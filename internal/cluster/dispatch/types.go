@@ -56,7 +56,9 @@ type DispatchCalloutRequest struct {
 	// pnodes cannot disagree about it.
 	AnswerLimitMs int64 `json:"answerLimitMs"`
 	// OwnerNodeID is the pnode that holds the transaction; the receiving pnode
-	// puts it in every pass it mints, so that callbacks are routed there.
+	// puts it in every pass it mints, so that callbacks are routed there. On a
+	// location-independent backend the passes name no owner, and a receiving
+	// pnode of such a backend accepts a hand-over that names none.
 	OwnerNodeID string `json:"ownerNodeID"`
 	// Major is the fencing number of this hand-over. The receiving pnode
 	// numbers its tries minor = 1, 2, … under it.

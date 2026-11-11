@@ -37,14 +37,19 @@ type LocalRunner interface {
 type DispatchHandler struct {
 	local LocalRunner
 	auth  PeerAuth
+	// locationIndependent is set when the storage backend coordinates
+	// transactions itself: a hand-over may then name no owner.
+	locationIndependent bool
 }
 
 // NewDispatchHandler constructs a DispatchHandler over the local procedure and
 // the peer-authentication impl. Auth is already validated at construction time
 // (NewAEADPeerAuth etc. check secret length), so this constructor returns no
-// error.
-func NewDispatchHandler(local LocalRunner, auth PeerAuth) *DispatchHandler {
-	return &DispatchHandler{local: local, auth: auth}
+// error. locationIndependent is true when the storage backend coordinates
+// transactions itself (txcoord.Select): only then is a hand-over that names no
+// owner accepted.
+func NewDispatchHandler(local LocalRunner, auth PeerAuth, locationIndependent bool) *DispatchHandler {
+	return &DispatchHandler{local: local, auth: auth, locationIndependent: locationIndependent}
 }
 
 // Register registers the dispatch routes on the provided ServeMux.
@@ -88,7 +93,7 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		h.refuse(w, binding, "", fmt.Errorf("failed to parse hand-over: %s", common.JSONErrorShape(err)))
 		return
 	}
-	if err := req.validate(); err != nil {
+	if err := req.validate(h.locationIndependent); err != nil {
 		h.refuse(w, binding, req.RequestID, fmt.Errorf("failed to validate hand-over: %w", err))
 		return
 	}

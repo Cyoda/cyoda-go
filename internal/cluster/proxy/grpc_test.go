@@ -107,3 +107,25 @@ func TestGRPCResolveNodeInfo_PeerNotServing(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveNodeInfo_PassWithoutOwnerLocal: a pass that names no owner (a
+// location-independent transaction) is served locally.
+func TestResolveNodeInfo_PassWithoutOwnerLocal(t *testing.T) {
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:8888", GRPCAddr: "localhost:19090", Alive: true},
+	)
+	tok, err := signer.Issue(token.Claims{TxRef: "tx-li", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-li", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, shouldProxy, err := proxy.ResolveNodeInfo(context.Background(), signer, reg, "node-1", tok)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if shouldProxy {
+		t.Fatal("expected shouldProxy=false for a pass that names no owner")
+	}
+}

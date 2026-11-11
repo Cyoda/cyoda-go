@@ -63,6 +63,8 @@ The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handl
 - The request was not sent to the owner node — the node is not in the registry or is marked dead by gossip, the peer address guard refused its address, or the connection to it could not be opened (on gRPC: the call failed before any of its headers went out) — `503 Service Unavailable` (code `TRANSACTION_NODE_UNAVAILABLE`), retryable: nothing ran, so sending the request again is safe. When the owner is in fact gone, its transaction is gone with it: the operation that owns it fails, and its client retries the operation from scratch. Fail-closed semantics, no orphaned transactions.
 - The request may have reached the owner — the connection failed after it was opened, or no answer came within `CYODA_PROXY_TIMEOUT` — the same `503`, not retryable: the owner may be alive and may have run the request, so the outcome of a write is unknown.
 
+A storage backend may coordinate transactions itself (the optional SPI capability `TransactionCoordinationCapable`). None of the in-tree backends does. On such a backend any node can serve any transaction: the token names no owning node, and every node serves the callback where it lands, without a proxy hop. A node picks this at start-up and logs it (`transaction coordination selected`, `locationIndependent=true`).
+
 `CYODA_HMAC_SECRET` is a deployment secret. All nodes in a cluster must share the same value; it is also the root key for peer-to-peer dispatch authentication (HKDF-derived AEAD), so rotating it requires a cluster-wide restart — see `SECRET ROTATION`.
 
 ## OPERATIONS
