@@ -267,10 +267,11 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	}
 
 	// Begin a fresh transaction, or PARTICIPATE in a joined tx already on ctx
-	// (a routed compute-node callback). A joined callback does not Begin
-	// and does not commit; the owner does. Its whole body is one gated critical
-	// section on the shared tx buffer — the join layer took the gate before this
-	// handler ran and holds it until it returns.
+	// (a routed compute-node callback). A joined callback does not Begin and
+	// does not commit; the owner does. It runs in the callback scope the join
+	// layer opened for it before this handler ran (txcoord.Enter). The owner
+	// takes no gate: it seals before its final writes, which waits for the
+	// callback scopes in progress and refuses every later joined request.
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, classifyBeginErr(err)
@@ -2174,8 +2175,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	}
 
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx.
-	// A joined callback does not Begin/commit; its whole body is one gated
-	// critical section on the shared tx buffer.
+	// A joined callback does not Begin/commit; it runs in the callback scope
+	// the join layer opened for it, and the owner's seal waits for that scope
+	// to end.
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, classifyBeginErr(err)
