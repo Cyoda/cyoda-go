@@ -50,8 +50,8 @@ const (
 // Coordination is the coordination of every transaction of one pnode.
 type Coordination interface {
 	// BeginCallout registers callout calloutID on txID under the scope on ctx
-	// (the root of txID when ctx carries none) and the pairs ctx was admitted
-	// under. The returned ctx is cancelled with cause fence.ErrSuperseded when
+	// (the root of txID when ctx carries none, or one of another transaction)
+	// and the pairs that scope was admitted under. The returned ctx is cancelled with cause fence.ErrSuperseded when
 	// an outer pair stops being current, and with cause common.ErrRollbackOnly
 	// when the scope it was begun from is marked (at once when it already is).
 	// end unregisters the callout, cancels the callouts begun under it, and
@@ -84,10 +84,12 @@ type Coordination interface {
 	// context; the returned one is detached from its cancellation and carries
 	// the scope. The caller ends the scope with End.
 	Enter(ctx context.Context, txID string, pairs []fence.Pair, class RequestClass, maxWaiters int) (Scope, context.Context, error)
-	// OpenChild opens an ASYNC_NEW_TX processor scope under the scope on ctx
-	// (the root of ctx's transaction when ctx carries none), with a savepoint.
-	// It refuses as Check(ctx) would, and with the broken cause on a broken
-	// transaction; a savepoint that cannot be taken is ErrScopeInfra. The
+	// OpenChild opens an ASYNC_NEW_TX processor scope in ctx's transaction,
+	// under the scope on ctx (the root when ctx carries none, or one of another
+	// transaction), with a savepoint. It refuses as Check(ctx) would, and with
+	// the broken cause on a broken transaction; a savepoint that cannot be
+	// taken is ErrScopeInfra (and a session that has ended leaves the
+	// transaction broken). The
 	// caller ends the scope with Close.
 	OpenChild(ctx context.Context) (Scope, context.Context, error)
 	// AtCapacity is the reading Joiner.CheckRoom takes before a door reads its
@@ -127,8 +129,10 @@ func scopeFrom(ctx context.Context) *scope {
 // Pause marks the scope on ctx paused, for the length of a callout of its own,
 // and releases the gate its chain holds, so that the callout's callbacks (its
 // descendants, and only those) can be admitted. It is a no-op with no scope on
-// ctx, or on a chain that holds no gate (the owner's). resume retakes the gate
-// (uncapped, never refused) and returns Check(ctx); it is idempotent. Callers
+// ctx, on a chain that holds no gate (the owner's), and on a chain whose gate a
+// Pause has already released and no resume has retaken: such a Pause releases
+// nothing, and its resume only returns Check(ctx). Otherwise resume retakes the
+// gate (uncapped, never refused) and returns Check(ctx). resume is idempotent. Callers
 // defer resume and call it explicitly before touching the transaction.
 func Pause(ctx context.Context) (resume func() error) {
 	s := scopeFrom(ctx)

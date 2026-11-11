@@ -29,8 +29,9 @@ const watchdog = 5 * time.Second
 type recTM struct {
 	spi.TransactionManager
 
-	lost        atomic.Bool
-	failRelease atomic.Pointer[error]
+	lost          atomic.Bool
+	failRelease   atomic.Pointer[error]
+	failSavepoint atomic.Pointer[error]
 
 	mu    sync.Mutex
 	calls []string
@@ -49,6 +50,9 @@ func (m *recTM) recorded() []string {
 }
 
 func (m *recTM) Savepoint(ctx context.Context, txID string) (string, error) {
+	if p := m.failSavepoint.Load(); p != nil {
+		return "", *p
+	}
 	sp, err := m.TransactionManager.Savepoint(ctx, txID)
 	if err == nil {
 		m.record("savepoint " + sp)
@@ -215,3 +219,17 @@ type deadSession struct{}
 func (deadSession) Error() string            { return "the session ended" }
 func (deadSession) StorageUnavailable() bool { return true }
 func (deadSession) Is(target error) bool     { return target == spi.ErrTxNotFound }
+
+// mustSuperseded polls until the scope on ctx reads superseded: the call under
+// test raises the number (or ends the callout) before it waits, so this is the
+// signal that it has reached the wait.
+func mustSuperseded(t *testing.T, ctx context.Context) {
+	t.Helper()
+	deadline := time.Now().Add(watchdog)
+	for !errors.Is(Check(ctx), fence.ErrSuperseded) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the scope never read superseded within %v", watchdog)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

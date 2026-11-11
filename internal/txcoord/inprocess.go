@@ -157,7 +157,18 @@ func openUnder(tx *txState, calloutID string, below uint32) bool {
 
 // BeginCallout implements Coordination.
 func (c *inProcess) BeginCallout(ctx context.Context, txID, calloutID string) (context.Context, func()) {
-	fctx, fenceEnd := c.fence.Begin(ctx, calloutID, txID, Pairs(ctx))
+	// The scope on ctx is the parent only when it belongs to txID; otherwise
+	// the callout is the root's, and no pair of another transaction encloses
+	// it.
+	from := scopeFrom(ctx)
+	if from != nil && from.tx.id != txID {
+		from = nil
+	}
+	var outer []fence.Pair
+	if from != nil {
+		outer = Pairs(ctx)
+	}
+	fctx, fenceEnd := c.fence.Begin(ctx, calloutID, txID, outer)
 	cctx, cancel := context.WithCancelCause(fctx)
 	var once sync.Once
 	if txID == "" {
@@ -171,12 +182,9 @@ func (c *inProcess) BeginCallout(ctx context.Context, txID, calloutID string) (c
 	reg, marked := func() (*calloutReg, bool) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		parent := scopeFrom(ctx)
-		var tx *txState
-		if parent != nil {
-			tx = parent.tx
-		} else {
-			tx = c.txLocked(txID)
+		tx := c.txLocked(txID)
+		parent := from
+		if parent == nil || parent.tx != tx {
 			parent = tx.root
 		}
 		reg := &calloutReg{id: calloutID, tx: tx, parent: parent, cancel: cancel}
@@ -206,9 +214,15 @@ func (c *inProcess) endCallout(reg *calloutReg, fenceEnd func()) {
 	func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		delete(reg.tx.callouts, reg.id)
-		delete(c.callouts, reg.id)
-		delete(reg.parent.callouts, reg.id)
+		if reg.tx.callouts[reg.id] == reg {
+			delete(reg.tx.callouts, reg.id)
+		}
+		if c.callouts[reg.id] == reg {
+			delete(c.callouts, reg.id)
+		}
+		if reg.parent.callouts[reg.id] == reg {
+			delete(reg.parent.callouts, reg.id)
+		}
 		c.forgetIfIdleLocked(reg.tx)
 	}()
 	reg.cancel(context.Canceled)
@@ -344,8 +358,8 @@ func (c *inProcess) Enter(ctx context.Context, txID string, pairs []fence.Pair, 
 	}
 	sp, err := c.txMgr.Savepoint(s.ctx, txID)
 	if err != nil {
-		refusal := c.savepointRefusal(s.ctx, txID, err)
-		c.leave(s, "", nil)
+		refusal, broken := c.savepointRefusal(s.ctx, txID, err)
+		c.leave(s, nil, broken)
 		s.releaseGate()
 		return nil, ctx, refusal
 	}
@@ -412,19 +426,28 @@ func (c *inProcess) open(s *scope, txID, calloutID string) error {
 
 // savepointRefusal answers a request whose savepoint could not be taken: the
 // handler did not run, so nothing is marked. A lost race answers as the lost
-// race; anything else is the classified error, not retryable.
-func (c *inProcess) savepointRefusal(ctx context.Context, txID string, err error) *common.AppError {
+// race. A session that has ended answers 404 and leaves the transaction broken
+// (the returned cause). Anything else is a 500, not retryable: the request
+// cannot succeed in this transaction, so no answer may invite a retry.
+func (c *inProcess) savepointRefusal(ctx context.Context, txID string, err error) (*common.AppError, error) {
 	if c.lostRace(ctx, txID) {
-		return lostRaceAnswer()
+		return lostRaceAnswer(), nil
 	}
-	refusal := common.Internal("failed to open the request's scope in the transaction", err)
-	refusal.Retryable = false
-	return refusal
+	if errors.Is(err, spi.ErrTxNotFound) {
+		return transactionNotFound(err), sessionEnded(err)
+	}
+	return common.InternalWithCode(common.ErrCodeServerError,
+		"the request could not open its scope in the transaction", err), nil
+}
+
+// sessionEnded is the broken cause of a transaction whose session has ended.
+func sessionEnded(err error) error {
+	return fmt.Errorf("the transaction's session has ended: %w", err)
 }
 
 // leave takes an ended scope out of its transaction's tree: it records broken,
-// marks the parent with markCode when that is set, and wakes the waits.
-func (c *inProcess) leave(s *scope, markCode string, broken error) {
+// sets mark on the parent when it is not nil, and wakes the waits.
+func (c *inProcess) leave(s *scope, mark *parentMark, broken error) {
 	cancels := func() []context.CancelCauseFunc {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -433,8 +456,8 @@ func (c *inProcess) leave(s *scope, markCode string, broken error) {
 			tx.broken = broken
 		}
 		var cancels []context.CancelCauseFunc
-		if markCode != "" {
-			cancels = s.parent.markLocked(markCode)
+		if mark != nil {
+			cancels = s.parent.markLocked(mark.code)
 		}
 		delete(tx.open, s)
 		close(tx.changed)
@@ -513,7 +536,7 @@ func (c *inProcess) pause(s *scope) func() error {
 		for h != nil && h.kind != callbackKind {
 			h = h.parent
 		}
-		if h == nil {
+		if h == nil || h.release == nil {
 			return nil, nil
 		}
 		r := h.release
@@ -551,28 +574,29 @@ func (c *inProcess) pause(s *scope) func() error {
 
 // OpenChild implements Coordination.
 func (c *inProcess) OpenChild(ctx context.Context) (Scope, context.Context, error) {
-	parent := scopeFrom(ctx)
-	var txID string
-	if parent != nil {
-		txID = parent.tx.id
-	} else if tx := spi.GetTransaction(ctx); tx != nil {
-		txID = tx.ID
-	} else {
+	spiTx := spi.GetTransaction(ctx)
+	if spiTx == nil {
 		return nil, ctx, errors.New("failed to open a processor scope: the context carries no transaction")
 	}
-	if err := Check(ctx); err != nil {
-		return nil, ctx, err
+	txID := spiTx.ID
+	// The scope on ctx is the parent only when it belongs to ctx's
+	// transaction; otherwise the processor scope is the root's.
+	parent := scopeFrom(ctx)
+	if parent != nil && parent.tx.id != txID {
+		parent = nil
+	}
+	if parent != nil {
+		if err := parent.check(); err != nil {
+			return nil, ctx, err
+		}
 	}
 	s := &scope{c: c, kind: processorKind}
 	s.ctx = context.WithValue(ctx, scopeKey{}, s)
 	broken := func() error {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		var tx *txState
-		if parent != nil {
-			tx = parent.tx
-		} else {
-			tx = c.txLocked(txID)
+		tx := c.txLocked(txID)
+		if parent == nil || parent.tx != tx {
 			parent = tx.root
 		}
 		if tx.broken != nil {
@@ -587,7 +611,11 @@ func (c *inProcess) OpenChild(ctx context.Context) (Scope, context.Context, erro
 	}
 	sp, err := c.txMgr.Savepoint(s.ctx, txID)
 	if err != nil {
-		c.leave(s, "", nil)
+		var broken error
+		if errors.Is(err, spi.ErrTxNotFound) {
+			broken = sessionEnded(err)
+		}
+		c.leave(s, nil, broken)
 		return nil, ctx, fmt.Errorf("failed to open a processor scope: %w", errors.Join(ErrScopeInfra, err))
 	}
 	s.savepoint = sp

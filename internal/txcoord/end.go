@@ -37,6 +37,24 @@ func failureOf(o *common.Outcome) *failure {
 	}
 }
 
+// markCode is the code the parent's mark names: the failure's own, or, for an
+// answer that carries none (a backstop: a buffered HTTP status, a raw gRPC
+// error), SERVER_ERROR for a 5xx and the status otherwise.
+func (f *failure) markCode() string {
+	switch {
+	case f.code != "":
+		return f.code
+	case f.status >= http.StatusInternalServerError:
+		return common.ErrCodeServerError
+	default:
+		return fmt.Sprintf("HTTP %d", f.status)
+	}
+}
+
+// parentMark is a mark to set on the parent of an ended scope, with the code
+// the owner's refusal names. A nil *parentMark is no mark.
+type parentMark struct{ code string }
+
 // answer is what the request is told for a failure: the handler's own answer
 // (nil), except for a failed completion, which the handler did not answer.
 func (f *failure) answer() *common.AppError {
@@ -52,7 +70,7 @@ func (f *failure) answer() *common.AppError {
 // savepoint is released or rolled back while the gate is still held.
 func (s *scope) End(o *common.Outcome) *common.AppError {
 	var answer *common.AppError
-	var mark string
+	var mark *parentMark
 	var broken error
 	if s.class != Outside {
 		answer, mark, broken = s.settle(failureOf(o))
@@ -64,30 +82,31 @@ func (s *scope) End(o *common.Outcome) *common.AppError {
 
 // settle decides a callback scope's end by the first matching row, and
 // releases or rolls back its savepoint. It returns the rewritten answer (nil:
-// the handler's own), the code to mark the parent with ("" for no mark), and
-// the cause that leaves the transaction broken (nil when it is not).
-func (s *scope) settle(f *failure) (*common.AppError, string, error) {
+// the handler's own), the mark to set on the parent (nil for none), and the
+// cause that leaves the transaction broken (nil when it is not).
+func (s *scope) settle(f *failure) (*common.AppError, *parentMark, error) {
 	// Row 1: its pass is no longer current. No mark is passed up: the owner
 	// has moved on.
 	if err := fence.Check(s.ctx); err != nil {
-		return fence.NewSupersededError().WithCause(err), "", s.discard()
+		return fence.NewSupersededError().WithCause(err), nil, s.discard()
 	}
 	// Row 2: the transaction lost a write race and the request failed.
 	if f != nil && s.c.lostRace(s.ctx, s.tx.id) {
-		return lostRaceAnswer(), "", s.discard()
+		return lostRaceAnswer(), nil, s.discard()
 	}
 	// Row 3: the transaction's session has ended. The scope is discarded if
 	// that is still possible; the transaction is broken either way.
 	if f != nil && errors.Is(f.err, spi.ErrTxNotFound) {
 		_ = s.discard()
-		return transactionNotFound(f.err), "", fmt.Errorf("a joined request found the transaction's session ended: %w", f.err)
+		return transactionNotFound(f.err), nil, sessionEnded(f.err)
 	}
 	// Row 4: the scope is marked; a write passes the mark up.
 	if code, marked := s.markedCode(); marked {
-		if s.class != Write {
-			code = ""
+		var mark *parentMark
+		if s.class == Write {
+			mark = &parentMark{code: code}
 		}
-		return common.TransactionRollbackOnlyJoined(), code, s.discard()
+		return common.TransactionRollbackOnlyJoined(), mark, s.discard()
 	}
 	switch {
 	case f == nil:
@@ -96,26 +115,26 @@ func (s *scope) settle(f *failure) (*common.AppError, string, error) {
 		return s.complete()
 	case f.retryable:
 		// Row 6.
-		return f.answer(), "", s.discard()
+		return f.answer(), nil, s.discard()
 	case s.class == Write:
 		// Row 7.
-		return f.answer(), f.code, s.discard()
+		return f.answer(), &parentMark{code: f.markCode()}, s.discard()
 	case f.status < http.StatusInternalServerError:
 		// Row 8: a read that answered keeps its read set, so the commit still
 		// validates what the compute node was told.
 		return s.complete()
 	default:
 		// Row 9.
-		return f.answer(), "", s.discard()
+		return f.answer(), nil, s.discard()
 	}
 }
 
 // complete releases the savepoint. A release that fails is a failed request,
 // judged again from row 1.
-func (s *scope) complete() (*common.AppError, string, error) {
+func (s *scope) complete() (*common.AppError, *parentMark, error) {
 	err := s.c.txMgr.ReleaseSavepoint(s.ctx, s.tx.id, s.savepoint)
 	if err == nil {
-		return nil, "", nil
+		return nil, nil, nil
 	}
 	return s.settle(&failure{
 		status:     http.StatusInternalServerError,
@@ -157,6 +176,6 @@ func (s *scope) Close(procErr error) error {
 			result = s.c.rollbackOnly(s.ctx, s.tx.id, code)
 		}
 	}
-	s.c.leave(s, "", broken)
+	s.c.leave(s, nil, broken)
 	return result
 }

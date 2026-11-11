@@ -3,7 +3,9 @@ package txcoord
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,9 +178,10 @@ func TestEnter_SealedTransactionRefused410(t *testing.T) {
 func TestAdvance_WaitsForLowerMajorScopes(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, _ := e.mustEnter(Write, pair("c1", 1))
+	a, actx := e.mustEnter(Write, pair("c1", 1))
 
 	advanced := async(func() { e.c.Advance("c1", 2) })
+	mustSuperseded(t, actx)
 	mustStillBlock(t, "Advance", advanced)
 	mustAnswer(t, a.End(&common.Outcome{}), http.StatusGone, common.ErrCodeCalloutSuperseded, false)
 	mustFinish(t, "Advance", advanced)
@@ -215,9 +218,10 @@ func TestCalloutEnd_WaitsForScopesAndCancelsNested(t *testing.T) {
 func TestCalloutEnd_AnsweredBeforeCallbackReturned(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, _ := e.mustEnter(Write, pair("c1", 1))
+	a, actx := e.mustEnter(Write, pair("c1", 1))
 
 	ended := async(endC1)
+	mustSuperseded(t, actx)
 	mustStillBlock(t, "the callout's end", ended)
 	mustAnswer(t, a.End(&common.Outcome{}), http.StatusGone, common.ErrCodeCalloutSuperseded, false)
 	mustFinish(t, "the callout's end", ended)
@@ -439,4 +443,213 @@ func TestPairs(t *testing.T) {
 	mustOwnAnswer(t, a.End(&common.Outcome{}))
 	endC1()
 	mustSealOK(t, e)
+}
+
+func TestEnter_SavepointRefused(t *testing.T) {
+	t.Run("lost race", func(t *testing.T) {
+		e := newEnv(t)
+		_, endC1 := e.callout(e.ownerCtx, "c1")
+		spErr := errors.New("savepoint refused")
+		e.tm.failSavepoint.Store(&spErr)
+		e.tm.lost.Store(true)
+
+		_, _, err := e.enter(Write, pair("c1", 1))
+		mustCode(t, err, http.StatusConflict, common.ErrCodeConflict, false)
+		mustNothingHeld(t, e)
+		endC1()
+	})
+	t.Run("other", func(t *testing.T) {
+		e := newEnv(t)
+		_, endC1 := e.callout(e.ownerCtx, "c1")
+		// A storage outage classifies as a retryable 503; the refusal of a
+		// savepoint is not retryable, so it must not read as one.
+		spErr := error(storageDown{})
+		e.tm.failSavepoint.Store(&spErr)
+
+		_, _, err := e.enter(Write, pair("c1", 1))
+		mustCode(t, err, http.StatusInternalServerError, common.ErrCodeServerError, false)
+		if strings.Contains(strings.ToLower(err.Error()), "retry") {
+			t.Errorf("a non-retryable refusal says retry: %q", err.Error())
+		}
+		mustNothingHeld(t, e)
+		if e.rootMarked() {
+			t.Fatal("a refused savepoint marked the root")
+		}
+		endC1()
+		mustSealOK(t, e)
+	})
+	t.Run("dead session", func(t *testing.T) {
+		e := newEnv(t)
+		_, endC1 := e.callout(e.ownerCtx, "c1")
+		spErr := error(fmt.Errorf("failed to take a savepoint: %w", deadSession{}))
+		e.tm.failSavepoint.Store(&spErr)
+
+		_, _, err := e.enter(Write, pair("c1", 1))
+		mustCode(t, err, http.StatusNotFound, common.ErrCodeTransactionNotFound, false)
+		e.tm.failSavepoint.Store(nil)
+		_, _, err = e.enter(Read, pair("c1", 1))
+		mustCode(t, err, http.StatusNotFound, common.ErrCodeTransactionNotFound, false)
+		endC1()
+		if err := e.seal(); !errors.Is(err, spi.ErrTxNotFound) {
+			t.Fatalf("Seal = %v; want the broken cause", err)
+		}
+	})
+}
+
+// mustNothingHeld asserts that a refused Enter left no scope open and the gate
+// free: the next request is admitted at once.
+func mustNothingHeld(t *testing.T, e *env) {
+	t.Helper()
+	e.tm.failSavepoint.Store(nil)
+	e.tm.lost.Store(false)
+	var s Scope
+	var err error
+	mustFinish(t, "the next Enter", async(func() { s, _, err = e.enter(Read, pair("c1", 1)) }))
+	if err != nil {
+		t.Fatalf("the next Enter = %v", err)
+	}
+	mustOwnAnswer(t, s.End(&common.Outcome{}))
+}
+
+type storageDown struct{}
+
+func (storageDown) Error() string            { return "storage is down" }
+func (storageDown) StorageUnavailable() bool { return true }
+
+func TestOpenChild_SavepointOnDeadSessionBreaks(t *testing.T) {
+	e := newEnv(t)
+	spErr := error(fmt.Errorf("failed to take a savepoint: %w", deadSession{}))
+	e.tm.failSavepoint.Store(&spErr)
+
+	_, _, err := e.c.OpenChild(e.ownerCtx)
+	if !errors.Is(err, ErrScopeInfra) {
+		t.Fatalf("OpenChild = %v; want ErrScopeInfra", err)
+	}
+	if err := e.seal(); !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatalf("Seal = %v; want the broken cause", err)
+	}
+}
+
+func TestCheck_LostRaceBeforeMark(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+	_, endX1 := e.callout(actx, "x1")
+	resume := Pause(actx)
+	d, _ := e.mustEnter(Write, pair("x1", 1), pair("c1", 1))
+	mustOwnAnswer(t, d.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+	endX1()
+	e.tm.lost.Store(true)
+
+	err := resume()
+	if !errors.Is(err, spi.ErrTxAborted) {
+		t.Fatalf("resume of a marked scope in a lost transaction = %v; want spi.ErrTxAborted", err)
+	}
+	_ = a.End(outcomeOf(err))
+	endC1()
+}
+
+func TestOpenChild_CloseMarkedLostRace(t *testing.T) {
+	e := newEnv(t)
+	p, pctx, err := e.c.OpenChild(e.ownerCtx)
+	if err != nil {
+		t.Fatalf("OpenChild = %v", err)
+	}
+	_, endP1 := e.callout(pctx, "p1")
+	d, _ := e.mustEnter(Write, pair("p1", 1))
+	mustOwnAnswer(t, d.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+	endP1()
+	e.tm.lost.Store(true)
+
+	if err := p.Close(nil); !errors.Is(err, spi.ErrTxAborted) {
+		t.Fatalf("Close = %v; want spi.ErrTxAborted", err)
+	}
+}
+
+// A ctx that carries a scope of another transaction registers nothing with
+// that scope: the callout and the processor scope go under txID's own root.
+func TestBeginCalloutAndOpenChild_ScopeOfAnotherTransaction(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+
+	tx2, tx2Ctx, err := e.tm.Begin(e.userCtx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	cctx, endY := e.c.BeginCallout(actx, tx2, "y1")
+	reg := func() *calloutReg {
+		e.c.mu.Lock()
+		defer e.c.mu.Unlock()
+		return e.c.callouts["y1"]
+	}()
+	if reg.tx.id != tx2 || reg.parent != reg.tx.root {
+		t.Fatalf("callout registered on %s under %v; want %s's root", reg.tx.id, reg.parent.kind, tx2)
+	}
+	// A mark on the first transaction's scope does not reach it.
+	func() {
+		e.c.mu.Lock()
+		defer e.c.mu.Unlock()
+		a.(*scope).markLocked(common.ErrCodeValidationFailed)
+	}()
+	if cctx.Err() != nil {
+		t.Fatal("a mark in one transaction cancelled a callout of another")
+	}
+	endY()
+
+	mixed := spi.WithTransaction(actx, spi.GetTransaction(tx2Ctx))
+	p, _, err := e.c.OpenChild(mixed)
+	if err != nil {
+		t.Fatalf("OpenChild = %v", err)
+	}
+	ps := p.(*scope)
+	if ps.tx.id != tx2 || ps.parent != ps.tx.root {
+		t.Fatalf("processor scope opened on %s; want under %s's root", ps.tx.id, tx2)
+	}
+	if err := p.Close(nil); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	_ = a.End(&common.Outcome{})
+	endC1()
+}
+
+// A second Pause before the first one's resume is a no-op: it releases
+// nothing, and its resume only checks.
+func TestPause_TwiceIsNoOp(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+	resume1 := Pause(actx)
+	resume2 := Pause(actx)
+	if err := resume2(); err != nil {
+		t.Fatalf("second resume = %v", err)
+	}
+	if err := resume1(); err != nil {
+		t.Fatalf("first resume = %v", err)
+	}
+	mustOwnAnswer(t, a.End(&common.Outcome{}))
+	// The gate is free: the next request is admitted at once.
+	mustNothingHeld(t, e)
+	endC1()
+	mustSealOK(t, e)
+}
+
+// The end of a callout forgets only its own registration: a later callout
+// registered under the same id stays registered.
+func TestCalloutEnd_ForgetsOnlyItsOwnRegistration(t *testing.T) {
+	e := newEnv(t)
+	_, endFirst := e.c.BeginCallout(e.ownerCtx, e.txID, "dup")
+	_, endSecond := e.c.BeginCallout(e.ownerCtx, e.txID, "dup")
+	endFirst()
+	registered := func() bool {
+		e.c.mu.Lock()
+		defer e.c.mu.Unlock()
+		tx := e.c.txs[e.txID]
+		return e.c.callouts["dup"] != nil && tx != nil && tx.callouts["dup"] != nil && tx.root.callouts["dup"] != nil
+	}()
+	if !registered {
+		t.Fatal("the first callout's end forgot the second's registration")
+	}
+	endSecond()
+	mustForgotten(t, e)
 }

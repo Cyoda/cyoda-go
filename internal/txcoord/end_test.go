@@ -66,9 +66,10 @@ func markedByChild(t *testing.T, e *env, actx context.Context) error {
 func TestEnd_Row1_SupersededDiscardsNoMark(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, _ := e.mustEnter(Write, pair("c1", 1))
+	a, actx := e.mustEnter(Write, pair("c1", 1))
 
 	advanced := async(func() { e.c.Advance("c1", 2) })
+	mustSuperseded(t, actx)
 	mustStillBlock(t, "Advance", advanced)
 	mustAnswer(t, a.End(&common.Outcome{}), http.StatusGone, common.ErrCodeCalloutSuperseded, false)
 	mustFinish(t, "Advance", advanced)
@@ -87,6 +88,7 @@ func TestEnd_Row1_SupersededWithMarkedDescendantNoClimb(t *testing.T) {
 	}
 
 	advanced := async(func() { e.c.Advance("c1", 2) })
+	mustSuperseded(t, actx)
 	mustStillBlock(t, "Advance", advanced)
 	mustAnswer(t, a.End(failed(http.StatusConflict, common.ErrCodeTransactionRollbackOnly)),
 		http.StatusGone, common.ErrCodeCalloutSuperseded, false)
@@ -254,9 +256,10 @@ func TestEnd_Row9_Read5xxDiscards(t *testing.T) {
 func TestEnd_Outside_NeverRewrittenNeverMarks(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, _ := e.mustEnter(Outside, pair("c1", 1))
+	a, actx := e.mustEnter(Outside, pair("c1", 1))
 
 	advanced := async(func() { e.c.Advance("c1", 2) })
+	mustSuperseded(t, actx)
 	mustStillBlock(t, "Advance", advanced)
 	mustOwnAnswer(t, a.End(failed(http.StatusBadRequest, common.ErrCodeBadRequest)))
 	mustFinish(t, "Advance", advanced)
@@ -278,4 +281,75 @@ func TestEnd_PanicOutcome_DiscardsAndMarks(t *testing.T) {
 	mustCalls(t, e.tm, "savepoint", "rollback")
 	endC1()
 	mustSealRollbackOnly(t, e, common.ErrCodeServerError)
+}
+
+// A backstop answer (a buffered HTTP status, a raw gRPC error) may carry no
+// code. A non-retryable write failure marks the parent all the same, and the
+// owner's refusal names the status.
+func TestEnd_Row7_EmptyCodeStillMarks(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+
+	mustOwnAnswer(t, a.End(&common.Outcome{Status: http.StatusRequestEntityTooLarge}))
+	mustCalls(t, e.tm, "savepoint", "rollback")
+	if !e.rootMarked() {
+		t.Fatal("a non-retryable write failure without a code did not mark the parent")
+	}
+	endC1()
+	mustSealRollbackOnly(t, e, "413")
+}
+
+// A completion that fails is judged again from row 1: a lost race answers by
+// row 2, not with the 500.
+func TestEnd_Row5_ReleaseFailsLostRaceAnswersRow2(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+	relErr := errors.New("release refused")
+	e.tm.failRelease.Store(&relErr)
+	e.tm.lost.Store(true)
+
+	mustAnswer(t, a.End(&common.Outcome{}), http.StatusConflict, common.ErrCodeConflict, false)
+	mustCalls(t, e.tm, "savepoint", "release", "rollback")
+	if e.rootMarked() {
+		t.Fatal("a lost race marked the root")
+	}
+	e.tm.failRelease.Store(nil)
+	endC1()
+}
+
+// A read whose completion fails is a 5xx read: discarded, no mark (row 9).
+func TestEnd_Row5_ReadReleaseFailsAnswersRow9(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Read, pair("c1", 1))
+	relErr := errors.New("release refused")
+	e.tm.failRelease.Store(&relErr)
+
+	mustAnswer(t, a.End(&common.Outcome{}), http.StatusInternalServerError, common.ErrCodeServerError, false)
+	mustCalls(t, e.tm, "savepoint", "release", "rollback")
+	if e.rootMarked() {
+		t.Fatal("a read whose completion failed marked the root")
+	}
+	e.tm.failRelease.Store(nil)
+	endC1()
+	mustSealOK(t, e)
+}
+
+// A lost race outranks a mark: the failed request of a marked scope in a
+// transaction that lost answers by row 2, and passes no mark up.
+func TestEnd_Row2_OutranksRow4(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+	_ = markedByChild(t, e, actx)
+	e.tm.lost.Store(true)
+
+	mustAnswer(t, a.End(failed(http.StatusConflict, common.ErrCodeTransactionRollbackOnly)),
+		http.StatusConflict, common.ErrCodeConflict, false)
+	if e.rootMarked() {
+		t.Fatal("a scope answered by row 2 passed its mark up")
+	}
+	endC1()
 }
