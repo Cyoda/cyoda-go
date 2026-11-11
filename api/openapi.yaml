@@ -531,6 +531,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -626,6 +628,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1302,6 +1306,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1399,6 +1405,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1511,6 +1519,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1599,6 +1609,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1740,6 +1752,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1880,6 +1894,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1961,6 +1977,7 @@ paths:
             retries the delete up to 3 times before it answers 409; retry the
             request. A request that joins an open transaction (`X-Tx-Token`) is
             not retried on the server.
+            A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit.
           content:
             application/problem+json:
               schema:
@@ -2117,6 +2134,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2221,6 +2240,8 @@ paths:
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2231,7 +2252,7 @@ paths:
             layer could not serve the request — no connection available within the
             acquire timeout, the transaction was reclaimed by the idle-in-transaction
             ceiling, or the connection was lost, or the store could not certify the
-            consistency time within its wait budget (CONSISTENCY_TIME_UNAVAILABLE).
+            consistency time within its wait budget (CONSISTENCY_TIME_UNAVAILABLE). A request carrying an `X-Tx-Token` is also answered 503 TRANSACTION_BUSY (retryable) while another callback of its transaction waits for a callout of its own.
           content:
             application/problem+json:
               schema:
@@ -2437,6 +2458,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2667,6 +2690,7 @@ paths:
             least as fast as they were removed, so it was stopped at its
             batch cap. Batches committed before the failure stay deleted.
             Stop the concurrent writers, narrow the condition, or retry.
+            A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit.
           content:
             application/problem+json:
               schema:
@@ -2893,7 +2917,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -3116,7 +3140,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -3303,7 +3327,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -3435,7 +3459,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -3645,7 +3669,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -3787,7 +3811,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -4040,7 +4064,7 @@ paths:
                 detail: cannot find model entityName=nobel-prize, version=1
                 instance: /api/entity/JSON/nobel-prize/1
         "409":
-          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -4166,6 +4190,8 @@ paths:
                       errorCode: BAD_REQUEST
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4367,6 +4393,8 @@ paths:
                       errorCode: BAD_REQUEST
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4505,6 +4533,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4583,6 +4613,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7205,6 +7237,8 @@ paths:
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/platform-api/entity/fetch/transitions
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7214,7 +7248,7 @@ paths:
             needs a compute member for its tags and none is connected, or the storage
             layer could not serve the request — no connection available within the
             acquire timeout, the transaction was reclaimed by the idle-in-transaction
-            ceiling, or the connection was lost.
+            ceiling, or the connection was lost. A request carrying an `X-Tx-Token` is also answered 503 TRANSACTION_BUSY (retryable) while another callback of its transaction waits for a callout of its own.
           content:
             application/problem+json:
               schema:
@@ -7512,6 +7546,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7526,6 +7562,7 @@ paths:
             CYODA_SEARCH_ASYNC_WORKERS / CYODA_SEARCH_ASYNC_QUEUE), or the
             store could not certify the consistency time within its wait budget
             (CONSISTENCY_TIME_UNAVAILABLE).
+            A request carrying an `X-Tx-Token` is also answered 503 TRANSACTION_BUSY (retryable) while another callback of its transaction waits for a callout of its own.
           content:
             application/problem+json:
               schema:
@@ -7625,6 +7662,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7683,6 +7722,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7769,6 +7810,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7957,6 +8000,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -12973,8 +13018,9 @@ components:
     TransactionNotFound:
       description: >-
         The transaction named by the `X-Tx-Token` is not open — it was never
-        registered on this node, or it has already committed or rolled back.
-        `properties.errorCode` is TRANSACTION_NOT_FOUND.
+        registered on this node, it has already committed or rolled back, or its
+        storage session has ended under it. `properties.errorCode` is
+        TRANSACTION_NOT_FOUND. Not retryable.
       content:
         application/problem+json:
           schema:
@@ -12986,8 +13032,21 @@ components:
         TRANSACTION_EXPIRED: the token has passed its own expiry;
         CALLOUT_SUPERSEDED: the callout the token names has been handed to
         another compute member or has ended while the transaction is still
-        open, so the caller no longer owns the work it is calling back about.
-        Neither is retryable with the same token.
+        open, so the caller no longer owns the work it is calling back about —
+        also when that happened while the request was in progress, whose writes
+        are then discarded. Neither is retryable with the same token.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    TransactionRollbackOnly:
+      description: >-
+        TRANSACTION_ROLLBACK_ONLY: the transaction, or the part of it the
+        request would run in, can only be rolled back — a request that joined
+        it (carrying its `X-Tx-Token`) failed a write. A request carrying the
+        token is refused before it runs; the operation that owns the
+        transaction is refused when it would commit, and the message names the
+        code the failed request got. Not retryable.
       content:
         application/problem+json:
           schema:
@@ -12998,7 +13057,9 @@ components:
         ceilings. `properties.errorCode` distinguishes them — BAD_REQUEST: the
         request body exceeds the 10 MiB a joined request may buffer;
         JOINED_RESPONSE_TOO_LARGE: the answer exceeds what a joined request may
-        hold under the transaction's lock, so page the read.
+        hold while it holds the transaction, so page the read. On a write that
+        answer is a failure of the request: its writes are discarded and the
+        transaction becomes rollback-only.
       content:
         application/problem+json:
           schema:
@@ -13066,12 +13127,16 @@ components:
         COMPUTE_MEMBER_DISCONNECTED, DISPATCH_FORWARD_FAILED), or a request
         carrying an `X-Tx-Token` could not reach the transaction it names — the
         node owning that transaction is not in the cluster's registry, is marked
-        dead, or is unreachable (TRANSACTION_NODE_UNAVAILABLE), or the
-        transaction already has as many callbacks waiting as it may have
-        (TOO_MANY_JOINED_REQUESTS), or this node's copy of the signing key pairs
+        dead, or is unreachable (TRANSACTION_NODE_UNAVAILABLE, retryable only
+        when the request was not sent to that node, since otherwise its outcome
+        is unknown), or the transaction already has as many callbacks waiting as
+        it may have (TOO_MANY_JOINED_REQUESTS), or another callback of the
+        transaction is waiting for a callout of its own and this request is not
+        one of that callout's callbacks (TRANSACTION_BUSY — send it again once
+        that one has been answered), or this node's copy of the signing key pairs
         has had no successful re-read from storage within its bound, or the store could
         not certify the consistency time within its wait budget
-        (CONSISTENCY_TIME_UNAVAILABLE). Retryable.
+        (CONSISTENCY_TIME_UNAVAILABLE). Retryable, except as stated above.
       content:
         application/problem+json:
           schema:
