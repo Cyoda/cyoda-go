@@ -364,11 +364,11 @@ func RunCallout_HandOverNoPayloadKeepsCallbackWrite(t *testing.T, fixture MultiN
 // RunCallout_HandOverStopsOnMark: the owner has no compute node for the
 // processor's tag, so the callout is handed over to the other pnode, which has
 // two. The first one tried makes a joined create whose own processor fails,
-// not retryably — a failed joined write — and then fails its try retryably,
-// which would send the work to the second. The failed write marks the
-// transaction; the mark cancels the owner's callout, and with it the hand-over
-// in progress on the peer: the peer makes no further try, so only one of its
-// compute nodes is ever called out. The owner is refused 409
+// not retryably — a failed joined write — and then never answers, so once its
+// answer limit passed the peer would give the work to the second. The failed
+// write marks the transaction; the mark cancels the owner's callout, and with
+// it the hand-over in progress on the peer: the peer makes no further try, so
+// only one of its compute nodes is ever called out. The owner is refused 409
 // TRANSACTION_ROLLBACK_ONLY, naming the callback's code.
 func RunCallout_HandOverStopsOnMark(t *testing.T, fixture MultiNodeFixture) {
 	urls := mnRequire(t, fixture, 2)
@@ -376,18 +376,20 @@ func RunCallout_HandOverStopsOnMark(t *testing.T, fixture MultiNodeFixture) {
 	owner := client.NewClient(urls[0], tenant.Token)
 	const model, tag = "mn-ho-mark", "mn-ho-mark"
 	const xModel, xTag = "mn-ho-mark-x", "mn-ho-mark-x"
-	const proc = "cb-create-secondary-then-fail-retryable"
+	const proc = "cb-create-secondary-then-silent"
+	const answerLimit = 1500 * time.Millisecond
 
 	// x's processor fails, not retryably; it runs where the callback's create
-	// runs, on the owner.
-	xnode := StartComputeClientOrSkip(t, fixture, 0, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{xTag}})
+	// runs, on the owner. Every compute node is warmed up, so the owner knows
+	// each of them before the scenario's create.
+	xnode := mnWarmUp(t, fixture, owner, tenant, 0, "mn-ho-mark-xw", xTag)
 	cbRouteSetupModel(t, owner, xModel, cbRouteSampleSecondary,
 		mnWorkflow("mn-ho-mark-x-wf", mnProc("inject-error-not-retryable", "SYNC", xTag, "", nil)))
-	first := StartComputeClientOrSkip(t, fixture, 1, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}})
-	second := mnWarmUp(t, fixture, owner, tenant, 1, "mn-ho-mark-w", tag)
+	first := mnWarmUp(t, fixture, owner, tenant, 1, "mn-ho-mark-w1", tag)
+	second := mnWarmUp(t, fixture, owner, tenant, 1, "mn-ho-mark-w2", tag)
 	cbRouteSetupModel(t, owner, model, cbRouteSampleNoWriteback,
 		mnWorkflow("mn-ho-mark-wf", mnProc(proc, "SYNC", tag, cbRouteContext(xModel, "mn-ho-mark-marker"),
-			map[string]any{"idempotent": true, "retryPolicy": "FIXED"})))
+			map[string]any{"idempotent": true, "retryPolicy": "FIXED", "responseTimeoutMs": answerLimit.Milliseconds()})))
 
 	status, body, err := owner.CreateEntityRaw(t, model, 1, mnSample)
 	if err != nil {
@@ -398,9 +400,9 @@ func RunCallout_HandOverStopsOnMark(t *testing.T, fixture MultiNodeFixture) {
 		t.Errorf("detail = %q; want it to name the callback's WORKFLOW_FAILED", detail)
 	}
 
-	// A further try on the peer would follow its first member's answer, a
-	// second after the callback; give it the time it would take.
-	time.Sleep(3 * time.Second)
+	// Without the mark, the peer would try the second compute node once the
+	// first one's answer limit passed. Wait past it before counting.
+	time.Sleep(2 * answerLimit)
 	tries := 0
 	for _, cc := range []parity.ComputeClient{first, second} {
 		for _, r := range cc.Received(t) {
@@ -412,8 +414,14 @@ func RunCallout_HandOverStopsOnMark(t *testing.T, fixture MultiNodeFixture) {
 	if tries != 1 {
 		t.Errorf("the peer's compute nodes were called out %d times; want 1 — the mark ends the hand-over", tries)
 	}
-	if got := len(xnode.Received(t)); got != 1 {
-		t.Errorf("x's compute node received %d requests; want the one failed write", got)
+	xRuns := 0
+	for _, r := range xnode.Received(t) {
+		if r.Name == "inject-error-not-retryable" {
+			xRuns++
+		}
+	}
+	if xRuns != 1 {
+		t.Errorf("x's compute node ran x's processor %d times; want the one failed write", xRuns)
 	}
 	if all, err := owner.ListEntitiesByModel(t, xModel, 1); err != nil {
 		t.Fatalf("list x: %v", err)

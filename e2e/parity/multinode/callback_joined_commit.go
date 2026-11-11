@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
@@ -20,10 +21,12 @@ import (
 //   - The secondary's workflow reaches a COMMIT_BEFORE_DISPATCH processor. On
 //     node 1 the joined write is refused with 409 COMMIT_IN_JOINED_TRANSACTION
 //     before T is flushed or committed, and the answer crosses back.
+//   - The processor records the crossed-back answer outside T (a standalone
+//     create, no token) and succeeds.
 //   - The refusal is a non-retryable failure of a joined write: T is made
-//     rollback-only. The processor records the answer and succeeds, and node 1
-//     still refuses its owner 409 TRANSACTION_ROLLBACK_ONLY, naming the
-//     callback's code; nothing is stored, the refused secondary nowhere.
+//     rollback-only, and node 1 refuses its owner 409 TRANSACTION_ROLLBACK_ONLY,
+//     naming the callback's code; nothing of T is stored, the refused
+//     secondary nowhere.
 //
 // The COMMIT_BEFORE_DISPATCH processor carries a tag no compute member serves:
 // the refusal comes before any dispatch, so when it holds the tag never
@@ -70,11 +73,13 @@ func RunCallback_CommitBeforeDispatchRefusedAcrossForwardedHop(t *testing.T, fix
 	const secondary = "cbjc-fwdhop-secondary"
 	const primary = "cbjc-fwdhop-primary"
 	const marker = "cbjc-fwdhop-marker"
+	const record = "cbjc-fwdhop-record"
 	const primarySample = `{"name":"Test","amount":10,"status":"new","tokenWasEmpty":false,"hopStatus":0,"hopBody":""}`
 
+	parity.SetupHopRecordModel(t, cSetup, record)
 	cbRouteSetupModel(t, cSetup, secondary, cbRouteSampleSecondary, cbRouteCommitBeforeDispatchWorkflow("cbjc-fwdhop-secondary-wf"))
 	cbRouteSetupModel(t, cSetup, primary, primarySample,
-		cbRoutePrimaryWorkflow("cbjc-fwdhop-wf", "cb-create-secondary-record", cbRouteContext(secondary, marker)))
+		cbRoutePrimaryWorkflow("cbjc-fwdhop-wf", "cb-create-secondary-record", parity.HopRecordContext(secondary, marker, record)))
 
 	const ownerIdx = 1
 	cOwner := client.NewClient(urls[ownerIdx], tenant.Token)
@@ -103,6 +108,16 @@ func RunCallback_CommitBeforeDispatchRefusedAcrossForwardedHop(t *testing.T, fix
 		t.Fatalf("list primary: %v", err)
 	} else if len(all) != 0 {
 		t.Fatalf("%d primary entities committed; the owner's refused operation commits nothing", len(all))
+	}
+
+	// The joined create's answer, as it crossed back through node 0's proxy.
+	hop := parity.ReadHopRecord(t, cSetup, record, marker)
+	if hop.TokenWasEmpty {
+		t.Fatal("forwarded SYNC dispatch: tokenWasEmpty=true; the owner's token must survive the forward")
+	}
+	if hop.Status != http.StatusConflict || hop.ErrorCode != "COMMIT_IN_JOINED_TRANSACTION" || hop.Retryable {
+		t.Fatalf("joined create across the hop = %d %s retryable=%t; want 409 COMMIT_IN_JOINED_TRANSACTION, not retryable (body: %s)",
+			hop.Status, hop.ErrorCode, hop.Retryable, hop.Body)
 	}
 
 	for nodeIdx, url := range urls {

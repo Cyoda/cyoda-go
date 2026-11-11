@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
@@ -37,17 +38,18 @@ import (
 //     the request BEFORE any write: 400 BAD_REQUEST naming the param and the
 //     joined-transaction reason. That response crosses back through node 0's
 //     proxy to the callback client unmodified.
+//   - The processor records the crossed-back HTTP status + body outside the
+//     transaction (a standalone create, no token), and the Go test driver
+//     reads it from that record.
 //   - The rejection is a non-retryable failure of a joined write: the
-//     callback's scope is discarded and T made rollback-only. The processor
-//     records the hop's outcome and succeeds, and the owner is still refused
-//     409 TRANSACTION_ROLLBACK_ONLY, naming the code its callback was refused
-//     with — BAD_REQUEST — so the rejection is proven to have happened on the
-//     owner, where T lives, and nothing of T is committed.
+//     callback's scope is discarded and T made rollback-only, so the owner is
+//     refused 409 TRANSACTION_ROLLBACK_ONLY, naming BAD_REQUEST, and nothing
+//     of T is committed.
 //
-// If the 400 is not given (e.g. it is replaced by a generic 502/500, or the
-// param is silently honored), that is a product bug in the proxy or the
-// forwarded join path — fail closed, do not weaken this assertion
-// (.claude/rules/correctness-over-availability.md).
+// If the 400 does not cross the hop cleanly (e.g. gets replaced by a
+// generic 502/500, or the param is silently honored), that is a product bug
+// in the proxy or the forwarded join path — fail closed, do not weaken this
+// assertion (.claude/rules/correctness-over-availability.md).
 
 func init() {
 	Register(
@@ -68,6 +70,7 @@ func RunTxControlParam_RejectedAcrossForwardedHop(t *testing.T, fixture MultiNod
 	const secondary = "txctl-fwdhop-secondary"
 	const primary = "txctl-fwdhop-primary"
 	const marker = "txctl-fwdhop-marker"
+	const record = "txctl-fwdhop-record"
 
 	// The sample declares hopStatus/hopBody/tokenWasEmpty at zero value — the
 	// exact field set cb-tx-control-param-joined writes back (see comment on
@@ -76,8 +79,9 @@ func RunTxControlParam_RejectedAcrossForwardedHop(t *testing.T, fixture MultiNod
 	// of silently widening the model.
 	const primarySample = `{"name":"Test","amount":10,"status":"new","tokenWasEmpty":false,"hopStatus":0,"hopBody":""}`
 	cbRouteSetupModel(t, cSetup, secondary, cbRouteSampleSecondary, cbRouteSecondaryWorkflow)
+	parity.SetupHopRecordModel(t, cSetup, record)
 	cbRouteSetupModel(t, cSetup, primary, primarySample,
-		cbRoutePrimaryWorkflow("txctl-fwdhop-wf", "cb-tx-control-param-joined", cbRouteContext(secondary, marker)))
+		cbRoutePrimaryWorkflow("txctl-fwdhop-wf", "cb-tx-control-param-joined", parity.HopRecordContext(secondary, marker, record)))
 
 	// OWNER = node 1 (no local compute member → dispatch forwards to node 0,
 	// whose member's callback then proxies BACK to node 1 to join T).
@@ -112,6 +116,26 @@ func RunTxControlParam_RejectedAcrossForwardedHop(t *testing.T, fixture MultiNod
 		t.Fatalf("list primary: %v", err)
 	} else if len(all) != 0 {
 		t.Fatalf("%d primary entities committed; the owner's refused operation commits nothing", len(all))
+	}
+
+	// The core assertion: the OWNER's rejection crossed the forwarded hop
+	// verbatim as 400 BAD_REQUEST naming the param and the joined-transaction
+	// reason — not a proxy-mangled status, not a silently-honored param.
+	hop := parity.ReadHopRecord(t, cSetup, record, marker)
+	if hop.TokenWasEmpty {
+		t.Fatalf("forwarded SYNC dispatch: tokenWasEmpty=true; want false (owner token must survive the A→B forward)")
+	}
+	if hop.Status != 400 {
+		t.Fatalf("joined create with transactionTimeoutMillis, forwarded across the hop: status = %d, want 400; body: %s", hop.Status, hop.Body)
+	}
+	if hop.ErrorCode != "BAD_REQUEST" {
+		t.Errorf("crossed-back 400 properties.errorCode = %q, want BAD_REQUEST: body=%s", hop.ErrorCode, hop.Body)
+	}
+	if !strings.Contains(hop.Body, "transactionTimeoutMillis") {
+		t.Errorf("crossed-back 400 body does not name transactionTimeoutMillis: %s", hop.Body)
+	}
+	if !strings.Contains(hop.Body, "joins an open transaction") {
+		t.Errorf("crossed-back 400 body does not name the joined-transaction rejection reason: %s", hop.Body)
 	}
 
 	// Negative control: the secondary the rejected create would have written

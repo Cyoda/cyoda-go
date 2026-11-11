@@ -44,7 +44,10 @@ func newScopeModels(t *testing.T, h *callbackHarness, prefix, mode string) scope
 }
 
 // assertNoEntityTrace asserts that an entity whose create was discarded left
-// nothing: it cannot be read, and the audit door does not know it.
+// nothing: it cannot be read, the audit door has no version of it, and no
+// StateMachine audit row names it. The audit door answers 404 before it merges
+// StateMachine events when the entity has no version, so those rows are
+// counted in PostgreSQL itself.
 func assertNoEntityTrace(t *testing.T, h *callbackHarness, entityID string) {
 	t.Helper()
 	if entityID == "" {
@@ -55,8 +58,44 @@ func assertNoEntityTrace(t *testing.T, h *callbackHarness, entityID string) {
 	}
 	resp := h.DoAuth(t, http.MethodGet, "/api/audit/entity/"+entityID, "", "")
 	if body := h.readBody(t, resp); resp.StatusCode != http.StatusNotFound {
-		t.Errorf("entity %s: audit answered %d %s; want 404 — a discarded write leaves no audit event", entityID, resp.StatusCode, body)
+		t.Errorf("entity %s: audit answered %d %s; want 404 — a discarded write leaves no version", entityID, resp.StatusCode, body)
 	}
+	if n := smAuditRows(t, entityID); n != 0 {
+		t.Errorf("entity %s: %d StateMachine audit rows committed; want none — a discarded write leaves no audit event", entityID, n)
+	}
+}
+
+// smAuditRows counts the committed StateMachine audit rows of an entity.
+func smAuditRows(t *testing.T, entityID string) int {
+	t.Helper()
+	var n int
+	if err := dbPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM sm_audit_events WHERE entity_id = $1`, entityID).Scan(&n); err != nil {
+		t.Fatalf("count sm_audit_events for %s: %v", entityID, err)
+	}
+	return n
+}
+
+// firstEntity is the entity id of the first callout cnode received, failing
+// the test when it received none.
+func firstEntity(t *testing.T, cnode *scriptedCnode) string {
+	t.Helper()
+	got := cnode.Received()
+	if len(got) == 0 {
+		t.Fatalf("cnode %s received no callout", cnode.name)
+	}
+	return got[0].EntityID
+}
+
+// assertRefusal asserts a problem response with wantStatus and wantCode that
+// does not carry the retryable flag at all.
+func assertRefusal(t *testing.T, status int, body string, wantStatus int, wantCode string) problemDoc {
+	t.Helper()
+	pd := assertProblem(t, status, body, wantStatus, wantCode, false)
+	if _, present := pd.Properties["retryable"]; present {
+		t.Errorf("retryable is set; want it absent (body: %s)", body)
+	}
+	return pd
 }
 
 // assertRollbackOnlyEnvelope checks a gRPC refusal with TRANSACTION_ROLLBACK_ONLY:
@@ -102,15 +141,15 @@ func TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_HTTP(t *testing.T) {
 	owner := h.CreateEntityRaw(m.p, 1, workflowSampleModel)
 
 	res := awaitCallback(t, "the callback", cb)
-	assertProblem(t, res.StatusCode, res.Body, http.StatusBadRequest, "WORKFLOW_FAILED", false)
-	pd := assertProblem(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
+	assertRefusal(t, res.StatusCode, res.Body, http.StatusBadRequest, "WORKFLOW_FAILED")
+	pd := assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
 	if !strings.Contains(pd.Detail, "WORKFLOW_FAILED") {
 		t.Errorf("owner detail = %q; want it to name the callback's WORKFLOW_FAILED", pd.Detail)
 	}
 	if n := h.countEntities(t, m.x); n != 0 {
 		t.Errorf("%d x entities committed; want none", n)
 	}
-	assertNoEntityTrace(t, h, xnode.Received()[0].EntityID)
+	assertNoEntityTrace(t, h, firstEntity(t, xnode))
 	if n := h.countEntities(t, m.p); n != 0 {
 		t.Errorf("%d p entities committed; want none", n)
 	}
@@ -146,7 +185,7 @@ func TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_GRPC(t *testing.T) {
 	if n := h.countEntities(t, m.x); n != 0 {
 		t.Errorf("%d x entities committed; want none", n)
 	}
-	assertNoEntityTrace(t, h, xnode.Received()[0].EntityID)
+	assertNoEntityTrace(t, h, firstEntity(t, xnode))
 	if n := h.countEntities(t, m.p); n != 0 {
 		t.Errorf("%d p entities committed; want none", n)
 	}
@@ -156,7 +195,8 @@ func TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_GRPC(t *testing.T) {
 // retryably — the callback is answered 400 retryable and its write discarded,
 // the transaction stays usable — and the cnode sends the same callback again,
 // which succeeds. The owner commits exactly one x, and the audit trail holds
-// the second run only.
+// the second run only: the first run's StateMachine events were discarded with
+// its scope.
 func TestCallbackScope_RetryableFailure_RetriedInTransaction(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
 	m := newScopeModels(t, h, "cs-rt", "SYNC")
@@ -196,8 +236,8 @@ func TestCallbackScope_RetryableFailure_RetriedInTransaction(t *testing.T) {
 		t.Fatalf("xproc ran %d times (%v); want two runs on two entities", len(runs), runs)
 	}
 	assertNoEntityTrace(t, h, runs[0].EntityID)
-	if n := len(h.GetAllAuditEvents(t, runs[1].EntityID)); n == 0 {
-		t.Error("the retried x has no audit events")
+	if n := smAuditRows(t, runs[1].EntityID); n == 0 {
+		t.Error("the retried x has no StateMachine audit rows")
 	}
 }
 
@@ -219,7 +259,7 @@ func TestCallbackScope_FailedRead404_TransactionGoesOn(t *testing.T) {
 	owner := h.CreateEntityRaw(m.p, 1, workflowSampleModel)
 
 	res := awaitCallback(t, "the read", cb)
-	assertProblem(t, res.StatusCode, res.Body, http.StatusNotFound, "ENTITY_NOT_FOUND", false)
+	assertRefusal(t, res.StatusCode, res.Body, http.StatusNotFound, "ENTITY_NOT_FOUND")
 	if owner.err != nil || owner.status != http.StatusOK {
 		t.Fatalf("owner: %d %s %v; want 200 — a read's 404 does not touch the transaction", owner.status, owner.body, owner.err)
 	}
@@ -278,14 +318,14 @@ func TestCallbackScope_LaterRequestOnRollbackOnly_409(t *testing.T) {
 		t.Error(err)
 	}
 	t.Run("http-read", func(t *testing.T) {
-		assertProblem(t, l.httpGet.StatusCode, l.httpGet.Body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
+		assertRefusal(t, l.httpGet.StatusCode, l.httpGet.Body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
 	})
 	t.Run("http-write", func(t *testing.T) {
-		assertProblem(t, l.httpPost.StatusCode, l.httpPost.Body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
+		assertRefusal(t, l.httpPost.StatusCode, l.httpPost.Body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
 	})
 	t.Run("grpc-read", func(t *testing.T) { assertRollbackOnlyEnvelope(t, "grpc-read", l.grpcGet, nil) })
 	t.Run("grpc-write", func(t *testing.T) { assertRollbackOnlyEnvelope(t, "grpc-write", l.grpcPost, nil) })
-	assertProblem(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
+	assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
 	if n := h.countEntities(t, m.x); n != 0 {
 		t.Errorf("%d x entities committed; want none", n)
 	}
@@ -377,7 +417,7 @@ func TestCallbackScope_LostRace_CallbackNotRetryable_OwnerRetryable(t *testing.T
 				if c.err != nil {
 					t.Fatalf("callback: %v", c.err)
 				}
-				assertProblem(t, c.res.StatusCode, c.res.Body, http.StatusConflict, "CONFLICT", false)
+				assertRefusal(t, c.res.StatusCode, c.res.Body, http.StatusConflict, "CONFLICT")
 				assertProblem(t, o.res.status, o.res.body, http.StatusConflict, "CONFLICT", true)
 			} else {
 				assertEnvelope(t, "callback", c.env, c.err, "CONFLICT", false)
@@ -436,11 +476,11 @@ func TestCallbackScope_WriteOverResponseCeiling_413AndMarked(t *testing.T) {
 				if c.err != nil {
 					t.Fatalf("callback: %v", c.err)
 				}
-				assertProblem(t, c.res.StatusCode, c.res.Body, http.StatusRequestEntityTooLarge, "JOINED_RESPONSE_TOO_LARGE", false)
+				assertRefusal(t, c.res.StatusCode, c.res.Body, http.StatusRequestEntityTooLarge, "JOINED_RESPONSE_TOO_LARGE")
 			} else {
 				assertEnvelope(t, "callback", c.env, c.err, "JOINED_RESPONSE_TOO_LARGE", false)
 			}
-			pd := assertProblem(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
+			pd := assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
 			if !strings.Contains(pd.Detail, "JOINED_RESPONSE_TOO_LARGE") {
 				t.Errorf("owner detail = %q; want it to name JOINED_RESPONSE_TOO_LARGE", pd.Detail)
 			}
@@ -487,7 +527,7 @@ func TestCallbackScope_PostgresSessionReclaimed(t *testing.T) {
 	owner := h.CreateEntityRaw(model, 1, workflowSampleModel)
 
 	res := awaitCallback(t, "the callback", cb)
-	assertProblem(t, res.StatusCode, res.Body, http.StatusNotFound, "TRANSACTION_NOT_FOUND", false)
+	assertRefusal(t, res.StatusCode, res.Body, http.StatusNotFound, "TRANSACTION_NOT_FOUND")
 	assertProblem(t, owner.status, owner.body, http.StatusServiceUnavailable, "STORAGE_UNAVAILABLE", true)
 	if n := h.countEntities(t, secondary); n != 0 {
 		t.Errorf("%d secondary entities committed; want none", n)

@@ -20,8 +20,10 @@ import (
 )
 
 // callout_scenarios_helpers_test.go holds what the callout scenario files
-// share. A callout harness stack is not behind the OpenAPI validator, so the
-// assertions here are the only check of a response's shape.
+// share. A callout harness stack runs behind the OpenAPI validator
+// (validated(a.Handler()) in newCalloutHarnessWithKey), which checks every
+// response against the spec; the assertions here check what the spec leaves
+// open: the code, the retryable flag and the message a scenario expects.
 
 // supersededDetail is the client-visible text of CALLOUT_SUPERSEDED.
 const supersededDetail = "this compute node was replaced, or its callout has ended"

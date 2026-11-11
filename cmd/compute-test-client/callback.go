@@ -68,6 +68,10 @@ type cbConfig struct {
 	SecondaryModel   string `json:"secondaryModel"`
 	SecondaryVersion int    `json:"secondaryVersion"`
 	Marker           string `json:"marker"`
+	// RecordModel, when set, is the model a recording processor writes what
+	// its joined callback was answered into — with no tx token, so the record
+	// is committed whatever becomes of the joined transaction.
+	RecordModel string `json:"recordModel"`
 }
 
 // parseCallbackConfig decodes the calc request's parameters node — which the
@@ -220,6 +224,33 @@ func (c *callbackClient) createSecondaryWithQuery(ctx context.Context, cfg cbCon
 	path := fmt.Sprintf("/api/entity/JSON/%s/%d?%s", cfg.SecondaryModel, version, query)
 	body := fmt.Sprintf(`{"name":"child","amount":1,"status":%q}`, status)
 	return c.do(ctx, http.MethodPost, path, body, txToken, "")
+}
+
+// recordHop writes what a joined callback was answered (res) into
+// cfg.RecordModel as a standalone create: no tx token, so it is committed
+// outside the joined transaction whatever that transaction's fate. A scenario
+// reads it back by cfg.Marker. A config with no RecordModel records nothing.
+func (c *callbackClient) recordHop(ctx context.Context, cfg cbConfig, res cbResult, txToken string) error {
+	if cfg.RecordModel == "" {
+		return nil
+	}
+	body, err := json.Marshal(map[string]any{
+		"marker":        cfg.Marker,
+		"hopStatus":     res.Status,
+		"hopBody":       res.Body,
+		"tokenWasEmpty": txToken == "",
+	})
+	if err != nil {
+		return fmt.Errorf("record the callback's answer: %w", err)
+	}
+	rec, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", cfg.RecordModel), string(body), "", "")
+	if err != nil {
+		return fmt.Errorf("record the callback's answer: %w", err)
+	}
+	if rec.Status != http.StatusOK {
+		return fmt.Errorf("record the callback's answer: status=%d body=%s", rec.Status, rec.Body)
+	}
+	return nil
 }
 
 // loopbackUpdate issues a PUT /api/entity/JSON/{id} (loopback, no transition)
@@ -449,6 +480,9 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err != nil {
 				return nil, fmt.Errorf("callback create with transactionTimeoutMillis: %w", err)
 			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
 			data, err := decodeData(entity)
 			if err != nil {
 				return nil, err
@@ -473,6 +507,9 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err != nil {
 				return nil, fmt.Errorf("callback create: %w", err)
 			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
 			data, err := decodeData(entity)
 			if err != nil {
 				return nil, err
@@ -483,25 +520,20 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			return withData(entity, data)
 		},
 
-		// cb-create-secondary-then-fail-retryable — issues the joined create
-		// callback, then fails the try with a retryable verdict whatever the
-		// callback answered, so the owner's loop would try another member. It
-		// answers a second later: a scenario about the callout's cancellation
-		// (a callback that failed its write cancels it) needs the owner's
-		// cancellation to reach a hand-over's pnode before this answer does.
-		"cb-create-secondary-then-fail-retryable": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+		// cb-create-secondary-then-silent — issues the joined create callback,
+		// then never answers the callout (it waits for its own context to end),
+		// whatever the callback answered. The owner's loop would give the work
+		// to another member once the answer limit passes — unless something
+		// ends the callout first.
+		"cb-create-secondary-then-silent": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
 			if err := requireCB(cb); err != nil {
 				return nil, err
 			}
-			res, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
-			if err != nil {
+			if _, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker); err != nil {
 				return nil, fmt.Errorf("callback create: %w", err)
 			}
-			select {
-			case <-time.After(time.Second): // realtime: the answer's delay behind the owner's cancellation
-			case <-ctx.Done():
-			}
-			return nil, &verdictError{msg: fmt.Sprintf("failed after a joined create answered %d", res.Status), retryable: true}
+			<-ctx.Done()
+			return nil, ctx.Err()
 		},
 
 		// cb-grpc-create-secondary — like cb-create-secondary but issues the joined
