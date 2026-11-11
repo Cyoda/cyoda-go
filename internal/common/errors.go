@@ -401,16 +401,38 @@ func isClientGoneCancellation(appErr *AppError) bool {
 // error's text there carries host, user and database; the driver redacts the
 // password.
 func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
-	path := r.URL.Path
 	RecordOutcome(r.Context(), appErr)
+	ticket := LogError(r.Context(), appErr, "path", r.URL.Path)
+	recordTicket(r.Context(), appErr, ticket)
+	writeProblem(w, r, appErr, ticket)
+}
 
+// WriteRecordedFailure writes the failure recorded on ctx's holder as
+// WriteError answered it — the same problem under the same ticket — without
+// recording or logging it again: it was logged when it was answered. It
+// reports false, writing nothing, when no failure is recorded. A door that
+// holds a handler's answer uses it to send the failure the handler answered
+// after it had written a success status.
+func WriteRecordedFailure(ctx context.Context, w http.ResponseWriter, r *http.Request) bool {
+	appErr, ticket := recordedAnswer(ctx)
+	if appErr == nil {
+		return false
+	}
+	writeProblem(w, r, appErr, ticket)
+	return true
+}
+
+// writeProblem writes appErr as a problem response under ticket, which
+// LogError returned for it.
+func writeProblem(w http.ResponseWriter, r *http.Request, appErr *AppError, ticket string) {
+	path := r.URL.Path
 	pd := ProblemDetail{
 		Type:     "about:blank",
 		Title:    http.StatusText(appErr.Status),
 		Status:   appErr.Status,
 		Instance: path,
 	}
-	pd.Ticket = LogError(r.Context(), appErr, "path", path)
+	pd.Ticket = ticket
 	pd.Detail = clientText(appErr, pd.Ticket, getErrorResponseMode() == "verbose")
 
 	// A copy: the error, and its Props map, may be shared.

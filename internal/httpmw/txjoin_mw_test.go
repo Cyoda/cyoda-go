@@ -909,3 +909,31 @@ func TestTxJoin_FailureRecordedAfterA2xxHeader_SendsTheError(t *testing.T) {
 		t.Fatalf("the buffered 2xx body was sent: %s", rec.Body.String())
 	}
 }
+
+// The recorded failure the door sends is the one the handler answered: one log
+// line, and the ticket the client is given is the one it was logged under.
+func TestTxJoin_FailureRecordedAfterA2xxHeader_LoggedOnce(t *testing.T) {
+	logs := captureSlog(t)
+	j, _, pass := liveJoiner(t, "tx-1")
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		common.WriteError(w, r, common.Internal("failed after the header", errors.New("boom")))
+	})
+	rec := httptest.NewRecorder()
+	routed(TxJoin(j), next).ServeHTTP(rec, joinedRequest(t, pass, nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("answer = %d %s; want the recorded 500", rec.Code, rec.Body.String())
+	}
+	var pd struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil || pd.Ticket == "" {
+		t.Fatalf("answer carries no ticket (%v): %s", err, rec.Body.String())
+	}
+	if n := strings.Count(logs.String(), `"msg":"internal error"`); n != 1 {
+		t.Fatalf("%d internal error log lines; want 1:\n%s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), `"ticket":"`+pd.Ticket+`"`) {
+		t.Fatalf("the ticket answered (%s) is not the one logged:\n%s", pd.Ticket, logs.String())
+	}
+}

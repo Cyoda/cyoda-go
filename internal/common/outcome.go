@@ -20,7 +20,8 @@ type Outcome struct {
 	Err       error // the answered error, cause chain intact
 	Panicked  bool
 
-	mu sync.Mutex
+	ticket string // the ticket the recorded failure was logged under, if any
+	mu     sync.Mutex
 }
 
 type outcomeKey struct{}
@@ -48,6 +49,36 @@ func RecordOutcome(ctx context.Context, appErr *AppError) {
 	o.Code = appErr.Code
 	o.Retryable = appErr.Retryable
 	o.Err = appErr
+}
+
+// recordTicket keeps the ticket appErr was logged under, when appErr is the
+// failure ctx's holder recorded.
+func recordTicket(ctx context.Context, appErr *AppError, ticket string) {
+	o, ok := ctx.Value(outcomeKey{}).(*Outcome)
+	if !ok {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.Err == error(appErr) {
+		o.ticket = ticket
+	}
+}
+
+// recordedAnswer returns the failure recorded on ctx's holder and the ticket it
+// was logged under; nil when none was recorded.
+func recordedAnswer(ctx context.Context) (*AppError, string) {
+	o, ok := ctx.Value(outcomeKey{}).(*Outcome)
+	if !ok {
+		return nil, ""
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	appErr, _ := o.Err.(*AppError)
+	if o.Status == 0 || appErr == nil {
+		return nil, ""
+	}
+	return appErr, o.ticket
 }
 
 // RecordedFailure returns the failure recorded on ctx's holder so far, nil
