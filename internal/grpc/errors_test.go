@@ -277,3 +277,13 @@ func TestBuildErrorFields_RecordsOutcome(t *testing.T) {
 		t.Errorf("recorded code=%q retryable=%v, want CONFLICT retryable", o.Code, o.Retryable)
 	}
 }
+
+// The dead-session sentinel must stay on the recorded chain through the
+// envelope funnel: the join layer classifies on it.
+func TestBuildErrorFields_RecordsOutcome_TxNotFoundSurvives(t *testing.T) {
+	ctx, o := common.WithOutcome(context.Background())
+	buildErrorFields(ctx, fmt.Errorf("x: %w", spi.ErrTxNotFound))
+	if !errors.Is(o.Err, spi.ErrTxNotFound) {
+		t.Errorf("o.Err = %v, want spi.ErrTxNotFound on the chain", o.Err)
+	}
+}
