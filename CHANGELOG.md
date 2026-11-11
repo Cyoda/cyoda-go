@@ -1676,10 +1676,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   describe one at all. The `410` response names both codes that share the
   status, `TRANSACTION_EXPIRED` and `CALLOUT_SUPERSEDED`;
   `properties.errorCode` tells them apart. The seven model and workflow
-  administration operations declare none of this: they refuse a request
-  carrying the header with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` before the
-  token is read — changing a model or a workflow from inside a callout is not
-  supported. Nothing existing changed: the parameter is optional and the
+  administration operations carry neither the parameter nor `410` or `413`:
+  they refuse a request carrying the header with `400
+  MODEL_ADMIN_IN_JOINED_TRANSACTION` before the token is read — changing a
+  model or a workflow from inside a callout is not supported. Nothing existing changed: the parameter is optional and the
   responses are additions.
 
 - **Audit events carry `version` (entity change) or `eventId` (state
