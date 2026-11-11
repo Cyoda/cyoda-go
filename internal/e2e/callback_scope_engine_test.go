@@ -340,8 +340,8 @@ func TestCallbackScope_MarkStopsFurtherTries(t *testing.T) {
 
 	assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
 	// Without the mark the other member would be tried once the answer limit
-	// passed: wait past it before counting.
-	time.Sleep(2 * answerLimit)
+	// passed. On one node the owner's loop runs inside the owner's request, so
+	// once the owner has answered no further try can be made: count at once.
 	if n := len(first.Received()) + len(second.Received()); n != 1 {
 		t.Errorf("the members received %d callouts in all; want 1 — the mark stops every further try", n)
 	}

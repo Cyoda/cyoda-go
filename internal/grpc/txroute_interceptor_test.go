@@ -1676,3 +1676,60 @@ func TestTxRoute_RewrittenFailure_LoggedOnce(t *testing.T) {
 		t.Fatalf("INFO lines = %q; want none", lines)
 	}
 }
+
+// A callback whose transaction has a scope paused for a callout of its own,
+// and that is not one of that callout's callbacks, is refused with the
+// TRANSACTION_BUSY envelope: Success=false, the code, and retryable, since the
+// callback may be sent again once the paused scope's callout is answered. The
+// envelope's code is the class; the code is the message's prefix. Its handler
+// never runs.
+func TestTxRouteInterceptor_SiblingOfPausedScope_BusyEnvelope(t *testing.T) {
+	ic, coord, tok := joinedRouteInterceptor(t, "tx-1")
+	held, hctx, err := coord.Enter(context.Background(), "tx-1", []txcoord.Pair{{Callout: "req-tx-1", Major: 1}}, txcoord.Write, 0)
+	if err != nil {
+		t.Fatalf("Enter: %v", err)
+	}
+	_, endNested := coord.BeginCallout(hctx, "tx-1", "nested")
+	resume := txcoord.Pause(hctx)
+	t.Cleanup(func() {
+		endNested()
+		_ = resume()
+		held.End(nil)
+	})
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-sibling"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		t.Error("the refused callback's handler ran")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("unary: %v; the refusal travels as the RPC's error envelope", err)
+	}
+	ce, ok := resp.(*cepb.CloudEvent)
+	if !ok {
+		t.Fatalf("expected *cepb.CloudEvent, got %T", resp)
+	}
+	_, payload, err := ParseCloudEvent(ce)
+	if err != nil {
+		t.Fatalf("ParseCloudEvent: %v", err)
+	}
+	var env envelopeRefusal
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Success {
+		t.Fatal("expected Success=false")
+	}
+	if env.RequestID != "req-sibling" {
+		t.Fatalf("RequestID = %q; want req-sibling", env.RequestID)
+	}
+	if env.Error == nil || env.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("Error = %+v; want the CLIENT_ERROR class", env.Error)
+	}
+	if !strings.HasPrefix(env.Error.Message, common.ErrCodeTransactionBusy+":") {
+		t.Fatalf("Error.Message = %q; want %s prefix", env.Error.Message, common.ErrCodeTransactionBusy)
+	}
+	if env.Error.Retryable == nil || !*env.Error.Retryable {
+		t.Fatalf("Error.Retryable = %v; want true", env.Error.Retryable)
+	}
+}

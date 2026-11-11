@@ -10,8 +10,14 @@ package txcoord
 // module; test files may build a gate or a fence of their own. The same scan
 // holds the transaction-coordination test double (txcoordtest) out of
 // production code: only test files import it.
+//
+// A second scan holds savepoints to txcoord: a scope's savepoint is what its
+// end releases or rolls back, so no other package takes one. The tracing
+// wrapper of the transaction manager (internal/observability) passes the call
+// through and is the one exception.
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -52,13 +58,14 @@ func skipDir(rel string) bool {
 	return name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
 }
 
-func TestOnlyTxcoordUsesGateAndFence(t *testing.T) {
+// walkProduction calls fn for every non-test .go file of the root module, with
+// its path relative to the module root and its package's import path.
+func walkProduction(t *testing.T, fn func(path, rel, pkg string) error) {
+	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("module root: %v", err)
 	}
-	var offenders []string
-	seen := map[string]int{} // leaf -> allowed imports found
 	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -84,6 +91,17 @@ func TestOnlyTxcoordUsesGateAndFence(t *testing.T) {
 		if dir := filepath.ToSlash(filepath.Dir(rel)); dir != "." {
 			pkg += "/" + dir
 		}
+		return fn(path, rel, pkg)
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+}
+
+func TestOnlyTxcoordUsesGateAndFence(t *testing.T) {
+	var offenders []string
+	seen := map[string]int{} // leaf -> allowed imports found
+	walkProduction(t, func(path, rel, pkg string) error {
 		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
 		if err != nil {
 			return err
@@ -109,9 +127,6 @@ func TestOnlyTxcoordUsesGateAndFence(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
-	}
 	for leaf := range leafImporters {
 		if seen[leaf] == 0 {
 			t.Errorf("no allowed import of %s found: the scan looked in the wrong place", leaf)
@@ -120,6 +135,46 @@ func TestOnlyTxcoordUsesGateAndFence(t *testing.T) {
 	if len(offenders) > 0 {
 		slices.Sort(offenders)
 		t.Fatalf("only txcoord uses the gate, only txcoord and the pass token use the fence, and only tests use the test double:\n%s", strings.Join(offenders, "\n"))
+	}
+}
+
+// savepointCallers are the packages, besides txcoord and its test double,
+// that may call a Savepoint method.
+var savepointCallers = []string{modulePath + "/internal/observability"}
+
+func TestOnlyTxcoordTakesSavepoints(t *testing.T) {
+	var offenders []string
+	allowed := 0 // calls found where they are allowed
+	walkProduction(t, func(path, rel, pkg string) error {
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Savepoint" {
+				return true
+			}
+			txcoord := modulePath + "/internal/txcoord"
+			if pkg == txcoord || strings.HasPrefix(pkg, txcoord+"/") || slices.Contains(savepointCallers, pkg) {
+				allowed++
+				return true
+			}
+			offenders = append(offenders, rel+" calls Savepoint")
+			return true
+		})
+		return nil
+	})
+	if allowed == 0 {
+		t.Error("no allowed Savepoint call found: the scan looked in the wrong place")
+	}
+	if len(offenders) > 0 {
+		slices.Sort(offenders)
+		t.Fatalf("only txcoord takes a savepoint (the tracing wrapper passes the call through):\n%s", strings.Join(offenders, "\n"))
 	}
 }
 

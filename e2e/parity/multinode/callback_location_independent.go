@@ -46,9 +46,14 @@ func liRequireCapable(t *testing.T, fixture MultiNodeFixture) {
 // processor from node 1, the owner, which has no compute member: the callout
 // is handed to node 0, whose member sends its callback to node 0. On a
 // location-independent backend the callback's pass names no owner, so node 0
-// serves it itself — no hop back to node 1 exists for it to take — and the
-// callback's write commits with the owner's transaction: it is visible from
-// every node and carries the owner's transaction id.
+// serves it itself, and the callback's write commits with the owner's
+// transaction: it is visible from every node and carries the owner's
+// transaction id. The scenario would also pass if the callback were proxied
+// to node 1: it proves the commit, not where the callback was served. That a
+// pass without an owner is served where it lands is pinned by the routing unit
+// tests (TestHTTPRouting_PassWithoutOwnerServedLocally,
+// TestResolveNodeInfo_PassWithoutOwnerLocal in internal/cluster/proxy) and by
+// TestDurable_CallbackServedOnAnotherPnodeCommitsWithOwner in internal/txcoord.
 func RunCallback_LocationIndependent_ServedOnNonOwner(t *testing.T, fixture MultiNodeFixture) {
 	t.Helper()
 	liRequireCapable(t, fixture)

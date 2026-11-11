@@ -2,12 +2,14 @@ package e2e_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/cyoda-platform/cyoda-go/app"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
@@ -191,57 +193,95 @@ func TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_GRPC(t *testing.T) {
 }
 
 // TestCallbackScope_RetryableFailure_RetriedInTransaction: xproc first fails
-// retryably — the callback is answered 400 retryable and its write discarded,
-// the transaction stays usable — and the cnode sends the same callback again,
-// which succeeds. The owner commits exactly one x, and the audit trail holds
-// the second run only: the first run's StateMachine events were discarded with
-// its scope.
+// retryably — the callback is refused retryable (HTTP 400 WORKFLOW_FAILED with
+// retryable, gRPC the CLIENT_ERROR envelope with Retryable=true) and its write
+// discarded, the transaction stays usable — and the cnode sends the same
+// callback again, which succeeds. The owner commits exactly one x, and the
+// audit trail holds the second run only: the first run's StateMachine events
+// were discarded with its scope. Both doors.
 func TestCallbackScope_RetryableFailure_RetriedInTransaction(t *testing.T) {
-	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
-	m := newScopeModels(t, h, "cs-rt", "SYNC")
-	xnode := h.AttachCnode(t, cnodeSpec{name: "x", tags: []string{m.tagX},
-		script: scriptSequence(answerFailVerdict("x busy", true), answerOK())})
-	cb := make(chan callbackResult, 2)
-	h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{m.tagP}, script: func(_ context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
-		for range 2 {
-			res, err := rc.CreateEntity(m.x, 1, scopeXPayload)
-			if err != nil {
-				res = callbackResult{StatusCode: -1, Body: err.Error()}
+	for _, door := range []string{"http", "grpc"} {
+		t.Run(door, func(t *testing.T) {
+			h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
+			m := newScopeModels(t, h, "cs-rt-"+door, "SYNC")
+			xnode := h.AttachCnode(t, cnodeSpec{name: "x", tags: []string{m.tagX},
+				script: scriptSequence(answerFailVerdict("x busy", true), answerOK())})
+			type attempt struct {
+				res callbackResult
+				env txEnvelope
+				err error
 			}
-			cb <- res
-			if res.StatusCode == http.StatusOK {
-				break
+			cb := make(chan attempt, 2)
+			h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{m.tagP}, script: func(_ context.Context, call receivedCallout, rc *reqCtx) cnodeReply {
+				for range 2 {
+					var a attempt
+					if door == "http" {
+						a.res, a.err = rc.CreateEntity(m.x, 1, scopeXPayload)
+					} else {
+						a.env, a.err = h.ReplayCreateGRPC(call.Pass(), m.x, 1, scopeXPayload)
+					}
+					cb <- a
+					if a.err == nil && (a.res.StatusCode == http.StatusOK || a.env.Success) {
+						break
+					}
+				}
+				return answerOK()
+			}})
+
+			owner := h.CreateEntityRaw(m.p, 1, workflowSampleModel)
+
+			first, second := awaitAttempt(t, "the first callback", cb), awaitAttempt(t, "the retried callback", cb)
+			if door == "http" {
+				if first.err != nil || second.err != nil {
+					t.Fatalf("callbacks: %v, %v", first.err, second.err)
+				}
+				assertProblem(t, first.res.StatusCode, first.res.Body, http.StatusBadRequest, "WORKFLOW_FAILED", true)
+				if second.res.StatusCode != http.StatusOK {
+					t.Fatalf("the retried callback: %d %s; want 200 — a retryable failure leaves the transaction usable", second.res.StatusCode, second.res.Body)
+				}
+			} else {
+				assertEnvelope(t, "the first callback", first.env, first.err, "WORKFLOW_FAILED", true)
+				if second.err != nil || !second.env.Success {
+					t.Fatalf("the retried callback: success=%t error=%v err=%v; want success — a retryable failure leaves the transaction usable", second.env.Success, second.env.Error, second.err)
+				}
 			}
-		}
-		return answerOK()
-	}})
+			if owner.err != nil || owner.status != http.StatusOK {
+				t.Fatalf("owner: %d %s %v; want 200", owner.status, owner.body, owner.err)
+			}
+			if n := h.countEntities(t, m.x); n != 1 {
+				t.Errorf("%d x entities committed; want exactly the retried one", n)
+			}
+			runs := xnode.Received()
+			if len(runs) != 2 || runs[0].EntityID == runs[1].EntityID {
+				t.Fatalf("xproc ran %d times (%v); want two runs on two entities", len(runs), runs)
+			}
+			assertNoEntityTrace(t, h, runs[0].EntityID)
+			if n := smAuditRows(t, runs[1].EntityID); n == 0 {
+				t.Error("the retried x has no StateMachine audit rows")
+			}
+		})
+	}
+}
 
-	owner := h.CreateEntityRaw(m.p, 1, workflowSampleModel)
-
-	first := awaitCallback(t, "the first callback", cb)
-	assertProblem(t, first.StatusCode, first.Body, http.StatusBadRequest, "WORKFLOW_FAILED", true)
-	second := awaitCallback(t, "the retried callback", cb)
-	if second.StatusCode != http.StatusOK {
-		t.Fatalf("the retried callback: %d %s; want 200 — a retryable failure leaves the transaction usable", second.StatusCode, second.Body)
-	}
-	if owner.err != nil || owner.status != http.StatusOK {
-		t.Fatalf("owner: %d %s %v; want 200", owner.status, owner.body, owner.err)
-	}
-	if n := h.countEntities(t, m.x); n != 1 {
-		t.Errorf("%d x entities committed; want exactly the retried one", n)
-	}
-	runs := xnode.Received()
-	if len(runs) != 2 || runs[0].EntityID == runs[1].EntityID {
-		t.Fatalf("xproc ran %d times (%v); want two runs on two entities", len(runs), runs)
-	}
-	assertNoEntityTrace(t, h, runs[0].EntityID)
-	if n := smAuditRows(t, runs[1].EntityID); n == 0 {
-		t.Error("the retried x has no StateMachine audit rows")
+// awaitAttempt receives one value from ch, failing the test when none arrives
+// in time.
+func awaitAttempt[T any](t *testing.T, what string, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s never returned", what)
+		var zero T
+		return zero
 	}
 }
 
 // TestCallbackScope_FailedRead404_TransactionGoesOn: a joined read of an
-// unknown entity is answered 404 and keeps its scope; the owner commits.
+// unknown entity is answered 404; it marks nothing, and the owner commits.
+// Whether the read's scope is kept (row 8) or discarded (row 9) does not change
+// that outcome, so this test does not tell them apart; TestEnd_Row8_Read4xxKeeps
+// in internal/txcoord pins row 8.
 func TestCallbackScope_FailedRead404_TransactionGoesOn(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
 	m := newScopeModels(t, h, "cs-rd", "SYNC")
@@ -447,9 +487,8 @@ func TestCallbackScope_PostgresSessionReclaimed(t *testing.T) {
 		map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 30000}}))
 	cb := make(chan callbackResult, 1)
 	h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: func(ctx context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
-		select {
-		case <-time.After(idle + 2*time.Second): // the session is reclaimed meanwhile
-		case <-ctx.Done():
+		if err := awaitSessionReclaimed(ctx, idle+15*time.Second); err != nil {
+			cb <- callbackResult{StatusCode: -1, Body: err.Error()}
 			return neverAnswer()
 		}
 		res, err := rc.CreateEntity(secondary, 1, scopeXPayload)
@@ -467,6 +506,50 @@ func TestCallbackScope_PostgresSessionReclaimed(t *testing.T) {
 	assertProblem(t, owner.status, owner.body, http.StatusServiceUnavailable, "STORAGE_UNAVAILABLE", true)
 	if n := h.countEntities(t, secondary); n != 0 {
 		t.Errorf("%d secondary entities committed; want none", n)
+	}
+}
+
+// awaitSessionReclaimed waits, within bound, until PostgreSQL has ended the
+// owner's session: it finds the one settled idle-in-transaction backend of the
+// database (the owner waits in its callout; e2e tests run one at a time), then
+// polls until that backend is gone. It returns an error instead of failing the
+// test: it runs on a cnode's goroutine.
+func awaitSessionReclaimed(ctx context.Context, bound time.Duration) error {
+	const idleInTx = `SELECT pid FROM pg_stat_activity
+		 WHERE datname = current_database() AND state = 'idle in transaction'
+		   AND pid <> pg_backend_pid() AND state_change < now() - interval '200 milliseconds'`
+	deadline := time.Now().Add(bound)
+	var pid int32
+	for {
+		rows, err := dbPool.Query(ctx, idleInTx)
+		if err != nil {
+			return fmt.Errorf("pg_stat_activity: %w", err)
+		}
+		pids, err := pgx.CollectRows(rows, pgx.RowTo[int32])
+		if err != nil {
+			return fmt.Errorf("pg_stat_activity: %w", err)
+		}
+		if len(pids) == 1 {
+			pid = pids[0]
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("found %d settled idle-in-transaction backends; want exactly the owner's", len(pids))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for {
+		var alive bool
+		if err := dbPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)`, pid).Scan(&alive); err != nil {
+			return fmt.Errorf("pg_stat_activity: %w", err)
+		}
+		if !alive {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the owner's session (pid %d) was not reclaimed within %v", pid, bound)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

@@ -253,7 +253,10 @@ func RunCallbackScope_RetryableFailureRetriedInTx(t *testing.T, fixture BackendF
 }
 
 // RunCallbackScope_FailedReadKeepsTx: a joined read of an unknown entity is
-// answered 404 ENTITY_NOT_FOUND and keeps its scope; the owner commits.
+// answered 404 ENTITY_NOT_FOUND; it marks nothing, and the owner commits.
+// Whether the read's scope is kept (row 8) or discarded (row 9) does not change
+// that outcome, so the scenario does not tell them apart; row 8 is pinned by
+// TestEnd_Row8_Read4xxKeeps in internal/txcoord.
 func RunCallbackScope_FailedReadKeepsTx(t *testing.T, fixture BackendFixture) {
 	s := newCbScopeCase(t, fixture, "rd", "cb-get-unknown-record", "SYNC", "")
 
