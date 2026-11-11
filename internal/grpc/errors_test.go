@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
@@ -263,5 +265,15 @@ func TestBuildErrorFields_FeatureDeadlineTimeout_Untouched(t *testing.T) {
 	rec := findRecord(t, records, "internal error")
 	if rec.level != slog.LevelError {
 		t.Errorf("level = %v, want ERROR", rec.level)
+	}
+}
+
+// The sentinel is deliberately not on the recorded error's chain: common.Internal
+// keeps it as detail only (see its comment).
+func TestBuildErrorFields_RecordsOutcome(t *testing.T) {
+	ctx, o := common.WithOutcome(context.Background())
+	buildErrorFields(ctx, spi.ErrConflict)
+	if o.Code != common.ErrCodeConflict || !o.Retryable {
+		t.Errorf("recorded code=%q retryable=%v, want CONFLICT retryable", o.Code, o.Retryable)
 	}
 }

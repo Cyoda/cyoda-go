@@ -77,6 +77,7 @@ func buildErrorFields(ctx context.Context, err error) (code, message string, ret
 		// (common.Internal keeps the cause, which carries the marker).
 		appErr = common.Internal("unclassified error", err)
 	}
+	common.RecordOutcome(ctx, appErr)
 	// The one log line, as the HTTP door writes it, naming the request.
 	message = common.SanitizedText(appErr, common.LogError(ctx, appErr, requestAttrs(ctx)...))
 	if appErr.Level == common.LevelOperational {

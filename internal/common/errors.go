@@ -402,6 +402,7 @@ func isClientGoneCancellation(appErr *AppError) bool {
 // password.
 func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 	path := r.URL.Path
+	RecordOutcome(r.Context(), appErr)
 
 	pd := ProblemDetail{
 		Type:     "about:blank",
