@@ -116,9 +116,10 @@ func classifyRouteErr(err error) error {
 	case errors.Is(err, token.ErrTokenTampered), errors.Is(err, token.ErrTokenInvalid):
 		return common.Operational(http.StatusUnauthorized, common.ErrCodeUnauthorized, "invalid transaction token")
 	case errors.Is(err, proxy.ErrNodeUnavailable):
-		// WARN with the node, as the HTTP proxy logs the same refusal.
+		// WARN with the node, as the HTTP proxy logs the same refusal. Nothing
+		// is sent to a node that is not live: retryable.
 		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is not available").
-			WithCause(err).WithLogLevel(slog.LevelWarn)
+			AsRetryable().WithCause(err).WithLogLevel(slog.LevelWarn)
 	default:
 		return err
 	}
@@ -457,9 +458,9 @@ const (
 	// for the caller's own request. It reaches the caller unchanged, as it
 	// would calling the owner directly.
 	ownerRefused
-	// ownerNotReached: no gRPC status (dial, address guard), or a status the
-	// transport raises when the owner cannot be reached or does not answer in
-	// time.
+	// ownerNotReached: no gRPC status (the pool refused or failed to set up
+	// the connection), or a status the transport raises when the owner cannot
+	// be reached or does not answer in time.
 	ownerNotReached
 )
 
@@ -502,14 +503,21 @@ func callerGone(ctx context.Context, addr string) error {
 // envelope funnel with the hop's address and error as its cause — at WARN when
 // the peer address guard refused the owner's address, as the HTTP proxy logs
 // that refusal, and at ERROR for any other failure to reach the owner.
+//
+// The answer is retryable only with proof that nothing was sent: the pool
+// refused or failed to set up the connection (proxy.NotSentProof). A failure of
+// the call itself — Unavailable, DeadlineExceeded — may follow a send, and the
+// owner may have run the request, so a retry could repeat a write it kept.
 func ownerUnreachable(addr string, err error) error {
 	level := slog.LevelError
 	if errors.Is(err, peeraddr.ErrForbiddenPeerAddress) {
 		level = slog.LevelWarn
 	}
-	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is unreachable").
-		WithCause(fmt.Errorf("forward to %s: %w", addr, err)).
-		WithLogLevel(level)
+	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is unreachable")
+	if proxy.ProvesNotSent(err) {
+		appErr.AsRetryable()
+	}
+	return appErr.WithCause(fmt.Errorf("forward to %s: %w", addr, err)).WithLogLevel(level)
 }
 
 // streamErr sends err as the routed RPC's error envelope on the stream. reqID

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -43,6 +44,26 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 	return &ClientPool{conns: make(map[string]*grpc.ClientConn), allowLoopback: allowLoopback}
 }
 
+// NotSentProof marks a forward error that proves nothing was sent to the
+// owner: the pool refused or failed to set up the connection, before the call
+// was made. Its absence proves nothing: a failure of the call itself may follow
+// a send, because grpc-go connects lazily, inside the call.
+//
+// It changes nothing a reader of the error sees: Error is the wrapped error's
+// text, and Unwrap exposes it to errors.Is and errors.As.
+type NotSentProof struct{ Err error }
+
+func (p *NotSentProof) Error() string { return p.Err.Error() }
+
+func (p *NotSentProof) Unwrap() error { return p.Err }
+
+// ProvesNotSent reports whether err carries a NotSentProof anywhere on its
+// chain.
+func ProvesNotSent(err error) bool {
+	var proof *NotSentProof
+	return errors.As(err, &proof)
+}
+
 // Get returns a cached connection for addr, dialling one on first use.
 // The peer address is validated via the SSRF guard before any dial is
 // attempted; forbidden addresses (loopback when disallowed, link-local,
@@ -50,7 +71,17 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 // ctx bounds the name lookup that guard makes, so a forwarded call whose caller
 // has gone does not wait on a resolver, and peeraddr's own bound for a lookup
 // that precedes a dial is applied on top of it.
+//
+// Every error Get returns carries NotSentProof: no call has been made.
 func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+	conn, err := p.get(ctx, addr)
+	if err != nil {
+		return nil, &NotSentProof{Err: err}
+	}
+	return conn, nil
+}
+
+func (p *ClientPool) get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
 	target, err := dialTarget(addr)
 	if err != nil {
 		return nil, err

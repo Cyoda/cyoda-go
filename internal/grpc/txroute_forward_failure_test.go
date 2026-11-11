@@ -463,3 +463,130 @@ func TestTxRouteInterceptor_RealNetworkStreamOwnerUnreachable(t *testing.T) {
 	}
 	assertEnvelopeCode(t, ss.sent[0], "req-net-stream", "TRANSACTION_NODE_UNAVAILABLE")
 }
+
+// --- retryable only with proof that nothing was sent -------------------------
+
+// envelopeRetryable asserts ce is a TRANSACTION_NODE_UNAVAILABLE envelope for
+// reqID and returns its Error.Retryable as sent.
+func envelopeRetryable(t *testing.T, ce any, reqID string) *bool {
+	t.Helper()
+	assertEnvelopeCode(t, ce, reqID, "TRANSACTION_NODE_UNAVAILABLE")
+	return decodeTxResp(t, ce.(*cepb.CloudEvent)).Error.Retryable
+}
+
+// The registry says the owner is not live: nothing is sent, so a retry cannot
+// repeat anything. Both routed doors.
+func TestTxRoute_OwnerNotLive_Retryable(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-dead", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-dead", Major: 1})
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: false},
+	}}
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-dead"}, entityManageInfo(), mustNotRunUnary(t))
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	if r := envelopeRetryable(t, resp, "req-dead"); r == nil || !*r {
+		t.Fatalf("unary: Retryable = %v, want true", r)
+	}
+
+	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-dead-stream"}}}
+	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {
+		t.Fatalf("expected an envelope on the stream, got err: %v", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
+	}
+	// A refusal before the request message is read carries no request id.
+	if r := envelopeRetryable(t, ss.sent[0], ""); r == nil || !*r {
+		t.Fatalf("stream: Retryable = %v, want true", r)
+	}
+}
+
+// The pool's peer address guard refuses the owner's address before any
+// connection is set up: nothing was sent. Both routed doors, through the
+// production forward.
+func TestTxRoute_ForbiddenPeerAddress_Retryable(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-guard", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-guard", Major: 1})
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-B": {NodeID: "node-B", Addr: "http://127.0.0.1:8080", GRPCAddr: "127.0.0.1:19090", Alive: true},
+	}}
+	// allowLoopback=false: the production posture, under which the guard
+	// refuses the loopback address.
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, false, testProxyTimeout)
+	t.Cleanup(ic.pool.Close)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-guard"}, entityManageInfo(), mustNotRunUnary(t))
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	if r := envelopeRetryable(t, resp, "req-guard"); r == nil || !*r {
+		t.Fatalf("unary: Retryable = %v, want true", r)
+	}
+
+	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-guard-stream"}}}
+	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {
+		t.Fatalf("expected an envelope on the stream, got err: %v", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
+	}
+	if r := envelopeRetryable(t, ss.sent[0], "req-guard-stream"); r == nil || !*r {
+		t.Fatalf("stream: Retryable = %v, want true", r)
+	}
+}
+
+// A forwarded call that ends DeadlineExceeded may have reached the owner, and
+// the owner may have run it: the outcome is unknown, so the answer carries no
+// retryable flag.
+func TestTxRoute_ForwardDeadline_NotRetryable(t *testing.T) {
+	ic, ctx := forwardingInterceptor(t, testProxyTimeout)
+	ic.forwardUnary = func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+		return nil, status.Error(codes.DeadlineExceeded, "context deadline exceeded")
+	}
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-deadline"}, entityManageInfo(), mustNotRunUnary(t))
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	if r := envelopeRetryable(t, resp, "req-deadline"); r != nil {
+		t.Fatalf("Retryable = %v, want nil", *r)
+	}
+}
+
+// grpc-go connects lazily, inside the call: a refused connection surfaces as
+// codes.Unavailable from the call itself, a status that a failure after the
+// request was sent also carries. With no proof that nothing was sent, the
+// answer is not retryable. Both routed doors, over a real connection.
+func TestTxRoute_ConnectionRefusedInCall_NotRetryable(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := closed.Addr().String()
+	_ = closed.Close()
+
+	ic, ctx := realForwardInterceptor(t, addr, 2*time.Second)
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-refused"}, entityManageInfo(), mustNotRunUnary(t))
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	if r := envelopeRetryable(t, resp, "req-refused"); r != nil {
+		t.Fatalf("unary: Retryable = %v, want nil", *r)
+	}
+
+	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-refused-stream"}}}
+	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {
+		t.Fatalf("expected an envelope on the stream, got err: %v", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
+	}
+	if r := envelopeRetryable(t, ss.sent[0], "req-refused-stream"); r != nil {
+		t.Fatalf("stream: Retryable = %v, want nil", *r)
+	}
+}
