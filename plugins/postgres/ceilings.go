@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -164,6 +165,9 @@ func (e *idleInTxAbortError) Error() string {
 }
 func (e *idleInTxAbortError) Unwrap() error            { return e.cause }
 func (e *idleInTxAbortError) StorageUnavailable() bool { return true }
+
+// Is makes a reclaimed transaction read as a transaction that no longer exists.
+func (e *idleInTxAbortError) Is(target error) bool { return target == spi.ErrTxNotFound }
 
 // isIdleInTxAbort reports whether err is PostgreSQL reclaiming a transaction
 // that sat idle past the ceiling.
