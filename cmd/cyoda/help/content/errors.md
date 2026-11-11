@@ -138,9 +138,11 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 - `errors.SERVER_ERROR` — `500` — retryable with caution — unclassified internal error; response includes `ticket` UUID for log correlation
 - `errors.STORAGE_UNAVAILABLE` — `503` — retryable — storage layer could not supply a connection within its acquire deadline, or the transaction was reclaimed by the idle-in-transaction ceiling
 - `errors.TOO_MANY_JOINED_REQUESTS` — `503` — retryable — `CYODA_CALLOUT_JOINED_MAX_WAITERS` requests made under a transaction token are already waiting for that transaction; back off and send the callback again
+- `errors.TRANSACTION_BUSY` — `503` — retryable — another callback of the same transaction is paused in a callout of its own; the refused callback ran nothing, and the compute node should send the callbacks of one transaction in series
 - `errors.TRANSACTION_EXPIRED` — `410` — not retryable — transaction token's `exp` claim is in the past
 - `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — not retryable — a request under a transaction token could not be completed on the node that owns the transaction (not alive, not reachable, or no answer within `CYODA_PROXY_TIMEOUT`)
 - `errors.TRANSACTION_NOT_FOUND` — `404` — not retryable — transaction ID does not correspond to an active transaction on this node
+- `errors.TRANSACTION_ROLLBACK_ONLY` — `409` — not retryable — a request that joined the transaction failed with an answer retrying cannot change; the transaction, or the part of it a request would run in, can only be rolled back
 - `errors.TRANSACTION_TIMEOUT` — `408` — retryable — client-requested transaction timeout expired before commit
 - `errors.TRANSITION_NOT_FOUND` — `400` — not retryable — requested workflow transition is not defined for the entity's current state
 - `errors.TRUSTED_KEY_CAP_REACHED` — `400` — not retryable — Per-tenant trusted-key cap reached.

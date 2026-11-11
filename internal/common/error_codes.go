@@ -68,6 +68,15 @@ const (
 	// commit-before-dispatch workflows) the timeout only governs the first
 	// commit — failures after that surface through the per-chunk contract.
 	ErrCodeTransactionTimeout = "TRANSACTION_TIMEOUT"
+	// ErrCodeTransactionRollbackOnly is returned when a transaction, or the
+	// part of it a request would run in, can only be rolled back because a
+	// request that joined it failed. To the owner: it may not commit. To a
+	// joined request: it may not run. Not retryable.
+	ErrCodeTransactionRollbackOnly = "TRANSACTION_ROLLBACK_ONLY"
+	// ErrCodeTransactionBusy is returned to a callback of a transaction while
+	// another callback of the same transaction is paused in a callout of its
+	// own. Retryable: send it again once that callback has been answered.
+	ErrCodeTransactionBusy = "TRANSACTION_BUSY"
 )
 
 const (
@@ -359,6 +368,8 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeTransactionExpired:               {},
 	ErrCodeTransactionNodeUnavailable:       {},
 	ErrCodeTransactionNotFound:              {},
+	ErrCodeTransactionRollbackOnly:          {},
+	ErrCodeTransactionBusy:                  {},
 	ErrCodeTransactionTimeout:               {},
 	ErrCodeTransitionNotFound:               {},
 	ErrCodeTrustedKeyCapReached:             {},
