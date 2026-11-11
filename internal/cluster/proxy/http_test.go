@@ -753,6 +753,11 @@ func TestHTTPRouting_DialRefusedAfterSend_NotRetryable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler())
 	get := func(path string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -767,6 +772,12 @@ func TestHTTPRouting_DialRefusedAfterSend_NotRetryable(t *testing.T) {
 		t.Fatalf("warm-up: status %d, body %s", rec.Code, rec.Body.String())
 	}
 	rec := get("/api/test")
+	// The answer must come from the second attempt's failed dial. Without the
+	// reused connection there is no second attempt, the error is the broken
+	// connection's, and the test would pass without reaching its branch.
+	if logged := logBuf.String(); !strings.Contains(logged, "connect: connection refused") {
+		t.Fatalf("the proxied request did not end in a refused dial; log:\n%s", logged)
+	}
 	if nodeUnavailableRetryable(t, rec) {
 		t.Fatalf("a dial error after the owner received the request must not be retryable; body: %s", rec.Body.String())
 	}
