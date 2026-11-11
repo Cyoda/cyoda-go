@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
@@ -558,11 +559,10 @@ func TestTxRoute_ForwardDeadline_NotRetryable(t *testing.T) {
 	}
 }
 
-// grpc-go connects lazily, inside the call: a refused connection surfaces as
-// codes.Unavailable from the call itself, a status that a failure after the
-// request was sent also carries. With no proof that nothing was sent, the
-// answer is not retryable. Both routed doors, over a real connection.
-func TestTxRoute_ConnectionRefusedInCall_NotRetryable(t *testing.T) {
+// The owner's port refuses connections: grpc-go never opens a stream to it, so
+// no header of the request reached a transport. Nothing was sent: retryable.
+// Both routed doors, over a real connection.
+func TestTxRoute_DialRefused_Retryable(t *testing.T) {
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -575,8 +575,8 @@ func TestTxRoute_ConnectionRefusedInCall_NotRetryable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected envelope response, got gRPC err: %v", err)
 	}
-	if r := envelopeRetryable(t, resp, "req-refused"); r != nil {
-		t.Fatalf("unary: Retryable = %v, want nil", *r)
+	if r := envelopeRetryable(t, resp, "req-refused"); r == nil || !*r {
+		t.Fatalf("unary: Retryable = %v, want true", r)
 	}
 
 	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-refused-stream"}}}
@@ -586,7 +586,66 @@ func TestTxRoute_ConnectionRefusedInCall_NotRetryable(t *testing.T) {
 	if len(ss.sent) != 1 {
 		t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
 	}
-	if r := envelopeRetryable(t, ss.sent[0], "req-refused-stream"); r != nil {
+	if r := envelopeRetryable(t, ss.sent[0], "req-refused-stream"); r == nil || !*r {
+		t.Fatalf("stream: Retryable = %v, want true", r)
+	}
+}
+
+// stallingOwner is a real owner that receives each call and never answers it.
+type stallingOwner struct {
+	cyodapb.UnimplementedCloudEventsServiceServer
+	received chan string
+}
+
+func (o *stallingOwner) EntityManage(ctx context.Context, ce *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+	o.received <- ce.Id
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (o *stallingOwner) EntityManageCollection(ce *cepb.CloudEvent, ss googlegrpc.ServerStreamingServer[cepb.CloudEvent]) error {
+	o.received <- ce.Id
+	<-ss.Context().Done()
+	return ss.Context().Err()
+}
+
+// The owner received the call and did not answer within the proxy timeout: it
+// may have run the request, so a retry could repeat a write it kept. Not
+// retryable. Both routed doors, over a real connection.
+func TestTxRoute_OwnerTimesOutAfterSend_NotRetryable(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := &stallingOwner{received: make(chan string, 2)}
+	srv := googlegrpc.NewServer()
+	cyodapb.RegisterCloudEventsServiceServer(srv, owner)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	ic, ctx := realForwardInterceptor(t, lis.Addr().String(), 300*time.Millisecond)
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-stalled"}, entityManageInfo(), mustNotRunUnary(t))
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	if got := <-owner.received; got != "req-stalled" {
+		t.Fatalf("owner received %q, want req-stalled", got)
+	}
+	if r := envelopeRetryable(t, resp, "req-stalled"); r != nil {
+		t.Fatalf("unary: Retryable = %v, want nil", *r)
+	}
+
+	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-stalled-stream"}}}
+	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {
+		t.Fatalf("expected an envelope on the stream, got err: %v", err)
+	}
+	if got := <-owner.received; got != "req-stalled-stream" {
+		t.Fatalf("owner received %q, want req-stalled-stream", got)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
+	}
+	if r := envelopeRetryable(t, ss.sent[0], "req-stalled-stream"); r != nil {
 		t.Fatalf("stream: Retryable = %v, want nil", *r)
 	}
 }

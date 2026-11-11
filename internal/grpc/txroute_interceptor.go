@@ -504,10 +504,11 @@ func callerGone(ctx context.Context, addr string) error {
 // the peer address guard refused the owner's address, as the HTTP proxy logs
 // that refusal, and at ERROR for any other failure to reach the owner.
 //
-// The answer is retryable only with proof that nothing was sent: the pool
-// refused or failed to set up the connection (proxy.NotSentProof). A failure of
-// the call itself — Unavailable, DeadlineExceeded — may follow a send, and the
-// owner may have run the request, so a retry could repeat a write it kept.
+// The answer is retryable only with proof that nothing was sent
+// (proxy.NotSentProof): the pool refused or failed to set up the connection, or
+// the call failed before any of its headers reached a transport to the owner.
+// Any other failure may follow a send, and the owner may have run the request,
+// so a retry could repeat a write it kept.
 func ownerUnreachable(addr string, err error) error {
 	level := slog.LevelError
 	if errors.Is(err, peeraddr.ErrForbiddenPeerAddress) {
