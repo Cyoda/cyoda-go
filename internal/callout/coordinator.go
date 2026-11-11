@@ -186,6 +186,12 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 	// scope is then marked whichever the loop saw first: a callout made from a
 	// scope that cannot complete fails with that scope's refusal (the lost
 	// race first), however it ended.
+	//
+	// The callout is ended first. end returns once no callback admitted under
+	// it is still open, and a callback that ends after the callout has ended
+	// is superseded and marks nothing. So every mark a callback of this
+	// callout can set is set before the check, and none after it.
+	end()
 	if cerr := txcoord.Check(cctx); cerr != nil {
 		result, err = internalgrpc.CalloutResult{}, cerr
 	}
