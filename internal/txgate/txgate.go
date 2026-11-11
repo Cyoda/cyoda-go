@@ -281,85 +281,9 @@ func (r *Registry) len() int {
 	return len(r.gates)
 }
 
-// Acquire is the pre-coordination entry point kept for its current callers:
-// it takes the slot uncapped, never refused and never cancelled.
+// Acquire is the pre-coordination entry point kept for the owner's gate sites
+// in the entity service: it takes the slot uncapped, never refused and never
+// cancelled.
 func (r *Registry) Acquire(txID string) func() {
 	return r.AcquireResume(txID)
-}
-
-// AcquireCtx is the pre-coordination entry point kept for its current callers:
-// AcquireJoined admitting every caller (a nil predicate).
-func (r *Registry) AcquireCtx(ctx context.Context, txID string, maxWaiters int) (func(), error) {
-	return r.AcquireJoined(ctx, txID, maxWaiters, nil)
-}
-
-// heldKeyT is the (unexported, collision-free) context key under which a joined
-// caller records the gate it currently holds so the engine can Suspend it across
-// a blocking external dispatch.
-type heldKeyT struct{}
-
-var heldKey = heldKeyT{}
-
-// held is the pre-coordination ctx-scoped handle to a gate the current call
-// chain holds, kept for its current callers. The engine releases it across
-// every blocking callout via Suspend and re-acquires it afterward.
-//
-// The handle is single-goroutine by construction: Suspend/resume and the
-// caller's deferred release all run on the synchronous handler→engine→dispatch
-// call chain, and the deferred release reads *release with no lock. The mutex
-// only orders the explicit + deferred resume against a redundant Suspend so a
-// double call cannot double-release the gate.
-type held struct {
-	reg     *Registry
-	txID    string
-	release *func() // points at the caller's live release variable
-	mu      sync.Mutex
-	active  bool // true while the gate is currently held via *release
-}
-
-// WithHeld is the pre-coordination entry point kept for its current callers:
-// it records, on the returned ctx, that the caller holds reg's gate for txID
-// via the release func pointed to by release. release MUST point at the
-// caller's own release variable: Suspend's resume mints a fresh release func
-// and stores it through the pointer, so the caller's deferred release frees the
-// re-acquired gate.
-func WithHeld(ctx context.Context, reg *Registry, txID string, release *func()) (context.Context, *held) {
-	h := &held{reg: reg, txID: txID, release: release, active: true}
-	return context.WithValue(ctx, heldKey, h), h
-}
-
-// Suspend is the pre-coordination entry point kept for its current callers: it
-// releases the gate the ctx's call chain holds (installed via WithHeld) and
-// returns a resume func that re-acquires it. If ctx carries no held gate,
-// Suspend and its resume are both no-ops. Callers MUST invoke resume before
-// touching the shared tx buffer again; a deferred resume also makes the
-// re-acquire panic-safe.
-func Suspend(ctx context.Context) (resume func()) {
-	h, _ := ctx.Value(heldKey).(*held)
-	if h == nil {
-		return func() {}
-	}
-	return h.suspend()
-}
-
-func (h *held) suspend() func() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if !h.active {
-		// Already suspended: a double call stays harmless rather than
-		// double-releasing the gate.
-		return func() {}
-	}
-	(*h.release)()
-	h.active = false
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			h.mu.Lock()
-			defer h.mu.Unlock()
-			*h.release = h.reg.AcquireResume(h.txID) // blocks until a descendant frees the gate
-			h.active = true
-		})
-	}
 }

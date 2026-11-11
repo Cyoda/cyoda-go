@@ -9,8 +9,7 @@ import (
 	"strconv"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // taskID deterministically derives a ScheduledTask's ID from the tenant,
@@ -251,32 +250,31 @@ type expiredSchedule struct {
 // result into either a ScheduledTask ready to arm, or a born-expired
 // signal. Exactly one of the two return values is non-nil on a nil error.
 //
-// The per-tx gate is released (txgate.Suspend) across the blocking dispatch
-// and re-acquired immediately on return — BEFORE this function's caller
-// does any further tx-buffer work — because the callout can re-enter with a
-// descendant callback joined on the same txID, and because the fence's wait
-// takes the same gate (the same reason as at evaluateCriterion's
-// FUNCTION-criterion dispatch and at executeSyncProcessor). resume is both
-// deferred AND called explicitly, as at every other Suspend site: the explicit
-// call re-acquires before returning, so reconcileScheduledTasks's later buffer
-// write (ReconcileForEntity) is gated; the deferred call covers the path where
-// the dispatch panics, so the caller's own deferred release gives back a gate
-// that is held rather than one that was already given up. resume is
-// sync.Once-guarded, so having both is free.
+// The chain's scope is paused (txcoord.Pause) across the blocking dispatch
+// and resumed immediately on return — BEFORE this function's caller does any
+// further transaction work — because the callout can re-enter with a
+// descendant callback joined on the same txID (the same reason as at
+// evaluateCriterion's FUNCTION-criterion dispatch and at
+// executeSyncProcessor). resume is both deferred AND called explicitly, as at
+// every other Pause site: the explicit call retakes the gate and checks the
+// chain's scope before returning, so reconcileScheduledTasks's later write
+// (ReconcileForEntity) is made under the gate by a chain still entitled to
+// it; the deferred call covers the path where the dispatch panics, so the
+// scope ends holding its gate. resume is idempotent, so having both is free.
 func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, tr *spi.TransitionDefinition, state, id string, armMs int64, modelVersion int, txID string) (task *spi.ScheduledTask, expired *expiredSchedule, err error) {
 	if e.extProc == nil {
 		return nil, nil, fmt.Errorf("no external processing service configured for scheduled-transition Function %q", tr.Schedule.Function.Name)
 	}
 
-	resume := txgate.Suspend(ctx)
+	resume := txcoord.Pause(ctx)
 	defer resume()
 	callCtx, stop := runCallCtx(ctx)
 	defer stop()
 	res, derr := e.extProc.DispatchFunction(callCtx, entity, *tr.Schedule.Function, wf.Name, tr.Name, txID)
 	stop()
-	resume() // BEFORE any tx-buffer write — see doc comment above.
-	if cerr := fence.Check(ctx); cerr != nil {
-		return nil, nil, cerr
+	// BEFORE any transaction write — see doc comment above.
+	if rerr := resume(); rerr != nil {
+		return nil, nil, rerr
 	}
 	if derr != nil {
 		// Fails the write, fail-closed. The wrap names the function for the one

@@ -34,3 +34,17 @@ func TestWriteError_RecordsOutcome(t *testing.T) {
 		t.Errorf("o.Err = %v, want the cause chain intact", o.Err)
 	}
 }
+
+func TestFailureRecorded(t *testing.T) {
+	if FailureRecorded(context.Background()) {
+		t.Fatal("a context with no holder reads as failed")
+	}
+	ctx, _ := WithOutcome(context.Background())
+	if FailureRecorded(ctx) {
+		t.Fatal("a fresh holder reads as failed")
+	}
+	RecordOutcome(ctx, Operational(http.StatusNotFound, ErrCodeEntityNotFound, "gone"))
+	if !FailureRecorded(ctx) {
+		t.Fatal("a recorded failure is not read")
+	}
+}

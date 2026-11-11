@@ -525,6 +525,12 @@ func TestOpenChild_SavepointOnDeadSessionBreaks(t *testing.T) {
 	if !errors.Is(err, ErrScopeInfra) {
 		t.Fatalf("OpenChild = %v; want ErrScopeInfra", err)
 	}
+	// The transaction is now broken: a later processor scope is refused as
+	// an unusable transaction, which is never the processor's failure.
+	e.tm.failSavepoint.Store(nil)
+	if _, _, err := e.c.OpenChild(e.ownerCtx); !errors.Is(err, ErrScopeInfra) || !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatalf("OpenChild on a broken transaction = %v; want ErrScopeInfra with the broken cause", err)
+	}
 	if err := e.seal(); !errors.Is(err, spi.ErrTxNotFound) {
 		t.Fatalf("Seal = %v; want the broken cause", err)
 	}
@@ -577,6 +583,7 @@ func TestBeginCalloutAndOpenChild_ScopeOfAnotherTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
+	t.Cleanup(func() { _ = e.tm.Rollback(e.userCtx, tx2) })
 	cctx, endY := e.c.BeginCallout(actx, tx2, "y1")
 	reg := func() *calloutReg {
 		e.c.mu.Lock()
@@ -652,4 +659,49 @@ func TestCalloutEnd_ForgetsOnlyItsOwnRegistration(t *testing.T) {
 	}
 	endSecond()
 	mustForgotten(t, e)
+}
+
+// The context a callout runs under reports, through Check, the refusal of the
+// scope it was begun from once that scope is marked: the owner's loop answers
+// a callout cancelled by a mark with it. On the owner's chain that scope is
+// the root, which the owner's own context does not carry.
+func TestCheck_CalloutContextReportsItsParentsMark(t *testing.T) {
+	t.Run("root", func(t *testing.T) {
+		e := newEnv(t)
+		cctx, endC1 := e.callout(e.ownerCtx, "c1")
+		if err := Check(cctx); err != nil {
+			t.Fatalf("Check before any mark = %v", err)
+		}
+		a, _ := e.mustEnter(Write, pair("c1", 1))
+		_ = a.End(failed(400, common.ErrCodeWorkflowFailed))
+		if !errors.Is(context.Cause(cctx), common.ErrRollbackOnly) {
+			t.Fatalf("cause = %v; want ErrRollbackOnly", context.Cause(cctx))
+		}
+		err := Check(cctx)
+		mustCode(t, err, 409, common.ErrCodeTransactionRollbackOnly, false)
+		if !strings.Contains(err.Error(), common.ErrCodeWorkflowFailed) {
+			t.Fatalf("refusal %q does not name the failed code", err)
+		}
+		e.tm.lost.Store(true)
+		if err := Check(cctx); !errors.Is(err, spi.ErrTxAborted) {
+			t.Fatalf("Check after a lost race = %v; want spi.ErrTxAborted", err)
+		}
+		endC1()
+		_ = e.seal()
+	})
+	t.Run("callback", func(t *testing.T) {
+		e := newEnv(t)
+		_, endC1 := e.callout(e.ownerCtx, "c1")
+		a, actx := e.mustEnter(Write, pair("c1", 1))
+		resume := Pause(actx)
+		cctx, endC2 := e.callout(actx, "c2")
+		b, _ := e.mustEnter(Write, pair("c2", 1), pair("c1", 1))
+		_ = b.End(failed(400, common.ErrCodeValidationFailed))
+		mustCode(t, Check(cctx), 409, common.ErrCodeTransactionRollbackOnly, false)
+		endC2()
+		_ = resume()
+		_ = a.End(&common.Outcome{})
+		endC1()
+		_ = e.seal()
+	})
 }

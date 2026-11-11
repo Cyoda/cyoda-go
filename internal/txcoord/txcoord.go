@@ -51,13 +51,14 @@ const (
 type Coordination interface {
 	// BeginCallout registers callout calloutID on txID under the scope on ctx
 	// (the root of txID when ctx carries none, or one of another transaction)
-	// and the pairs that scope was admitted under. The returned ctx is cancelled with cause fence.ErrSuperseded when
-	// an outer pair stops being current, and with cause common.ErrRollbackOnly
-	// when the scope it was begun from is marked (at once when it already is).
-	// end unregisters the callout, cancels the callouts begun under it, and
-	// waits until no open scope admitted under it remains; it is idempotent.
-	// An empty txID is a callout with no transaction: it is registered with the
-	// fence only.
+	// and the pairs that scope was admitted under. The returned ctx is
+	// cancelled with cause ErrSuperseded when an outer pair stops being
+	// current, and with cause common.ErrRollbackOnly when the scope it was
+	// begun from is marked (at once when it already is); Check on it then
+	// reports the refusal of the scope it was begun from. end unregisters the
+	// callout, cancels the callouts begun under it, and waits until no open
+	// scope admitted under it remains; it is idempotent. An empty txID is a
+	// callout with no transaction: it is registered with the fence only.
 	BeginCallout(ctx context.Context, txID, calloutID string) (context.Context, func())
 	// Advance raises the callout's major, cancels the callouts begun under its
 	// earlier passes, then waits until no open scope admitted under it at a
@@ -85,12 +86,12 @@ type Coordination interface {
 	// the scope. The caller ends the scope with End.
 	Enter(ctx context.Context, txID string, pairs []fence.Pair, class RequestClass, maxWaiters int) (Scope, context.Context, error)
 	// OpenChild opens an ASYNC_NEW_TX processor scope in ctx's transaction,
-	// under the scope on ctx (the root when ctx carries none, or one of another
-	// transaction), with a savepoint. It refuses as Check(ctx) would, and with
-	// the broken cause on a broken transaction; a savepoint that cannot be
-	// taken is ErrScopeInfra (and a session that has ended leaves the
-	// transaction broken). The
-	// caller ends the scope with Close.
+	// under the scope on ctx (the root when ctx carries none, or one of
+	// another transaction), with a savepoint. It refuses as the parent
+	// scope's check would. A broken transaction, and a savepoint that cannot
+	// be taken, are ErrScopeInfra (with the broken cause or the savepoint's
+	// error); a session that has ended leaves the transaction broken. The caller ends the scope with
+	// Close.
 	OpenChild(ctx context.Context) (Scope, context.Context, error)
 	// AtCapacity is the reading Joiner.CheckRoom takes before a door reads its
 	// body: whether maxWaiters requests already queue for txID's gate.
@@ -128,12 +129,20 @@ func scopeFrom(ctx context.Context) *scope {
 
 // Pause marks the scope on ctx paused, for the length of a callout of its own,
 // and releases the gate its chain holds, so that the callout's callbacks (its
-// descendants, and only those) can be admitted. It is a no-op with no scope on
-// ctx, on a chain that holds no gate (the owner's), and on a chain whose gate a
-// Pause has already released and no resume has retaken: such a Pause releases
-// nothing, and its resume only returns Check(ctx). Otherwise resume retakes the
-// gate (uncapped, never refused) and returns Check(ctx). resume is idempotent. Callers
-// defer resume and call it explicitly before touching the transaction.
+// descendants, and only those) can be admitted. resume retakes the gate
+// (uncapped, never refused) and returns Check(ctx); it is idempotent. Callers
+// defer resume and call it explicitly before they touch the transaction again.
+//
+// Pause is a no-op with no scope on ctx and on a chain that holds no gate (the
+// owner's); its resume then only returns Check(ctx).
+//
+// A chain has at most one paused scope at a time. The engine makes its
+// callouts one after another on the goroutine that serves the request (a
+// transition's processors run in order, and criteria and schedule functions
+// are evaluated inline), and that goroutine is blocked in the callout for as
+// long as its scope is paused. A Pause on a chain whose gate a Pause has
+// already released, before that one's resume, is therefore a caller's
+// mistake; it is a silent no-op that releases nothing.
 func Pause(ctx context.Context) (resume func() error) {
 	s := scopeFrom(ctx)
 	if s == nil {
@@ -145,14 +154,36 @@ func Pause(ctx context.Context) (resume func() error) {
 // Check reports, for the scope on ctx and its ancestors: 410 CALLOUT_SUPERSEDED
 // when a pair is not current; else, when a scope on the chain is marked, the
 // lost race (spi.ErrTxAborted) if LostRace says so, otherwise
-// common.TransactionRollbackOnly(code). nil for a ctx with no scope.
+// common.TransactionRollbackOnly(code). On the context BeginCallout returned,
+// it reports on the scope the callout was begun from, the root included. nil
+// for a ctx with no scope.
 func Check(ctx context.Context) error {
 	s := scopeFrom(ctx)
 	if s == nil {
 		return nil
 	}
+	if s.kind == rootKind {
+		// The root has no pass: only a mark refuses it, and LostRace is
+		// asked with the owner's context.
+		if code, marked := s.markedCode(); marked {
+			return s.c.rollbackOnly(ctx, s.tx.id, code)
+		}
+		return nil
+	}
 	return s.check()
 }
+
+// Pair names one callout at one fencing number, as a pass carries it.
+type Pair = fence.Pair
+
+// ErrSuperseded is the cause of every 410 CALLOUT_SUPERSEDED refusal, and the
+// cause with which a callout's context is cancelled when an enclosing pass
+// stops being current.
+var ErrSuperseded = fence.ErrSuperseded
+
+// NewSupersededError returns the 410 CALLOUT_SUPERSEDED refusal, not
+// retryable, with ErrSuperseded as its cause.
+func NewSupersededError() *common.AppError { return fence.NewSupersededError() }
 
 // Pairs returns the pairs the callback scope on ctx (or the nearest one above a
 // processor scope on ctx) was admitted under: the outer of a callout begun from

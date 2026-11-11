@@ -13,10 +13,9 @@ import (
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 const (
@@ -45,11 +44,10 @@ func secret() []byte {
 }
 
 // env is an owner over a real dispatcher, a real member registry and a real
-// fence, the way app.go builds them.
+// transaction coordination, the way app.go builds them.
 type env struct {
 	reg    *internalgrpc.MemberRegistry
-	gate   *txgate.Registry
-	fence  *fence.Fence
+	coord  txcoord.Coordination
 	signer *token.Signer
 	// clock is the owner's platform clock.
 	clock *fakeclock.Clock
@@ -63,20 +61,62 @@ var envStart = time.Date(2015, 3, 1, 9, 30, 0, 123_456_789, time.UTC)
 
 func newEnv(t *testing.T, cfg Config) *env {
 	t.Helper()
+	return newEnvOver(t, cfg, noopTM{})
+}
+
+// newEnvOver is newEnv with the transaction manager the coordination asks.
+func newEnvOver(t *testing.T, cfg Config, tm spi.TransactionManager) *env {
+	t.Helper()
 	signer, err := token.NewSigner(secret())
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
 	reg := internalgrpc.NewMemberRegistry()
-	gate := txgate.New()
-	f := fence.New(gate)
+	coord := txcoord.New(tm)
 	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
 		signer, 30*time.Second, 60*time.Second, 30*time.Second)
 	if cfg.SelfNodeID == "" {
 		cfg.SelfNodeID = "node-owner"
 	}
 	clk := fakeclock.New(envStart)
-	return &env{reg: reg, gate: gate, fence: f, signer: signer, clock: clk, owner: New(local, reg, nil, f, common.NewTestUUIDGenerator(), clk, cfg)}
+	return &env{reg: reg, coord: coord, signer: signer, clock: clk, owner: New(local, reg, nil, coord, common.NewTestUUIDGenerator(), clk, cfg)}
+}
+
+// noopTM stands in for the transaction manager of "tx-1", a transaction the
+// tests never open: a callback scope's savepoint is taken and ended without
+// doing anything, and no transaction has lost a race.
+type noopTM struct{ spi.TransactionManager }
+
+func (noopTM) Savepoint(context.Context, string) (string, error)         { return "sp", nil }
+func (noopTM) ReleaseSavepoint(context.Context, string, string) error    { return nil }
+func (noopTM) RollbackToSavepoint(context.Context, string, string) error { return nil }
+func (noopTM) LostRace(context.Context, string) (bool, error)            { return false, nil }
+
+// callback opens the scope of a joined request of "tx-1" under pairs (own pair
+// first), as the join layer does, and returns it with the context its handler
+// runs on.
+func (e *env) callback(t *testing.T, class txcoord.RequestClass, pairs ...txcoord.Pair) (txcoord.Scope, context.Context) {
+	t.Helper()
+	joined := spi.WithTransaction(userCtx(tenantA), &spi.TransactionState{ID: "tx-1"})
+	s, ctx, err := e.coord.Enter(joined, "tx-1", pairs, class, 0)
+	if err != nil {
+		t.Fatalf("callback %v refused: %v", pairs, err)
+	}
+	return s, ctx
+}
+
+// refused reports whether a joined request under p is refused as superseded.
+// A request admitted while another holds the gate gives up its wait after a
+// moment and reads as not refused.
+func (e *env) refused(p txcoord.Pair) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	s, _, err := e.coord.Enter(ctx, "tx-1", []txcoord.Pair{p}, txcoord.Outside, 0)
+	if err != nil {
+		return errors.Is(err, txcoord.ErrSuperseded)
+	}
+	s.End(nil)
+	return false
 }
 
 // cnode records what one scripted cnode was sent.

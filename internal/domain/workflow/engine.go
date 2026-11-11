@@ -19,8 +19,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 var tracer = otel.Tracer("github.com/cyoda-platform/cyoda-go/workflow")
@@ -146,10 +146,14 @@ func criterionName(criterion []byte) string {
 
 // Engine orchestrates workflow execution for entities.
 type Engine struct {
-	factory          spi.StoreFactory
-	uuids            spi.UUIDGenerator
-	txMgr            spi.TransactionManager
-	extProc          contract.ExternalProcessingService
+	factory spi.StoreFactory
+	uuids   spi.UUIDGenerator
+	txMgr   spi.TransactionManager
+	extProc contract.ExternalProcessingService
+	// coord is the transaction coordination the engine opens ASYNC_NEW_TX
+	// processor scopes in: the one the callout coordinator registers its
+	// callouts with and the doors open callback scopes in.
+	coord            txcoord.Coordination
 	maxStateVisits   int
 	defaultWorkflows []spi.WorkflowDefinition
 	// clock supplies "now" for scheduled-transition arming (reconcileScheduledTasks)
@@ -181,6 +185,10 @@ func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.Tran
 	for _, opt := range opts {
 		opt(e)
 	}
+	if e.coord == nil {
+		// An engine on its own coordinates the transactions it alone runs.
+		e.coord = txcoord.New(txMgr)
+	}
 
 	var defaultWF spi.WorkflowDefinition
 	if err := json.Unmarshal(defaultWorkflowJSON, &defaultWF); err != nil {
@@ -199,6 +207,19 @@ type EngineOption func(*Engine)
 func WithExternalProcessing(extProc contract.ExternalProcessingService) EngineOption {
 	return func(e *Engine) {
 		e.extProc = extProc
+	}
+}
+
+// WithCoordination sets the transaction coordination the engine opens
+// ASYNC_NEW_TX processor scopes in. It must be the one the external processing
+// service registers its callouts with, and the one the callback doors open
+// their scopes in: a processor scope is the parent of the callouts begun from
+// it and of their callbacks. Without it the engine builds one of its own over
+// txMgr, which serves only an engine whose callouts and callbacks no other
+// component coordinates.
+func WithCoordination(c txcoord.Coordination) EngineOption {
+	return func(e *Engine) {
+		e.coord = c
 	}
 }
 
@@ -1037,12 +1058,13 @@ func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, rea
 // recordEvent records a single audit event, and reports whether the store
 // accepted it.
 func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) bool {
-	// A chain the fence refuses performs no store operation of any kind, an
-	// audit row included: on PostgreSQL it would be a statement on the
-	// operation's connection, after the owner has stopped waiting for this
-	// chain. The guard is here, and not at the error paths that record, so that
-	// no further site can appear later.
-	if fence.Check(ctx) != nil {
+	// A chain whose scope is refused (superseded, or marked rollback-only)
+	// performs no store operation of any kind, an audit row included: on
+	// PostgreSQL it would be a statement on the operation's connection, after
+	// the owner has stopped waiting for this chain, and in a marked scope it
+	// would be discarded anyway. The guard is here, and not at the error paths
+	// that record, so that no further site can appear later.
+	if txcoord.Check(ctx) != nil {
 		return false
 	}
 	event := spi.StateMachineEvent{

@@ -20,6 +20,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -152,10 +153,13 @@ func TestTxRouteInterceptor_SearchForwardReturnsOwnerUncommittedWrites(t *testin
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	// The owner's fence has that callout in progress at the pass's number, so
-	// the local join below admits it. liveRouteFence names it "req-"+txID.
-	ownerFence, ownerGate, _ := liveRouteFence(t, txID)
-	ownerJoiner := mustJoiner(t, signer, owner.txMgr, ownerFence, ownerGate)
+	// The owner's coordination has that callout in progress at the pass's
+	// number, so the local join below admits it.
+	ownerCoord := txcoord.New(owner.txMgr)
+	_, endCallout := ownerCoord.BeginCallout(context.Background(), txID, "req-"+txID)
+	t.Cleanup(endCallout)
+	ownerCoord.Advance("req-"+txID, 1)
+	ownerJoiner := mustJoiner(t, signer, owner.txMgr, ownerCoord)
 
 	// --- node A owner-side forward target: join the LIVE tx exactly as the
 	// interceptor's local-join branch does (the one join door, txjoin.Joiner.Run,
@@ -165,13 +169,14 @@ func TestTxRouteInterceptor_SearchForwardReturnsOwnerUncommittedWrites(t *testin
 	ownerHandle := func(ce *cepb.CloudEvent) (*fakeClientStream, error) {
 		var captured *mockEntityStream
 		var herr error
-		jerr := ownerJoiner.Run(owner.ctx(), tok, func(ownerCtx context.Context) {
+		_, jerr := ownerJoiner.Run(owner.ctx(), tok, txcoord.Read, func(ownerCtx context.Context) *common.Outcome {
 			if spi.GetTransaction(ownerCtx) == nil {
 				t.Error("owner must join the live tx from the token (co-location precondition)")
-				return
+				return nil
 			}
 			captured = &mockEntityStream{ctx: ownerCtx}
 			herr = owner.svc.EntitySearchCollection(ce, captured)
+			return nil
 		})
 		if jerr != nil {
 			return nil, jerr

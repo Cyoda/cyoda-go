@@ -562,31 +562,6 @@ func TestRegistry_AtCapacity_NothingQueued(t *testing.T) {
 
 // --- the pre-coordination entry points ---------------------------------------
 
-// AcquireCtx is AcquireJoined admitting everyone: capped, given up when its
-// context ends.
-func TestRegistry_AcquireCtx_IsCappedAndCancellable(t *testing.T) {
-	r := New()
-	holder := r.Acquire("tx-1")
-	ctx, cancel := context.WithCancel(context.Background())
-	gaveUp := make(chan error, 1)
-	go func() {
-		_, err := r.AcquireCtx(ctx, "tx-1", 1)
-		gaveUp <- err
-	}()
-	waitFor(t, "the waiter to queue", func() bool { return r.AtCapacity("tx-1", 1) })
-	if _, err := r.AcquireCtx(context.Background(), "tx-1", 1); !errors.Is(err, ErrTooManyWaiters) {
-		t.Fatalf("err = %v; want ErrTooManyWaiters", err)
-	}
-	cancel()
-	if err := expectSoon(t, gaveUp, "the waiter to give up"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v; want context.Canceled", err)
-	}
-	holder()
-	if n := r.len(); n != 0 {
-		t.Fatalf("gate map = %d entries", n)
-	}
-}
-
 // Acquire is the wait the transaction owner's own chain, the fence and a
 // suspended callback's resume take, and none of them may be refused: each holds
 // state a refusal could not undo. The cap belongs to the joined doors alone.
@@ -594,7 +569,7 @@ func TestRegistry_Acquire_IsNeverRefusedForCapacity(t *testing.T) {
 	r := New()
 	holder := r.Acquire("tx-1")
 	go func() {
-		if release, err := r.AcquireCtx(context.Background(), "tx-1", 1); err == nil {
+		if release, err := r.AcquireJoined(context.Background(), "tx-1", 1, nil); err == nil {
 			release()
 		}
 	}()
@@ -604,69 +579,4 @@ func TestRegistry_Acquire_IsNeverRefusedForCapacity(t *testing.T) {
 	go func() { r.Acquire("tx-1")(); close(got) }()
 	holder()
 	expectSoon(t, got, "an uncapped wait to get the gate")
-}
-
-// TestSuspend_NoHeldGate_NoOp: a ctx with no held gate installed (the owner
-// path, or a plain non-joined call) yields a no-op Suspend whose resume is also
-// a harmless no-op — it must never touch any gate.
-func TestSuspend_NoHeldGate_NoOp(t *testing.T) {
-	resume := Suspend(context.Background())
-	if resume == nil {
-		t.Fatal("Suspend returned a nil resume for a ctx with no held gate")
-	}
-	resume() // must not panic
-}
-
-// TestSuspend_ReleasesHeldGate_ResumeReacquires encodes the fix's core seam.
-// A joined caller holds gate(T) and installs a held handle on ctx via WithHeld.
-// While it is "parked in dispatch" it calls Suspend(ctx): the gate MUST be
-// released so a descendant on the same txID can Acquire and progress. After the
-// descendant releases, resume() MUST re-acquire the gate before the caller
-// resumes its buffer access — and the caller's own release variable must observe
-// the fresh release func so the deferred release matches the re-acquire.
-func TestSuspend_ReleasesHeldGate_ResumeReacquires(t *testing.T) {
-	r := New()
-	const txID = "tx-suspend"
-
-	// Joined caller acquires the gate and records it on ctx.
-	release := r.Acquire(txID)
-	ctx, _ := WithHeld(context.Background(), r, txID, &release)
-
-	// Descendant tries to acquire the SAME gate. It must block until Suspend
-	// releases, then complete, then release before resume can re-acquire.
-	descendantAcquired := make(chan struct{})
-	descendantReleased := make(chan struct{})
-	go func() {
-		rel := r.Acquire(txID) // blocks until the caller Suspends
-		close(descendantAcquired)
-		time.Sleep(20 * time.Millisecond) // hold briefly so resume must wait
-		rel()
-		close(descendantReleased)
-	}()
-
-	// Before Suspend the descendant must NOT be able to acquire.
-	expectNotYet(t, descendantAcquired, "descendant acquired gate(T) while the caller still held it")
-
-	resume := Suspend(ctx)
-
-	// Now the descendant progresses (the gate was released).
-	expectSoon(t, descendantAcquired, "descendant to acquire gate(T) after Suspend")
-
-	// resume() must block until the descendant releases, then re-acquire.
-	resume()
-	select {
-	case <-descendantReleased:
-	default:
-		t.Fatal("resume() returned before the descendant released — it did not re-acquire the gate")
-	}
-
-	// The caller's release variable now points at the re-acquired gate; calling
-	// it must free the gate (a fresh Acquire must not block afterward).
-	release()
-	done := make(chan struct{})
-	go func() { r.Acquire(txID)(); close(done) }()
-	expectSoon(t, done, "the gate after the caller's release()")
-	if n := r.len(); n != 0 {
-		t.Fatalf("expected empty gate map after all releases, got %d", n)
-	}
 }

@@ -49,3 +49,17 @@ func RecordOutcome(ctx context.Context, appErr *AppError) {
 	o.Retryable = appErr.Retryable
 	o.Err = appErr
 }
+
+// FailureRecorded reports whether a failure has been recorded on ctx's holder
+// so far. Unlike the fields, it may be read while the handler runs: a door
+// that holds a streamed answer asks it frame by frame, to tell the frame that
+// carries the failure from the frames before it. False without a holder.
+func FailureRecorded(ctx context.Context) bool {
+	o, ok := ctx.Value(outcomeKey{}).(*Outcome)
+	if !ok {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.Status != 0
+}

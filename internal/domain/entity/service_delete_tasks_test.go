@@ -12,7 +12,6 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/taskconflict"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 // armForeignModelTask arms one task of another model in the same tenant, so
@@ -580,27 +579,26 @@ func TestDeleteEntitiesConditional_SingleTx_CommitConflictPersists_Retryable409W
 	}
 }
 
-// heldJoinedCtx begins a fresh transaction and takes its gate the way
-// txjoin.Joiner.RunVerified does before it ever calls a routed callback's
-// handler (internal/domain/txjoin/txjoin.go: AcquireCtx, then WithHeld) —
-// so the ctx a test hands the handler here is held exactly as a real joined
-// callback's is, not merely tx-bearing. A once-function whose internal
+// heldJoinedCtx begins a fresh transaction and takes its gate the way the join
+// layer takes it for a joined request before it ever calls a routed
+// callback's handler (txcoord's Enter, AcquireJoined on the shared registry)
+// — so the transaction a test hands the handler here is held exactly as a real
+// joined callback's is, not merely tx-bearing. A once-function whose internal
 // "owned" wrongly read true against such a ctx would try to acquire the same
 // non-reentrant gate a second time and deadlock; a joined ctx built from a
-// bare txMgr.Begin/Join (as the existing *_Joined_NotRetried tests use)
-// never holds the gate, so it cannot catch that.
+// bare txMgr.Begin/Join (as the existing *_Joined_NotRetried tests use) never
+// holds the gate, so it cannot catch that.
 func (e *taskEnv) heldJoinedCtx(t *testing.T) (ctx context.Context, txID string, release func()) {
 	t.Helper()
 	txID, joinedCtx, err := e.txMgr.Begin(e.ctx)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	rel, err := e.h.gate.AcquireCtx(joinedCtx, txID, 0)
+	rel, err := e.h.gate.AcquireJoined(joinedCtx, txID, 0, nil)
 	if err != nil {
-		t.Fatalf("AcquireCtx: %v", err)
+		t.Fatalf("AcquireJoined: %v", err)
 	}
-	held, _ := txgate.WithHeld(joinedCtx, e.h.gate, txID, &rel)
-	return held, txID, func() { rel() }
+	return joinedCtx, txID, rel
 }
 
 // runWithTimeout runs fn on its own goroutine and fails the test if fn has

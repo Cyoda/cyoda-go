@@ -44,7 +44,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
@@ -53,7 +52,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 type App struct {
@@ -64,9 +63,8 @@ type App struct {
 	authService        contract.AuthenticationService
 	authSvc            *auth.AuthService // non-nil only in JWT IAM mode; nil in mock IAM mode
 	workflowEngine     *workflow.Engine
-	txGate             *txgate.Registry // per-tx application gate serialising joined callbacks and the owner's commit
-	fence              *fence.Fence     // one arbiter per process; both callback doors and every callout judge a callback by it
-	joiner             *txjoin.Joiner   // the join layer both callback doors run a request carrying a pass through
+	coord              txcoord.Coordination // one per process: callouts, callback scopes and processor scopes of every transaction
+	joiner             *txjoin.Joiner       // the join layer both callback doors run a request carrying a pass through
 	searchService      *search.SearchService
 	memberRegistry     *internalgrpc.MemberRegistry
 	grpcServer         *internalgrpc.Server
@@ -419,10 +417,10 @@ func New(cfg Config) *App {
 	}
 
 	a.memberRegistry = internalgrpc.NewMemberRegistry()
-	// One lock registry and one fence per process: both callback doors, the
-	// entity service and every callout judge a callback by the same state.
-	a.txGate = txgate.New()
-	a.fence = fence.New(a.txGate)
+	// One transaction coordination per process: both callback doors, the
+	// engine, the entity service and every callout judge a callback by the
+	// same state.
+	a.coord = txcoord.New(a.transactionManager)
 	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -529,7 +527,7 @@ func New(cfg Config) *App {
 			}
 			peers = peerRouter
 		}
-		extProc = callout.New(localDispatcher, a.memberRegistry, peers, a.fence, common.NewDefaultUUIDGenerator(), clk, callout.Config{
+		extProc = callout.New(localDispatcher, a.memberRegistry, peers, a.coord, common.NewDefaultUUIDGenerator(), clk, callout.Config{
 			SelfNodeID:        a.selfNodeID,
 			FixedNumRetries:   cfg.Callout.FixedNumRetries,
 			Patience:          cfg.Cluster.DispatchWaitTimeout,
@@ -541,6 +539,7 @@ func New(cfg Config) *App {
 	}
 	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager, clk,
 		workflow.WithExternalProcessing(extProc),
+		workflow.WithCoordination(a.coord),
 		workflow.WithMaxStateVisits(cfg.MaxStateVisits))
 
 	// Wire MemberRegistry onChange to gossip tag updates
@@ -574,9 +573,9 @@ func New(cfg Config) *App {
 	}
 
 	// The join layer: every request that carries a pass runs through it, on
-	// either door — joined, checked under the transaction's lock, and holding
-	// that lock for the length of the handler.
-	joiner, err := txjoin.NewJoiner(a.tokenSigner, a.transactionManager, a.fence, a.txGate,
+	// either door — joined, in a scope of its own, and holding the
+	// transaction's gate until its scope has ended.
+	joiner, err := txjoin.NewJoiner(a.tokenSigner, a.transactionManager, a.coord,
 		cfg.Callout.JoinedResponseMaxBytes, cfg.Callout.JoinedMaxWaiters, observability.Meter())
 	if err != nil {
 		slog.Error("startup failure", "phase", "joiner-metrics-init", "error", err.Error())
@@ -585,7 +584,7 @@ func New(cfg Config) *App {
 	a.joiner = joiner
 
 	// Domain handlers
-	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate, a.consistency, clk)
+	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, txcoord.GateOf(a.coord), a.consistency, clk)
 	modelHandler := model.New(a.storeFactory, clk)
 	server := internalapi.NewServer()
 	server.Entity = entityHandler
@@ -992,7 +991,6 @@ func (a *App) SearchService() *search.SearchService         { return a.searchSer
 func (a *App) GRPCServer() *internalgrpc.Server             { return a.grpcServer }
 func (a *App) MemberRegistry() *internalgrpc.MemberRegistry { return a.memberRegistry }
 func (a *App) TokenSigner() *token.Signer                   { return a.tokenSigner }
-func (a *App) Fence() *fence.Fence                          { return a.fence }
 func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegistry }
 
 // gRPCGracefulStopBudget is the upper bound on graceful drain at shutdown.

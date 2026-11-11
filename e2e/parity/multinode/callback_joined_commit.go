@@ -3,6 +3,7 @@ package multinode
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
@@ -19,8 +20,10 @@ import (
 //   - The secondary's workflow reaches a COMMIT_BEFORE_DISPATCH processor. On
 //     node 1 the joined write is refused with 409 COMMIT_IN_JOINED_TRANSACTION
 //     before T is flushed or committed, and the answer crosses back.
-//   - The processor records the answer and succeeds, so node 1 commits T: the
-//     primary reaches ACTIVE, and the refused secondary is stored nowhere.
+//   - The refusal is a non-retryable failure of a joined write: T is made
+//     rollback-only. The processor records the answer and succeeds, and node 1
+//     still refuses its owner 409 TRANSACTION_ROLLBACK_ONLY, naming the
+//     callback's code; nothing is stored, the refused secondary nowhere.
 //
 // The COMMIT_BEFORE_DISPATCH processor carries a tag no compute member serves:
 // the refusal comes before any dispatch, so when it holds the tag never
@@ -75,38 +78,31 @@ func RunCallback_CommitBeforeDispatchRefusedAcrossForwardedHop(t *testing.T, fix
 
 	const ownerIdx = 1
 	cOwner := client.NewClient(urls[ownerIdx], tenant.Token)
-	primaryID, err := cOwner.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	status, raw, err := cOwner.CreateEntityRaw(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if err != nil {
-		t.Fatalf("primary create via owner node %d: %v — the owner must still commit T after its callback was refused", ownerIdx, err)
-	}
-	prim, err := cOwner.GetEntity(t, primaryID)
-	if err != nil {
-		t.Fatalf("GetEntity primary via owner: %v", err)
-	}
-	if prim.Meta.State != "ACTIVE" {
-		t.Fatalf("primary state = %q; want ACTIVE (the owner committed T): data=%+v", prim.Meta.State, prim.Data)
-	}
-	if empty, _ := prim.Data["tokenWasEmpty"].(bool); empty {
-		t.Fatal("forwarded SYNC dispatch: tokenWasEmpty=true; the owner's token must survive the forward")
-	}
-
-	status, _ := prim.Data["hopStatus"].(float64)
-	body, _ := prim.Data["hopBody"].(string)
-	if int(status) != http.StatusConflict {
-		t.Fatalf("joined create across the hop: status = %v; want 409 (body: %s)", status, body)
+		t.Fatalf("primary create via owner node %d: %v", ownerIdx, err)
 	}
 	var pd struct {
+		Detail     string `json:"detail"`
 		Properties struct {
 			ErrorCode string `json:"errorCode"`
 			Retryable bool   `json:"retryable"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal([]byte(body), &pd); err != nil {
-		t.Fatalf("crossed-back answer is not a problem document: %v (body: %s)", err, body)
+	if err := json.Unmarshal(raw, &pd); err != nil {
+		t.Fatalf("primary create answered %d, not a problem document: %v (body: %s)", status, err, raw)
 	}
-	if pd.Properties.ErrorCode != "COMMIT_IN_JOINED_TRANSACTION" || pd.Properties.Retryable {
-		t.Fatalf("errorCode=%q retryable=%t; want COMMIT_IN_JOINED_TRANSACTION, not retryable (body: %s)",
-			pd.Properties.ErrorCode, pd.Properties.Retryable, body)
+	if status != http.StatusConflict || pd.Properties.ErrorCode != "TRANSACTION_ROLLBACK_ONLY" || pd.Properties.Retryable {
+		t.Fatalf("primary create = %d %s retryable=%t; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable (body: %s)",
+			status, pd.Properties.ErrorCode, pd.Properties.Retryable, raw)
+	}
+	if !strings.Contains(pd.Detail, "COMMIT_IN_JOINED_TRANSACTION") {
+		t.Fatalf("detail = %q; want it to name the crossed-back COMMIT_IN_JOINED_TRANSACTION", pd.Detail)
+	}
+	if all, err := cOwner.ListEntitiesByModel(t, primary, 1); err != nil {
+		t.Fatalf("list primary: %v", err)
+	} else if len(all) != 0 {
+		t.Fatalf("%d primary entities committed; the owner's refused operation commits nothing", len(all))
 	}
 
 	for nodeIdx, url := range urls {

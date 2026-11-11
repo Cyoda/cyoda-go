@@ -16,8 +16,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // retryPolicyNone is the retryPolicy value that selects a single try. Every
@@ -55,10 +55,12 @@ type Config struct {
 
 // Coordinator implements contract.ExternalProcessingService on the owner.
 //
-// Every entry point must be called with the transaction's write lock suspended,
-// never held: the fence's Advance before each try, and the callout's end, wait
-// for that lock, so a Coordinator that held it would wait for itself. The
-// engine suspends it around every dispatch site.
+// Every entry point must be called with the chain's scope paused, never
+// holding the transaction's gate: the Advance before each try, and the
+// callout's end, wait for the callbacks of the callout's earlier passes, which
+// need the gate to end, so a Coordinator whose chain held it would wait for
+// itself. The engine pauses the scope around every dispatch site
+// (txcoord.Pause).
 type Coordinator struct {
 	local *internalgrpc.ProcessorDispatcher
 	// members is this pnode's cnode registry: the change signal a callout that
@@ -66,7 +68,9 @@ type Coordinator struct {
 	members *internalgrpc.MemberRegistry
 	// peers is the other pnodes, nil on a single pnode.
 	peers PeerRouter
-	fence *fence.Fence
+	// coord is the transaction coordination the callouts are registered with:
+	// the one the callback doors open their scopes in.
+	coord txcoord.Coordination
 	uuids spi.UUIDGenerator
 	// clock is the platform clock: the owner reads the platform time of each
 	// callout from it, once.
@@ -77,11 +81,11 @@ type Coordinator struct {
 // New builds the owner's loop. peers is nil on a single pnode — pass an untyped
 // nil, not a nil *dispatch.PeerRouter, which would be a non-nil interface. It
 // panics on a nil clock.
-func New(local *internalgrpc.ProcessorDispatcher, members *internalgrpc.MemberRegistry, peers PeerRouter, f *fence.Fence, uuids spi.UUIDGenerator, clock spi.Clock, cfg Config) *Coordinator {
+func New(local *internalgrpc.ProcessorDispatcher, members *internalgrpc.MemberRegistry, peers PeerRouter, coord txcoord.Coordination, uuids spi.UUIDGenerator, clock spi.Clock, cfg Config) *Coordinator {
 	if clock == nil {
 		panic("callout.New: nil clock")
 	}
-	return &Coordinator{local: local, members: members, peers: peers, fence: f, uuids: uuids, clock: clock, cfg: cfg}
+	return &Coordinator{local: local, members: members, peers: peers, coord: coord, uuids: uuids, clock: clock, cfg: cfg}
 }
 
 // triesFor is the number of tries retryPolicy selects.
@@ -95,17 +99,17 @@ func (c *Coordinator) triesFor(retryPolicy string) int {
 // majorCounter is the one fencing counter of a callout. Both the local
 // procedure (as its TryNumberer) and every hand-over draw from it, so the
 // number rises — and the earlier cnode is shut out, and its joined request in
-// progress waited for — before the work is given to anyone else. It is used
-// from the goroutine that runs the callout only.
+// progress waited for (it ends discarded) — before the work is given to anyone
+// else. It is used from the goroutine that runs the callout only.
 type majorCounter struct {
-	fence     *fence.Fence
+	coord     txcoord.Coordination
 	calloutID string
 	major     uint32
 }
 
 func (n *majorCounter) Next() (uint32, uint32) {
 	n.major++
-	n.fence.Advance(n.calloutID, n.major)
+	n.coord.Advance(n.calloutID, n.major)
 	return n.major, 0
 }
 
@@ -137,8 +141,8 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 	tries := c.triesFor(call.RetryPolicy)
 	// The pairs this chain was admitted under, if it is a callback of an outer
 	// callout: the callout is begun under them, and every pass it mints carries
-	// them. The pass's type for a pair is the fence's own.
-	outer := fence.Pairs(ctx)
+	// them.
+	outer := txcoord.Pairs(ctx)
 	call.RequestID = uuid.UUID(c.uuids.NewTimeUUID()).String()
 	call.AnswerLimit = limit
 	call.OwnerNodeID = c.cfg.SelfNodeID
@@ -152,13 +156,15 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 	// clock reads by then. It is cut to the microsecond a hand-over carries,
 	// so a local try and a peer's try send the same instant.
 	call.At = time.UnixMicro(c.clock.Now().UnixMicro()).UTC()
-	number := &majorCounter{fence: c.fence, calloutID: call.RequestID}
+	number := &majorCounter{coord: c.coord, calloutID: call.RequestID}
 	call.Number = number
 
-	// The callout is ended on every exit path, a panic included: from then on
-	// all its passes are refused, and end waits for a joined request of its
-	// last cnode that is still in progress.
-	cctx, end := c.fence.Begin(ctx, call.RequestID, call.TxID, outer)
+	// The callout is registered with the scope this chain runs in, and ended
+	// on every exit path, a panic included: from then on all its passes are
+	// refused, and end waits for a joined request of its last cnode that is
+	// still in progress (it ends discarded). A mark on that scope cancels the
+	// callout: no further try or hand-over is made.
+	cctx, end := c.coord.BeginCallout(ctx, call.TxID, call.RequestID)
 	defer end()
 
 	// The hard limit on time, fixed now. A lost hand-over answer counts one try
@@ -174,6 +180,16 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 
 	p := &progress{triesLeft: tries}
 	result, err := c.loop(cctx, call, number, p)
+	if err == nil {
+		// An answer does not outrank the scope the callout was made from: a
+		// callback of the callout may have failed a write before the cnode
+		// answered, and the scope is then marked whichever the loop saw first.
+		// A callout made from a scope that cannot complete fails with that
+		// scope's refusal.
+		if cerr := txcoord.Check(cctx); cerr != nil {
+			result, err = internalgrpc.CalloutResult{}, cerr
+		}
+	}
 
 	used := tries - p.triesLeft
 	if stats := contract.CalloutStatsFrom(ctx); stats != nil {
@@ -291,8 +307,8 @@ func (c *Coordinator) askPeers(cctx context.Context, call internalgrpc.Callout, 
 		// The same counter RunLocal draws from: the cnode that held the work
 		// is shut out before the work goes to another pnode.
 		major, _ := number.Next()
-		// Raising the number waits for the transaction's lock, and a joined
-		// write in progress can hold it past the callout's deadline. No
+		// Raising the number waits for the callbacks of the earlier passes,
+		// and a joined write in progress can run past the callout's deadline. No
 		// hand-over starts after that: the loop's tail hands the callout to
 		// stop, which reports what is on record.
 		if cctx.Err() != nil {
@@ -312,8 +328,8 @@ func (c *Coordinator) askPeers(cctx context.Context, call internalgrpc.Callout, 
 
 		// The hand-over does not report the owner's own context ending, so the
 		// owner reads it here: the callout's own deadline is not the end of the
-		// callout's story — what it recorded is — but the caller going away and
-		// the fence's release are.
+		// callout's story — what it recorded is — but the caller going away,
+		// the fence's release and a mark on the scope it was begun from are.
 		if err := cctx.Err(); err != nil && !calloutDeadlinePassed(cctx) {
 			p.stats.HandOvers = append(p.stats.HandOvers, contract.CalloutOutcomeAbandoned)
 			return none, true, ended(cctx, err)
@@ -451,10 +467,17 @@ func calloutDeadlinePassed(ctx context.Context) bool {
 }
 
 // ended is the error for a callout whose context ended for a reason other than
-// its own deadline. context.Cause tells the two apart: released by the fence —
-// the callback this callout was made from belongs to a cnode that was replaced
-// — is CALLOUT_SUPERSEDED; the caller going away, or its
-// transactionTimeoutMillis, is ctxErr, marked as the caller's departure.
+// its own deadline. context.Cause tells the reasons apart:
+//
+//   - released by the fence — the callback this callout was made from belongs
+//     to a cnode that was replaced — is CALLOUT_SUPERSEDED;
+//   - cancelled by a mark on the scope it was begun from (a callback of it, or
+//     of another callout of that scope, failed a write) is that scope's
+//     refusal, as txcoord.Check reports it on the callout's context: the lost
+//     race (spi.ErrTxAborted, the retryable conflict) when the transaction has
+//     lost one, otherwise 409 TRANSACTION_ROLLBACK_ONLY;
+//   - the caller going away, or its transactionTimeoutMillis, is ctxErr,
+//     marked as the caller's departure.
 //
 // This is one of the two places that KNOW an error is the caller's own context
 // ending rather than a failure that happens to carry a cancellation, so it says
@@ -463,8 +486,13 @@ func calloutDeadlinePassed(ctx context.Context) bool {
 // error itself intact, so a transactionTimeoutMillis that expired is still
 // classified 408 upstream before any funnel sees it.
 func ended(cctx context.Context, ctxErr error) error {
-	if errors.Is(context.Cause(cctx), fence.ErrSuperseded) {
-		return fence.NewSupersededError()
+	cause := context.Cause(cctx)
+	switch {
+	case errors.Is(cause, txcoord.ErrSuperseded):
+		return txcoord.NewSupersededError()
+	case errors.Is(cause, common.ErrRollbackOnly):
+		// A mark never clears, so the check reports it.
+		return txcoord.Check(cctx)
 	}
 	return common.ClientGone(ctxErr)
 }

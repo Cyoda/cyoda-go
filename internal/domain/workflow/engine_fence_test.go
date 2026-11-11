@@ -13,13 +13,13 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// innerCoordinator is what a Coordinator does as far as the fence is concerned:
-// begin under the callback's pairs, advance, wait for the compute node, end.
+// innerCoordinator is what a Coordinator does as far as the coordination is
+// concerned: begin under the scope on the chain, advance, wait for the compute
+// node, end.
 //
 // succeedAfterRelease decides what the compute node finally says, and it is the
 // difference between a test with teeth and one without. When it is false the
@@ -30,8 +30,9 @@ import (
 // engine to stop. Only the fence's check does, and that is the race the checks
 // exist for.
 type innerCoordinator struct {
-	f                   *fence.Fence
+	coord               txcoord.Coordination
 	entered             chan struct{} // closed when the first callout is waiting
+	released            chan struct{} // closed when the first callout's context ends
 	proceed             chan struct{} // the released callout returns only once this is closed
 	n                   atomic.Int32
 	succeedAfterRelease bool // set before any goroutine starts; never written afterwards
@@ -39,19 +40,22 @@ type innerCoordinator struct {
 
 func (c *innerCoordinator) run(ctx context.Context, txID string) error {
 	id := "inner-" + strconv.Itoa(int(c.n.Add(1)))
-	cctx, end := c.f.Begin(ctx, id, txID, fence.Pairs(ctx))
+	cctx, end := c.coord.BeginCallout(ctx, txID, id)
 	defer end()
-	c.f.Advance(id, 1)
+	c.coord.Advance(id, 1)
 	if c.n.Load() == 1 {
 		close(c.entered)
 	}
 	<-cctx.Done()
+	if c.n.Load() == 1 {
+		close(c.released)
+	}
 	<-c.proceed
 	if c.succeedAfterRelease {
 		return nil
 	}
-	if errors.Is(context.Cause(cctx), fence.ErrSuperseded) {
-		return fence.NewSupersededError()
+	if errors.Is(context.Cause(cctx), txcoord.ErrSuperseded) {
+		return txcoord.NewSupersededError()
 	}
 	return cctx.Err()
 }
@@ -89,15 +93,17 @@ func (c *innerCoordinator) DispatchFunction(ctx context.Context, _ *spi.Entity, 
 type chainKey struct{}
 
 // supersededOps counts the store operations — audit writes, entity and model
-// reads, the scheduled-task reconcile, savepoint work — made by a chain the
-// test has already superseded.
+// reads, the scheduled-task reconcile, a savepoint taken or released — made by
+// a chain the test has already superseded. Undoing a scope (a rollback to its
+// savepoint) is not counted: a superseded scope is discarded, and that is the
+// one thing it must still do.
 //
 // Its predicate is deliberately the test's OWN bookkeeping: the major it put on
 // the callback's context, against the major it made current when it superseded
-// that callback. It never asks fence.Check. A Check that wrongly answered "still
-// current" would otherwise silence this counter at the same moment it silenced
-// the production guard, and the test would pass while the bug it exists for was
-// live.
+// that callback. It never asks the coordination. A check that wrongly answered
+// "still current" would otherwise silence this counter at the same moment it
+// silenced the production guard, and the test would pass while the bug it
+// exists for was live.
 type supersededOps struct {
 	current atomic.Uint32 // the major the owner has given the work to
 	n       atomic.Int32
@@ -161,7 +167,6 @@ func (w *watchedTxMgr) Savepoint(ctx context.Context, txID string) (string, erro
 }
 
 func (w *watchedTxMgr) RollbackToSavepoint(ctx context.Context, txID, sp string) error {
-	w.ops.note(ctx)
 	w.undone.Add(1)
 	return w.TransactionManager.RollbackToSavepoint(ctx, txID, sp)
 }
@@ -176,8 +181,7 @@ type supersedeEnv struct {
 	base    context.Context
 	factory spi.StoreFactory
 	txMgr   *watchedTxMgr
-	gate    *txgate.Registry
-	f       *fence.Fence
+	coord   txcoord.Coordination
 	ext     *innerCoordinator
 	engine  *Engine
 	ops     *supersededOps
@@ -192,12 +196,11 @@ func newSupersedeEnv(t *testing.T, succeedAfterRelease bool) *supersedeEnv {
 	uuids := common.NewTestUUIDGenerator()
 	ops := &supersededOps{}
 	txMgr := &watchedTxMgr{TransactionManager: mem.NewTransactionManager(uuids), ops: ops}
-	gate := txgate.New()
-	f := fence.New(gate)
-	ext := &innerCoordinator{f: f, entered: make(chan struct{}), proceed: make(chan struct{}), succeedAfterRelease: succeedAfterRelease}
+	coord := txcoord.New(txMgr)
+	ext := &innerCoordinator{coord: coord, entered: make(chan struct{}), released: make(chan struct{}), proceed: make(chan struct{}), succeedAfterRelease: succeedAfterRelease}
 	factory := watchedFactory{StoreFactory: mem, ops: ops}
-	env := &supersedeEnv{base: ctxWithTenant(testTenant), factory: factory, txMgr: txMgr, gate: gate, f: f, ext: ext, ops: ops,
-		engine: NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext))}
+	env := &supersedeEnv{base: ctxWithTenant(testTenant), factory: factory, txMgr: txMgr, coord: coord, ext: ext, ops: ops,
+		engine: NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext), WithCoordination(coord))}
 	var err error
 	env.txID, env.txCtx, err = txMgr.Begin(env.base)
 	if err != nil {
@@ -207,9 +210,11 @@ func newSupersedeEnv(t *testing.T, succeedAfterRelease bool) *supersedeEnv {
 }
 
 // callback runs fn as the join layer runs a callback of callout "outer" at
-// major: joined, admitted, under the lock with the suspendable handle, checked.
-// The major also travels as a plain context value for the store-op counter,
-// which must not depend on the fence to know whose chain it is watching.
+// major: joined, in a scope of its own (admitted, holding the gate, checked,
+// with a savepoint), ended by fn's answer. It returns fn's error, or the
+// scope's rewritten answer, or the refusal on entry. The major also travels as
+// a plain context value for the store-op counter, which must not depend on the
+// coordination to know whose chain it is watching.
 func (env *supersedeEnv) callback(t *testing.T, major uint32, fn func(ctx context.Context) error) error {
 	t.Helper()
 	joined, err := env.txMgr.Join(env.base, env.txID)
@@ -220,25 +225,39 @@ func (env *supersedeEnv) callback(t *testing.T, major uint32, fn func(ctx contex
 		return err
 	}
 	joined = context.WithValue(joined, chainKey{}, major)
-	admitted, err := env.f.Admit(joined, []fence.Pair{{Callout: "outer", Major: major}})
+	scope, ctx, err := env.coord.Enter(joined, env.txID, []txcoord.Pair{{Callout: "outer", Major: major}}, txcoord.Write, 0)
 	if err != nil {
 		return err
 	}
-	release := env.gate.Acquire(env.txID)
-	defer func() { release() }()
-	admitted, _ = txgate.WithHeld(admitted, env.gate, env.txID, &release)
-	if err := fence.Check(admitted); err != nil {
-		return err
+	ferr := fn(ctx)
+	var outcome *common.Outcome
+	if ferr != nil {
+		outcome = &common.Outcome{Status: 500, Err: ferr}
+		var appErr *common.AppError
+		if errors.As(ferr, &appErr) {
+			outcome = &common.Outcome{Status: appErr.Status, Code: appErr.Code, Retryable: appErr.Retryable, Err: ferr}
+		}
 	}
-	return fn(admitted)
+	if rewrite := scope.End(outcome); rewrite != nil {
+		return rewrite
+	}
+	return ferr
 }
 
 // supersede is the owner giving the work to another compute node. The counter's
-// own record of the current major is set BEFORE the fence's, so no operation of
-// the chain about to be superseded can slip past it unnoticed.
-func (env *supersedeEnv) supersede(major uint32) {
+// own record of the current major is set BEFORE the number rises, so no
+// operation of the chain about to be superseded can slip past it unnoticed.
+// The number rises at once; the Advance's wait for the superseded callback runs
+// on and is returned as a channel closed when it is over.
+func (env *supersedeEnv) supersede(major uint32) <-chan struct{} {
 	env.ops.current.Store(major)
-	env.f.Advance("outer", major)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.coord.Advance("outer", major)
+	}()
+	<-env.ext.released // the number has risen: the inner callout is released
+	return done
 }
 
 func assertSuperseded(t *testing.T, err error) {
@@ -247,7 +266,7 @@ func assertSuperseded(t *testing.T, err error) {
 	if !errors.As(err, &appErr) || appErr.Status != 410 || appErr.Code != common.ErrCodeCalloutSuperseded {
 		t.Fatalf("err = %v; want 410 CALLOUT_SUPERSEDED (the callback must be answered 410, not 200)", err)
 	}
-	if !errors.Is(err, fence.ErrSuperseded) {
+	if !errors.Is(err, txcoord.ErrSuperseded) {
 		t.Fatalf("the engine's wraps must keep the refusal findable: %v", err)
 	}
 }
@@ -271,7 +290,7 @@ func supersedeShapes() []supersedeShape {
 			transition: spi.TransitionDefinition{Name: "T", Next: "DONE", Processors: proc(ExecutionModeSync)}},
 		{name: "ASYNC_SAME_TX processor", guardedBy: "executeSyncProcessor's check",
 			transition: spi.TransitionDefinition{Name: "T", Next: "DONE", Processors: proc(ExecutionModeAsyncSameTx)}},
-		{name: "ASYNC_NEW_TX as the LAST processor", guardedBy: "executeAsyncNewTx's check, before the savepoint is looked at",
+		{name: "ASYNC_NEW_TX as the LAST processor", guardedBy: "executeAsyncNewTx's resume, before its scope is ended",
 			transition: spi.TransitionDefinition{Name: "T", Next: "DONE", Processors: proc(ExecutionModeAsyncNewTx)}},
 		{name: "transition FUNCTION criterion", guardedBy: "evaluateCriterion's check",
 			transition: spi.TransitionDefinition{Name: "T", Next: "DONE", Criterion: fnCriterion}},
@@ -297,9 +316,9 @@ func runSupersedeScenario(t *testing.T, tc supersedeShape, calloutSucceeds bool)
 		States: map[string]spi.StateDefinition{"INITIAL": {Transitions: []spi.TransitionDefinition{tc.transition}}, "DONE": {}},
 	}})
 
-	_, endOuter := env.f.Begin(env.base, "outer", env.txID, nil)
+	_, endOuter := env.coord.BeginCallout(env.base, env.txID, "outer")
 	defer endOuter()
-	env.f.Advance("outer", 1)
+	env.coord.Advance("outer", 1)
 
 	var state string
 	done := make(chan error, 1)
@@ -314,7 +333,7 @@ func runSupersedeScenario(t *testing.T, tc supersedeShape, calloutSucceeds bool)
 	}()
 
 	<-env.ext.entered
-	env.supersede(2) // the owner gives the work to another compute node
+	advanced := env.supersede(2) // the owner gives the work to another compute node
 	close(env.ext.proceed)
 
 	select {
@@ -323,6 +342,7 @@ func runSupersedeScenario(t *testing.T, tc supersedeShape, calloutSucceeds bool)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the callback was not released")
 	}
+	<-advanced
 	if state == "DONE" {
 		t.Fatalf("the superseded chain carried the entity on to the next state; %s did not refuse it", tc.guardedBy)
 	}
@@ -355,11 +375,13 @@ func TestSupersededChain_CalloutSucceeded_StillRefusedAndTouchesNoStore(t *testi
 	}
 }
 
-// In ASYNC_NEW_TX the superseded chain neither undoes nor releases its
-// savepoint: what the replacement compute node wrote meanwhile is kept. True
-// whether the callout came back refused (the undo path) or successful (the
-// release path).
-func TestSupersededChain_AsyncNewTx_LeavesItsSavepointAlone(t *testing.T) {
+// In ASYNC_NEW_TX the superseded chain's processor scope is discarded, never
+// released, whether the callout came back refused or successful. While the
+// chain waits in its callout, the replacement compute node's callback is
+// refused 503 TRANSACTION_BUSY (it is not a descendant of the paused scope),
+// so nothing it writes sits above the scope being discarded; once the
+// superseded chain has ended, the replacement's write is admitted and kept.
+func TestExecuteAsyncNewTx_SupersededDiscardsScope(t *testing.T) {
 	for _, calloutSucceeds := range []bool{false, true} {
 		name := "callout refused"
 		if calloutSucceeds {
@@ -378,9 +400,9 @@ func TestSupersededChain_AsyncNewTx_LeavesItsSavepointAlone(t *testing.T) {
 					"DONE": {},
 				},
 			}})
-			_, endOuter := env.f.Begin(env.base, "outer", env.txID, nil)
+			_, endOuter := env.coord.BeginCallout(env.base, env.txID, "outer")
 			defer endOuter()
-			env.f.Advance("outer", 1)
+			env.coord.Advance("outer", 1)
 
 			done := make(chan error, 1)
 			go func() {
@@ -392,31 +414,43 @@ func TestSupersededChain_AsyncNewTx_LeavesItsSavepointAlone(t *testing.T) {
 				})
 			}()
 			<-env.ext.entered
-			env.supersede(2)
+			advanced := env.supersede(2)
 
-			// The replacement compute node writes while the superseded chain is
-			// still waiting. Undoing the savepoint would take this with it.
 			const keptID = "replacement-write"
-			if err := env.callback(t, 2, func(ctx context.Context) error {
-				es, err := env.factory.EntityStore(ctx)
-				if err != nil {
+			replacement := func() error {
+				return env.callback(t, 2, func(ctx context.Context) error {
+					es, err := env.factory.EntityStore(ctx)
+					if err != nil {
+						return err
+					}
+					kept := makeEntity(keptID, modelRef, map[string]any{"kept": true})
+					kept.Meta.TransactionID = env.txID
+					_, err = es.Save(ctx, kept)
 					return err
-				}
-				kept := makeEntity(keptID, modelRef, map[string]any{"kept": true})
-				kept.Meta.TransactionID = env.txID
-				_, err = es.Save(ctx, kept)
-				return err
-			}); err != nil {
-				t.Fatalf("replacement write: %v", err)
+				})
+			}
+			// The superseded chain is still paused in its callout: the
+			// replacement's callback is refused, retryably.
+			var appErr *common.AppError
+			if err := replacement(); !errors.As(err, &appErr) || appErr.Code != common.ErrCodeTransactionBusy || !appErr.Retryable {
+				t.Fatalf("replacement write while the superseded chain waits = %v; want 503 TRANSACTION_BUSY, retryable", err)
 			}
 
 			close(env.ext.proceed)
 			assertSuperseded(t, <-done)
-			if u, r := env.txMgr.undone.Load(), env.txMgr.released.Load(); u != 0 || r != 0 {
-				t.Fatalf("savepoint undone %d times, released %d times; a refused chain touches neither", u, r)
+			<-advanced
+			if r := env.txMgr.released.Load(); r != 0 {
+				t.Fatalf("a savepoint was released %d times; a superseded scope is never kept", r)
+			}
+			if u := env.txMgr.undone.Load(); u == 0 {
+				t.Fatal("the superseded processor scope was not discarded")
 			}
 			if got := env.ops.n.Load(); got != 0 {
 				t.Fatalf("the superseded chain made %d store operations; want none", got)
+			}
+			// Retried once the superseded chain has ended: admitted and kept.
+			if err := replacement(); err != nil {
+				t.Fatalf("replacement write after the superseded chain ended: %v", err)
 			}
 			if err := env.txMgr.Commit(env.txCtx, env.txID); err != nil {
 				t.Fatalf("Commit: %v", err)

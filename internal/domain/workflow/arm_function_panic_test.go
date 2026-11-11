@@ -3,25 +3,24 @@ package workflow
 // arm_function_panic_test.go — the arm-time Function callout must leave the
 // per-tx gate exactly as it found it, panic or not.
 //
-// A joined (routed compute-node callback) write installs a held gate handle on
-// ctx and registers `defer releaseGate()`. armViaFunction suspends that gate
-// across the blocking dispatch. If the dispatch panics and the re-acquire never
-// runs, the unwinding deferred release unlocks a mutex nobody holds — a runtime
-// fatal (`sync: unlock of unlocked mutex`) that NO recover() can catch, so the
-// HTTP/gRPC recovery interceptors and the health latch are all bypassed and the
-// node dies. Worse, if another goroutine won the gate in between, the second
-// unlock frees THEIR gate and refs double-decrements, deleting a held registry
-// entry: mutual exclusion for that txID silently gone.
+// A joined (routed compute-node callback) write runs in a callback scope that
+// holds the transaction's gate. armViaFunction pauses that scope — releasing
+// the gate — across the blocking dispatch. If the dispatch panics and the
+// resume never runs, the scope ends holding no slot, and the gate's queue
+// would be granted to a sibling while the panicking request's scope is still
+// being discarded: mutual exclusion for that transaction silently gone.
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // panickingFunctionProc panics inside the Function callout — standing in for any
@@ -45,13 +44,19 @@ func TestArmViaFunction_PanickingCalloutLeavesGateHeld(t *testing.T) {
 	const nowMs = int64(1_700_000_000_000)
 	engine, _ := setupEngineWithClockAndExtProc(t, nowMs, panickingFunctionProc{})
 
-	reg := txgate.New()
+	coord := txcoord.New(engine.txMgr)
 	const txID = "tx-arm-panic"
+	_, end := coord.BeginCallout(context.Background(), txID, "c-1")
+	defer end()
+	coord.Advance("c-1", 1)
+	pairs := []txcoord.Pair{{Callout: "c-1", Major: 1}}
 
-	// Stand in for the joined callback path: hold gate(T) and record it on ctx
-	// exactly as the join layer (txjoin.Joiner.Run) does.
-	release := reg.Acquire(txID)
-	ctx, _ := txgate.WithHeld(ctxWithTenant(testTenant), reg, txID, &release)
+	// Stand in for the joined callback path: a callback scope holding gate(T),
+	// opened exactly as the join layer opens it.
+	scope, ctx, err := coord.Enter(ctxWithTenant(testTenant), txID, pairs, txcoord.Outside, 0)
+	if err != nil {
+		t.Fatalf("Enter: %v", err)
+	}
 
 	wf := scheduleFunctionWorkflow("PanicWF", "boom")
 	tr := wf.States["OPEN"].Transitions[0]
@@ -66,26 +71,26 @@ func TestArmViaFunction_PanickingCalloutLeavesGateHeld(t *testing.T) {
 		t.Fatal("the callout panic did not propagate — recovery is the door's job, not the engine's")
 	}
 
-	// The caller's `defer releaseGate()` is about to run. It MUST find the gate
-	// held, or it unlocks an unlocked mutex.
-	acquired := make(chan struct{})
-	go func() {
-		rel := reg.Acquire(txID)
-		close(acquired)
-		rel()
-	}()
-	select {
-	case <-acquired:
-		t.Fatal("gate(T) was free after the panic unwound: resume() never ran, so the caller's deferred release will unlock an unlocked mutex (runtime fatal, uncatchable)")
-	case <-time.After(50 * time.Millisecond):
+	// The scope is about to end: it MUST hold the gate again, so that no other
+	// request of the transaction runs before it has been discarded.
+	sibling := func(wait time.Duration) error {
+		wctx, cancel := context.WithTimeout(ctxWithTenant(testTenant), wait)
+		defer cancel()
+		s, _, err := coord.Enter(wctx, txID, pairs, txcoord.Outside, 0)
+		if err == nil {
+			s.End(nil)
+		}
+		return err
+	}
+	if err := sibling(50 * time.Millisecond); err == nil {
+		t.Fatal("gate(T) was free after the panic unwound: the deferred resume never retook it")
+	} else if !errors.Is(err, common.ErrClientGone) {
+		t.Fatalf("the sibling was refused (%v); want it queued behind the panicking scope", err)
 	}
 
-	// And releasing it once must free it — the deferred resume re-acquires
-	// through the caller's own release variable, so one release is enough.
-	release()
-	select {
-	case <-acquired:
-	case <-time.After(time.Second):
-		t.Fatal("gate(T) still held after the caller's release() — resume did not rebind the release func")
+	// Ending the scope once frees it.
+	scope.End(&common.Outcome{Panicked: true})
+	if err := sibling(time.Second); err != nil {
+		t.Fatalf("gate(T) still held after the scope ended: %v", err)
 	}
 }

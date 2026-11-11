@@ -1,7 +1,7 @@
 // Package txjoin turns an inbound transaction routing token into a joined
-// transaction context, mapping verify/join failures to reusable operational
-// error codes. Transport-agnostic: used by both the gRPC interceptor and the
-// HTTP middleware.
+// request of that transaction, run in a scope of its own, mapping verify/join
+// failures to reusable operational error codes. Transport-agnostic: used by
+// both the gRPC interceptor and the HTTP middleware.
 package txjoin
 
 import (
@@ -18,8 +18,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // Joiner is what a callback door needs to run a request as a joined request of
@@ -27,21 +26,21 @@ import (
 type Joiner struct {
 	signer           *token.Signer
 	txMgr            spi.TransactionManager
-	fence            *fence.Fence
-	gate             *txgate.Registry
+	coord            txcoord.Coordination
 	maxResponseBytes int
 	maxWaiters       int
 	superseded       metric.Int64Counter
 }
 
-// NewJoiner builds a Joiner. maxResponseBytes is the ceiling on what one joined
-// request may answer with while it holds the transaction's lock
+// NewJoiner builds a Joiner over the transaction coordination its requests
+// open their scopes in. maxResponseBytes is the ceiling on what one joined
+// request may answer with while it holds the transaction's gate
 // (CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES); maxWaiters is how many joined
 // requests may queue for one transaction behind the one holding it
 // (CYODA_CALLOUT_JOINED_MAX_WAITERS). meter is where the
 // "cyoda.callout.superseded" counter is registered; a nil meter is the no-op
 // meter, so callers that have none (tests) need not stand one up.
-func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, gate *txgate.Registry, maxResponseBytes, maxWaiters int, meter metric.Meter) (*Joiner, error) {
+func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, coord txcoord.Coordination, maxResponseBytes, maxWaiters int, meter metric.Meter) (*Joiner, error) {
 	if meter == nil {
 		meter = noop.NewMeterProvider().Meter("")
 	}
@@ -53,8 +52,7 @@ func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fenc
 	return &Joiner{
 		signer:           signer,
 		txMgr:            txMgr,
-		fence:            f,
-		gate:             gate,
+		coord:            coord,
 		maxResponseBytes: maxResponseBytes,
 		maxWaiters:       maxWaiters,
 		superseded:       superseded,
@@ -62,12 +60,14 @@ func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, f *fence.Fenc
 }
 
 // MaxResponseBytes is the most a joined request may hold on its way out while
-// it has the transaction's lock: the buffered response on the HTTP door, the
+// it has the transaction's gate: the buffered response on the HTTP door, the
 // held frames on the gRPC one. The owner's Advance and the end of the callout
 // wait behind these bytes.
 //
 // Past it the request FAILS, with the 413 ResponseTooLargeError builds: a
-// truncated answer would be a wrong answer given as an available one.
+// truncated answer would be a wrong answer given as an available one. The door
+// decides it inside the handler, so it is the request's outcome: a write
+// answered with it is discarded and marks its parent.
 func (j *Joiner) MaxResponseBytes() int { return j.maxResponseBytes }
 
 // ResponseTooLargeError is what a door tells a compute member whose answer
@@ -105,7 +105,7 @@ func (j *Joiner) CheckRoom(pass *Pass) error {
 	if pass == nil {
 		return nil
 	}
-	if j.gate.AtCapacity(pass.claims.TxRef, j.maxWaiters) {
+	if j.coord.AtCapacity(pass.claims.TxRef, j.maxWaiters) {
 		return common.TooManyJoinedRequests()
 	}
 	return nil
@@ -146,18 +146,16 @@ func (j *Joiner) Verify(tok string) (*Pass, error) {
 }
 
 // join resolves a verified pass into a joined transaction context: it calls
-// txMgr.Join with the embedded TxRef, and then asks the fence whether the
-// callout the pass names is still this compute node's. On success it returns
-// the joined, admitted context. On failure it returns the original ctx
-// alongside a mapped operational error, so callers always have a valid context
-// regardless of outcome — a caller that dropped the error would otherwise run
-// the request unfenced.
+// txMgr.Join with the embedded TxRef and checks an on-behalf-of request's
+// user. It returns the joined context and the pairs the pass names, own pair
+// first. On failure it returns the original ctx alongside a mapped operational
+// error, so callers always have a valid context regardless of outcome.
 //
-// Order: Join, which checks the tenant → the fence. The tenant check comes
-// first so that a stolen pass tells another tenant nothing about which callouts
-// exist, and a callback that arrives after the TRANSACTION has ended is
-// answered TRANSACTION_NOT_FOUND as before; CALLOUT_SUPERSEDED is the answer
-// while the transaction is still open.
+// Order: Join, which checks the tenant → the on-behalf-of check → (Enter, in
+// RunVerified) the fence. The tenant check comes first so that a stolen pass
+// tells another tenant nothing about which callouts exist, and a callback that
+// arrives after the TRANSACTION has ended is answered TRANSACTION_NOT_FOUND as
+// before; CALLOUT_SUPERSEDED is the answer while the transaction is still open.
 //
 // That 403 and 404 are different answers tells a caller nothing it did not
 // already hold. The transaction is the one claims.TxRef names — read from the
@@ -185,39 +183,53 @@ func (j *Joiner) Verify(tok string) (*Pass, error) {
 //	spi.ErrTxTenantMismatch                      → 403 FORBIDDEN
 //	spi.ErrTxNotFound/RolledBack/AlreadyCommitted → 404 TRANSACTION_NOT_FOUND
 //	an on-behalf-of request, another origin       → 403 FORBIDDEN
-//	a pass that is no longer current              → 410 CALLOUT_SUPERSEDED
-func (j *Joiner) join(ctx context.Context, pass *Pass) (context.Context, error) {
+func (j *Joiner) join(ctx context.Context, pass *Pass) (context.Context, []txcoord.Pair, error) {
 	claims := pass.claims
 	joined, err := j.txMgr.Join(ctx, claims.TxRef)
 	if err != nil {
 		switch {
 		case errors.Is(err, spi.ErrTxTenantMismatch):
-			return ctx, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "transaction belongs to a different tenant")
+			return ctx, nil, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "transaction belongs to a different tenant")
 		case errors.Is(err, spi.ErrTxNotFound),
 			errors.Is(err, spi.ErrTxRolledBack),
 			errors.Is(err, spi.ErrTxAlreadyCommitted):
-			return ctx, common.Operational(http.StatusNotFound, common.ErrCodeTransactionNotFound, "transaction not found or no longer active")
+			return ctx, nil, common.Operational(http.StatusNotFound, common.ErrCodeTransactionNotFound, "transaction not found or no longer active")
 		default:
-			return ctx, common.Internal("failed to join transaction", err)
+			return ctx, nil, common.Internal("failed to join transaction", err)
 		}
 	}
 
 	if uc := spi.GetUserContext(ctx); uc != nil && uc.Executor != nil {
 		own := spi.Principal{ID: uc.UserID, Kind: uc.Kind}
 		if tx := spi.GetTransaction(joined); tx == nil || tx.Origin != own {
-			return ctx, common.Operational(http.StatusForbidden, common.ErrCodeForbidden,
+			return ctx, nil, common.Operational(http.StatusForbidden, common.ErrCodeForbidden,
 				"an on-behalf-of request may join only its own user's transaction")
 		}
 	}
 
-	pairs := make([]fence.Pair, 0, 1+len(claims.Outer))
-	pairs = append(pairs, fence.Pair{Callout: claims.Callout, Major: claims.Major, Minor: claims.Minor})
+	pairs := make([]txcoord.Pair, 0, 1+len(claims.Outer))
+	pairs = append(pairs, txcoord.Pair{Callout: claims.Callout, Major: claims.Major, Minor: claims.Minor})
 	pairs = append(pairs, claims.Outer...)
-	admitted, err := j.fence.Admit(joined, pairs)
+	return joined, pairs, nil
+}
+
+// enter joins the transaction a verified pass names and opens the request's
+// scope in it (Coordination.Enter: admit, take the gate, check, savepoint).
+// It returns the scope and the context the handler runs on: detached from the
+// request's cancellation, carrying the transaction and the scope.
+func (j *Joiner) enter(ctx context.Context, pass *Pass, class txcoord.RequestClass) (txcoord.Scope, context.Context, error) {
+	joined, pairs, err := j.join(ctx, pass)
 	if err != nil {
-		return ctx, err
+		return nil, ctx, err
 	}
-	return admitted, nil
+	scope, sctx, err := j.coord.Enter(joined, spi.GetTransaction(joined).ID, pairs, class, j.maxWaiters)
+	if err != nil {
+		if errors.Is(err, txcoord.ErrSuperseded) {
+			j.count(ctx, "refused_on_entry")
+		}
+		return nil, ctx, err
+	}
+	return scope, sctx, nil
 }
 
 // count records one refusal or supersession under outcome. No tenant, callout
@@ -228,92 +240,84 @@ func (j *Joiner) count(ctx context.Context, outcome string) {
 }
 
 // Run verifies tok and runs handler as a joined request of the transaction it
-// names. A door that has to read the request before the handler can run
-// verifies first (Verify), asks CheckRoom, and calls RunVerified once it has
-// the request in memory, so that a refused pass or a full queue costs it no
-// buffer.
+// names (RunVerified). A door that has to read the request before the handler
+// can run verifies first (Verify), asks CheckRoom, and calls RunVerified once
+// it has the request in memory, so that a refused pass or a full queue costs
+// it no buffer.
 //
 // An empty tok is not a joined request: handler runs on ctx as it is.
-func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.Context)) error {
+func (j *Joiner) Run(ctx context.Context, tok string, class txcoord.RequestClass, handler func(ctx context.Context) *common.Outcome) (*common.AppError, error) {
 	pass, err := j.Verify(tok)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return j.RunVerified(ctx, pass, handler)
+	return j.RunVerified(ctx, pass, class, handler)
 }
 
-// RunVerified runs handler as a joined request under an already verified pass.
-// The storage contract leaves it to the application to serialise its own
-// concurrent operations on one transaction, so EVERY joined request — a read as
-// much as a write, an entity request or not — holds the transaction's lock from
-// before its first store operation until its handler returns: during a callout
-// the transaction's users are its current compute node's callbacks, one at a
-// time.
+// RunVerified runs handler as a joined request under an already verified pass,
+// in a scope of its own: the request's writes become part of the transaction
+// all together, or none of them do. class is what the request does to the
+// transaction, decided by the door before the handler runs.
 //
 // Order: verify (done) → Join (tenant) → an on-behalf-of request's own-user
-// check → Admit → take the lock, which is where the queue's cap is applied →
-// Check under the lock → handler → release. The check under the lock is the
-// one that gives the right to touch the transaction: the owner's wait takes
-// the same lock, so a request either passed this check before the number rose
-// — and the owner waits for it — or is refused here. The engine gives the lock
-// up for the length of a callout of the callback's own through the handle
-// installed here (txgate.Suspend).
+// check → Enter (admit the pass, take the transaction's gate, where the
+// queue's cap and the stack rule are applied, check the pass and the scopes
+// above, take a savepoint) → handler → End → release of the gate. The storage
+// contract leaves it to the application to serialise its own concurrent
+// operations on one transaction, so EVERY joined request — a read as much as a
+// write, an entity request or not — holds the gate from before its first store
+// operation until its scope has ended. The engine gives the gate up for the
+// length of a callout of the request's own (txcoord.Pause).
 //
-// A non-nil error means the handler did not run: a refusal, or — while the
-// request was still queued for the lock, having touched nothing — ctx's own
-// error, the compute node having gone away. The caller sends its response only
-// after RunVerified has returned, so that a compute node that does not read its
-// response holds nothing. The caller must also have the whole request in memory
-// before it calls: what the lock waits on must never be the client.
+// The handler's outcome decides how the scope ends. What the shared error
+// funnels record on the context (common.RecordOutcome) wins; the outcome the
+// handler returns is the door's backstop for an answer that passed no funnel,
+// and nil when it has none. A handler that panics ends its scope as a failed
+// request — discarded, and a write marks its parent — and the panic goes on
+// to the recovery layer outside the door.
+//
+// rewrite non-nil: the scope's end overrides the handler's answer (the pass
+// was superseded, the transaction lost a race or its session ended, the scope
+// was marked, or the completion failed). The door sends rewrite and drops what
+// the handler produced.
+//
+// err non-nil means the handler did not run: a refusal, or — while the request
+// was still queued for the gate, having touched nothing — ctx's own error, the
+// compute node having gone away. The caller sends its response only after
+// RunVerified has returned, so that a compute node that does not read its
+// response holds nothing. The caller must also have the whole request in
+// memory before it calls: what the gate waits on must never be the client.
 //
 // A nil pass is not a joined request: handler runs on ctx as it is.
-func (j *Joiner) RunVerified(ctx context.Context, pass *Pass, handler func(ctx context.Context)) error {
+func (j *Joiner) RunVerified(ctx context.Context, pass *Pass, class txcoord.RequestClass, handler func(ctx context.Context) *common.Outcome) (rewrite *common.AppError, err error) {
 	if pass == nil {
 		handler(ctx)
-		return nil
+		return nil, nil
 	}
-	joined, err := j.join(ctx, pass)
+	scope, sctx, err := j.enter(ctx, pass, class)
 	if err != nil {
-		if errors.Is(err, fence.ErrSuperseded) {
-			j.count(ctx, "refused_on_entry")
+		return nil, err
+	}
+	sctx, recorded := common.WithOutcome(sctx)
+	// A panic ends the scope as a failed request while the gate is still held,
+	// then goes on: recovery is the outermost layer.
+	returned := false
+	defer func() {
+		if !returned {
+			scope.End(&common.Outcome{Panicked: true})
 		}
-		return err
+	}()
+	backstop := handler(sctx)
+	returned = true
+	if recorded.Status == 0 && backstop != nil {
+		recorded.Status = backstop.Status
+		recorded.Code = backstop.Code
+		recorded.Retryable = backstop.Retryable
+		recorded.Err = backstop.Err
 	}
-	txID := spi.GetTransaction(joined).ID
-
-	// The wait for the lock is the one part of a joined request that its client
-	// may still call off: nothing of the transaction has been touched yet, so a
-	// compute node that goes away while its request is queued takes nothing
-	// with it and the handler never runs.
-	release, err := j.gate.AcquireCtx(joined, txID, j.maxWaiters)
-	if err != nil {
-		if errors.Is(err, txgate.ErrTooManyWaiters) {
-			return common.TooManyJoinedRequests()
-		}
-		// What is left is the request's own context ending while it queued. This
-		// is one of the two places that KNOW the error is the client's departure
-		// rather than a failure that happens to carry a cancellation, so it says
-		// so: the doors' error funnels file a departed client — quietly, without
-		// a ticket — on this marker alone.
-		return common.ClientGone(err)
-	}
-	// From here the request is detached from its client's cancellation: it runs
-	// on the transaction of the operation it belongs to, and a compute node that
-	// goes away in the middle of a statement must not take that operation's
-	// connection with it. It ends by finishing or by being refused at a check.
-	joined = context.WithoutCancel(joined)
-	// The closure reads `release` when it runs: a Suspend/resume in between
-	// stores the re-acquired lock's release through the pointer below.
-	defer func() { release() }()
-	joined, _ = txgate.WithHeld(joined, j.gate, txID, &release)
-
-	if err := fence.Check(joined); err != nil {
-		j.count(ctx, "refused_at_lock")
-		return err
-	}
-	handler(joined)
-	if fence.Check(joined) != nil {
+	rewrite = scope.End(recorded)
+	if rewrite != nil && errors.Is(rewrite, txcoord.ErrSuperseded) {
 		j.count(ctx, "superseded_in_progress")
 	}
-	return nil
+	return rewrite, nil
 }

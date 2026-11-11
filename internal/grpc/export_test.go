@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // OwnerTestConfig is what an envelope test may set on the owner's loop.
@@ -17,4 +17,4 @@ type OwnerTestConfig struct {
 // dispatcher and its registry. internal/callout imports this package, so the
 // in-package tests cannot import it; owner_wiring_test.go, an external test
 // file of this directory, sets this variable from its init.
-var NewOwnerForTest func(local *ProcessorDispatcher, members *MemberRegistry, f *fence.Fence, cfg OwnerTestConfig) contract.ExternalProcessingService
+var NewOwnerForTest func(local *ProcessorDispatcher, members *MemberRegistry, c txcoord.Coordination, cfg OwnerTestConfig) contract.ExternalProcessingService

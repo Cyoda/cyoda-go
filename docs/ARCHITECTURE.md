@@ -681,11 +681,12 @@ current. Every callback is already routed to the node holding the transaction
    travel as a context value, so an inner callout is begun under them even where
    the engine has detached the context from cancellation.
 
-**Savepoints under `ASYNC_NEW_TX`.** The processor runs inside a savepoint of
-the parent transaction. Its own failure is non-fatal: the savepoint is undone
-and the pipeline continues. A savepoint that cannot be **created, undone or
-released** is not a processor failure — it says the transaction is unusable — so
-it is marked with `workflow.ErrSavepointInfra` and **fails the operation** with a
+**Savepoints under `ASYNC_NEW_TX`.** The processor runs in a processor scope of
+its own (`txcoord`), which takes a savepoint of the parent transaction. Its own
+failure is non-fatal: the scope is discarded and the pipeline continues. A
+scope whose savepoint cannot be **created, undone or released**, or whose
+transaction is broken, is not a processor failure — it says the transaction is
+unusable — so it is marked with `txcoord.ErrScopeInfra` and **fails the operation** with a
 ticketed 5xx. Two answers are classified first: an unavailable store keeps its
 `503 STORAGE_UNAVAILABLE`, and a transaction that has already lost a race
 answers its retryable `409 CONFLICT`. It is never reported as the processor's

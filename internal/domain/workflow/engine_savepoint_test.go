@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -36,11 +37,11 @@ func (m failingSavepoints) ReleaseSavepoint(ctx context.Context, txID, sp string
 	return m.TransactionManager.ReleaseSavepoint(ctx, txID, sp)
 }
 
-// TestAsyncNewTx_SavepointFailureFailsTheOperation — a savepoint that cannot be
-// created, undone or released means the transaction is unusable. It is never the
-// ASYNC_NEW_TX processor's own failure, so it must not take that mode's
-// "log and continue" path: carrying on commits the writes of a processor that
-// failed, or silently skips one.
+// TestAsyncNewTx_SavepointFailureFailsTheOperation — a processor scope whose
+// savepoint cannot be created, undone or released means the transaction is
+// unusable. It is never the ASYNC_NEW_TX processor's own failure, so it must not
+// take that mode's "log and continue" path: carrying on commits the writes of a
+// processor that failed, or silently skips one.
 func TestAsyncNewTx_SavepointFailureFailsTheOperation(t *testing.T) {
 	boom := errors.New(`ERROR: current transaction is aborted (SQLSTATE 25P02) host=db-1`)
 	tests := []struct {
@@ -67,7 +68,7 @@ func TestAsyncNewTx_SavepointFailureFailsTheOperation(t *testing.T) {
 				}
 				return e, nil
 			}}
-			engine := NewEngine(factory, uuids, tc.mgr, platformclock.Real(), WithExternalProcessing(ext))
+			engine := NewEngine(factory, uuids, tc.mgr, platformclock.Real(), WithExternalProcessing(ext), WithCoordination(txcoord.New(tc.mgr)))
 			base := ctxWithTenant(testTenant)
 			modelRef := spi.ModelRef{EntityName: "sp-fatal", ModelVersion: "1.0"}
 			saveWorkflow(t, factory, base, modelRef, []spi.WorkflowDefinition{{
@@ -88,8 +89,8 @@ func TestAsyncNewTx_SavepointFailureFailsTheOperation(t *testing.T) {
 			entity.Meta.TransactionID = txID
 
 			_, err = engine.Execute(txCtx, entity)
-			if !errors.Is(err, ErrSavepointInfra) {
-				t.Fatalf("err = %v; want ErrSavepointInfra — a savepoint failure is not the processor's failure", err)
+			if !errors.Is(err, txcoord.ErrScopeInfra) {
+				t.Fatalf("err = %v; want txcoord.ErrScopeInfra — a scope failure is not the processor's failure", err)
 			}
 			if !errors.Is(err, boom) {
 				t.Fatalf("the cause must stay in the chain for the log: %v", err)

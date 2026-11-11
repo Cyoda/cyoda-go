@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // scriptedMarkStore counts MarkUnsafe calls and, when markErr is set,
@@ -287,7 +288,7 @@ func TestUnsafeMark_AsyncNewTx_SavepointFails_NoMark(t *testing.T) {
 	store := &scriptedMarkStore{ScheduledTaskStore: env.sts}
 
 	r := newTestRun(store, claimed).fire(env.engine, env.ctx, claimed)
-	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, ErrSavepointInfra) || r.MarkHeld {
+	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, txcoord.ErrScopeInfra) || r.MarkHeld {
 		t.Fatalf("report = %+v, want failed on the savepoint without a mark", r)
 	}
 	if n := store.count(); n != 0 {

@@ -6,17 +6,16 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 )
 
-// A joined response is held in memory while the transaction's lock is held, so
+// A joined response is held in memory while the transaction's gate is held, so
 // it has a ceiling of its own. Past it the request fails, and the caller is told
 // what the ceiling is so it can page the read: the alternative would be to send
 // a truncated answer, which is a wrong answer.
 func TestTxJoin_AResponseOverTheCeilingFails_AndIsNotTruncated(t *testing.T) {
-	j, gate, pass := liveJoiner(t, "tx-1")
+	j, c, pass := liveJoiner(t, "tx-1")
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -27,11 +26,11 @@ func TestTxJoin_AResponseOverTheCeilingFails_AndIsNotTruncated(t *testing.T) {
 			_, _ = w.Write(chunk)
 		}
 	})
-	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", nil))
+	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity/JSON", nil))
 	req.Header.Set(proxy.TxTokenHeader, pass)
 	rec := httptest.NewRecorder()
 
-	TxJoin(j)(next).ServeHTTP(rec, req)
+	routed(TxJoin(j), next).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d; want 413", rec.Code)
@@ -51,13 +50,17 @@ func TestTxJoin_AResponseOverTheCeilingFails_AndIsNotTruncated(t *testing.T) {
 	if rec.Body.Len() > 4096 {
 		t.Errorf("the client got %d bytes: a refused response must not be sent at all", rec.Body.Len())
 	}
-	// The lock is given back, whatever the answer was.
-	free := make(chan struct{})
-	go func() { gate.Acquire("tx-1")(); close(free) }()
-	select {
-	case <-free:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the transaction's lock was not released")
+	// The gate is given back, whatever the answer was.
+	if !gateFree(c, "tx-1") {
+		t.Fatal("the transaction's gate was not released")
+	}
+	// The answer is the request's outcome: a write whose answer could not be
+	// sent is discarded, and the transaction can only be rolled back — the
+	// compute node cannot know what its write did.
+	rec = httptest.NewRecorder()
+	routed(TxJoin(j), okHandler()).ServeHTTP(rec, joinedRequest(t, pass, nil))
+	if rec.Code != http.StatusConflict || problemProps(t, rec).ErrorCode != "TRANSACTION_ROLLBACK_ONLY" {
+		t.Fatalf("the next request = %d %+v; want 409 TRANSACTION_ROLLBACK_ONLY", rec.Code, problemProps(t, rec))
 	}
 }
 
@@ -74,11 +77,11 @@ func TestTxJoin_AResponseAtTheCeilingIsSentWhole(t *testing.T) {
 			t.Errorf("a response of exactly the ceiling was refused: %v", err)
 		}
 	})
-	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", nil))
+	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity/JSON", nil))
 	req.Header.Set(proxy.TxTokenHeader, pass)
 	rec := httptest.NewRecorder()
 
-	TxJoin(j)(next).ServeHTTP(rec, req)
+	routed(TxJoin(j), next).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK || rec.Body.Len() != len(body) {
 		t.Fatalf("status = %d, %d bytes; want 200 and all %d", rec.Code, rec.Body.Len(), len(body))
@@ -88,7 +91,7 @@ func TestTxJoin_AResponseAtTheCeilingIsSentWhole(t *testing.T) {
 // The writer a handler is given behind TxJoin buffers the whole response, so it
 // must not advertise streaming. A handler that flushed or hijacked through it
 // would either buffer an unbounded stream in memory or write to the client while
-// the transaction's lock is held — the two things the buffering exists to
+// the transaction's gate is held — the two things the buffering exists to
 // prevent. Both are better as a failed type assertion the handler sees than as a
 // silent success, so the absence is pinned here rather than left to chance.
 func TestTxJoin_TheWriterHandlersGetCannotStream(t *testing.T) {
@@ -101,9 +104,9 @@ func TestTxJoin_TheWriterHandlersGetCannotStream(t *testing.T) {
 		_, hijacker = w.(http.Hijacker)
 		w.WriteHeader(http.StatusOK)
 	})
-	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity", nil))
+	req := withUserCtx(httptest.NewRequest(http.MethodPost, "/entity/JSON", nil))
 	req.Header.Set(proxy.TxTokenHeader, pass)
-	TxJoin(j)(next).ServeHTTP(httptest.NewRecorder(), req)
+	routed(TxJoin(j), next).ServeHTTP(httptest.NewRecorder(), req)
 
 	if !ran {
 		t.Fatal("the handler never ran: flusher/hijacker default to false, which would pass this test vacuously")
@@ -112,6 +115,6 @@ func TestTxJoin_TheWriterHandlersGetCannotStream(t *testing.T) {
 		t.Error("the buffered writer implements http.Flusher: a streaming handler would buffer its whole stream instead of failing")
 	}
 	if hijacker {
-		t.Error("the buffered writer implements http.Hijacker: a handler could take the connection while the transaction's lock is held")
+		t.Error("the buffered writer implements http.Hijacker: a handler could take the connection while the transaction's gate is held")
 	}
 }

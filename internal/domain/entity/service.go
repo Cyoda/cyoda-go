@@ -23,6 +23,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // --- Input/Output types ---
@@ -2820,7 +2821,7 @@ func engineConflictIsTransactionConflict(err error) bool {
 	return errors.Is(err, spi.ErrTxAborted) ||
 		errors.Is(err, wfengine.ErrScheduledTaskInfra) ||
 		errors.Is(err, wfengine.ErrProcessorOutputInfra) ||
-		errors.Is(err, wfengine.ErrSavepointInfra) ||
+		errors.Is(err, txcoord.ErrScopeInfra) ||
 		errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) ||
 		errors.Is(err, wfengine.ErrCriterionTypingInfra)
 }
@@ -2850,8 +2851,9 @@ func engineConflictIsTransactionConflict(err error) bool {
 //     arm/cancel pass writes through failed) → sanitized 5xx, same reason.
 //     Every save of an entity on a scheduled workflow re-arms, so this store
 //     is on the ordinary write path.
-//   - ErrSavepointInfra (the savepoint around an ASYNC_NEW_TX processor could
-//     not be created, undone or released) → sanitized 5xx, same reason. It says
+//   - txcoord.ErrScopeInfra (the scope of an ASYNC_NEW_TX processor could not
+//     be opened or ended: its savepoint could not be taken, undone or
+//     released, or the transaction is broken) → sanitized 5xx, same reason. It says
 //     the transaction is unusable, never that the processor failed, so it must
 //     not reach the catch-all and become a 400 carrying the driver's own text.
 //   - ErrAuthContextUnavailable (AttachAuthContext could not populate a
@@ -2910,8 +2912,8 @@ func classifyWorkflowError(err error) *common.AppError {
 	if errors.Is(err, wfengine.ErrScheduledTaskInfra) {
 		return common.Internal("scheduled task reconciliation failed", err)
 	}
-	if errors.Is(err, wfengine.ErrSavepointInfra) {
-		return common.Internal("workflow savepoint failed", err)
+	if errors.Is(err, txcoord.ErrScopeInfra) {
+		return common.Internal("workflow processor scope failed", err)
 	}
 	if errors.Is(err, contract.ErrAuthContextUnavailable) {
 		return common.Internal("auth context unavailable for dispatch", err)

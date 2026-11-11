@@ -15,6 +15,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // TestClassifyWorkflowError_InfraErrorMapsTo5xx is the regression test for
@@ -287,9 +289,9 @@ func TestClassifyWorkflowError_SavepointInfra(t *testing.T) {
 		code      string
 		retryable bool
 	}{
-		{"ticketed 5xx, no driver text", fmt.Errorf("processor p failed: %w", errors.Join(wfengine.ErrSavepointInfra, driver)), http.StatusInternalServerError, common.ErrCodeServerError, false},
-		{"a conflict stays 409", fmt.Errorf("processor p failed: %w", errors.Join(wfengine.ErrSavepointInfra, spi.ErrConflict)), http.StatusConflict, common.ErrCodeConflict, true},
-		{"an unavailable store stays 503", fmt.Errorf("processor p failed: %w", errors.Join(wfengine.ErrSavepointInfra, &markedStorageOutage{detail: "acquire: host=db-1: context deadline exceeded"})), http.StatusServiceUnavailable, common.ErrCodeStorageUnavailable, true},
+		{"ticketed 5xx, no driver text", fmt.Errorf("processor p failed: %w", errors.Join(txcoord.ErrScopeInfra, driver)), http.StatusInternalServerError, common.ErrCodeServerError, false},
+		{"a conflict stays 409", fmt.Errorf("processor p failed: %w", errors.Join(txcoord.ErrScopeInfra, spi.ErrConflict)), http.StatusConflict, common.ErrCodeConflict, true},
+		{"an unavailable store stays 503", fmt.Errorf("processor p failed: %w", errors.Join(txcoord.ErrScopeInfra, &markedStorageOutage{detail: "acquire: host=db-1: context deadline exceeded"})), http.StatusServiceUnavailable, common.ErrCodeStorageUnavailable, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -554,7 +556,7 @@ func TestEngineConflictIsTransactionConflict(t *testing.T) {
 		spi.ErrTxAborted,
 		wfengine.ErrScheduledTaskInfra,
 		wfengine.ErrProcessorOutputInfra,
-		wfengine.ErrSavepointInfra,
+		txcoord.ErrScopeInfra,
 		wfengine.ErrCommitBeforeDispatchInfra,
 		wfengine.ErrCriterionTypingInfra,
 	}

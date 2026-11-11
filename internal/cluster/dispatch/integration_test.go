@@ -1,9 +1,11 @@
 package dispatch
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
@@ -66,5 +68,58 @@ func TestIntegration_HandOver_FullFlow(t *testing.T) {
 			}
 			tt.check(t, *a.Result)
 		})
+	}
+}
+
+// ctxRunner is a peer's local procedure that runs until its context ends, and
+// reports that it ended.
+type ctxRunner struct {
+	started chan struct{}
+	ended   chan error
+}
+
+func (r *ctxRunner) RunLocal(ctx context.Context, _ internalgrpc.Callout, _ int) internalgrpc.LocalResult {
+	close(r.started)
+	select {
+	case <-ctx.Done():
+	case <-time.After(10 * time.Second): // bounded, so a context that never ends fails the test instead of hanging it
+	}
+	r.ended <- ctx.Err()
+	return internalgrpc.LocalResult{CtxErr: ctx.Err()}
+}
+
+// The owner calling its callout off — the caller went away, or a callback's
+// failed write marked the scope the callout was made from — ends a hand-over in
+// progress on the peer: the peer's local procedure sees its context end and
+// makes no further try.
+func TestIntegration_HandOver_OwnersCancellationEndsThePeersRun(t *testing.T) {
+	peerAuth := newAEAD(t)
+	runner := &ctxRunner{started: make(chan struct{}), ended: make(chan error, 1)}
+	peer := httptest.NewServer(newHandlerMux(t, runner, peerAuth))
+	defer peer.Close()
+
+	ctx, cancel := context.WithCancel(testContext())
+	done := make(chan HandOverAnswer, 1)
+	go func() {
+		done <- realRouter(t, true).HandOver(ctx, contract.NodeInfo{NodeID: testSelfNodeID, Addr: peer.URL}, ownerCallout(t, "processor"), 3, 1)
+	}()
+	select {
+	case <-runner.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the peer never started its local procedure")
+	}
+	cancel()
+	select {
+	case err := <-runner.ended:
+		if err == nil {
+			t.Fatal("the owner's cancellation did not reach the peer's local procedure")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the peer's local procedure never ended")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the owner's hand-over did not return")
 	}
 }

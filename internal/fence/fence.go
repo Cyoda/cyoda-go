@@ -2,15 +2,14 @@
 // callback still comes from the compute node that currently holds a callout's
 // work. Each callout has a fencing number (major, minor) that only rises; a
 // pass carries the number it was minted under; a callback is admitted only
-// under the current number, checked again whenever its chain takes the
-// transaction's write lock, and whoever takes the work over waits until a write
-// in progress has finished. The fence never cancels a callback's context and
-// never interrupts a database statement: it works by checks and by the wait.
+// under the current number, and checked again before its work is kept. The
+// fence never cancels a callback's context and never interrupts a database
+// statement: it works by checks. Waiting for the callbacks in progress when a
+// number rises or a callout ends is the transaction coordination's job
+// (internal/txcoord), which owns the one fence of a process.
 //
-// The package is a leaf: it imports only internal/txgate and internal/common,
-// so every place that enforces the fence (the join, the entity service, the
-// workflow engine) and every place that drives it (the owner's loop) can
-// import it.
+// The package is a leaf: it imports only internal/common, so the coordination
+// that drives it and the cluster token that carries its pairs can import it.
 package fence
 
 import (
@@ -21,7 +20,6 @@ import (
 	"sync"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
 // ErrSuperseded is the cause carried by every refusal, and the cause with which
@@ -48,18 +46,15 @@ type Pair struct {
 	Minor   uint32 `json:"i,omitempty"`
 }
 
-// Fence is the arbiter of one pnode. One per process, shared by the owner's
-// loop (Begin, Advance) and by both callback doors (Admit).
+// Fence is the arbiter of one pnode. One per process, owned by the
+// transaction coordination.
 type Fence struct {
-	gate *txgate.Registry
-
 	mu       sync.Mutex
 	callouts map[string]*callout
 }
 
 // callout is the registration of one callout in progress.
 type callout struct {
-	txID  string
 	major uint32 // 0 until the first Advance: no pass is current yet
 	minor uint32 // highest minor seen under major
 	// inner holds the callouts begun from inside a callback of this one, each
@@ -73,27 +68,22 @@ type inner struct {
 	cancel context.CancelCauseFunc
 }
 
-// New returns a Fence whose wait takes the write locks of gate. A nil gate is
-// a fence that does not wait: its owner (the transaction coordination) waits
-// for the scopes in progress itself.
-func New(gate *txgate.Registry) *Fence {
-	return &Fence{gate: gate, callouts: make(map[string]*callout)}
+// New returns a Fence that knows no callout.
+func New() *Fence {
+	return &Fence{callouts: make(map[string]*callout)}
 }
 
-// Begin registers a callout on transaction txID, under the enclosing callouts
-// named by outer, and returns the context the callout runs under and the func
+// Begin registers a callout under the enclosing callouts named by outer, and returns the context the callout runs under and the func
 // that ends it. The context is cancelled, with ErrSuperseded as its cause, when
 // one of the outer pairs stops being current — at once if one already is not.
 // The caller defers end, so a callout is ended on every exit path, a panic
 // included. end is idempotent.
 //
-// No pass is current until the first Advance. An empty txID is a callout with
-// no transaction: it is registered so that it is released with an enclosing
-// callback, and its wait is a no-op.
-func (f *Fence) Begin(ctx context.Context, calloutID, txID string, outer []Pair) (context.Context, func()) {
+// No pass is current until the first Advance.
+func (f *Fence) Begin(ctx context.Context, calloutID string, outer []Pair) (context.Context, func()) {
 	cctx, cancel := context.WithCancelCause(ctx)
 	in := &inner{cancel: cancel}
-	c := &callout{txID: txID, inner: make(map[*inner]Pair)}
+	c := &callout{inner: make(map[*inner]Pair)}
 	outer = append([]Pair(nil), outer...)
 
 	stale := func() bool {
@@ -120,9 +110,8 @@ func (f *Fence) Begin(ctx context.Context, calloutID, txID string, outer []Pair)
 	}
 }
 
-// end unregisters the callout — all its passes are refused from then on —
-// releases the Coordinators begun under it, and waits for a joined write in
-// progress on its transaction.
+// end unregisters the callout — all its passes are refused from then on — and
+// releases the Coordinators begun under it.
 func (f *Fence) end(calloutID string, c *callout, in *inner, outer []Pair) {
 	released := func() []*inner {
 		f.mu.Lock()
@@ -141,46 +130,27 @@ func (f *Fence) end(calloutID string, c *callout, in *inner, outer []Pair) {
 		r.cancel(ErrSuperseded)
 	}
 	in.cancel(context.Canceled)
-	f.wait(c.txID)
 }
 
 // Advance raises the callout's number to (major, 0), which shuts out every
-// pass issued under a lower one, releases the Coordinators begun under those
-// passes, and then waits until no joined write is in progress on the
-// transaction. It is called before each local try and before each hand-over.
+// pass issued under a lower one, and releases the Coordinators begun under
+// those passes. It is called before each local try and before each hand-over.
 // A major that is not higher than the current one, or a callout that has
 // ended, changes nothing.
 func (f *Fence) Advance(calloutID string, major uint32) {
-	txID, released, raised := func() (string, []*inner, bool) {
+	released := func() []*inner {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		c := f.callouts[calloutID]
 		if c == nil || major <= c.major {
-			return "", nil, false
+			return nil
 		}
 		c.major, c.minor = major, 0
-		return c.txID, takeInner(c, func(Pair) bool { return true }), true
+		return takeInner(c, func(Pair) bool { return true })
 	}()
-	if !raised {
-		return
-	}
 	for _, r := range released {
 		r.cancel(ErrSuperseded)
 	}
-	f.wait(txID)
-}
-
-// wait is the hand-over of the write lock: a joined write that made its check
-// before the number rose still holds the lock, and this blocks until it has
-// finished; one that takes the lock afterwards is refused by its check. It runs
-// outside f.mu — the fence never waits under its own mutex. A fence with no
-// gate does not wait.
-func (f *Fence) wait(txID string) {
-	if f.gate == nil {
-		return
-	}
-	release := f.gate.Acquire(txID)
-	release()
 }
 
 // Admit is the check on entry. pairs names the pass's own callout first and
@@ -235,7 +205,7 @@ type admitted struct {
 // Check reports CALLOUT_SUPERSEDED if ctx carries pairs (it was admitted) and
 // one of them is no longer current. A context that was never admitted — the
 // owner's own chain, an ordinary request — always passes. Check absorbs
-// nothing. Callers run it once they hold the transaction's write lock.
+// nothing.
 func Check(ctx context.Context) error {
 	a, _ := ctx.Value(admittedKey{}).(*admitted)
 	if a == nil {

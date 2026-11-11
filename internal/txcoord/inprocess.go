@@ -23,7 +23,7 @@ import (
 func New(txMgr spi.TransactionManager) Coordination {
 	return &inProcess{
 		txMgr:    txMgr,
-		fence:    fence.New(nil), // txcoord does the waits itself
+		fence:    fence.New(),
 		gate:     txgate.New(),
 		txs:      make(map[string]*txState),
 		callouts: make(map[string]*calloutReg),
@@ -168,7 +168,7 @@ func (c *inProcess) BeginCallout(ctx context.Context, txID, calloutID string) (c
 	if from != nil {
 		outer = Pairs(ctx)
 	}
-	fctx, fenceEnd := c.fence.Begin(ctx, calloutID, txID, outer)
+	fctx, fenceEnd := c.fence.Begin(ctx, calloutID, outer)
 	cctx, cancel := context.WithCancelCause(fctx)
 	var once sync.Once
 	if txID == "" {
@@ -199,6 +199,11 @@ func (c *inProcess) BeginCallout(ctx context.Context, txID, calloutID string) (c
 	}()
 	if marked {
 		cancel(common.ErrRollbackOnly)
+	}
+	if reg.parent.kind == rootKind {
+		// So that Check on the callout's context reports the root's mark: the
+		// owner's chain carries no scope of its own.
+		cctx = context.WithValue(cctx, scopeKey{}, reg.parent)
 	}
 	return cctx, func() {
 		once.Do(func() { c.endCallout(reg, fenceEnd) })
@@ -607,7 +612,7 @@ func (c *inProcess) OpenChild(ctx context.Context) (Scope, context.Context, erro
 		return nil
 	}()
 	if broken != nil {
-		return nil, ctx, fmt.Errorf("failed to open a processor scope: the transaction is unusable: %w", broken)
+		return nil, ctx, fmt.Errorf("failed to open a processor scope: the transaction is unusable: %w", errors.Join(ErrScopeInfra, broken))
 	}
 	sp, err := c.txMgr.Savepoint(s.ctx, txID)
 	if err != nil {
@@ -625,4 +630,12 @@ func (c *inProcess) OpenChild(ctx context.Context) (Scope, context.Context, erro
 // AtCapacity implements Coordination.
 func (c *inProcess) AtCapacity(txID string, maxWaiters int) bool {
 	return c.gate.AtCapacity(txID, maxWaiters)
+}
+
+// GateOf returns the gate registry of an in-process coordination, for the
+// owner's gate sites in the entity service: the owner's final save and commit
+// must exclude the joined requests this coordination admits, so both take the
+// same gate. Kept until the owner seals; deleted with the owner's gate sites.
+func GateOf(c Coordination) *txgate.Registry {
+	return c.(*inProcess).gate
 }
