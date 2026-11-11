@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -74,6 +76,7 @@ type stagedAuditEvent struct {
 
 // savepointSnapshot holds a deep copy of transaction state at savepoint time.
 type savepointSnapshot struct {
+	id                string
 	buffer            map[string]*spi.Entity
 	readSet           map[string]bool
 	writeSet          map[string]bool
@@ -128,9 +131,9 @@ type transactionManager struct {
 	committedLog    []committedTx
 	committing      map[string]bool
 	submitTimes     map[string]submitTimeEntry
-	savepoints      map[string]map[string]savepointSnapshot
-	consistencyHigh int64 // persisted consistency_floor.micros; guarded by mu
-	lastSubmitTime  int64 // monotonic submit time in microseconds; bumped under mu by callers holding the commit gate; also read under mu alone, without the gate, by LatestRecordedTime
+	savepoints      map[string][]savepointSnapshot // txID -> snapshots in creation order, as SQL nests them
+	consistencyHigh int64                          // persisted consistency_floor.micros; guarded by mu
+	lastSubmitTime  int64                          // monotonic submit time in microseconds; bumped under mu by callers holding the commit gate; also read under mu alone, without the gate, by LatestRecordedTime
 
 	// commitSeq counts committed writes, a transaction's and a task-row
 	// write that commits on its own alike; txSnapshotSeq holds its value at
@@ -224,7 +227,7 @@ func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *tran
 		active:                  make(map[string]*spi.TransactionState),
 		committing:              make(map[string]bool),
 		submitTimes:             make(map[string]submitTimeEntry),
-		savepoints:              make(map[string]map[string]savepointSnapshot),
+		savepoints:              make(map[string][]savepointSnapshot),
 		txUniqueKeys:            make(map[string]map[string][]spi.UniqueKey),
 		txSnapshotSeq:           make(map[string]int64),
 		scheduledTaskOps:        make(map[string][]scheduledTaskOp),
@@ -1503,9 +1506,6 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.savepoints[txID] == nil {
-		m.savepoints[txID] = make(map[string]savepointSnapshot)
-	}
 	// supersededLens records each entityID's current supersededSaves[txID]
 	// length so RollbackToSavepoint can truncate back to it — mirrors
 	// scheduledTaskOpsLen's approach (append-only, so length is enough).
@@ -1513,7 +1513,8 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 	for eid, s := range m.supersededSaves[txID] {
 		supersededLens[eid] = len(s)
 	}
-	m.savepoints[txID][spID] = savepointSnapshot{
+	m.savepoints[txID] = append(m.savepoints[txID], savepointSnapshot{
+		id:                  spID,
 		buffer:              bufCopy,
 		readSet:             readCopy,
 		writeSet:            writeCopy,
@@ -1522,7 +1523,7 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
 		auditOpsLen:         len(m.auditOps[txID]),
 		supersededLens:      supersededLens,
-	}
+	})
 	return spID, nil
 }
 
@@ -1564,14 +1565,11 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	txSavepoints, ok := m.savepoints[txID]
-	if !ok {
+	idx := m.savepointIndexLocked(txID, savepointID)
+	if idx < 0 {
 		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
 	}
-	snap, ok := txSavepoints[savepointID]
-	if !ok {
-		return fmt.Errorf("RollbackToSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
-	}
+	snap := m.savepoints[txID][idx]
 
 	// A write the rollback discards stops being a write, but if another
 	// transaction already committed its entity or task row after this one's
@@ -1595,11 +1593,16 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 		m.lostDiscardedWrite[txID] = true
 	}
 
-	tx.Buffer = snap.buffer
-	tx.ReadSet = snap.readSet
-	tx.WriteSet = snap.writeSet
-	tx.Deletes = snap.deletes
-	tx.DeleteAttribution = snap.deleteAttribution
+	// The savepoint survives this rollback, so the transaction takes copies:
+	// later writes must not mutate the snapshot a second rollback restores.
+	tx.Buffer = make(map[string]*spi.Entity, len(snap.buffer))
+	for k, v := range snap.buffer {
+		tx.Buffer[k] = copyEntity(v)
+	}
+	tx.ReadSet = maps.Clone(snap.readSet)
+	tx.WriteSet = maps.Clone(snap.writeSet)
+	tx.Deletes = maps.Clone(snap.deletes)
+	tx.DeleteAttribution = maps.Clone(snap.deleteAttribution)
 
 	// Truncate staged scheduled-task ops back to the length recorded at the
 	// savepoint — append-only, so truncation (not replacement) is how it is
@@ -1632,12 +1635,20 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 		}
 	}
 
-	delete(txSavepoints, savepointID)
+	// A rollback destroys the savepoints taken after this one and keeps it.
+	m.savepoints[txID] = m.savepoints[txID][:idx+1]
 	return nil
 }
 
-// ReleaseSavepoint releases a savepoint. The work done since the savepoint is
-// already in the parent transaction's buffer, so this just removes the snapshot.
+// savepointIndexLocked returns the position of savepointID among txID's live
+// savepoints, or -1. The caller holds m.mu.
+func (m *transactionManager) savepointIndexLocked(txID, savepointID string) int {
+	return slices.IndexFunc(m.savepoints[txID], func(s savepointSnapshot) bool { return s.id == savepointID })
+}
+
+// ReleaseSavepoint releases a savepoint and every savepoint taken after it, as
+// SQL RELEASE does. The work done since is already in the parent transaction's
+// buffer, so this just removes the snapshots.
 //
 // Locking discipline: does not touch any field of
 // TransactionState — only mutates m.savepoints. Holds m.mu only;
@@ -1658,15 +1669,11 @@ func (m *transactionManager) ReleaseSavepoint(ctx context.Context, txID string, 
 		return fmt.Errorf("ReleaseSavepoint: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
 	}
 
-	txSavepoints, ok := m.savepoints[txID]
-	if !ok {
+	idx := m.savepointIndexLocked(txID, savepointID)
+	if idx < 0 {
 		return fmt.Errorf("ReleaseSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
 	}
-	if _, ok := txSavepoints[savepointID]; !ok {
-		return fmt.Errorf("ReleaseSavepoint: %w (txID=%s, savepointID=%s)", spi.ErrSavepointNotFound, txID, savepointID)
-	}
-
-	delete(txSavepoints, savepointID)
+	m.savepoints[txID] = m.savepoints[txID][:idx]
 	return nil
 }
 
