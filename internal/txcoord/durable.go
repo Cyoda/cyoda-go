@@ -242,10 +242,12 @@ func (c *durable) Advance(calloutID string, major uint32) {
 	reg.stopIfRefused()
 }
 
-// Seal implements Coordination. finish has nothing to forget.
+// Seal implements Coordination. finish has nothing to forget. The backend is
+// asked on a context the owner's cancellation does not reach: the owner also
+// seals on its rollback path, where its context may already be cancelled.
 func (c *durable) Seal(ctx context.Context, txID string) (func(), error) {
 	finish := func() {}
-	err := c.co.Seal(ctx, txID)
+	err := c.co.Seal(context.WithoutCancel(ctx), txID)
 	switch {
 	case err == nil:
 		return finish, nil
@@ -327,23 +329,8 @@ func (s *durableScope) End(o *common.Outcome) *common.AppError {
 		return nil
 	}
 	answer, _, broken := decide(s, s.class, failureOf(o))
-	var discard *discardFailure
-	if errors.As(broken, &discard) {
-		// The backend may still hold the scope's writes, or may not have
-		// passed its mark up: the request did not end as answered.
-		return common.InternalWithCode(common.ErrCodeServerError,
-			"the request's scope could not be ended in the transaction", broken)
-	}
-	return answer
+	return endAnswer(answer, broken)
 }
-
-// discardFailure is a DiscardScope the backend refused.
-type discardFailure struct{ err error }
-
-func (d *discardFailure) Error() string {
-	return "failed to discard a scope of the transaction: " + d.err.Error()
-}
-func (d *discardFailure) Unwrap() error { return d.err }
 
 // standing implements ending. Row 1 comes before row 4 in the backend's own
 // order (CheckScope). An error the backend does not name is a failed

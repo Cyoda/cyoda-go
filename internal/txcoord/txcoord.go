@@ -166,7 +166,7 @@ func scopeFrom(ctx context.Context) *scope {
 func Pause(ctx context.Context) (resume func() error) {
 	switch s := ctx.Value(scopeKey{}).(type) {
 	case *scope:
-		return s.c.pause(s)
+		return s.c.pause(ctx, s)
 	case durableNode:
 		return func() error { return s.check() }
 	}
@@ -183,24 +183,13 @@ func Pause(ctx context.Context) (resume func() error) {
 // On a backend that coordinates transactions itself, it asks the backend
 // (CheckScope); a refusal the backend does not name carries ErrScopeInfra.
 func Check(ctx context.Context) error {
-	var s *scope
 	switch n := ctx.Value(scopeKey{}).(type) {
 	case *scope:
-		s = n
+		return n.check(ctx)
 	case durableNode:
 		return n.check()
-	default:
-		return nil
 	}
-	if s.kind == rootKind {
-		// The root has no pass: only a mark refuses it, and LostRace is
-		// asked with the owner's context.
-		if code, marked := s.markedCode(); marked {
-			return s.c.rollbackOnly(ctx, s.tx.id, code)
-		}
-		return nil
-	}
-	return s.check()
+	return nil
 }
 
 // Pair names one callout at one fencing number, as a pass carries it.

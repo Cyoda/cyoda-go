@@ -141,6 +141,29 @@ func decide(e ending, class RequestClass, f *failure) (*common.AppError, *parent
 	}
 }
 
+// endAnswer is the answer of a scope that decide ended with answer and broken.
+// A discard that failed overrides the row's answer with a 500 SERVER_ERROR,
+// never retryable: the scope's writes may still be in the transaction, or its
+// mark not passed up, so the request did not end as its row answers, and a
+// retry in the same transaction cannot succeed. The transaction is broken.
+func endAnswer(answer *common.AppError, broken error) *common.AppError {
+	var discard *discardFailure
+	if errors.As(broken, &discard) {
+		return common.InternalWithCode(common.ErrCodeServerError,
+			"the request's scope could not be ended in the transaction", broken)
+	}
+	return answer
+}
+
+// discardFailure is a discard of a scope that failed: a rollback to its
+// savepoint, or a DiscardScope the backend refused.
+type discardFailure struct{ err error }
+
+func (d *discardFailure) Error() string {
+	return "failed to discard a scope of the transaction: " + d.err.Error()
+}
+func (d *discardFailure) Unwrap() error { return d.err }
+
 // completionFailure is a request whose handler succeeded and whose completion
 // step failed with err: it is answered 500 SERVER_ERROR.
 func completionFailure(err error) *failure {
@@ -164,7 +187,7 @@ func (s *scope) End(o *common.Outcome) *common.AppError {
 	}
 	s.c.leave(s, mark, broken)
 	s.releaseGate()
-	return answer
+	return endAnswer(answer, broken)
 }
 
 // standing implements ending. The gate serialises the scope's descendants, so
@@ -194,7 +217,7 @@ func (s *scope) complete(class RequestClass) (*common.AppError, *parentMark, err
 // is set by leave, under the coordination's lock.
 func (s *scope) discard(*parentMark) error {
 	if err := s.c.txMgr.RollbackToSavepoint(s.ctx, s.tx.id, s.savepoint); err != nil {
-		return fmt.Errorf("failed to roll back a scope of the transaction: %w", err)
+		return &discardFailure{err: err}
 	}
 	return nil
 }

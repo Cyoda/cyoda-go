@@ -525,8 +525,16 @@ func (s *scope) markedCode() (string, bool) {
 	return s.markedLocked()
 }
 
-// check implements Check for s.
-func (s *scope) check() error {
+// check implements Check for s, on the chain whose context is ctx. The root
+// has no pass and no context of its own: only a mark refuses it, and LostRace
+// is asked with ctx, the owner's chain.
+func (s *scope) check(ctx context.Context) error {
+	if s.kind == rootKind {
+		if code, marked := s.markedCode(); marked {
+			return s.c.rollbackOnly(ctx, s.tx.id, code)
+		}
+		return nil
+	}
 	if err := fence.Check(s.ctx); err != nil {
 		return err
 	}
@@ -550,10 +558,10 @@ func (s *scope) releaseGate() {
 	}
 }
 
-// pause implements Pause for s. The gate is held by the nearest callback scope
+// pause implements Pause for s, on the chain whose context is ctx. The gate is held by the nearest callback scope
 // on s's chain; s itself goes on the paused stack, because the callout it makes
 // is registered with s and its callbacks open under s.
-func (c *inProcess) pause(s *scope) func() error {
+func (c *inProcess) pause(ctx context.Context, s *scope) func() error {
 	holder, release := func() (*scope, func()) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -573,7 +581,7 @@ func (c *inProcess) pause(s *scope) func() error {
 	var err error
 	if holder == nil {
 		return func() error {
-			once.Do(func() { err = s.check() })
+			once.Do(func() { err = s.check(ctx) })
 			return err
 		}
 	}
@@ -591,7 +599,7 @@ func (c *inProcess) pause(s *scope) func() error {
 				i := slices.Index(s.tx.paused, s)
 				s.tx.paused = slices.Delete(s.tx.paused, i, i+1)
 			}()
-			err = s.check()
+			err = s.check(ctx)
 		})
 		return err
 	}
@@ -611,7 +619,7 @@ func (c *inProcess) OpenChild(ctx context.Context) (Scope, context.Context, erro
 		parent = nil
 	}
 	if parent != nil {
-		if err := parent.check(); err != nil {
+		if err := parent.check(ctx); err != nil {
 			return nil, ctx, err
 		}
 	}

@@ -774,3 +774,31 @@ func TestAdvance_UnderConcurrentWriters_NoEarlierMajorOutlivesIt(t *testing.T) {
 		t.Fatalf("%d scopes of an earlier major completed after the Advance past them returned", n)
 	}
 }
+
+// The context a callout of the owner's runs under carries the root. Pause's
+// resume and OpenChild on it check the root as Check does: nil while it is
+// unmarked, its refusal once it is marked.
+func TestRootOnCalloutContext_PauseAndOpenChildCheckTheRoot(t *testing.T) {
+	e := newEnv(t)
+	cctx, endC1 := e.callout(e.ownerCtx, "c1")
+
+	if err := Pause(cctx)(); err != nil {
+		t.Fatalf("resume on an unmarked root = %v; want nil", err)
+	}
+	p, _, err := e.c.OpenChild(cctx)
+	if err != nil {
+		t.Fatalf("OpenChild under an unmarked root = %v; want nil", err)
+	}
+	if err := p.Close(nil); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+	mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+	mustCode(t, Pause(cctx)(), http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
+	_, _, err = e.c.OpenChild(cctx)
+	mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
+
+	endC1()
+	mustSealRollbackOnly(t, e, common.ErrCodeValidationFailed)
+}

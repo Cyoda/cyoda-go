@@ -24,7 +24,7 @@ const settle = 50 * time.Millisecond
 const watchdog = 5 * time.Second
 
 // recTM is the memory plugin's transaction manager, recording the savepoint
-// calls txcoord makes and answering LostRace and ReleaseSavepoint as a test
+// calls txcoord makes and answering LostRace, ReleaseSavepoint, Savepoint and RollbackToSavepoint as a test
 // arranges.
 type recTM struct {
 	spi.TransactionManager
@@ -32,6 +32,7 @@ type recTM struct {
 	lost          atomic.Bool
 	failRelease   atomic.Pointer[error]
 	failSavepoint atomic.Pointer[error]
+	failRollback  atomic.Pointer[error]
 
 	mu    sync.Mutex
 	calls []string
@@ -70,6 +71,9 @@ func (m *recTM) ReleaseSavepoint(ctx context.Context, txID, sp string) error {
 
 func (m *recTM) RollbackToSavepoint(ctx context.Context, txID, sp string) error {
 	m.record("rollback " + sp)
+	if p := m.failRollback.Load(); p != nil {
+		return *p
+	}
 	return m.TransactionManager.RollbackToSavepoint(ctx, txID, sp)
 }
 

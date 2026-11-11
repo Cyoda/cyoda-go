@@ -353,3 +353,55 @@ func TestEnd_Row2_OutranksRow4(t *testing.T) {
 	}
 	endC1()
 }
+
+// A scope whose discard fails did not end as its row answers: the request
+// gets a 500, never an answer that invites a retry, and the transaction is
+// broken, so later requests are refused 404 and Seal fails with the cause.
+func TestEnd_DiscardFails500AndBreaks(t *testing.T) {
+	retryable := failed(http.StatusServiceUnavailable, common.ErrCodeStorageUnavailable)
+	retryable.Retryable = true
+	for _, tc := range []struct {
+		name      string
+		class     RequestClass
+		outcome   *common.Outcome
+		supersede bool
+	}{
+		{"row 1, superseded", Write, &common.Outcome{}, true},
+		{"row 6, retryable", Write, retryable, false},
+		{"row 7, non-retryable write", Write, failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed), false},
+		{"row 9, read 5xx", Read, failed(http.StatusInternalServerError, common.ErrCodeServerError), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			_, endC1 := e.callout(e.ownerCtx, "c1")
+			a, actx := e.mustEnter(tc.class, pair("c1", 1))
+			rbErr := errors.New("the connection is gone")
+			e.tm.failRollback.Store(&rbErr)
+
+			var advanced <-chan struct{}
+			if tc.supersede {
+				advanced = async(func() { e.c.Advance("c1", 2) })
+				mustSuperseded(t, actx)
+			}
+			ans := a.End(tc.outcome)
+			mustAnswer(t, ans, http.StatusInternalServerError, common.ErrCodeServerError, false)
+			if !errors.Is(ans, rbErr) {
+				t.Errorf("the 500 does not carry the discard's cause: %v", ans)
+			}
+			if advanced != nil {
+				mustFinish(t, "Advance", advanced)
+			}
+
+			_, _, err := e.enter(Read, pair("c1", 1))
+			if tc.supersede {
+				_, _, err = e.enter(Read, pair("c1", 2))
+			}
+			mustCode(t, err, http.StatusNotFound, common.ErrCodeTransactionNotFound, false)
+
+			endC1()
+			if err := e.seal(); !errors.Is(err, rbErr) {
+				t.Fatalf("Seal = %v; want the discard's cause", err)
+			}
+		})
+	}
+}

@@ -365,8 +365,11 @@ func (s *scripted) OpenScope(ctx context.Context, _ string, _ []spi.CalloutPair)
 	}
 	return ctx, nil
 }
-func (s *scripted) CheckScope(context.Context) error    { return s.check }
-func (s *scripted) CompleteScope(context.Context) error { return s.complete }
+
+// Seal fails on a cancelled context, as a backend's store call does.
+func (s *scripted) Seal(ctx context.Context, _ string) error { return ctx.Err() }
+func (s *scripted) CheckScope(context.Context) error         { return s.check }
+func (s *scripted) CompleteScope(context.Context) error      { return s.complete }
 func (s *scripted) DiscardScope(_ context.Context, failedCode string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -542,5 +545,18 @@ func TestDurableEnd_OutsideCompletionFailureIsLoggedNotAnswered(t *testing.T) {
 	mustOwnAnswer(t, s.End(nil))
 	if line := buf.String(); !strings.Contains(line, "level=WARN") || !strings.Contains(line, "unreachable") {
 		t.Fatalf("log = %q; want one WARN line with the completion's error", line)
+	}
+}
+
+// TestDurableSeal_DetachedFromCancellation: the owner seals on the rollback
+// path too, where its own context may already be cancelled; the backend is
+// asked on a context its cancellation does not reach.
+func TestDurableSeal_DetachedFromCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	finish, err := newScripted(t, &scripted{}, false).Seal(ctx, "tx-1")
+	finish()
+	if err != nil {
+		t.Fatalf("Seal on a cancelled context = %v; want nil", err)
 	}
 }
