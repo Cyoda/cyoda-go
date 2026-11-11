@@ -7,11 +7,12 @@
 //
 // A joined request takes the slot through AcquireJoined, which is capped and
 // subject to an admission predicate the caller supplies: the predicate is read
-// when the caller arrives and again each time Reevaluate runs while it queues,
-// and a caller it no longer admits is turned away holding nothing. A paused
-// scope resuming takes the slot through AcquireResume, which is neither capped
-// nor refused nor cancelled. The slot passes to the queued callers in the order
-// they queued.
+// when the caller arrives, each time Reevaluate runs while it queues, and when
+// a release would grant it the slot, and a caller it no longer admits is
+// turned away holding nothing. A paused scope resuming takes the slot through
+// AcquireResume, which is neither capped nor refused nor cancelled. The slot
+// passes to the queued callers in the order they queued, skipping (and
+// refusing) any no longer admitted.
 package txgate
 
 import (
@@ -27,12 +28,13 @@ import (
 var ErrTooManyWaiters = errors.New("too many callers are waiting for the transaction's gate")
 
 // ErrNotAdmitted is what AcquireJoined returns when its admission predicate
-// reads false, on arrival or at a Reevaluate while the caller queues. The
-// refused caller holds nothing and has touched nothing of the transaction.
+// reads false: on arrival, at a Reevaluate while the caller queues, or when a
+// release would grant it the slot. The refused caller holds nothing and has
+// touched nothing of the transaction.
 var ErrNotAdmitted = errors.New("the transaction's gate does not admit this caller now")
 
 // waiter is one caller queued for a gate's slot. Its fate is decided under the
-// registry's lock by whoever settles it — a release granting it the slot, a
+// registry's lock by whoever settles it — a release granting or refusing it, a
 // Reevaluate refusing it, or the caller itself giving the wait up — and done is
 // closed once it is settled, so the caller reads err only after done.
 type waiter struct {
@@ -68,10 +70,14 @@ func New() *Registry { return &Registry{gates: make(map[string]*gate)} }
 // AcquireJoined takes the slot for a joined request and returns the func that
 // releases it. Empty txID returns a no-op release (never gated).
 //
-// admitted is evaluated under the registry's lock on entry and again each time
-// Reevaluate is called while the caller queues; when it reads false the caller
-// gets ErrNotAdmitted at once, holding nothing. It must not call back into the
-// registry. A nil admitted admits always.
+// admitted is read on entry, at each Reevaluate while the caller queues, and
+// when a release would grant it the slot; when it reads false the caller gets
+// ErrNotAdmitted at once, holding nothing. A nil admitted admits always. It
+// runs under the registry's lock, on whichever goroutine calls AcquireJoined,
+// Reevaluate or a release, so it must not call into the registry and must not
+// take a lock that any caller of AcquireJoined, Reevaluate or a release may
+// hold while calling: the lock order is the registry's lock, then the
+// consumer's.
 //
 // maxWaiters bounds the queue: when that many callers are already queued the
 // call returns ErrTooManyWaiters rather than joining them, having touched
@@ -81,10 +87,11 @@ func New() *Registry { return &Registry{gates: make(map[string]*gate)} }
 //
 // When ctx ends before the slot is granted the call returns ctx.Err(), holding
 // nothing. When the grant and the end of ctx coincide either may win; a grant
-// the caller does not take up is passed on to the next caller, never lost. Once a release func has been returned the slot is held
-// and ctx no longer bears on it — a holder gives the slot up by releasing it,
-// never by being cancelled. The release func may be called more than once; the
-// calls after the first do nothing.
+// the caller does not take up is passed on to the next caller, never lost.
+// Once a release func has been returned the slot is held and ctx no longer
+// bears on it — a holder gives the slot up by releasing it, never by being
+// cancelled. The release func may be called more than once; the calls after
+// the first do nothing.
 func (r *Registry) AcquireJoined(ctx context.Context, txID string, maxWaiters int, admitted func() bool) (release func(), err error) {
 	if txID == "" {
 		return func() {}, nil
@@ -128,6 +135,8 @@ func (r *Registry) AcquireResume(txID string) (release func()) {
 
 // Reevaluate re-runs admitted for every caller queued on txID; those it now
 // refuses return ErrNotAdmitted, holding nothing. The others keep their place.
+// The predicates run under the registry's lock on the calling goroutine, so the
+// caller must not hold a lock any predicate takes (see AcquireJoined).
 func (r *Registry) Reevaluate(txID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -137,13 +146,11 @@ func (r *Registry) Reevaluate(txID string) {
 	}
 	kept := g.queue[:0]
 	for _, w := range g.queue {
-		if w.admitted == nil || w.admitted() {
+		if w.admits() {
 			kept = append(kept, w)
 			continue
 		}
-		w.err = ErrNotAdmitted
-		close(w.done)
-		r.unrefLocked(txID, g)
+		r.refuseLocked(txID, g, w)
 	}
 	clear(g.queue[len(kept):])
 	g.queue = kept
@@ -228,20 +235,36 @@ func (r *Registry) releaseFunc(txID string, g *gate) func() {
 	}
 }
 
-// passOnLocked gives the held slot up: to the head of the queue when anyone
-// waits, else it frees it. It drops the giver's reference.
+// passOnLocked gives the held slot up: to the first queued caller still
+// admitted, refusing the ones before it that no longer are, else it frees it.
+// It drops the giver's reference.
 func (r *Registry) passOnLocked(txID string, g *gate) {
-	if len(g.queue) > 0 {
+	defer r.unrefLocked(txID, g)
+	for len(g.queue) > 0 {
 		next := g.queue[0]
 		g.queue[0] = nil
 		g.queue = g.queue[1:]
+		if !next.admits() {
+			r.refuseLocked(txID, g, next)
+			continue
+		}
 		next.granted = true
 		close(next.done)
-	} else {
-		g.held = false
+		return
 	}
+	g.held = false
+}
+
+// refuseLocked settles a waiter already taken out of the queue as refused and
+// drops its reference.
+func (r *Registry) refuseLocked(txID string, g *gate, w *waiter) {
+	w.err = ErrNotAdmitted
+	close(w.done)
 	r.unrefLocked(txID, g)
 }
+
+// admits reads the waiter's predicate; a waiter without one is never refused.
+func (w *waiter) admits() bool { return w.admitted == nil || w.admitted() }
 
 // unrefLocked drops one reference to txID's gate and forgets the gate once no
 // goroutine holds or waits on it.
@@ -258,8 +281,6 @@ func (r *Registry) len() int {
 	return len(r.gates)
 }
 
-func admitAll() bool { return true }
-
 // Acquire is the pre-coordination entry point kept for its current callers:
 // it takes the slot uncapped, never refused and never cancelled.
 func (r *Registry) Acquire(txID string) func() {
@@ -267,9 +288,9 @@ func (r *Registry) Acquire(txID string) func() {
 }
 
 // AcquireCtx is the pre-coordination entry point kept for its current callers:
-// AcquireJoined admitting every caller.
+// AcquireJoined admitting every caller (a nil predicate).
 func (r *Registry) AcquireCtx(ctx context.Context, txID string, maxWaiters int) (func(), error) {
-	return r.AcquireJoined(ctx, txID, maxWaiters, admitAll)
+	return r.AcquireJoined(ctx, txID, maxWaiters, nil)
 }
 
 // heldKeyT is the (unexported, collision-free) context key under which a joined

@@ -311,6 +311,37 @@ func TestReevaluate_RefusesOnlyTheNoLongerAdmitted(t *testing.T) {
 	}
 }
 
+// The grant honours admission too: a queued caller whose predicate has turned
+// false is refused when the slot reaches it, even with no Reevaluate since, and
+// the slot goes on to the next admitted caller.
+func TestRelease_GrantRereadsAdmission(t *testing.T) {
+	r := New()
+	holder := mustAcquire(t, r, "tx-1")
+
+	var admitA atomic.Bool
+	admitA.Store(true)
+	a := acquireAsync(r, context.Background(), "tx-1", 0, admitA.Load)
+	waitFor(t, "A to queue", func() bool { return r.queued("tx-1") == 1 })
+	b := acquireAsync(r, context.Background(), "tx-1", 0, always)
+	waitFor(t, "B to queue", func() bool { return r.queued("tx-1") == 2 })
+
+	admitA.Store(false) // no Reevaluate
+	holder()
+
+	gotA := expectSoon(t, a, "A to be refused at the grant")
+	if !errors.Is(gotA.err, ErrNotAdmitted) || gotA.release != nil {
+		t.Fatalf("A: AcquireJoined = %v, %v; want ErrNotAdmitted and no release", gotA.release != nil, gotA.err)
+	}
+	gotB := expectSoon(t, b, "B to take the slot")
+	if gotB.err != nil {
+		t.Fatalf("B: %v", gotB.err)
+	}
+	gotB.release()
+	if n := r.len(); n != 0 {
+		t.Fatalf("gate map = %d entries", n)
+	}
+}
+
 // Reevaluate on a transaction with no gate does nothing.
 func TestReevaluate_NoGate(t *testing.T) {
 	r := New()
