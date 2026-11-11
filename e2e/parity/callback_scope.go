@@ -98,14 +98,16 @@ func newCbScopeCase(t *testing.T, fixture BackendFixture, name, ownerProc, owner
 	return s
 }
 
-// problem decodes a problem document, failing the test unless it is one.
+// cbScopeProblem is the part of a problem document the scenarios assert on.
 type cbScopeProblem struct {
-	Detail     string
-	ErrorCode  string
-	Retryable  bool
-	HasRetryFl bool
+	Detail           string
+	ErrorCode        string
+	Retryable        bool
+	RetryablePresent bool
 }
 
+// cbDecodeProblem decodes a problem document, failing the test unless it is
+// one with wantStatus and wantCode.
 func cbDecodeProblem(t *testing.T, status int, raw []byte, wantStatus int, wantCode string) cbScopeProblem {
 	t.Helper()
 	var pd struct {
@@ -120,7 +122,7 @@ func cbDecodeProblem(t *testing.T, status int, raw []byte, wantStatus int, wantC
 	if status != wantStatus || code != wantCode {
 		t.Fatalf("answered %d %s; want %d %s (body: %s)", status, code, wantStatus, wantCode, raw)
 	}
-	return cbScopeProblem{Detail: pd.Detail, ErrorCode: code, Retryable: retryable, HasRetryFl: has}
+	return cbScopeProblem{Detail: pd.Detail, ErrorCode: code, Retryable: retryable, RetryablePresent: has}
 }
 
 // assertNothingCommitted asserts that no entity of model is committed, and that
@@ -181,7 +183,7 @@ func RunCallbackScope_FailedJoinedWriteDoomsOwner(t *testing.T, fixture BackendF
 		t.Fatalf("owner create: %v", err)
 	}
 	pd := cbDecodeProblem(t, status, raw, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
-	if pd.HasRetryFl {
+	if pd.RetryablePresent {
 		t.Errorf("owner refusal carries retryable=%t; want the flag absent (body: %s)", pd.Retryable, raw)
 	}
 	if !strings.Contains(pd.Detail, "WORKFLOW_FAILED") {
