@@ -1761,7 +1761,7 @@ paths:
             Request body exceeds the 10 MiB maximum. A request carrying an `X-Tx-Token` is
             also answered 413 when it passes one of the join layer's ceilings —
             `properties.errorCode` BAD_REQUEST for the request body,
-            JOINED_RESPONSE_TOO_LARGE for the answer held under the transaction's lock.
+            JOINED_RESPONSE_TOO_LARGE for the answer held while the request holds the transaction.
           content:
             application/problem+json:
               schema:
@@ -4198,8 +4198,8 @@ paths:
           description: >-
             Payload too large. A request carrying an `X-Tx-Token` is also answered 413 when
             it passes one of the join layer's ceilings — `properties.errorCode` BAD_REQUEST
-            for the request body, JOINED_RESPONSE_TOO_LARGE for the answer held under the
-            transaction's lock.
+            for the request body, JOINED_RESPONSE_TOO_LARGE for the answer held while the
+            request holds the transaction.
           content:
             application/problem+json:
               schema:
@@ -4401,8 +4401,8 @@ paths:
           description: >-
             Payload too large. A request carrying an `X-Tx-Token` is also answered 413 when
             it passes one of the join layer's ceilings — `properties.errorCode` BAD_REQUEST
-            for the request body, JOINED_RESPONSE_TOO_LARGE for the answer held under the
-            transaction's lock.
+            for the request body, JOINED_RESPONSE_TOO_LARGE for the answer held while the
+            request holds the transaction.
           content:
             application/problem+json:
               schema:

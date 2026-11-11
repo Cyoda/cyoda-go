@@ -23,8 +23,8 @@ import (
 //
 // "In progress" is made deterministic inside PostgreSQL rather than by waiting.
 // A joined WRITE to a committed row the test holds FOR UPDATE waits in the
-// database, on the operation's own connection, while the join layer holds the
-// transaction's lock for it. A joined READ cannot be blocked by a row lock, so
+// database, on the operation's own connection, while the request holds the
+// transaction's gate. A joined READ cannot be blocked by a row lock, so
 // the read scenarios read a message while the test holds the messages table
 // ACCESS EXCLUSIVE. That table, and only it: a table lock on entities would
 // stall the shared stack's background loops (storage_ceilings_e2e_test.go's

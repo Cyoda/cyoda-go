@@ -525,6 +525,13 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 		// whatever the callback answered. The owner's loop would give the work
 		// to another member once the answer limit passes — unless something
 		// ends the callout first.
+		//
+		// Its context is the client's stream context: a callout's end does
+		// not end it. The client serves callouts one at a time on its receive
+		// loop, so this client takes no further work, and reads no further
+		// message, until it is stopped. A scenario uses it for the one callout
+		// that client is meant to receive, and that is what keeps a second
+		// try from reaching it.
 		"cb-create-secondary-then-silent": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
 			if err := requireCB(cb); err != nil {
 				return nil, err

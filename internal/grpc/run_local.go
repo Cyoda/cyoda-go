@@ -114,9 +114,9 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 		major, minor := call.Number.Next()
 		// Numbering waits on the owner for the joined requests of the
 		// callout's earlier passes still in progress, and one can run past
-		// the callout's deadline. A try that
-		// would start after it does not start at all: it charges no try and
-		// names no member. The count is taken once the try is certain.
+		// the callout's deadline. A try that would start after it does not
+		// start at all: it charges no try and names no member. The count is
+		// taken once the try is certain.
 		if err := ctx.Err(); err != nil {
 			if calloutDeadlinePassed(ctx) {
 				break

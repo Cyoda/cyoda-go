@@ -82,8 +82,8 @@ func assertEnvelope(t *testing.T, door string, env txEnvelope, err error, wantDo
 // routes, write and read; the gRPC unary methods, EntityManage and
 // EntitySearch; and the gRPC server-streaming methods, EntityManageCollection
 // and EntitySearchCollection, whose join runs a path of its own — the request
-// message is received before the transaction's lock is taken and every response
-// frame is held until it has been released.
+// message is received before the transaction's gate is taken and every response
+// frame is held until it has been given back.
 //
 // Each door is a subtest, so a door that answers wrongly neither hides the
 // others nor stops the scenario: what every door did is in the report.

@@ -647,9 +647,9 @@ func TestAppError_WithCause_PreservesErrorsIs(t *testing.T) {
 	}
 }
 
-// clientGone is the join layer's own "the request ended before it took the
-// transaction's lock", as internal/domain/txjoin marks it. It is the one cause
-// a door's funnel may file as a departed client.
+// clientGone is the coordination's own "the request ended while it queued for
+// the transaction's gate", as internal/txcoord marks it. It is the one cause a
+// door's funnel may file as a departed client.
 func clientGone() error {
 	return fmt.Errorf("%w: %w", common.ErrClientGone, context.Canceled)
 }
@@ -667,7 +667,7 @@ func TestWriteError_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T) {
 	cancel()
 	r = r.WithContext(ctx)
 
-	appErr := common.Internal("joined request ended before it took the transaction's lock", clientGone())
+	appErr := common.Internal("joined request ended while it queued for the transaction's gate", clientGone())
 	common.WriteError(w, r, appErr)
 
 	if w.Code != http.StatusInternalServerError {
@@ -746,7 +746,7 @@ func TestWriteError_ClientGoneCancellation_VerboseModeKeepsDetailNoTicket(t *tes
 	r = r.WithContext(ctx)
 
 	cause := clientGone()
-	appErr := common.Internal("joined request ended before it took the transaction's lock", cause)
+	appErr := common.Internal("joined request ended while it queued for the transaction's gate", cause)
 	common.WriteError(w, r, appErr)
 
 	if w.Code != http.StatusInternalServerError {

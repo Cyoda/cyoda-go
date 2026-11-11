@@ -108,9 +108,9 @@ func TestBuildErrorFields_HonoursAPinnedTicket(t *testing.T) {
 	}
 }
 
-// clientGoneCause is the join layer's own "the request ended before it took the
-// transaction's lock", as internal/domain/txjoin marks it. It is the one cause
-// a door's funnel may file as a departed client.
+// clientGoneCause is the coordination's own "the request ended while it
+// queued for the transaction's gate", as internal/txcoord marks it. It is the
+// one cause a door's funnel may file as a departed client.
 func clientGoneCause() error {
 	return fmt.Errorf("%w: %w", common.ErrClientGone, context.Canceled)
 }
@@ -122,7 +122,7 @@ func clientGoneCause() error {
 func TestBuildErrorFields_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T) {
 	records := captureSlog(t)
 
-	appErr := common.Internal("dispatch request ended before it took the transaction's lock", clientGoneCause())
+	appErr := common.Internal("dispatch request ended while it queued for the transaction's gate", clientGoneCause())
 	code, message, _ := buildErrorFields(context.Background(), appErr)
 
 	if code != "SERVER_ERROR" {

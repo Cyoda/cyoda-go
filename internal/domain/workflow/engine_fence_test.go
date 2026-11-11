@@ -365,8 +365,8 @@ func TestSupersededChain_CalloutRefused_TouchesNoStore(t *testing.T) {
 
 // The race the checks exist for: the compute node finished its work and ANSWERED
 // SUCCESSFULLY, never learning it had been replaced while the chain waited.
-// Nothing in that answer tells the engine to stop — only the check after the
-// chain re-takes the transaction's lock does. Without it the chain would apply
+// Nothing in that answer tells the engine to stop — only the check when the
+// chain resumes after its callout does. Without it the chain would apply
 // the processor's data, let the transition fire, release its savepoint or arm a
 // scheduled task on a transaction the owner has already handed on.
 func TestSupersededChain_CalloutSucceeded_StillRefusedAndTouchesNoStore(t *testing.T) {

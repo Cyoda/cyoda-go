@@ -615,8 +615,8 @@ func TestTxJoin_ClientGoesAwayWhileQueued_HandlerNeverRuns_NeverAnImplicit200(t 
 
 // A join that FAILS with an internal error which merely wraps a cancellation is
 // not a departed client, even when the client has in fact also gone: the two
-// are different events, and only the join layer's own "the request ended before
-// it took the transaction's lock" is the second. Filing this as a departed
+// are different events, and only the coordination's own "the request ended
+// while it queued for the transaction's gate" is the second. Filing this as a departed
 // client would log a genuine fault at DEBUG with no ticket, below the default
 // level — the fault would leave no trace at all.
 func TestTxJoin_JoinFailureWrappingACancellation_KeepsItsTicket(t *testing.T) {
