@@ -279,7 +279,10 @@ func (j *Joiner) Run(ctx context.Context, tok string, class txcoord.RequestClass
 // rewrite non-nil: the scope's end overrides the handler's answer (the pass
 // was superseded, the transaction lost a race or its session ended, the scope
 // was marked, or the completion failed). The door sends rewrite and drops what
-// the handler produced.
+// the handler produced. A failure the handler answered through the shared
+// funnels is logged here, once the scope has ended: as it was answered, or,
+// when rewritten, folded into rewrite, whose line the door writes
+// (common.LogAnswer).
 //
 // err non-nil means the handler did not run: a refusal, or — while the request
 // was still queued for the gate, having touched nothing — ctx's own error, the
@@ -305,6 +308,7 @@ func (j *Joiner) RunVerified(ctx context.Context, pass *Pass, class txcoord.Requ
 	defer func() {
 		if !returned {
 			scope.End(&common.Outcome{Panicked: true})
+			common.WriteHeldLine(sctx)
 		}
 	}()
 	backstop := handler(sctx)
@@ -316,7 +320,15 @@ func (j *Joiner) RunVerified(ctx context.Context, pass *Pass, class txcoord.Requ
 		recorded.Err = backstop.Err
 	}
 	rewrite = scope.End(recorded)
-	if rewrite != nil && errors.Is(rewrite, txcoord.ErrSuperseded) {
+	// The request's failure is logged once, as what its client is told: the
+	// handler's own line when its answer is sent, otherwise folded into the
+	// line of the answer that replaces it.
+	if rewrite == nil {
+		common.WriteHeldLine(sctx)
+		return nil, nil
+	}
+	common.FoldHeldLine(sctx, rewrite)
+	if errors.Is(rewrite, txcoord.ErrSuperseded) {
 		j.count(ctx, "superseded_in_progress")
 	}
 	return rewrite, nil

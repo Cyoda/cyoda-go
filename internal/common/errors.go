@@ -402,14 +402,14 @@ func isClientGoneCancellation(appErr *AppError) bool {
 // password.
 func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 	RecordOutcome(r.Context(), appErr)
-	ticket := LogError(r.Context(), appErr, "path", r.URL.Path)
-	recordTicket(r.Context(), appErr, ticket)
+	ticket := LogAnswer(r.Context(), appErr, "path", r.URL.Path)
 	writeProblem(w, r, appErr, ticket)
 }
 
 // WriteRecordedFailure writes the failure recorded on ctx's holder as
 // WriteError answered it — the same problem under the same ticket — without
-// recording or logging it again: it was logged when it was answered. It
+// recording or logging it again: its one line is the one WriteError held for
+// the join layer to write (LogAnswer). It
 // reports false, writing nothing, when no failure is recorded. A door that
 // holds a handler's answer uses it to send the failure the handler answered
 // after it had written a success status.
@@ -456,10 +456,39 @@ func writeProblem(w http.ResponseWriter, r *http.Request, appErr *AppError, tick
 // LogError writes an error's one log line, by its class, and returns the
 // ticket an internal or fatal error is logged under ("" for an operational
 // error or a client that went away). It is the funnel every door shares:
-// WriteError, ReportError for an error answered outside a problem response,
-// and the gRPC envelope funnel. attrs name where the error was answered (an
-// HTTP path, a chunk, a gRPC request).
+// WriteError and the gRPC envelope funnel through LogAnswer, and ReportError
+// for an error answered outside a problem response. attrs name where the error
+// was answered (an HTTP path, a chunk, a gRPC request).
 func LogError(ctx context.Context, appErr *AppError, attrs ...any) (ticket string) {
+	ticket = mintTicket(appErr)
+	logLine(ctx, appErr, ticket, attrs...)
+	return ticket
+}
+
+// mintTicket is the ticket appErr's line is logged under: none for an
+// operational error or a client that went away, its pinned or a fresh one
+// otherwise.
+func mintTicket(appErr *AppError) string {
+	if appErr.Level == LevelOperational || (appErr.Level == LevelInternal && isClientGoneCancellation(appErr)) {
+		return ""
+	}
+	return appErr.ticketOr()
+}
+
+// lineLevel is the level appErr's line is logged at.
+func lineLevel(appErr *AppError) slog.Level {
+	switch {
+	case appErr.Level == LevelOperational:
+		return appErr.OperationalLogLevel()
+	case appErr.Level == LevelInternal && isClientGoneCancellation(appErr):
+		return slog.LevelDebug
+	default:
+		return slog.LevelError
+	}
+}
+
+// logLine writes appErr's one line under ticket (mintTicket's).
+func logLine(ctx context.Context, appErr *AppError, ticket string, attrs ...any) {
 	switch appErr.Level {
 	case LevelOperational:
 		// Most operational errors put full domain detail in Message, which the
@@ -477,16 +506,14 @@ func LogError(ctx context.Context, appErr *AppError, attrs ...any) (ticket strin
 			line = append(line, "cause", appErr.Err.Error())
 		}
 		slog.Log(ctx, appErr.OperationalLogLevel(), "operational error", line...)
-		return ""
 	case LevelInternal:
 		if isClientGoneCancellation(appErr) {
 			// Routine: the client disconnected, nothing was wrong on this end,
 			// and there is nobody to quote a ticket to. No ticket is minted.
 			slog.Debug("client gone before request completed",
 				append([]any{"code", appErr.Code, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
-			return ""
+			return
 		}
-		ticket = appErr.ticketOr()
 		// Detail may hold infrastructure detail (a storage error's connection
 		// detail such as host, user and database; the driver redacts the
 		// password). It goes to the log only, and to the response only in the
@@ -494,12 +521,9 @@ func LogError(ctx context.Context, appErr *AppError, attrs ...any) (ticket strin
 		// only; see `cyoda help config`).
 		slog.Error("internal error",
 			append([]any{"ticket", ticket, "code", appErr.Code, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
-		return ticket
 	default: // LevelFatal
-		ticket = appErr.ticketOr()
 		slog.Error("FATAL error",
 			append([]any{"ticket", ticket, "code", appErr.Code, "message", appErr.Message, "detail", appErr.Detail}, attrs...)...)
-		return ticket
 	}
 }
 

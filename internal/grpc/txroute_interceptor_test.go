@@ -1650,3 +1650,29 @@ func TestTxRouteInterceptor_UnaryHandlerRunsUnderTheLock(t *testing.T) {
 // interceptor with: the shipped default, long enough that no test reaches it
 // by accident. The tests that mean to reach it set a short one.
 const testProxyTimeout = 30 * time.Second
+
+// A rewritten answer is the request's one log line, on the gRPC door as on the
+// HTTP door: the handler's envelope failed, 500, with a cause saying the
+// transaction's session has ended, and the scope's end answers 404
+// TRANSACTION_NOT_FOUND instead. The handler's failure is folded into the 404's
+// line at its ERROR level, not logged on its own under a ticket the client is
+// never given.
+func TestTxRoute_RewrittenFailure_LoggedOnce(t *testing.T) {
+	logs := captureLogs(t)
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(), func(joined context.Context, _ any) (any, error) {
+		return entityTransactionError(joined, "req-1", common.Internal("store read failed", fmt.Errorf("session gone: %w", spi.ErrTxNotFound)))
+	})
+	if err != nil {
+		t.Fatalf("expected an envelope, got %v", err)
+	}
+	ce, _ := resp.(*cepb.CloudEvent)
+	assertRefusalEnvelope(t, ce, "req-1", "TRANSACTION_NOT_FOUND")
+	if lines := logs.lines("ERROR"); len(lines) != 1 || !strings.Contains(lines[0], "TRANSACTION_NOT_FOUND") || !strings.Contains(lines[0], "store read failed") {
+		t.Fatalf("ERROR lines = %q; want the one line of the 404, carrying the handler's failure", lines)
+	}
+	if lines := logs.lines("INFO"); len(lines) != 0 {
+		t.Fatalf("INFO lines = %q; want none", lines)
+	}
+}

@@ -937,3 +937,32 @@ func TestTxJoin_FailureRecordedAfterA2xxHeader_LoggedOnce(t *testing.T) {
 		t.Fatalf("the ticket answered (%s) is not the one logged:\n%s", pd.Ticket, logs.String())
 	}
 }
+
+// A rewritten answer is the request's one log line. The handler failed, 500,
+// with a cause that says the transaction's session has ended; the scope's end
+// answers 404 TRANSACTION_NOT_FOUND instead. The handler's failure is not
+// logged on its own — its ticket would name a line the client is never given —
+// but folded into the line of the 404 the client gets, at the handler's ERROR
+// level.
+func TestTxJoin_RewrittenFailure_LoggedOnce(t *testing.T) {
+	logs := captureSlog(t)
+	j, _, pass := liveJoiner(t, "tx-1")
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		common.WriteError(w, r, common.Internal("store read failed", fmt.Errorf("session gone: %w", spi.ErrTxNotFound)))
+	})
+	rec := httptest.NewRecorder()
+	routed(TxJoin(j), next).ServeHTTP(rec, joinedRequest(t, pass, nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("answer = %d %s; want the rewritten 404", rec.Code, rec.Body.String())
+	}
+	out := logs.String()
+	if n := strings.Count(out, `"msg":"internal error"`); n != 0 {
+		t.Errorf("%d internal error lines; want none — the client was not answered the 500:\n%s", n, out)
+	}
+	if n := strings.Count(out, `"msg":"operational error"`); n != 1 {
+		t.Fatalf("%d operational error lines; want the one line of the 404:\n%s", n, out)
+	}
+	if !strings.Contains(out, `"code":"TRANSACTION_NOT_FOUND"`) || !strings.Contains(out, "store read failed") || !strings.Contains(out, `"level":"ERROR"`) {
+		t.Fatalf("the 404's line does not carry the handler's failure at ERROR:\n%s", out)
+	}
+}

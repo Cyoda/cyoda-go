@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -79,5 +80,73 @@ func TestWriteRecordedFailure(t *testing.T) {
 	}
 	if logs.Len() != logged {
 		t.Fatalf("resending logged again: %s", logs.String()[logged:])
+	}
+}
+
+// TestLogAnswer_HeldUntilTheScopeEnds: on a joined request (a holder on ctx),
+// the recorded failure's line is held under the ticket the answer carries, and
+// written once by WriteHeldLine. Without a holder, or for a failure that is not
+// the recorded one, the line is written at once.
+func TestLogAnswer_HeldUntilTheScopeEnds(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	if ticket := LogAnswer(context.Background(), Internal("unjoined", errors.New("boom"))); ticket == "" || !strings.Contains(logs.String(), ticket) {
+		t.Fatalf("no holder: ticket %q not logged at once: %s", ticket, logs.String())
+	}
+	logs.Reset()
+
+	ctx, _ := WithOutcome(context.Background())
+	recorded := Internal("joined", errors.New("boom"))
+	RecordOutcome(ctx, recorded)
+	ticket := LogAnswer(ctx, recorded, "path", "/x")
+	if ticket == "" || logs.Len() != 0 {
+		t.Fatalf("ticket %q, logged %q; want a ticket and nothing logged yet", ticket, logs.String())
+	}
+	if other := LogAnswer(ctx, Internal("not the recorded one", errors.New("bang"))); !strings.Contains(logs.String(), other) {
+		t.Fatalf("a failure other than the recorded one was not logged at once: %s", logs.String())
+	}
+	logs.Reset()
+	WriteHeldLine(ctx)
+	WriteHeldLine(ctx)
+	if n := strings.Count(logs.String(), `"msg":"internal error"`); n != 1 || !strings.Contains(logs.String(), `"ticket":"`+ticket+`"`) {
+		t.Fatalf("held line written %d times, or not under ticket %s: %s", n, ticket, logs.String())
+	}
+}
+
+// TestFoldHeldLine: the held line is not written; the answer that replaces the
+// handler's carries it in its Detail and is logged at least at its level.
+func TestFoldHeldLine(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx, _ := WithOutcome(context.Background())
+	recorded := Internal("store read failed", errors.New("session gone"))
+	RecordOutcome(ctx, recorded)
+	LogAnswer(ctx, recorded)
+	answer := Operational(http.StatusNotFound, ErrCodeTransactionNotFound, "transaction not found")
+	FoldHeldLine(ctx, answer)
+	WriteHeldLine(ctx)
+	if logs.Len() != 0 {
+		t.Fatalf("the folded line was written: %s", logs.String())
+	}
+	if !strings.Contains(answer.Detail, "store read failed") || !strings.Contains(answer.Detail, "session gone") {
+		t.Fatalf("Detail = %q; want the handler's failure", answer.Detail)
+	}
+	if answer.OperationalLogLevel() != slog.LevelError {
+		t.Fatalf("level = %v; want ERROR, the handler's", answer.OperationalLogLevel())
+	}
+	quiet := Operational(http.StatusBadRequest, ErrCodeBadRequest, "x").WithLogLevel(slog.LevelWarn)
+	ctx2, _ := WithOutcome(context.Background())
+	r2 := Operational(http.StatusConflict, ErrCodeConflict, "y")
+	RecordOutcome(ctx2, r2)
+	LogAnswer(ctx2, r2)
+	FoldHeldLine(ctx2, quiet)
+	if quiet.OperationalLogLevel() != slog.LevelWarn {
+		t.Fatalf("level = %v; a folded INFO line must not lower WARN", quiet.OperationalLogLevel())
 	}
 }

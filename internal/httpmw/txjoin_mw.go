@@ -116,14 +116,16 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 				writeJoinError(w, r, err)
 			case rewrite != nil:
 				// The scope's end decided another answer: what the handler
-				// wrote is not sent.
+				// wrote is not sent, and the failure it answered is folded
+				// into this answer's one line.
 				common.WriteError(w, r, rewrite)
 			case buffered.tooLarge():
 				// Fail closed: the answer is not sent in part. The gate has
 				// already been given back.
 				common.WriteError(w, r, tooLarge)
 			case failed != nil:
-				// Sent as the handler answered it; it was logged then.
+				// Sent as the handler answered it; its one line was written
+				// when its scope ended.
 				common.WriteRecordedFailure(failed, w, r)
 			default:
 				buffered.flushTo(w)
