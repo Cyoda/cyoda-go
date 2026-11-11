@@ -17,6 +17,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 var fired = workflow.RunReport{Outcome: workflow.OutcomeFired}
@@ -486,7 +487,7 @@ func (failingFactory) ScheduledTaskStore(context.Context) (spi.ScheduledTaskStor
 // A Start that failed keeps failing: a later call reports the first error,
 // never a success for a service that runs nothing.
 func TestService_StartAfterAFailedStartReportsTheFirstError(t *testing.T) {
-	svc := New(testConfig(), Deps{Store: failingFactory{}, Firer: reportFirer(fired), Clock: platformclock.Real()})
+	svc := New(testConfig(), Deps{Store: failingFactory{}, Coord: txcoord.New(nil), Firer: reportFirer(fired), Clock: platformclock.Real()})
 	t.Cleanup(svc.Stop)
 	first := svc.Start(context.Background())
 	if first == nil {

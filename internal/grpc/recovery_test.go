@@ -32,7 +32,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -492,7 +491,7 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthLatch *health.Latc
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
-	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txcoord.New(tracker), newTestConsistency(t, factory), platformclock.Real())
 	modelHandler := model.New(factory, platformclock.Real())
 
 	uc := &spi.UserContext{

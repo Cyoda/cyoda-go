@@ -559,24 +559,3 @@ func TestRegistry_AtCapacity_NothingQueued(t *testing.T) {
 		t.Error("a gate nobody is queued for reports itself full")
 	}
 }
-
-// --- the pre-coordination entry points ---------------------------------------
-
-// Acquire is the wait the transaction owner's own chain, the fence and a
-// suspended callback's resume take, and none of them may be refused: each holds
-// state a refusal could not undo. The cap belongs to the joined doors alone.
-func TestRegistry_Acquire_IsNeverRefusedForCapacity(t *testing.T) {
-	r := New()
-	holder := r.Acquire("tx-1")
-	go func() {
-		if release, err := r.AcquireJoined(context.Background(), "tx-1", 1, nil); err == nil {
-			release()
-		}
-	}()
-	waitFor(t, "the gate to fill", func() bool { return r.AtCapacity("tx-1", 1) })
-
-	got := make(chan struct{})
-	go func() { r.Acquire("tx-1")(); close(got) }()
-	holder()
-	expectSoon(t, got, "an uncapped wait to get the gate")
-}

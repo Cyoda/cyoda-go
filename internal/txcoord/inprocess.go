@@ -631,11 +631,3 @@ func (c *inProcess) OpenChild(ctx context.Context) (Scope, context.Context, erro
 func (c *inProcess) AtCapacity(txID string, maxWaiters int) bool {
 	return c.gate.AtCapacity(txID, maxWaiters)
 }
-
-// GateOf returns the gate registry of an in-process coordination, for the
-// owner's gate sites in the entity service: the owner's final save and commit
-// must exclude the joined requests this coordination admits, so both take the
-// same gate. Kept until the owner seals; deleted with the owner's gate sites.
-func GateOf(c Coordination) *txgate.Registry {
-	return c.(*inProcess).gate
-}

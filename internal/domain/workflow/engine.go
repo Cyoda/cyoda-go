@@ -274,12 +274,35 @@ func (e *Engine) rollbackSegment(ctx context.Context, openTxID, entryTxID string
 	if openTxID == "" || openTxID == entryTxID {
 		return
 	}
-	rbCtx, cancel := common.RollbackContext(ctx)
-	defer cancel()
-	if err := e.txMgr.Rollback(rbCtx, openTxID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
+	if err := e.rollbackSealed(ctx, openTxID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
 		slog.Warn("failed to roll back an engine-opened transaction",
 			"pkg", "workflow", "txID", openTxID, "err", err)
 	}
+}
+
+// rollbackSealed rolls back a transaction the engine owns: it seals the
+// transaction first, ignoring the answer — a rollback is what a refused seal
+// asks for — and the coordination forgets it after the rollback. The rollback
+// runs on common.RollbackContext, derived once the seal is done, so the
+// seal's wait does not spend the rollback's budget.
+func (e *Engine) rollbackSealed(ctx context.Context, txID string) error {
+	finish, _ := e.coord.Seal(ctx, txID)
+	defer finish()
+	rbCtx, cancel := common.RollbackContext(ctx)
+	defer cancel()
+	return e.txMgr.Rollback(rbCtx, txID)
+}
+
+// commitSealed seals txID and, when the seal admits it, commits it with
+// commit; the coordination forgets the transaction after. A refused seal is
+// returned as it is, and the caller rolls back.
+func (e *Engine) commitSealed(ctx context.Context, txID string, commit func() error) error {
+	finish, err := e.coord.Seal(ctx, txID)
+	defer finish()
+	if err != nil {
+		return err
+	}
+	return commit()
 }
 
 // Execute runs the workflow engine for entity creation. It selects the matching
@@ -1128,12 +1151,15 @@ func (e *Engine) recordEventInOwnTx(auditStore spi.StateMachineAuditStore, ctx c
 		}
 	}()
 	// An event recordEvent refuses leaves the transaction empty; it is rolled
-	// back rather than committed.
+	// back rather than committed. The transaction makes no callout, and seals
+	// like every other the engine commits.
 	if !e.recordEvent(auditStore, ownCtx, entityID, txID, state, eventType, details, data) {
 		return
 	}
-	if err := common.ShieldedCommitWithBudget(ownCtx, e.commitBudget, func(commitCtx context.Context) error {
-		return e.txMgr.Commit(commitCtx, ownTxID)
+	if err := e.commitSealed(ownCtx, ownTxID, func() error {
+		return common.ShieldedCommitWithBudget(ownCtx, e.commitBudget, func(commitCtx context.Context) error {
+			return e.txMgr.Commit(commitCtx, ownTxID)
+		})
 	}); err != nil {
 		slog.Warn("state-machine audit event not recorded: failed to commit its transaction",
 			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", err)

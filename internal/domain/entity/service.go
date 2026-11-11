@@ -277,7 +277,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	}
 	defer scope.Release()
 
-	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
+	txID, txCtx := scope.TxID(), scope.Ctx()
 
 	entityID := uuid.UUID(h.uuids.NewTimeUUID())
 	now := h.clock.Now()
@@ -325,39 +325,27 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// marker for that is "loopback", not the literal "workflow".
 	entity.Meta.TransitionForLatestSave = "loopback"
 
-	finalCtx, finalTxID := scope.Ctx(), scope.TxID()
+	finalCtx := scope.Ctx()
 
 	// Save entity within the engine's final-segment transaction (goes to
-	// buffer). For non-segmenting cascades finalCtx/finalTxID equal the
-	// handler's input; for segmenting cascades the engine has already
-	// committed TX_pre and finalCtx/finalTxID address TX_post.
+	// buffer). For non-segmenting cascades finalCtx is the handler's input;
+	// for segmenting cascades the engine has already committed TX_pre and
+	// finalCtx addresses TX_post.
 	entityStore, err := h.factory.EntityStore(finalCtx)
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	// Finalize: for the OWNER, gate the final Save+Commit so an in-flight joined
-	// callback's Save cannot race the owner's buffer mutation/commit (the SPI
-	// delegates within-tx serialisation to the application). On the joined path
-	// the join layer holds the gate for the whole request, so it must NOT
-	// re-acquire here. The gate is NEVER held across engine.Execute (above) —
-	// that would deadlock against callbacks that need the gate.
-	if appErr := func() *common.AppError {
-		if owned {
-			defer h.gate.Acquire(finalTxID)()
-		}
-		if _, err := entityStore.Save(finalCtx, entity); err != nil {
-			return classifySaveErr("failed to save entity", entity.Meta.ID, err)
-		}
-		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
-		}
-		return nil
-	}(); appErr != nil {
-		return nil, appErr
+	// Seal before the final Save: from here no joined request runs in the
+	// transaction, and one that failed a write refuses the operation.
+	if err := scope.Seal(); err != nil {
+		return nil, classifyCommitErr(err)
+	}
+	if _, err := entityStore.Save(finalCtx, entity); err != nil {
+		return nil, classifySaveErr("failed to save entity", entity.Meta.ID, err)
+	}
+	if err := scope.Commit(); err != nil {
+		return nil, classifyCommitErr(err)
 	}
 
 	// Surface the cascade-entry txID for client correlation (spec §8) — even
@@ -698,7 +686,7 @@ func (h *Handler) deleteEntityOnce(ctx context.Context, entityID string) (*delet
 	}
 	defer scope.Release()
 
-	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
+	txID, txCtx := scope.TxID(), scope.Ctx()
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
@@ -722,27 +710,22 @@ func (h *Handler) deleteEntityOnce(ctx context.Context, entityID string) (*delet
 		return nil, appErr
 	}
 
-	// Finalize: gate the OWNER's Delete+Commit against a concurrent joined
-	// callback's buffer write; on the joined path the join layer holds the gate.
-	if appErr := func() *common.AppError {
-		if owned {
-			defer h.gate.Acquire(txID)()
-		}
-		// Soft delete within transaction.
-		if err := entityStore.Delete(txCtx, entityID); err != nil {
-			return deleteWriteError("failed to delete entity", err)
-		}
-		// The entity's scheduled tasks go in the same transaction.
-		if err := h.deleteEntityTasks(txCtx, []string{entityID}); err != nil {
-			return deleteWriteError("failed to delete scheduled tasks", err)
-		}
-		// Commit transaction (no-op when participating in a joined tx).
-		if err := scope.Commit(); err != nil {
-			return deleteWriteError("failed to commit transaction", err)
-		}
-		return nil
-	}(); appErr != nil {
-		return nil, appErr
+	// Seal before the final writes: from here no joined request runs in the
+	// transaction.
+	if err := scope.Seal(); err != nil {
+		return nil, classifyCommitErr(err)
+	}
+	// Soft delete within transaction.
+	if err := entityStore.Delete(txCtx, entityID); err != nil {
+		return nil, deleteWriteError("failed to delete entity", err)
+	}
+	// The entity's scheduled tasks go in the same transaction.
+	if err := h.deleteEntityTasks(txCtx, []string{entityID}); err != nil {
+		return nil, deleteWriteError("failed to delete scheduled tasks", err)
+	}
+	// Commit transaction (no-op when participating in a joined tx).
+	if err := scope.Commit(); err != nil {
+		return nil, classifyCommitErr(err)
 	}
 
 	ver, _ := strconv.Atoi(entity.Meta.ModelRef.ModelVersion)
@@ -769,6 +752,23 @@ func deleteWriteError(msg string, err error) *common.AppError {
 		return conflictError(err)
 	}
 	return common.Internal(msg, err)
+}
+
+// classifyCommitErr classifies a refused seal or a failed commit of the flow's
+// transaction. A refusal that is already an *AppError — the transaction a
+// failed joined write made rollback-only — is answered as it is; a lost write
+// race (spi.ErrTxAborted) or a first-committer-wins refusal is the retryable
+// 409; anything else, a broken transaction's cause among them, is
+// common.Internal, which answers a storage outage with the retryable 503.
+func classifyCommitErr(err error) *common.AppError {
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	if errors.Is(err, spi.ErrConflict) {
+		return conflictError(err)
+	}
+	return common.Internal("failed to commit transaction", err)
 }
 
 // deleteEntityTasks removes the scheduled tasks of ids inside the
@@ -894,7 +894,7 @@ func (h *Handler) deleteAllEntitiesOnce(ctx context.Context, entityName string, 
 	}
 	defer scope.Release()
 
-	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
+	txCtx := scope.Ctx()
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
@@ -931,26 +931,21 @@ func (h *Handler) deleteAllEntitiesOnce(ctx context.Context, entityName string, 
 		return nil, common.Internal("failed to count entities for delete", scanErr)
 	}
 
-	// Finalize: gate the OWNER's DeleteAll+Commit against a concurrent joined
-	// callback's buffer write; on the joined path the join layer holds the gate.
-	if appErr := func() *common.AppError {
-		if owned {
-			defer h.gate.Acquire(txID)()
-		}
-		if err := entityStore.DeleteAll(txCtx, ref); err != nil {
-			return deleteWriteError("failed to delete entities", err)
-		}
-		// Every task of the model goes in the same transaction.
-		if err := h.deleteModelTasks(txCtx, entityName, modelVersion); err != nil {
-			return deleteWriteError("failed to delete scheduled tasks", err)
-		}
-		// Commit transaction (no-op when participating in a joined tx).
-		if err := scope.Commit(); err != nil {
-			return deleteWriteError("failed to commit transaction", err)
-		}
-		return nil
-	}(); appErr != nil {
-		return nil, appErr
+	// Seal before the final writes: from here no joined request runs in the
+	// transaction.
+	if err := scope.Seal(); err != nil {
+		return nil, classifyCommitErr(err)
+	}
+	if err := entityStore.DeleteAll(txCtx, ref); err != nil {
+		return nil, deleteWriteError("failed to delete entities", err)
+	}
+	// Every task of the model goes in the same transaction.
+	if err := h.deleteModelTasks(txCtx, entityName, modelVersion); err != nil {
+		return nil, deleteWriteError("failed to delete scheduled tasks", err)
+	}
+	// Commit transaction (no-op when participating in a joined tx).
+	if err := scope.Commit(); err != nil {
+		return nil, classifyCommitErr(err)
 	}
 
 	modelID := deterministicModelID(ref)
@@ -1278,7 +1273,7 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 	}
 	defer scope.Release()
 
-	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
+	txCtx := scope.Ctx()
 
 	modelStore, err := h.factory.ModelStore(txCtx)
 	if err != nil {
@@ -1322,11 +1317,11 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 	}
 	deleted := make([]string, 0, len(ids))
 
-	// Finalize: gate the per-id deletes + commit against a concurrent joined
-	// callback's buffer write (mirror DeleteAllEntities).
+	// Seal before the deletes: from here no joined request runs in the
+	// transaction (mirror DeleteAllEntities).
 	if appErr := func() *common.AppError {
-		if owned {
-			defer h.gate.Acquire(txID)()
+		if err := scope.Seal(); err != nil {
+			return classifyCommitErr(err)
 		}
 		for _, id := range ids {
 			// Generic cancellation check at the iteration head (spec D9) —
@@ -1370,7 +1365,7 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 		// Do NOT roll back after a failed commit — it has already aborted
 		// the tx. Mirrors DeleteAllEntities.
 		if err := scope.Commit(); err != nil {
-			return deleteWriteError("failed to commit transaction", err)
+			return classifyCommitErr(err)
 		}
 		return nil
 	}(); appErr != nil {
@@ -1524,10 +1519,7 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	}
 
 	if err := scope.Commit(); err != nil {
-		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-		}
-		return nil, common.Internal("failed to commit transaction", err)
+		return nil, classifyCommitErr(err)
 	}
 
 	result := &DeleteResult{
@@ -1763,18 +1755,18 @@ func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (
 	}
 	defer scope.Release()
 
-	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
+	txCtx := scope.Ctx()
 
 	entityStore, err := h.factory.EntityStore(txCtx)
 	if err != nil {
 		return a, common.Internal("failed to access entity store", err)
 	}
 
-	// Finalize: gate the per-id deletes + commit against a concurrent joined
-	// callback's buffer write (mirror the single-tx path / DeleteAllEntities).
+	// Seal before the deletes: from here no joined request runs in the
+	// transaction (mirror the single-tx path / DeleteAllEntities).
 	a.failure = func() *common.AppError {
-		if owned {
-			defer h.gate.Acquire(txID)()
+		if err := scope.Seal(); err != nil {
+			return classifyCommitErr(err)
 		}
 		for _, t := range chunk {
 			// Generic cancellation check at the iteration head (spec D9) —
@@ -1826,7 +1818,7 @@ func (h *Handler) deleteOneBatchOnce(ctx context.Context, chunk []batchTarget) (
 			return deleteWriteError("failed to delete scheduled tasks", err)
 		}
 		if err := scope.Commit(); err != nil {
-			return deleteWriteError("failed to commit transaction", err)
+			return classifyCommitErr(err)
 		}
 		return nil
 	}()
@@ -2011,7 +2003,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	}
 	defer scope.Release()
 
-	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
+	txID, txCtx := scope.TxID(), scope.Ctx()
 
 	now := h.clock.Now()
 
@@ -2088,48 +2080,29 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		// marker is "loopback", matching single CreateEntity.
 		entity.Meta.TransitionForLatestSave = "loopback"
 
-		// Finalize this item's Save. For the OWNER, gate each per-item Save so a
-		// callback in-flight from this item's dispatch cannot race the buffer
-		// write; on the joined path the join layer holds the gate for the whole
-		// request. The gate is never held across engine.Execute (above).
-		if appErr := func() *common.AppError {
-			if owned {
-				defer h.gate.Acquire(currentTxID)()
-			}
-			// Re-resolve the entity store on the now-current segment context;
-			// the per-segment factory may bind storage handles to ctx.
-			finalEntityStore, err := h.factory.EntityStore(currentCtx)
-			if err != nil {
-				return common.Internal("failed to access entity store", err)
-			}
-			if _, err := finalEntityStore.Save(currentCtx, entity); err != nil {
-				return classifySaveErr(fmt.Sprintf("item %d: failed to save entity", i), entity.Meta.ID, err)
-			}
-			return nil
-		}(); appErr != nil {
-			return nil, appErr
+		// This item's Save. The callouts of its engine run have ended, and
+		// with them every callback they admitted, so nothing joined runs
+		// beside it. Re-resolve the entity store on the now-current segment
+		// context; the per-segment factory may bind storage handles to ctx.
+		finalEntityStore, err := h.factory.EntityStore(currentCtx)
+		if err != nil {
+			return nil, common.Internal("failed to access entity store", err)
+		}
+		if _, err := finalEntityStore.Save(currentCtx, entity); err != nil {
+			return nil, classifySaveErr(fmt.Sprintf("item %d: failed to save entity", i), entity.Meta.ID, err)
 		}
 	}
 
-	// Commit the final still-open TX. Equals the entry txID for
+	// Seal, then commit the final still-open TX. Equals the entry txID for
 	// non-segmenting batches; for batches with at least one segmenting
 	// cascade this is the post-segment TX (earlier segments already
-	// committed their TX_pre durably). For the OWNER, gate the commit against a
-	// concurrent joined callback's buffer write; a joined batch skips the commit
-	// entirely (owner commits).
-	if appErr := func() *common.AppError {
-		if owned {
-			defer h.gate.Acquire(currentTxID)()
-		}
-		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
-		}
-		return nil
-	}(); appErr != nil {
-		return nil, appErr
+	// committed their TX_pre durably). A joined batch neither seals nor
+	// commits (the owner does).
+	if err := scope.Seal(); err != nil {
+		return nil, classifyCommitErr(err)
+	}
+	if err := scope.Commit(); err != nil {
+		return nil, classifyCommitErr(err)
 	}
 
 	// Surface the cascade-entry txID for audit correlation (spec §8).
@@ -2204,7 +2177,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	}
 	defer scope.Release()
 
-	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
+	txID, txCtx := scope.TxID(), scope.Ctx()
 
 	// Load existing entity within transaction (adds to read set).
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -2325,40 +2298,31 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		updated.Meta.TransitionForLatestSave = input.Transition
 	}
 
-	finalCtx, finalTxID := scope.Ctx(), scope.TxID()
+	finalCtx := scope.Ctx()
 
 	finalEntityStore, err := h.factory.EntityStore(finalCtx)
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	// Finalize: gate the OWNER's Save + Commit against a concurrent joined
-	// callback's write; on the joined path the join layer holds the gate for
-	// the whole request. The gate is NEVER held across engine.Execute (above).
-	if appErr := func() *common.AppError {
-		if owned {
-			defer h.gate.Acquire(finalTxID)()
-		}
-		// A plain Save: the engine checked If-Match when the transition
-		// started, and the engine's entity supersedes any write made to E
-		// earlier in this transaction.
-		if _, err := finalEntityStore.Save(finalCtx, updated); err != nil {
-			return classifySaveErr("failed to save entity", input.EntityID, err)
-		}
+	// Seal before the final Save: from here no joined request runs in the
+	// transaction, and one that failed a write refuses the operation.
+	if err := scope.Seal(); err != nil {
+		return nil, classifyCommitErr(err)
+	}
+	// A plain Save: the engine checked If-Match when the transition
+	// started, and the engine's entity supersedes any write made to E
+	// earlier in this transaction.
+	if _, err := finalEntityStore.Save(finalCtx, updated); err != nil {
+		return nil, classifySaveErr("failed to save entity", input.EntityID, err)
+	}
 
-		// Commit FinalTxID — the still-open TX after the cascade (no-op when
-		// participating in a joined tx; the owner commits). For non-segmenting
-		// cascades this is the handler's original txID; for segmenting cascades
-		// this is TX_post (TX_pre was committed by the engine before the callout).
-		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
-		}
-		return nil
-	}(); appErr != nil {
-		return nil, appErr
+	// Commit FinalTxID — the still-open TX after the cascade (no-op when
+	// participating in a joined tx; the owner commits). For non-segmenting
+	// cascades this is the handler's original txID; for segmenting cascades
+	// this is TX_post (TX_pre was committed by the engine before the callout).
+	if err := scope.Commit(); err != nil {
+		return nil, classifyCommitErr(err)
 	}
 
 	// Surface the cascade-entry txID to the caller for client correlation
@@ -2498,7 +2462,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	}
 	defer scope.Release()
 
-	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
+	txID, txCtx := scope.TxID(), scope.Ctx()
 
 	now := h.clock.Now()
 
@@ -2665,26 +2629,18 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			updated.Meta.TransitionForLatestSave = item.transition
 		}
 
-		// Finalize this item's Save. For the OWNER, gate the Save against a
-		// concurrent joined callback's write; the joined path already holds
-		// the gate for its whole body. Never gated across engine.Execute.
-		if appErr := func() *common.AppError {
-			if owned {
-				defer h.gate.Acquire(currentTxID)()
-			}
-			// Re-resolve the entity store on the now-current segment context.
-			finalEntityStore, err := h.factory.EntityStore(currentCtx)
-			if err != nil {
-				return common.Internal("failed to access entity store", err)
-			}
-			// A plain Save: the engine checked the item's If-Match when its
-			// transition started.
-			if _, err := finalEntityStore.Save(currentCtx, updated); err != nil {
-				return classifySaveErr(fmt.Sprintf("item %d: failed to save entity", i), updated.Meta.ID, err)
-			}
-			return nil
-		}(); appErr != nil {
-			return nil, appErr
+		// This item's Save. The callouts of its engine run have ended, and
+		// with them every callback they admitted, so nothing joined runs
+		// beside it. Re-resolve the entity store on the now-current segment
+		// context.
+		finalEntityStore, err := h.factory.EntityStore(currentCtx)
+		if err != nil {
+			return nil, common.Internal("failed to access entity store", err)
+		}
+		// A plain Save: the engine checked the item's If-Match when its
+		// transition started.
+		if _, err := finalEntityStore.Save(currentCtx, updated); err != nil {
+			return nil, classifySaveErr(fmt.Sprintf("item %d: failed to save entity", i), updated.Meta.ID, err)
 		}
 		entityIDs = append(entityIDs, updated.Meta.ID)
 	}
@@ -2695,21 +2651,13 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 	// committed their TX_pre durably). When every item failed via per-item
 	// isolation, the commit is a zero-write commit but still validates the
 	// read-set and stamps a database timestamp; the txID it commits remains
-	// meaningful for audit correlation. For the OWNER, gate the commit against a
-	// concurrent joined callback; a joined batch skips the commit (owner commits).
-	if appErr := func() *common.AppError {
-		if owned {
-			defer h.gate.Acquire(currentTxID)()
-		}
-		if err := scope.Commit(); err != nil {
-			if errors.Is(err, spi.ErrConflict) {
-				return common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
-			}
-			return common.Internal("failed to commit transaction", err)
-		}
-		return nil
-	}(); appErr != nil {
-		return nil, appErr
+	// meaningful for audit correlation. A joined batch neither seals nor
+	// commits (the owner does).
+	if err := scope.Seal(); err != nil {
+		return nil, classifyCommitErr(err)
+	}
+	if err := scope.Commit(); err != nil {
+		return nil, classifyCommitErr(err)
 	}
 
 	// Surface the cascade-entry txID for audit correlation (spec §8).

@@ -157,9 +157,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	committed := false
 	defer func() {
 		if !committed {
-			rbCtx, cancel := common.RollbackContext(curCtx)
-			defer cancel()
-			_ = e.txMgr.Rollback(rbCtx, curTxID)
+			_ = e.rollbackSealed(curCtx, curTxID)
 		}
 	}()
 	commit := func(id string) error {
@@ -343,20 +341,24 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	return OutcomeFired, commit(finalTxID)
 }
 
-// commitRun commits one entity transaction of a scheduled run, shielded: a
-// cancellation that arrives while the commit is in flight does not cut it
-// (spec §5.3).
+// commitRun seals and commits one entity transaction of a scheduled run,
+// shielded: a cancellation that arrives while the commit is in flight does not
+// cut it (spec §5.3). A refused seal — a callback of the run failed a write,
+// or the transaction lost a write race or broke — is the fire's failure, and
+// the run rolls back.
 func (e *Engine) commitRun(ctx context.Context, txID string) error {
 	// Checkpoint before the run's final commit (spec §5.3), on the guard of
 	// the transaction, as at every segment commit.
 	if err := commitCheckpoint(e.runTxs.forTx(txID), "scheduled run not committed"); err != nil {
 		return err
 	}
-	return common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
-		if err := e.txMgr.Commit(commitCtx, txID); err != nil {
-			return fmt.Errorf("failed to commit scheduled run: %w", err)
-		}
-		return nil
+	return e.commitSealed(ctx, txID, func() error {
+		return common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
+			if err := e.txMgr.Commit(commitCtx, txID); err != nil {
+				return fmt.Errorf("failed to commit scheduled run: %w", err)
+			}
+			return nil
+		})
 	})
 }
 

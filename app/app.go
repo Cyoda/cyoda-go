@@ -561,6 +561,7 @@ func New(cfg Config) *App {
 	a.scheduler = scheduler.New(scheduler.Config(cfg.Scheduler), scheduler.Deps{
 		Store:              a.storeFactory,
 		TxManager:          a.transactionManager,
+		Coord:              a.coord,
 		Firer:              a.workflowEngine,
 		Clock:              clk,
 		HealthLatch:        a.healthLatch,
@@ -584,7 +585,7 @@ func New(cfg Config) *App {
 	a.joiner = joiner
 
 	// Domain handlers
-	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, txcoord.GateOf(a.coord), a.consistency, clk)
+	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.coord, a.consistency, clk)
 	modelHandler := model.New(a.storeFactory, clk)
 	server := internalapi.NewServer()
 	server.Entity = entityHandler

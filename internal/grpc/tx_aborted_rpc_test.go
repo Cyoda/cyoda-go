@@ -16,7 +16,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -54,7 +53,7 @@ func TestRPC_EntityPatch_SaveInAbortedTxIsConflict(t *testing.T) {
 	factory := &txAbortedSaveFactory{StoreFactory: inner}
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	svc.txMgr = txMgr
-	svc.entityHandler = entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
+	svc.entityHandler = entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
 	svc.modelHandler = model.New(inner, platformclock.Real())
 	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "A", "amount": 1})
 
@@ -137,7 +136,7 @@ func TestRPC_EntityCreate_ProcessorFailedAfterLostRaceIsConflict(t *testing.T) {
 	})
 	engine := workflow.NewEngine(inner, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(lp), workflow.WithCoordination(txcoord.New(txMgr)))
 	svc.txMgr = txMgr
-	svc.entityHandler = entity.New(inner, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, inner), platformclock.Real())
+	svc.entityHandler = entity.New(inner, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, inner), platformclock.Real())
 	svc.modelHandler = model.New(inner, platformclock.Real())
 	importAndLockModel(t, svc, ctx, "racer", "1", map[string]any{"name": "A", "amount": 1})
 

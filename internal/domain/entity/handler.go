@@ -23,7 +23,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // maxEntityBodySize is the maximum allowed request body size for entity operations (10 MB).
@@ -47,7 +47,7 @@ type Handler struct {
 	txMgr   spi.TransactionManager
 	uuids   spi.UUIDGenerator
 	engine  *wfengine.Engine
-	gate    *txgate.Registry
+	coord   txcoord.Coordination
 	cons    *consistency.Service
 	clock   spi.Clock
 	// maxDeleteCycles overrides deleteCycleBudget's built-in bound on how
@@ -87,14 +87,17 @@ func (h *Handler) deleteCycleBudget() int {
 	return defaultMaxDeleteCycles
 }
 
-func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry, cons *consistency.Service, clock spi.Clock) *Handler {
+func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, coord txcoord.Coordination, cons *consistency.Service, clock spi.Clock) *Handler {
 	if cons == nil {
 		panic("entity.New: nil consistency service")
 	}
 	if clock == nil {
 		panic("entity.New: nil clock")
 	}
-	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate, cons: cons, clock: clock}
+	if coord == nil {
+		panic("entity.New: nil transaction coordination")
+	}
+	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, coord: coord, cons: cons, clock: clock}
 }
 
 // beginOrJoin decides whether this inbound request OWNS a fresh transaction or
@@ -124,10 +127,8 @@ func (h *Handler) beginOrJoin(ctx context.Context) (string, context.Context, boo
 
 // commitOwned commits the transaction only when this request owns it. For a
 // joined callback (owned==false) the owner is responsible for the commit, so
-// this is a no-op. Callers gate the whole final Save+Commit critical section
-// (see the per-flow finalize blocks): the gate is acquired by the flow around
-// the final buffer mutation and released after this commit, so commitOwned
-// itself must NOT touch the gate (the gate is a non-reentrant per-tx mutex).
+// this is a no-op. The flow has sealed the transaction (txScope.Seal) before
+// its final writes, so no joined request runs beside them or this commit.
 //
 // The commit runs shielded via common.ShieldedCommit — WithoutCancel plus its
 // own bounded budget — so a client-requested deadline or disconnect on ctx

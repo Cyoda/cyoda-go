@@ -280,10 +280,3 @@ func (r *Registry) len() int {
 	defer r.mu.Unlock()
 	return len(r.gates)
 }
-
-// Acquire is the pre-coordination entry point kept for the owner's gate sites
-// in the entity service: it takes the slot uncapped, never refused and never
-// cancelled.
-func (r *Registry) Acquire(txID string) func() {
-	return r.AcquireResume(txID)
-}

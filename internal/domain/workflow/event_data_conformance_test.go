@@ -21,6 +21,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -198,13 +199,15 @@ func recordScheduledFailure(t *testing.T) (spi.StoreFactory, context.Context, st
 		t.Fatalf("arm task: %v", err)
 	}
 
+	txMgr := mem.NewTransactionManager(common.NewTestUUIDGenerator())
 	svc := scheduler.New(scheduler.Config{
 		Enabled: true, ScanInterval: 5 * time.Millisecond, MaxRuns: 1, MaxRunsPerTenant: 1,
 		HeartbeatInterval: 10 * time.Millisecond, StaleAfter: time.Hour, MaxLostOwners: 3,
 		RetryDelay: 30 * time.Second, RetryDelayMax: 15 * time.Minute, ShutdownDrain: 50 * time.Millisecond,
 	}, scheduler.Deps{
 		Store:     mem,
-		TxManager: mem.NewTransactionManager(common.NewTestUUIDGenerator()),
+		TxManager: txMgr,
+		Coord:     txcoord.New(txMgr),
 		Firer:     unsafeFailure{},
 		Clock:     platformclock.Real(),
 	})

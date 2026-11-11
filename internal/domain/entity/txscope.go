@@ -24,13 +24,23 @@ import (
 //	...
 //	scope.Advance(result.FinalCtx, result.FinalTxID) // first statement after every engine call
 //	...
+//	if err := scope.Seal(); err != nil {
+//	    return nil, classifyCommitErr(err)
+//	}
+//	... // the final writes
 //	err := scope.Commit()
 //
-// beginScope deliberately does NOT touch the joined gate: a joined request's
-// gate is the join layer's, taken before the handler ran and released after it
-// returns — hence after Release. The gate is a non-reentrant mutex, so nothing
-// in a joined chain may take the transaction's gate again; Release returns
-// before the gate for every joined scope.
+// An owned scope seals before it commits or rolls back (txcoord's Seal): the
+// seal waits for the callback scopes of the transaction still in progress,
+// refuses every later one, and reports a transaction a failed joined write made
+// rollback-only. A flow seals before its final writes, so nothing joined runs
+// beside them; Commit and Release seal too, and a second seal is the first
+// one's answer. The coordination forgets the transaction once the commit or
+// rollback is done.
+//
+// A joined scope neither seals nor commits nor rolls back: the transaction is
+// the owner's, and the join layer's scope decides what becomes of the
+// request's writes.
 //
 // A joined scope never moves off the transaction it joined: the engine refuses
 // the only step that opens a segment (a COMMIT_BEFORE_DISPATCH processor) on a
@@ -46,10 +56,15 @@ type txScope struct {
 
 	owned bool
 	done  bool
+
+	// finish forgets the sealed transaction in the coordination; nil until
+	// the scope seals. sealErr is the seal's answer.
+	finish  func()
+	sealErr error
 }
 
 // beginScope begins a transaction, or joins one already on ctx (a routed
-// compute-node callback). It performs no gating — see the type comment.
+// compute-node callback).
 func (h *Handler) beginScope(ctx context.Context) (*txScope, error) {
 	txID, txCtx, owned, err := h.beginOrJoin(ctx)
 	if err != nil {
@@ -60,7 +75,6 @@ func (h *Handler) beginScope(ctx context.Context) (*txScope, error) {
 
 func (s *txScope) Ctx() context.Context { return s.ctx }
 func (s *txScope) TxID() string         { return s.txID }
-func (s *txScope) Owned() bool          { return s.owned }
 
 // Advance moves the scope onto whichever segment the engine left open.
 //
@@ -77,7 +91,25 @@ func (s *txScope) Advance(ctx context.Context, txID string) {
 	s.ctx, s.txID = ctx, txID
 }
 
-// Commit commits when this flow owns the transaction. Before committing it
+// Seal cuts the owned transaction off before the flow's final writes: it
+// waits for the callback scopes in progress and refuses every later joined
+// request. It reports the lost write race (spi.ErrTxAborted), the cause that
+// broke the transaction, or common.TransactionRollbackOnly when a joined write
+// failed; the flow then fails, and Release rolls back. A second call returns
+// the first one's answer. A joined scope does not seal: nil.
+func (s *txScope) Seal() error {
+	if !s.owned || s.txID == "" {
+		return nil
+	}
+	if s.finish == nil {
+		s.finish, s.sealErr = s.h.coord.Seal(s.ctx, s.txID)
+	}
+	return s.sealErr
+}
+
+// Commit commits when this flow owns the transaction. It seals first — a flow
+// that sealed before its final writes gets that seal's answer — and a refused
+// seal leaves the scope for Release to roll back. Before committing it
 // performs the spec-D2 pre-commit check: an expired/cancelled context fails
 // closed WITHOUT marking the scope done, so the deferred Release still rolls
 // the transaction back — the 408 contract ("nothing committed") depends on
@@ -91,19 +123,28 @@ func (s *txScope) Advance(ctx context.Context, txID string) {
 //
 // After a commit ATTEMPT the scope is done regardless of outcome: the commit
 // may be partially applied, and aborting one another goroutine is running
-// trips memory's ErrTxCommitInProgress path.
+// trips memory's ErrTxCommitInProgress path. The coordination forgets the
+// transaction after the attempt.
 func (s *txScope) Commit() error {
 	if s.owned {
+		if err := s.Seal(); err != nil {
+			return err
+		}
 		if err := s.ctx.Err(); err != nil {
 			return err
 		}
 	}
 	s.done = true
+	if s.finish != nil {
+		defer s.finish()
+	}
 	return s.h.commitOwned(s.ctx, s.txID, s.owned)
 }
 
 // Release rolls back the segment currently open, unless the scope is already
-// done or the transaction belongs to somebody else.
+// done or the transaction belongs to somebody else. It seals first, ignoring
+// the answer — a rollback is what a refused seal asks for — and forgets the
+// transaction after the rollback.
 //
 // A joined callback never rolls back its owner's transaction — an error on the
 // joined path surfaces to the owner, which decides its fate.
@@ -115,23 +156,11 @@ func (s *txScope) Release() {
 	if s.txID == "" || !s.owned {
 		return
 	}
+	_ = s.Seal()
+	defer s.finish()
 
-	// Acquire the per-tx gate so the rollback is mutually exclusive with any
-	// joined callback's access to the same transaction handle. No self-deadlock:
-	// every `defer h.gate.Acquire(...)()` site in this package is inside an IIFE,
-	// so the gate is free by outer-defer time, and an owned chain holds no gate
-	// of the join layer's.
-	//
-	// What this does NOT preserve is failed-Save-then-rollback as one atomic
-	// gated section: a joined callback can win the gate in the window between an
-	// IIFE releasing it and Release re-acquiring, Save successfully, return 200
-	// to its caller, and then have its write discarded by this rollback. That is
-	// strictly better than the alternative it replaces — a leaked transaction —
-	// and the joined caller's write was doomed either way once the owner failed.
-	defer s.h.gate.Acquire(s.txID)()
-
-	// Derive the budget only once the gate is held. RollbackContext bounds the
-	// Rollback call, not the queue in front of it; charging the gate wait
+	// Derive the budget only once the seal is done. RollbackContext bounds the
+	// Rollback call, not the wait in front of it; charging the seal's wait
 	// against it would hand txMgr.Rollback an already-expired context, which on
 	// postgres fails the rollback and destroys the pooled connection instead of
 	// returning it — the outcome this scope exists to prevent.

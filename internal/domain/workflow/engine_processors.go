@@ -574,6 +574,19 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 // see the pre-commit check and common.CommitContext below, mirroring
 // txScope.Commit (internal/domain/entity/txscope.go).
 func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, txID string) error {
+	// Seal TX_pre before its final writes: from here no joined request runs
+	// in it, and one that failed a write refuses the segment — the lost race
+	// first, as the retryable conflict. The coordination forgets TX_pre once
+	// this function returns; whoever rolls TX_pre back after a failure seals
+	// it afresh. Joined with ErrCommitBeforeDispatchInfra so that a broken
+	// transaction's cause is a ticketed 5xx (or the storage outage it is); a
+	// rollback-only refusal and a lost race keep their own answers, which
+	// classifyWorkflowError finds first.
+	finish, err := e.coord.Seal(ctx, txID)
+	defer finish()
+	if err != nil {
+		return fmt.Errorf("commit-before-dispatch: seal TX_pre: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+	}
 	es, err := e.factory.EntityStore(ctx)
 	if err != nil {
 		return fmt.Errorf("commit-before-dispatch: get entity store: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))

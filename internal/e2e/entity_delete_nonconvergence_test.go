@@ -14,7 +14,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ func newLowBudgetDeleteServer(t *testing.T, maxCycles int) string {
 		testApp.TransactionManager(),
 		common.NewDefaultUUIDGenerator(),
 		testApp.WorkflowEngine(),
-		txgate.New(), newTestConsistency(t, testApp.StoreFactory()),
+		txcoord.New(testApp.TransactionManager()), newTestConsistency(t, testApp.StoreFactory()),
 		platformclock.Real(),
 	).WithMaxDeleteCycles(maxCycles)
 

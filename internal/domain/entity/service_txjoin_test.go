@@ -11,7 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -30,7 +30,7 @@ func newTxJoinTestHandler(t *testing.T) (*Handler, spi.StoreFactory, spi.Transac
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerWidgetModel(t, ctx, factory)
 	return h, factory, txMgr, ctx

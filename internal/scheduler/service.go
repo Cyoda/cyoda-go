@@ -22,6 +22,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // Firer runs one claimed task. *workflow.Engine satisfies it.
@@ -33,7 +34,11 @@ type Firer interface {
 type Deps struct {
 	Store     spi.StoreFactory
 	TxManager spi.TransactionManager
-	Firer     Firer
+	// Coord is the transaction coordination of this pnode. The scheduler's
+	// own transaction seals before it commits or rolls back, as every
+	// owner's does.
+	Coord txcoord.Coordination
+	Firer Firer
 	// Clock is the platform clock, injected: the one that set scheduledTime
 	// at arm.
 	Clock spi.Clock
@@ -148,6 +153,9 @@ type Service struct {
 func New(cfg Config, deps Deps) *Service {
 	if deps.Clock == nil {
 		panic("scheduler.New: nil clock")
+	}
+	if deps.Coord == nil {
+		panic("scheduler.New: nil transaction coordination")
 	}
 	return &Service{
 		cfg:            cfg,
@@ -903,6 +911,11 @@ func (s *Service) failWithAudit(ctx context.Context, r *liveRun, f spi.Failure) 
 	if err != nil {
 		return fmt.Errorf("failed to begin the transaction that fails a scheduled task: %w", err)
 	}
+	// The transaction makes no callout, and seals like every owner's, before
+	// its writes. The coordination forgets it once the commit or the rollback
+	// below is done.
+	finish, sealErr := s.deps.Coord.Seal(txCtx, txID)
+	defer finish()
 	committed := false
 	defer func() {
 		if !committed {
@@ -911,6 +924,9 @@ func (s *Service) failWithAudit(ctx context.Context, r *liveRun, f spi.Failure) 
 			_ = s.deps.TxManager.Rollback(rbCtx, txID)
 		}
 	}()
+	if sealErr != nil {
+		return fmt.Errorf("failed to seal the transaction that fails a scheduled task: %w", sealErr)
+	}
 	if err := s.store.Fail(txCtx, r.ref, f); err != nil {
 		return fmt.Errorf("failed to fail the scheduled task: %w", err)
 	}

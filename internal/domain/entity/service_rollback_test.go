@@ -21,7 +21,6 @@ import (
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
@@ -178,7 +177,7 @@ func TestJoinedFlows_ErrorPath_DoNotDeadlock(t *testing.T) {
 			t.Fatal("expected the joined call to fail")
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("joined error path did not return; the gate and Release are deadlocked")
+		t.Fatal("joined error path did not return; Release is deadlocked")
 	}
 
 	if hn.tracker.wasRolledBack(ownerTxID) {
@@ -187,13 +186,21 @@ func TestJoinedFlows_ErrorPath_DoNotDeadlock(t *testing.T) {
 	if !hn.tracker.isOpen(ownerTxID) {
 		t.Fatal("owner's transaction is no longer open; the owner must decide its fate")
 	}
-	// The gate must be free for the owner to finish its own work.
-	freed := make(chan struct{})
-	go func() { hn.h.gate.Acquire(ownerTxID)(); close(freed) }()
+	// The owner must be able to finish its own work: its seal waits for no
+	// scope the joined call left open, and is not refused.
+	sealed := make(chan error, 1)
+	go func() {
+		finish, err := hn.h.coord.Seal(hn.ctx, ownerTxID)
+		finish()
+		sealed <- err
+	}()
 	select {
-	case <-freed:
+	case err := <-sealed:
+		if err != nil {
+			t.Fatalf("owner's seal after the joined call: %v", err)
+		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("joined call returned still holding gate(entry)")
+		t.Fatal("the owner's seal did not return: the joined call left the transaction held")
 	}
 }
 
@@ -815,7 +822,7 @@ func newTrackingHandlerWrapping(t *testing.T, backend string, wrap func(spi.Tran
 		wfengine.WithExternalProcessing(proc), wfengine.WithCoordination(txcoord.New(tracker)))
 
 	armed := &armedFactory{StoreFactory: raw}
-	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(tracker), platformclock.Real())
+	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txcoord.New(tracker), newTestConsistencyFor(tracker), platformclock.Real())
 
 	hn := &rollbackHarness{h: h, tracker: tracker, raw: raw, armed: armed, engineCAS: engineCAS, proc: proc, ctx: ctx}
 	hn.registerModel(t, rollbackModel)
