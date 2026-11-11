@@ -31,6 +31,7 @@ func init() {
 		NamedTest{Name: "Callout_HandOverMemberFailureWithoutText", Fn: RunCallout_HandOverMemberFailureWithoutText},
 		NamedTest{Name: "Callout_TwoTenantsShareATag", Fn: RunCallout_TwoTenantsShareATag},
 		NamedTest{Name: "Callout_HandOverNoPayloadKeepsCallbackWrite", Fn: RunCallout_HandOverNoPayloadKeepsCallbackWrite},
+		NamedTest{Name: "Callout_HandOverStopsOnMark", Fn: RunCallout_HandOverStopsOnMark},
 	)
 }
 
@@ -357,5 +358,66 @@ func RunCallout_HandOverNoPayloadKeepsCallbackWrite(t *testing.T, fixture MultiN
 	}
 	if got.Data["status"] != marker {
 		t.Errorf("status = %v; want %q, the callback's write", got.Data["status"], marker)
+	}
+}
+
+// RunCallout_HandOverStopsOnMark: the owner has no compute node for the
+// processor's tag, so the callout is handed over to the other pnode, which has
+// two. The first one tried makes a joined create whose own processor fails,
+// not retryably — a failed joined write — and then fails its try retryably,
+// which would send the work to the second. The failed write marks the
+// transaction; the mark cancels the owner's callout, and with it the hand-over
+// in progress on the peer: the peer makes no further try, so only one of its
+// compute nodes is ever called out. The owner is refused 409
+// TRANSACTION_ROLLBACK_ONLY, naming the callback's code.
+func RunCallout_HandOverStopsOnMark(t *testing.T, fixture MultiNodeFixture) {
+	urls := mnRequire(t, fixture, 2)
+	tenant := fixture.NewTenant(t)
+	owner := client.NewClient(urls[0], tenant.Token)
+	const model, tag = "mn-ho-mark", "mn-ho-mark"
+	const xModel, xTag = "mn-ho-mark-x", "mn-ho-mark-x"
+	const proc = "cb-create-secondary-then-fail-retryable"
+
+	// x's processor fails, not retryably; it runs where the callback's create
+	// runs, on the owner.
+	xnode := StartComputeClientOrSkip(t, fixture, 0, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{xTag}})
+	cbRouteSetupModel(t, owner, xModel, cbRouteSampleSecondary,
+		mnWorkflow("mn-ho-mark-x-wf", mnProc("inject-error-not-retryable", "SYNC", xTag, "", nil)))
+	first := StartComputeClientOrSkip(t, fixture, 1, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}})
+	second := mnWarmUp(t, fixture, owner, tenant, 1, "mn-ho-mark-w", tag)
+	cbRouteSetupModel(t, owner, model, cbRouteSampleNoWriteback,
+		mnWorkflow("mn-ho-mark-wf", mnProc(proc, "SYNC", tag, cbRouteContext(xModel, "mn-ho-mark-marker"),
+			map[string]any{"idempotent": true, "retryPolicy": "FIXED"})))
+
+	status, body, err := owner.CreateEntityRaw(t, model, 1, mnSample)
+	if err != nil {
+		t.Fatalf("create through the owner: %v", err)
+	}
+	detail := AssertProblem(t, status, body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
+	if !strings.Contains(detail, "WORKFLOW_FAILED") {
+		t.Errorf("detail = %q; want it to name the callback's WORKFLOW_FAILED", detail)
+	}
+
+	// A further try on the peer would follow its first member's answer, a
+	// second after the callback; give it the time it would take.
+	time.Sleep(3 * time.Second)
+	tries := 0
+	for _, cc := range []parity.ComputeClient{first, second} {
+		for _, r := range cc.Received(t) {
+			if r.Name == proc {
+				tries++
+			}
+		}
+	}
+	if tries != 1 {
+		t.Errorf("the peer's compute nodes were called out %d times; want 1 — the mark ends the hand-over", tries)
+	}
+	if got := len(xnode.Received(t)); got != 1 {
+		t.Errorf("x's compute node received %d requests; want the one failed write", got)
+	}
+	if all, err := owner.ListEntitiesByModel(t, xModel, 1); err != nil {
+		t.Fatalf("list x: %v", err)
+	} else if len(all) != 0 {
+		t.Errorf("%d x entities committed; want none", len(all))
 	}
 }

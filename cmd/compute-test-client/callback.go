@@ -483,6 +483,27 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			return withData(entity, data)
 		},
 
+		// cb-create-secondary-then-fail-retryable — issues the joined create
+		// callback, then fails the try with a retryable verdict whatever the
+		// callback answered, so the owner's loop would try another member. It
+		// answers a second later: a scenario about the callout's cancellation
+		// (a callback that failed its write cancels it) needs the owner's
+		// cancellation to reach a hand-over's pnode before this answer does.
+		"cb-create-secondary-then-fail-retryable": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("callback create: %w", err)
+			}
+			select {
+			case <-time.After(time.Second): // realtime: the answer's delay behind the owner's cancellation
+			case <-ctx.Done():
+			}
+			return nil, &verdictError{msg: fmt.Sprintf("failed after a joined create answered %d", res.Status), retryable: true}
+		},
+
 		// cb-grpc-create-secondary — like cb-create-secondary but issues the joined
 		// callback over gRPC (EntityManage) instead of HTTP. When the calc request
 		// was forwarded to this member from a remote owner, the tx-token names that
