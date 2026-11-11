@@ -471,26 +471,46 @@ func TestOwner_CalloutDeadline_DuringAWait_FallsToThePrecedence(t *testing.T) {
 // Raising the fencing number before a hand-over waits for the joined requests
 // of the earlier compute member still in progress, and that wait can outlast
 // the callout's deadline. No hand-over starts after the deadline — it charges
-// no try, names no member, and the callout reports what it had on record.
-func TestOwner_NumberingOutlastsTheCalloutDeadline_NoHandOverIsMade(t *testing.T) {
-	// Two tries of 60 ms and 50 ms of allowance: the callout may take 170 ms.
-	// m-1's joined write stays in progress for 400 ms after m-1 goes away, so
-	// the number the hand-over draws cannot rise before the callout's deadline
-	// has passed.
+// no try and names no member — and the callout reports what it has on record.
+//
+// What is on record is the local try whose member went away: the wait is now
+// for the callbacks of the callout's own earlier passes, so the scenario needs
+// a local try whose callback is still in progress when the hand-over draws its
+// number (it used to need only a joined write of the transaction holding its
+// lock, with no local try at all, and reported ErrNoMatchingMember).
+func TestOwner_EarlierCallbackOutlastsTheDeadline_NoHandOverAndTheLocalTryOnRecord(t *testing.T) {
+	// Two tries of 60 ms and 50 ms of allowance: the callout's deadline is
+	// 170 ms after it begins.
+	const deadline = 2*limitMs*time.Millisecond + 50*time.Millisecond
 	router := newScriptedRouter("p-1")
 	router.script("p-1", hangs())
 	e := newClusterEnv(t, Config{FixedNumRetries: 1, HandoverAllowance: 50 * time.Millisecond}, router)
 	var first *cnode
-	ended := make(chan struct{})
+	inProgress := make(chan txcoord.Scope, 1)
 	first = e.attach(t, "m-1", tenantA, "x", func(reg *internalgrpc.MemberRegistry, m *internalgrpc.Member, _ string) {
 		_, passes := first.seen()
 		s, _ := e.callback(t, txcoord.Write, pairOf(t, e, passes[0]))
-		time.AfterFunc(400*time.Millisecond, func() { s.End(nil); close(ended) })
+		inProgress <- s
 		reg.Unregister(m)
 	})
 
-	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
-	<-ended
+	start := time.Now() // realtime: the callout's deadline is real time
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+		done <- err
+	}()
+	s := <-inProgress
+	// The hand-over has drawn its number: m-1's pass is refused, and the
+	// owner waits for m-1's callback.
+	_, passes := first.seen()
+	for !e.refused(pairOf(t, e, passes[0])) {
+		time.Sleep(time.Millisecond)
+	}
+	// The deadline is real time, so the wait has to outlast it in real time.
+	time.Sleep(time.Until(start.Add(deadline + 50*time.Millisecond))) // realtime: outlast the callout's deadline
+	s.End(nil)
+	err := <-done
 
 	if calls := router.made(); len(calls) != 0 {
 		t.Errorf("hand-overs = %+v, want none: no hand-over starts after the callout's deadline", calls)

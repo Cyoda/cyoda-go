@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func TestAsyncNewTx_CallbackInProgressAtTheCalloutsEndIsDiscarded(t *testing.T) 
 	const lateID = "late-write"
 
 	writeStarted := make(chan struct{})
-	letWriteLand := make(chan struct{})
+	var written atomic.Bool
 	callbackEnded := make(chan *common.AppError, 1)
 
 	ext := &mockExternalProcessing{
@@ -53,7 +54,16 @@ func TestAsyncNewTx_CallbackInProgressAtTheCalloutsEndIsDiscarded(t *testing.T) 
 					return
 				}
 				close(writeStarted)
-				<-letWriteLand
+				// The write lands once the callout has ended under it: the
+				// owner's end() has unregistered the callout and now waits.
+				deadline := time.Now().Add(5 * time.Second)
+				for !errors.Is(txcoord.Check(sctx), txcoord.ErrSuperseded) {
+					if time.Now().After(deadline) {
+						t.Error("the callout never ended under the callback")
+						break
+					}
+					time.Sleep(time.Millisecond)
+				}
 				es, err := factory.EntityStore(sctx)
 				if err != nil {
 					t.Errorf("EntityStore: %v", err)
@@ -64,13 +74,10 @@ func TestAsyncNewTx_CallbackInProgressAtTheCalloutsEndIsDiscarded(t *testing.T) 
 						t.Errorf("late Save: %v", err)
 					}
 				}
+				written.Store(true)
 				callbackEnded <- scope.End(nil)
 			}()
 			<-writeStarted
-			go func() {
-				time.Sleep(50 * time.Millisecond) // end() is blocked in the wait meanwhile
-				close(letWriteLand)
-			}()
 			return nil, errors.New("the cnode answered: failed")
 		},
 	}
@@ -98,13 +105,16 @@ func TestAsyncNewTx_CallbackInProgressAtTheCalloutsEndIsDiscarded(t *testing.T) 
 	if _, err := engine.Execute(txCtx, entity); err != nil {
 		t.Fatalf("an ASYNC_NEW_TX processor failure must not fail the operation: %v", err)
 	}
+	if !written.Load() {
+		t.Fatal("the engine carried on while the failed processor's callback was still in progress")
+	}
 	select {
 	case answer := <-callbackEnded:
 		if answer == nil || answer.Code != common.ErrCodeCalloutSuperseded {
 			t.Fatalf("the callback in progress at the callout's end was answered %v; want 410 CALLOUT_SUPERSEDED", answer)
 		}
-	default:
-		t.Fatal("the engine carried on while the failed processor's callback was still in progress")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback never ended")
 	}
 	if err := txMgr.Commit(txCtx, txID); err != nil {
 		t.Fatalf("Commit: %v", err)

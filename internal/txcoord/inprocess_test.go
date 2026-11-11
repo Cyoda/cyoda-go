@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -704,4 +706,71 @@ func TestCheck_CalloutContextReportsItsParentsMark(t *testing.T) {
 		endC1()
 		_ = e.seal()
 	})
+}
+
+// Writers enter and end scopes of one callout in a loop while the owner keeps
+// raising its number. Once Advance(m) has returned, no scope admitted under a
+// lower major is still open, and none of them completes afterwards: each ends
+// superseded. Run with -race.
+func TestAdvance_UnderConcurrentWriters_NoEarlierMajorOutlivesIt(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	defer endC1()
+	var current, advanced, entered atomic.Uint32
+	current.Store(1)
+	advanced.Store(1)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var violations atomic.Int32
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				major := current.Load()
+				s, _, err := e.enter(Write, pair("c1", major))
+				if err != nil {
+					continue // superseded on entry
+				}
+				entered.Store(major)
+				time.Sleep(100 * time.Microsecond) // the scope's work, while the owner advances
+				seen := advanced.Load()
+				if answer := s.End(nil); answer == nil && seen > major {
+					violations.Add(1) // completed after an Advance past its major returned
+				}
+			}
+		}()
+	}
+	for m := uint32(2); m <= 60; m++ {
+		// A writer is in a scope of the current major before it is raised.
+		deadline := time.Now().Add(watchdog)
+		for entered.Load() != m-1 {
+			if time.Now().After(deadline) {
+				t.Fatalf("no writer entered at major %d", m-1)
+			}
+			time.Sleep(10 * time.Microsecond)
+		}
+		current.Store(m)
+		e.c.Advance("c1", m)
+		advanced.Store(m)
+		open := func() bool {
+			e.c.mu.Lock()
+			defer e.c.mu.Unlock()
+			tx := e.c.txs[e.txID]
+			return tx != nil && openUnder(tx, "c1", m)
+		}()
+		if open {
+			t.Fatalf("a scope admitted below major %d is still open after Advance returned", m)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if n := violations.Load(); n != 0 {
+		t.Fatalf("%d scopes of an earlier major completed after the Advance past them returned", n)
+	}
 }

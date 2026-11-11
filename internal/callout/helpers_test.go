@@ -105,18 +105,28 @@ func (e *env) callback(t *testing.T, class txcoord.RequestClass, pairs ...txcoor
 	return s, ctx
 }
 
-// refused reports whether a joined request under p is refused as superseded.
-// A request admitted while another holds the gate gives up its wait after a
-// moment and reads as not refused.
+// refused reports whether a joined request under p is refused as superseded
+// (true) or admitted (false). A probe that is still queued for the gate when
+// its short wait ends answers neither, and is sent again: the answer is always
+// one the coordination gave, never the probe's own timeout.
 func (e *env) refused(p txcoord.Pair) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	s, _, err := e.coord.Enter(ctx, "tx-1", []txcoord.Pair{p}, txcoord.Outside, 0)
-	if err != nil {
-		return errors.Is(err, txcoord.ErrSuperseded)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		s, _, err := e.coord.Enter(ctx, "tx-1", []txcoord.Pair{p}, txcoord.Outside, 0)
+		cancel()
+		switch {
+		case err == nil:
+			s.End(nil)
+			return false
+		case errors.Is(err, txcoord.ErrSuperseded):
+			return true
+		case errors.Is(err, common.ErrClientGone) && time.Now().Before(deadline):
+			continue // queued behind a request in progress: ask again
+		default:
+			panic(fmt.Sprintf("refused: %v", err))
+		}
 	}
-	s.End(nil)
-	return false
 }
 
 // cnode records what one scripted cnode was sent.

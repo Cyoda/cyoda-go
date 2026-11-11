@@ -112,6 +112,13 @@ func TestJoinedRequestClass_EveryRouteClassified(t *testing.T) {
 		t.Errorf("routeClasses names routes no router registers: %v", stale)
 	}
 
+	// The exact class of every route: spec section 6's writes, section 7's
+	// routes outside the transaction (and model administration, refused before
+	// the pass is read), and reads for the rest.
+	want := make(map[string]txcoord.RequestClass, len(routes))
+	for _, route := range routes {
+		want[route] = txcoord.Read
+	}
 	for _, route := range []string{
 		"POST /entity/{format}/{entityName}/{modelVersion}",
 		"POST /entity/{format}",
@@ -123,9 +130,7 @@ func TestJoinedRequestClass_EveryRouteClassified(t *testing.T) {
 		"DELETE /entity/{entityId}",
 		"DELETE /entity/{entityName}/{modelVersion}",
 	} {
-		if c := classOf(route); c != txcoord.Write {
-			t.Errorf("%s: class %d; want Write", route, c)
-		}
+		want[route] = txcoord.Write
 	}
 	for _, route := range []string{
 		"POST /message/new/{subject}",
@@ -134,16 +139,34 @@ func TestJoinedRequestClass_EveryRouteClassified(t *testing.T) {
 		"POST /search/async/{entityName}/{modelVersion}",
 		"PUT /search/async/{jobId}/cancel",
 		"POST /clients",
+		"DELETE /clients/{clientId}",
+		"PUT /clients/{clientId}/secret",
 		"POST /oauth/keys/keypair",
+		"DELETE /oauth/keys/keypair/{keyId}",
+		"POST /oauth/keys/keypair/{keyId}/invalidate",
+		"POST /oauth/keys/keypair/{keyId}/reactivate",
 		"POST /oauth/keys/trusted",
+		"DELETE /oauth/keys/trusted/{keyId}",
+		"POST /oauth/keys/trusted/{keyId}/invalidate",
+		"POST /oauth/keys/trusted/{keyId}/reactivate",
+		"POST /platform/clock",
+		"POST /tenants/{tenant}/oauth/token",
+		"POST /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion}",
+		"DELETE /model/{entityName}/{modelVersion}",
+		"POST /model/{entityName}/{modelVersion}/changeLevel/{changeLevel}",
+		"PUT /model/{entityName}/{modelVersion}/lock",
+		"PUT /model/{entityName}/{modelVersion}/unlock",
+		"PUT /model/{entityName}/{modelVersion}/unique-keys",
+		"POST /model/{entityName}/{modelVersion}/workflow/import",
 	} {
-		if c := classOf(route); c != txcoord.Outside {
-			t.Errorf("%s: class %d; want Outside", route, c)
+		if _, ok := want[route]; !ok {
+			t.Errorf("%s: expected outside the transaction, but no router registers it", route)
 		}
+		want[route] = txcoord.Outside
 	}
-	for route, class := range routeClasses {
-		if class == txcoord.Write && strings.HasPrefix(route, "GET ") {
-			t.Errorf("%s: a GET is never a write", route)
+	for route, w := range want {
+		if c := classOf(route); c != w {
+			t.Errorf("%s: class %d; want %d", route, c, w)
 		}
 	}
 }

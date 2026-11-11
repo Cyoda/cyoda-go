@@ -434,9 +434,9 @@ func TestOwner_SecondCnode_TheFirstIsShutOutAndWaitedForBeforeTheNextHandOff(t *
 		}
 		time.Sleep(time.Millisecond)
 	}
-	// And the wait comes before the next hand-off: while m-1's request is in
-	// progress, m-2 is not given the work.
-	time.Sleep(50 * time.Millisecond)
+	// And the wait comes before the next hand-off: the number has risen, and
+	// the owner cannot hand the work on before m-1's request ends, which only
+	// this test does below — so m-2 has not been given it.
 	if second.count() != 0 {
 		t.Fatal("m-2 was given the work while m-1's joined request was still in progress")
 	}

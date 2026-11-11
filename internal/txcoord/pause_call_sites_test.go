@@ -155,7 +155,7 @@ func scanPauseSites(filename string, src any) (pauses int, offenders []string, e
 		if n == 0 {
 			continue
 		}
-		var names []string
+		bound := 0
 		ast.Inspect(fn.Body, func(c ast.Node) bool {
 			list, owns := stmtList(c)
 			if !owns {
@@ -166,35 +166,28 @@ func scanPauseSites(filename string, src any) (pauses int, offenders []string, e
 				if name == "" {
 					continue
 				}
-				names = append(names, name)
+				bound++
 				if i+1 >= len(list) || !isDeferOf(list[i+1], name) {
 					offenders = append(offenders, at(stmt)+": the statement after "+name+" := txcoord.Pause(...) must be `defer "+name+"()`")
+				}
+				// The explicit resume follows in the same statement list: one
+				// nested in a branch, a loop or a closure could be skipped.
+				checked := false
+				for _, later := range list[i+1:] {
+					if isCheckedResume(later, name) {
+						checked = true
+						break
+					}
+				}
+				if !checked {
+					offenders = append(offenders, at(stmt)+": "+name+"() must be called explicitly, later in the same block, as `if err := "+name+"(); err != nil { return ...err... }`, before the chain touches the transaction again")
 				}
 			}
 			return true
 		})
-		if len(names) != n {
+		if bound != n {
 			offenders = append(offenders, at(fn)+": func "+fn.Name.Name+" makes "+strconv.Itoa(n)+
-				" txcoord.Pause call(s) but binds "+strconv.Itoa(len(names))+" of them as `resume := txcoord.Pause(ctx)`")
-		}
-		for _, name := range names {
-			checked := 0
-			ast.Inspect(fn.Body, func(c ast.Node) bool {
-				list, owns := stmtList(c)
-				if !owns {
-					return true
-				}
-				for _, stmt := range list {
-					if isCheckedResume(stmt, name) {
-						checked++
-					}
-				}
-				return true
-			})
-			if checked == 0 {
-				offenders = append(offenders, at(fn)+": func "+fn.Name.Name+" must call "+name+
-					"() explicitly as `if err := "+name+"(); err != nil { return ...err... }` before it touches the transaction again")
-			}
+				" txcoord.Pause call(s) but binds "+strconv.Itoa(bound)+" of them as `resume := txcoord.Pause(ctx)`")
 		}
 	}
 	if inFuncs != pauses {
@@ -347,6 +340,43 @@ func f() error {
 func f() {
 	defer txcoord.Pause(ctx)()
 	dispatch()
+}
+`,
+			wantBad: true,
+		},
+		{
+			name: "the checked resume is nested in a branch: it could be skipped",
+			src: `package p
+
+func f(again bool) error {
+	resume := txcoord.Pause(ctx)
+	defer resume()
+	dispatch()
+	if again {
+		if err := resume(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+`,
+			wantBad: true,
+		},
+		{
+			name: "the checked resume belongs to another Pause of the function",
+			src: `package p
+
+func f() error {
+	first := txcoord.Pause(ctx)
+	defer first()
+	dispatch()
+	if err := first(); err != nil {
+		return err
+	}
+	second := txcoord.Pause(ctx)
+	defer second()
+	dispatch()
+	return nil
 }
 `,
 			wantBad: true,
