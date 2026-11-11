@@ -261,12 +261,14 @@ func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, er
 	return &kvStore{q: unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "key-value"}, tenantID: tid}, nil
 }
 
+// MessageStore never joins the caller's transaction (spi.MessageStore
+// contract): a message is applied when Save returns and survives a rollback.
 func (f *StoreFactory) MessageStore(ctx context.Context) (spi.MessageStore, error) {
 	tid, err := resolveTenant(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &messageStore{q: f.querier(), tenantID: tid}, nil
+	return &messageStore{q: unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "message"}, tenantID: tid}, nil
 }
 
 func (f *StoreFactory) WorkflowStore(ctx context.Context) (spi.WorkflowStore, error) {
