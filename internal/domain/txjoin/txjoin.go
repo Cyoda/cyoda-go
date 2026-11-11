@@ -85,16 +85,6 @@ func (j *Joiner) ResponseTooLargeError() *common.AppError {
 // is not what the caller is told: the join layer's refusal is.
 var ErrHeldResponseTooLarge = errors.New("the answer of a joined request exceeds what it may hold under the transaction's lock")
 
-// tooManyJoinedRequests is what a compute member is told when its transaction
-// already has as many callbacks queued as it may have. Retryable, the capacity
-// idiom of this codebase: the queue drains as the callbacks ahead of it finish.
-// The figure is not in the message — which bound was met is operator
-// information, and the help topic names the setting.
-func tooManyJoinedRequests() *common.AppError {
-	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTooManyJoinedRequests,
-		"too many requests of this transaction are already waiting — retry later").AsRetryable()
-}
-
 // CheckRoom reports whether the transaction a verified pass names has room for
 // another waiting request. A door that must read its request before the handler
 // can run asks here first, so that a refused callback costs it no buffer;
@@ -116,7 +106,7 @@ func (j *Joiner) CheckRoom(pass *Pass) error {
 		return nil
 	}
 	if j.gate.AtCapacity(pass.claims.TxRef, j.maxWaiters) {
-		return tooManyJoinedRequests()
+		return common.TooManyJoinedRequests()
 	}
 	return nil
 }
@@ -298,7 +288,7 @@ func (j *Joiner) RunVerified(ctx context.Context, pass *Pass, handler func(ctx c
 	release, err := j.gate.AcquireCtx(joined, txID, j.maxWaiters)
 	if err != nil {
 		if errors.Is(err, txgate.ErrTooManyWaiters) {
-			return tooManyJoinedRequests()
+			return common.TooManyJoinedRequests()
 		}
 		// What is left is the request's own context ending while it queued. This
 		// is one of the two places that KNOW the error is the client's departure

@@ -73,7 +73,9 @@ type inner struct {
 	cancel context.CancelCauseFunc
 }
 
-// New returns a Fence whose wait takes the write locks of gate.
+// New returns a Fence whose wait takes the write locks of gate. A nil gate is
+// a fence that does not wait: its owner (the transaction coordination) waits
+// for the scopes in progress itself.
 func New(gate *txgate.Registry) *Fence {
 	return &Fence{gate: gate, callouts: make(map[string]*callout)}
 }
@@ -171,8 +173,12 @@ func (f *Fence) Advance(calloutID string, major uint32) {
 // wait is the hand-over of the write lock: a joined write that made its check
 // before the number rose still holds the lock, and this blocks until it has
 // finished; one that takes the lock afterwards is refused by its check. It runs
-// outside f.mu — the fence never waits under its own mutex.
+// outside f.mu — the fence never waits under its own mutex. A fence with no
+// gate does not wait.
 func (f *Fence) wait(txID string) {
+	if f.gate == nil {
+		return
+	}
 	release := f.gate.Acquire(txID)
 	release()
 }

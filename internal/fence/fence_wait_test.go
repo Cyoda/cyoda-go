@@ -367,3 +367,16 @@ func TestFence_ConcurrentUse(t *testing.T) {
 		t.Fatalf("%d callouts still registered after every end ran: nothing may be kept past a callout", remaining)
 	}
 }
+
+// A fence built with no gate does not wait: whoever owns it does the waits
+// itself. Advance and end return at once with a joined request in progress.
+func TestFence_NilGateDoesNotWait(t *testing.T) {
+	f := New(nil)
+	_, end := f.Begin(context.Background(), "c-1", "tx-1", nil)
+	advanced := make(chan struct{})
+	go func() { defer close(advanced); f.Advance("c-1", 1) }()
+	mustFinish(t, "Advance", advanced)
+	ended := make(chan struct{})
+	go func() { defer close(ended); end() }()
+	mustFinish(t, "end", ended)
+}

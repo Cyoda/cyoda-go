@@ -1,0 +1,442 @@
+package txcoord
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"testing"
+	"time"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/fence"
+)
+
+func mustCancelledWith(t *testing.T, ctx context.Context, cause error) {
+	t.Helper()
+	select {
+	case <-ctx.Done():
+	case <-time.After(watchdog):
+		t.Fatalf("context not cancelled within %v", watchdog)
+	}
+	if got := context.Cause(ctx); !errors.Is(got, cause) {
+		t.Fatalf("cancellation cause = %v; want %v", got, cause)
+	}
+}
+
+func outcomeOf(err error) *common.Outcome {
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return &common.Outcome{Status: appErr.Status, Code: appErr.Code, Retryable: appErr.Retryable, Err: appErr}
+	}
+	return &common.Outcome{Status: http.StatusInternalServerError, Code: common.ErrCodeServerError, Err: err}
+}
+
+func TestEnter_NotCurrentPass410(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	defer endC1()
+
+	_, _, err := e.enter(Write, pair("c1", 2))
+	mustCode(t, err, http.StatusGone, common.ErrCodeCalloutSuperseded, false)
+	_, _, err = e.enter(Write, pair("nobody", 1))
+	mustCode(t, err, http.StatusGone, common.ErrCodeCalloutSuperseded, false)
+	mustCalls(t, e.tm)
+}
+
+func TestEnter_RefusedUnderMarkedAncestor(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+	mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+
+	for _, class := range []RequestClass{Read, Write, Outside} {
+		_, _, err := e.enter(class, pair("c1", 1))
+		mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
+	}
+	mustCalls(t, e.tm, "savepoint", "rollback")
+	endC1()
+	mustSealRollbackOnly(t, e, common.ErrCodeValidationFailed)
+}
+
+func TestEnter_SiblingOfPausedScopeIsBusy(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+	_, endX1 := e.callout(actx, "x1")
+	resume := Pause(actx)
+
+	_, _, err := e.enter(Write, pair("c1", 1))
+	mustCode(t, err, http.StatusServiceUnavailable, common.ErrCodeTransactionBusy, true)
+
+	d, _ := e.mustEnter(Write, pair("x1", 1), pair("c1", 1))
+	mustOwnAnswer(t, d.End(&common.Outcome{}))
+	endX1()
+	if err := resume(); err != nil {
+		t.Fatalf("resume = %v", err)
+	}
+	mustOwnAnswer(t, a.End(&common.Outcome{}))
+
+	// Once nothing is paused, a sibling is admitted again.
+	b, _ := e.mustEnter(Write, pair("c1", 1))
+	mustOwnAnswer(t, b.End(&common.Outcome{}))
+	endC1()
+	mustSealOK(t, e)
+}
+
+func TestEnter_QueuedSiblingRefusedWhenScopePauses(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+
+	var bErr error
+	bDone := async(func() { _, _, bErr = e.enter(Write, pair("c1", 1)) })
+	mustQueue(t, e, 1)
+	mustStillBlock(t, "the queued sibling", bDone)
+
+	_, endX1 := e.callout(actx, "x1")
+	resume := Pause(actx)
+	mustFinish(t, "the queued sibling", bDone)
+	mustCode(t, bErr, http.StatusServiceUnavailable, common.ErrCodeTransactionBusy, true)
+
+	endX1()
+	if err := resume(); err != nil {
+		t.Fatalf("resume = %v", err)
+	}
+	mustOwnAnswer(t, a.End(&common.Outcome{}))
+	endC1()
+	mustSealOK(t, e)
+}
+
+// A descendant's callback can arrive, and queue, before its parent pauses. When
+// the parent pauses the descendant takes the slot, and a sibling queued behind
+// it is refused at that moment, not when the descendant ends.
+func TestEnter_QueuedSiblingBehindDescendantRefusedAtPause(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+	_, endX1 := e.callout(actx, "x1")
+
+	var d Scope
+	var dErr error
+	dDone := async(func() { d, _, dErr = e.enter(Write, pair("x1", 1), pair("c1", 1)) })
+	mustQueue(t, e, 1)
+	var bErr error
+	bDone := async(func() { _, _, bErr = e.enter(Write, pair("c1", 1)) })
+	mustQueue(t, e, 2)
+
+	resume := Pause(actx)
+	mustFinish(t, "the queued descendant", dDone)
+	if dErr != nil {
+		t.Fatalf("descendant refused: %v", dErr)
+	}
+	mustFinish(t, "the queued sibling", bDone)
+	mustCode(t, bErr, http.StatusServiceUnavailable, common.ErrCodeTransactionBusy, true)
+
+	mustOwnAnswer(t, d.End(&common.Outcome{}))
+	endX1()
+	if err := resume(); err != nil {
+		t.Fatalf("resume = %v", err)
+	}
+	mustOwnAnswer(t, a.End(&common.Outcome{}))
+	endC1()
+	mustSealOK(t, e)
+}
+
+// mustQueue polls until n requests queue for the transaction's gate.
+func mustQueue(t *testing.T, e *env, n int) {
+	t.Helper()
+	deadline := time.Now().Add(watchdog)
+	for !e.c.AtCapacity(e.txID, n) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d requests never queued", n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestEnter_SealedTransactionRefused410(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	finish, err := e.c.Seal(e.userCtx, e.txID)
+	if err != nil {
+		t.Fatalf("Seal = %v", err)
+	}
+
+	_, _, err = e.enter(Write, pair("c1", 1))
+	mustCode(t, err, http.StatusGone, common.ErrCodeCalloutSuperseded, false)
+	mustCalls(t, e.tm)
+	endC1()
+	finish()
+	if n := e.c.len(); n != 0 {
+		t.Fatalf("registry holds %d entries after finish; want 0", n)
+	}
+}
+
+func TestAdvance_WaitsForLowerMajorScopes(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+
+	advanced := async(func() { e.c.Advance("c1", 2) })
+	mustStillBlock(t, "Advance", advanced)
+	mustAnswer(t, a.End(&common.Outcome{}), http.StatusGone, common.ErrCodeCalloutSuperseded, false)
+	mustFinish(t, "Advance", advanced)
+
+	// A scope at the current major is not waited for.
+	b, _ := e.mustEnter(Write, pair("c1", 2))
+	mustFinish(t, "Advance to the same major", async(func() { e.c.Advance("c1", 2) }))
+	mustOwnAnswer(t, b.End(&common.Outcome{}))
+
+	endC1()
+	mustSealOK(t, e)
+}
+
+func TestCalloutEnd_WaitsForScopesAndCancelsNested(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+	x1ctx, endX1 := e.callout(actx, "x1")
+	resume := Pause(actx)
+
+	ended := async(endC1)
+	mustCancelledWith(t, x1ctx, fence.ErrSuperseded)
+	mustStillBlock(t, "the callout's end", ended)
+
+	endX1() // the nested callout's loop returns on its cancelled context
+	err := resume()
+	mustCode(t, err, http.StatusGone, common.ErrCodeCalloutSuperseded, false)
+	mustAnswer(t, a.End(outcomeOf(err)), http.StatusGone, common.ErrCodeCalloutSuperseded, false)
+	mustFinish(t, "the callout's end", ended)
+	mustCalls(t, e.tm, "savepoint", "rollback")
+	mustSealOK(t, e)
+}
+
+func TestCalloutEnd_AnsweredBeforeCallbackReturned(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+
+	ended := async(endC1)
+	mustStillBlock(t, "the callout's end", ended)
+	mustAnswer(t, a.End(&common.Outcome{}), http.StatusGone, common.ErrCodeCalloutSuperseded, false)
+	mustFinish(t, "the callout's end", ended)
+	mustCalls(t, e.tm, "savepoint", "rollback")
+	mustSealOK(t, e)
+}
+
+func TestMark_CancelsCalloutsBegunFromScope(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+	x1ctx, endX1 := e.callout(actx, "x1")
+	resume := Pause(actx)
+
+	d, _ := e.mustEnter(Write, pair("x1", 1), pair("c1", 1))
+	mustOwnAnswer(t, d.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+	mustCancelledWith(t, x1ctx, common.ErrRollbackOnly)
+	endX1()
+	err := resume()
+	mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
+
+	// A callout begun from a scope already marked is cancelled at once.
+	x2ctx, endX2 := e.c.BeginCallout(actx, e.txID, "x2")
+	mustCancelledWith(t, x2ctx, common.ErrRollbackOnly)
+	endX2()
+
+	mustAnswer(t, a.End(outcomeOf(err)), http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
+	endC1()
+	mustSealRollbackOnly(t, e, common.ErrCodeValidationFailed)
+}
+
+func TestMark_RootCancelsOwnerCallouts(t *testing.T) {
+	e := newEnv(t)
+	c1ctx, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+	mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+	mustCancelledWith(t, c1ctx, common.ErrRollbackOnly)
+	if err := Check(e.ownerCtx); err != nil {
+		t.Fatalf("Check on the owner's chain (no scope) = %v; want nil", err)
+	}
+	endC1()
+	mustSealRollbackOnly(t, e, common.ErrCodeValidationFailed)
+}
+
+func TestSeal_LostRaceBeforeMark(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+	mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+	endC1()
+	e.tm.lost.Store(true)
+
+	err := e.seal()
+	if !errors.Is(err, spi.ErrTxAborted) {
+		t.Fatalf("Seal = %v; want the lost race (spi.ErrTxAborted)", err)
+	}
+	mustCode(t, common.TxAbortedConflict(err), http.StatusConflict, common.ErrCodeConflict, true)
+}
+
+func TestSeal_WaitsForOpenCallbackScopes(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+
+	var finish func()
+	var sealErr error
+	sealed := async(func() { finish, sealErr = e.c.Seal(e.userCtx, e.txID) })
+	mustStillBlock(t, "Seal", sealed)
+	mustOwnAnswer(t, a.End(&common.Outcome{}))
+	mustFinish(t, "Seal", sealed)
+	if sealErr != nil {
+		t.Fatalf("Seal = %v", sealErr)
+	}
+	endC1()
+	finish()
+}
+
+func TestSeal_FinishForgetsTransaction(t *testing.T) {
+	t.Run("committed", func(t *testing.T) {
+		e := newEnv(t)
+		_, endC1 := e.callout(e.ownerCtx, "c1")
+		a, _ := e.mustEnter(Write, pair("c1", 1))
+		mustOwnAnswer(t, a.End(&common.Outcome{}))
+		endC1()
+		mustSealOK(t, e)
+		mustForgotten(t, e)
+	})
+	t.Run("refused", func(t *testing.T) {
+		e := newEnv(t)
+		_, endC1 := e.callout(e.ownerCtx, "c1")
+		a, _ := e.mustEnter(Write, pair("c1", 1))
+		mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+		endC1()
+		if err := e.seal(); err == nil {
+			t.Fatal("Seal of a marked transaction = nil")
+		}
+		mustForgotten(t, e)
+	})
+	t.Run("never seen", func(t *testing.T) {
+		e := newEnv(t)
+		finish, err := e.c.Seal(e.userCtx, e.txID)
+		if err != nil {
+			t.Fatalf("Seal = %v", err)
+		}
+		finish()
+		mustForgotten(t, e)
+	})
+}
+
+func mustForgotten(t *testing.T, e *env) {
+	t.Helper()
+	if n := e.c.len(); n != 0 {
+		t.Fatalf("registry holds %d entries after finish; want 0", n)
+	}
+}
+
+func TestOpenChild_CloseKeeps(t *testing.T) {
+	e := newEnv(t)
+	p, _, err := e.c.OpenChild(e.ownerCtx)
+	if err != nil {
+		t.Fatalf("OpenChild = %v", err)
+	}
+	if err := p.Close(nil); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	mustCalls(t, e.tm, "savepoint", "release")
+	mustSealOK(t, e)
+}
+
+func TestOpenChild_CloseFailedProcessorDiscards(t *testing.T) {
+	e := newEnv(t)
+	p, _, err := e.c.OpenChild(e.ownerCtx)
+	if err != nil {
+		t.Fatalf("OpenChild = %v", err)
+	}
+	procErr := errors.New("processor failed")
+	if err := p.Close(procErr); !errors.Is(err, procErr) {
+		t.Fatalf("Close = %v; want the processor's error", err)
+	}
+	mustCalls(t, e.tm, "savepoint", "rollback")
+	mustSealOK(t, e)
+}
+
+func TestOpenChild_CloseMarkedAbsorbs(t *testing.T) {
+	e := newEnv(t)
+	p, pctx, err := e.c.OpenChild(e.ownerCtx)
+	if err != nil {
+		t.Fatalf("OpenChild = %v", err)
+	}
+	_, endP1 := e.callout(pctx, "p1")
+	d, _ := e.mustEnter(Write, pair("p1", 1))
+	mustOwnAnswer(t, d.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+	endP1()
+
+	err = p.Close(nil)
+	mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
+	mustCalls(t, e.tm, "savepoint", "savepoint", "rollback", "rollback")
+	if e.rootMarked() {
+		t.Fatal("the processor scope let its mark climb to the root")
+	}
+	mustSealOK(t, e)
+}
+
+func TestOpenChild_UnderCallbackPausesItsHolder(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+	p, pctx, err := e.c.OpenChild(actx)
+	if err != nil {
+		t.Fatalf("OpenChild = %v", err)
+	}
+	if got := Pairs(pctx); len(got) != 1 || got[0] != pair("c1", 1) {
+		t.Fatalf("Pairs under the processor scope = %v; want the callback's", got)
+	}
+	_, endP1 := e.callout(pctx, "p1")
+	resume := Pause(pctx)
+
+	_, _, err = e.enter(Write, pair("c1", 1))
+	mustCode(t, err, http.StatusServiceUnavailable, common.ErrCodeTransactionBusy, true)
+	d, _ := e.mustEnter(Write, pair("p1", 1), pair("c1", 1))
+	mustOwnAnswer(t, d.End(&common.Outcome{}))
+	endP1()
+	if err := resume(); err != nil {
+		t.Fatalf("resume = %v", err)
+	}
+	if err := p.Close(nil); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	mustOwnAnswer(t, a.End(&common.Outcome{}))
+	endC1()
+	mustSealOK(t, e)
+}
+
+func TestPause_RootIsNoOp(t *testing.T) {
+	e := newEnv(t)
+	if err := Pause(e.ownerCtx)(); err != nil {
+		t.Fatalf("resume on the owner's chain = %v", err)
+	}
+	if err := Pause(context.Background())(); err != nil {
+		t.Fatalf("resume with no transaction = %v", err)
+	}
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+	mustOwnAnswer(t, a.End(&common.Outcome{}))
+	endC1()
+	mustSealOK(t, e)
+}
+
+func TestPairs(t *testing.T) {
+	e := newEnv(t)
+	if got := Pairs(e.ownerCtx); got != nil {
+		t.Fatalf("Pairs on the owner's chain = %v; want nil", got)
+	}
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Read, pair("c1", 1))
+	if got := Pairs(actx); len(got) != 1 || got[0] != pair("c1", 1) {
+		t.Fatalf("Pairs = %v; want [c1/1]", got)
+	}
+	mustOwnAnswer(t, a.End(&common.Outcome{}))
+	endC1()
+	mustSealOK(t, e)
+}
