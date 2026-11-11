@@ -515,7 +515,7 @@ func joinedRequestClass(r *http.Request) txcoord.RequestClass // 0 for an unknow
     2. The compute node sends the same callback again, and `xproc` succeeds.
     3. Assert: owner 200, exactly one `x`, and the audit holds events for one run only.
   - `TestCallbackScope_FailedRead404_TransactionGoesOn`: the callback GETs an unknown id and gets 404. The owner gets 200.
-  - `TestCallbackScope_LaterRequestOnRollbackOnly_409`: after a failed joined write, a joined GET and a joined POST get 409 `TRANSACTION_ROLLBACK_ONLY` with no `retryable`. Run this on HTTP and on gRPC.
+  - Later joined requests on a rollback-only transaction: carried by unit tests on both doors (see Coverage waivers).
   - `TestCallbackScope_LostRace_CallbackNotRetryable_OwnerRetryable`: adapt `joined_callback_conflict_test.go`'s set-up.
     - The callback's update loses to a concurrent commit and gets 409 `CONFLICT` with no `retryable`.
     - The owner gets 409 `CONFLICT` with `retryable: true`.
@@ -710,6 +710,8 @@ Spec coverage-matrix cells carried by another layer, one line each:
 - "Messages and async-search writes under a token: not rewritten by a supersession" (e2e): carried by `TestEnd_Outside_NeverRewrittenNeverMarks` (Task 9), the route-class walk (Task 11) and `TestCallback_MessageUnderToken_OutsideTheTransaction` (Task 4). A supersession landing mid-way through a message POST cannot be timed through HTTP without a test hook.
 - "Completion fails (PostgreSQL)" (unit): carried by `TestEnd_Row5_ReleaseFails500AndMarks` with a fake transaction manager. A real swallowed statement error needs a handler bug to provoke.
 - Task 7 Step 2b, if the multinode fixture cannot stop a node.
+- "Later joined read and write on a rollback-only transaction → 409, both doors" (e2e): carried by `TestTxJoin_FailedWriteMakesTheTransactionRollbackOnly` (HTTP) and `TestTxRoute_RawHandlerErrorMarks` (gRPC), both on live coordination. End to end the 409 exists only between the mark and the callout's end: the mark cancels the callout begun from the marked scope, and Enter checks the fence (410) before the mark (5.1 steps 6-7).
+- Task 7 Step 2b: waived — `e2e/parity/multinode` has no node stop helper; the unit tests on both doors carry the cell.
 
 ## Verification before the PR
 
