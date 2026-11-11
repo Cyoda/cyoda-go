@@ -373,8 +373,9 @@ func TestTxScope_Release_HoldsTheGate(t *testing.T) {
 }
 
 // waitForGateContention returns once a goroutine is provably parked waiting for
-// the gate inside txgate.Registry.Acquire — the gate is a one-token channel, so
-// a waiter parks in that send — or once acquired fires, meaning no gate was
+// the gate inside txgate.Registry.Acquire — a queued waiter parks receiving on
+// its own channel in AcquireResume, or in AcquireJoined's select — or once
+// acquired fires, meaning no gate was
 // held and the competitor walked in, which the caller's ordering assertion then
 // reports. Polling the goroutine dump is what removes the sleep: the caller
 // resumes on an observed state, not on elapsed time. The deadline is a
@@ -400,10 +401,10 @@ func waitForGateContention(t *testing.T, acquired <-chan struct{}) {
 			buf = make([]byte, 2*len(buf))
 		}
 		for _, g := range strings.Split(dump, "\n\n") {
-			if !strings.Contains(g, "txgate.(*Registry).acquire") {
-				continue
+			if strings.Contains(g, "txgate.(*Registry).AcquireResume") && strings.Contains(g, "[chan receive") {
+				return
 			}
-			if strings.Contains(g, "[select") || strings.Contains(g, "[chan send") {
+			if strings.Contains(g, "txgate.(*Registry).AcquireJoined") && strings.Contains(g, "[select") {
 				return
 			}
 		}
