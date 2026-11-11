@@ -1508,13 +1508,9 @@ func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 
 	// Truncate staged scheduled-task ops back to the length recorded at the
 	// savepoint — append-only, so truncation (not replacement) is how it is
-	// "restored". Clamp to the current length defensively: rolling back to a
-	// savepoint ID whose recorded length exceeds what's currently staged
-	// cannot happen via the normal linear-nesting flow (only a stale
-	// savepoint ID from an already-superseded rollback could produce it),
-	// but truncating past slice bounds would panic, and Savepoint's other
-	// restored fields (whole-map replacement) have no equivalent failure
-	// mode to mirror here.
+	// "restored". A live savepoint's recorded length never exceeds what is
+	// staged: only a rollback to an earlier savepoint truncates, and that
+	// destroys this one. The comparison skips the no-op case.
 	if opsLen := snap.scheduledTaskOpsLen; opsLen < len(m.scheduledTaskOps[txID]) {
 		m.scheduledTaskOps[txID] = m.scheduledTaskOps[txID][:opsLen]
 	}
