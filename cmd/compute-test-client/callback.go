@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/api/grpc/authctx"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
@@ -541,6 +543,67 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			}
 			<-ctx.Done()
 			return nil, ctx.Err()
+		},
+
+		// cb-create-secondary-retry-record — issues the joined create callback,
+		// and again, up to three tries, until it is answered 200. Each answer
+		// is recorded under the marker with "-attempt-<n>" appended. It
+		// succeeds whatever the last answer was, so a scenario sees what the
+		// owner does with a retried joined write.
+		"cb-create-secondary-retry-record": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			for attempt := 1; attempt <= 3; attempt++ {
+				res, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
+				if err != nil {
+					return nil, fmt.Errorf("callback create: %w", err)
+				}
+				rec := cfg
+				rec.Marker = fmt.Sprintf("%s-attempt-%d", cfg.Marker, attempt)
+				if err := cb.recordHop(ctx, rec, res, token); err != nil {
+					return nil, err
+				}
+				if res.Status == http.StatusOK {
+					break
+				}
+			}
+			return entity, nil
+		},
+
+		// cb-get-unknown-record — reads, through a joined callback, an entity
+		// that does not exist, and records the answer. It succeeds, so the owner
+		// goes on to commit.
+		"cb-get-unknown-record": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, err := cb.getEntity(ctx, uuid.NewString(), token)
+			if err != nil {
+				return nil, fmt.Errorf("callback read: %w", err)
+			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
+			return entity, nil
+		},
+
+		// cb-post-message-then-fail — posts a message, under the token, on the
+		// subject cfg.Marker, records the answer, and then fails. The owner's
+		// operation fails with it; a message never joins the transaction, so the
+		// record holds the message id for a scenario to look for afterwards.
+		"cb-post-message-then-fail": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, err := cb.do(ctx, http.MethodPost, "/api/message/new/"+url.PathEscape(cfg.Marker), `{"payload":{"x":1}}`, token, "")
+			if err != nil {
+				return nil, fmt.Errorf("callback message: %w", err)
+			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("processor deliberately fails after posting a message")
 		},
 
 		// cb-grpc-create-secondary — like cb-create-secondary but issues the joined

@@ -83,6 +83,7 @@ type HopRecord struct {
 }
 
 // ReadHopRecord returns the record written under marker in recordModel,
+// decoding the problem document of an answer of 400 or more,
 // failing the test unless there is exactly one. The record may land after the
 // owner has answered: a mark ends the owner's callout at once, while the
 // compute node goes on to record and answer. It is waited for, bounded.
@@ -114,6 +115,9 @@ func ReadHopRecord(t *testing.T, c *client.Client, recordModel, marker string) H
 	body, _ := d["hopBody"].(string)
 	empty, _ := d["tokenWasEmpty"].(bool)
 	r := HopRecord{Status: int(status), Body: body, TokenWasEmpty: empty}
+	if r.Status < http.StatusBadRequest {
+		return r // an answer, not a problem document
+	}
 	var pd struct {
 		Detail     string `json:"detail"`
 		Properties struct {

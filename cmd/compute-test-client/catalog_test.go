@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -73,6 +74,27 @@ func TestRecordAuthType_RecordsBothPrincipals(t *testing.T) {
 	} {
 		if got, _ := body.Payload.Data[field].(string); got != want {
 			t.Errorf("%s = %q, want %q", field, got, want)
+		}
+	}
+}
+
+// TestInjectErrorRetryableOnce_FailsOnceThenSucceeds: the first run of the
+// processor fails with the retryable verdict, every later run of the same
+// client succeeds. A scenario uses it for the retry of a joined write.
+func TestInjectErrorRetryableOnce_FailsOnceThenSucceeds(t *testing.T) {
+	fn, ok := newCatalog(nil, nil).processor("inject-error-retryable-once")
+	if !ok {
+		t.Fatal("inject-error-retryable-once is not in the catalog")
+	}
+	e := &Entity{ID: "e", Data: json.RawMessage(`{}`)}
+	_, err := fn(context.Background(), e, nil)
+	var ve *verdictError
+	if !errors.As(err, &ve) || !ve.retryable {
+		t.Fatalf("first run: err = %v; want a retryable verdict", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := fn(context.Background(), e, nil); err != nil {
+			t.Fatalf("run %d after the first: %v; want success", i+2, err)
 		}
 	}
 }
