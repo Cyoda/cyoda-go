@@ -42,8 +42,9 @@ transaction of the operation that called the compute node out.
   callback is, but their effect is not in the transaction: they keep their own
   answer and never mark. On PostgreSQL a message saved under a token is now
   written outside the transaction, as on memory and SQLite.
-- **The owner's commit and rollback** refuse every later callback (`410
-  CALLOUT_SUPERSEDED`). A callback still in progress is never kept after them:
+- **The owner's commit and rollback** refuse every later callback: with `410
+  CALLOUT_SUPERSEDED` while the transaction is still open, and with `404
+  TRANSACTION_NOT_FOUND` once it has ended. A callback still in progress is never kept after them:
   a serialising backend waits until it has ended first; a location-independent
   backend does not wait, and refuses its completion (`410
   CALLOUT_SUPERSEDED`, nothing kept). The outcome is the same either way.

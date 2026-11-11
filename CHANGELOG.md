@@ -1651,8 +1651,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **`CYODA_CALLOUT_JOINED_MAX_WAITERS` (default `128`) bounds how many of a
   compute member's callbacks may queue for one transaction**, and a new
   retryable `503` `TOO_MANY_JOINED_REQUESTS` is what the member is told past
-  it. Callbacks of one transaction are served one at a time, so firing many at
-  once buys a member no speed — but each one waiting held its whole request in
+  it. On the in-tree backends the callbacks of one transaction are served one
+  at a time, so firing many at once buys a member no speed — but each one waiting held its whole request in
   memory for as long as the callout lasted, with nothing bounding how many
   there could be. The refusal comes before the request body is read where the
   door allows that, and touches neither the transaction nor the callbacks
@@ -1662,21 +1662,25 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   prevent. A paused callback's resume is never refused.
 
 - **The published API document declares the transaction routing token and the
-  statuses a joined request is refused with.** `X-Tx-Token` is a new optional
+  statuses a joined request is answered with.** `X-Tx-Token` is a new optional
   header parameter (`components.parameters.TxToken`) on the thirty entity,
   search, message, audit and platform-api operations a compute member's
-  callback may reach, and each of those now declares `401`, `403`, `404`,
-  `410` and `413` — three of them new shared response components,
-  `TransactionNotFound`, `TransactionGone` and `JoinedPayloadTooLarge`. `410`
-  appeared nowhere in the document before, so a client generated from it had
-  no way to send a callback and no way to read the refusal, and an operation
-  declaring no `default` response could not describe one at all. The `410`
-  response names both codes that share the status, `TRANSACTION_EXPIRED` and
-  `CALLOUT_SUPERSEDED`; `properties.errorCode` tells them apart. The eleven
-  entity-model and workflow operations are deliberately excluded — changing a
-  model or a workflow from inside a callout is not supported — as are the
-  OAuth, client and account operations. Nothing existing changed: the
-  parameter is optional and the responses are additions.
+  callback may reach. Fifty-five operations, those thirty among them, declare
+  `401`, `403`, `404`, `409`, `410`, `413` and `503`, the statuses the join
+  layer answers a joined request with; four new shared response components
+  carry them where an operation has no answer of its own for the status:
+  `TransactionNotFound`, `TransactionGone`, `TransactionRollbackOnly` and
+  `JoinedPayloadTooLarge`. `410` appeared nowhere in the document before, so a
+  client generated from it had no way to send a callback and no way to read
+  the refusal, and an operation declaring no `default` response could not
+  describe one at all. The `410` response names both codes that share the
+  status, `TRANSACTION_EXPIRED` and `CALLOUT_SUPERSEDED`;
+  `properties.errorCode` tells them apart. The seven model and workflow
+  administration operations declare none of this: they refuse a request
+  carrying the header with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` before the
+  token is read — changing a model or a workflow from inside a callout is not
+  supported. Nothing existing changed: the parameter is optional and the
+  responses are additions.
 
 - **Audit events carry `version` (entity change) or `eventId` (state
   machine).** `EntityChangeAuditEventDto.version` is the entity's version

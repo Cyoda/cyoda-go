@@ -6028,11 +6028,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Unauthorized'
         "403":
           description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
@@ -6040,11 +6036,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/InternalServerError'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -6085,11 +6077,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "401":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Unauthorized'
         "403":
           description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
@@ -6106,11 +6094,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/InternalServerError'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -6161,11 +6145,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Unauthorized'
         "403":
           description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
@@ -6183,11 +6163,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/InternalServerError'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -6255,11 +6231,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Unauthorized'
         "403":
           description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
@@ -6277,11 +6249,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/InternalServerError'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -6341,11 +6309,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Unauthorized'
         "403":
           description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
@@ -6363,11 +6327,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/InternalServerError'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -6407,17 +6367,9 @@ paths:
                 items:
                   $ref: "#/components/schemas/TrustedKeyResponseDto"
         "401":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Unauthorized'
         "403":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Forbidden'
         "404":
           description: >-
             Not found — FEATURE_DISABLED: trusted-key registration is disabled. A
@@ -6513,17 +6465,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Unauthorized'
         "403":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Forbidden'
         "404":
           description: >-
             Not found — FEATURE_DISABLED: trusted-key registration is disabled. A
@@ -6535,11 +6479,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/InternalServerError'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -6587,17 +6527,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Unauthorized'
         "403":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Forbidden'
         "404":
           description: >-
             Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID;
@@ -6610,11 +6542,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/InternalServerError'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -6667,17 +6595,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Unauthorized'
         "403":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Forbidden'
         "404":
           description: >-
             Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID;
@@ -6690,11 +6610,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/InternalServerError'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -6753,17 +6669,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Unauthorized'
         "403":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/Forbidden'
         "404":
           description: >-
             Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID;
@@ -6776,11 +6684,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/InternalServerError'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:

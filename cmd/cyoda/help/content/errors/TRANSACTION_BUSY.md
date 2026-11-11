@@ -21,7 +21,7 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`. Over gRPC the code is the m
 
 ## DESCRIPTION
 
-A callback runs a write whose workflow may call out to a compute member again. While that inner callout is waiting for its answer, the callback is paused, and it holds the transaction. A sibling callback of the same transaction that arrives in that time is refused at once with this code, instead of waiting behind the paused one. A callback that belongs to the paused callback's own callout is not a sibling and is admitted.
+On the in-tree backends (memory, SQLite, PostgreSQL) the callbacks of one transaction are served one at a time. A callback runs a write whose workflow may call out to a compute member again. While that inner callout is waiting for its answer, the callback is paused: it lets the transaction go, so that the callbacks of the inner callout can run, and only those. A sibling callback of the same transaction that arrives in that time is refused at once with this code, instead of waiting behind the paused one; so is a sibling already waiting when the pause begins. A callback that belongs to the paused callback's own callout is not a sibling and is admitted. A location-independent backend runs callbacks at the same time and never answers this code.
 
 Nothing of the refused callback ran. Retryable: send it again once the paused callback has been answered.
 

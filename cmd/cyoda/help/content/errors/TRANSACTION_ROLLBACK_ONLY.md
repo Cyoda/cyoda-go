@@ -13,7 +13,7 @@ see_also:
 
 ## NAME
 
-TRANSACTION_ROLLBACK_ONLY — a request that joined a transaction failed, and what that transaction holds can no longer be kept.
+TRANSACTION_ROLLBACK_ONLY — a write that joined a transaction failed, and what that transaction holds can no longer be kept.
 
 ## SYNOPSIS
 
@@ -23,10 +23,11 @@ HTTP: `409` `Conflict`. Retryable: `no`. Over gRPC the code is the message prefi
 
 A compute member's callback — a request carrying a transaction token — joins the transaction of the operation that called the member out. When a write made that way fails with an answer that retrying cannot change, what that write and its workflow had already done in the transaction is discarded, and the transaction is marked: it can only be rolled back.
 
-Two requests meet this code.
+Three requests meet this code.
 
 - The operation that began the transaction (the owner), when it tries to commit, or to write, in the marked transaction. The message names the code the failed callback was answered with. The owner's operation fails and is rolled back; nothing is committed.
 - A request that joins the transaction under a part that is marked. It is refused at once, reads included, because what it would read or write belongs to a part that can no longer be kept.
+- A callback whose own write called a compute member out, when a callback of that inner callout failed a write. Its part is marked: it keeps nothing, and the mark goes on up to the owner.
 
 The mark also stops the callout the failed write was made under before its next try, and the owner then ends that callout. So a compute member that carries on under the same token after a failed write sees this code only until then. After it, its callbacks are answered `410 CALLOUT_SUPERSEDED` while the transaction is open, and `404 TRANSACTION_NOT_FOUND` once the owner has rolled it back.
 

@@ -709,9 +709,9 @@ Spec coverage-matrix cells carried by another layer, one line each:
 
 - "Messages and async-search writes under a token: not rewritten by a supersession" (e2e): carried by `TestEnd_Outside_NeverRewrittenNeverMarks` (Task 9), the route-class walk (Task 11) and `TestCallback_MessageUnderToken_OutsideTheTransaction` (Task 4). A supersession landing mid-way through a message POST cannot be timed through HTTP without a test hook.
 - "Completion fails (PostgreSQL)" (unit): carried by `TestEnd_Row5_ReleaseFails500AndMarks` with a fake transaction manager. A real swallowed statement error needs a handler bug to provoke.
-- Task 7 Step 2b, if the multinode fixture cannot stop a node.
 - "Later joined read and write on a rollback-only transaction → 409, both doors" (e2e): carried by `TestTxJoin_FailedWriteMakesTheTransactionRollbackOnly` (HTTP) and `TestTxRoute_RawHandlerErrorMarks` (gRPC), both on live coordination. End to end the 409 exists only between the mark and the callout's end: the mark cancels the callout begun from the marked scope, and Enter checks the fence (410) before the mark (5.1 steps 6-7).
 - Task 7 Step 2b: waived — `e2e/parity/multinode` has no node stop helper; the unit tests on both doors carry the cell.
+- "Superseded scope with a marked descendant → no mark climbs, operation can commit" (e2e): carried by `TestEnd_Row1_SupersededWithMarkedDescendantNoClimb` (in-process) and `TestDurableEnd_MapsCompleteRefusals` (a superseded completion passes no mark). End to end the scope must be marked and then superseded before it ends, and on the in-tree backends nothing a test can hold without a test hook keeps it open in between: the mark cancels the scope's nested callout, the scope's resume takes the gate as soon as the failed callback lets it go, and later callbacks under it are refused at open; once its own callout ends, the fence refuses every pass under it, so no mark can arrive after. The two-level climb of the same shape, without the supersession, is end to end in `TestCallbackScope_MarkedByDescendant_ClimbsToTheOwner`.
 
 ## Verification before the PR
 

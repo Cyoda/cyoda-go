@@ -215,6 +215,9 @@ frames and the buffered HTTP body are dropped.
   - A Discard whose rollback fails, or a dead session (row 3), leaves the
     transaction unusable. That is an infrastructure failure, not a joined
     write's failure.
+  - The request whose Discard failed is answered `500 SERVER_ERROR`, not
+    retryable, whatever its row would have answered: its writes may still be
+    in the transaction, and a retry in it cannot succeed.
   - The root records the cause as **broken**, which is separate from marked.
   - Seal then fails with that cause, classified as today. For example a dead
     PostgreSQL session gives the owner the retryable
@@ -378,7 +381,7 @@ callback that completed before the callout moved on stays kept
 
 #### 5.6 Routing
 
-Unchanged. The pass names the owner pnode (`internal/grpc/dispatch.go:96`), and
+Unchanged. The pass names the owner pnode (`internal/grpc/dispatch.go:98`), and
 both proxies forward to it.
 
 ### 6. Outcome capture at the doors
@@ -596,11 +599,11 @@ on another pnode when its enclosing scope is superseded or marked.
     the code `Seal` reports.
 - It is chosen at start-up when the store factory implements the capability.
   `CachingStoreFactory` forwards it by hand
-  (`internal/cluster/modelcache/factory.go:87-92`).
+  (`internal/cluster/modelcache/factory.go:97-106`).
 - **Routing.**
-  - `mintPass` leaves the owner out of the pass (`internal/grpc/dispatch.go:92-96`).
+  - `mintPass` leaves the owner out of the pass (`internal/grpc/dispatch.go:94-101`).
   - Both proxies serve a pass without an owner locally
-    (`internal/cluster/proxy/http.go:66-69`, `internal/cluster/proxy/grpc.go:49-75`).
+    (`internal/cluster/proxy/http.go:80`, `internal/cluster/proxy/grpc.go:61`).
   - The peer router leaves the owner out of a hand-over, as the passes do
     (`internal/cluster/dispatch/peer_router.go`), and a location-independent
     pnode accepts a hand-over that names no owner

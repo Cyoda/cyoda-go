@@ -142,7 +142,7 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 - `errors.TRANSACTION_EXPIRED` — `410` — not retryable — transaction token's `exp` claim is in the past
 - `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — retryable only when the request was not sent to the owner — a request under a transaction token could not be completed on the node that owns the transaction (not alive, not reachable, or no answer within `CYODA_PROXY_TIMEOUT`); once it may have been sent, the outcome of a write is unknown and it is not retryable
 - `errors.TRANSACTION_NOT_FOUND` — `404` — not retryable — transaction ID does not correspond to an active transaction on this node, or its storage session ended under a request that joined it
-- `errors.TRANSACTION_ROLLBACK_ONLY` — `409` — not retryable — a request that joined the transaction failed with an answer retrying cannot change; the transaction, or the part of it a request would run in, can only be rolled back
+- `errors.TRANSACTION_ROLLBACK_ONLY` — `409` — not retryable — a write that joined the transaction failed with an answer retrying cannot change; the transaction, or the part of it a request would run in, can only be rolled back
 - `errors.TRANSACTION_TIMEOUT` — `408` — retryable — client-requested transaction timeout expired before commit
 - `errors.TRANSITION_NOT_FOUND` — `400` — not retryable — requested workflow transition is not defined for the entity's current state
 - `errors.TRUSTED_KEY_CAP_REACHED` — `400` — not retryable — Per-tenant trusted-key cap reached.
