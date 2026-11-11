@@ -469,3 +469,117 @@ func TestCallbackScope_PostgresSessionReclaimed(t *testing.T) {
 		t.Errorf("%d secondary entities committed; want none", n)
 	}
 }
+
+// laterRequest is what a joined request made after the failed write answered,
+// in a door-neutral form.
+type laterRequest struct {
+	door      string
+	status    int    // HTTP status; 0 for a gRPC door
+	envelope  string // gRPC envelope class; "" for an HTTP door
+	code      string
+	retryable bool
+	raw       string
+	err       error
+}
+
+func laterHTTP(res callbackResult, err error) laterRequest {
+	o := httpJoinedOutcome(res, err)
+	return laterRequest{status: o.status, code: o.errorCode, retryable: o.retryable, raw: o.detail, err: o.err}
+}
+
+func laterGRPC(env txEnvelope, err error) laterRequest {
+	o := grpcJoinedOutcome(env, err)
+	return laterRequest{envelope: o.envelopeCode, code: o.errorCode, retryable: o.retryable, raw: o.detail, err: o.err}
+}
+
+// assertLaterRefused asserts a later request on the pass was refused, not
+// retryably: 409 TRANSACTION_ROLLBACK_ONLY while the callout is still current,
+// 410 CALLOUT_SUPERSEDED once the owner has ended it, 404 TRANSACTION_NOT_FOUND
+// once the owner has rolled back. Which one depends on timing; that it is
+// refused does not.
+func assertLaterRefused(t *testing.T, r laterRequest) {
+	t.Helper()
+	if r.err != nil {
+		t.Fatalf("%s: transport error: %v", r.door, r.err)
+	}
+	want := map[string]int{
+		"TRANSACTION_ROLLBACK_ONLY": http.StatusConflict,
+		"CALLOUT_SUPERSEDED":        http.StatusGone,
+		"TRANSACTION_NOT_FOUND":     http.StatusNotFound,
+	}
+	status, ok := want[r.code]
+	if !ok {
+		t.Errorf("%s: code %q; want TRANSACTION_ROLLBACK_ONLY, CALLOUT_SUPERSEDED or TRANSACTION_NOT_FOUND (%s)", r.door, r.code, r.raw)
+	}
+	if r.envelope == "" && ok && r.status != status {
+		t.Errorf("%s: status %d with %s; want %d (%s)", r.door, r.status, r.code, status, r.raw)
+	}
+	if r.envelope != "" && r.envelope != "CLIENT_ERROR" {
+		t.Errorf("%s: envelope %q; want CLIENT_ERROR (%s)", r.door, r.envelope, r.raw)
+	}
+	if r.retryable {
+		t.Errorf("%s: refusal marked retryable (%s)", r.door, r.raw)
+	}
+}
+
+// TestCallbackScope_FailedWrite_LaterRequestsOnThePassRefused: after a
+// callback's write failed, not retryably, a later joined read and a later
+// joined write on the same pass are refused — 409, 410 or 404, never
+// retryable — and nothing of the later write is committed. The precise 409 for
+// a request under a marked scope is pinned at both doors by unit tests; end to
+// end the mark cancels the callout first, so the refusal is usually 410 or
+// 404. Both doors.
+func TestCallbackScope_FailedWrite_LaterRequestsOnThePassRefused(t *testing.T) {
+	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
+	for _, door := range []string{"http", "grpc"} {
+		t.Run(door, func(t *testing.T) {
+			m := newScopeModels(t, h, "cs-later-"+door, "SYNC")
+			y := "cs-later-y-" + door + "-" + randSuffix(t)
+			h.SetupModelWithWorkflow(t, y, secondaryWorkflow)
+			h.AttachCnode(t, cnodeSpec{name: "x", tags: []string{m.tagX}, script: scriptAlways(answerFailVerdict("x refused", false))})
+			type observed struct {
+				failed       laterRequest
+				read, create laterRequest
+			}
+			got := make(chan observed, 1)
+			h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{m.tagP}, script: func(_ context.Context, call receivedCallout, rc *reqCtx) cnodeReply {
+				var o observed
+				if door == "http" {
+					o.failed = laterHTTP(rc.CreateEntity(m.x, 1, scopeXPayload))
+					o.read = laterHTTP(rc.GetEntity(call.EntityID))
+					o.create = laterHTTP(rc.CreateEntity(y, 1, scopeXPayload))
+				} else {
+					o.failed = laterGRPC(h.ReplayCreateGRPC(call.Pass(), m.x, 1, scopeXPayload))
+					o.read = laterGRPC(h.ReplayGetGRPC(call.Pass(), call.EntityID))
+					o.create = laterGRPC(h.ReplayCreateGRPC(call.Pass(), y, 1, scopeXPayload))
+				}
+				o.failed.door, o.read.door, o.create.door = "failed write", "later read", "later write"
+				select {
+				case got <- o:
+				default:
+				}
+				return answerOK()
+			}})
+
+			owner := h.CreateEntityRaw(m.p, 1, workflowSampleModel)
+
+			var o observed
+			select {
+			case o = <-got:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the callbacks never ran")
+			}
+			if o.failed.code != "WORKFLOW_FAILED" {
+				t.Fatalf("the first write: code %q; want WORKFLOW_FAILED (%s)", o.failed.code, o.failed.raw)
+			}
+			assertLaterRefused(t, o.read)
+			assertLaterRefused(t, o.create)
+			assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
+			for _, model := range []string{m.p, m.x, y} {
+				if n := h.countEntities(t, model); n != 0 {
+					t.Errorf("%d %s entities committed; want none", n, model)
+				}
+			}
+		})
+	}
+}

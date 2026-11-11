@@ -454,9 +454,12 @@ type joinedCallbackOutcome struct {
 // No later joined request is asserted here. The mark cancels the callout the
 // failed write ran under, and the owner ends it at once, so a later request
 // on its pass is refused 410 CALLOUT_SUPERSEDED — or 404 once the owner has
-// rolled back. Which one depends on timing. The 409 refusal of a request under
-// a marked scope is pinned at both doors by TestTxJoin_FailedWriteMakesTheTransactionRollbackOnly
-// and TestTxRoute_RawHandlerErrorMarks.
+// rolled back. Which one depends on timing; that a later request is refused,
+// not retryably, is pinned at both doors by
+// TestCallbackScope_FailedWrite_LaterRequestsOnThePassRefused. The 409 refusal
+// of a request under a marked scope is pinned at both doors by
+// TestTxJoin_FailedWriteMakesTheTransactionRollbackOnly and
+// TestTxRoute_RawHandlerErrorMarks.
 func TestE2E_JoinedCallbackFailure_OwnerRollbackOnly(t *testing.T) {
 	h := newCallbackHarness(t)
 
