@@ -576,3 +576,31 @@ func TestClassifyCommitErr(t *testing.T) {
 		})
 	}
 }
+
+// TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn: a transaction broken by a
+// dead session carries, deep in its cause, the answer the joined request that
+// met it was given. The owner classifies the cause — its own retryable 503 —
+// and never returns that request's answer as its own. The shape is the one
+// Seal returns (txcoord: "unusable: %w" around sessionEnded's "session has
+// ended: %w" around the joined request's answered error).
+func TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		joined *common.AppError
+	}{
+		{"the joined request's own 503", common.Internal("joined read failed", suMarked{})},
+		{"a joined answer of another code", common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity id=e1 not found").WithCause(suMarked{})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broken := fmt.Errorf("the transaction is unusable: %w",
+				fmt.Errorf("the transaction's session has ended: %w", tc.joined))
+			got := classifyCommitErr(broken)
+			if got == tc.joined {
+				t.Fatal("the owner answered the joined request's own error")
+			}
+			if got.Status != http.StatusServiceUnavailable || got.Code != common.ErrCodeStorageUnavailable || !got.Retryable {
+				t.Fatalf("classifyCommitErr = %d %s retryable=%t (%s); want the retryable 503 STORAGE_UNAVAILABLE", got.Status, got.Code, got.Retryable, got.Message)
+			}
+		})
+	}
+}
