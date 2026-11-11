@@ -603,8 +603,8 @@ callout of its own (5.3).
 
 | Answer | Today | After |
 |---|---|---|
-| `503 TRANSACTION_NODE_UNAVAILABLE` when the request was not sent to the owner (registry says not live, `http.go:77-83`, `txroute_interceptor.go:118-121`; the address guard refused; the dial failed) | not retryable | **retryable** |
-| `503 TRANSACTION_NODE_UNAVAILABLE` after the request may have reached the owner (proxy `ErrorHandler` past the dial, `http.go:145-158`; gRPC forward timeout, `txroute_interceptor.go:155,410`) | not retryable | not retryable: the outcome is unknown, and a retry could repeat a kept write |
+| `503 TRANSACTION_NODE_UNAVAILABLE` when the request was not sent to the owner (registry says not live, `http.go:77-83`, `txroute_interceptor.go:118-121`; the address guard refused; the dial failed; a gRPC forward with no header sent) | not retryable | **retryable** |
+| `503 TRANSACTION_NODE_UNAVAILABLE` after the request may have reached the owner (proxy `ErrorHandler` past the dial, `http.go:145-158`; gRPC forward that failed or timed out after a header of it was sent, `txroute_interceptor.go:155,410`) | not retryable | not retryable: the outcome is unknown, and a retry could repeat a kept write. A gRPC forward that fails or times out before any header was sent is retryable (previous row) |
 | A callback whose PostgreSQL session ended under it (`deadTxQuerier`, `plugins/postgres/classifying_querier.go:136-157`; `idleInTxAbortError`, `plugins/postgres/ceilings.go:150-166`) | retryable `503 STORAGE_UNAVAILABLE` | `404 TRANSACTION_NOT_FOUND`, not retryable (the owner keeps the retryable `503`) |
 | A callback in a transaction that lost a write race | retryable `409 CONFLICT` | `409 CONFLICT`, not retryable (the owner keeps the retryable `409`) |
 | A callback still in progress when its callout advanced or ended | its own answer, writes kept | `410 CALLOUT_SUPERSEDED`, writes discarded |

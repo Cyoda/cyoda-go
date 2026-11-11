@@ -37,10 +37,10 @@ the focus of this document.
 
 | Mode | Synchrony | Open TX during dispatch | Result mutations applied | Failure | Suitable for |
 |---|---|---|---|---|---|
-| `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — the callout's error (see `cyoda help workflows`), or a retryable `409 CONFLICT` when a callback write had already lost a race; entity stays in source state | fast, in-TX work; standard processor |
+| `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — the callout's error (see `cyoda help workflows`), `409 TRANSACTION_ROLLBACK_ONLY` when a callback write failed with an answer that is not retryable, or a retryable `409 CONFLICT` when a callback write had already lost a race; entity stays in source state | fast, in-TX work; standard processor |
 | `ASYNC_SAME_TX` | blocks inline | yes (caller's TX) | yes | fatal — same as `SYNC` | indistinguishable from `SYNC` today; reserved label |
-| `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal for the processor's own failure — warning logged, pipeline continues; a savepoint that cannot be created, undone or released fails the operation instead (ticketed `5xx`), a callback write inside the savepoint that had already lost a race when the savepoint was undone fails it with a retryable `409 CONFLICT` and nothing commits, and a superseded enclosing callout is not swallowed either | fire-and-forget side effects (notifications, audit pings) |
-| `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — the callout's error (see `cyoda help workflows`), or, with `startNewTxOnDispatch`, a retryable `409 CONFLICT` when a callback write in `TX_post` had already lost a race; entity durable in pre-callout state | slow external work; connection-pool relief |
+| `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal for the processor's own failure, and for a failed callback write under it — warning logged, pipeline continues; a savepoint that cannot be created, undone or released fails the operation instead (ticketed `5xx`), a callback write inside the savepoint that had already lost a race when the savepoint was undone fails it with a retryable `409 CONFLICT` and nothing commits, and a superseded enclosing callout is not swallowed either | fire-and-forget side effects (notifications, audit pings) |
+| `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — the callout's error (see `cyoda help workflows`), or, with `startNewTxOnDispatch`, `409 TRANSACTION_ROLLBACK_ONLY` when a callback write in `TX_post` failed with an answer that is not retryable, or a retryable `409 CONFLICT` when one had already lost a race; entity durable in pre-callout state | slow external work; connection-pool relief |
 
 The engine implementation is in
 [`internal/domain/workflow/engine_processors.go`](../internal/domain/workflow/engine_processors.go).
@@ -114,6 +114,17 @@ A callback ack is **provisional** — it is not durable until the owning
 transaction commits. If the processor fails or the engine rolls back `T`,
 all callback writes are rolled back atomically with the rest of the cascade.
 
+Each callback is **all-or-nothing**: it runs in a scope of its own, and either
+all its writes become part of `T` or none do. A `2xx` is sent only for a
+callback whose writes were kept. A callback that fails keeps nothing; when it
+failed with a retryable answer, `T` goes on and the callback can be sent again.
+A callback **write** that fails with an answer that is not retryable makes `T`
+rollback-only: the callout it was made under is stopped and the operation
+fails with `409 TRANSACTION_ROLLBACK_ONLY`, whatever the processor answers
+(`ASYNC_NEW_TX` is the exception, below). A callback still in progress when its
+callout moves on is discarded and answered `410 CALLOUT_SUPERSEDED`. See
+`cyoda help cluster` and `docs/cloud-parity/callback-scopes.md`.
+
 A callback write that loses a race — another transaction committed the same
 entity or task row after `T` began — dooms `T`. If the processor then fails,
 for that reason or any other, the operation answers a retryable
@@ -171,8 +182,11 @@ non-fatal. The engine code is `executeAsyncNewTx` at
    a ticketed `5xx` and nothing commits. A callback write that had already
    lost a race against another transaction stays lost after the rollback: the
    operation fails with a retryable `409 CONFLICT` and nothing commits. A
-   replaced compute member is shut out before the savepoint is undone, so none
-   of its writes lands after it.
+   callback write under the processor that fails with an answer that is not
+   retryable makes the processor fail the same way: its savepoint is undone
+   with everything its callbacks wrote, and the pipeline continues. A replaced
+   compute member is shut out before the savepoint is undone, so none of its
+   writes lands after it.
 4. On success: `ReleaseSavepoint(T, S)` discards the savepoint marker.
 
 ### Why mutations are discarded
@@ -204,8 +218,9 @@ to `T`'s eventual commit). A callback write to the entity the processor runs
 for is the exception: the engine does not adopt it, and its own write of
 that entity later in `T` replaces it. A savepoint that cannot be created, undone or
 released fails the operation instead of continuing the pipeline (a ticketed
-`5xx`); a chain superseded by fencing does not touch its savepoint at all, so
-a replaced compute member's writes never land after it.
+`5xx`); a chain superseded by fencing undoes its savepoint, which undoes only
+its own processor's work: while the processor's callout is out, only that
+callout's callbacks write in `T`.
 
 ### Pitfalls
 
@@ -466,11 +481,6 @@ one of these causes:
   unreadable, so the record carries no `failReason`: an `ASYNC_NEW_TX`
   processor's record is kept without it, and any other mode's rolls back
   with the operation the failure fails.)
-- The processor ran in a callback that joined another operation's transaction,
-  and the fence refused the callback's chain after the dispatch, because its
-  compute node was replaced or its callout ended. The chain records nothing more,
-  and its `PAUSE_FOR_PROCESSING` stays in the joined transaction, which commits
-  if the operation that began it commits.
 - The commit of `T_pre` at the segment boundary was interrupted, and its
   outcome is in doubt. The processor was not dispatched and the client is
   answered with a 5xx. When that commit did land, `PAUSE_FOR_PROCESSING` is

@@ -23,6 +23,8 @@ HTTP: `404` `Not Found`. Retryable: `no`.
 
 The transaction ID supplied in the request does not correspond to an active transaction. The transaction may have been committed, rolled back, expired, or may never have existed. Also occurs when a request is mis-routed to a node that never opened the transaction.
 
+A request made under a transaction token — a compute member's callback — also gets this answer when the transaction's storage session ended while the request ran, or before it: on PostgreSQL, the connection was lost, or the idle-in-transaction ceiling reclaimed the transaction. Nothing the request did is kept, and every later callback of the transaction gets the same answer. The operation that owns the transaction fails with the retryable `503 STORAGE_UNAVAILABLE`, and its client runs it again.
+
 Not retryable. Transaction state (committed, rolled back, expired) determines whether the transaction existed.
 
 ## SEE ALSO

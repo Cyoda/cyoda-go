@@ -377,6 +377,18 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /account/subscriptions:
@@ -402,6 +414,18 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "501":
           $ref: "#/components/responses/NotImplemented"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /audit/entity/{entityId}:
@@ -702,6 +726,14 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
     post:
@@ -805,15 +837,23 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "M2M_CLIENT_EXISTS: the caller's tenant already holds a
-            client with this clientId, or another create of it wrote first."
+          description: >-
+            M2M_CLIENT_EXISTS: the caller's tenant already holds a client with this
+            clientId, or another create of it wrote first. A request whose
+            transaction has become rollback-only, because a request that joined it
+            failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not
+            retryable) — a request carrying its `X-Tx-Token` before it runs, the
+            operation that owns it when it would commit.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Feature is disabled — M2M admin-role grants are not enabled
-            via `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED`.
+          description: >-
+            Feature is disabled — M2M admin-role grants are not enabled via
+            `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED`. A request carrying an `X-Tx-Token`
+            is also answered 404 when the transaction the token names is no longer
+            open, with `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -831,10 +871,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
-          description: Service Unavailable - STORAGE_UNAVAILABLE (the client store
-            is unavailable), or SERVER_BUSY (no client-secret hashing slot freed
-            up within 1 second; nothing was written, so no client was created; carries
-            Retry-After). Retryable.
+          description: >-
+            Service Unavailable - STORAGE_UNAVAILABLE (the client store is
+            unavailable), or SERVER_BUSY (no client-secret hashing slot freed up
+            within 1 second; nothing was written, so no client was created; carries
+            Retry-After). Retryable. A request carrying an `X-Tx-Token` is also
+            answered 503 by the join layer — TRANSACTION_NODE_UNAVAILABLE (retryable
+            only when the request was not sent to the node that owns the
+            transaction), TOO_MANY_JOINED_REQUESTS (retryable), or TRANSACTION_BUSY
+            (retryable) while another callback of its transaction waits for a
+            callout of its own.
           headers:
             Retry-After:
               description: Seconds to wait before retrying; set on SERVER_BUSY.
@@ -844,6 +890,10 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -899,7 +949,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: M2M client not found
+          description: >-
+            M2M client not found A request carrying an `X-Tx-Token` is also answered
+            404 when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -920,6 +973,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /clients/{clientId}/secret:
@@ -980,13 +1039,21 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: M2M client not found
+          description: >-
+            M2M client not found A request carrying an `X-Tx-Token` is also answered
+            404 when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "CONFLICT (retryable): another change to the client won the race; retry."
+          description: >-
+            CONFLICT (retryable): another change to the client won the race; retry.
+            A request whose transaction has become rollback-only, because a request
+            that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY
+            (not retryable) — a request carrying its `X-Tx-Token` before it runs,
+            the operation that owns it when it would commit.
           content:
             application/problem+json:
               schema:
@@ -1007,10 +1074,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
-          description: Service Unavailable - STORAGE_UNAVAILABLE (the client store
-            is unavailable), or SERVER_BUSY (no client-secret hashing slot freed
-            up within 1 second; nothing was written, so the old secret stays in force; carries
-            Retry-After). Retryable.
+          description: >-
+            Service Unavailable - STORAGE_UNAVAILABLE (the client store is
+            unavailable), or SERVER_BUSY (no client-secret hashing slot freed up
+            within 1 second; nothing was written, so the old secret stays in force;
+            carries Retry-After). Retryable. A request carrying an `X-Tx-Token` is
+            also answered 503 by the join layer — TRANSACTION_NODE_UNAVAILABLE
+            (retryable only when the request was not sent to the node that owns the
+            transaction), TOO_MANY_JOINED_REQUESTS (retryable), or TRANSACTION_BUSY
+            (retryable) while another callback of its transaction waits for a
+            callout of its own.
           headers:
             Retry-After:
               description: Seconds to wait before retrying; set on SERVER_BUSY.
@@ -1020,6 +1093,10 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /entity/consistency-time:
@@ -1048,6 +1125,14 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         default:
           $ref: '#/components/responses/InternalServerError'
   /platform/clock:
@@ -1071,6 +1156,18 @@ paths:
                 $ref: "#/components/schemas/PlatformClockDto"
         "401":
           $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/InternalServerError'
     post:
@@ -1143,10 +1240,14 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
           description: >-
-            CLOCK_BEFORE_RECORDED_TIME — the store has recorded a time later
-            than the requested `time`; the detail names the latest one, and the
-            problem's `properties.latestRecordedTime` carries it as an RFC 3339
-            timestamp. The clock is unchanged.
+            CLOCK_BEFORE_RECORDED_TIME — the store has recorded a time later than
+            the requested `time`; the detail names the latest one, and the problem's
+            `properties.latestRecordedTime` carries it as an RFC 3339 timestamp. The
+            clock is unchanged. A request whose transaction has become
+            rollback-only, because a request that joined it failed a write, is
+            answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request
+            carrying its `X-Tx-Token` before it runs, the operation that owns it
+            when it would commit.
           content:
             application/problem+json:
               schema:
@@ -1155,17 +1256,28 @@ paths:
           description: >-
             Service unavailable. `properties.errorCode` is STORAGE_UNAVAILABLE or
             CONSISTENCY_TIME_UNAVAILABLE when the store did not answer the
-            consistency-time check or the move's task query, and
-            CLOCK_NOT_CONFIRMED when a node of the cluster did not confirm the
-            change or one of a move's steps within CYODA_PROXY_TIMEOUT — it did
-            not answer, refused (for example, clock control is off there, or the
-            setting failed its validation), answered a different setting, or has no
-            usable address. The detail names those nodes. CLOCK_NOT_CONFIRMED is
-            not retryable: nothing is rolled back; start over with a fresh store.
+            consistency-time check or the move's task query, and CLOCK_NOT_CONFIRMED
+            when a node of the cluster did not confirm the change or one of a move's
+            steps within CYODA_PROXY_TIMEOUT — it did not answer, refused (for
+            example, clock control is off there, or the setting failed its
+            validation), answered a different setting, or has no usable address. The
+            detail names those nodes. CLOCK_NOT_CONFIRMED is not retryable: nothing
+            is rolled back; start over with a fresh store. A request carrying an
+            `X-Tx-Token` is also answered 503 by the join layer —
+            TRANSACTION_NODE_UNAVAILABLE (retryable only when the request was not
+            sent to the node that owns the transaction), TOO_MANY_JOINED_REQUESTS
+            (retryable), or TRANSACTION_BUSY (retryable) while another callback of
+            its transaction waits for a callout of its own.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         default:
           $ref: '#/components/responses/InternalServerError'
   /platform/cluster:
@@ -1248,12 +1360,29 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           description: >-
-            The cluster is not operational. The body is the same status as
-            the 200's, not a problem: it carries no ticket and no detail.
+            The cluster is not operational. The body is the same status as the
+            200's, not a problem: it carries no ticket and no detail. A request
+            carrying an `X-Tx-Token` is also answered 503 by the join layer, with
+            a problem body — TRANSACTION_NODE_UNAVAILABLE (retryable only when the
+            request was not sent to the node that owns the transaction),
+            TOO_MANY_JOINED_REQUESTS (retryable), or TRANSACTION_BUSY (retryable)
+            while another callback of its transaction waits for a callout of its
+            own.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ClusterStatusDto"
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/stats:
@@ -2252,7 +2381,7 @@ paths:
             layer could not serve the request — no connection available within the
             acquire timeout, the transaction was reclaimed by the idle-in-transaction
             ceiling, or the connection was lost, or the store could not certify the
-            consistency time within its wait budget (CONSISTENCY_TIME_UNAVAILABLE). A request carrying an `X-Tx-Token` is also answered 503 TRANSACTION_BUSY (retryable) while another callback of its transaction waits for a callout of its own.
+            consistency time within its wait budget (CONSISTENCY_TIME_UNAVAILABLE). A request carrying an `X-Tx-Token` is also answered 503 by the join layer — TRANSACTION_NODE_UNAVAILABLE (retryable only when the request was not sent to the node that owns the transaction), TOO_MANY_JOINED_REQUESTS (retryable), or TRANSACTION_BUSY (retryable) while another callback of its transaction waits for a callout of its own.
           content:
             application/problem+json:
               schema:
@@ -2492,7 +2621,11 @@ paths:
         its error is reported for each of its other entities, and the other
         batches still run. In a request that joins another request's transaction, the
         delete commits and rolls back nothing itself: the owner's transaction
-        commits or rolls back as a whole.
+        commits or rolls back as a whole. A joined delete that fails keeps
+        nothing, and when its error is not retryable it makes the owner's
+        transaction rollback-only: the owner fails with 409
+        TRANSACTION_ROLLBACK_ONLY. An entity reported in `idToError` does not
+        fail the request.
         A malformed condition body returns `400 INVALID_CONDITION`.
       operationId: deleteEntities
       parameters:
@@ -4675,6 +4808,14 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/export/{converter}/{entityName}/{modelVersion}:
@@ -4826,7 +4967,10 @@ paths:
                 properties:
                   errorCode: BAD_REQUEST
         "404":
-          description: Entity model not found
+          description: >-
+            Entity model not found A request carrying an `X-Tx-Token` is also
+            answered 404 when the transaction the token names is no longer open,
+            with `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -4846,6 +4990,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         default:
           $ref: '#/components/responses/InternalServerError'
   /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion}:
@@ -5060,7 +5210,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Model not found
+          description: >-
+            Model not found A request carrying an `X-Tx-Token` is also answered 404
+            when the transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -5071,6 +5224,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -5726,7 +5885,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowExportResponseDto"
         "404":
-          description: "Not found — MODEL_NOT_FOUND: entity model does not exist; or WORKFLOW_NOT_FOUND: model exists but has no imported workflows."
+          description: >-
+            Not found — MODEL_NOT_FOUND: entity model does not exist; or
+            WORKFLOW_NOT_FOUND: model exists but has no imported workflows. A
+            request carrying an `X-Tx-Token` is also answered 404 when the
+            transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -5737,6 +5901,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         default:
           $ref: '#/components/responses/InternalServerError'
       security:
@@ -5883,6 +6053,14 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/current:
@@ -5919,7 +6097,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not found — KEYPAIR_NOT_FOUND: no active key pair."
+          description: >-
+            Not found — KEYPAIR_NOT_FOUND: no active key pair. A request carrying an
+            `X-Tx-Token` is also answered 404 when the transaction the token names
+            is no longer open, with `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -5938,6 +6119,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}:
@@ -5986,7 +6173,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID."
+          description: >-
+            Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID. A request
+            carrying an `X-Tx-Token` is also answered 404 when the transaction the
+            token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -6005,6 +6196,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/invalidate:
@@ -6070,7 +6267,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID."
+          description: >-
+            Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID. A request
+            carrying an `X-Tx-Token` is also answered 404 when the transaction the
+            token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -6089,6 +6290,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/reactivate:
@@ -6146,7 +6353,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID."
+          description: >-
+            Not found — KEYPAIR_NOT_FOUND: no key pair with the given ID. A request
+            carrying an `X-Tx-Token` is also answered 404 when the transaction the
+            token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -6165,6 +6376,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /oauth/keys/trusted:
@@ -6202,7 +6419,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not found — FEATURE_DISABLED: trusted-key registration is disabled."
+          description: >-
+            Not found — FEATURE_DISABLED: trusted-key registration is disabled. A
+            request carrying an `X-Tx-Token` is also answered 404 when the
+            transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -6221,6 +6442,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
     post:
@@ -6298,7 +6525,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not found — FEATURE_DISABLED: trusted-key registration is disabled."
+          description: >-
+            Not found — FEATURE_DISABLED: trusted-key registration is disabled. A
+            request carrying an `X-Tx-Token` is also answered 404 when the
+            transaction the token names is no longer open, with
+            `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -6317,6 +6548,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}:
@@ -6362,7 +6599,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID; FEATURE_DISABLED: trusted-key registration is disabled."
+          description: >-
+            Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID;
+            FEATURE_DISABLED: trusted-key registration is disabled. A request
+            carrying an `X-Tx-Token` is also answered 404 when the transaction the
+            token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -6381,6 +6623,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/invalidate:
@@ -6431,7 +6679,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID; FEATURE_DISABLED: trusted-key registration is disabled."
+          description: >-
+            Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID;
+            FEATURE_DISABLED: trusted-key registration is disabled. A request
+            carrying an `X-Tx-Token` is also answered 404 when the transaction the
+            token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -6450,6 +6703,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/reactivate:
@@ -6506,7 +6765,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID; FEATURE_DISABLED: trusted-key registration is disabled."
+          description: >-
+            Not found — TRUSTED_KEY_NOT_FOUND: no key with the given ID;
+            FEATURE_DISABLED: trusted-key registration is disabled. A request
+            carrying an `X-Tx-Token` is also answered 404 when the transaction the
+            token names is no longer open, with `properties.errorCode`
+            TRANSACTION_NOT_FOUND.
           content:
             application/problem+json:
               schema:
@@ -6525,6 +6789,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /tenants/{tenant}/oauth/token:
@@ -7248,7 +7518,7 @@ paths:
             needs a compute member for its tags and none is connected, or the storage
             layer could not serve the request — no connection available within the
             acquire timeout, the transaction was reclaimed by the idle-in-transaction
-            ceiling, or the connection was lost. A request carrying an `X-Tx-Token` is also answered 503 TRANSACTION_BUSY (retryable) while another callback of its transaction waits for a callout of its own.
+            ceiling, or the connection was lost. A request carrying an `X-Tx-Token` is also answered 503 by the join layer — TRANSACTION_NODE_UNAVAILABLE (retryable only when the request was not sent to the node that owns the transaction), TOO_MANY_JOINED_REQUESTS (retryable), or TRANSACTION_BUSY (retryable) while another callback of its transaction waits for a callout of its own.
           content:
             application/problem+json:
               schema:
@@ -7361,6 +7631,14 @@ paths:
           $ref: '#/components/responses/InternalServerError'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/TransactionRollbackOnly'
+        "410":
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
       security:
         - bearerAuth: []
   /search/async/{entityName}/{modelVersion}:
@@ -7562,7 +7840,7 @@ paths:
             CYODA_SEARCH_ASYNC_WORKERS / CYODA_SEARCH_ASYNC_QUEUE), or the
             store could not certify the consistency time within its wait budget
             (CONSISTENCY_TIME_UNAVAILABLE).
-            A request carrying an `X-Tx-Token` is also answered 503 TRANSACTION_BUSY (retryable) while another callback of its transaction waits for a callout of its own.
+            A request carrying an `X-Tx-Token` is also answered 503 by the join layer — TRANSACTION_NODE_UNAVAILABLE (retryable only when the request was not sent to the node that owns the transaction), TOO_MANY_JOINED_REQUESTS (retryable), or TRANSACTION_BUSY (retryable) while another callback of its transaction waits for a callout of its own.
           content:
             application/problem+json:
               schema:
@@ -13057,9 +13335,9 @@ components:
         ceilings. `properties.errorCode` distinguishes them — BAD_REQUEST: the
         request body exceeds the 10 MiB a joined request may buffer;
         JOINED_RESPONSE_TOO_LARGE: the answer exceeds what a joined request may
-        hold while it holds the transaction, so page the read. On a write that
-        answer is a failure of the request: its writes are discarded and the
-        transaction becomes rollback-only.
+        hold while it holds the transaction, so page the read. On an entity
+        write that answer is a failure of the request: its writes are discarded
+        and the transaction becomes rollback-only.
       content:
         application/problem+json:
           schema:
@@ -13079,7 +13357,9 @@ components:
         (client, trusted-key and key-pair operations, `POST /platform/clock`,
         `GET /platform/cluster`); or the operation needs a platform operator
         (`ROLE_ADMIN` in the tenant `PLATFORM`); or an on-behalf-of token
-        reaches an admin or platform-operator operation.
+        reaches an admin or platform-operator operation; or a request carrying
+        an `X-Tx-Token` names a transaction of another tenant, or, on behalf of
+        a user, a transaction that user did not begin.
       content:
         application/problem+json:
           schema:

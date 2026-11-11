@@ -13,36 +13,52 @@ commit atomically — the whole nested chain succeeds or rolls back together.
 
 ## Invariant Cloud must uphold
 
-Access to a transaction's shared buffer / connection is serialised by a
-**per-transaction exclusive gate** (a non-reentrant mutex keyed by tx id). The
-gate covers **every** joined request, not only entity writes: a joined read, a
-joined search, the model load and model extension of a joined create, and
-every non-entity handler behind the callback door all take it for their whole
-length too, from before the request's first store operation to when its
-handler returns. Two joined requests at once — a read alongside a write, or two
-reads — are otherwise unsafe on every backend: `concurrent map writes` on
-memory and SQLite, `conn busy` on PostgreSQL.
+On a backend whose transaction lives in one node's memory or connection
+(memory, SQLite, PostgreSQL), access to a transaction's shared buffer /
+connection is serialised by a **per-transaction exclusive gate** keyed by tx
+id. The gate covers **every** joined request, not only entity writes: a joined
+read, a joined search, the model load and model extension of a joined create,
+and every non-entity handler behind the callback door all hold it from before
+the request's first store operation until the request's scope has ended. Two
+joined requests at once — a read alongside a write, or two reads — are
+otherwise unsafe on every such backend: `concurrent map writes` on memory and
+SQLite, `conn busy` on PostgreSQL. The owner's own chain does not take the
+gate: while a callout of the owner is out, the owner is blocked in it, and it
+seals the transaction — waits for the callbacks in progress and refuses every
+later one — before its final writes and its commit or rollback. See
+`callback-scopes.md`.
 
-The gate is also the place where a callback from a compute member that was
-replaced is refused: the right to touch the transaction is checked again once
-the gate is held, and whoever takes the callout's work over waits for the same
-gate before proceeding. See `callout-failover.md` §6.
+The right to touch the transaction is checked when the gate is taken and again
+when the request's scope ends; whoever takes the callout's work over waits
+until the earlier member's requests in progress have ended, and those are
+discarded. See `callout-failover.md` §6.
 
-Every holder of that gate — the transaction owner **and** every joined callback — MUST
-**release the gate for the duration of any blocking external dispatch** (every
-processor dispatch — SYNC / ASYNC_SAME_TX / ASYNC_NEW_TX — and FUNCTION criterion
-call-out) and re-acquire it before touching the buffer again. Where the dispatch
-is bracketed by buffer work (e.g. an ASYNC_NEW_TX savepoint create/rollback), the
-release spans only the call-out, not the surrounding buffer ops. The dispatch
-window touches no local buffer but can re-enter with a
-descendant joined callback on the same tx; holding the gate across it is a
-hold-and-wait that deadlocks the transaction until the dispatch timeout.
+Every joined holder of the gate MUST **give the gate up for the duration of
+any blocking external dispatch** (every processor dispatch — SYNC /
+ASYNC_SAME_TX / ASYNC_NEW_TX — and FUNCTION criterion and schedule-function
+call-out) and take it back before touching the buffer again. Where the dispatch
+is bracketed by buffer work (e.g. an ASYNC_NEW_TX savepoint create/rollback),
+the release spans only the call-out, not the surrounding buffer ops. The
+dispatch window touches no local buffer but can re-enter with a descendant
+joined callback on the same tx; holding the gate across it is a hold-and-wait
+that deadlocks the transaction until the dispatch timeout.
 
-This generalises the owner-side rule ("never hold the gate across the engine's
-processor dispatch") to **every** gate holder. Releasing during a remote dispatch
-is safe: no local buffer write is pending at the dispatch point (state and audit
-writes happen only after the processor pipeline returns), so concurrent siblings
-on the same tx stay consistent.
+While a holder is paused in its dispatch, the gate admits **only that
+dispatch's callbacks** (its descendants). A sibling callback of the same
+transaction is refused at once with `503 TRANSACTION_BUSY`, retryable, and one
+already queued is refused when the pause begins. This keeps each callback's
+writes, with those nested under it, contiguous, so that undoing one callback's
+savepoint undoes exactly its own work and its descendants', never a sibling's.
+The paused holder takes the gate back in its turn, without a cap, and is
+never refused.
+
+Releasing during a remote dispatch is safe because only the dispatch's own
+callbacks can run while it is out. The workflow does write before a dispatch —
+the engine records the start of the state machine (`STATE_MACHINE_START`) and
+the processing pause (`PAUSE_FOR_PROCESSING`) before it dispatches the
+processor — but those writes
+belong to the paused holder's scope, below every write its descendants make,
+and no sibling can interleave with them.
 
 ## Failure mode this prevents
 
