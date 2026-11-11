@@ -28,6 +28,24 @@ var leafImporters = map[string][]string{
 	modulePath + "/internal/fence":  {modulePath + "/internal/txcoord", modulePath + "/internal/cluster/token"},
 }
 
+// skipDir reports whether the directory rel (slash-separated, relative to the
+// module root) holds no package of the root module: plugins/ (each plugin is a
+// module of its own) and vendor/, both at the root only, and at any depth the
+// directories the go tool ignores — testdata, and names starting with a dot or
+// an underscore.
+func skipDir(rel string) bool {
+	if rel == "." {
+		return false
+	}
+	for _, top := range []string{"plugins", "vendor"} {
+		if rel == top || strings.HasPrefix(rel, top+"/") {
+			return true
+		}
+	}
+	name := rel[strings.LastIndex(rel, "/")+1:]
+	return name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
 func TestOnlyTxcoordUsesGateAndFence(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -40,9 +58,11 @@ func TestOnlyTxcoordUsesGateAndFence(t *testing.T) {
 			return err
 		}
 		if info.IsDir() {
-			// plugins/* are modules of their own; dot directories and
-			// testdata hold no package of this module.
-			if name := info.Name(); path != root && (strings.HasPrefix(name, ".") || name == "plugins" || name == "vendor" || name == "testdata") {
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			if skipDir(filepath.ToSlash(rel)) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -90,5 +110,28 @@ func TestOnlyTxcoordUsesGateAndFence(t *testing.T) {
 	if len(offenders) > 0 {
 		slices.Sort(offenders)
 		t.Fatalf("only txcoord uses the gate, and only txcoord and the pass token use the fence:\n%s", strings.Join(offenders, "\n"))
+	}
+}
+
+// TestSkipDir: only what holds no package of the root module is skipped. A
+// package named plugins, vendor or testdata below the root is still scanned
+// only if Go would build it — testdata and dot or underscore directories never
+// are, at any depth.
+func TestSkipDir(t *testing.T) {
+	for rel, want := range map[string]bool{
+		".":                        false,
+		"plugins":                  true,
+		"plugins/postgres":         true,
+		"vendor":                   true,
+		".git":                     true,
+		"internal/domain/testdata": true,
+		"internal/x/_scratch":      true,
+		"internal/domain/plugins":  false,
+		"internal/cluster/vendor":  false,
+		"internal/txcoord":         false,
+	} {
+		if got := skipDir(rel); got != want {
+			t.Errorf("skipDir(%q) = %t; want %t", rel, got, want)
+		}
 	}
 }
