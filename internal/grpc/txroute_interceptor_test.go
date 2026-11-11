@@ -312,7 +312,7 @@ func TestTxRouteInterceptor_SearchStreamLocalJoin(t *testing.T) {
 	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeJoinTM{}, f), 9090, true, testProxyTimeout)
 	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 	// The interceptor receives the one request message before it takes the
-	// transaction's lock, and replays it to the handler.
+	// transaction's gate, and replays it to the handler.
 	ss := &fakeServerStream{ctx: baseCtx, request: &cepb.CloudEvent{Id: "req-s7"}}
 
 	var sawTx string
@@ -1041,10 +1041,10 @@ func TestTxRouteInterceptor_StreamForwardErrPreservesRequestID(t *testing.T) {
 	}
 }
 
-// --- the transaction's lock on this door -------------------------------------
+// --- the transaction's gate on this door -------------------------------------
 
 // joinedRouteInterceptor returns an interceptor whose join layer has the callout
-// of txID in progress at major 1, the gate the transaction's lock comes from,
+// of txID in progress at major 1, the gate the transaction's gate comes from,
 // and the pass that names the callout.
 func joinedRouteInterceptor(t *testing.T, txID string) (*txRouteInterceptor, txcoord.Coordination, string) {
 	t.Helper()
@@ -1213,12 +1213,12 @@ func TestTxRouteInterceptor_StreamSendsAreHeldUntilTheLockIsReleased(t *testing.
 	ss.request = &cepb.CloudEvent{Id: "req-1"}
 	ss.onRecv = func() {
 		if !lockFree() {
-			t.Error("the request message was received under the transaction's lock")
+			t.Error("the request message was received under the transaction's gate")
 		}
 	}
 	ss.onSend = func() {
 		if !lockFree() {
-			t.Error("a response frame was sent under the transaction's lock")
+			t.Error("a response frame was sent under the transaction's gate")
 		}
 	}
 	err := ic.stream()(nil, ss, entitySearchCollectionInfo(),
@@ -1228,7 +1228,7 @@ func TestTxRouteInterceptor_StreamSendsAreHeldUntilTheLockIsReleased(t *testing.
 				t.Errorf("handler RecvMsg = %v, id %q; want the request replayed", err, req.Id)
 			}
 			if lockFree() {
-				t.Error("the handler ran without the transaction's lock")
+				t.Error("the handler ran without the transaction's gate")
 			}
 			for _, id := range []string{"f-1", "f-2"} {
 				if err := stream.SendMsg(&cepb.CloudEvent{Id: id}); err != nil {
@@ -1419,7 +1419,7 @@ func TestTxRoute_RawHandlerErrorMarks(t *testing.T) {
 }
 
 // The frames a joined server-streaming handler produces are held in memory
-// while the transaction's lock is held, so they have a ceiling of their own.
+// while the transaction's gate is held, so they have a ceiling of their own.
 // Past it the call fails with an envelope naming the ceiling and no frame is
 // sent: a collection answered in part would be a wrong answer.
 func TestTxRouteInterceptor_HeldFramesOverTheCeiling_FailWithoutSendingAny(t *testing.T) {
@@ -1446,7 +1446,7 @@ func TestTxRouteInterceptor_HeldFramesOverTheCeiling_FailWithoutSendingAny(t *te
 	}
 	assertEnvelopeCode(t, ss.sent[0], "req-1", "JOINED_RESPONSE_TOO_LARGE")
 	if !lockFree() {
-		t.Error("the transaction's lock was not released")
+		t.Error("the transaction's gate was not released")
 	}
 }
 
@@ -1546,7 +1546,7 @@ func TestTxRouteInterceptor_UnaryAnswerOverTheCeiling_IsRefused(t *testing.T) {
 	}
 	assertEnvelopeCode(t, resp, "req-1", "JOINED_RESPONSE_TOO_LARGE")
 	if !lockFree() {
-		t.Error("the transaction's lock was not released")
+		t.Error("the transaction's gate was not released")
 	}
 }
 
@@ -1623,7 +1623,7 @@ func TestTxRouteInterceptor_UnaryPastTheWaiterCap_IsRefused(t *testing.T) {
 	}
 }
 
-// gRPC unary: the handler runs under the transaction's lock, which is free once
+// gRPC unary: the handler runs under the transaction's gate, which is free once
 // the interceptor has returned. The message is already complete, so nothing is
 // read ahead of the lock.
 func TestTxRouteInterceptor_UnaryHandlerRunsUnderTheLock(t *testing.T) {
@@ -1634,7 +1634,7 @@ func TestTxRouteInterceptor_UnaryHandlerRunsUnderTheLock(t *testing.T) {
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
 		func(context.Context, any) (any, error) {
 			if lockFree() {
-				t.Error("the handler ran without the transaction's lock")
+				t.Error("the handler ran without the transaction's gate")
 			}
 			return "ok", nil
 		})
@@ -1642,7 +1642,7 @@ func TestTxRouteInterceptor_UnaryHandlerRunsUnderTheLock(t *testing.T) {
 		t.Fatalf("unary = %v, %v; want ok, nil", resp, err)
 	}
 	if !lockFree() {
-		t.Fatal("the transaction's lock is still held after the interceptor returned")
+		t.Fatal("the transaction's gate is still held after the interceptor returned")
 	}
 }
 

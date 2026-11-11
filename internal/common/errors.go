@@ -49,7 +49,7 @@ var ErrClientGone = errors.New("the request's client went away")
 // context, or the error of a call that context's end interrupted — as that
 // client's departure. Only a layer that was waiting on the client may call it:
 // internal/domain/txjoin, for a joined request whose context ended while it
-// queued for the transaction's lock; internal/callout, for a callout whose
+// queued for the transaction's gate; internal/callout, for a callout whose
 // caller's context ended during or between tries; internal/platformclock,
 // for a clock move whose caller's context ended between steps or during a
 // store call, or a clock set-back whose caller's context ended during its

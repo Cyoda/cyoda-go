@@ -31,6 +31,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -484,7 +485,7 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthLatch *health.Latc
 
 	localProc := localproc.New()
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
-		wfengine.WithExternalProcessing(localProc))
+		wfengine.WithExternalProcessing(localProc), wfengine.WithCoordination(txcoord.New(tracker)))
 
 	searchStore, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {

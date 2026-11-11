@@ -802,3 +802,38 @@ func TestCoordinator_AnsweredAfterTheMark_FailsRollbackOnly(t *testing.T) {
 		t.Fatalf("err = %d %s; want 409 TRANSACTION_ROLLBACK_ONLY", appErr.Status, appErr.Code)
 	}
 }
+
+// A cnode that answers a non-retryable failure after one of its callbacks
+// failed a write does not decide the callout either: the scope is marked, so
+// the callout fails with the scope's refusal — 409 TRANSACTION_ROLLBACK_ONLY,
+// or the retryable conflict when the transaction has lost a write race —
+// whichever the owner's loop saw first.
+func TestCoordinator_FailedAfterTheMark_FailsWithTheScopesRefusal(t *testing.T) {
+	run := func(t *testing.T, lose bool) error {
+		lost := &atomic.Bool{}
+		e := newEnvOver(t, Config{}, raceTM{lost: lost})
+		var only *cnode
+		verdict := false
+		only = e.attach(t, "m-1", tenantA, "x", func(_ *internalgrpc.MemberRegistry, m *internalgrpc.Member, requestID string) {
+			_, passes := only.seen()
+			s, _ := e.callback(t, txcoord.Write, pairOf(t, e, passes[0]))
+			// The failure is on its way before the callback's failure is known.
+			fails("the member failed", &verdict)(nil, m, requestID)
+			s.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+			lost.Store(lose)
+		})
+		_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+		return err
+	}
+	t.Run("rollback-only", func(t *testing.T) {
+		appErr := appErrOf(t, run(t, false))
+		if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeTransactionRollbackOnly || appErr.Retryable {
+			t.Fatalf("err = %d %s retryable=%v; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable", appErr.Status, appErr.Code, appErr.Retryable)
+		}
+	})
+	t.Run("lost race first", func(t *testing.T) {
+		if err := run(t, true); !errors.Is(err, spi.ErrTxAborted) {
+			t.Fatalf("err = %v; want the lost race (spi.ErrTxAborted)", err)
+		}
+	})
+}

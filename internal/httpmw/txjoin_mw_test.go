@@ -889,3 +889,23 @@ func TestTxJoin_FailedWriteMakesTheTransactionRollbackOnly(t *testing.T) {
 		}
 	}
 }
+
+// A handler that started a 2xx answer and then failed through the error
+// funnel has its failure recorded: the scope ends as a failed request, so the
+// door sends the recorded error, never the 2xx it had buffered.
+func TestTxJoin_FailureRecordedAfterA2xxHeader_SendsTheError(t *testing.T) {
+	j, _, pass := liveJoiner(t, "tx-1")
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"partial":true}`))
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, "failed after the header"))
+	})
+	rec := httptest.NewRecorder()
+	routed(TxJoin(j), next).ServeHTTP(rec, joinedRequest(t, pass, nil))
+	if rec.Code != http.StatusBadRequest || problemProps(t, rec).ErrorCode != "WORKFLOW_FAILED" {
+		t.Fatalf("answer = %d %s; want the recorded 400 WORKFLOW_FAILED", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "partial") {
+		t.Fatalf("the buffered 2xx body was sent: %s", rec.Body.String())
+	}
+}

@@ -11,6 +11,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -38,7 +39,7 @@ func procOutputEngine(
 			return &spi.Entity{Data: []byte(procData)}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "procout-" + mode, ModelVersion: "1.0"}
@@ -214,7 +215,7 @@ func TestProcessorOutput_DescriptorResolvedOnceAcrossThePipeline(t *testing.T) {
 			return &spi.Entity{Data: []byte(fmt.Sprintf(`{"x":%d}`, calls))}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "procout-memo", ModelVersion: "1.0"}

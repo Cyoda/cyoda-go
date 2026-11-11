@@ -73,11 +73,12 @@ func New() *Fence {
 	return &Fence{callouts: make(map[string]*callout)}
 }
 
-// Begin registers a callout under the enclosing callouts named by outer, and returns the context the callout runs under and the func
-// that ends it. The context is cancelled, with ErrSuperseded as its cause, when
-// one of the outer pairs stops being current — at once if one already is not.
-// The caller defers end, so a callout is ended on every exit path, a panic
-// included. end is idempotent.
+// Begin registers a callout under the enclosing callouts named by outer, and
+// returns the context the callout runs under and the func that ends it. The
+// context is cancelled, with ErrSuperseded as its cause, when one of the outer
+// pairs stops being current — at once if one already is not. The caller defers
+// end, so a callout is ended on every exit path, a panic included. end is
+// idempotent.
 //
 // No pass is current until the first Advance.
 func (f *Fence) Begin(ctx context.Context, calloutID string, outer []Pair) (context.Context, func()) {

@@ -180,15 +180,14 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 
 	p := &progress{triesLeft: tries}
 	result, err := c.loop(cctx, call, number, p)
-	if err == nil {
-		// An answer does not outrank the scope the callout was made from: a
-		// callback of the callout may have failed a write before the cnode
-		// answered, and the scope is then marked whichever the loop saw first.
-		// A callout made from a scope that cannot complete fails with that
-		// scope's refusal.
-		if cerr := txcoord.Check(cctx); cerr != nil {
-			result, err = internalgrpc.CalloutResult{}, cerr
-		}
+	// No outcome of the loop outranks the scope the callout was made from. A
+	// callback of the callout may have failed a write before the cnode
+	// answered — success or failure — or before its tries ran out, and the
+	// scope is then marked whichever the loop saw first: a callout made from a
+	// scope that cannot complete fails with that scope's refusal (the lost
+	// race first), however it ended.
+	if cerr := txcoord.Check(cctx); cerr != nil {
+		result, err = internalgrpc.CalloutResult{}, cerr
 	}
 
 	used := tries - p.triesLeft

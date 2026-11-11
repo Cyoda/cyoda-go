@@ -54,6 +54,10 @@ func (b *bufferedWriter) Write(p []byte) (int, error) {
 	return b.body.Write(p)
 }
 
+// statusCode is the status the handler wrote: 200 once it wrote a body
+// without one, 0 before it wrote anything.
+func (b *bufferedWriter) statusCode() int { return b.status }
+
 // tooLarge reports whether the handler's answer passed the ceiling. The
 // middleware asks after the handler has returned: a handler that ignores a write
 // error, as most do, must not have its answer sent in part.

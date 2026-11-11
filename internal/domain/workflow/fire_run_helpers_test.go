@@ -13,6 +13,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -163,7 +164,7 @@ func newRunEnvWith(t *testing.T, ext contract.ExternalProcessingService,
 	clock, advance := steppableClock(runStartMs)
 	var opts []EngineOption
 	if ext != nil {
-		opts = append(opts, WithExternalProcessing(ext))
+		opts = append(opts, WithExternalProcessing(ext), WithCoordination(txcoord.New(engineTx)))
 	}
 	engine := NewEngine(factory, uuids, engineTx, funcClock(clock), opts...)
 	ctx := ctxWithTenant(testTenant)

@@ -77,13 +77,13 @@ func (j *Joiner) MaxResponseBytes() int { return j.maxResponseBytes }
 // the read.
 func (j *Joiner) ResponseTooLargeError() *common.AppError {
 	return common.Operational(http.StatusRequestEntityTooLarge, common.ErrCodeJoinedResponseTooLarge,
-		fmt.Sprintf("the answer of a joined request exceeds the %d bytes it may hold under the transaction's lock — page the read", j.maxResponseBytes))
+		fmt.Sprintf("the answer of a joined request exceeds the %d bytes it may hold while it holds the transaction — page the read", j.maxResponseBytes))
 }
 
 // ErrHeldResponseTooLarge is what a door's held writer reports to a handler
 // whose answer passes the ceiling. The handler's own error, if it returns one,
 // is not what the caller is told: the join layer's refusal is.
-var ErrHeldResponseTooLarge = errors.New("the answer of a joined request exceeds what it may hold under the transaction's lock")
+var ErrHeldResponseTooLarge = errors.New("the answer of a joined request exceeds what it may hold while it holds the transaction")
 
 // CheckRoom reports whether the transaction a verified pass names has room for
 // another waiting request. A door that must read its request before the handler
@@ -117,7 +117,7 @@ type Pass struct{ claims token.Claims }
 
 // Verify checks the pass itself: its signature, then its shape — the callout
 // and the number it names — then its expiry. It needs neither the transaction's
-// lock nor the request, so a door verifies before it reads anything the compute
+// gate nor the request, so a door verifies before it reads anything the compute
 // node sends: a pass that is refused costs no buffer.
 //
 // An empty pass is not a joined request: it returns (nil, nil), and

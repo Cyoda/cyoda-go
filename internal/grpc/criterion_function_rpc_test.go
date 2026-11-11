@@ -20,6 +20,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -42,7 +43,7 @@ func newTestEnvWithLocalCriteria(t *testing.T) (*CloudEventsServiceImpl, *workfl
 	}
 
 	lp := localproc.New()
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(lp))
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(lp), workflow.WithCoordination(txcoord.New(txMgr)))
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())

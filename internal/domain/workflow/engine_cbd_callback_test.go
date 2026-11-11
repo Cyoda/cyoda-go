@@ -10,6 +10,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -56,7 +57,7 @@ func newCallbackEnv(t *testing.T, procs []spi.ProcessorDefinition, dispatch func
 	for _, w := range wrapTx {
 		engineTx = w(engineTx)
 	}
-	engine := NewEngine(factory, uuids, engineTx, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, engineTx, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(engineTx)))
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-callback", ModelVersion: "1.0"}
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{

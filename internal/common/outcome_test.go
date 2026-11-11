@@ -35,16 +35,17 @@ func TestWriteError_RecordsOutcome(t *testing.T) {
 	}
 }
 
-func TestFailureRecorded(t *testing.T) {
-	if FailureRecorded(context.Background()) {
+func TestRecordedFailure(t *testing.T) {
+	if RecordedFailure(context.Background()) != nil {
 		t.Fatal("a context with no holder reads as failed")
 	}
 	ctx, _ := WithOutcome(context.Background())
-	if FailureRecorded(ctx) {
+	if RecordedFailure(ctx) != nil {
 		t.Fatal("a fresh holder reads as failed")
 	}
-	RecordOutcome(ctx, Operational(http.StatusNotFound, ErrCodeEntityNotFound, "gone"))
-	if !FailureRecorded(ctx) {
-		t.Fatal("a recorded failure is not read")
+	recorded := Operational(http.StatusNotFound, ErrCodeEntityNotFound, "gone")
+	RecordOutcome(ctx, recorded)
+	if got := RecordedFailure(ctx); got != recorded {
+		t.Fatalf("RecordedFailure = %v; want the recorded error", got)
 	}
 }

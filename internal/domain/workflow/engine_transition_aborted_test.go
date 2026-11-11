@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -35,7 +36,7 @@ func TestManualTransition_StaleEmitsTransitionAborted(t *testing.T) {
 			return entity, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ifmatch-aborted", ModelVersion: "1.0"}

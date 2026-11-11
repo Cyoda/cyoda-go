@@ -376,7 +376,7 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 // collection answered in part would be a wrong answer.
 //
 // A request answers all of its frames or only its failure. The frame sent once
-// an error envelope has recorded the request's failure (common.FailureRecorded)
+// an error envelope has recorded the request's failure (common.RecordedFailure)
 // is that envelope: the frames before it are let go of, and nothing after it is
 // held, so a stream that fails after some frames answers the error alone.
 type heldStream struct {
@@ -416,7 +416,7 @@ func (s *heldStream) SendMsg(m any) error {
 		// The failure has been answered; nothing follows it.
 		return nil
 	}
-	if common.FailureRecorded(s.ctx) {
+	if common.RecordedFailure(s.ctx) != nil {
 		// This frame carries the failure: the frames before it are not part
 		// of the answer.
 		s.held, s.bytes = nil, 0

@@ -20,6 +20,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
@@ -811,7 +812,7 @@ func newTrackingHandlerWrapping(t *testing.T, backend string, wrap func(spi.Tran
 	proc := &stubExternalProc{}
 	engineCAS := &casHookFactory{StoreFactory: raw}
 	engine := wfengine.NewEngine(engineCAS, common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
-		wfengine.WithExternalProcessing(proc))
+		wfengine.WithExternalProcessing(proc), wfengine.WithCoordination(txcoord.New(tracker)))
 
 	armed := &armedFactory{StoreFactory: raw}
 	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(tracker), platformclock.Real())

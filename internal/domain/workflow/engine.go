@@ -186,7 +186,14 @@ func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.Tran
 		opt(e)
 	}
 	if e.coord == nil {
-		// An engine on its own coordinates the transactions it alone runs.
+		if e.extProc != nil {
+			// Its processor scopes would sit where the doors and the
+			// owner's loop never look: a callback would re-parent to the root
+			// and a pause would release no gate.
+			panic("workflow.NewEngine: WithExternalProcessing needs WithCoordination, the coordination its callouts and callbacks share")
+		}
+		// An engine that makes no callouts has no callbacks and no processor
+		// scopes to share.
 		e.coord = txcoord.New(txMgr)
 	}
 
@@ -214,9 +221,9 @@ func WithExternalProcessing(extProc contract.ExternalProcessingService) EngineOp
 // ASYNC_NEW_TX processor scopes in. It must be the one the external processing
 // service registers its callouts with, and the one the callback doors open
 // their scopes in: a processor scope is the parent of the callouts begun from
-// it and of their callbacks. Without it the engine builds one of its own over
-// txMgr, which serves only an engine whose callouts and callbacks no other
-// component coordinates.
+// it and of their callbacks. It is required with WithExternalProcessing;
+// NewEngine panics without it. An engine with no external processing builds
+// one of its own.
 func WithCoordination(c txcoord.Coordination) EngineOption {
 	return func(e *Engine) {
 		e.coord = c

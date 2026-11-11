@@ -12,6 +12,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -856,7 +857,7 @@ func setupEngineForCBDFire(t *testing.T, initialMs int64, mock *mockExternalProc
 	rawTxMgr := factory.NewTransactionManager(uuids)
 	tracker := newTxLeakTracker(rawTxMgr)
 	clock, advance := steppableClock(initialMs)
-	opts := []EngineOption{WithExternalProcessing(mock)}
+	opts := []EngineOption{WithExternalProcessing(mock), WithCoordination(txcoord.New(tracker))}
 	if maxStateVisits > 0 {
 		opts = append(opts, WithMaxStateVisits(maxStateVisits))
 	}

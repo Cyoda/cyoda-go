@@ -100,8 +100,15 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 
 			buffered := newBufferedWriter(j.MaxResponseBytes())
 			tooLarge := j.ResponseTooLargeError()
+			// failed is a failure the outcome recorded under a status the
+			// handler had already written as a success: the scope ends as a
+			// failed request, so its answer is the failure.
+			var failed *common.AppError
 			rewrite, err := j.RunVerified(r.Context(), pass, class, func(ctx context.Context) *common.Outcome {
 				next.ServeHTTP(buffered, r.WithContext(ctx))
+				if rec := common.RecordedFailure(ctx); rec != nil && buffered.statusCode() < http.StatusBadRequest {
+					failed = rec
+				}
 				return buffered.outcome(tooLarge)
 			})
 			switch {
@@ -115,6 +122,8 @@ func TxJoin(j *txjoin.Joiner) func(http.Handler) http.Handler {
 				// Fail closed: the answer is not sent in part. The gate has
 				// already been given back.
 				common.WriteError(w, r, tooLarge)
+			case failed != nil:
+				common.WriteError(w, r, failed)
 			default:
 				buffered.flushTo(w)
 			}
