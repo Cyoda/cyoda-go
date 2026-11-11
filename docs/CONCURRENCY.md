@@ -102,6 +102,7 @@ each non-entity store has its own RWMutex):
 for completeness):
 - `internal/cluster/modelcache/cache.go` — RWMutex on cache entries; Lock for invalidation, RLock for Get.
 - `internal/txgate/txgate.go`, `internal/txcoord/inprocess.go`, `internal/fence/fence.go` — the transaction coordination's three mutexes: the gate registry's `mu`, the coordination's `mu` (scope tree, marks, paused stack, sealed and broken state), and the fence's `mu`. Lock order: the gate's, then the coordination's, then the fence's; the gate's admission predicate takes the coordination's `mu`, so the coordination never calls the gate while it holds it, and never cancels a context under it. Each is brief. None is held across a store call, a callout or a wait: the waits for open scopes (`Advance`, the end of a callout, `Seal`) watch a channel the coordination replaces each time a scope ends.
+- `internal/txcoord/durable.go:36` and `:121` — the durable coordination (a backend that offers `TransactionCoordinationCapable`): `durable.mu` on the map of callouts this node runs the loop of, and each `durableCallout.mu` on the error its end recorded. Each is held for one map or field access, brief, never across a call to the backend's coordinator.
 - `internal/cluster/registry/gossip.go` — multiple mutexes: `mu` on node meta, `subsMu` on subscription map, plus the gossipDelegate's broadcast queue.
 - `internal/cluster/dispatch/nonce_cache.go` — Mutex; AEAD replay-window enforcement.
 - `internal/domain/search/path_validation_cache.go` — RWMutex on validation results.

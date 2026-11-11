@@ -27,8 +27,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   fails where before it could commit what the refused workflow had done; so is
   a joined conditional delete that fails, and a joined write whose answer
   passes `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`. Every commit and rollback
-  of the operation's transaction first waits for the callbacks still in
-  progress and refuses later ones. See `cyoda help cluster` and
+  of the operation's transaction refuses later callbacks; on the in-tree
+  backends it first waits for the callbacks still in progress, and on a
+  backend with location-independent transactions a callback still in
+  progress is refused completion instead. See `cyoda help cluster` and
   `docs/cloud-parity/callback-scopes.md`.
 
 - **New error code `TRANSACTION_ROLLBACK_ONLY` (`409`, not retryable).** The
@@ -620,8 +622,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   try's answer limit plus `CYODA_CALLOUT_PASS_ALLOWANCE` (default `30s`). The
   variable is ignored if set; remove it from deployment configuration.
 
-- **Every request that joins a transaction holds that transaction's lock — a
-  read as much as a write.** Two callbacks of one transaction used to run at
+- **On the in-tree backends, every request that joins a transaction holds that
+  transaction's lock — a read as much as a write.** Two callbacks of one transaction used to run at
   once; on the in-tree backends they are served one at a time, so a compute member that parallelises its
   callbacks for speed gains nothing by it. The pass is verified before the
   request is read, the request is read whole before the lock is taken and its
@@ -1374,6 +1376,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `ifMatch`. See `cyoda help errors.PRECONDITION_REQUIRED`.
 
 ### Added
+
+- **Location-independent transactions through an optional storage-plugin
+  capability.** A storage plugin can supply the coordination of its
+  transactions itself, through the SPI's optional
+  `TransactionCoordinationCapable` on its store factory. cyoda-go asks for it
+  once at start-up and logs the choice at INFO (`transaction coordination
+  selected`, `locationIndependent`); an error from the backend fails start-up.
+  On such a backend the pass a compute member receives, and a callout handed
+  over to another node, name no owning node, and every node serves a callback
+  where it lands, with no proxy hop. The callbacks of one transaction may then
+  run at the same time: of two that wrote the same entity from the same
+  version, one keeps nothing and is answered a retryable `409 CONFLICT`. The
+  scope rules and the answers are otherwise the same. None of the in-tree
+  backends (memory, SQLite, PostgreSQL) offers the capability. See `cyoda help
+  cluster` (TRANSACTION ROUTING).
 
 - **An async search that failed says why.** The async search status carries
   an optional `failureReason`, present only when the status is `FAILED`:

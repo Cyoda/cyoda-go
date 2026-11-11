@@ -258,8 +258,9 @@ answered, and after later processors of the same transition have run.
 
 - Each callout is numbered by a **pair**: a **round**, and a **try within the
   round**. The owner opens the next round before every try it makes itself and
-  before every hand-over to another node, and each time it waits until the
-  earlier try's callbacks in progress have ended (below). A node that received a hand-over opens no round: it
+  before every hand-over to another node, and each time, on a serialising
+  backend, it waits until the earlier try's callbacks in progress have ended
+  (below). A node that received a hand-over opens no round: it
   numbers its own tries within the round it was given — 1, then 2, and so on —
   and touches nothing on the owner.
 - The transaction token is minted per try. It names the owner node, the
@@ -303,10 +304,12 @@ answered, and after later processors of the same transition have run.
   processors of a workflow it started, and when its scope ends. A refused
   callback performs no store operation of any kind — no write, no read, no
   audit record.
-- When the owner opens a round, and when a callout ends, the platform waits
-  until no callback admitted under the earlier round, or under the ended
-  callout, is still in progress before it proceeds; nothing of the earlier
-  member can start afterwards.
+- When the owner opens a round, and when a callout ends, a serialising
+  backend (memory, SQLite, PostgreSQL) waits until no callback admitted under
+  the earlier round, or under the ended callout, is still in progress before
+  it proceeds; nothing of the earlier member can start afterwards. A
+  location-independent backend does not wait: such a callback is refused
+  completion when it ends (`callback-scopes.md`).
 - No database statement is interrupted — not by the fence, and not by the
   member's connection dropping. A callback that was already reading or writing
   when the work moved on runs to its end, and is then discarded and answered

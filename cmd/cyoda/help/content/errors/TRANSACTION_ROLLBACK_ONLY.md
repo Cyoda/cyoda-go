@@ -28,7 +28,7 @@ Two requests meet this code.
 - The operation that began the transaction (the owner), when it tries to commit, or to write, in the marked transaction. The message names the code the failed callback was answered with. The owner's operation fails and is rolled back; nothing is committed.
 - A request that joins the transaction under a part that is marked. It is refused at once, reads included, because what it would read or write belongs to a part that can no longer be kept.
 
-The mark also stops the callout the failed write was made under, and the owner then ends that callout. So a compute member that carries on under the same token after a failed write sees this code only until then. After it, its callbacks are answered `410 CALLOUT_SUPERSEDED` while the transaction is open, and `404 TRANSACTION_NOT_FOUND` once the owner has rolled it back.
+The mark also stops the callout the failed write was made under before its next try, and the owner then ends that callout. So a compute member that carries on under the same token after a failed write sees this code only until then. After it, its callbacks are answered `410 CALLOUT_SUPERSEDED` while the transaction is open, and `404 TRANSACTION_NOT_FOUND` once the owner has rolled it back.
 
 Under an `ASYNC_NEW_TX` processor the mark stops at that processor: the processor fails, everything its callbacks wrote is discarded, and the operation goes on. When the transaction has also lost a write race, the owner gets the retryable `409 CONFLICT` instead of this code: on a new transaction the failed write may succeed.
 

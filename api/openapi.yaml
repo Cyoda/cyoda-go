@@ -950,7 +950,7 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: >-
-            M2M client not found A request carrying an `X-Tx-Token` is also answered
+            M2M client not found. A request carrying an `X-Tx-Token` is also answered
             404 when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -1040,7 +1040,7 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: >-
-            M2M client not found A request carrying an `X-Tx-Token` is also answered
+            M2M client not found. A request carrying an `X-Tx-Token` is also answered
             404 when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -4968,7 +4968,7 @@ paths:
                   errorCode: BAD_REQUEST
         "404":
           description: >-
-            Entity model not found A request carrying an `X-Tx-Token` is also
+            Entity model not found. A request carrying an `X-Tx-Token` is also
             answered 404 when the transaction the token names is no longer open,
             with `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -5211,7 +5211,7 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: >-
-            Model not found A request carrying an `X-Tx-Token` is also answered 404
+            Model not found. A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -6910,6 +6910,10 @@ paths:
             unknown client id, or a wrong secret). A 401 decided after reading
             the client store is held for 500 ms; a 401 for missing credentials or a
             malformed client id is immediate. Carries WWW-Authenticate Basic realm="cyoda".
+            In a cluster, a request carrying an `X-Tx-Token` that does not
+            verify is refused by the transaction routing layer before the
+            endpoint runs, with a problem body whose `properties.errorCode` is
+            UNAUTHORIZED.
           headers:
             WWW-Authenticate:
               description: The client authentication scheme and realm, Basic realm="cyoda".
@@ -6919,6 +6923,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Forbidden - access_denied (the assertion's caas_org_id is
             not the client's tenant)
@@ -6938,6 +6945,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "410":
+          description: >-
+            TRANSACTION_EXPIRED: in a cluster, a request carrying an
+            `X-Tx-Token` past its expiry is refused by the transaction routing
+            layer before the endpoint runs. Not retryable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "429":
           description: Too Many Requests - slow_down (the client has used its
             per-node limit of token requests per minute, counted across both
@@ -6977,7 +6993,11 @@ paths:
           description: Service Unavailable - temporarily_unavailable (the client
             store or the trusted-key store is unavailable, or no client-secret
             check slot freed up within 1 second). Retry after the
-            Retry-After delay.
+            Retry-After delay. In a cluster, a request carrying an
+            `X-Tx-Token` that names another node is forwarded to it, and is
+            answered TRANSACTION_NODE_UNAVAILABLE, with a problem body, when
+            that node cannot be reached — retryable only when the request was
+            not sent to it.
           headers:
             Retry-After:
               description: Seconds to wait before retrying.
@@ -6987,6 +7007,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - basicAuth: []
   /platform-api/stream-data/config:
@@ -13322,9 +13345,12 @@ components:
         TRANSACTION_ROLLBACK_ONLY: the transaction, or the part of it the
         request would run in, can only be rolled back — a request that joined
         it (carrying its `X-Tx-Token`) failed a write. A request carrying the
-        token is refused before it runs; the operation that owns the
-        transaction is refused when it would commit, and the message names the
-        code the failed request got. Not retryable.
+        token is refused before it runs; one already running whose part of the
+        transaction was marked meanwhile, by a failed write of a request nested
+        under it, is answered this code when it ends, and keeps nothing. The
+        operation that owns the transaction is refused when it would commit,
+        or write, and the message names the code the failed request got. Not
+        retryable.
       content:
         application/problem+json:
           schema:

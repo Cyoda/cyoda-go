@@ -473,7 +473,7 @@ and `EntityFunctionCalculationResponse.json` (see `cyoda help cloudevents`).
 
 An API request made under a transaction token is not cancelled when its client
 goes away: once it has its turn on the transaction it runs to completion on the
-node that holds the transaction. Until then — while it waits its turn behind
+node that serves it. Until then — while it waits its turn behind
 another request under the same token — it has touched nothing, and a client that
 goes away is simply dropped. If the connection drops, or the node the request
 arrived at answers a `503 TRANSACTION_NODE_UNAVAILABLE` that is not retryable —
@@ -673,7 +673,7 @@ Errors a compute member sees on a callback:
 - `errors.CALLOUT_SUPERSEDED` — `410` — the member was replaced, or its callout has ended; also a callback still in progress when that happened, whose writes are discarded
 - `errors.TRANSACTION_NOT_FOUND` — `404` — the transaction has ended, or its storage session ended under the callback
 - `errors.TRANSACTION_ROLLBACK_ONLY` — `409` — the part of the transaction the callback would run in can only be rolled back, because an earlier write under it failed
-- `errors.CONFLICT` — `409` — not retryable on a callback: the transaction lost a write race and cannot commit; the operation that owns it is retried, not the callback
+- `errors.CONFLICT` — `409` — not retryable when the transaction lost a write race and cannot commit: the operation that owns it is retried, not the callback. On a backend with location-independent transactions a callback can also get a retryable `409 CONFLICT`, when another callback of the transaction wrote the same entity from the same version first; see `errors.CONFLICT`
 - `errors.TRANSACTION_BUSY` — `503` — retryable — another callback of the transaction is paused in a callout of its own
 - `errors.TRANSACTION_EXPIRED` — `410` — the token is past its expiry
 - `errors.UNAUTHORIZED` — `401` — the token does not name a callout and a try number at all (detail "invalid transaction token"); a callback whose bearer token fails gets the same code with the detail "authentication failed"

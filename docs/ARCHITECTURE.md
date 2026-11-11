@@ -512,9 +512,14 @@ opened it — the **owner** — runs the workflow engine; while a callout is out
 the compute member handling it makes callbacks that carry the transaction's
 pass and join the same transaction. `internal/txcoord` coordinates them: the
 owner's callouts, the callbacks that join under a callout's pass, and the
-`ASYNC_NEW_TX` processors that run inside the transaction. The fence
-(`internal/fence`) and the gate (`internal/txgate`) sit behind it; no other
-package imports `txgate`, and only `txcoord` calls `fence.Check`.
+`ASYNC_NEW_TX` processors that run inside the transaction. `txcoord.Select`
+picks one of two implementations at start-up: the in-process one
+(`txcoord.New`), for memory, SQLite and PostgreSQL, or the durable one over a
+storage plugin's own coordinator (`txcoord.NewDurable`; *Location-independent
+transactions* below). The fence (`internal/fence`) and the gate
+(`internal/txgate`) sit behind the in-process implementation; no other package
+imports `txgate`, and only `txcoord` calls `fence.Check`. What follows
+describes the in-process implementation unless it says otherwise.
 
 **Scopes.** Every joined request runs in a **scope**, and a scope is
 all-or-nothing: either all its writes become part of the scope above it, or
@@ -660,9 +665,11 @@ after another on the goroutine that serves the request.
 *answer* is discarded by request correlation (§6.4), but while it works it makes
 callbacks — ordinary API requests carrying a pass. `internal/fence` decides
 which passes are current: one `Fence` per process, owned by the coordination,
-which decides in memory, for as long as a callout lasts. Every callback is
-routed to the node holding the transaction (§4.2), so that node's fence is the
-only judge, and no database step is needed.
+which decides in memory, for as long as a callout lasts. In-process, every
+callback is routed to the node holding the transaction (§4.2), so that node's
+fence is the only judge, and no database step is needed. On a
+location-independent backend the backend holds the fencing numbers, and the
+fence is not used.
 
 - **The number.** Each callout has a fencing number, the pair `(major, minor)`,
   ordered lexicographically. `Coordination.BeginCallout` registers a callout
@@ -719,14 +726,17 @@ first (`Coordination.Seal`): the entity service's `txScope.Commit` and
 (`flushAndCommitSegment`), the scheduled fire's commit, the engine's own
 rollbacks (`rollbackSealed`), and the transactions that make no callout (the
 workflow import's task removal, `recordEventInOwnTx`, and the scheduler's
-`failWithAudit`), one rule with no exceptions. Seal waits until no callback scope is open — the wait does not end
-with the owner's context, because a callback in progress still uses the
-transaction — then marks the transaction sealed, so that a later joined request
+`failWithAudit`), one rule with no exceptions. In-process, Seal waits until no
+callback scope is open — the wait does not end with the owner's context,
+because a callback in progress still uses the transaction — then marks the
+transaction sealed, so that a later joined request
 is refused with `410 CALLOUT_SUPERSEDED`. It reports, in order: the lost race
 when the root is marked or the transaction broken and `LostRace` says so; the
 broken cause; or `409 TRANSACTION_ROLLBACK_ONLY` when the root is marked. The
 order is Seal → the final save → commit; a rollback seals and ignores the
-answer.
+answer. On a location-independent backend Seal does not wait: the backend's
+`Seal` refuses every later scope, and a scope still in progress can no longer
+complete.
 
 **What the gate waits on is never the compute member.** The join layer has the
 whole request in memory before it takes the gate: the HTTP middleware verifies
@@ -775,14 +785,31 @@ it marks the parent.
 
 **Location-independent transactions.** A storage plugin may supply the
 coordination itself through the SPI's optional
-`TransactionCoordinationCapable` (`cyoda-go-spi` `coordination.go`). A
-transaction of such a store is location-independent: a callback is served by
-the node it reaches, and `Join` on it allows concurrent operations from any
-number of goroutines and nodes. The rules of the scope tree, the table of how a
-scope ends and the marks are the same; there is no gate and no stack rule, a
-pause only checks the scope again on resume, and the waits are not needed,
-because a scope in progress when its callout advances or ends cannot complete.
-Of two callback scopes that wrote the same entity from the same version, the
+`TransactionCoordinationCapable` (`cyoda-go-spi` `coordination.go`).
+`txcoord.Select` asks the store factory for it once, at start-up
+(`app/app.go`): a factory that offers it with a non-nil coordinator gets the
+durable coordination (`internal/txcoord/durable.go`), any other gets the
+in-process one, and an error from the backend fails start-up. The choice is
+logged at INFO (`transaction coordination selected`, `locationIndependent`).
+`CachingStoreFactory` forwards the capability of the factory it wraps
+(`internal/cluster/modelcache/factory.go`). A transaction of such a store is
+location-independent: the pass names no owner (`mintPass`,
+`internal/grpc/dispatch.go`), and neither does a hand-over
+(`newHandOverRequest`), which a receiving node of such a store accepts
+(`DispatchCalloutRequest.validate`); both proxies serve a pass with no owner
+locally (`proxy.HTTPRouting`, `proxy.ResolveNodeInfo`), so a callback is served
+by the node it reaches, and `Join` allows concurrent operations from any
+number of goroutines and nodes. The backend holds the scopes, the marks and the
+fencing numbers. The rules of the scope tree, the table of how a scope ends and
+the marks are the same; there is no gate and no stack rule, a pause only checks
+the scope again on resume, and nothing waits: a scope in progress when its
+callout advances or ends, or when the transaction is sealed, cannot complete,
+so it is discarded and answered `410 CALLOUT_SUPERSEDED`. Nothing cancels a
+callout running on another node when the scope it was begun from is
+superseded or marked, so the owner's loop checks that scope (`CheckScope`)
+after it begins the callout and at every `Advance` — before each try and each
+hand-over — and stops the callout when the scope can no longer complete. Of
+two callback scopes that wrote the same entity from the same version, the
 second to complete is discarded and answered the retryable `409 CONFLICT`. No
 in-tree backend implements the capability.
 
@@ -825,7 +852,9 @@ reached no compute member made no callback and keeps its own error.
 node, the earlier compute member stays admitted until the first callback of the
 later one arrives; its writes are repeats of an idempotent processor's own
 writes, and the wait at the end of the callout still settles each of them —
-kept or discarded — before anything the engine does next. A joined request
+kept or discarded — before anything the engine does next (on a
+location-independent backend nothing waits, and the backend refuses the
+completion of any still in progress). A joined request
 already in progress when its member is replaced — a read as much as a write —
 runs to its end and is then discarded. What a processor did outside cyoda is
 outside every one of these mechanisms: a rollback does not undo it and a repeat
@@ -966,7 +995,7 @@ itself and it proceeds as a cluster of one.
 
 ```go
 type Claims struct {
-    NodeID    string `json:"n"`           // the owner: the node holding the transaction
+    NodeID    string `json:"n"`           // the owner: the node holding the transaction; empty on a location-independent backend
     TxRef     string `json:"t"`           // UUID, key into the owner's local tx map
     ExpiresAt int64  `json:"e"`           // Unix seconds: the try's answer limit + CYODA_CALLOUT_PASS_ALLOWANCE
     Callout   string `json:"c"`           // the callout's request id
@@ -1011,9 +1040,11 @@ lifetime: the replay cache is in memory, so a node restarted inside the
 30-second skew window accepts a replay of a request its previous life ran.
 
 The token is a **pass**: it is minted per try, by the node that makes the
-hand-off, and `NodeID` is always the owner's — so a callback is routed to the
-node holding the transaction whichever node handed the work out. Which passes
-are current is the fence's decision (§3.8).
+hand-off, and `NodeID` is the owner's — so a callback is routed to the node
+holding the transaction whichever node handed the work out. On a
+location-independent backend (§3.8) `NodeID` is empty, and every node serves
+the callback where it lands. Which passes are current is the fence's decision,
+or the backend's on a location-independent one (§3.8).
 
 The token is opaque to the client. The router decodes it to extract `nodeID` without any network call -- the address is a local lookup in the registry's own directory of alive members (§4.1).
 
@@ -1025,8 +1056,9 @@ The token is opaque to the client. The router decodes it to extract `nodeID` wit
 3. If the route is model or workflow administration
      → 400 MODEL_ADMIN_IN_JOINED_TRANSACTION (before verification, on every node)
 4. Verify HMAC signature
-5. If claims.NodeID == self → serve locally
-6. If claims.NodeID != self → lookup address in gossip registry
+5. If claims.NodeID == self, or empty (a location-independent transaction)
+     → serve locally
+6. Otherwise → lookup address in gossip registry
 7. If node alive and its address passes SSRF validation
      → httputil.ReverseProxy to target node
 8. If node dead/unknown/address rejected → 503 TRANSACTION_NODE_UNAVAILABLE, retryable
@@ -1152,9 +1184,10 @@ upper bound, 275 s. Both sit inside PostgreSQL's idle-in-transaction ceiling
 (§3.4).
 
 **Fencing.** The callout's number rises before every try, which refuses the
-earlier compute member's callbacks, and the coordination then waits until no
-joined request of that member is still in progress; each one that was is
-discarded. The full account — the number, the pass, admission, the waits, and
+earlier compute member's callbacks, and the in-process coordination then
+waits until no joined request of that member is still in progress; each one
+that was is discarded. On a location-independent backend nothing waits: the
+backend refuses the completion of such a request. The full account — the number, the pass, admission, the waits, and
 the scopes the checks sit in — is §3.8.
 
 **The hand-over** is a POST to `http://peer/internal/dispatch/callout` under the
@@ -1239,8 +1272,9 @@ request carries the callout kind, the entity payload and meta, the workflow/tran
 the callout's txID, the tenant, the callout's attributed and executor principals and the executor's roles (all four principal fields required), a request id the
 owner mints and uses for every try, the callout's platform time (`atUnixMicro`,
 required), how many tries and how long an answer may
-take, the owner's node id and the fencing number the peer's tries are numbered
-under, the enclosing callouts (empty unless the callout was made from inside a
+take, the owner's node id (empty on a location-independent backend, whose
+receiving node accepts a hand-over without one, and only there) and the
+fencing number the peer's tries are numbered under, the enclosing callouts (empty unless the callout was made from inside a
 callback), whether the work may be given to a second compute member after a
 hand-off, and one kind-specific member (`Processor`, `Criterion` + `Target` +
 `ProcessorName`, or `Function`). The receiver takes the tags from the
