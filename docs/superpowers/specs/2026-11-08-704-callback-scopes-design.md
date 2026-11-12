@@ -242,7 +242,7 @@ type Coordination interface {
     // Owner side (the pnode running the callout's loop).
     BeginCallout(ctx context.Context, txID, calloutID string, outer []fence.Pair) (context.Context, func(), error)
     Advance(ctx context.Context, calloutID string, major uint32) error
-    Seal(ctx context.Context, txID string) error // ErrRollbackOnly, or the broken cause
+    Seal(ctx context.Context, txID string) error // ErrRollbackOnly, or the broken cause (in-process) or the backend's Seal failure
 
     // Any pnode that serves the request.
     Enter(ctx context.Context, txID string, pairs []fence.Pair, write bool) (Scope, context.Context, error)
@@ -706,7 +706,7 @@ Joined requests, both doors. Scope rows apply to every route that opens a scope
 |---|---|---|---|---|
 | any joined request | parent or ancestor scope marked | 409 | `TRANSACTION_ROLLBACK_ONLY` | no |
 | any joined request | another callback paused, request not its descendant | 503 | `TRANSACTION_BUSY` | yes |
-| any joined request | transaction broken or session ended | 404 | `TRANSACTION_NOT_FOUND` | no |
+| any joined request | transaction broken (in-process coordination) or session ended | 404 | `TRANSACTION_NOT_FOUND` | no |
 | any joined request | owner not live / not reachable before send | 503 | `TRANSACTION_NODE_UNAVAILABLE` | yes |
 | any joined request | proxied, failed after send | 503 | `TRANSACTION_NODE_UNAVAILABLE` | no |
 | scope request | in progress when its callout advanced or ended | 410 | `CALLOUT_SUPERSEDED` | no |
@@ -720,7 +720,7 @@ Owner operations:
 | Operation | Condition | Status / outcome | Code | Retryable |
 |---|---|---|---|---|
 | HTTP and gRPC entity create, create collection, update, update collection, patch, transition (loopback and named) | root marked | 409 / `CLIENT_ERROR` envelope | `TRANSACTION_ROLLBACK_ONLY` | no |
-| same | transaction broken by a dead session | 503 | `STORAGE_UNAVAILABLE` | yes |
+| same | transaction broken by a dead session (in-process coordination) | 503 | `STORAGE_UNAVAILABLE` | yes |
 | same | transaction lost a race | 409 | `CONFLICT` | yes (unchanged) |
 | scheduled fire | root marked | fire fails and rolls back, then bookkeeping | `TRANSACTION_ROLLBACK_ONLY` in the fire's failure | per bookkeeping |
 | `ASYNC_NEW_TX` processor | its scope marked | processor failed (non-fatal), operation continues | recorded in `STATE_PROCESS_RESULT` | — |
