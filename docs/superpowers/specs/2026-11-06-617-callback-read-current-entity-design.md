@@ -29,7 +29,10 @@ replaces that transaction's pending version.
   postgres. `GET /entity/{id}?transactionId=X` returns the entity as X left it,
   which is what the parameter's documentation already promises.
 - Every backend enforces unique keys on the transaction's final entity, at
-  commit.
+  commit, with the keys it reads from its own stored model; no caller passes
+  keys.
+- A model cannot be unlocked or deleted while an entity is being written to
+  it (§4.5).
 
 ### Builds on callback scopes (#704)
 
@@ -343,7 +346,7 @@ back to the caller) and is corrected.
   the fix (driving the kernel directly in each plugin, since spitest has no
   harness in the SPI repo).
 
-## 4. Unique keys: computed at commit, from the final entities, on every backend
+## 4. Unique keys: computed at commit, from the final entities and the stored model, on every backend
 
 Today the backends disagree:
 
@@ -365,37 +368,88 @@ documents a "free before claim" rule (`cmd/cyoda/help/content/models.md`
 re-keying works on commit-time backends, which is false today. With §2's saves,
 postgres would also check every intermediate state.
 
+The keys themselves reach storage on the request context: the entity service
+attaches the model's keys (`spi.WithUniqueKeys`, `service.go` ~:196, ~:2064,
+~:2532) and the store reads them (`spi.UniqueKeysFromContext`). That design
+(`docs/superpowers/specs/2026-06-28-composite-unique-keys-design.md` §3.1)
+rejected the store reading the keys through the main module's model cache,
+which a plugin cannot reach; it did not consider the store reading its own
+stored model, which holds the keys (`spi.ModelDescriptor.UniqueKeys`, persisted
+by each model store). It has two failure modes:
+
+- A write that does not attach the keys enforces nothing, without error;
+  `UniqueKeysFromContext` returns `nil` for "no keys" and "not attached" alike.
+  The scheduled fire attaches none (§4.3).
+- A caller with an out-of-date cached model enforces the old keys. The design
+  accepted this for multi-node postgres (§ "The residual risk" of that spec):
+  a node that misses the unlock and relock gossip enforces the old keys until
+  its cache lease ends, and data it admits can break the new key and stays.
+
 ### 4.1 The rule
 
 At commit, a transaction's claims are computed from its final entities:
 
-1. Release the claims of every entity the transaction wrote or deleted.
-2. Compute the claims of every entity the transaction wrote, from its final
-   data, with the model's unique keys. A partial composite key fails the commit
-   with `spi.ErrPartialUniqueKey`.
-3. Insert those claims. A value claimed twice inside the transaction, or held
+1. Read, from the store's own model store and inside the committing
+   transaction, the model of every entity the transaction wrote (one read per
+   distinct model). A model that is not `LOCKED` (unlocked or deleted since the
+   request checked it) fails the commit with a new `spi.ErrModelNotLocked`
+   (§4.5).
+2. Release the claims of every entity the transaction wrote or deleted.
+3. Compute the claims of every entity the transaction wrote, from its final
+   data, with its model's unique keys as read in step 1. A partial composite
+   key fails the commit with `spi.ErrPartialUniqueKey`.
+4. Insert those claims. A value claimed twice inside the transaction, or held
    by an entity outside the transaction's writes (committed, or claimed by a
    concurrent transaction that commits first), fails the commit with
    `spi.ErrUniqueViolation`.
 
-A save inside a transaction does no claim work beyond recording the entity's
-model keys, taken from the write's context (`spi.UniqueKeysFromContext`), last
-write wins, as memory's `recordUniqueKeys` already does. Because step 1
-releases unconditionally, **every write of an entity whose model declares keys
-must carry them**; a write without them would drop the entity's claims. The
-builder lists every engine and service write site (the scheduled fire is the
-only one without keys today, §4.3) and a test per door asserts the claims
-survive a write through it. A write outside a transaction keeps its current
-claim path (postgres and sqlite `replaceClaims` in the statement; memory
-`saveUnlocked`); it is its own transaction, so its claims are its final ones.
+A save inside a transaction does no claim work. A write outside a transaction
+is its own transaction and does steps 1-4 in its own statement or critical
+section (postgres and sqlite `replaceClaims`; memory `saveUnlocked`), with the
+model read from its own model store in the same way.
+
+No caller passes keys. The store is the only reader of the keys, from the one
+place they are kept, at the moment it enforces them; a write path cannot
+forget them or pass out-of-date ones, and the stale-cache residual is gone.
+
+**Call stack cleanup.** Deleted, with their tests rewritten to state keys on
+the model instead:
+
+- SPI: `WithUniqueKeys`, `UniqueKeysFromContext` (`unique_context.go` and its
+  test).
+- `internal/domain/entity/service.go`: the context half of `withUniqueKeys`
+  (it becomes a check of the request body that returns only an error, §4.1
+  last paragraph), `parsedItem.uniqueKeys` (~:1934, ~:1988) and the two
+  per-item `WithUniqueKeys` assignments with their comments (~:2062-2064,
+  ~:2531-2532), and the comments that describe keys riding the context
+  (~:261-263, ~:2244-2245).
+- memory: `recordUniqueKeys`, `txUniqueKeys` and their cleanup and capture
+  (`txmanager.go` ~:104, ~:111-116, ~:237, ~:282-292, ~:594, ~:908;
+  `entity_store.go` ~:281, ~:349, ~:376); `saveUnlocked` reads the model
+  instead of the context (~:420).
+- sqlite: `recordUniqueKeys`, `uniqueKeysFor`, `txUniqueKeys`, and the
+  savepoint note about not snapshotting them (`txmanager.go` ~:128, ~:147-152,
+  ~:231, ~:241-258, ~:686, ~:1140, ~:1448-1455; `entity_store.go` ~:325, ~:537,
+  ~:560); the non-transactional `replaceClaims` call takes the model's keys
+  (~:469).
+- postgres: `replaceClaims` takes the keys from the model read, not the context
+  (`unique_claims.go` ~:29).
+
+The builder's exit check: `grep -rn "UniqueKeysFromContext\|WithUniqueKeys\|recordUniqueKeys\|txUniqueKeys\|uniqueKeysFor"`
+over cyoda-go, the SPI and the three plugins is empty.
 
 Swaps, chains of moves and free-after-claim all commit when the final state is
-unique. The request-body pre-check (`service.go` `withUniqueKeys`: a body with a
-partial key is `422` before the transaction begins) stays.
+unique. The request-body pre-check stays: a body with a partial key is `422`
+before the workflow runs (`service.go` `withUniqueKeys`, ~:186-196, using the
+model the service has already loaded). It validates the client's input; it no
+longer passes anything to storage.
 
 ### 4.2 Per backend
 
-- **memory:** in commit, the release set is every entity in `tx.Buffer` and
+- **all backends:** step 1 reads the model rows in a fixed order (by model
+  name, then version), so two commits never wait on each other's model reads
+  in opposite orders.
+- **memory:** in commit, under `entityMu`, the release set is every entity in `tx.Buffer` and
   `tx.Deletes`; a committed claim held by an entity in that set does not
   conflict, and the intra-batch check (`pending`) catches a value two buffered
   entities claim. The apply step releases the claims of **every** entity in the
@@ -403,19 +457,27 @@ partial key is `422` before the transaction begins) stays.
   inserting one entity at a time (`txmanager.go` ~:1110-1117) loses a claim on
   a swap: A x→y then B y→x inserts `y→A`, and `releaseClaims(B)`
   (`store_factory.go` ~:311-317) deletes key `y`.
-- **sqlite:** in the commit flush, release the claims of every buffered and
+- **sqlite:** in the commit flush, inside its write transaction, read the
+  models, then release the claims of every buffered and
   deleted entity first, then insert all new claims.
 - **postgres:** keep the immediate index. Transactional saves stop calling
-  `replaceClaims`; they record the entity id and its model keys in the
-  transaction's state. At commit, after read-set validation and **before**
-  `stampCommitInstant` (its rule: nothing after `cyoda_stamp` waits on a lock,
+  `replaceClaims`; they record the entity id in the transaction's state. At
+  commit, after read-set validation and **before** `stampCommitInstant` (its
+  rule: nothing after `cyoda_stamp` waits on a lock,
   `transaction_manager.go` ~:417-420, relied on by `ConsistencyTime`,
-  `consistency_time.go` ~:186-191), run steps 1-3 as `DELETE` and `INSERT`
-  statements, inserting in a deterministic order (by model, key id,
-  signature). The recorded set must be right after `ROLLBACK TO SAVEPOINT`:
+  `consistency_time.go` ~:186-191), run steps 1-4: step 1 as a `SELECT … FOR
+  SHARE` of the `models` rows, steps 2-4 as `DELETE` and `INSERT` statements,
+  inserting in a deterministic order (by model, key id, signature).
+
+  The transaction is `REPEATABLE READ` (`transaction_manager.go` ~:173). A
+  `models` row changed and committed after its snapshot fails step 1 with a
+  serialization conflict (`40001`, retryable `409 CONFLICT`); the retry is
+  refused by the service's state check, or, if that read a stale cache, by
+  step 1. A change not yet committed makes step 1 wait for it. So the commit
+  never uses keys or a state older than the row's current ones. The recorded set must be right after `ROLLBACK TO SAVEPOINT`:
   either snapshot it with the savepoint, or at commit keep only the ids whose
   `entities` row this transaction wrote. The claim release in `deleteOn`
-  (`entity_store.go` ~:884) **moves to commit** (step 1), and the model-wide
+  (`entity_store.go` ~:884) **moves to commit** (step 2), and the model-wide
   claim `DELETE` in `DeleteAll` (~:935) is removed inside a transaction: its
   per-entity deletes (~:927-931) already record every id, and a model-wide
   release at commit would drop the claims of entities a rolled-back savepoint
@@ -441,14 +503,14 @@ Commit errors already map to the right answers: `common.Internal` turns
 classifies a 23505 on `unique_claims_uq` by constraint name
 (`transaction_manager.go` ~:1031).
 
-### 4.3 Scheduled fires carry the model's unique keys
+### 4.3 Scheduled fires
 
 `fireScheduled` begins its transaction without `spi.WithUniqueKeys`
-(`fire_scheduled.go` ~:146; the only callers are in `service.go` ~:196, :2064,
-:2532). memory then releases the entity's claims and inserts none
-(`txmanager.go` ~:958-963, ~:1114-1117); postgres and sqlite skip claim work and
-keep stale claims. The fire attaches the anchor model's keys, as the entity
-service does. A fire whose final entity breaks a key then fails at commit,
+(`fire_scheduled.go` ~:146). memory then releases the entity's claims and
+inserts none (`txmanager.go` ~:958-963, ~:1114-1117); postgres and sqlite skip
+claim work and keep stale claims. With §4.1 the fire needs no change for this:
+its commit reads the model like any other. A fire whose final entity breaks a
+key then fails at commit,
 the entity unchanged by that transaction. (A segmented fire, through a
 `COMMIT_BEFORE_DISPATCH` processor, has already committed its earlier segments;
 each segment's commit is checked on its own final entities, §4.1.) That is a failed run like any other
@@ -470,6 +532,61 @@ asserts this outcome.
 - "Transactional ordering" in `models.md` and the free-before-claim sentence in
   `UNIQUE_VIOLATION.md` are replaced by: keys are checked on the transaction's
   final entities at commit.
+- Tests that attach keys with `spi.WithUniqueKeys` (`service_unique_keys_test.go`;
+  in memory `unique_claims_test.go`, `tx_abort_test.go`,
+  `sm_audit_txindex_prune_test.go`; in sqlite `unique_claims_test.go`,
+  `sm_audit_tx_join_test.go`; in postgres `unique_claims_test.go`,
+  `entity_store_nontx_atomic_test.go`) declare the keys on a locked model
+  instead.
+- The composite-unique-keys help and docs that describe the gossip/TTL
+  staleness residual, if any (builder greps `models.md`, `UNIQUE_VIOLATION.md`,
+  `docs/`), drop it.
+
+### 4.5 A model cannot change while entities are being written to it
+
+Unique keys, like the schema, may change only while a model is `UNLOCKED`, and
+a model may be unlocked or deleted only when it has no entities. Today both
+rules are checked by the service before it acts, not where the change is made:
+
+- An entity write checks that the model is `LOCKED` when the request starts
+  (`service.go` ~:226, ~:1954); nothing checks it at commit.
+- Unlock and delete count the model's entities (`internal/domain/model/service.go`
+  ~:382, ~:448, `EntityStore.Count` outside any transaction) and then change
+  the model in a separate call (`ModelStore.Unlock`, `ModelStore.Delete`).
+
+So an entity write and an unlock or delete that run together can both succeed:
+the write commits an entity into a model that is now unlocked (its keys free
+to change) or deleted. The fix puts both checks where the change is made:
+
+- **The write side** is step 1 of §4.1: the commit reads the model and refuses
+  one that is not `LOCKED` (`spi.ErrModelNotLocked`, answered as the service's
+  existing `409 MODEL_NOT_LOCKED`).
+- **The unlock and delete side:** `ModelStore.Unlock` and `ModelStore.Delete`
+  check for live entities themselves, inside the change, and refuse with a new
+  `*spi.ModelHasEntitiesError` (carrying the count; `errors.Is` matches
+  `spi.ErrModelHasEntities`), answered as today's `409 MODEL_HAS_ENTITIES` with
+  the same props. The service's `Count` calls are deleted.
+  - postgres: `Unlock` already flips the state first, as a write claim on the
+    `models` row, in a `READ COMMITTED` transaction (`model_store.go` ~:254-260,
+    ~:428-433); it then counts in a later statement, which sees every entity
+    committed before its claim, and rolls back if any exist. `Delete` (one
+    statement today, ~:142-167) becomes the same: claim the row, count, delete.
+    A commit that read the row `FOR SHARE` first makes the claim wait until it
+    ends; a claim made first makes the commit's read fail (§4.2).
+  - memory: `Unlock` and `Delete` count and change under `entityMu` (write),
+    the lock entity commits hold; the model store's own lock is taken inside
+    `entityMu`, never around it.
+  - sqlite: count and change in one write transaction; sqlite has one writer.
+
+### 4.6 Rejected alternatives
+
+- **Assert that the caller attached the keys** (`UniqueKeysFromContext`
+  returning "not stated", storage refusing a save without it). It closes the
+  forgotten-keys hole but keeps the caller as the source of the keys, so the
+  out-of-date-keys hole stays, and every write path keeps an obligation.
+- **One wrapper in cyoda-go that attaches the keys to every write.** Same: the
+  keys still come from the main module's cache, and code that reaches the
+  plugin's factory directly bypasses it.
 
 ## 5. Behaviour visible to clients
 
@@ -488,6 +605,8 @@ asserts this outcome.
 | A joined callback whose request body leaves a partial key | `422` at the callback, every backend (`withUniqueKeys`, `service.go` ~:264, ~:2246); the failed write marks the owner (#704) | unchanged |
 | A joined callback whose processors' returned data leaves a partial key (postgres) | the callback request gets `422` | the callback request succeeds; the owner's commit fails `422` (as memory/sqlite today) |
 | A scheduled fire that changes a key field | memory drops the entity's claims; postgres/sqlite keep stale claims | claims follow the final entity; a fire that breaks a key fails (§4.3) |
+| A multi-node postgres node whose cached model is out of date after an unlock, key change and relock | enforces the old keys until its cache lease ends; data it admits can break the new key | enforces the stored keys; a commit whose snapshot predates the change gets a retryable `409 CONFLICT` (§4.2) |
+| An entity write and an unlock or delete of its model, at the same time | both can succeed: an entity in an unlocked or deleted model | one wins: the write's commit is refused `409 MODEL_NOT_LOCKED` (postgres: or a retryable `409 CONFLICT`), or the unlock/delete is refused `409 MODEL_HAS_ENTITIES` (§4.5) |
 | A callback's `If-Match` with the payload's `meta.transactionId` on the anchor | update path: `412`; scheduled fire: matches | matches on every path (§2.5) |
 | A scheduled fire that declines or is cancelled after running a function criterion | no entity version | unchanged: no entity version (§2.2) |
 | Reading an entity's available transitions under a transaction token (function criteria run) | no write | unchanged: no write (§2.1) |
@@ -512,6 +631,8 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | | `503` / `500` | the pre-callout save meets a storage outage / other failure |
 | Joined callback writes (`X-Tx-Token` / gRPC `tx-token`) | `2xx` instead of `409`/`422` on postgres | a key clash, or a partial key from the callback's processors' returned data, is now found at the owner's commit; a partial key in the callback's body stays `422` at the callback |
 | `GET /entity/{id}` and search/count under `X-Tx-Token` / gRPC `tx-token` from a callback | `200` | returns the current anchor |
+| Entity create/update/transition/collection endpoints, HTTP and gRPC | `409 MODEL_NOT_LOCKED` | the model was unlocked or deleted after the request checked it; now refused at commit (§4.5) |
+| `PUT /model/{entityName}/{modelVersion}/unlock`, `DELETE /model/{entityName}/{modelVersion}` | `409 MODEL_HAS_ENTITIES` | unchanged code and props; now checked inside the store's change, so a concurrent entity commit cannot slip past it (§4.5) |
 
 ## 7. Test coverage matrix
 
@@ -552,6 +673,11 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | A write through each door keeps the entity's claims (keys carried, §4.1) | engine/service unit | — | — | — |
 | Callback `If-Match` with payload `meta.transactionId` on the anchor → matches (update path and scheduled fire) | engine unit | yes | — | — |
 | Scheduled fire breaks a key → task outcome per §4.3 | scheduler/engine unit | yes | — | — |
+| Keys come from the stored model: a transactional and a non-transactional save with no keys anywhere on the call path enforce the model's keys | spitest + per-plugin unit | — | existing `unique_keys` parity (unchanged results) | — |
+| Commit of an entity whose model is no longer `LOCKED` → `ErrModelNotLocked`, nothing committed | spitest + per-plugin unit | waived: needs an unlock between the request's check and its commit; the plugin test drives that order deterministically with two transactions | — | — |
+| `ModelStore.Unlock` / `Delete` with live entities → `ModelHasEntitiesError` with the count, model unchanged | spitest + per-plugin unit | existing (`MODEL_HAS_ENTITIES` e2e, unchanged answer) | existing | — |
+| Interleave: a write transaction holds an uncommitted entity of model M; unlock of M → the unlock or the commit is refused, never both succeed (each order) | per-plugin unit (two transactions, deterministic order) | — | — | — |
+| postgres: model row changed and committed after a writer's snapshot → writer's commit `409 CONFLICT` (40001) | postgres plugin unit | — | — | — |
 
 Workflow selection, `ASYNC_NEW_TX` and schedule-function rows have no parity
 scenario: they differ from the `SYNC` rows only in the engine; the storage call
@@ -611,8 +737,15 @@ showing the old outcome) on the unfixed code, or it is dropped.
 - `api/openapi.yaml` ~:5742 (free-before-claim in the unique-keys operation).
 - The comment on `getEntityByTransactionID` (`service.go` ~:363-371, "earliest
   matching version").
-- SPI `unique.go` / `unique_context.go`: state the commit-time claim rule (§4.1)
-  and that every write of a keyed entity carries its keys.
+- SPI `unique.go`: the commit-time claim rule (§4.1), keys read by the store
+  from its own model; `unique_context.go` and its test deleted.
+- SPI `ModelStore` doc: `Unlock` and `Delete` refuse a model with live entities
+  (`*ModelHasEntitiesError`, `ErrModelHasEntities`) atomically with the
+  change; `EntityStore` commit/save refuse a model that is not `LOCKED`
+  (`ErrModelNotLocked`). spitest cases per §7.
+- `cmd/cyoda/help/content/errors/MODEL_NOT_LOCKED.md` and
+  `MODEL_HAS_ENTITIES.md`: the write side is checked at commit;
+  unlock/delete check entities atomically.
 - SPI: `EntityStore` doc (Save/CompareAndSave/Delete rule §3.1,
   `GetVersionByTransaction` §3.2) and the SPI CHANGELOG. SPI PR into SPI `main`;
   cyoda-go and the three plugins pseudo-pin it (`make repin-plugins`).
@@ -620,8 +753,9 @@ showing the old outcome) on the unfixed code, or it is dropped.
 - `docs/cloud-parity/617-one-version-per-transaction.md`: the contract (§3, §4,
   §5) in a few lines.
 - Issue in `cyoda-go-cassandra`: the contract change, the cases its current code
-  does not meet (save-then-delete, delete-then-save, savepoints), and the
-  commit-time unique-key rule.
+  does not meet (save-then-delete, delete-then-save, savepoints), the
+  commit-time unique-key rule with keys read from the stored model, and the
+  §4.5 model-change rule.
 
 ## 10. Left to the builder
 
