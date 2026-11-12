@@ -501,10 +501,13 @@ longer passes anything to storage.
   security and the same tenant policy as `models` (`000001_initial_schema.up.sql`
   ~:145-146); created with the model, deleted with it, filled for existing
   models by the migration. Every change of a model's state or unique keys
-  (`Lock` and `Unlock` when the state actually changes, `Delete`, `Save`,
-  which `ImportModel` and `SetUniqueKeys` use) bumps `generation` in the same
+  (`Lock` when it changes the state, `Unlock` always, `Delete`, `Save`, which
+  `ImportModel` and `SetUniqueKeys` use) bumps `generation` in the same
   transaction; `ExtendSchema`, `SetChangeLevel` and a `Lock` of a model already
-  `LOCKED` do not touch it.
+  `LOCKED` do not touch it. Whether `Lock` changed the state is decided by the
+  row count of its own conditional `UPDATE … WHERE doc->>'state' <> 'LOCKED'`,
+  never by a read before it (today's `isCurrentlyUnlocked`, `model_store.go`
+  ~:188, can see a state another uncommitted operation is about to change).
 
   **Lock order.** Every model operation writes the `models` row first and bumps
   the lifecycle row second. An entity transaction that extends the schema
@@ -520,10 +523,21 @@ longer passes anything to storage.
   its snapshot fails step 1 with `40001` (retryable `409 CONFLICT`), so the
   snapshot's state and keys are always the current ones; a bump not yet
   committed makes step 1 wait for it. The retry is refused by the service's
-  state check, or, with a stale cache, by step 1. A lifecycle row the snapshot
-  does not see (a model created and locked after the transaction began) is
-  also `spi.ErrConflict`, not `ErrModelNotLocked`: memory and sqlite read the
-  current state and would commit, and the retry gets the true answer.
+  state check, or, with a stale cache, by step 1.
+
+  A lifecycle row the snapshot does not see is one of two cases, which `FOR
+  SHARE` cannot tell apart (both return no row): the model does not exist, or
+  it was created after the transaction began. Step 1 tells them apart with
+  `INSERT INTO model_lifecycle … ON CONFLICT DO NOTHING RETURNING 1`: under
+  `REPEATABLE READ`, a conflicting row invisible to the snapshot raises
+  `40001`. A row inserted means the model does not exist: `ErrModelNotLocked`
+  (the transaction rolls back, and the inserted row with it), as on memory and
+  sqlite. `40001` means it was created after the snapshot: `spi.ErrConflict`,
+  retryable, where memory and sqlite read the current state and commit; the
+  retry commits too. That transient difference is of the same kind as the
+  `40P01` one below and fails closed. The postgres plugin test proves both
+  branches; if PostgreSQL does not raise `40001` there, the builder stops and
+  brings it back.
 
   **The non-transactional path** (`Save` and `CompareAndSave` outside a
   transaction) runs `READ COMMITTED` (`entity_store.go` ~:128, ~:525). There a
@@ -532,7 +546,9 @@ longer passes anything to storage.
   snapshot from before the wait. So on this path the `FOR SHARE` of the
   lifecycle rows is a statement of its own, and the `models` read is a later
   statement, whose snapshot includes the bump's commit. A missing lifecycle
-  row here is `ErrModelNotLocked`.
+  row here is `ErrModelNotLocked`. These statements stay inside
+  `replaceClaims`, which runs before `stampOwnCommitInstant`
+  (`entity_store.go` ~:402-415), so no lock wait follows the stamp.
 
   **Errors.** The step 1-4 statements can now be the first statements
   `Commit` issues (when the read set is empty), so their errors go through
@@ -666,16 +682,27 @@ Per backend:
   (`model_store.go` ~:428-433), writes the `models` row, then bumps the
   lifecycle row (the order of §4.2), then checks state and counts entities in
   later statements, which see every commit before the bump, and rolls back on
-  a refusal. `Unlock` already writes the `models` row first (~:254-260);
-  `Delete` (one statement today, ~:142-167) becomes delete the `models` row,
-  delete the lifecycle row, check, roll back on a refusal; `Save` becomes
-  upsert, bump (or insert the lifecycle row), check, roll back on a refusal. A commit that took `FOR SHARE` first
+  a refusal. Every state check reads the state the operation's own write
+  replaced, never a later read (which would see the new document):
+  - `Lock` moves into `inWriteTx` (today it is not in a transaction): the
+    conditional `UPDATE` first (§4.2), then the fold and savepoint as today
+    when it changed the state, then the bump.
+  - `Unlock` already writes the `models` row first (~:254-260); it then bumps
+    and counts.
+  - `Delete` (one statement today, ~:142-167) becomes `DELETE … RETURNING
+    doc` (refuse `ErrModelLocked` if the returned state is `LOCKED`), delete
+    the lifecycle row, count, roll back on a refusal.
+  - `Save` becomes `INSERT … ON CONFLICT … DO UPDATE SET doc = EXCLUDED.doc
+    WHERE models.doc->>'state' <> 'LOCKED' RETURNING 1`: no row returned on a
+    conflict is `ErrModelLocked` (`READ COMMITTED` re-checks the `WHERE`
+    against the latest row version, so a lock committed in between is seen);
+    then bump or insert the lifecycle row. A commit that took `FOR SHARE` first
   makes the bump wait until it ends; a bump committed first makes the commit
   fail `40001`.
 - memory: `Unlock`, `Delete` and `Save` check and change under `entityMu`
   (write), the lock entity commits hold, counting with an internal helper that
   takes no lock (`EntityStore.Count` takes `entityMu.RLock`,
-  `plugins/memory/entity_store.go` ~:886, and would deadlock). `modelMu` is
+  `plugins/memory/entity_store.go` ~:912, and would deadlock). `modelMu` is
   taken inside `entityMu`, never around it.
 - sqlite: check and change in one write transaction; sqlite has one writer.
 
@@ -795,7 +822,9 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | Interleave: a write transaction holds an uncommitted entity of model M; unlock of M, and delete of M → the model change or the commit is refused, never both succeed (each order) | per-plugin unit (two transactions, deterministic order) | — | — | — |
 | postgres interleave, non-transactional save: the save waits on an unlock's uncommitted bump → refused `ErrModelNotLocked` after the unlock commits | postgres plugin unit | — | — | — |
 | postgres: `Unlock` against a writer that extended the schema → no deadlock; the unlock waits, then answers `MODEL_HAS_ENTITIES` or proceeds | postgres plugin unit | — | — | — |
-| postgres: a model created and locked after a writer's snapshot → writer's commit `409 CONFLICT`, retry commits | postgres plugin unit | — | — | — |
+| postgres: a model created and locked after a writer's snapshot → writer's commit `409 CONFLICT`, retry commits; a model that never existed → `ErrModelNotLocked` | postgres plugin unit | — | — | — |
+| postgres interleave: Lock uncommitted, Unlock decides, entity commit → never an entity in an unlocked model (round-3 case) | postgres plugin unit | — | — | — |
+| postgres interleave: `SetUniqueKeys` read `UNLOCKED`, Lock commits, then `Save` → `ErrModelLocked`, keys unchanged | postgres plugin unit | — | — | — |
 | postgres: lifecycle row bumped and committed after a writer's snapshot → writer's commit `409 CONFLICT` (40001) | postgres plugin unit | (covered by the e2e row above) | — | — |
 
 Workflow selection, `ASYNC_NEW_TX` and schedule-function rows have no parity
