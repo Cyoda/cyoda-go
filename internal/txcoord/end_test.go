@@ -142,6 +142,37 @@ func TestEnd_Row3_DeadSession404(t *testing.T) {
 	mustCode(t, common.Internal("failed to commit", err), http.StatusServiceUnavailable, common.ErrCodeStorageUnavailable, true)
 }
 
+// Row 3 answers 404 even when the request's error carries another scope's
+// failed discard: a processor scope under the callback scope could not be
+// rolled back because the session had ended, and its Close error reached the
+// handler's answer. Only the ending scope's own discard decides the 500.
+func TestEnd_Row3_NestedDiscardFailureStill404(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Write, pair("c1", 1))
+
+	p, _, err := e.c.OpenChild(actx)
+	if err != nil {
+		t.Fatalf("OpenChild = %v", err)
+	}
+	var rbErr error = fmt.Errorf("failed to roll back: %w", deadSession{})
+	e.tm.failRollback.Store(&rbErr)
+	closeErr := p.Close(errors.New("processor failed"))
+	if !errors.Is(closeErr, ErrScopeInfra) {
+		t.Fatalf("Close = %v; want a scope-infrastructure failure", closeErr)
+	}
+	e.tm.failRollback.Store(nil)
+
+	failure := common.Internal("failed to run the processor", closeErr)
+	ans := a.End(&common.Outcome{Status: failure.Status, Code: failure.Code, Retryable: failure.Retryable, Err: failure})
+	mustAnswer(t, ans, http.StatusNotFound, common.ErrCodeTransactionNotFound, false)
+
+	endC1()
+	if err := e.seal(); !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatalf("Seal = %v; want the broken cause", err)
+	}
+}
+
 func TestEnd_Row4_MarkedScope409AndClimbsForWrite(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
