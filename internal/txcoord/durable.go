@@ -365,12 +365,12 @@ func (s *durableScope) complete(class RequestClass) (*common.AppError, *parentMa
 		// Row 4: a write passes the mark up, which only DiscardScope does,
 		// with the code the refusal names.
 		var mark *parentMark
-		var broken error
+		var failed error
 		if class == Write {
 			mark = &parentMark{code: failedCodeOf(err)}
-			broken = s.discard(mark)
+			failed = s.discard(mark)
 		}
-		return common.TransactionRollbackOnlyJoined(), mark, broken
+		return common.TransactionRollbackOnlyJoined(), mark, failed
 	case errors.Is(err, spi.ErrScopeConflict):
 		return scopeConflict(err), nil, nil
 	}

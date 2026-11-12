@@ -102,8 +102,8 @@ type Coordination interface {
 	// another transaction), with a savepoint. It refuses as the parent
 	// scope's check would. A broken transaction, and a savepoint that cannot
 	// be taken, are ErrScopeInfra (with the broken cause or the savepoint's
-	// error); a session that has ended leaves the transaction broken. The caller ends the scope with
-	// Close.
+	// error); a session that has ended leaves the transaction broken. The
+	// caller ends the scope with Close.
 	OpenChild(ctx context.Context) (Scope, context.Context, error)
 	// AtCapacity is the reading Joiner.CheckRoom takes before a door reads its
 	// body: whether maxWaiters requests already queue for txID's gate.

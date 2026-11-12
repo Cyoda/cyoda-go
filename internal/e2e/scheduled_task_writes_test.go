@@ -175,9 +175,11 @@ func TestScheduledTaskWrites_DeleteEntity_Joined_NotRetried(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("primary create did not finish")
 	}
-	mu.Lock()
-	got := callback
-	mu.Unlock()
+	got := func() callbackResult {
+		mu.Lock()
+		defer mu.Unlock()
+		return callback
+	}()
 	if got.StatusCode != http.StatusConflict {
 		t.Fatalf("joined delete answered %d %s, want 409", got.StatusCode, got.Body)
 	}

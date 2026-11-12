@@ -94,15 +94,19 @@ func TestRegistry_SerialisesSameTxID(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		rel := r.AcquireResume("tx-1") // must block until rel1() runs
-		mu.Lock()
-		order = append(order, 2)
-		mu.Unlock()
+		func() {
+			mu.Lock()
+			defer mu.Unlock()
+			order = append(order, 2)
+		}()
 		rel()
 	}()
 	time.Sleep(20 * time.Millisecond)
-	mu.Lock()
-	order = append(order, 1)
-	mu.Unlock()
+	func() {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, 1)
+	}()
 	rel1()
 	wg.Wait()
 	if len(order) != 2 || order[0] != 1 || order[1] != 2 {
@@ -136,9 +140,11 @@ func TestRegistry_GrantsInQueueOrder(t *testing.T) {
 				t.Errorf("waiter %d: %v", i, err)
 				return
 			}
-			mu.Lock()
-			order = append(order, i)
-			mu.Unlock()
+			func() {
+				mu.Lock()
+				defer mu.Unlock()
+				order = append(order, i)
+			}()
 			release()
 		}()
 		waitFor(t, "the waiter to queue", func() bool { return r.queued("tx-1") == i+1 })
