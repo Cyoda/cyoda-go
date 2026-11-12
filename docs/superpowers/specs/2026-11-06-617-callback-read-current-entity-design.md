@@ -31,13 +31,14 @@ replaces that transaction's pending version.
 - Every backend enforces unique keys on the transaction's final entity, at
   commit.
 
-### Depends on #702
+### Builds on callback scopes (#704)
 
-#702 (a failed joined write request makes the owner's transaction
-rollback-only, on every backend) lands first. With §2's saves, a joined write
-request that fails after one of its processors has run has already stored its
-own entity, half-way through its workflow, in the owner's transaction; without
-#702 the owner can commit that. This spec assumes #702's rule and does not
+Every joined request runs in a callback scope that is all-or-nothing
+(`internal/txcoord`): a scope that fails is rolled back to its savepoint and
+marks the scope above it. With §2's saves, a joined write request that fails
+after one of its processors has run has already stored its own entity,
+half-way through its workflow, in the owner's transaction; the scope's
+rollback removes that write. This spec relies on that rule and does not
 restate it.
 
 ### Non-goals
@@ -72,10 +73,10 @@ carry a joined transaction.
 
 | Callout | Dispatch site | Notes |
 |---|---|---|
-| `SYNC` / `ASYNC_SAME_TX` processor | `internal/domain/workflow/engine_processors.go` (`executeSyncProcessor`, dispatch at ~:270) | |
-| `ASYNC_NEW_TX` processor | `engine_processors.go` (savepoint at ~:344, dispatch at ~:364) | Save **before** `Savepoint()`, so a processor failure does not roll back the save. |
-| Function criterion — workflow selection, manual transition, automated cascade transition | `criterion_eval.go` (dispatch at ~:179), reached from `engine.go` ~:550, ~:757, ~:880 | On create, workflow selection runs before the anchor has a state; the save stores it with an empty state and a callback read sees it so. |
-| Schedule function | `arm.go` (dispatch at ~:275) | Runs from `reconcileScheduledTasks` after the cascade, before the final save. |
+| `SYNC` / `ASYNC_SAME_TX` processor | `internal/domain/workflow/engine_processors.go` (`executeSyncProcessor`, `Pause` at ~:257, dispatch at ~:261) | |
+| `ASYNC_NEW_TX` processor | `engine_processors.go` (`e.coord.OpenChild` at ~:337, dispatch at ~:368) | Save **before** `OpenChild`, in the chain's own scope, so discarding the processor scope (a processor failure) does not roll back the save. |
+| Function criterion — workflow selection, manual transition, automated cascade transition | `criterion_eval.go` `dispatchCriterionFunction` (`Pause` at ~:173, dispatch at ~:177), reached from `selectWorkflow` (`engine.go` ~:575) and the transition paths | On create, workflow selection runs before the anchor has a state; the save stores it with an empty state and a callback read sees it so. |
+| Schedule function | `arm.go` `armViaFunction` (`Pause` at ~:269, dispatch at ~:273) | Runs from `reconcileScheduledTasks` after the cascade, before the final save. |
 
 Not covered, because they need no save:
 
@@ -132,20 +133,22 @@ save).
   (`service.go` ~:282-295 create, ~:2280-2296 update; a scheduled fire keeps
   the stored meta and sets change user and executor, `fire_scheduled.go`
   ~:241-244).
-- **Gate.** The save runs before `txgate.Suspend` releases the chain's gate for
-  the dispatch, and never acquires the gate itself. A joined chain already holds
-  it for its whole handler (`internal/domain/txjoin/txjoin.go` ~:298, :318) and
-  the gate is not re-entrant. The owner's chain needs none: no joined callback
-  can act on the transaction between two callouts, because ending a callout
-  refuses all its passes from then on and waits for a joined write still in
-  progress (`internal/fence/fence.go` `end`, ~:121-140; called on every exit of
-  `internal/callout/coordinator.go` ~:161). The gate the owner takes around its
-  final save and commit is not changed by this work.
+- **Gate.** The save runs in the chain's scope, before `txcoord.Pause`
+  releases the chain's gate for the dispatch, and never acquires the gate
+  itself. A joined chain holds the gate from `Coordination.Enter`
+  (`internal/domain/txjoin/txjoin.go` `enter`, ~:225) until its scope ends,
+  except while paused, and the gate is not re-entrant. The owner's chain holds
+  no gate (`Pause` is a no-op there) and needs none: no joined callback can act
+  on the transaction between two callouts, because ending a callout refuses all
+  its passes from then on and waits until no scope admitted under it is still
+  open (`Coordination.BeginCallout`'s `end`, `internal/txcoord/txcoord.go`;
+  deferred on every exit of `internal/callout/coordinator.go` ~:166). Neither
+  `Seal` nor the owner's final save and commit is changed by this work.
 - **Errors.** A failure of this read or save is marked with an engine infrastructure
   sentinel, as `readAnchor` failures are (`errors.Join(ErrProcessorOutputInfra,
   err)` at `engine_processors.go` ~:247-250, or a new sentinel of the same family
   named for this save and added to `engineConflictIsTransactionConflict`,
-  `service.go` ~:2819-2826). So a conflict from the save is a transaction
+  `service.go` ~:2775-2782). So a conflict from the save is a transaction
   conflict (retryable `409 CONFLICT`), never `412 ENTITY_MODIFIED`, and the
   collection update loop (`service.go` ~:2635-2644) never isolates it as an
   item failure and carries on in a failed transaction. A storage outage maps to
