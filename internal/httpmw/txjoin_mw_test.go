@@ -439,9 +439,9 @@ func TestTxJoin_BodyIsReadBeforeTheGateIsTaken(t *testing.T) {
 }
 
 // lockProbeBody mirrors lockProbeWriter on Read: it notes, on every read of the
-// client's body, whether the transaction's gate is free. reading is closed on the
-// FIRST read, so a test waiting for the middleware to be inside the body read
-// waits for that rather than guessing how long it takes.
+// client's body, whether the transaction's gate is free. reading is closed on
+// the FIRST read, so a test waiting for the middleware to be inside the body
+// read waits for that rather than guessing how long it takes.
 type lockProbeBody struct {
 	io.Reader
 	coord                 txcoord.Coordination
@@ -616,9 +616,9 @@ func TestTxJoin_ClientGoesAwayWhileQueued_HandlerNeverRuns_NeverAnImplicit200(t 
 // A join that FAILS with an internal error which merely wraps a cancellation is
 // not a departed client, even when the client has in fact also gone: the two
 // are different events, and only the coordination's own "the request ended
-// while it queued for the transaction's gate" is the second. Filing this as a departed
-// client would log a genuine fault at DEBUG with no ticket, below the default
-// level — the fault would leave no trace at all.
+// while it queued for the transaction's gate" is the second. Filing this as a
+// departed client would log a genuine fault at DEBUG with no ticket, below the
+// default level — the fault would leave no trace at all.
 func TestTxJoin_JoinFailureWrappingACancellation_KeepsItsTicket(t *testing.T) {
 	buf := captureSlog(t)
 	s, _ := token.NewSigner(make32(t))
@@ -941,9 +941,9 @@ func TestTxJoin_FailureRecordedAfterA2xxHeader_LoggedOnce(t *testing.T) {
 // A rewritten answer is the request's one log line. The handler failed, 500,
 // with a cause that says the transaction's session has ended; the scope's end
 // answers 404 TRANSACTION_NOT_FOUND instead. The handler's failure is not
-// logged on its own — its ticket would name a line the client is never given —
-// but folded into the line of the 404 the client gets, at the handler's ERROR
-// level.
+// logged on its own — its ticket would name a line the client is never
+// given — but folded into the line of the 404 the client gets, at the
+// handler's ERROR level.
 func TestTxJoin_RewrittenFailure_LoggedOnce(t *testing.T) {
 	logs := captureSlog(t)
 	j, _, pass := liveJoiner(t, "tx-1")

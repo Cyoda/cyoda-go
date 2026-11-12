@@ -24,8 +24,8 @@ const settle = 50 * time.Millisecond
 const watchdog = 5 * time.Second
 
 // recTM is the memory plugin's transaction manager, recording the savepoint
-// calls txcoord makes and answering LostRace, ReleaseSavepoint, Savepoint and RollbackToSavepoint as a test
-// arranges.
+// calls txcoord makes and answering LostRace, ReleaseSavepoint, Savepoint and
+// RollbackToSavepoint as a test arranges.
 type recTM struct {
 	spi.TransactionManager
 

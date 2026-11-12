@@ -18,8 +18,8 @@ import (
 
 // TestCallbackScope_MarkedByDescendant_ClimbsToTheOwner: the owner creates p,
 // whose SYNC processor's cnode makes callback A — a create of a. a's SYNC
-// processor's cnode makes callback D — a create of x, whose processor fails, not
-// retryably. D is answered 400 WORKFLOW_FAILED; A is answered 409
+// processor's cnode makes callback D — a create of x, whose processor fails,
+// not retryably. D is answered 400 WORKFLOW_FAILED; A is answered 409
 // TRANSACTION_ROLLBACK_ONLY although its cnode answered success; the owner is
 // refused 409 TRANSACTION_ROLLBACK_ONLY naming WORKFLOW_FAILED; no p, a or x
 // entity is committed, and no StateMachine audit row of any of them.

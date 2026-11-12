@@ -99,8 +99,9 @@ func assertRefusal(t *testing.T, status int, body string, wantStatus int, wantCo
 	return pd
 }
 
-// assertRollbackOnlyEnvelope checks a gRPC refusal with TRANSACTION_ROLLBACK_ONLY:
-// CLIENT_ERROR, the code as the message prefix, and no retryable flag at all.
+// assertRollbackOnlyEnvelope checks a gRPC refusal with
+// TRANSACTION_ROLLBACK_ONLY: CLIENT_ERROR, the code as the message prefix, and
+// no retryable flag at all.
 func assertRollbackOnlyEnvelope(t *testing.T, door string, env txEnvelope, err error) {
 	t.Helper()
 	assertEnvelope(t, door, env, err, "TRANSACTION_ROLLBACK_ONLY", false)

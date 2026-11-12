@@ -80,9 +80,9 @@ func requireRollbackOnly(t *testing.T, err error) {
 	}
 }
 
-// TestEngine_FlushAndCommitSegment_SealsTxPre: TX_pre of a COMMIT_BEFORE_DISPATCH
-// processor is sealed before its flush: a rollback-only TX_pre is neither
-// flushed nor committed, and the coordination forgets it.
+// TestEngine_FlushAndCommitSegment_SealsTxPre: TX_pre of a
+// COMMIT_BEFORE_DISPATCH processor is sealed before its flush: a rollback-only
+// TX_pre is neither flushed nor committed, and the coordination forgets it.
 func TestEngine_FlushAndCommitSegment_SealsTxPre(t *testing.T) {
 	s := newSealEnv(t)
 	s.markRoot(t)

@@ -2808,9 +2808,10 @@ func engineConflictIsTransactionConflict(err error) bool {
 //     is on the ordinary write path.
 //   - txcoord.ErrScopeInfra (the scope of an ASYNC_NEW_TX processor could not
 //     be opened or ended: its savepoint could not be taken, undone or
-//     released, or the transaction is broken) → sanitized 5xx, same reason. It says
-//     the transaction is unusable, never that the processor failed, so it must
-//     not reach the catch-all and become a 400 carrying the driver's own text.
+//     released, or the transaction is broken) → sanitized 5xx, same reason.
+//     It says the transaction is unusable, never that the processor failed,
+//     so it must not reach the catch-all and become a 400 carrying the
+//     driver's own text.
 //   - ErrAuthContextUnavailable (AttachAuthContext could not populate a
 //     dispatch CloudEvent's Auth Context — a principal with no id or an
 //     unset/unrecognized Kind, or nil CloudEvent) → sanitized 5xx via

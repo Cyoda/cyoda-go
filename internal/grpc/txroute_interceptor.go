@@ -235,10 +235,10 @@ func streamClass(fullMethod string) txcoord.RequestClass {
 
 // handlerBackstop is the door's reading of a joined handler's answer, for an
 // answer no envelope recorded: the ceiling's refusal when the answer passed it;
-// a handler error, which is a raw gRPC status (an invalid request, InvalidArgument,
-// is a 400; any other is a 500), not retryable; nil otherwise. An envelope
-// carrying Success:false recorded its own failure when it was built, and that
-// record wins.
+// a handler error, which is a raw gRPC status (an invalid request,
+// InvalidArgument, is a 400; any other is a 500), not retryable; nil
+// otherwise. An envelope carrying Success:false recorded its own failure when
+// it was built, and that record wins.
 func handlerBackstop(herr error, over bool, tooLarge *common.AppError) *common.Outcome {
 	switch {
 	case over:

@@ -268,8 +268,8 @@ func TestBuildErrorFields_FeatureDeadlineTimeout_Untouched(t *testing.T) {
 	}
 }
 
-// The sentinel is deliberately not on the recorded error's chain: common.Internal
-// keeps it as detail only (see its comment).
+// The sentinel is deliberately not on the recorded error's chain:
+// common.Internal keeps it as detail only (see its comment).
 func TestBuildErrorFields_RecordsOutcome(t *testing.T) {
 	ctx, o := common.WithOutcome(context.Background())
 	buildErrorFields(ctx, spi.ErrConflict)

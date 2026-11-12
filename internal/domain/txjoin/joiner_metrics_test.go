@@ -19,9 +19,9 @@ import (
 )
 
 // joinerEnv is a Joiner wired over the memory backend's transaction manager, a
-// real transaction coordination, and a meter backed by a ManualReader so the counter can
-// be observed through its public collection API — no test seam in production
-// code.
+// real transaction coordination, and a meter backed by a ManualReader so the
+// counter can be observed through its public collection API — no test seam in
+// production code.
 type joinerEnv struct {
 	factory   *memory.StoreFactory
 	txMgr     spi.TransactionManager
