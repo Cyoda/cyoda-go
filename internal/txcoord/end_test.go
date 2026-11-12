@@ -142,6 +142,30 @@ func TestEnd_Row3_DeadSession404(t *testing.T) {
 	mustCode(t, common.Internal("failed to commit", err), http.StatusServiceUnavailable, common.ErrCodeStorageUnavailable, true)
 }
 
+// Row 3 answers 404 even when the scope's own rollback fails too: the session
+// has ended, so the discard fails like the request did, and the answer stays
+// the row's rather than the 500 of a failed discard.
+func TestEnd_Row3_OwnDiscardFailureStill404(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+
+	var rbErr error = fmt.Errorf("failed to roll back: %w", deadSession{})
+	e.tm.failRollback.Store(&rbErr)
+	dead := common.StorageUnavailable(fmt.Errorf("failed to save: %w", deadSession{}))
+	ans := a.End(&common.Outcome{Status: dead.Status, Code: dead.Code, Retryable: true, Err: dead})
+	mustAnswer(t, ans, http.StatusNotFound, common.ErrCodeTransactionNotFound, false)
+	mustCalls(t, e.tm, "savepoint", "rollback")
+
+	_, _, err := e.enter(Read, pair("c1", 1))
+	mustCode(t, err, http.StatusNotFound, common.ErrCodeTransactionNotFound, false)
+
+	endC1()
+	if err := e.seal(); !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatalf("Seal = %v; want the broken cause", err)
+	}
+}
+
 // Row 3 answers 404 even when the request's error carries another scope's
 // failed discard: a processor scope under the callback scope could not be
 // rolled back because the session had ended, and its Close error reached the
