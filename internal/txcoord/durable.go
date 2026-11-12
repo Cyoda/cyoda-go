@@ -328,8 +328,8 @@ func (s *durableScope) End(o *common.Outcome) *common.AppError {
 		}
 		return nil
 	}
-	answer, _, broken := decide(s, s.class, failureOf(o))
-	return endAnswer(answer, broken)
+	answer, _, failed := decide(s, s.class, failureOf(o))
+	return endAnswer(answer, failed)
 }
 
 // standing implements ending. Row 1 comes before row 4 in the backend's own

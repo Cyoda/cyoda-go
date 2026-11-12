@@ -147,20 +147,20 @@ func decide(e ending, class RequestClass, f *failure) (*common.AppError, *parent
 	}
 }
 
-// endAnswer is the answer of a scope that decide ended with answer and broken.
+// endAnswer is the answer of a scope that decide ended with answer and failed.
 // A discard that failed overrides the row's answer with a 500 SERVER_ERROR,
 // never retryable: the scope's writes may still be in the transaction, or its
 // mark not passed up, so the request did not end as its row answers, and a
 // retry in the same transaction cannot succeed.
 //
 // Only the scope's own discard counts: every row that discards returns the
-// discard's result as broken, unwrapped. Row 3's broken wraps the request's
+// discard's result as failed, unwrapped. Row 3's failed wraps the request's
 // error, which may carry the failed discard of another scope (a processor
 // scope the handler ran), and row 3 answers 404 whatever its own discard did.
-func endAnswer(answer *common.AppError, broken error) *common.AppError {
-	if _, ok := broken.(*discardFailure); ok {
+func endAnswer(answer *common.AppError, failed error) *common.AppError {
+	if _, ok := failed.(*discardFailure); ok {
 		return common.InternalWithCode(common.ErrCodeServerError,
-			"the request's scope could not be ended in the transaction", broken)
+			"the request's scope could not be ended in the transaction", failed)
 	}
 	return answer
 }

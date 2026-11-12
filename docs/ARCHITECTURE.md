@@ -805,28 +805,29 @@ logged at INFO (`transaction coordination selected`, `locationIndependent`).
 location-independent: the pass names no owner (`mintPass`,
 `internal/grpc/dispatch.go`), also on a node a callout was handed over to,
 whose `mintPass` leaves out the owner the hand-over names; both proxies serve
-a pass with no owner locally (`proxy.HTTPRouting`, `proxy.ResolveNodeInfo`), so
-a callback is served by the node it reaches, and `Join` allows concurrent
+a pass with no owner locally (`proxy.HTTPRouting`, `proxy.ResolveNodeInfo`),
+so a callback is served by the node it reaches, and `Join` allows concurrent
 operations from any number of goroutines and nodes. The backend holds the
-scopes, the marks and the fencing numbers. The rules of the scope tree, the table of how a scope ends and
-the marks are the same, except that nothing records a transaction as broken: a
-scope whose `DiscardScope` failed is answered `500 SERVER_ERROR` (row 3
-excepted) and is never completed, so `Commit` does not keep its writes, and a
-failed `DiscardScope` with a mark's code is covered by the obligation below
-that `Seal` must fail. There is no gate and no stack rule, a pause only checks
-the scope again on resume, and nothing waits: a scope in progress when its
-callout advances or ends, or when the transaction is sealed, cannot complete,
-so it is discarded and answered `410 CALLOUT_SUPERSEDED`. Nothing cancels a
-callout running on another node when the scope it was begun from is
-superseded or marked, so the owner's loop checks that scope (`CheckScope`)
-after it begins the callout and at every `Advance` — before each try and each
-hand-over — and stops the callout when the scope can no longer complete. Of
-two callback scopes that wrote the same entity from the same version, the
-second to complete is discarded and answered the retryable `409 CONFLICT`. No
-in-tree backend implements the capability. A coordinator must never let `Seal`
-succeed after a mark it failed to record: when `DiscardScope` with a code
-cannot record the mark, the transaction's `Seal` must still fail, and a
-`DiscardScope` error does not release it from this.
+scopes, the marks and the fencing numbers. The rules of the scope tree, the
+table of how a scope ends and the marks are the same, except that nothing
+records a transaction as broken: a scope whose `DiscardScope` failed is
+answered `500 SERVER_ERROR` (row 3 excepted) and is never completed, so
+`Commit` does not keep its writes, and a failed `DiscardScope` with a mark's
+code is covered by the obligation below that `Seal` must fail. There is no
+gate and no stack rule, a pause only checks the scope again on resume, and
+nothing waits: a scope in progress when its callout advances or ends, or when
+the transaction is sealed, cannot complete, so it is discarded and answered
+`410 CALLOUT_SUPERSEDED`. Nothing cancels a callout running on another node
+when the scope it was begun from is superseded or marked, so the owner's loop
+checks that scope (`CheckScope`) after it begins the callout and at every
+`Advance` — before each try and each hand-over — and stops the callout when
+the scope can no longer complete. Of two callback scopes that wrote the same
+entity from the same version, the second to complete is discarded and answered
+the retryable `409 CONFLICT`. No in-tree backend implements the capability. A
+coordinator must never let `Seal` succeed after a mark it failed to record:
+when `DiscardScope` with a code cannot record the mark, the transaction's
+`Seal` must still fail, and a `DiscardScope` error does not release it from
+this.
 
 **Savepoints under `ASYNC_NEW_TX`.** The processor runs in a processor scope of
 its own, which takes a savepoint of the parent transaction. Its own failure,
