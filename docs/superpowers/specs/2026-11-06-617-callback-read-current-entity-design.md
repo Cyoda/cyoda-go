@@ -389,14 +389,15 @@ by each model store). It has two failure modes:
 
 At commit, a transaction's claims are computed from its final entities:
 
-1. Read, from the store's own model store and inside the committing
-   transaction, the model of every entity the transaction wrote (one read per
-   distinct model). A model that is not `LOCKED` (unlocked or deleted since the
-   request checked it) fails the commit with a new `spi.ErrModelNotLocked`
-   (§4.5).
+1. Read, inside the committing transaction, the model of every entity whose
+   final write in the transaction is a save (one read per distinct model). A
+   model that does not exist or is not `LOCKED` fails the commit with a new
+   `spi.ErrModelNotLocked` (§4.5). An entity whose final write is a delete
+   needs no model read, so a transaction that only deletes commits whatever
+   the model's state; entities can always be cleaned up.
 2. Release the claims of every entity the transaction wrote or deleted.
-3. Compute the claims of every entity the transaction wrote, from its final
-   data, with its model's unique keys as read in step 1. A partial composite
+3. Compute the claims of every entity whose final write is a save, from its
+   final data, with its model's unique keys as read in step 1. A partial composite
    key fails the commit with `spi.ErrPartialUniqueKey`.
 4. Insert those claims. A value claimed twice inside the transaction, or held
    by an entity outside the transaction's writes (committed, or claimed by a
@@ -418,8 +419,8 @@ the model instead:
 - SPI: `WithUniqueKeys`, `UniqueKeysFromContext` (`unique_context.go` and its
   test).
 - `internal/domain/entity/service.go`: the context half of `withUniqueKeys`
-  (it becomes a check of the request body that returns only an error, §4.1
-  last paragraph), `parsedItem.uniqueKeys` (~:1934, ~:1988) and the two
+  and its doc comment (~:176-180; it becomes a check of the request body that
+  returns only an error, §4.1 last paragraph), `parsedItem.uniqueKeys` (~:1934, ~:1988) and the two
   per-item `WithUniqueKeys` assignments with their comments (~:2062-2064,
   ~:2531-2532), and the comments that describe keys riding the context
   (~:261-263, ~:2244-2245).
@@ -433,9 +434,15 @@ the model instead:
   ~:560); the non-transactional `replaceClaims` call takes the model's keys
   (~:469).
 - postgres: `replaceClaims` takes the keys from the model read, not the context
-  (`unique_claims.go` ~:29).
+  (`unique_claims.go` ~:29), and the comment at `entity_store.go` ~:402 ("no-op
+  when no keys are declared in context").
+- `internal/e2e/unique_keys_processor_test.go` header (~:8-12, "the cascade's
+  final Save computes claims").
+- The cassandra plugin uses both SPI helpers (`internal/store/entity_store.go`
+  and five integration tests); its build breaks at the SPI bump until it
+  follows (§9 issue).
 
-The builder's exit check: `grep -rn "UniqueKeysFromContext\|WithUniqueKeys\|recordUniqueKeys\|txUniqueKeys\|uniqueKeysFor"`
+The builder's exit check: `grep -rn --include='*.go' "UniqueKeysFromContext\|WithUniqueKeys\|recordUniqueKeys\|txUniqueKeys\|uniqueKeysFor"`
 over cyoda-go, the SPI and the three plugins is empty.
 
 Swaps, chains of moves and free-after-claim all commit when the final state is
@@ -446,9 +453,8 @@ longer passes anything to storage.
 
 ### 4.2 Per backend
 
-- **all backends:** step 1 reads the model rows in a fixed order (by model
-  name, then version), so two commits never wait on each other's model reads
-  in opposite orders.
+- **all backends:** step 1 reads the models in a fixed order (by model name,
+  then version).
 - **memory:** in commit, under `entityMu`, the release set is every entity in `tx.Buffer` and
   `tx.Deletes`; a committed claim held by an entity in that set does not
   conflict, and the intra-batch check (`pending`) catches a value two buffered
@@ -457,8 +463,12 @@ longer passes anything to storage.
   inserting one entity at a time (`txmanager.go` ~:1110-1117) loses a claim on
   a swap: A x→y then B y→x inserts `y→A`, and `releaseClaims(B)`
   (`store_factory.go` ~:311-317) deletes key `y`.
-- **sqlite:** in the commit flush, inside its write transaction, read the
-  models, then release the claims of every buffered and
+- **sqlite:** in the commit flush, read the `models` rows with the flush's own
+  `sqlTx`, never through the model store: the model store uses the writer
+  pool, which has one connection (`store_factory.go` ~:115, ~:377), so a call
+  into it from inside the flush would wait for itself. The non-transactional
+  `saveDirectlyLocked` does the same with its own transaction. Then release
+  the claims of every buffered and
   deleted entity first, then insert all new claims.
 - **postgres:** keep the immediate index. Transactional saves stop calling
   `replaceClaims`; they record the entity id in the transaction's state. At
@@ -466,15 +476,37 @@ longer passes anything to storage.
   rule: nothing after `cyoda_stamp` waits on a lock,
   `transaction_manager.go` ~:417-420, relied on by `ConsistencyTime`,
   `consistency_time.go` ~:186-191), run steps 1-4: step 1 as a `SELECT … FOR
-  SHARE` of the `models` rows, steps 2-4 as `DELETE` and `INSERT` statements,
-  inserting in a deterministic order (by model, key id, signature).
+  SHARE` of the models' **lifecycle rows** (below) and a read of the `models`
+  rows, steps 2-4 as `DELETE` and `INSERT` statements, inserting in a
+  deterministic order (by model, key id, signature).
 
-  The transaction is `REPEATABLE READ` (`transaction_manager.go` ~:173). A
-  `models` row changed and committed after its snapshot fails step 1 with a
-  serialization conflict (`40001`, retryable `409 CONFLICT`); the retry is
-  refused by the service's state check, or, if that read a stale cache, by
-  step 1. A change not yet committed makes step 1 wait for it. So the commit
-  never uses keys or a state older than the row's current ones. The recorded set must be right after `ROLLBACK TO SAVEPOINT`:
+  *Why a lifecycle row and not the `models` row.* `ExtendSchema` serialises
+  schema writers with a real `UPDATE models SET doc = doc` on the `models` row
+  (`model_store.go` ~:487-501), inside the entity's transaction on the update
+  door (`service.go` ~:2238) and for processor output
+  (`processor_output.go` ~:68). That claim is deliberate: under `REPEATABLE
+  READ` it makes the losing writer fail with `40001` rather than fold from a
+  stale snapshot. A `FOR SHARE` of the `models` row at commit would therefore
+  conflict with every schema extension of the model: a writer whose snapshot
+  predates a committed extension would fail `40001`, every commit of the model
+  would wait for a transaction that extended the schema and is still in its
+  callouts, and two transactions extending two models and writing entities of
+  both would deadlock. (`FOR KEY SHARE` does not help: the state change is a
+  non-key `UPDATE` too.)
+
+  So postgres keeps a separate lifecycle row per model: a new table
+  `model_lifecycle (tenant_id, model_name, model_version, generation)`,
+  created with the model, deleted with it, filled for existing models by the
+  migration. Every change of a model's state or unique keys (`Lock`, `Unlock`,
+  `Delete`, `Save`, which `ImportModel` and `SetUniqueKeys` use) bumps
+  `generation` in the same transaction; `ExtendSchema` and `SetChangeLevel` do
+  not touch it. The commit takes `FOR SHARE` on the lifecycle rows and reads
+  state and keys from the `models` rows in its snapshot. The transaction is
+  `REPEATABLE READ` (`transaction_manager.go` ~:173): a lifecycle row bumped
+  and committed after its snapshot fails step 1 with `40001` (retryable `409
+  CONFLICT`), so the snapshot's state and keys are always the current ones; a
+  bump not yet committed makes step 1 wait for it. The retry is refused by the
+  service's state check, or, with a stale cache, by step 1. The recorded set must be right after `ROLLBACK TO SAVEPOINT`:
   either snapshot it with the savepoint, or at commit keep only the ids whose
   `entities` row this transaction wrote. The claim release in `deleteOn`
   (`entity_store.go` ~:884) **moves to commit** (step 2), and the model-wide
@@ -544,39 +576,75 @@ asserts this outcome.
 
 ### 4.5 A model cannot change while entities are being written to it
 
-Unique keys, like the schema, may change only while a model is `UNLOCKED`, and
-a model may be unlocked or deleted only when it has no entities. Today both
-rules are checked by the service before it acts, not where the change is made:
+The rules: entities exist only in a `LOCKED` model; a model's unique keys
+(and state) change only while it is `UNLOCKED`; a model is unlocked or deleted
+only when it has no entities; a `LOCKED` model is never deleted. Today every one
+of them is checked by a service before it calls the store, not where the
+change is made:
 
-- An entity write checks that the model is `LOCKED` when the request starts
-  (`service.go` ~:226, ~:1954); nothing checks it at commit.
-- Unlock and delete count the model's entities (`internal/domain/model/service.go`
-  ~:382, ~:448, `EntityStore.Count` outside any transaction) and then change
-  the model in a separate call (`ModelStore.Unlock`, `ModelStore.Delete`).
+- An entity write checks that the model is `LOCKED` only on the create paths,
+  when the request starts (`internal/domain/entity/service.go` ~:226, ~:1954);
+  nothing checks it at commit.
+- Unlock and delete count the model's entities
+  (`internal/domain/model/service.go` ~:382, ~:448, `EntityStore.Count`
+  outside any transaction) and then change the model in a separate call.
+- `SetUniqueKeys` and `ImportModel` check `UNLOCKED` and then call
+  `ModelStore.Save` with the descriptor they read (`model/service.go`
+  ~:640-669, ~:153-227); `Save` replaces the whole document, state included
+  (postgres upsert, `model_store.go` ~:66-79; memory overwrite,
+  `plugins/memory/model_store.go` ~:26-34).
+- Delete checks the state in the service (`model/service.go` ~:427-439);
+  `ModelStore.Delete` does not.
 
-So an entity write and an unlock or delete that run together can both succeed:
-the write commits an entity into a model that is now unlocked (its keys free
-to change) or deleted. The fix puts both checks where the change is made:
+So, run together: an entity write and an unlock or delete both succeed (an
+entity in an unlocked or deleted model); a key change and a lock with entity
+writes after it both succeed (`Save` writes `UNLOCKED` and new keys over a
+model that has entities the keys were never checked against). The fix puts
+every check inside the store operation that makes the change, atomic with it:
 
-- **The write side** is step 1 of §4.1: the commit reads the model and refuses
-  one that is not `LOCKED` (`spi.ErrModelNotLocked`, answered as the service's
-  existing `409 MODEL_NOT_LOCKED`).
-- **The unlock and delete side:** `ModelStore.Unlock` and `ModelStore.Delete`
-  check for live entities themselves, inside the change, and refuse with a new
-  `*spi.ModelHasEntitiesError` (carrying the count; `errors.Is` matches
-  `spi.ErrModelHasEntities`), answered as today's `409 MODEL_HAS_ENTITIES` with
-  the same props. The service's `Count` calls are deleted.
-  - postgres: `Unlock` already flips the state first, as a write claim on the
-    `models` row, in a `READ COMMITTED` transaction (`model_store.go` ~:254-260,
-    ~:428-433); it then counts in a later statement, which sees every entity
-    committed before its claim, and rolls back if any exist. `Delete` (one
-    statement today, ~:142-167) becomes the same: claim the row, count, delete.
-    A commit that read the row `FOR SHARE` first makes the claim wait until it
-    ends; a claim made first makes the commit's read fail (§4.2).
-  - memory: `Unlock` and `Delete` count and change under `entityMu` (write),
-    the lock entity commits hold; the model store's own lock is taken inside
-    `entityMu`, never around it.
-  - sqlite: count and change in one write transaction; sqlite has one writer.
+| Store operation | Refuses, atomically with the change | Answer |
+|---|---|---|
+| Entity commit / non-transactional save (§4.1 step 1) | a model that does not exist or is not `LOCKED` | `spi.ErrModelNotLocked` → `409 MODEL_NOT_LOCKED` |
+| `ModelStore.Unlock` | live entities | `*spi.ModelHasEntitiesError` (count; `errors.Is` `spi.ErrModelHasEntities`) → `409 MODEL_HAS_ENTITIES`, today's props |
+| `ModelStore.Delete` | a `LOCKED` model; live entities | `spi.ErrModelLocked` → `409 MODEL_ALREADY_LOCKED`; `ModelHasEntitiesError` as above |
+| `ModelStore.Save` of an existing model | a stored model that is `LOCKED` | `spi.ErrModelLocked` → `409 MODEL_ALREADY_LOCKED` |
+
+The service's own checks stay as early answers, with the codes above; the
+service's `Count` calls are deleted, since the store's answer carries the
+count.
+
+Error mapping: `common.Internal` maps `spi.ErrModelNotLocked` to `409
+MODEL_NOT_LOCKED` and `spi.ErrModelLocked` to `409 MODEL_ALREADY_LOCKED`
+(`internal/common/errors.go` ~:266-298), so the entity doors' commit and
+workflow funnels (`service.go` `classifyCommitErr` ~:767-778,
+`classifyWorkflowError` ~:2831-2881) answer them without a branch of their
+own. `UnlockModel` and `DeleteModel` take `errors.As` on
+`*spi.ModelHasEntitiesError` before their generic wrap (~:399-400, ~:465-466)
+and build today's props (`entityName`, `entityVersion`, `entityCount`).
+
+Per backend:
+
+- postgres: each operation bumps the lifecycle row first (§4.2), in a `READ
+  COMMITTED` transaction (`model_store.go` ~:428-433), then checks state and
+  counts entities in later statements, which see every commit before the bump,
+  and rolls back on a refusal. `Unlock` already claims first (~:254-260);
+  `Delete` (one statement today, ~:142-167) becomes bump, check, delete; `Save`
+  becomes bump (or insert), check, upsert. A commit that took `FOR SHARE` first
+  makes the bump wait until it ends; a bump committed first makes the commit
+  fail `40001`.
+- memory: `Unlock`, `Delete` and `Save` check and change under `entityMu`
+  (write), the lock entity commits hold, counting with an internal helper that
+  takes no lock (`EntityStore.Count` takes `entityMu.RLock`,
+  `plugins/memory/entity_store.go` ~:886, and would deadlock). `modelMu` is
+  taken inside `entityMu`, never around it.
+- sqlite: check and change in one write transaction; sqlite has one writer.
+
+**Test fixtures.** Storage now refuses an entity whose model does not exist or
+is not `LOCKED`. The spitest entity, transaction, search and audit suites save
+entities of models they never create (`spitest/helpers.go` ~:32,
+`transaction.go`), as do most plugin and unit tests that use an
+`EntityStore`. They get a shared fixture that saves and locks the model; the
+builder migrates them (§8).
 
 ### 4.6 Rejected alternatives
 
@@ -607,6 +675,8 @@ to change) or deleted. The fix puts both checks where the change is made:
 | A scheduled fire that changes a key field | memory drops the entity's claims; postgres/sqlite keep stale claims | claims follow the final entity; a fire that breaks a key fails (§4.3) |
 | A multi-node postgres node whose cached model is out of date after an unlock, key change and relock | enforces the old keys until its cache lease ends; data it admits can break the new key | enforces the stored keys; a commit whose snapshot predates the change gets a retryable `409 CONFLICT` (§4.2) |
 | An entity write and an unlock or delete of its model, at the same time | both can succeed: an entity in an unlocked or deleted model | one wins: the write's commit is refused `409 MODEL_NOT_LOCKED` (postgres: or a retryable `409 CONFLICT`), or the unlock/delete is refused `409 MODEL_HAS_ENTITIES` (§4.5) |
+| A unique-key change or model import and a lock of the same model, at the same time | both can succeed: the import or key change writes `UNLOCKED` and new keys over a locked model that may already have entities | one wins: the key change or import is refused `409 MODEL_ALREADY_LOCKED` (§4.5) |
+| A schema extension and other entity writes of the same model (postgres) | unchanged | unchanged: the commit's model check uses the lifecycle row, which a schema extension does not touch (§4.2) |
 | A callback's `If-Match` with the payload's `meta.transactionId` on the anchor | update path: `412`; scheduled fire: matches | matches on every path (§2.5) |
 | A scheduled fire that declines or is cancelled after running a function criterion | no entity version | unchanged: no entity version (§2.2) |
 | Reading an entity's available transitions under a transaction token (function criteria run) | no write | unchanged: no write (§2.1) |
@@ -631,8 +701,11 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | | `503` / `500` | the pre-callout save meets a storage outage / other failure |
 | Joined callback writes (`X-Tx-Token` / gRPC `tx-token`) | `2xx` instead of `409`/`422` on postgres | a key clash, or a partial key from the callback's processors' returned data, is now found at the owner's commit; a partial key in the callback's body stays `422` at the callback |
 | `GET /entity/{id}` and search/count under `X-Tx-Token` / gRPC `tx-token` from a callback | `200` | returns the current anchor |
-| Entity create/update/transition/collection endpoints, HTTP and gRPC | `409 MODEL_NOT_LOCKED` | the model was unlocked or deleted after the request checked it; now refused at commit (§4.5) |
+| Entity create/update/transition/collection endpoints, HTTP and gRPC | `409 MODEL_NOT_LOCKED` | the model is not `LOCKED` (or no longer exists) at commit; only create paths checked it before, at request start (§4.5) |
+| | `409 CONFLICT` (retryable, postgres) | the model's lifecycle row changed after the transaction's snapshot (§4.2) |
 | `PUT /model/{entityName}/{modelVersion}/unlock`, `DELETE /model/{entityName}/{modelVersion}` | `409 MODEL_HAS_ENTITIES` | unchanged code and props; now checked inside the store's change, so a concurrent entity commit cannot slip past it (§4.5) |
+| `DELETE /model/{entityName}/{modelVersion}` | `409 MODEL_ALREADY_LOCKED` | unchanged code; now also checked inside the store's delete |
+| `PUT /model/{entityName}/{modelVersion}/unique-keys`, `POST /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion}` | `409 MODEL_ALREADY_LOCKED` | unchanged code; now also checked inside the store's save, so a concurrent lock cannot slip past it |
 
 ## 7. Test coverage matrix
 
@@ -670,14 +743,17 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | `COMMIT_BEFORE_DISPATCH` (`startNewTxOnDispatch: true`) callback reads anchor and writes it with `If-Match` = payload id → matches | engine unit | yes | — | — |
 | Scheduled fire declines / is cancelled after a function criterion → no entity version, client `If-Match` still valid | engine unit | yes | — | — |
 | Available-transitions read under a token runs a function criterion → no write | engine unit | yes | — | — |
-| A write through each door keeps the entity's claims (keys carried, §4.1) | engine/service unit | — | — | — |
 | Callback `If-Match` with payload `meta.transactionId` on the anchor → matches (update path and scheduled fire) | engine unit | yes | — | — |
 | Scheduled fire breaks a key → task outcome per §4.3 | scheduler/engine unit | yes | — | — |
 | Keys come from the stored model: a transactional and a non-transactional save with no keys anywhere on the call path enforce the model's keys | spitest + per-plugin unit | — | existing `unique_keys` parity (unchanged results) | — |
-| Commit of an entity whose model is no longer `LOCKED` → `ErrModelNotLocked`, nothing committed | spitest + per-plugin unit | waived: needs an unlock between the request's check and its commit; the plugin test drives that order deterministically with two transactions | — | — |
-| `ModelStore.Unlock` / `Delete` with live entities → `ModelHasEntitiesError` with the count, model unchanged | spitest + per-plugin unit | existing (`MODEL_HAS_ENTITIES` e2e, unchanged answer) | existing | — |
+| Commit of an entity whose model is no longer `LOCKED`, or does not exist → `ErrModelNotLocked`, nothing committed | spitest + per-plugin unit | yes: a test processor unlocks the model without the token during the create's callout (count is 0, the entity is uncommitted); postgres answers `409 CONFLICT`, its retry `409 MODEL_NOT_LOCKED`; memory/sqlite `409 MODEL_NOT_LOCKED` (isolated, not parity) | — | gRPC create: envelope `Error.Code=MODEL_NOT_LOCKED` |
+| A transaction that only deletes entities of a model that is not `LOCKED` commits | spitest + per-plugin unit | — | — | — |
+| `ModelStore.Unlock` / `Delete` with live entities → `ModelHasEntitiesError` with the count, model unchanged | spitest + per-plugin unit | unlock: existing (`model_errors_test.go` ~:45); delete: new | new scenario (unlock and delete) | — |
+| `ModelStore.Delete` of a `LOCKED` model, `Save` over a `LOCKED` model → `ErrModelLocked`, model unchanged | spitest + per-plugin unit | existing service-level answers (`MODEL_ALREADY_LOCKED`) unchanged | — | — |
+| Interleave: a key change (`Save`) read `UNLOCKED`, then the model is locked → the save is refused | per-plugin unit (deterministic order) | — | — | — |
+| postgres: a schema extension in another transaction does not fail or delay a non-extending writer's commit of the same model | postgres plugin unit | — | — | — |
 | Interleave: a write transaction holds an uncommitted entity of model M; unlock of M → the unlock or the commit is refused, never both succeed (each order) | per-plugin unit (two transactions, deterministic order) | — | — | — |
-| postgres: model row changed and committed after a writer's snapshot → writer's commit `409 CONFLICT` (40001) | postgres plugin unit | — | — | — |
+| postgres: lifecycle row bumped and committed after a writer's snapshot → writer's commit `409 CONFLICT` (40001) | postgres plugin unit | (covered by the e2e row above) | — | — |
 
 Workflow selection, `ASYNC_NEW_TX` and schedule-function rows have no parity
 scenario: they differ from the `SYNC` rows only in the engine; the storage call
@@ -703,6 +779,12 @@ showing the old outcome) on the unfixed code, or it is dropped.
   The comment on `writtenHere` about which runs take that branch is rewritten.
   The fire's existing tests that pin `Seal` before reconcile, if any, change.
 - `SameTxReclaim*` in the three plugins' `unique_claims_test.go`.
+- Every spitest suite and plugin/unit test that saves entities of a model it
+  never created and locked (spitest `helpers.go` ~:32 and the entity,
+  transaction, search and audit suites; most `_test.go` files that use an
+  `EntityStore`): a shared fixture saves and locks the model first (§4.5).
+- postgres migrations: a new up migration creates `model_lifecycle` and fills
+  it from `models` (§4.2).
 - Any e2e/parity test counting `/changes` entries after a joined-callback write
   or a COMMIT_BEFORE_DISPATCH run (to be found by the builder; grep `changes`
   counts in `internal/e2e` and `e2e/parity`).
