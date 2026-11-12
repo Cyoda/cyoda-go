@@ -14,6 +14,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -101,7 +102,7 @@ func auditEnv(t *testing.T, answers map[string]criteriaAnswer, wfs ...spi.Workfl
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
 	rec := &recordingCriteria{answers: answers}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(rec))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(rec), WithCoordination(txcoord.New(txMgr)))
 	ctx := ctxWithTenant(testTenant)
 	name := strings.ReplaceAll(strings.ToLower(t.Name()), "/", "-")
 	ref := spi.ModelRef{EntityName: "fn-audit-" + name, ModelVersion: "1.0"}

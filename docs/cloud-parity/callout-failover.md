@@ -147,13 +147,14 @@ savepoint failure, a platform error — records no `failReason`. The record is
 written in the operation's transaction and kept only when that transaction
 commits: for a failed `ASYNC_NEW_TX` processor whose failure the operation goes
 on past, when the operation commits; and for a processor in a callback that
-joined another operation's transaction, when that operation commits. A failed
+joined another operation's transaction, when that callback's work is kept and
+that operation commits. A failed
 `SYNC` or `ASYNC_SAME_TX` processor fails the operation, and its record is
 rolled back with it. A `COMMIT_BEFORE_DISPATCH` processor that fails after its
 segment boundary committed has its record written in a transaction of its own,
 so it is kept although the operation fails. (On a callback that joined another
-transaction, such a processor is refused before the boundary, and its record
-stays in the joined transaction; when the boundary itself fails, the record is
+transaction, such a processor is refused before the boundary, and its record is
+discarded with the callback's failed write; when the boundary itself fails, the record is
 rolled back with the failed operation, or is not kept when the boundary's
 commit was interrupted and its outcome is in doubt.) Whenever the record is rolled back, the
 client's error message is where the member's text reaches the caller.
@@ -257,8 +258,9 @@ answered, and after later processors of the same transition have run.
 
 - Each callout is numbered by a **pair**: a **round**, and a **try within the
   round**. The owner opens the next round before every try it makes itself and
-  before every hand-over to another node, and it waits for the transaction's lock
-  each time it does (below). A node that received a hand-over opens no round: it
+  before every hand-over to another node, and each time, on a serialising
+  backend, it waits until the earlier try's callbacks in progress have ended
+  (below). A node that received a hand-over opens no round: it
   numbers its own tries within the round it was given — 1, then 2, and so on —
   and touches nothing on the owner.
 - The transaction token is minted per try. It names the owner node, the
@@ -297,17 +299,21 @@ answered, and after later processors of the same transition have run.
   active (`404`) — and only then is the admission rule applied
   (`410 CALLOUT_SUPERSEDED`). A stolen or forged token therefore tells another
   tenant nothing about which callouts exist.
-- The rule is applied again under the transaction's lock: when the callback
-  takes it, each time it takes it back after a callout of its own, and between
-  the processors of a workflow it started. A refused callback performs no store
-  operation of any kind — no write, no read, no audit record.
-- When the owner opens a round, and when a callout ends, the platform takes the
-  transaction's lock once before it proceeds: whatever the earlier member had in
-  progress finishes first, and nothing of it can start afterwards.
+- The rule is applied again when the callback has its turn on the
+  transaction, each time it resumes after a callout of its own, between the
+  processors of a workflow it started, and when its scope ends. A refused
+  callback performs no store operation of any kind — no write, no read, no
+  audit record.
+- When the owner opens a round, and when a callout ends, a serialising
+  backend (memory, SQLite, PostgreSQL) waits until no callback admitted under
+  the earlier round, or under the ended callout, is still in progress before
+  it proceeds; nothing of the earlier member can start afterwards. A
+  location-independent backend does not wait: such a callback is refused
+  completion when it ends (`callback-scopes.md`).
 - No database statement is interrupted — not by the fence, and not by the
   member's connection dropping. A callback that was already reading or writing
-  when the work moved on is allowed to finish and is answered normally; the wait
-  above is what makes that safe.
+  when the work moved on runs to its end, and is then discarded and answered
+  `410 CALLOUT_SUPERSEDED`: none of its writes are kept (`callback-scopes.md`).
 - "Too slow" is not "replaced": a timeout that fails the operation rolls the
   transaction back and opens no round.
 
@@ -315,16 +321,20 @@ A compute member that receives `CALLOUT_SUPERSEDED` must stop working on that
 callout: nothing further it sends under that token is accepted, and an answer it
 does send for the callout is discarded.
 
-**Departure 10 — one transaction, one user at a time.** Every callback, a read
-or a search as much as a write, holds its transaction's lock for the whole time
-the platform works on it. The pass is verified before the request is read, the
-request is read in full before the lock is taken and the response is sent after
-it is released, so a member that stalls holds nothing, and a member that
-disconnects once its callback holds the lock does not cancel it. A callback
-still waiting for the lock is the one that its member can still call off: it has
-touched nothing, so it is simply dropped. This extends
-`nested-join-tx-serialisation.md`: the lock is still given up for the length of
-any callout the callback itself makes.
+**Departure 10 — one transaction, one user at a time (serialising
+backends).** On a backend whose transaction lives in one node (memory, SQLite,
+PostgreSQL), every callback, a read or a search as much as a write, holds its
+transaction's gate for the whole time the platform works on it. The pass is
+verified before the request is read, the request is read in full before the
+gate is taken and the response is sent after it is released, so a member that
+stalls holds nothing, and a member that disconnects once its callback holds the
+gate does not cancel it. A callback still waiting for the gate is the one that
+its member can still call off: it has touched nothing, so it is simply dropped.
+This extends `nested-join-tx-serialisation.md`: the gate is still given up for
+the length of any callout the callback itself makes, and while it is, only that
+callout's callbacks are admitted (`503 TRANSACTION_BUSY` for the others). A
+backend with location-independent transactions runs callbacks at the same time
+instead (`callback-scopes.md`).
 
 What is not stopped, stated plainly: the owner's own next try shuts the member
 before it out at once, because the owner opens the round before it mints. A try
@@ -333,13 +343,14 @@ the round it was given and tells the owner nothing, so the owner learns of a
 later try only from the first callback that carries it. Until then the member of
 the earlier try is still admitted. Its writes are repeats of an idempotent
 processor's own, and the wait at the end of the callout still puts them before
-anything the workflow does next.
+anything the workflow does next: each is kept or discarded before the workflow
+goes on.
 
 ## 7. Joined-request wire behaviour Cloud must replicate
 
-These follow from taking the transaction's lock for every joined request (reads
-included), not only entity writes, and from reading each request whole before
-the lock is taken:
+These follow from taking the transaction's gate for every joined request (reads
+included), not only entity writes, from reading each request whole before
+the gate is taken, and from each callback being all-or-nothing:
 
 - A refused gRPC **server-streaming** joined request
   (`EntityManageCollection`, `EntitySearchCollection`) carries the request id
@@ -350,22 +361,24 @@ the lock is taken:
   before the message is read at all — carries no id.
 - An over-size body on a joined HTTP request is refused with `413`, the same
   as an unjoined one: the body is read into memory, under the same size cap a
-  handler would apply, before the lock is taken, so the join layer never
+  handler would apply, before the gate is taken, so the join layer never
   accepts a body a handler would reject. A pass that fails verification —
   `401 UNAUTHORIZED`, `410 TRANSACTION_EXPIRED` — is refused before the body is
   read at all, so it costs no buffer.
-- A held gRPC server-streaming response is not all-or-nothing: if the handler
-  fails partway through a joined chunked collection, the frames already
-  produced are sent before the handler's error is returned, exactly as an
-  unjoined stream would deliver them.
-- A joined answer is held in memory while the transaction's lock is held, under
+- A held gRPC server-streaming response is all-or-nothing: if the handler
+  fails partway through a joined chunked collection, only the error is sent,
+  never the frames produced before it. Those frames describe work the failed
+  request did not keep.
+- A joined answer is held in memory while the transaction's gate is held, under
   a ceiling of its own: `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`, default
   10 MiB. An answer past it fails the request — `413
   JOINED_RESPONSE_TOO_LARGE`, naming the ceiling — on all three doors that can
   hold one: the HTTP callback door, the gRPC unary door (`EntityManage`,
   `EntitySearch`), and the gRPC server-streaming door
   (`EntityManageCollection`, `EntitySearchCollection`) — and is never sent in
-  part: a truncated answer would be a wrong one.
+  part: a truncated answer would be a wrong one. On an entity write that
+  answer is a failed write: nothing of it is kept, and the transaction becomes
+  rollback-only.
 
 ## 8. What Cloud has to decide
 

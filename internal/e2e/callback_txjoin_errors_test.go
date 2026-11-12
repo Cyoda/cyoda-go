@@ -147,8 +147,23 @@ func (h *callbackHarness) doAuthBearer(t *testing.T, bearer, method, path, body,
 	return resp
 }
 
+// assertProblemNotRetryable asserts a problem body does not invite a retry:
+// none of the refusals of a pass can succeed when the same request is sent
+// again.
+func assertProblemNotRetryable(t *testing.T, body string) {
+	t.Helper()
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	_ = json.Unmarshal([]byte(body), &pd)
+	if _, ok := pd.Properties["retryable"]; ok {
+		t.Errorf("retryable is set; want it absent (body: %s)", body)
+	}
+}
+
 // TestCallbackErr_LoudFailCodes proves each documented status/error code a
-// callback token can trigger through the HTTP TxJoin middleware. Subtests share
+// callback token can trigger through the HTTP TxJoin middleware, none of them
+// retryable. Subtests share
 // one full stack (postgres + member) for speed; each uses isolated names.
 func TestCallbackErr_LoudFailCodes(t *testing.T) {
 	h := newCallbackHarness(t)
@@ -175,6 +190,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if code := problemErrorCode(body); code != "TRANSACTION_NOT_FOUND" {
 			t.Fatalf("errorCode = %q; want TRANSACTION_NOT_FOUND (body: %s)", code, body)
 		}
+		assertProblemNotRetryable(t, body)
 	})
 
 	// expired token → 410 TRANSACTION_EXPIRED. HMAC-valid but past its deadline,
@@ -193,6 +209,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if code := problemErrorCode(body); code != "TRANSACTION_EXPIRED" {
 			t.Fatalf("errorCode = %q; want TRANSACTION_EXPIRED (body: %s)", code, body)
 		}
+		assertProblemNotRetryable(t, body)
 	})
 
 	// forged / bad-HMAC token → 401 UNAUTHORIZED. Signed by a DIFFERENT secret,
@@ -215,6 +232,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if code := problemErrorCode(body); code != "UNAUTHORIZED" {
 			t.Fatalf("errorCode = %q; want UNAUTHORIZED (body: %s)", code, body)
 		}
+		assertProblemNotRetryable(t, body)
 	})
 
 	// A pass with no callout and number — what an earlier version minted — is
@@ -234,6 +252,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if code := problemErrorCode(body); code != "UNAUTHORIZED" {
 			t.Fatalf("errorCode = %q; want UNAUTHORIZED (body: %s)", code, body)
 		}
+		assertProblemNotRetryable(t, body)
 	})
 
 	// empty token (control) → 2xx standalone. No X-Tx-Token header: the middleware
@@ -320,6 +339,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if code := problemErrorCode(body); code != "FORBIDDEN" {
 			t.Fatalf("cross-tenant errorCode = %q; want FORBIDDEN (body: %s)", code, body)
 		}
+		assertProblemNotRetryable(t, body)
 
 		// Release the held transaction and let the primary create finish.
 		close(release)

@@ -22,13 +22,13 @@ func TestBegin_ContextIsReleasedWhenAnEnclosingPairStopsBeingCurrent(t *testing.
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFence()
-			_, endOuter := begin(t, f, context.Background(), "outer", "tx", nil)
+			_, endOuter := begin(t, f, context.Background(), "outer", nil)
 			f.Advance("outer", 1)
 			if _, err := f.Admit(context.Background(), []Pair{{Callout: "outer", Major: 1, Minor: 1}}); err != nil {
 				t.Fatalf("Admit: %v", err)
 			}
 
-			cctx, _ := begin(t, f, context.Background(), "inner", "tx", []Pair{{Callout: "outer", Major: 1, Minor: 1}})
+			cctx, _ := begin(t, f, context.Background(), "inner", []Pair{{Callout: "outer", Major: 1, Minor: 1}})
 			f.Advance("inner", 1)
 			if cctx.Err() != nil {
 				t.Fatal("inner context cancelled while its enclosing pair is current")
@@ -50,10 +50,10 @@ func TestBegin_ContextIsReleasedWhenAnEnclosingPairStopsBeingCurrent(t *testing.
 
 func TestBegin_UnderAnEnclosingPairThatIsAlreadyStale(t *testing.T) {
 	f := newFence()
-	begin(t, f, context.Background(), "outer", "tx", nil)
+	begin(t, f, context.Background(), "outer", nil)
 	f.Advance("outer", 2)
 
-	cctx, _ := begin(t, f, context.Background(), "inner", "tx", []Pair{{Callout: "outer", Major: 1}})
+	cctx, _ := begin(t, f, context.Background(), "inner", []Pair{{Callout: "outer", Major: 1}})
 	if cause := context.Cause(cctx); !errors.Is(cause, ErrSuperseded) {
 		t.Fatalf("cause = %v; want ErrSuperseded at once", cause)
 	}
@@ -75,11 +75,11 @@ func TestBegin_OuterAlreadyStale_ReleasesAtOnce(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFence()
-			_, endOuter := begin(t, f, context.Background(), "outer", "tx", nil)
+			_, endOuter := begin(t, f, context.Background(), "outer", nil)
 			f.Advance("outer", 1)
 			tc.stale(f, endOuter)
 
-			cctx, _ := begin(t, f, context.Background(), "inner", "tx", tc.outer)
+			cctx, _ := begin(t, f, context.Background(), "inner", tc.outer)
 			select {
 			case <-cctx.Done():
 			default:
@@ -90,20 +90,4 @@ func TestBegin_OuterAlreadyStale_ReleasesAtOnce(t *testing.T) {
 			}
 		})
 	}
-}
-
-// A callout with no transaction is registered like any other, so that it is
-// released with an enclosing callback, and its end runs through without a
-// transaction to wait on.
-func TestBegin_NoTransaction(t *testing.T) {
-	f := newFence()
-	begin(t, f, context.Background(), "outer", "tx", nil)
-	f.Advance("outer", 1)
-	cctx, end := f.Begin(context.Background(), "inner", "", []Pair{{Callout: "outer", Major: 1}})
-	f.Advance("inner", 1)
-	f.Advance("outer", 2)
-	if cause := context.Cause(cctx); !errors.Is(cause, ErrSuperseded) {
-		t.Fatalf("cause = %v; want ErrSuperseded", cause)
-	}
-	end()
 }

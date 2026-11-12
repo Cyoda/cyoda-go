@@ -2,16 +2,20 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
 	"net/url"
 	"sync"
+	"sync/atomic"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/resolver"
+	"google.golang.org/grpc/stats"
+	"google.golang.org/grpc/status"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
@@ -43,6 +47,81 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 	return &ClientPool{conns: make(map[string]*grpc.ClientConn), allowLoopback: allowLoopback}
 }
 
+// NotSentProof marks a forward error that proves nothing was sent to the
+// owner: the pool refused or failed to set up the connection, or the call
+// failed with no header of it ever put on a transport to the owner (see
+// sendRecorder). Its absence proves nothing: the owner may have received the
+// request.
+//
+// It changes nothing a reader of the error sees: Error is the wrapped error's
+// text, Unwrap exposes it to errors.Is and errors.As, and GRPCStatus gives a
+// wrapped status back as it is.
+type NotSentProof struct{ Err error }
+
+func (p *NotSentProof) Error() string { return p.Err.Error() }
+
+func (p *NotSentProof) Unwrap() error { return p.Err }
+
+// GRPCStatus returns the status of the wrapped error unchanged, or nil when it
+// has none, so status.FromError reads a wrapped error as it reads the error
+// itself.
+func (p *NotSentProof) GRPCStatus() *status.Status {
+	st, ok := status.FromError(p.Err)
+	if !ok {
+		return nil
+	}
+	return st
+}
+
+// ProvesNotSent reports whether err carries a NotSentProof anywhere on its
+// chain.
+func ProvesNotSent(err error) bool {
+	var proof *NotSentProof
+	return errors.As(err, &proof)
+}
+
+// sendRecord is the record of one forwarded call: whether any attempt of it put
+// the request's headers on a transport to the owner.
+type sendRecord struct{ sent atomic.Bool }
+
+type sendRecordKey struct{}
+
+// sendRecorder is the stats handler of every pooled connection. grpc-go
+// connects lazily, inside the call, so a call's own error does not say whether
+// the request left this node: a refused connection and a connection lost after
+// the send are both codes.Unavailable. grpc-go reports OutHeader once an
+// attempt's headers are queued on a transport, before the call can return, and
+// nothing of a call reaches the owner before its headers. A call that fails
+// with no OutHeader on any attempt sent nothing.
+type sendRecorder struct{}
+
+func (sendRecorder) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context { return ctx }
+
+func (sendRecorder) HandleRPC(ctx context.Context, s stats.RPCStats) {
+	if _, ok := s.(*stats.OutHeader); !ok {
+		return
+	}
+	if rec, ok := ctx.Value(sendRecordKey{}).(*sendRecord); ok {
+		rec.sent.Store(true)
+	}
+}
+
+func (sendRecorder) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context { return ctx }
+
+func (sendRecorder) HandleConn(context.Context, stats.ConnStats) {}
+
+// callOwner makes one forwarded call with the inbound metadata, and marks its
+// error with NotSentProof when no attempt of the call sent the request's
+// headers to the owner.
+func callOwner[T any](ctx context.Context, call func(context.Context) (T, error)) (T, error) {
+	rec := &sendRecord{}
+	resp, err := call(context.WithValue(withForwardedMetadata(ctx), sendRecordKey{}, rec))
+	if err != nil && !rec.sent.Load() {
+		return resp, &NotSentProof{Err: err}
+	}
+	return resp, err
+}
+
 // Get returns a cached connection for addr, dialling one on first use.
 // The peer address is validated via the SSRF guard before any dial is
 // attempted; forbidden addresses (loopback when disallowed, link-local,
@@ -50,7 +129,17 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 // ctx bounds the name lookup that guard makes, so a forwarded call whose caller
 // has gone does not wait on a resolver, and peeraddr's own bound for a lookup
 // that precedes a dial is applied on top of it.
+//
+// Every error Get returns carries NotSentProof: no call has been made.
 func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+	conn, err := p.get(ctx, addr)
+	if err != nil {
+		return nil, &NotSentProof{Err: err}
+	}
+	return conn, nil
+}
+
+func (p *ClientPool) get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
 	target, err := dialTarget(addr)
 	if err != nil {
 		return nil, err
@@ -78,6 +167,7 @@ func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, er
 	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithNoProxy(),
+		grpc.WithStatsHandler(sendRecorder{}),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(math.MaxInt32)))
 	if err != nil {
 		return nil, err
@@ -130,7 +220,7 @@ func ForwardEntityManage(ctx context.Context, pool *ClientPool, addr string, ce 
 		return nil, err
 	}
 	client := cyodapb.NewCloudEventsServiceClient(conn)
-	return client.EntityManage(withForwardedMetadata(ctx), ce)
+	return callOwner(ctx, func(ctx context.Context) (*cepb.CloudEvent, error) { return client.EntityManage(ctx, ce) })
 }
 
 // ForwardEntityManageCollection dials the owning node and re-issues the
@@ -142,7 +232,9 @@ func ForwardEntityManageCollection(ctx context.Context, pool *ClientPool, addr s
 		return nil, err
 	}
 	client := cyodapb.NewCloudEventsServiceClient(conn)
-	return client.EntityManageCollection(withForwardedMetadata(ctx), ce)
+	return callOwner(ctx, func(ctx context.Context) (grpc.ServerStreamingClient[cepb.CloudEvent], error) {
+		return client.EntityManageCollection(ctx, ce)
+	})
 }
 
 // ForwardEntitySearch dials the owning node and replays a unary EntitySearch
@@ -155,7 +247,7 @@ func ForwardEntitySearch(ctx context.Context, pool *ClientPool, addr string, ce 
 		return nil, err
 	}
 	client := cyodapb.NewCloudEventsServiceClient(conn)
-	return client.EntitySearch(withForwardedMetadata(ctx), ce)
+	return callOwner(ctx, func(ctx context.Context) (*cepb.CloudEvent, error) { return client.EntitySearch(ctx, ce) })
 }
 
 // ForwardEntitySearchCollection dials the owning node and re-issues the
@@ -167,7 +259,9 @@ func ForwardEntitySearchCollection(ctx context.Context, pool *ClientPool, addr s
 		return nil, err
 	}
 	client := cyodapb.NewCloudEventsServiceClient(conn)
-	return client.EntitySearchCollection(withForwardedMetadata(ctx), ce)
+	return callOwner(ctx, func(ctx context.Context) (grpc.ServerStreamingClient[cepb.CloudEvent], error) {
+		return client.EntitySearchCollection(ctx, ce)
+	})
 }
 
 // withForwardedMetadata copies inbound metadata (auth + tx-token) onto the

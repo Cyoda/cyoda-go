@@ -12,9 +12,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // criterionOutcome is the result of evaluating one criterion.
@@ -165,22 +164,20 @@ func (f *critFunction) eval(e *Engine, cc *criterionContext, entity *spi.Entity,
 // dispatchCriterionFunction makes one criterion callout with the function
 // condition's own JSON.
 func (e *Engine) dispatchCriterionFunction(cc *criterionContext, entity *spi.Entity, raw json.RawMessage) (bool, string, error) {
-	// Release any per-tx gate this call chain holds across the blocking
-	// FUNCTION-criterion dispatch — same H3 rationale as executeSyncProcessor:
-	// the callout can re-enter with a descendant joined callback on the same
-	// txID. No-op for the owner / non-joined calls. The explicit resume
-	// re-acquires the lock so the fence's check below is made while holding
-	// it, which is what gives the chain the right to carry on; the deferred
-	// one covers a panicking dispatch.
-	resume := txgate.Suspend(cc.ctx)
+	// Pause this chain's scope across the blocking FUNCTION-criterion
+	// dispatch — same rationale as executeSyncProcessor: the callout can
+	// re-enter with a descendant joined callback on the same txID. No-op for
+	// the owner and for calls that joined no transaction. The explicit resume
+	// retakes the gate and checks the chain's scope before the chain carries
+	// on; the deferred one covers a panicking dispatch.
+	resume := txcoord.Pause(cc.ctx)
 	defer resume()
 	callCtx, stop := runCallCtx(cc.ctx)
 	defer stop()
 	matches, reason, err := e.extProc.DispatchCriteria(callCtx, entity, raw, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
 	stop()
-	resume()
-	if cerr := fence.Check(cc.ctx); cerr != nil {
-		return false, "", cerr
+	if rerr := resume(); rerr != nil {
+		return false, "", rerr
 	}
 	return matches, reason, err
 }

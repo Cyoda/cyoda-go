@@ -11,8 +11,8 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // No cnode, one attaches inside the patience: the callout succeeds, and the
@@ -225,17 +225,15 @@ func TestOwner_CallerGoesAwayDuringAWait_EndsAtOnce(t *testing.T) {
 
 func TestOwner_ReleasedByTheFenceDuringAWait_IsCalloutSuperseded(t *testing.T) {
 	e := newEnv(t, Config{FixedNumRetries: 3, Patience: 30 * time.Second})
-	_, endOuter := e.fence.Begin(context.Background(), "outer-callout", "tx-1", nil)
+	_, endOuter := e.coord.BeginCallout(context.Background(), "tx-1", "outer-callout")
 	defer endOuter()
-	e.fence.Advance("outer-callout", 1)
-	callback, err := e.fence.Admit(userCtx(tenantA), []fence.Pair{{Callout: "outer-callout", Major: 1}})
-	if err != nil {
-		t.Fatalf("Admit: %v", err)
-	}
-	time.AfterFunc(30*time.Millisecond, func() { e.fence.Advance("outer-callout", 2) })
+	e.coord.Advance("outer-callout", 1)
+	scope, callback := e.callback(t, txcoord.Write, txcoord.Pair{Callout: "outer-callout", Major: 1})
+	defer scope.End(nil) // before endOuter, which waits for it
+	time.AfterFunc(30*time.Millisecond, func() { e.coord.Advance("outer-callout", 2) })
 	start := time.Now()
 
-	_, err = e.dispatchFunction(callback, "x", "")
+	_, err := e.dispatchFunction(callback, "x", "")
 
 	if got := appErrOf(t, err).Code; got != common.ErrCodeCalloutSuperseded {
 		t.Errorf("code = %s, want CALLOUT_SUPERSEDED", got)

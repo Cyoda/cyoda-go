@@ -12,7 +12,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/taskconflict"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // armForeignModelTask arms one task of another model in the same tenant, so
@@ -580,33 +580,44 @@ func TestDeleteEntitiesConditional_SingleTx_CommitConflictPersists_Retryable409W
 	}
 }
 
-// heldJoinedCtx begins a fresh transaction and takes its gate the way
-// txjoin.Joiner.RunVerified does before it ever calls a routed callback's
-// handler (internal/domain/txjoin/txjoin.go: AcquireCtx, then WithHeld) —
-// so the ctx a test hands the handler here is held exactly as a real joined
-// callback's is, not merely tx-bearing. A once-function whose internal
-// "owned" wrongly read true against such a ctx would try to acquire the same
-// non-reentrant gate a second time and deadlock; a joined ctx built from a
-// bare txMgr.Begin/Join (as the existing *_Joined_NotRetried tests use)
-// never holds the gate, so it cannot catch that.
+// heldJoinedCtx begins a fresh transaction and opens a callback scope in it
+// the way the join layer does for a joined request before it ever calls a
+// routed callback's handler (txcoord's Enter, under the pass of a callout the
+// owner made) — so the transaction a test hands the handler here is held
+// exactly as a real joined callback's is, not merely tx-bearing. A
+// once-function whose internal "owned" wrongly read true against such a ctx
+// would seal the transaction, and the seal waits for this very scope to end:
+// a deadlock. A joined ctx built from a bare txMgr.Begin/Join (as the existing
+// *_Joined_NotRetried tests use) opens no scope, so it cannot catch that.
 func (e *taskEnv) heldJoinedCtx(t *testing.T) (ctx context.Context, txID string, release func()) {
 	t.Helper()
-	txID, joinedCtx, err := e.txMgr.Begin(e.ctx)
+	txID, ownerCtx, err := e.txMgr.Begin(e.ctx)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	rel, err := e.h.gate.AcquireCtx(joinedCtx, txID, 0)
+	const callout = "held-callout"
+	_, endCallout := e.h.coord.BeginCallout(ownerCtx, txID, callout)
+	e.h.coord.Advance(callout, 1)
+	joinedCtx, err := e.txMgr.Join(e.ctx, txID)
 	if err != nil {
-		t.Fatalf("AcquireCtx: %v", err)
+		endCallout()
+		t.Fatalf("Join: %v", err)
 	}
-	held, _ := txgate.WithHeld(joinedCtx, e.h.gate, txID, &rel)
-	return held, txID, func() { rel() }
+	scope, scopeCtx, err := e.h.coord.Enter(joinedCtx, txID, []txcoord.Pair{{Callout: callout, Major: 1}}, txcoord.Write, 0)
+	if err != nil {
+		endCallout()
+		t.Fatalf("Enter: %v", err)
+	}
+	return scopeCtx, txID, func() {
+		scope.End(nil)
+		endCallout()
+	}
 }
 
 // runWithTimeout runs fn on its own goroutine and fails the test if fn has
 // not returned within timeout, rather than hanging the run — the bounded-
 // timeout pattern TestJoinedFlows_ErrorPath_DoNotDeadlock (service_rollback_test.go)
-// already uses for the same class of gate deadlock.
+// already uses for the same class of deadlock.
 func runWithTimeout(t *testing.T, timeout time.Duration, fn func() error) error {
 	t.Helper()
 	done := make(chan error, 1)
@@ -615,12 +626,12 @@ func runWithTimeout(t *testing.T, timeout time.Duration, fn func() error) error 
 	case err := <-done:
 		return err
 	case <-time.After(timeout):
-		t.Fatal("operation did not return within the timeout: a joined call must not try to re-acquire the gate it already holds")
+		t.Fatal("operation did not return within the timeout: a joined call must not seal the transaction its own scope holds")
 		return nil // unreachable; t.Fatal stops this goroutine
 	}
 }
 
-func TestDeleteEntity_Joined_HeldGateNotReacquired(t *testing.T) {
+func TestDeleteEntity_Joined_OpenScopeNotSealed(t *testing.T) {
 	e := newTaskEnv(t)
 	ids := seedPersons(t, e.h, e.ctx, 1)
 	heldCtx, txID, release := e.heldJoinedCtx(t)
@@ -632,14 +643,14 @@ func TestDeleteEntity_Joined_HeldGateNotReacquired(t *testing.T) {
 		return err
 	})
 	if err != nil {
-		t.Fatalf("DeleteEntity under an already-held gate: %v", err)
+		t.Fatalf("DeleteEntity in an open callback scope: %v", err)
 	}
 	if got := e.plan.Calls(taskconflict.DeleteForEntities); got != 1 {
 		t.Errorf("DeleteForEntities calls = %d, want 1: a joined delete is not retried", got)
 	}
 }
 
-func TestDeleteAllEntities_Joined_HeldGateNotReacquired(t *testing.T) {
+func TestDeleteAllEntities_Joined_OpenScopeNotSealed(t *testing.T) {
 	e := newTaskEnv(t)
 	seedPersons(t, e.h, e.ctx, 1)
 	heldCtx, txID, release := e.heldJoinedCtx(t)
@@ -651,7 +662,7 @@ func TestDeleteAllEntities_Joined_HeldGateNotReacquired(t *testing.T) {
 		return err
 	})
 	if err != nil {
-		t.Fatalf("DeleteAllEntities under an already-held gate: %v", err)
+		t.Fatalf("DeleteAllEntities in an open callback scope: %v", err)
 	}
 	if got := e.plan.Calls(taskconflict.DeleteForModel); got != 1 {
 		t.Errorf("DeleteForModel calls = %d, want 1: a joined delete-all is not retried", got)
@@ -815,7 +826,7 @@ func TestDeleteBatched_CommitConflictPersists_ReportedPerIDWithCause(t *testing.
 	}
 }
 
-func TestDeleteEntitiesConditional_SingleTx_Joined_HeldGateNotReacquired(t *testing.T) {
+func TestDeleteEntitiesConditional_SingleTx_Joined_OpenScopeNotSealed(t *testing.T) {
 	e := newTaskEnv(t)
 	seedPersons(t, e.h, e.ctx, 2)
 	heldCtx, txID, release := e.heldJoinedCtx(t)
@@ -827,7 +838,7 @@ func TestDeleteEntitiesConditional_SingleTx_Joined_HeldGateNotReacquired(t *test
 		return err
 	})
 	if err != nil {
-		t.Fatalf("DeleteEntitiesConditional under an already-held gate: %v", err)
+		t.Fatalf("DeleteEntitiesConditional in an open callback scope: %v", err)
 	}
 	if got := e.plan.Calls(taskconflict.DeleteForEntities); got != 1 {
 		t.Errorf("DeleteForEntities calls = %d, want 1: a joined conditional delete is not retried", got)

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
@@ -37,11 +38,13 @@ import (
 //     the request BEFORE any write: 400 BAD_REQUEST naming the param and the
 //     joined-transaction reason. That response crosses back through node 0's
 //     proxy to the callback client unmodified.
-//   - The primary transition itself completes (the processor records the
-//     hop's outcome into the primary's data rather than failing), so the Go
-//     test driver reads the crossed-back HTTP status + body straight off the
-//     primary entity — the same technique callback_route.go uses for
-//     tokenWasEmpty.
+//   - The processor records the crossed-back HTTP status + body outside the
+//     transaction (a standalone create, no token), and the Go test driver
+//     reads it from that record.
+//   - The rejection is a non-retryable failure of a joined write: the
+//     callback's scope is discarded and T made rollback-only, so the owner is
+//     refused 409 TRANSACTION_ROLLBACK_ONLY, naming BAD_REQUEST, and nothing
+//     of T is committed.
 //
 // If the 400 does not cross the hop cleanly (e.g. gets replaced by a
 // generic 502/500, or the param is silently honored), that is a product bug
@@ -52,22 +55,6 @@ func init() {
 	Register(
 		NamedTest{Name: "TxControlParam_RejectedAcrossForwardedHop", Fn: RunTxControlParam_RejectedAcrossForwardedHop},
 	)
-}
-
-// txctlHopResult is the crossed-back HTTP outcome, decoded from the
-// primary entity's data after the cascade completes.
-type txctlHopResult struct {
-	Status int
-	Body   string
-}
-
-// txctlProblemDetail is the subset of the RFC 9457 Problem Details envelope
-// (internal/common.ProblemDetail) this scenario asserts on.
-type txctlProblemDetail struct {
-	Detail     string `json:"detail"`
-	Properties struct {
-		ErrorCode string `json:"errorCode"`
-	} `json:"properties"`
 }
 
 func RunTxControlParam_RejectedAcrossForwardedHop(t *testing.T, fixture MultiNodeFixture) {
@@ -83,6 +70,7 @@ func RunTxControlParam_RejectedAcrossForwardedHop(t *testing.T, fixture MultiNod
 	const secondary = "txctl-fwdhop-secondary"
 	const primary = "txctl-fwdhop-primary"
 	const marker = "txctl-fwdhop-marker"
+	const record = "txctl-fwdhop-record"
 
 	// The sample declares hopStatus/hopBody/tokenWasEmpty at zero value — the
 	// exact field set cb-tx-control-param-joined writes back (see comment on
@@ -91,58 +79,63 @@ func RunTxControlParam_RejectedAcrossForwardedHop(t *testing.T, fixture MultiNod
 	// of silently widening the model.
 	const primarySample = `{"name":"Test","amount":10,"status":"new","tokenWasEmpty":false,"hopStatus":0,"hopBody":""}`
 	cbRouteSetupModel(t, cSetup, secondary, cbRouteSampleSecondary, cbRouteSecondaryWorkflow)
+	parity.SetupHopRecordModel(t, cSetup, record)
 	cbRouteSetupModel(t, cSetup, primary, primarySample,
-		cbRoutePrimaryWorkflow("txctl-fwdhop-wf", "cb-tx-control-param-joined", cbRouteContext(secondary, marker)))
+		cbRoutePrimaryWorkflow("txctl-fwdhop-wf", "cb-tx-control-param-joined", parity.HopRecordContext(secondary, marker, record)))
 
 	// OWNER = node 1 (no local compute member → dispatch forwards to node 0,
 	// whose member's callback then proxies BACK to node 1 to join T).
 	const ownerIdx = 1
 	cOwner := client.NewClient(urls[ownerIdx], tenant.Token)
 
-	primaryID, err := cOwner.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	status, raw, err := cOwner.CreateEntityRaw(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if err != nil {
-		t.Fatalf("primary create via owner node %d (forwarded dispatch + cross-node joined-param rejection): %v", ownerIdx, err)
+		t.Fatalf("primary create via owner node %d: %v", ownerIdx, err)
+	}
+	var pd struct {
+		Detail     string `json:"detail"`
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+			Retryable bool   `json:"retryable"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &pd); err != nil {
+		t.Fatalf("primary create answered %d, not a problem document: %v (body: %s)", status, err, raw)
+	}
+	// The owner's refusal names the code its callback got: the joined create
+	// carrying transactionTimeoutMillis was refused 400 BAD_REQUEST on the
+	// owner, across the forwarded hop.
+	if status != 409 || pd.Properties.ErrorCode != "TRANSACTION_ROLLBACK_ONLY" || pd.Properties.Retryable {
+		t.Fatalf("primary create = %d %s retryable=%t; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable (body: %s)",
+			status, pd.Properties.ErrorCode, pd.Properties.Retryable, raw)
+	}
+	if !strings.Contains(pd.Detail, "BAD_REQUEST") {
+		t.Fatalf("detail = %q; want it to name the callback's BAD_REQUEST", pd.Detail)
+	}
+	if all, err := cOwner.ListEntitiesByModel(t, primary, 1); err != nil {
+		t.Fatalf("list primary: %v", err)
+	} else if len(all) != 0 {
+		t.Fatalf("%d primary entities committed; the owner's refused operation commits nothing", len(all))
 	}
 
-	prim, err := cOwner.GetEntity(t, primaryID)
-	if err != nil {
-		t.Fatalf("GetEntity primary via owner: %v", err)
-	}
-	if prim.Meta.State != "ACTIVE" {
-		t.Fatalf("primary state = %q; want ACTIVE (cascade did not complete): data=%+v", prim.Meta.State, prim.Data)
-	}
-	if empty, _ := prim.Data["tokenWasEmpty"].(bool); empty {
-		t.Fatalf("forwarded SYNC dispatch: tokenWasEmpty=true; want false (owner token must survive the A→B forward)")
-	}
-
-	statusF, ok := prim.Data["hopStatus"].(float64)
-	if !ok {
-		t.Fatalf("primary missing hopStatus (joined-param callback did not record an outcome): data=%+v", prim.Data)
-	}
-	hopBody, _ := prim.Data["hopBody"].(string)
-	res := txctlHopResult{Status: int(statusF), Body: hopBody}
-
-	// The core assertion: the OWNER's rejection must cross the forwarded hop
+	// The core assertion: the OWNER's rejection crossed the forwarded hop
 	// verbatim as 400 BAD_REQUEST naming the param and the joined-transaction
 	// reason — not a proxy-mangled status, not a silently-honored param.
-	const wantStatus = 400
-	if res.Status != wantStatus {
-		t.Fatalf("joined create with transactionTimeoutMillis, forwarded across the hop: status = %d, want %d; body: %s",
-			res.Status, wantStatus, res.Body)
+	hop := parity.ReadHopRecord(t, cSetup, record, marker)
+	if hop.TokenWasEmpty {
+		t.Fatalf("forwarded SYNC dispatch: tokenWasEmpty=true; want false (owner token must survive the A→B forward)")
 	}
-	if !strings.Contains(res.Body, "transactionTimeoutMillis") {
-		t.Errorf("crossed-back 400 body does not name transactionTimeoutMillis: %s", res.Body)
+	if hop.Status != 400 {
+		t.Fatalf("joined create with transactionTimeoutMillis, forwarded across the hop: status = %d, want 400; body: %s", hop.Status, hop.Body)
 	}
-	if !strings.Contains(res.Body, "joins an open transaction") {
-		t.Errorf("crossed-back 400 body does not name the joined-transaction rejection reason: %s", res.Body)
+	if hop.ErrorCode != "BAD_REQUEST" {
+		t.Errorf("crossed-back 400 properties.errorCode = %q, want BAD_REQUEST: body=%s", hop.ErrorCode, hop.Body)
 	}
-
-	var pd txctlProblemDetail
-	if err := json.Unmarshal([]byte(res.Body), &pd); err != nil {
-		t.Fatalf("crossed-back 400 body is not a problem+json envelope: %v (body=%s)", err, res.Body)
+	if !strings.Contains(hop.Body, "transactionTimeoutMillis") {
+		t.Errorf("crossed-back 400 body does not name transactionTimeoutMillis: %s", hop.Body)
 	}
-	if pd.Properties.ErrorCode != "BAD_REQUEST" {
-		t.Errorf("crossed-back 400 properties.errorCode = %q, want BAD_REQUEST: body=%s", pd.Properties.ErrorCode, res.Body)
+	if !strings.Contains(hop.Body, "joins an open transaction") {
+		t.Errorf("crossed-back 400 body does not name the joined-transaction rejection reason: %s", hop.Body)
 	}
 
 	// Negative control: the secondary the rejected create would have written

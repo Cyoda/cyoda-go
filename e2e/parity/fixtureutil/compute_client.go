@@ -62,6 +62,10 @@ func StartComputeClient(opts ComputeClientOpts) (*ComputeClientProc, error) {
 		fmt.Sprintf("CYODA_TEST_COMPUTE_BEHAVIOUR=%s", opts.Behaviour),
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The client's own log lines (it never logs a credential) ride along in a
+	// start failure, so the failure names its cause.
+	stderr := &SyncBuffer{}
+	cmd.Stderr = stderr
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -77,14 +81,14 @@ func StartComputeClient(opts ComputeClientOpts) (*ComputeClientProc, error) {
 	healthAddr, err := ParseHealthAddr(stdout, defaultComputeHealthAddrTimeout)
 	if err != nil {
 		p.Stop()
-		return nil, fmt.Errorf("failed to parse HEALTH_ADDR from compute-test-client: %w", err)
+		return nil, fmt.Errorf("failed to parse HEALTH_ADDR from compute-test-client: %w (client stderr: %q)", err, stderr.String())
 	}
 	go func() { _, _ = io.Copy(io.Discard, stdout) }()
 	p.controlURL = "http://" + healthAddr
 
 	if err := WaitForHTTPHealth(p.controlURL+"/healthz", ready); err != nil {
 		p.Stop()
-		return nil, fmt.Errorf("compute-test-client health probe failed: %w", err)
+		return nil, fmt.Errorf("compute-test-client health probe failed: %w (client stderr: %q)", err, stderr.String())
 	}
 	doc, err := p.fetch(http.MethodGet, "/record")
 	if err != nil {

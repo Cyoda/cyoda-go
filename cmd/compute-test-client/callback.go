@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/api/grpc/authctx"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
@@ -68,6 +70,10 @@ type cbConfig struct {
 	SecondaryModel   string `json:"secondaryModel"`
 	SecondaryVersion int    `json:"secondaryVersion"`
 	Marker           string `json:"marker"`
+	// RecordModel, when set, is the model a recording processor writes what
+	// its joined callback was answered into — with no tx token, so the record
+	// is committed whatever becomes of the joined transaction.
+	RecordModel string `json:"recordModel"`
 }
 
 // parseCallbackConfig decodes the calc request's parameters node — which the
@@ -220,6 +226,33 @@ func (c *callbackClient) createSecondaryWithQuery(ctx context.Context, cfg cbCon
 	path := fmt.Sprintf("/api/entity/JSON/%s/%d?%s", cfg.SecondaryModel, version, query)
 	body := fmt.Sprintf(`{"name":"child","amount":1,"status":%q}`, status)
 	return c.do(ctx, http.MethodPost, path, body, txToken, "")
+}
+
+// recordHop writes what a joined callback was answered (res) into
+// cfg.RecordModel as a standalone create: no tx token, so it is committed
+// outside the joined transaction whatever that transaction's fate. A scenario
+// reads it back by cfg.Marker. A config with no RecordModel records nothing.
+func (c *callbackClient) recordHop(ctx context.Context, cfg cbConfig, res cbResult, txToken string) error {
+	if cfg.RecordModel == "" {
+		return nil
+	}
+	body, err := json.Marshal(map[string]any{
+		"marker":        cfg.Marker,
+		"hopStatus":     res.Status,
+		"hopBody":       res.Body,
+		"tokenWasEmpty": txToken == "",
+	})
+	if err != nil {
+		return fmt.Errorf("record the callback's answer: %w", err)
+	}
+	rec, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", cfg.RecordModel), string(body), "", "")
+	if err != nil {
+		return fmt.Errorf("record the callback's answer: %w", err)
+	}
+	if rec.Status != http.StatusOK {
+		return fmt.Errorf("record the callback's answer: status=%d body=%s", rec.Status, rec.Body)
+	}
+	return nil
 }
 
 // loopbackUpdate issues a PUT /api/entity/JSON/{id} (loopback, no transition)
@@ -449,6 +482,9 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err != nil {
 				return nil, fmt.Errorf("callback create with transactionTimeoutMillis: %w", err)
 			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
 			data, err := decodeData(entity)
 			if err != nil {
 				return nil, err
@@ -473,6 +509,9 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err != nil {
 				return nil, fmt.Errorf("callback create: %w", err)
 			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
 			data, err := decodeData(entity)
 			if err != nil {
 				return nil, err
@@ -481,6 +520,90 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			data["hopBody"] = res.Body
 			data["tokenWasEmpty"] = token == ""
 			return withData(entity, data)
+		},
+
+		// cb-create-secondary-then-silent — issues the joined create callback,
+		// then never answers the callout (it waits for its own context to end),
+		// whatever the callback answered. The owner's loop would give the work
+		// to another member once the answer limit passes — unless something
+		// ends the callout first.
+		//
+		// Its context is the client's stream context: a callout's end does
+		// not end it. The client serves callouts one at a time on its receive
+		// loop, so this client takes no further work, and reads no further
+		// message, until it is stopped. A scenario uses it for the one callout
+		// that client is meant to receive, and that is what keeps a second
+		// try from reaching it.
+		"cb-create-secondary-then-silent": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			if _, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker); err != nil {
+				return nil, fmt.Errorf("callback create: %w", err)
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+
+		// cb-create-secondary-retry-record — issues the joined create callback,
+		// and again, up to three tries, until it is answered 200. Each answer
+		// is recorded under the marker with "-attempt-<n>" appended. It
+		// succeeds whatever the last answer was, so a scenario sees what the
+		// owner does with a retried joined write.
+		"cb-create-secondary-retry-record": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			for attempt := 1; attempt <= 3; attempt++ {
+				res, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
+				if err != nil {
+					return nil, fmt.Errorf("callback create: %w", err)
+				}
+				rec := cfg
+				rec.Marker = fmt.Sprintf("%s-attempt-%d", cfg.Marker, attempt)
+				if err := cb.recordHop(ctx, rec, res, token); err != nil {
+					return nil, err
+				}
+				if res.Status == http.StatusOK {
+					break
+				}
+			}
+			return entity, nil
+		},
+
+		// cb-get-unknown-record — reads, through a joined callback, an entity
+		// that does not exist, and records the answer. It succeeds, so the owner
+		// goes on to commit.
+		"cb-get-unknown-record": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, err := cb.getEntity(ctx, uuid.NewString(), token)
+			if err != nil {
+				return nil, fmt.Errorf("callback read: %w", err)
+			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
+			return entity, nil
+		},
+
+		// cb-post-message-then-fail — posts a message, under the token, on the
+		// subject cfg.Marker, records the answer, and then fails. The owner's
+		// operation fails with it; a message never joins the transaction, so the
+		// record holds the message id for a scenario to look for afterwards.
+		"cb-post-message-then-fail": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, err := cb.do(ctx, http.MethodPost, "/api/message/new/"+url.PathEscape(cfg.Marker), `{"payload":{"x":1}}`, token, "")
+			if err != nil {
+				return nil, fmt.Errorf("callback message: %w", err)
+			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("processor deliberately fails after posting a message")
 		},
 
 		// cb-grpc-create-secondary — like cb-create-secondary but issues the joined

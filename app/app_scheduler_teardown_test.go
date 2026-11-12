@@ -14,6 +14,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 	"github.com/google/uuid"
 )
@@ -78,9 +79,11 @@ func startedSchedulerApp(t *testing.T) (*App, *teardownLog) {
 	log := &teardownLog{}
 	mem := memory.NewStoreFactory()
 	f := orderRecordingFactory{StoreFactory: mem, log: log}
+	txMgr := mem.NewTransactionManager(common.NewTestUUIDGenerator())
 	svc := scheduler.New(scheduler.Config(defaultSchedulerConfig()), scheduler.Deps{
 		Store:     f,
-		TxManager: mem.NewTransactionManager(common.NewTestUUIDGenerator()),
+		TxManager: txMgr,
+		Coord:     txcoord.New(txMgr),
 		Firer:     idleFirer{},
 		Clock:     platformclock.Real(),
 	})

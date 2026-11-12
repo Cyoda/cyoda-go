@@ -22,6 +22,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // forwardUnaryFn re-issues a unary CloudEvent RPC to a peer node.
@@ -116,9 +117,10 @@ func classifyRouteErr(err error) error {
 	case errors.Is(err, token.ErrTokenTampered), errors.Is(err, token.ErrTokenInvalid):
 		return common.Operational(http.StatusUnauthorized, common.ErrCodeUnauthorized, "invalid transaction token")
 	case errors.Is(err, proxy.ErrNodeUnavailable):
-		// WARN with the node, as the HTTP proxy logs the same refusal.
+		// WARN with the node, as the HTTP proxy logs the same refusal. Nothing
+		// is sent to a node that is not live: retryable.
 		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is not available").
-			WithCause(err).WithLogLevel(slog.LevelWarn)
+			AsRetryable().WithCause(err).WithLogLevel(slog.LevelWarn)
 	default:
 		return err
 	}
@@ -171,32 +173,88 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 		}
 
 		// The message is complete before the interceptor runs, so a unary call
-		// needs nothing read ahead of the lock.
+		// needs nothing read ahead of the gate.
 		var resp any
 		var herr error
-		if jerr := i.joiner.Run(ctx, tok, func(joined context.Context) { resp, herr = handler(joined, req) }); jerr != nil {
+		var over bool
+		tooLarge := i.joiner.ResponseTooLargeError()
+		rewrite, jerr := i.joiner.Run(ctx, tok, unaryClass(info.FullMethod, ce), func(joined context.Context) *common.Outcome {
+			resp, herr = handler(joined, req)
+			// The answer is complete by the time the handler returns — as it
+			// is on the HTTP door, where the encoder has materialised it before
+			// the buffered writer sees it — so what the ceiling bounds here is
+			// what is SENT, not the peak this node held while building it. Past
+			// it the call fails with the JOINED_RESPONSE_TOO_LARGE the other two
+			// doors give: the three doors answer one contract, and a truncated
+			// answer is not one of its answers. It is decided here, in the
+			// request's turn, so it is the request's outcome. An unjoined call
+			// holds no transaction and is not governed.
+			over = tok != "" && herr == nil && overJoinedCeiling(resp, i.joiner.MaxResponseBytes())
+			return handlerBackstop(herr, over, tooLarge)
+		})
+		switch {
+		case jerr != nil:
 			if clientGone(jerr) {
 				return nil, status.FromContextError(jerr).Err()
 			}
 			return i.unaryErr(ctx, ce, envelope, jerr)
-		}
-		// The answer is complete by the time the handler returns — as it is on
-		// the HTTP door, where the encoder has materialised it before the
-		// buffered writer sees it — so what the ceiling bounds here is what is
-		// SENT, not the peak this node held while building it. Past it the call
-		// fails with the JOINED_RESPONSE_TOO_LARGE the other two doors give: the
-		// three doors answer one contract, and a truncated answer is not one of
-		// its answers. An unjoined call holds no transaction and is not governed.
-		if tok != "" && overJoinedCeiling(resp, i.joiner.MaxResponseBytes()) {
-			return i.unaryErr(ctx, ce, envelope, i.joiner.ResponseTooLargeError())
+		case rewrite != nil:
+			// The scope's end decided another answer: the handler's is not
+			// sent.
+			return i.unaryErr(ctx, ce, envelope, rewrite)
+		case over:
+			return i.unaryErr(ctx, ce, envelope, tooLarge)
 		}
 		return resp, herr
 	}
 }
 
+// unaryClass is what a routed unary call does to the transaction it joins.
+// EntityManage is a write whatever its CloudEvent, including one that does not
+// parse. EntitySearch is a read, except the snapshot-search job routes, which
+// write outside the transaction.
+func unaryClass(fullMethod string, ce *cepb.CloudEvent) txcoord.RequestClass {
+	if fullMethod == cyodapb.CloudEventsService_EntityManage_FullMethodName {
+		return txcoord.Write
+	}
+	switch ce.GetType() {
+	case EntitySnapshotSearchRequest, SnapshotCancelRequest:
+		return txcoord.Outside
+	}
+	return txcoord.Read
+}
+
+// streamClass is unaryClass for the routed server-streaming calls:
+// EntityManageCollection writes, EntitySearchCollection reads.
+func streamClass(fullMethod string) txcoord.RequestClass {
+	if fullMethod == cyodapb.CloudEventsService_EntityManageCollection_FullMethodName {
+		return txcoord.Write
+	}
+	return txcoord.Read
+}
+
+// handlerBackstop is the door's reading of a joined handler's answer, for an
+// answer no envelope recorded: the ceiling's refusal when the answer passed it;
+// a handler error, which is a raw gRPC status (an invalid request,
+// InvalidArgument, is a 400; any other is a 500), not retryable; nil
+// otherwise. An envelope carrying Success:false recorded its own failure when
+// it was built, and that record wins.
+func handlerBackstop(herr error, over bool, tooLarge *common.AppError) *common.Outcome {
+	switch {
+	case over:
+		return &common.Outcome{Status: tooLarge.Status, Code: tooLarge.Code, Retryable: tooLarge.Retryable, Err: tooLarge}
+	case herr == nil:
+		return nil
+	case status.Code(herr) == codes.InvalidArgument:
+		return &common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeBadRequest, Err: herr}
+	default:
+		return &common.Outcome{Status: http.StatusInternalServerError, Code: common.ErrCodeServerError, Err: herr}
+	}
+}
+
 // overJoinedCeiling reports whether a unary answer passes the joined-answer
 // ceiling. Every answer of these RPCs is a CloudEvent; its encoded size is what
-// the node sends once the transaction's lock has been given back, the same
+// the node sends once the transaction's gate has been given back, the same
 // measure heldStream takes of each frame it holds.
 func overJoinedCeiling(resp any, limit int) bool {
 	pm, ok := resp.(proto.Message)
@@ -205,7 +263,7 @@ func overJoinedCeiling(resp any, limit int) bool {
 
 // clientGone reports whether err is the call's own context ending, as the join
 // layer marks it: the compute node went away while its request was queued for
-// the transaction's lock, so nothing was touched and there is nobody to answer
+// the transaction's gate, so nothing was touched and there is nobody to answer
 // with an envelope. A join that FAILED carrying an unrelated cancellation is
 // not this — its client is still there, waiting for an answer, and gets the
 // envelope and the ticket that name the fault.
@@ -264,52 +322,63 @@ func (i *txRouteInterceptor) stream() googlegrpc.StreamServerInterceptor {
 		// How many callbacks may queue for one transaction is bounded, and the
 		// bound is read before the request message is taken off the stream: a
 		// refusal costs this node no buffer. The gate applies the same bound
-		// again when the lock is taken, and that answer is the binding one.
+		// again when the gate is taken, and that answer is the binding one.
 		if err := i.joiner.CheckRoom(pass); err != nil {
 			return i.streamErr(ctx, ss, "", envelope, err)
 		}
-		// Receive the request before the lock is taken (see heldStream).
+		// Receive the request before the gate is taken (see heldStream).
 		var first cepb.CloudEvent
 		if err := ss.RecvMsg(&first); err != nil {
 			return err
 		}
 		ctx = withRequestMessage(ctx, &first)
-		held := &heldStream{ServerStream: ss, ctx: ctx, first: &first, limit: i.joiner.MaxResponseBytes()}
+		held := &heldStream{ServerStream: ss, ctx: ctx, first: &first, limit: i.joiner.MaxResponseBytes(), failedAt: -1}
 		var herr error
-		if jerr := i.joiner.RunVerified(ctx, pass, func(joined context.Context) {
+		tooLarge := i.joiner.ResponseTooLargeError()
+		rewrite, jerr := i.joiner.RunVerified(ctx, pass, streamClass(info.FullMethod), func(joined context.Context) *common.Outcome {
 			held.ctx = joined
 			herr = handler(srv, held)
-		}); jerr != nil {
+			return handlerBackstop(herr, held.tooLarge(), tooLarge)
+		})
+		switch {
+		case jerr != nil:
 			if clientGone(jerr) {
 				return status.FromContextError(jerr).Err()
 			}
 			return i.streamErr(ctx, ss, first.Id, envelope, jerr)
-		}
-		if held.tooLarge() {
-			// Fail closed: nothing of an over-size answer is sent. The lock has
+		case rewrite != nil:
+			// The scope's end decided another answer: nothing the handler
+			// wrote is sent.
+			return i.streamErr(ctx, ss, first.Id, envelope, rewrite)
+		case held.tooLarge():
+			// Fail closed: nothing of an over-size answer is sent. The gate has
 			// already been given back.
-			return i.streamErr(ctx, ss, first.Id, envelope, i.joiner.ResponseTooLargeError())
+			return i.streamErr(ctx, ss, first.Id, envelope, tooLarge)
+		case herr != nil:
+			// A failed request's frames are not sent: the scope they describe
+			// was discarded, or (a read) they are part of an answer that
+			// failed. The handler's own error is the answer.
+			return herr
 		}
-		// What the handler wrote is delivered even when it then failed: a joined
-		// chunked collection that fails at chunk n still answers chunks 1…n-1,
-		// as an unheld stream does.
-		if err := held.flush(); err != nil {
-			return err
-		}
-		return herr
+		return held.flush()
 	}
 }
 
 // heldStream is the stream a joined server-streaming handler sees. The handler
-// runs under its transaction's lock, and neither end of the stream may make
-// that lock wait on the compute node: the request message was received before
-// the lock was taken and is replayed here, and every response frame is held
-// until the handler has returned and the lock is released.
+// runs under its transaction's gate, and neither end of the stream may make
+// that gate wait on the compute node: the request message was received before
+// the gate was taken and is replayed here, and every response frame is held
+// until the handler has returned and the gate is released.
 //
 // What is held is bounded by the joiner's own ceiling
 // (CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES) — the owner's next move waits behind
 // these bytes. Past the ceiling the frames are let go of and the call fails: a
 // collection answered in part would be a wrong answer.
+//
+// A request answers all of its frames or only its failure. The frame sent once
+// an error envelope has recorded the request's failure (common.RecordedFailure)
+// is that envelope: the frames before it are let go of, and nothing after it is
+// held, so a stream that fails after some frames answers the error alone.
 type heldStream struct {
 	googlegrpc.ServerStream
 	ctx   context.Context
@@ -318,6 +387,9 @@ type heldStream struct {
 	bytes int
 	limit int
 	over  bool
+	// failedAt is the index in held of the frame that carries the request's
+	// failure, -1 while there is none.
+	failedAt int
 }
 
 func (s *heldStream) Context() context.Context { return s.ctx }
@@ -327,7 +399,7 @@ func (s *heldStream) RecvMsg(m any) error {
 		// The request of a server-streaming RPC is one message, and it has been
 		// replayed: the stream is at its end. Delegating instead would wait on
 		// the compute node — for its half-close — while the handler holds the
-		// transaction's lock.
+		// transaction's gate.
 		return io.EOF
 	}
 	dst, ok := m.(proto.Message)
@@ -340,14 +412,24 @@ func (s *heldStream) RecvMsg(m any) error {
 }
 
 func (s *heldStream) SendMsg(m any) error {
+	if s.failedAt >= 0 {
+		// The failure has been answered; nothing follows it.
+		return nil
+	}
+	if common.RecordedFailure(s.ctx) != nil {
+		// This frame carries the failure: the frames before it are not part
+		// of the answer.
+		s.held, s.bytes = nil, 0
+		s.failedAt = 0
+	}
 	// Every frame of these RPCs is a CloudEvent; its encoded size is what the
-	// node holds until the lock is released.
+	// node holds until the gate is released.
 	if pm, ok := m.(proto.Message); ok {
 		s.bytes += proto.Size(pm)
 	}
 	if s.over || s.bytes > s.limit {
 		s.over = true
-		s.held = nil // held under the transaction's lock: let it go at once
+		s.held = nil // held under the transaction's gate: let it go at once
 		return txjoin.ErrHeldResponseTooLarge
 	}
 	s.held = append(s.held, m)
@@ -457,9 +539,9 @@ const (
 	// for the caller's own request. It reaches the caller unchanged, as it
 	// would calling the owner directly.
 	ownerRefused
-	// ownerNotReached: no gRPC status (dial, address guard), or a status the
-	// transport raises when the owner cannot be reached or does not answer in
-	// time.
+	// ownerNotReached: no gRPC status (the pool refused or failed to set up
+	// the connection), or a status the transport raises when the owner cannot
+	// be reached or does not answer in time.
 	ownerNotReached
 )
 
@@ -502,14 +584,22 @@ func callerGone(ctx context.Context, addr string) error {
 // envelope funnel with the hop's address and error as its cause — at WARN when
 // the peer address guard refused the owner's address, as the HTTP proxy logs
 // that refusal, and at ERROR for any other failure to reach the owner.
+//
+// The answer is retryable only with proof that nothing was sent
+// (proxy.NotSentProof): the pool refused or failed to set up the connection, or
+// the call failed before any of its headers reached a transport to the owner.
+// Any other failure may follow a send, and the owner may have run the request,
+// so a retry could repeat a write it kept.
 func ownerUnreachable(addr string, err error) error {
 	level := slog.LevelError
 	if errors.Is(err, peeraddr.ErrForbiddenPeerAddress) {
 		level = slog.LevelWarn
 	}
-	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is unreachable").
-		WithCause(fmt.Errorf("forward to %s: %w", addr, err)).
-		WithLogLevel(level)
+	appErr := common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is unreachable")
+	if proxy.ProvesNotSent(err) {
+		appErr.AsRetryable()
+	}
+	return appErr.WithCause(fmt.Errorf("forward to %s: %w", addr, err)).WithLogLevel(level)
 }
 
 // streamErr sends err as the routed RPC's error envelope on the stream. reqID

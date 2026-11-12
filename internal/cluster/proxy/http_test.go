@@ -3,9 +3,11 @@ package proxy_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -611,5 +613,198 @@ func TestHTTPProxy_RelaysTheOwnersWarnings(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("%s = %q; want %q", common.WarningHeader, got, want)
 		}
+	}
+}
+
+// --- retryable only with proof that nothing was sent -------------------------
+
+// routedTo runs one GET under a token for node-2 at addr through a routing
+// layer built with proxyTimeout and allowLoopback, and returns the answer.
+func routedTo(t *testing.T, addr string, alive bool, proxyTimeout time.Duration, allowLoopback bool) *httptest.ResponseRecorder {
+	t.Helper()
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://10.0.0.1:8080", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: addr, Alive: alive},
+	)
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-retry", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-retry", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := proxy.HTTPRouting(signer, reg, "node-1", proxyTimeout, allowLoopback, "")(localHandler())
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// nodeUnavailableRetryable asserts the answer is 503
+// TRANSACTION_NODE_UNAVAILABLE and returns whether it advertises
+// properties.retryable=true. A body without the property is not retryable.
+func nodeUnavailableRetryable(t *testing.T, rec *httptest.ResponseRecorder) bool {
+	t.Helper()
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var pd map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("decode body: %v (body: %s)", err, rec.Body.String())
+	}
+	props, _ := pd["properties"].(map[string]any)
+	if props == nil || props["errorCode"] != common.ErrCodeTransactionNodeUnavailable {
+		t.Fatalf("body does not carry %s: %s", common.ErrCodeTransactionNodeUnavailable, rec.Body.String())
+	}
+	v, present := props["retryable"]
+	if !present {
+		return false
+	}
+	b, ok := v.(bool)
+	if !ok || !b {
+		t.Fatalf("properties.retryable = %v; want true or absent", v)
+	}
+	return true
+}
+
+// closedAddr returns a loopback address on which nothing listens.
+func closedAddr(t *testing.T) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := lis.Addr().String()
+	_ = lis.Close()
+	return addr
+}
+
+// The registry says the owner is not live: nothing is sent, so a retry cannot
+// repeat anything.
+func TestHTTPRouting_OwnerNotLive_Retryable(t *testing.T) {
+	rec := routedTo(t, "http://10.0.0.2:8080", false, 5*time.Second, true)
+	if !nodeUnavailableRetryable(t, rec) {
+		t.Fatalf("owner not live must be retryable; body: %s", rec.Body.String())
+	}
+}
+
+// The peer address guard refuses the owner's address before any dial.
+func TestHTTPRouting_ForbiddenPeerAddress_Retryable(t *testing.T) {
+	rec := routedTo(t, "http://127.0.0.1:9999", true, 5*time.Second, false)
+	if !nodeUnavailableRetryable(t, rec) {
+		t.Fatalf("an address-guard refusal must be retryable; body: %s", rec.Body.String())
+	}
+}
+
+// The dial to the owner is refused: no connection, so nothing was sent.
+func TestHTTPRouting_DialRefused_Retryable(t *testing.T) {
+	rec := routedTo(t, "http://"+closedAddr(t), true, 5*time.Second, true)
+	if !nodeUnavailableRetryable(t, rec) {
+		t.Fatalf("a refused dial must be retryable; body: %s", rec.Body.String())
+	}
+}
+
+// The owner received the request and did not begin to answer within the proxy
+// timeout: it may have run the request, so a retry could repeat a kept write.
+func TestHTTPRouting_OwnerTimesOutAfterSend_NotRetryable(t *testing.T) {
+	release := make(chan struct{})
+	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer owner.Close()
+	defer close(release)
+
+	rec := routedTo(t, owner.URL, true, 100*time.Millisecond, true)
+	if nodeUnavailableRetryable(t, rec) {
+		t.Fatalf("a timeout after the request was sent must not be retryable; body: %s", rec.Body.String())
+	}
+}
+
+// The transport sends a GET again on a new connection when a reused one breaks
+// after the request was written. If the owner went down in between, that second
+// attempt fails to dial: a dial error, but the owner received the first
+// attempt and may have run it. Not retryable.
+func TestHTTPRouting_DialRefusedAfterSend_NotRetryable(t *testing.T) {
+	var owner *httptest.Server
+	owner = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/warm" {
+			return
+		}
+		// The owner took the request, then went down: no further dial
+		// succeeds, and this connection ends without an answer.
+		_ = owner.Listener.Close()
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer owner.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://10.0.0.1:8080", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: owner.URL, Alive: true},
+	)
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-resent", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-resent", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler())
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set(proxy.TxTokenHeader, tok)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	// A first request leaves a kept-alive connection to the owner, which the
+	// next request reuses.
+	if rec := get("/warm"); rec.Code != http.StatusOK {
+		t.Fatalf("warm-up: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	rec := get("/api/test")
+	// The answer must come from the second attempt's failed dial. Without the
+	// reused connection there is no second attempt, the error is the broken
+	// connection's, and the test would pass without reaching its branch.
+	if logged := logBuf.String(); !strings.Contains(logged, "connect: connection refused") {
+		t.Fatalf("the proxied request did not end in a refused dial; log:\n%s", logged)
+	}
+	if nodeUnavailableRetryable(t, rec) {
+		t.Fatalf("a dial error after the owner received the request must not be retryable; body: %s", rec.Body.String())
+	}
+}
+
+// TestHTTPRouting_PassWithoutOwnerServedLocally: a pass that names no owner is
+// one of a location-independent transaction, which any pnode serves. It is
+// served where it lands, never proxied and never refused as a node that is
+// not live.
+func TestHTTPRouting_PassWithoutOwnerServedLocally(t *testing.T) {
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:8888", Alive: true},
+	)
+	tok, err := signer.Issue(token.Claims{TxRef: "tx-li", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-li", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler())
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "local" {
+		t.Fatalf("got %d %q; want 200 \"local\"", rec.Code, rec.Body.String())
 	}
 }

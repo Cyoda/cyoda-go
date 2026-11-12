@@ -10,6 +10,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 func proofOf(cause error) error { return &contract.NoHandOffProof{Err: cause} }
@@ -71,7 +72,7 @@ func TestUnsafeReached_SavepointErrorReplacesProof(t *testing.T) {
 	claimed := env.claimed(t, "sp-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{unsafeProc("p1", ExecutionModeAsyncNewTx)}, nil))
 
 	r, _ := env.run(claimed)
-	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, ErrSavepointInfra) || !r.UnsafeReached {
+	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, txcoord.ErrScopeInfra) || !r.UnsafeReached {
 		t.Fatalf("report = %+v, want failed on the savepoint with unsafeReached (the proof was replaced)", r)
 	}
 }

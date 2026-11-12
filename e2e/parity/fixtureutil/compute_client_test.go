@@ -2,7 +2,10 @@ package fixtureutil_test
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,5 +137,23 @@ func TestStartComputeClient_RejectsUnknownBehaviour(t *testing.T) {
 	}
 	if time.Since(start) > 10*time.Second {
 		t.Errorf("took %s to report a client that exits at once", time.Since(start))
+	}
+}
+
+// TestStartComputeClient_StartFailureCarriesTheClientsOutput: when the client
+// never reports its health address, the error carries what the client wrote to
+// stderr, so a start failure names its own cause instead of only a timeout.
+func TestStartComputeClient_StartFailureCarriesTheClientsOutput(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "fake-compute-client")
+	script := "#!/bin/sh\necho 'dispatcher connect failed: sentinel-cause' >&2\nexit 1\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake client: %v", err)
+	}
+	_, err := fixtureutil.StartComputeClient(fixtureutil.ComputeClientOpts{ComputeBin: bin})
+	if err == nil {
+		t.Fatal("StartComputeClient succeeded for a client that never reports ready")
+	}
+	if !strings.Contains(err.Error(), "sentinel-cause") {
+		t.Errorf("error = %q; want it to carry the client's stderr", err)
 	}
 }

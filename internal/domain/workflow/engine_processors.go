@@ -9,8 +9,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // ErrCommitBeforeDispatchInfra wraps every infrastructure-layer failure
@@ -21,14 +20,6 @@ import (
 // 4xx WORKFLOW_FAILED. Processor errors and CAS conflicts (spi.ErrConflict)
 // are NOT wrapped — they remain client-attributable and stay 4xx.
 var ErrCommitBeforeDispatchInfra = errors.New("commit-before-dispatch infrastructure failure")
-
-// ErrSavepointInfra marks a savepoint that could not be created, undone or
-// released around an ASYNC_NEW_TX processor. It is never the processor's
-// failure: the transaction is unusable — gone, missing the savepoint, or on
-// PostgreSQL already aborted by an earlier failed statement — so the operation
-// fails instead of committing the writes of a processor that failed, or
-// silently skipping one. Handlers map it to a sanitized 5xx.
-var ErrSavepointInfra = errors.New("savepoint failure")
 
 // ErrPostSegmentConflict marks a CAS conflict raised AFTER a
 // COMMIT_BEFORE_DISPATCH segment has committed and its external dispatch has
@@ -74,8 +65,8 @@ func clientAttributableStoreErr(err error) bool {
 
 // executeProcessors runs each processor in the transition's processor pipeline
 // sequentially. Processors are dispatched according to their ExecutionMode:
-// ASYNC_NEW_TX runs within a savepoint (the processor's failure is non-fatal; a
-// savepoint failure is fatal); SYNC and
+// ASYNC_NEW_TX runs in a processor scope of its own (the processor's failure
+// is non-fatal; a scope that cannot be opened or ended is fatal); SYNC and
 // ASYNC_SAME_TX run inline in the caller's transaction context;
 // COMMIT_BEFORE_DISPATCH commits the current segment before dispatch and
 // continues the cascade in a fresh segment.
@@ -159,17 +150,18 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		// carry a superseded chain on to the next processor, and past the last
 		// one to the handler's final save. A check at the top of the loop alone
 		// would never see the last processor.
-		if cerr := fence.Check(currentCtx); cerr != nil {
+		if cerr := txcoord.Check(currentCtx); cerr != nil {
 			return currentCtx, currentTxID, cerr
 		}
 
 		// An ASYNC_NEW_TX processor's own failure is non-fatal: log warning,
-		// continue pipeline. A savepoint that could not be created, undone or
-		// released is not that — the transaction is unusable, so it kills the
+		// continue pipeline. So is a mark its callbacks set on its scope: the
+		// scope is discarded with it. A scope that could not be opened or
+		// ended is not that — the transaction is unusable, so it kills the
 		// pipeline like any other mode's failure. Nor is an unsafe processor
 		// a scheduled run refused to dispatch: the run must end there.
 		nonFatal := proc.ExecutionMode == ExecutionModeAsyncNewTx &&
-			!errors.Is(procErr, ErrSavepointInfra) && !errors.Is(procErr, errUnsafeNotDispatched)
+			!errors.Is(procErr, txcoord.ErrScopeInfra) && !errors.Is(procErr, errUnsafeNotDispatched)
 		if procErr != nil && nonFatal {
 			slog.Warn("ASYNC_NEW_TX processor failed, continuing pipeline",
 				"pkg", "workflow", "processor", proc.Name, "error", procErr)
@@ -208,7 +200,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		}
 
 		// For SYNC/ASYNC_SAME_TX/COMMIT_BEFORE_DISPATCH, and for an ASYNC_NEW_TX
-		// savepoint failure, failure kills the pipeline.
+		// scope failure, failure kills the pipeline.
 		if procErr != nil && !nonFatal {
 			return currentCtx, currentTxID, fmt.Errorf("processor %s failed: %w", proc.Name, procErr)
 		}
@@ -255,23 +247,21 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 		return err
 	}
 	defer func() { dispatched(retErr) }()
-	// Release any per-tx gate this call chain holds across the blocking dispatch
-	// (H3 invariant, generalised to the joined-callback path): the dispatch
-	// touches no local buffer but can re-enter with a descendant joined callback
-	// on the same txID, which would otherwise deadlock waiting for the gate this
-	// chain holds. resume() re-acquires before we apply the processor's result.
-	// No-op for the owner and for plain non-joined calls. Deferred resume keeps
-	// the re-acquire panic-safe; the explicit call re-acquires before touching
-	// entity so the buffer write below is gated.
-	resume := txgate.Suspend(ctx)
+	// Pause this chain's scope across the blocking dispatch: the dispatch
+	// touches no transaction state but can re-enter with a descendant joined
+	// callback on the same txID, which would otherwise deadlock waiting for
+	// the gate this chain holds. No-op for the owner and for calls that joined
+	// no transaction. The deferred resume keeps the gate panic-safe; the
+	// explicit one retakes it and checks the chain's scope before the
+	// processor's result is applied.
+	resume := txcoord.Pause(ctx)
 	defer resume()
 	callCtx, stop := runCallCtx(ctx)
 	defer stop()
 	modifiedEntity, err := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, txID)
 	stop()
-	resume()
-	if cerr := fence.Check(ctx); cerr != nil {
-		return cerr
+	if rerr := resume(); rerr != nil {
+		return rerr
 	}
 	if err != nil {
 		return e.conflictOverDispatchFailure(ctx, proc, err)
@@ -320,72 +310,67 @@ func (e *Engine) conflictOverDispatchFailure(ctx context.Context, proc spi.Proce
 	return dispatchErr
 }
 
-// executeAsyncNewTx runs an ASYNC_NEW_TX processor within a savepoint. The
-// processor's returned entity modifications are intentionally discarded —
-// ASYNC_NEW_TX processors perform side-effects only. On dispatch failure the
-// savepoint is rolled back and the error is returned; on success the savepoint
-// is released.
+// executeAsyncNewTx runs an ASYNC_NEW_TX processor in a processor scope of its
+// own (txcoord's OpenChild), a child of the chain's scope. The processor's
+// returned entity modifications are intentionally discarded — ASYNC_NEW_TX
+// processors perform side-effects only. The scope is kept when the dispatch
+// succeeded and nothing refuses the scope; otherwise it is discarded, with
+// everything its callbacks wrote, and the error is returned. A mark the
+// processor's callbacks set on its scope goes with it: the processor counts as
+// failed and the operation goes on.
 //
 // A failed dispatch needs no LostRace question (see
 // conflictOverDispatchFailure): the processor's failure does not fail the
-// operation, and a callback write inside the savepoint that had lost a race by
-// the time the savepoint is rolled back stays lost, so the transaction's Commit
-// refuses it with the conflict on every backend — the RollbackToSavepoint
-// contract, pinned by the spitest Savepoint cases.
+// operation, and a callback write inside the scope that had lost a race by the
+// time the scope is discarded stays lost, so the transaction's Commit refuses
+// it with the conflict on every backend — the RollbackToSavepoint contract,
+// pinned by the spitest Savepoint cases.
 //
-// A savepoint that cannot be created, undone or released is marked with
-// ErrSavepointInfra and fails the operation: it says the transaction is
-// unusable, not that the processor misbehaved.
+// A scope that cannot be opened or ended carries txcoord.ErrScopeInfra and
+// fails the operation: it says the transaction is unusable, not that the
+// processor misbehaved.
 func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
 	if e.extProc == nil {
 		return nil
 	}
 
-	spID, err := e.txMgr.Savepoint(ctx, txID)
-	if err != nil {
-		return fmt.Errorf("failed to create savepoint: %w", errors.Join(ErrSavepointInfra, err))
-	}
-	// After the savepoint: a savepoint that cannot be created dispatches
-	// nothing, so it needs no mark.
-	dispatched, err := beforeDispatch(ctx, proc)
+	scope, pctx, err := e.coord.OpenChild(ctx)
 	if err != nil {
 		return err
 	}
+	// A panic below ends the scope discarded. Registered first, so it runs
+	// after the deferred resume has retaken the gate.
+	closed := false
+	defer func() {
+		if !closed {
+			_ = scope.Close(errors.New("the processor's dispatch panicked"))
+		}
+	}()
+	end := func(procErr error) error {
+		closed = true
+		return scope.Close(procErr)
+	}
+	// After the scope: a scope that cannot be opened dispatches nothing, so it
+	// needs no mark.
+	dispatched, err := beforeDispatch(pctx, proc)
+	if err != nil {
+		return end(err)
+	}
 	defer func() { dispatched(retErr) }()
 
-	// Release the per-tx gate across the blocking dispatch (H3 invariant). The
-	// savepoint create above and the rollback/release below are buffer ops that
-	// must stay gated, so suspend only spans the callout: re-acquire before
-	// touching the savepoint again. No-op for the owner / non-joined calls.
-	resume := txgate.Suspend(ctx)
+	// Pause the processor's scope across the blocking dispatch: its callbacks
+	// open under it. The scope is ended after the explicit resume, under the
+	// gate. No-op on the owner's chain.
+	resume := txcoord.Pause(pctx)
 	defer resume()
-	callCtx, stop := runCallCtx(ctx)
+	callCtx, stop := runCallCtx(pctx)
 	defer stop()
 	_, dispatchErr := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, txID)
 	stop()
-	resume()
-	// Before the savepoint is looked at. A chain that was superseded neither
-	// undoes nor releases its savepoint: by now the replacement compute node may
-	// have written, and undoing would take those writes with it. An abandoned
-	// savepoint is harmless on every backend.
-	if cerr := fence.Check(ctx); cerr != nil {
-		return cerr
+	if rerr := resume(); rerr != nil {
+		return end(rerr)
 	}
-	if dispatchErr != nil {
-		if rbErr := e.txMgr.RollbackToSavepoint(ctx, txID, spID); rbErr != nil {
-			// The processor's own error is not joined in: it may be a classified
-			// client error, and errors.As would then answer with it.
-			slog.Warn("ASYNC_NEW_TX processor failed and its savepoint could not be undone",
-				"pkg", "workflow", "processor", proc.Name, "processorError", dispatchErr)
-			return fmt.Errorf("failed to undo savepoint: %w", errors.Join(ErrSavepointInfra, rbErr))
-		}
-		return dispatchErr
-	}
-
-	if err := e.txMgr.ReleaseSavepoint(ctx, txID, spID); err != nil {
-		return fmt.Errorf("failed to release savepoint: %w", errors.Join(ErrSavepointInfra, err))
-	}
-	return nil
+	return end(dispatchErr)
 }
 
 // executeCommitBeforeDispatch implements processor execution mode
@@ -589,6 +574,19 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 // see the pre-commit check and common.CommitContext below, mirroring
 // txScope.Commit (internal/domain/entity/txscope.go).
 func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, txID string) error {
+	// Seal TX_pre before its final writes: from here no joined request runs
+	// in it, and one that failed a write refuses the segment — the lost race
+	// first, as the retryable conflict. The coordination forgets TX_pre once
+	// this function returns; whoever rolls TX_pre back after a failure seals
+	// it afresh. Joined with ErrCommitBeforeDispatchInfra so that a broken
+	// transaction's cause is a ticketed 5xx (or the storage outage it is); a
+	// rollback-only refusal and a lost race keep their own answers, which
+	// classifyWorkflowError finds first.
+	finish, err := e.coord.Seal(ctx, txID)
+	defer finish()
+	if err != nil {
+		return fmt.Errorf("commit-before-dispatch: seal TX_pre: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+	}
 	es, err := e.factory.EntityStore(ctx)
 	if err != nil {
 		return fmt.Errorf("commit-before-dispatch: get entity store: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))

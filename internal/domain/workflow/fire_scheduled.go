@@ -154,14 +154,29 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	// processor commits the entry segment and opens a new one; every exit
 	// that does not commit rolls back the segment open now.
 	curCtx, curTxID := txCtx, txID
+	// Every ending that commits seals the segment it commits before its final
+	// writes (seal), and the coordination forgets it once the commit or the
+	// rollback is done: this is deferred first, so it runs after the rollback.
+	var sealFinish func()
+	defer func() {
+		if sealFinish != nil {
+			sealFinish()
+		}
+	}()
 	committed := false
 	defer func() {
 		if !committed {
-			rbCtx, cancel := common.RollbackContext(curCtx)
-			defer cancel()
-			_ = e.txMgr.Rollback(rbCtx, curTxID)
+			_ = e.rollbackSealed(curCtx, curTxID)
 		}
 	}()
+	// seal cuts the segment id off before the ending's final writes. A refusal
+	// — a callback of the run failed a write, or the transaction lost a write
+	// race or broke — is the fire's failure, and the run rolls back.
+	seal := func(id string) error {
+		finish, err := e.coord.Seal(ctx, id)
+		sealFinish = finish
+		return err
+	}
 	commit := func(id string) error {
 		if err := e.commitRun(ctx, id); err != nil {
 			return err
@@ -180,6 +195,9 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	}
 
 	if expire {
+		if err := seal(txID); err != nil {
+			return "", err
+		}
 		if err := removeOwnLife(txCtx, g); err != nil {
 			return "", err
 		}
@@ -206,6 +224,9 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		// Gone, or moved on: removed without an audit event (spec §4).
 		slog.DebugContext(txCtx, "scheduled task's entity is gone or has left the source state; removing",
 			"pkg", "workflow", "taskId", cur.ID, "entityId", cur.EntityID)
+		if err := seal(txID); err != nil {
+			return "", err
+		}
 		if err := removeOwnLife(txCtx, g); err != nil {
 			return "", err
 		}
@@ -225,6 +246,9 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		slog.DebugContext(txCtx, "scheduled task references a transition the selected workflow does not declare as scheduled; removing",
 			"pkg", "workflow", "entityId", cur.EntityID, "workflowName", wf.Name,
 			"sourceState", cur.SourceState, "transition", cur.Transition)
+		if err := seal(txID); err != nil {
+			return "", err
+		}
 		if err := removeOwnLife(txCtx, g); err != nil {
 			return "", err
 		}
@@ -254,6 +278,9 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		// removed and audited; a later write re-arms it.
 		slog.Error("scheduled fire refused: stored entity carries no transaction ID to guard against",
 			"pkg", "workflow", "taskID", cur.ID, "entityID", cur.EntityID)
+		if err := seal(txID); err != nil {
+			return "", err
+		}
 		if err := removeOwnLife(txCtx, g); err != nil {
 			return "", err
 		}
@@ -269,6 +296,9 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	if fireErr != nil {
 		if errors.Is(fireErr, ErrCriterionNotMatched) {
 			// Declined; fireTransition already recorded the criterion event.
+			if err := seal(newTxID); err != nil {
+				return "", err
+			}
 			if err := removeOwnLife(newCtx, g); err != nil {
 				return "", err
 			}
@@ -281,6 +311,10 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	finalCtx, finalTxID, _, err := e.cascadeAutomated(newCtx, entity, wf, auditStore, newTxID)
 	curCtx, curTxID = finalCtx, finalTxID
 	if err != nil {
+		return "", err
+	}
+	// The cascade's callouts have ended: seal before the final writes.
+	if err := seal(finalTxID); err != nil {
 		return "", err
 	}
 
@@ -345,7 +379,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 
 // commitRun commits one entity transaction of a scheduled run, shielded: a
 // cancellation that arrives while the commit is in flight does not cut it
-// (spec §5.3).
+// (spec §5.3). The run has sealed txID before its final writes.
 func (e *Engine) commitRun(ctx context.Context, txID string) error {
 	// Checkpoint before the run's final commit (spec §5.3), on the guard of
 	// the transaction, as at every segment commit.

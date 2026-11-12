@@ -13,7 +13,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -69,7 +69,7 @@ func newFenceFixture(t *testing.T, tenant spi.TenantID, withModel bool) *fenceFi
 			t.Fatalf("ModelStore.Save: %v", err)
 		}
 	}
-	h := entity.New(factory, tm, common.NewDefaultUUIDGenerator(), nil, txgate.New(), consistency.New(tm), platformclock.Real())
+	h := entity.New(factory, tm, common.NewDefaultUUIDGenerator(), nil, txcoord.New(tm), consistency.New(tm), platformclock.Real())
 	return &fenceFixture{ctx: ctx, h: h, factory: factory, tm: tm, ref: ref, c: c}
 }
 

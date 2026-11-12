@@ -12,16 +12,19 @@ import (
 )
 
 // callout_fencing_wait_test.go is the owner's wait: a joined request that was
-// already in progress when the work moved on is neither overtaken nor
-// interrupted. The fence shuts the earlier pass out and then takes the
-// transaction's lock, which the request in progress still holds, so nothing of
-// the next try — and nothing the engine does after a callout — can start until
-// that request has finished.
+// already in progress when the work moved on is not overtaken and not
+// interrupted — the owner waits for it — but it is not kept either. The fence
+// shuts the earlier pass out at once, and the owner then waits until the
+// request's scope has ended, so nothing of the next try — and nothing the
+// engine does after a callout — can start until that request has finished.
+// Its scope ends discarded, and it is answered 410 CALLOUT_SUPERSEDED: the
+// owner has moved on, and the compute node must not be told its work was
+// kept.
 //
 // "In progress" is made deterministic inside PostgreSQL rather than by waiting.
 // A joined WRITE to a committed row the test holds FOR UPDATE waits in the
-// database, on the operation's own connection, while the join layer holds the
-// transaction's lock for it. A joined READ cannot be blocked by a row lock, so
+// database, on the operation's own connection, while the request holds the
+// transaction's gate. A joined READ cannot be blocked by a row lock, so
 // the read scenarios read a message while the test holds the messages table
 // ACCESS EXCLUSIVE. That table, and only it: a table lock on entities would
 // stall the shared stack's background loops (storage_ceilings_e2e_test.go's
@@ -152,10 +155,10 @@ func awaitResult(t *testing.T, what string, ch <-chan callbackResult) callbackRe
 
 // TestCalloutFence_OwnerWaitsForARequestInProgress (F-replaced + F-blocked):
 // the first cnode has one joined write inside PostgreSQL and a second queued
-// for the transaction's lock when its answer limit passes. The second cnode is
-// not given the work until the first write has finished; that write lands and
-// is answered 200; the queued one is refused on taking the lock and writes
-// nothing.
+// for the transaction's gate when its answer limit passes. The second cnode is
+// not given the work until the first write has finished; that write is
+// discarded and answered 410; the queued one is refused on taking the gate and
+// writes nothing.
 func TestCalloutFence_OwnerWaitsForARequestInProgress(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
 	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
@@ -203,18 +206,17 @@ func TestCalloutFence_OwnerWaitsForARequestInProgress(t *testing.T) {
 	}
 
 	unlock()
-	if res := awaitResult(t, "the write in progress", writeRes); res.StatusCode != http.StatusOK {
-		t.Errorf("the write in progress: %d %s; want 200 — it made its check before the number rose, and it lands", res.StatusCode, res.Body)
-	}
-	res := awaitResult(t, "the queued write", queued)
+	res := awaitResult(t, "the write in progress", writeRes)
+	assertProblem(t, res.StatusCode, res.Body, http.StatusGone, "CALLOUT_SUPERSEDED", false)
+	res = awaitResult(t, "the queued write", queued)
 	assertProblem(t, res.StatusCode, res.Body, http.StatusGone, "CALLOUT_SUPERSEDED", false)
 
 	awaitCnodeReceived(t, second, 1, 15*time.Second)
 	if res := awaitCreate(t, done, 15*time.Second); res.status != http.StatusOK {
 		t.Fatalf("create: %d %s; want 200", res.status, res.body)
 	}
-	if got := h.GetEntityData(t, victim)["status"]; got != "held" {
-		t.Errorf("victim.status = %v; want \"held\" — the write in progress landed in the transaction that committed", got)
+	if got := h.GetEntityData(t, victim)["status"]; got == "held" {
+		t.Errorf("victim.status = %v; the write in progress was overtaken and must be discarded", got)
 	}
 	if n := h.countEntities(t, secondary); n != 0 {
 		t.Errorf("%d secondary entities committed; the queued write must have written nothing", n)
@@ -229,8 +231,8 @@ func TestCalloutFence_OwnerWaitsForARequestInProgress(t *testing.T) {
 
 // TestCalloutFence_AsyncNewTxFailedWriteIsNotCommitted (F-blocked): an
 // ASYNC_NEW_TX processor's cnode has a write inside PostgreSQL when its try
-// times out. The engine does not carry on until that write has finished, and
-// the write is then undone with the processor's savepoint.
+// times out. The engine does not carry on until that write has finished; the
+// write is discarded and answered 410, and the processor's scope with it.
 func TestCalloutFence_AsyncNewTxFailedWriteIsNotCommitted(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
 	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
@@ -262,14 +264,13 @@ func TestCalloutFence_AsyncNewTxFailedWriteIsNotCommitted(t *testing.T) {
 	}
 
 	unlock()
-	if res := awaitResult(t, "A's write in progress", writeRes); res.StatusCode != http.StatusOK {
-		t.Errorf("A's write in progress: %d %s; want 200", res.StatusCode, res.Body)
-	}
+	res := awaitResult(t, "A's write in progress", writeRes)
+	assertProblem(t, res.StatusCode, res.Body, http.StatusGone, "CALLOUT_SUPERSEDED", false)
 	if res := awaitCreate(t, done, 15*time.Second); res.status != http.StatusOK {
 		t.Fatalf("create: %d %s; want 200 — an ASYNC_NEW_TX failure does not fail the operation", res.status, res.body)
 	}
 	if got := h.GetEntityData(t, victim)["status"]; got != "draft" {
-		t.Errorf("victim.status = %v; want \"draft\" — the failed processor's write is undone with its savepoint", got)
+		t.Errorf("victim.status = %v; want \"draft\" — the failed processor's write is discarded", got)
 	}
 	if n := len(a.Received()); n != 1 {
 		t.Errorf("processor A's cnode received %d callouts; want 1 — a lost answer ends a callout that is not repeat-safe", n)
@@ -279,11 +280,12 @@ func TestCalloutFence_AsyncNewTxFailedWriteIsNotCommitted(t *testing.T) {
 	}
 }
 
-// TestCalloutFence_CallbackPastItsLastCheckLandsWhole (F-blocked): a cnode
+// TestCalloutFence_CallbackPastItsLastCheckDiscardedWhole (F-blocked): a cnode
 // answers while its own joined collection update is still inside PostgreSQL.
-// The engine does not carry on until the collection has finished; the
-// collection lands whole and is answered 200.
-func TestCalloutFence_CallbackPastItsLastCheckLandsWhole(t *testing.T) {
+// The engine does not carry on until the collection has finished; the callout
+// has ended under it, so the collection is discarded whole — neither victim is
+// updated — and answered 410 CALLOUT_SUPERSEDED.
+func TestCalloutFence_CallbackPastItsLastCheckDiscardedWhole(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
 	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 	model, victimModel, tagA, tagB := "s8-whole-"+sfx, "s8-whole-victim-"+sfx, "s8-whole-a-"+sfx, "s8-whole-b-"+sfx
@@ -335,15 +337,14 @@ func TestCalloutFence_CallbackPastItsLastCheckLandsWhole(t *testing.T) {
 	}
 
 	unlock()
-	if res := awaitResult(t, "the collection in progress", collRes); res.StatusCode != http.StatusOK {
-		t.Fatalf("the collection: %d %s; want 200 — what it wrote is in the transaction", res.StatusCode, res.Body)
-	}
+	coll := awaitResult(t, "the collection in progress", collRes)
+	assertProblem(t, coll.StatusCode, coll.Body, http.StatusGone, "CALLOUT_SUPERSEDED", false)
 	if res := awaitCreate(t, done, 15*time.Second); res.status != http.StatusOK {
-		t.Fatalf("create: %d %s; want 200", res.status, res.body)
+		t.Fatalf("create: %d %s; want 200 — a discarded callback marks nothing", res.status, res.body)
 	}
 	for _, id := range []string{v1, v2} {
-		if st, _ := h.GetEntityState(t, id); st != "APPROVED" {
-			t.Errorf("victim %s state = %q; want APPROVED — the collection lands whole", id, st)
+		if st, _ := h.GetEntityState(t, id); st == "APPROVED" {
+			t.Errorf("victim %s state = %q; the collection is discarded whole", id, st)
 		}
 	}
 	if n := len(b.Received()); n != 1 {
@@ -355,7 +356,8 @@ func TestCalloutFence_CallbackPastItsLastCheckLandsWhole(t *testing.T) {
 // first cnode has a joined read inside PostgreSQL when it is replaced — because
 // its answer limit passed, or because it disconnected and abandoned the read
 // mid-statement. Either way the statement is not interrupted, the owner waits
-// for it, and the owner's operation succeeds.
+// for it, and the owner's operation succeeds. The read is answered 410: its
+// pass was overtaken before it ended.
 func TestCalloutFence_JoinedReadInProgress(t *testing.T) {
 	runSfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 	for _, disconnect := range []bool{false, true} {
@@ -424,8 +426,8 @@ func TestCalloutFence_JoinedReadInProgress(t *testing.T) {
 
 			unlock()
 			res := awaitResult(t, "the read in progress", readRes)
-			if !disconnect && res.StatusCode != http.StatusOK {
-				t.Errorf("the read in progress: %d %s; want 200 — it completes", res.StatusCode, res.Body)
+			if !disconnect {
+				assertProblem(t, res.StatusCode, res.Body, http.StatusGone, "CALLOUT_SUPERSEDED", false)
 			}
 			awaitCnodeReceived(t, second, 1, 15*time.Second)
 			if cr := awaitCreate(t, done, 15*time.Second); cr.status != http.StatusOK {
@@ -440,8 +442,9 @@ func TestCalloutFence_JoinedReadInProgress(t *testing.T) {
 
 // TestCalloutFence_WaitDoesNotDeadlock (F-nested + F-blocked): out1's callback
 // made a callout of its own, and that inner cnode's callback holds the
-// transaction's lock inside PostgreSQL when out1 is replaced. Everything
-// unwinds once the database lets the write through.
+// transaction's gate inside PostgreSQL when out1 is replaced. Everything
+// unwinds once the database lets the write through; the inner write, whose
+// enclosing pass was overtaken, is discarded and answered 410.
 func TestCalloutFence_WaitDoesNotDeadlock(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(3, 100*time.Millisecond))
 	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
@@ -490,10 +493,9 @@ func TestCalloutFence_WaitDoesNotDeadlock(t *testing.T) {
 	}
 
 	unlock()
-	if res := awaitResult(t, "the inner cnode's write", writeRes); res.StatusCode != http.StatusOK {
-		t.Errorf("the inner cnode's write: %d %s; want 200 — it was in progress and lands", res.StatusCode, res.Body)
-	}
-	res := awaitResult(t, "out1's callback", out1Res)
+	res := awaitResult(t, "the inner cnode's write", writeRes)
+	assertProblem(t, res.StatusCode, res.Body, http.StatusGone, "CALLOUT_SUPERSEDED", false)
+	res = awaitResult(t, "out1's callback", out1Res)
 	assertProblem(t, res.StatusCode, res.Body, http.StatusGone, "CALLOUT_SUPERSEDED", false)
 	awaitCnodeReceived(t, out2, 1, 15*time.Second)
 	if cr := awaitCreate(t, done, 15*time.Second); cr.status != http.StatusOK {

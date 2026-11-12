@@ -18,6 +18,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -348,9 +349,11 @@ func newHarness(t *testing.T, cfg Config, firer Firer) *harness {
 	t.Cleanup(func() { _ = mem.Close() })
 	fs := &fakeStore{}
 	latch := health.NewLatch()
+	txMgr := mem.NewTransactionManager(common.NewTestUUIDGenerator())
 	svc := New(cfg, Deps{
 		Store:              testFactory{StoreFactory: mem, sts: fs},
-		TxManager:          mem.NewTransactionManager(common.NewTestUUIDGenerator()),
+		TxManager:          txMgr,
+		Coord:              txcoord.New(txMgr),
 		Firer:              firer,
 		Clock:              platformclock.Real(),
 		HealthLatch:        latch,

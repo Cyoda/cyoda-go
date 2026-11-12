@@ -6,6 +6,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -57,5 +59,14 @@ func TestNew_NilClockPanics(t *testing.T) {
 			t.Fatal("New with a nil clock did not panic")
 		}
 	}()
-	New(testConfig(), Deps{Store: failingFactory{}})
+	New(testConfig(), Deps{Store: failingFactory{}, Coord: txcoord.New(nil)})
+}
+
+func TestNew_NilCoordinationPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("New with a nil transaction coordination did not panic")
+		}
+	}()
+	New(testConfig(), Deps{Store: failingFactory{}, Clock: platformclock.Real()})
 }

@@ -16,7 +16,7 @@ CONFLICT — the write lost a race: another transaction committed a change to th
 
 ## SYNOPSIS
 
-HTTP: `409` `Conflict`. Retryable: `yes`.
+HTTP: `409` `Conflict`. Retryable: `yes`, except on a request that joined a transaction (below).
 
 ## DESCRIPTION
 
@@ -37,7 +37,8 @@ How each operation handles a race with the scheduler:
 
 - **Entity delete, when the request owns its transaction, and workflow import, which always does.** The server retries up to 3 times before it answers 409. A workflow import that answers 409 has already saved its workflows; only the removal of the tasks of transitions no longer scheduled is left.
 - **Batched delete (`transactionSize`).** The whole request does not answer 409 for a task race. A batch that still conflicts lists its other ids in `idToError` with this code (an entity gone or changed keeps its own entry), and the other batches run.
-- **Entity write that joined an open transaction (`X-Tx-Token`).** The server does not retry it. The request can answer 409 itself, and the transaction's owner then cannot commit. A workflow import never joins one: it is refused with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` if it carries the token.
+- **A request that joined an open transaction (`X-Tx-Token`).** The server does not retry it. When the transaction has lost a race, a joined request that fails answers 409 with `retryable` false, and keeps nothing: a retry inside the same transaction cannot succeed. The callback is not what is retried — the operation that owns the transaction answers the retryable 409, and its client runs it again as a new transaction. A workflow import never joins one: it is refused with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` if it carries the token.
+- **Two callbacks of one transaction (location-independent backends only).** A storage plugin that supplies the transaction coordination itself may run the callbacks of one transaction at the same time. Of two that wrote the same entity from the same version, one keeps nothing and answers 409 with `retryable` true: send it again in the same transaction. The in-tree backends serve the callbacks of one transaction one at a time and never give this answer.
 
 **A client secret reset (`PUT /clients/{clientId}/secret`).** Of two resets of one client at the same moment, on one node or on two, exactly one wins; the other answers 409 and changes nothing. A reset also answers 409 when the client was deleted and created again under the same id while the reset ran. Retryable: reset again if you still want a new secret. See `auth.clients` (STORAGE AND CONSISTENCY).
 

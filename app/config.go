@@ -215,7 +215,7 @@ type CalloutConfig struct {
 	// CYODA_CALLOUT_PASS_ALLOWANCE, default 30s, must be > 0.
 	PassAllowance time.Duration
 	// JoinedResponseMaxBytes is the most a compute member's callback may
-	// answer with while it holds its transaction's lock — the owner's next
+	// answer with while it holds its transaction's gate — the owner's next
 	// move waits behind those bytes. An answer past it fails the callback with
 	// 413 JOINED_RESPONSE_TOO_LARGE rather than being cut short.
 	// CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES, default 10485760 (10 MiB),

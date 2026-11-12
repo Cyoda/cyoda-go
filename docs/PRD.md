@@ -368,8 +368,10 @@ In a multi-node cluster a transaction lives in the process of the node
 that began it (with the **postgres plugin**, its `pgx.Tx` handle). The
 transaction token a compute node receives for a callout encodes which
 node owns the transaction (see Section 9). Every request made under that
-token is routed to the owning node, whatever the storage plugin — no
-distributed transaction coordination inside cyoda-go.
+token is routed to the owning node — no distributed transaction coordination
+inside cyoda-go — except on a storage plugin that coordinates its transactions
+itself (an optional SPI capability no in-tree plugin offers), whose token names
+no node and is served on the node where it lands.
 
 If the owning node dies, the transaction dies. PostgreSQL
 automatically rolls back the connection. A compute node's callback
@@ -699,8 +701,8 @@ Every node acts as a transparent HTTP proxy for requests that belong to another 
 ```
 1. Extract txToken from header/metadata
 2. Verify HMAC signature
-3. If nodeID == self → serve locally
-4. If nodeID != self → resolve address from local memberlist → forward request
+3. If nodeID == self, or empty (a location-independent transaction) → serve locally
+4. Otherwise → resolve address from local memberlist → forward request
 5. If nodeID not found in membership → TRANSACTION_NODE_UNAVAILABLE (node is dead, tx is gone)
 ```
 

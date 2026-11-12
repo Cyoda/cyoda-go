@@ -3,7 +3,7 @@
 // transaction, and two layers refuse a request for one of these routes that
 // carries a transaction token: the cluster routing layer, before it verifies
 // the token or forwards the request to the transaction's owner, and the join
-// layer, before it verifies the token or takes the transaction's lock. Both ask
+// layer, before it verifies the token or takes the transaction's gate. Both ask
 // this one predicate, so the list is written once.
 package adminroute
 

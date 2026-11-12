@@ -6,13 +6,14 @@ import (
 )
 
 // rollbackBudget bounds the Rollback call itself. It does NOT bound the wait to
-// reach it: a rollback first acquires the per-tx gate, and txgate.Registry.Acquire
-// is a plain sync.Mutex with no context (memory and sqlite additionally take
-// tx.OpMu inside Rollback). That wait terminates because the gate is never held
-// across a dispatch and every operation it can be waiting on is itself bounded —
-// by a callout's response timeout, or by the PostgreSQL statement ceiling. Making
-// it a hard bound means giving both mutexes context-aware variants, which is a
-// change to the concurrency model of core plus two plugins.
+// reach it: an owner's rollback first seals the transaction, and the seal's
+// wait for the callback scopes in progress takes no context (memory and sqlite
+// additionally take tx.OpMu inside Rollback). That wait terminates because a
+// callback scope ends when its request's handler returns, and every operation
+// a handler can be waiting on is itself bounded — by a callout's response
+// timeout, or by the PostgreSQL statement ceiling. Making it a hard bound means
+// giving both waits context-aware variants, which is a change to the
+// concurrency model of core plus two plugins.
 const rollbackBudget = 5 * time.Second
 
 // RollbackContext derives the context a rollback must run on: the caller's

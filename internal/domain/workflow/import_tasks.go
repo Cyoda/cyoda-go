@@ -78,6 +78,11 @@ func (h *Handler) removeUnscheduledTasksOwned(ctx context.Context, tenant spi.Te
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
+	// The transaction makes no callout, and seals like every other the
+	// engine commits, before its writes. The coordination forgets it once the
+	// commit or the rollback below is done.
+	finish, sealErr := h.engine.coord.Seal(txCtx, txID)
+	defer finish()
 	done := false
 	defer func() {
 		if done {
@@ -89,6 +94,9 @@ func (h *Handler) removeUnscheduledTasksOwned(ctx context.Context, tenant spi.Te
 			slog.Warn("failed to roll back transaction", "pkg", "workflow", "txID", txID, "err", rbErr)
 		}
 	}()
+	if sealErr != nil {
+		return fmt.Errorf("failed to seal the task removal: %w", sealErr)
+	}
 
 	if err := h.deleteUnscheduled(txCtx, tenant, name, version, keep); err != nil {
 		return err

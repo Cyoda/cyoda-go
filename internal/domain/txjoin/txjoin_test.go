@@ -11,8 +11,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // testResponseMax is the joined-answer ceiling these tests build a Joiner with
@@ -54,18 +53,19 @@ func make32(t *testing.T) []byte {
 	return []byte("test-secret-key-at-least-32byte!")
 }
 
-// noCalloutFence returns a fence that knows no callout: every pass is refused.
-func noCalloutFence() *fence.Fence { return fence.New(txgate.New()) }
+// noCalloutCoord returns a coordination that knows no callout: every pass is
+// refused.
+func noCalloutCoord() txcoord.Coordination { return txcoord.New(fakeTM{}) }
 
-// liveFence returns a fence on which calloutID is in progress on txID at
-// major 1, and the pass claims that name it.
-func liveFence(t *testing.T, calloutID, txID string) (*fence.Fence, token.Claims) {
+// liveCoord returns a coordination on which calloutID is in progress on txID
+// at major 1, and the pass claims that name it.
+func liveCoord(t *testing.T, calloutID, txID string) (txcoord.Coordination, token.Claims) {
 	t.Helper()
-	f := fence.New(txgate.New())
-	_, end := f.Begin(context.Background(), calloutID, txID, nil)
+	c := txcoord.New(fakeTM{})
+	_, end := c.BeginCallout(context.Background(), txID, calloutID)
 	t.Cleanup(end)
-	f.Advance(calloutID, 1)
-	return f, token.Claims{NodeID: "local", TxRef: txID, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: calloutID, Major: 1}
+	c.Advance(calloutID, 1)
+	return c, token.Claims{NodeID: "local", TxRef: txID, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: calloutID, Major: 1}
 }
 
 func assertAppErr(t *testing.T, err error, status int, code string) {
@@ -80,22 +80,29 @@ func assertAppErr(t *testing.T, err error, status int, code string) {
 }
 
 // joinFromToken is the entry of a joined request as Run runs it, short of the
-// transaction's lock: verify the pass, then join and admit. The tests of the
-// entry drive the Joiner's own two halves in that order.
-func joinFromToken(ctx context.Context, s *token.Signer, txMgr spi.TransactionManager, f *fence.Fence, tok string) (context.Context, error) {
+// handler: verify the pass, then join, admit and take the gate (enter). The
+// scope is opened outside the transaction (no savepoint, which the fake
+// manager does not take) and ended at once; the returned context keeps the
+// transaction and the pairs.
+func joinFromToken(ctx context.Context, s *token.Signer, txMgr spi.TransactionManager, c txcoord.Coordination, tok string) (context.Context, error) {
 	// NewJoiner fails only when the meter cannot register its counter, and the
 	// no-op meter cannot.
-	j, _ := NewJoiner(s, txMgr, f, txgate.New(), testResponseMax, testMaxWaiters, nil)
+	j, _ := NewJoiner(s, txMgr, c, testResponseMax, testMaxWaiters, nil)
 	pass, err := j.Verify(tok)
 	if err != nil || pass == nil {
 		return ctx, err
 	}
-	return j.join(ctx, pass)
+	scope, sctx, err := j.enter(ctx, pass, txcoord.Outside)
+	if err != nil {
+		return sctx, err
+	}
+	scope.End(nil)
+	return sctx, nil
 }
 
 func TestVerify_EmptyPassIsNotAJoinedRequest(t *testing.T) {
 	ctx := context.Background()
-	got, err := joinFromToken(ctx, nil, fakeTM{}, noCalloutFence(), "")
+	got, err := joinFromToken(ctx, nil, fakeTM{}, noCalloutCoord(), "")
 	if err != nil {
 		t.Fatalf("empty token must not error; err=%v", err)
 	}
@@ -112,7 +119,7 @@ func TestJoin_ValidPassJoinsTheTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	f, claims := liveFence(t, "req-tx-1", "tx-1")
+	f, claims := liveCoord(t, "req-tx-1", "tx-1")
 	tok, err := s.Issue(claims)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -136,7 +143,7 @@ func TestVerify_ExpiredMaps410(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = joinFromToken(context.Background(), s, fakeTM{}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{}, noCalloutCoord(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -163,7 +170,7 @@ func TestVerify_ForgedMaps401(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = joinFromToken(context.Background(), s, fakeTM{}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{}, noCalloutCoord(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -185,7 +192,7 @@ func TestJoin_NotFoundMaps404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxNotFound}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxNotFound}, noCalloutCoord(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -207,7 +214,7 @@ func TestJoin_RolledBackMaps404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxRolledBack}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxRolledBack}, noCalloutCoord(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -229,7 +236,7 @@ func TestJoin_AlreadyCommittedMaps404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxAlreadyCommitted}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxAlreadyCommitted}, noCalloutCoord(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -252,7 +259,7 @@ func TestJoin_UnknownJoinErrorMaps5xx(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 	unknownErr := errors.New("db unavailable")
-	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: unknownErr}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: unknownErr}, noCalloutCoord(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -271,7 +278,7 @@ func TestJoin_TenantMismatchMaps403(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxTenantMismatch}, noCalloutFence(), tok)
+	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxTenantMismatch}, noCalloutCoord(), tok)
 	var op *common.AppError
 	if !errors.As(err, &op) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
@@ -286,7 +293,7 @@ func TestJoin_TenantMismatchMaps403(t *testing.T) {
 
 func TestJoin_AdmitsUnderTheCurrentNumber(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	f, claims := liveFence(t, "req-1", "tx-1")
+	f, claims := liveCoord(t, "req-1", "tx-1")
 	tok, _ := s.Issue(claims)
 	ctx, err := joinFromToken(context.Background(), s, fakeTM{}, f, tok)
 	if err != nil {
@@ -295,15 +302,15 @@ func TestJoin_AdmitsUnderTheCurrentNumber(t *testing.T) {
 	if tx := spi.GetTransaction(ctx); tx == nil || tx.ID != "tx-1" {
 		t.Fatalf("expected joined tx-1, got %+v", tx)
 	}
-	if got := fence.Pairs(ctx); len(got) != 1 || got[0] != (fence.Pair{Callout: "req-1", Major: 1}) {
+	if got := txcoord.Pairs(ctx); len(got) != 1 || got[0] != (txcoord.Pair{Callout: "req-1", Major: 1}) {
 		t.Fatalf("Pairs = %v", got)
 	}
 }
 
 func TestJoin_CalloutEnded_410(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	f := fence.New(txgate.New())
-	_, end := f.Begin(context.Background(), "req-1", "tx-1", nil)
+	f := noCalloutCoord()
+	_, end := f.BeginCallout(context.Background(), "tx-1", "req-1")
 	f.Advance("req-1", 1)
 	end()
 	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
@@ -317,7 +324,7 @@ func TestJoin_CalloutEnded_410(t *testing.T) {
 
 func TestJoin_ReplacedWhileCalloutInProgress_410(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	f, claims := liveFence(t, "req-1", "tx-1")
+	f, claims := liveCoord(t, "req-1", "tx-1")
 	tok, _ := s.Issue(claims)
 	f.Advance("req-1", 2)
 	_, err := joinFromToken(context.Background(), s, fakeTM{}, f, tok)
@@ -326,7 +333,7 @@ func TestJoin_ReplacedWhileCalloutInProgress_410(t *testing.T) {
 
 func TestJoin_EnclosingCalloutNotCurrent_410(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	f, claims := liveFence(t, "req-inner", "tx-1")
+	f, claims := liveCoord(t, "req-inner", "tx-1")
 	claims.Outer = []token.Pair{{Callout: "req-outer", Major: 1}} // never begun
 	tok, _ := s.Issue(claims)
 	_, err := joinFromToken(context.Background(), s, fakeTM{}, f, tok)
@@ -349,7 +356,7 @@ func TestJoin_JoinComesBeforeTheFence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := token.NewSigner(make32(t))
 			// Callout ended: the fence alone would answer 410.
-			f := fence.New(txgate.New())
+			f := noCalloutCoord()
 			tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1})
 			_, err := joinFromToken(context.Background(), s, fakeTM{joinErr: tc.joinErr}, f, tok)
 			assertAppErr(t, err, tc.status, tc.code)
@@ -361,17 +368,17 @@ func TestJoin_JoinComesBeforeTheFence(t *testing.T) {
 // about the callout it names — current, superseded or never registered — so a
 // stolen pass tells another tenant nothing about which callouts exist.
 func TestJoin_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *testing.T) {
-	for name, setup := range map[string]func(*testing.T) (*fence.Fence, token.Claims){
-		"callout current": func(t *testing.T) (*fence.Fence, token.Claims) {
-			return liveFence(t, "req-1", "tx-1")
+	for name, setup := range map[string]func(*testing.T) (txcoord.Coordination, token.Claims){
+		"callout current": func(t *testing.T) (txcoord.Coordination, token.Claims) {
+			return liveCoord(t, "req-1", "tx-1")
 		},
-		"callout superseded": func(t *testing.T) (*fence.Fence, token.Claims) {
-			f, claims := liveFence(t, "req-1", "tx-1")
+		"callout superseded": func(t *testing.T) (txcoord.Coordination, token.Claims) {
+			f, claims := liveCoord(t, "req-1", "tx-1")
 			f.Advance("req-1", 2)
 			return f, claims
 		},
-		"callout unknown": func(t *testing.T) (*fence.Fence, token.Claims) {
-			return noCalloutFence(), token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1}
+		"callout unknown": func(t *testing.T) (txcoord.Coordination, token.Claims) {
+			return noCalloutCoord(), token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-1", Major: 1}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -388,24 +395,35 @@ func TestJoin_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *testing.T) {
 // not shut the rightful cnode out.
 func TestJoin_TenantMismatch_AbsorbsNothing(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	f, claims := liveFence(t, "req-1", "tx-1")
-	rightful, err := f.Admit(context.Background(), []fence.Pair{{Callout: "req-1", Major: 1, Minor: 1}})
-	if err != nil {
-		t.Fatalf("Admit: %v", err)
-	}
+	f, claims := liveCoord(t, "req-1", "tx-1")
+	rightful := rightfulRequest(t, s, f, claims)
 	claims.Minor = 9
 	tok, _ := s.Issue(claims)
-	_, err = joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxTenantMismatch}, f, tok)
+	_, err := joinFromToken(context.Background(), s, fakeTM{joinErr: spi.ErrTxTenantMismatch}, f, tok)
 	assertAppErr(t, err, http.StatusForbidden, common.ErrCodeForbidden)
-	if err := fence.Check(rightful); err != nil {
+	if err := txcoord.Check(rightful); err != nil {
 		t.Fatalf("a refused join changed the fence: %v", err)
 	}
+}
+
+// rightfulRequest is a request of the rightful compute node admitted under
+// claims at minor 1: Check on its context reads whether its pass is still
+// current.
+func rightfulRequest(t *testing.T, s *token.Signer, c txcoord.Coordination, claims token.Claims) context.Context {
+	t.Helper()
+	claims.Minor = 1
+	tok, _ := s.Issue(claims)
+	ctx, err := joinFromToken(context.Background(), s, fakeTM{}, c, tok)
+	if err != nil {
+		t.Fatalf("the rightful request was refused: %v", err)
+	}
+	return ctx
 }
 
 func TestVerify_NoCalloutAndNumber_401(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix()})
-	_, err := joinFromToken(context.Background(), s, fakeTM{}, fence.New(txgate.New()), tok)
+	_, err := joinFromToken(context.Background(), s, fakeTM{}, noCalloutCoord(), tok)
 	assertAppErr(t, err, http.StatusUnauthorized, common.ErrCodeUnauthorized)
 	var appErr *common.AppError
 	_ = errors.As(err, &appErr)
@@ -452,7 +470,7 @@ func TestJoin_OBOJoinsOnlyItsOwnUsersTransaction(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := token.NewSigner(make32(t))
-			f, claims := liveFence(t, "req-1", "tx-1")
+			f, claims := liveCoord(t, "req-1", "tx-1")
 			tok, _ := s.Issue(claims)
 			base := spi.WithUserContext(context.Background(), tc.uc)
 			got, err := joinFromToken(base, s, fakeTM{origin: tc.origin, noTx: tc.noTx}, f, tok)
@@ -482,20 +500,17 @@ func TestJoin_OBOJoinsOnlyItsOwnUsersTransaction(t *testing.T) {
 // so a higher minor on its pass does not shut the rightful compute node out.
 func TestJoin_OBOOtherUser_AbsorbsNothing(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	f, claims := liveFence(t, "req-1", "tx-1")
-	rightful, err := f.Admit(context.Background(), []fence.Pair{{Callout: "req-1", Major: 1, Minor: 1}})
-	if err != nil {
-		t.Fatalf("Admit: %v", err)
-	}
+	f, claims := liveCoord(t, "req-1", "tx-1")
+	rightful := rightfulRequest(t, s, f, claims)
 	claims.Minor = 9
 	tok, _ := s.Issue(claims)
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "bob", Kind: spi.PrincipalUser,
 		Executor: &spi.Principal{ID: "app-client", Kind: spi.PrincipalService},
 	})
-	_, err = joinFromToken(ctx, s, fakeTM{origin: spi.Principal{ID: "alice", Kind: spi.PrincipalUser}}, f, tok)
+	_, err := joinFromToken(ctx, s, fakeTM{origin: spi.Principal{ID: "alice", Kind: spi.PrincipalUser}}, f, tok)
 	assertAppErr(t, err, http.StatusForbidden, common.ErrCodeForbidden)
-	if err := fence.Check(rightful); err != nil {
+	if err := txcoord.Check(rightful); err != nil {
 		t.Fatalf("a refused join changed the fence: %v", err)
 	}
 }

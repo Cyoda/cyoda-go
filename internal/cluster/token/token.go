@@ -24,9 +24,10 @@ var (
 type Pair = fence.Pair
 
 // Claims is what a pass says. NodeID is the owner — the pnode that holds the
-// transaction and whose fence judges the pass. Callout, Major and Minor name
-// the try the pass was minted for; Outer names every enclosing callout, for a
-// callout made from inside a callback.
+// transaction and whose fence judges the pass. It is empty for a transaction
+// of a location-independent backend, which any pnode serves. Callout, Major
+// and Minor name the try the pass was minted for; Outer names every enclosing
+// callout, for a callout made from inside a callback.
 type Claims struct {
 	NodeID    string `json:"n"`
 	TxRef     string `json:"t"`

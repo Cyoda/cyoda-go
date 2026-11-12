@@ -318,7 +318,7 @@ func TestHandler_PassMintedOnThePeerNamesTheOwner(t *testing.T) {
 	}
 	reg, cnode := attachedCnode(t, "tenant-1", "python")
 	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second, false)
 
 	auth := newAEAD(t)
 	resp := postHandOver(t, newHandlerMux(t, local, auth), auth, validRequest(t, "processor"))
@@ -344,6 +344,41 @@ func TestHandler_PassMintedOnThePeerNamesTheOwner(t *testing.T) {
 	}
 }
 
+// On a location-independent backend the pass the receiving pnode mints names no
+// owner, although the hand-over names the sending pnode: any pnode serves the
+// transaction's callbacks, so they are served where they land. The receiving
+// pnode's dispatcher decides it, over a real signer.
+func TestHandler_PassMintedOnALocationIndependentPeerNamesNoOwner(t *testing.T) {
+	signer, err := token.NewSigner(testSecret32)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	reg, cnode := attachedCnode(t, "tenant-1", "python")
+	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
+		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second, true)
+
+	auth := newAEAD(t)
+	req := validRequest(t, "processor")
+	if req.OwnerNodeID != "owner-node" {
+		t.Fatalf("hand-over owner = %q; want the sending pnode", req.OwnerNodeID)
+	}
+	resp := postHandOver(t, newHandlerMux(t, local, auth), auth, req)
+	if resp.Outcome != OutcomeOK {
+		t.Fatalf("%+v", resp)
+	}
+
+	claims, err := signer.Verify(cnode.onlyPass(t))
+	if err != nil {
+		t.Fatalf("verify the pass the cnode was given: %v", err)
+	}
+	if claims.NodeID != "" {
+		t.Errorf("pass NodeID = %q, want none on a location-independent backend", claims.NodeID)
+	}
+	if claims.TxRef != "tx-1" || claims.Callout != "rid-1" || claims.Major != 5 || claims.Minor != 1 {
+		t.Errorf("pass TxRef/Callout/numbers = %q/%q/(%d,%d)", claims.TxRef, claims.Callout, claims.Major, claims.Minor)
+	}
+}
+
 // The receiving pnode sends the platform time the hand-over carries, the time
 // the owner took the callout up, whatever its own clock reads: a peer that has
 // not yet adopted a clock move must not send the compute node an older time
@@ -356,7 +391,7 @@ func TestHandler_TheCnodeIsSentTheOwnersPlatformTime(t *testing.T) {
 	}
 	reg, cnode := attachedCnode(t, "tenant-1", "python")
 	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second, false)
 
 	auth := newAEAD(t)
 	req := validRequest(t, "processor")
@@ -711,7 +746,7 @@ func TestHandler_AScheduledFiresIdentityArrivesAsSent(t *testing.T) {
 		}
 		reg, cnode := attachedCnode(t, "tenant-1", "python")
 		local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-			signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+			signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second, false)
 		auth := newAEAD(t)
 		if resp := postHandOver(t, newHandlerMux(t, local, auth), auth, scheduled(t)); resp.Outcome != OutcomeOK {
 			t.Fatalf("%+v", resp)

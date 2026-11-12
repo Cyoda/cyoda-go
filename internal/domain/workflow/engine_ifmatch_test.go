@@ -9,6 +9,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -37,7 +38,7 @@ func newIfMatchFixture(t *testing.T, name string, dispatch func(ctx context.Cont
 	}
 	f := &ifMatchFixture{
 		factory: factory, txMgr: txMgr, ctx: ctxWithTenant(testTenant),
-		engine:   NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock)),
+		engine:   NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr))),
 		modelRef: spi.ModelRef{EntityName: name, ModelVersion: "1.0"},
 		id:       name + "-1",
 	}

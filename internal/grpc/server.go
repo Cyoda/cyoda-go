@@ -63,8 +63,8 @@ type KeepAliveConfig struct {
 // against; nil in mock IAM mode, where no stream is re-checked.
 // j is the join layer: the tx-route interceptor hands it every request that
 // carries a pass, and it joins the transaction, refuses a pass that no longer
-// names the callout that compute node holds, and holds the transaction's lock
-// for the length of the handler.
+// names the callout that compute node holds, and runs the handler in a scope
+// of its own, holding the transaction's gate until the scope has ended.
 // localGRPCPort is this node's gRPC listen port; it is used as the fallback
 // when deriving a peer's gRPC address from its HTTP address (advertise-or-derive).
 // allowLoopback must match cfg.Cluster.DispatchAllowLoopback; it gates the

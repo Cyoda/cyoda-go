@@ -2,10 +2,15 @@ package postgres
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // TestPgDurationMillis is coverage row 11a. These values go into the startup
@@ -302,5 +307,31 @@ func TestDefaultStoreConfig_MatchesParseConfigCeilings(t *testing.T) {
 		got.MigrateLockTimeout != parsed.MigrateLockTimeout ||
 		got.SearchStatementTimeout != parsed.SearchStatementTimeout {
 		t.Errorf("defaultStoreConfig ceilings = %+v, want parseConfig's %+v", got, parsed)
+	}
+}
+
+// A reclaimed transaction is gone for good: callers classify it as
+// spi.ErrTxNotFound, and it keeps the retryable storage-unavailable marker.
+func TestIdleInTxAbortError_IsTxNotFound(t *testing.T) {
+	err := classifyError(fmt.Errorf("failed to get DB timestamps: %w", io.ErrUnexpectedEOF))
+	var idle *idleInTxAbortError
+	if !errors.As(err, &idle) {
+		t.Fatalf("not an idleInTxAbortError: %v", err)
+	}
+	if !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatal("a reclaimed transaction does not match spi.ErrTxNotFound")
+	}
+	if !hasStorageUnavailableMarker(err) {
+		t.Fatal("lost the storage-unavailable marker")
+	}
+}
+
+func TestDeadTxError_IsTxNotFound(t *testing.T) {
+	err := deadTxQuerier{txID: "tx-1", sentinel: spi.ErrTxNotFound}.err()
+	if !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatal("a dead-transaction error does not match spi.ErrTxNotFound")
+	}
+	if !hasStorageUnavailableMarker(err) {
+		t.Fatal("lost the storage-unavailable marker")
 	}
 }

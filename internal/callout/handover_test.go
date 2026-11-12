@@ -13,8 +13,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 // The router the wiring passes is the cluster's own.
@@ -197,7 +197,7 @@ func peerNotConnected() func(context.Context) dispatch.HandOverAnswer {
 func newClusterEnv(t *testing.T, cfg Config, router PeerRouter) *env {
 	t.Helper()
 	e := newEnv(t, cfg)
-	e.owner = New(e.owner.local, e.reg, router, e.fence, common.NewTestUUIDGenerator(), e.clock, e.owner.cfg)
+	e.owner = New(e.owner.local, e.reg, router, e.coord, common.NewTestUUIDGenerator(), e.clock, e.owner.cfg)
 	return e
 }
 
@@ -379,19 +379,17 @@ func TestOwner_WhoseContextEndedDuringAHandOver(t *testing.T) {
 			name: "the fence released the callout: CALLOUT_SUPERSEDED",
 			cfg:  Config{FixedNumRetries: 1, HandoverAllowance: 30 * time.Second},
 			ctx: func(t *testing.T, e *env) context.Context {
-				_, endOuter := e.fence.Begin(context.Background(), "outer-callout", "tx-1", nil)
+				_, endOuter := e.coord.BeginCallout(context.Background(), "tx-1", "outer-callout")
 				t.Cleanup(endOuter)
-				e.fence.Advance("outer-callout", 1)
-				callback, err := e.fence.Admit(userCtx(tenantA), []fence.Pair{{Callout: "outer-callout", Major: 1}})
-				if err != nil {
-					t.Fatalf("Admit: %v", err)
-				}
-				time.AfterFunc(40*time.Millisecond, func() { e.fence.Advance("outer-callout", 2) })
+				e.coord.Advance("outer-callout", 1)
+				scope, callback := e.callback(t, txcoord.Write, txcoord.Pair{Callout: "outer-callout", Major: 1})
+				t.Cleanup(func() { scope.End(nil) }) // before endOuter, which waits for it
+				time.AfterFunc(40*time.Millisecond, func() { e.coord.Advance("outer-callout", 2) })
 				return callback
 			},
 			check: func(t *testing.T, err error) {
-				if !errors.Is(err, fence.ErrSuperseded) {
-					t.Fatalf("err = %v, want fence.ErrSuperseded", err)
+				if !errors.Is(err, txcoord.ErrSuperseded) {
+					t.Fatalf("err = %v, want txcoord.ErrSuperseded", err)
 				}
 				if got := appErrOf(t, err).Code; got != common.ErrCodeCalloutSuperseded {
 					t.Errorf("code = %s, want CALLOUT_SUPERSEDED", got)
@@ -470,32 +468,56 @@ func TestOwner_CalloutDeadline_DuringAWait_FallsToThePrecedence(t *testing.T) {
 	}
 }
 
-// Raising the fencing number before a hand-over waits for the transaction's
-// lock: a joined write of the earlier compute member that is still in progress
-// holds it, and that wait can outlast the callout's deadline. No hand-over
-// starts after the deadline — it charges no try, names no member, and the
-// callout reports what it had on record.
-func TestOwner_NumberingOutlastsTheCalloutDeadline_NoHandOverIsMade(t *testing.T) {
-	// One try of 60 ms and 50 ms of allowance: the callout may take 110 ms. A
-	// joined write holds the transaction's lock for 400 ms, so the number the
-	// hand-over draws cannot rise before the callout's deadline has passed.
+// Raising the fencing number before a hand-over waits for the joined requests
+// of the earlier compute member still in progress, and that wait can outlast
+// the callout's deadline. No hand-over starts after the deadline — it charges
+// no try and names no member — and the callout reports what it has on record.
+//
+// What is on record is the local try whose member went away: the wait is now
+// for the callbacks of the callout's own earlier passes, so the scenario needs
+// a local try whose callback is still in progress when the hand-over draws its
+// number (it used to need only a joined write of the transaction holding its
+// lock, with no local try at all, and reported ErrNoMatchingMember).
+func TestOwner_EarlierCallbackOutlastsTheDeadline_NoHandOverAndTheLocalTryOnRecord(t *testing.T) {
+	// Two tries of 60 ms and 50 ms of allowance: the callout's deadline is
+	// 170 ms after it begins.
+	const deadline = 2*limitMs*time.Millisecond + 50*time.Millisecond
 	router := newScriptedRouter("p-1")
 	router.script("p-1", hangs())
-	e := newClusterEnv(t, Config{HandoverAllowance: 50 * time.Millisecond}, router)
-	joinedWrite := e.gate.Acquire("tx-1")
-	time.AfterFunc(400*time.Millisecond, joinedWrite)
+	e := newClusterEnv(t, Config{FixedNumRetries: 1, HandoverAllowance: 50 * time.Millisecond}, router)
+	var first *cnode
+	inProgress := make(chan txcoord.Scope, 1)
+	first = e.attach(t, "m-1", tenantA, "x", func(reg *internalgrpc.MemberRegistry, m *internalgrpc.Member, _ string) {
+		_, passes := first.seen()
+		s, _ := e.callback(t, txcoord.Write, pairOf(t, e, passes[0]))
+		inProgress <- s
+		reg.Unregister(m)
+	})
 
-	_, err := e.dispatchFunction(userCtx(tenantA), "x", "NONE")
+	start := time.Now() // realtime: the callout's deadline is real time
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+		done <- err
+	}()
+	s := <-inProgress
+	// The hand-over has drawn its number: m-1's pass is refused, and the
+	// owner waits for m-1's callback.
+	_, passes := first.seen()
+	for !e.refused(pairOf(t, e, passes[0])) {
+		time.Sleep(time.Millisecond)
+	}
+	// The deadline is real time, so the wait has to outlast it in real time.
+	time.Sleep(time.Until(start.Add(deadline + 50*time.Millisecond))) // realtime: outlast the callout's deadline
+	s.End(nil)
+	err := <-done
 
 	if calls := router.made(); len(calls) != 0 {
 		t.Errorf("hand-overs = %+v, want none: no hand-over starts after the callout's deadline", calls)
 	}
-	if !errors.Is(err, contract.ErrNoMatchingMember) {
-		t.Fatalf("err = %v, want ErrNoMatchingMember: no try was ever made", err)
-	}
 	var failure *contract.CalloutFailure
-	if errors.As(err, &failure) && len(failure.Attempts) != 0 {
-		t.Errorf("attempts = %+v, want none: nothing was handed over", failure.Attempts)
+	if !errors.As(err, &failure) || len(failure.Attempts) != 1 {
+		t.Fatalf("err = %v, want the one local attempt on record", err)
 	}
 }
 
@@ -895,8 +917,8 @@ func TestOwner_PanicInsideTheLoop_TheCalloutIsStillEnded(t *testing.T) {
 	_, passes := own.seen()
 	calloutID := pairOf(t, e, passes[0]).Callout
 	for major := uint32(1); major <= 2; major++ {
-		if _, err := e.fence.Admit(context.Background(), []fence.Pair{{Callout: calloutID, Major: major}}); !errors.Is(err, fence.ErrSuperseded) {
-			t.Errorf("Admit(major %d) = %v, want every pass of a callout ended by a panic refused", major, err)
+		if !e.refused(txcoord.Pair{Callout: calloutID, Major: major}) {
+			t.Errorf("a pass at major %d was admitted; want every pass of a callout ended by a panic refused", major)
 		}
 	}
 }

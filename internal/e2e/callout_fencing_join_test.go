@@ -19,9 +19,10 @@ import (
 
 // callout_fencing_join_test.go is the join layer itself: one transaction, one
 // user at a time. Every joined request — a read as much as a write, an entity
-// request or not — holds the transaction's lock for the whole of its handler,
-// and the lock is held only while the request is wholly in memory, so a compute
-// node that stalls its body or never sends its message holds nothing.
+// request or not — holds the transaction's gate for the whole of its handler
+// (a callback paused in a callout of its own lets in only that callout's
+// callbacks), and takes it only once the request is wholly in memory, so a
+// compute node that stalls its body or never sends its message holds nothing.
 
 // TestCalloutFence_ParallelJoinedRequests: one cnode fires reads and writes at
 // its transaction in parallel. Each is answered 200, the operation succeeds

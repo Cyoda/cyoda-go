@@ -94,6 +94,17 @@ func (f *CachingStoreFactory) SupportsCompositeUniqueKeys() bool {
 	return false
 }
 
+// TransactionCoordinator forwards the optional transaction-coordination
+// capability to the inner factory. It returns (nil, nil), which means "not
+// capable", when the inner factory does not implement
+// spi.TransactionCoordinationCapable.
+func (f *CachingStoreFactory) TransactionCoordinator(ctx context.Context) (spi.TransactionCoordinator, error) {
+	if c, ok := f.inner.(spi.TransactionCoordinationCapable); ok {
+		return c.TransactionCoordinator(ctx)
+	}
+	return nil, nil
+}
+
 // SubscribeLocal registers an in-process invalidation handler on the
 // shared CachingModelStore. The handler receives (tenant, ref) for
 // every model invalidation — local mutations and gossip-received

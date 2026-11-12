@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/adminroute"
@@ -22,9 +25,17 @@ import (
 const TxTokenHeader = "X-Tx-Token"
 
 // HTTPRouting returns middleware that routes requests to the correct cluster
-// node based on the transaction token. Requests without a token, or with a
-// token targeting the local node, are served locally. Requests targeting a
-// remote node are reverse-proxied transparently.
+// node based on the transaction token. Requests without a token, with a token
+// targeting the local node, or with a token that names no owner (a
+// location-independent transaction, which any node serves) are served locally.
+// Requests targeting a remote node are reverse-proxied transparently.
+//
+// A request that cannot reach the owner is answered 503
+// TRANSACTION_NODE_UNAVAILABLE, retryable only with proof that nothing was
+// sent: the owner is not live, the peer address guard refused its address, or
+// the dial to it failed with no connection to it held for the request. Past
+// that, the owner may have run the request, and a retry could repeat a write it
+// kept.
 //
 // Model and workflow administration never runs inside a transaction: a request
 // for one of those routes (adminroute) that carries a token is refused 400
@@ -64,7 +75,9 @@ func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeI
 				return
 			}
 
-			if claims.NodeID == selfNodeID {
+			// A pass that names no owner is one of a location-independent
+			// transaction: any pnode serves it.
+			if claims.NodeID == selfNodeID || claims.NodeID == "" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -75,11 +88,12 @@ func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeI
 				return
 			}
 			if !alive || addr == "" {
+				// Nothing is sent to a node that is not live: retryable.
 				common.WriteError(w, r, common.Operational(
 					http.StatusServiceUnavailable,
 					common.ErrCodeTransactionNodeUnavailable,
 					"transaction node is not available",
-				).WithCause(fmt.Errorf("transaction node %s is not live", claims.NodeID)).WithLogLevel(slog.LevelWarn))
+				).AsRetryable().WithCause(fmt.Errorf("transaction node %s is not live", claims.NodeID)).WithLogLevel(slog.LevelWarn))
 				return
 			}
 
@@ -109,8 +123,9 @@ func handleTokenError(w http.ResponseWriter, r *http.Request, err error) {
 func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http.RoundTripper, allowLoopback bool) {
 	// SSRF guard: validate the resolved peer address before building the reverse
 	// proxy. Matches the same guard on the dispatch forwarder. On failure the
-	// request is rejected with 503 TRANSACTION_NODE_UNAVAILABLE — the node
-	// address is untrusted (same semantics as a dead node from the client's view).
+	// request is rejected with the retryable 503 TRANSACTION_NODE_UNAVAILABLE —
+	// the node address is untrusted (same semantics as a dead node from the
+	// client's view), and nothing was sent.
 	// The lookup runs under the client's own request context, bounded: a client
 	// that has gone must not leave a handler waiting on a resolver, and a client
 	// that stays must not either — an inbound request carries no deadline of its
@@ -122,7 +137,7 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 			http.StatusServiceUnavailable,
 			common.ErrCodeTransactionNodeUnavailable,
 			"transaction node address is not reachable",
-		).WithCause(fmt.Errorf("proxy target address %s rejected by SSRF guard: %w", addr, err)).WithLogLevel(slog.LevelWarn))
+		).AsRetryable().WithCause(fmt.Errorf("proxy target address %s rejected by SSRF guard: %w", addr, err)).WithLogLevel(slog.LevelWarn))
 		return
 	}
 
@@ -134,6 +149,16 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 		common.WriteError(w, r, common.Internal("invalid proxy target", fmt.Errorf("proxy target URL %q: %w", addr, err)))
 		return
 	}
+
+	// connected records whether the transport held a connection to the owner
+	// for this request at any point. A dial error alone is not proof that
+	// nothing was sent: the transport sends a replayable request again on a new
+	// connection when a reused one breaks after the request was written, and
+	// that second dial can fail after the owner received the first.
+	var connected atomic.Bool
+	r = r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
+	}))
 
 	// ReverseProxy is created per request. It is lightweight (Director func +
 	// shared Transport + ErrorHandler) with no per-instance state worth caching.
@@ -151,11 +176,19 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 			if req.Context().Err() != nil {
 				level, cause = slog.LevelDebug, fmt.Errorf("client gone before the request proxied to %s completed: %w", addr, err)
 			}
-			common.WriteError(rw, req, common.Operational(
+			appErr := common.Operational(
 				http.StatusServiceUnavailable,
 				common.ErrCodeTransactionNodeUnavailable,
 				"transaction node is unreachable",
-			).WithCause(cause).WithLogLevel(level))
+			)
+			// Retryable only with proof that nothing was sent: the dial failed
+			// and no connection to the owner was ever held for this request.
+			// Any other failure leaves the outcome unknown.
+			var opErr *net.OpError
+			if errors.As(err, &opErr) && opErr.Op == "dial" && !connected.Load() {
+				appErr.AsRetryable()
+			}
+			common.WriteError(rw, req, appErr.WithCause(cause).WithLogLevel(level))
 		},
 	}
 

@@ -3,12 +3,15 @@ package proxy_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
@@ -204,5 +207,22 @@ func TestForwardEntitySearch_AnswerPastClientDefaultLimit(t *testing.T) {
 	}
 	if got := len(resp.GetBinaryData()); got != 6<<20 {
 		t.Fatalf("answer = %d bytes, want %d", got, 6<<20)
+	}
+}
+
+// NotSentProof changes nothing a reader of the error sees: a status it wraps
+// reads back unchanged, code and message, and an error without a status still
+// has none.
+func TestNotSentProof_ChangesNothingAStatusReaderSees(t *testing.T) {
+	inner := status.Error(codes.Unavailable, "connection error")
+	st, ok := status.FromError(&proxy.NotSentProof{Err: inner})
+	if !ok || st.Code() != codes.Unavailable || st.Message() != "connection error" {
+		t.Fatalf("FromError = %v, %v; want Unavailable %q, true", st, ok, "connection error")
+	}
+	if _, ok := status.FromError(&proxy.NotSentProof{Err: errors.New("guard refused")}); ok {
+		t.Fatal("an error without a status reads as one when wrapped")
+	}
+	if !proxy.ProvesNotSent(fmt.Errorf("forward: %w", &proxy.NotSentProof{Err: inner})) {
+		t.Fatal("the proof is not found through a wrap")
 	}
 }

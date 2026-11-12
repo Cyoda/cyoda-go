@@ -273,6 +273,29 @@ func TestReleaseSavepoint_DropsEntryKeepsWork(t *testing.T) {
 	}
 }
 
+// TestReleaseSavepoint_DropsLaterSavepoints verifies that releasing a
+// savepoint destroys every savepoint taken after it (SQL RELEASE) and keeps
+// the earlier ones.
+func TestReleaseSavepoint_DropsLaterSavepoints(t *testing.T) {
+	s := newTxState("t1", 1)
+	s.PushSavepoint("sp0")
+	s.PushSavepoint("sp1")
+	s.PushSavepoint("sp2")
+
+	if err := s.ReleaseSavepoint("sp1"); err != nil {
+		t.Fatalf("ReleaseSavepoint: %v", err)
+	}
+	if !s.HasSavepoint("sp0") {
+		t.Error("sp0 (earlier) must survive the release")
+	}
+	if s.HasSavepoint("sp1") || s.HasSavepoint("sp2") {
+		t.Error("sp1 and sp2 must be destroyed by releasing sp1")
+	}
+	if err := s.ReleaseSavepoint("sp2"); !errors.Is(err, spi.ErrSavepointNotFound) {
+		t.Errorf("release of destroyed sp2 = %v, want ErrSavepointNotFound", err)
+	}
+}
+
 // TestRestoreSavepoint_Unknown verifies that restoring an unknown savepoint
 // returns spi.ErrSavepointNotFound.
 func TestRestoreSavepoint_Unknown(t *testing.T) {

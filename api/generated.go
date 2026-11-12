@@ -2203,6 +2203,9 @@ type TransactionGone = ProblemDetail
 // TransactionNotFound defines model for TransactionNotFound.
 type TransactionNotFound = ProblemDetail
 
+// TransactionRollbackOnly defines model for TransactionRollbackOnly.
+type TransactionRollbackOnly = ProblemDetail
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ProblemDetail
 

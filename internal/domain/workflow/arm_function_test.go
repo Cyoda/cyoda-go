@@ -11,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -22,7 +23,7 @@ func setupEngineWithClockAndExtProc(t *testing.T, nowMs int64, extProc contract.
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, funcClock(fixedClock(nowMs)), WithExternalProcessing(extProc))
+	engine := NewEngine(factory, uuids, txMgr, funcClock(fixedClock(nowMs)), WithExternalProcessing(extProc), WithCoordination(txcoord.New(txMgr)))
 	return engine, factory
 }
 

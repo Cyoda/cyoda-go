@@ -75,13 +75,12 @@ member. These settings apply on a single node and in a cluster alike.
   callback's own request body — that is a fixed 10 MiB, which no setting moves.
   Must be `> 0`; startup fails otherwise (default: `10485760`, 10 MiB)
 - `CYODA_CALLOUT_JOINED_MAX_WAITERS` — how many of a compute member's callbacks
-  may queue for one transaction behind the one holding it. Callbacks of one
-  transaction are served one at a time; past the cap a callback is refused with
-  `503 TOO_MANY_JOINED_REQUESTS`, retryable, having touched nothing. The count
-  is deliberately conservative: it includes callers that are about to be
-  admitted, and the waits that are never refused (the node's own work on the
-  transaction, and a callback resuming after a callout of its own) take a place
-  in it too. Read the value as a floor on how many callbacks are served, not an
+  may queue for one transaction behind the one holding it. On the in-tree
+  backends callbacks of one transaction are served one at a time; past the cap
+  a callback is refused with `503 TOO_MANY_JOINED_REQUESTS`, retryable, having
+  touched nothing. The count is deliberately conservative: it includes callers
+  that are about to be admitted, and the wait that is never refused (a callback
+  resuming after a callout of its own) takes a place in it too. Read the value as a floor on how many callbacks are served, not an
   exact admission count — at a small setting a callback can be refused while the
   transaction is in fact free a moment later. Firing many callbacks at one
   transaction at once buys a member no speed, so the cap enforces documented

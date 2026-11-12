@@ -364,31 +364,31 @@ func TestCallback_CommitBeforeDispatchInJoinedTransaction_Refused(t *testing.T) 
 	}
 }
 
-// TestCallback_CommitBeforeDispatchInJoinedTransaction_OwnerStillCommits: the
-// refusal leaves the joined transaction to its owner. An outer processor that
-// ignores the 409 and answers success lets the owner commit T: the outer entity
-// completes its transition, the marker written in T is committed with it, and
-// the refused write left nothing behind.
-func TestCallback_CommitBeforeDispatchInJoinedTransaction_OwnerStillCommits(t *testing.T) {
+// TestCallback_CommitBeforeDispatchInJoinedTransaction_OwnerRollbackOnly: the
+// refused write is a non-retryable failure of a joined write. Its scope is
+// discarded and the owner's transaction made rollback-only, so an outer
+// processor that ignores the 409 and answers success still leaves its owner
+// refused 409 TRANSACTION_ROLLBACK_ONLY, naming the callback's code. Nothing of
+// T is committed: not the marker the outer processor wrote in T, not the target,
+// and not the refused workflow's audit events.
+func TestCallback_CommitBeforeDispatchInJoinedTransaction_OwnerRollbackOnly(t *testing.T) {
 	h := newCallbackHarness(t)
 	for _, startNewTx := range []bool{false, true} {
 		for _, door := range joinedCommitDoors() {
 			t.Run(fmt.Sprintf("%s/startNewTxOnDispatch=%t", door.name, startNewTx), func(t *testing.T) {
 				o, outerStatus, outerBody, target, dispatched := runJoinedCommitCase(t, h, door, startNewTx, true)
-				if outerStatus != http.StatusOK {
-					t.Fatalf("outer create: %d %s; want 200, the owner commits T", outerStatus, outerBody)
+				pd := assertProblem(t, outerStatus, outerBody, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
+				if !strings.Contains(pd.Detail, "COMMIT_IN_JOINED_TRANSACTION") {
+					t.Errorf("owner detail = %q; want it to name the callback's COMMIT_IN_JOINED_TRANSACTION", pd.Detail)
 				}
 				assertJoinedCommitRefused(t, o.outcome, fmt.Sprintf("jc-cbd-proc-%s-%t-true", door.name, startNewTx), dispatched)
 
-				if st, code := h.GetEntityState(t, o.markerID); code != http.StatusOK || st != "STORED" {
-					t.Errorf("marker state = %q (http %d); want STORED, committed with T by its owner", st, code)
+				if st, code := h.GetEntityState(t, o.markerID); code != http.StatusNotFound {
+					t.Errorf("marker readable after the owner's refusal (http %d, state %q); want nothing of T committed", code, st)
 				}
 				assertTargetUntouched(t, h, door, target)
-				// What the refused workflow recorded stays in T and is the owner's:
-				// here the owner committed, so the refused processor's failed result
-				// is part of the target's audit trail.
-				if door.shape != shapeOnCreate && !hasRefusedProcessorResult(h.GetSMAuditEvents(t, target.id)) {
-					t.Errorf("target %s has no STATE_PROCESS_RESULT with success=false for the refused COMMIT_BEFORE_DISPATCH processor; the refused workflow's audit events must stay in T", target.id)
+				if door.shape != shapeOnCreate && hasRefusedProcessorResult(h.GetSMAuditEvents(t, target.id)) {
+					t.Errorf("target %s carries the refused workflow's STATE_PROCESS_RESULT; the discarded scope's audit events must not be committed", target.id)
 				}
 			})
 		}

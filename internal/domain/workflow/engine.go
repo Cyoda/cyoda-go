@@ -19,8 +19,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 var tracer = otel.Tracer("github.com/cyoda-platform/cyoda-go/workflow")
@@ -146,10 +146,14 @@ func criterionName(criterion []byte) string {
 
 // Engine orchestrates workflow execution for entities.
 type Engine struct {
-	factory          spi.StoreFactory
-	uuids            spi.UUIDGenerator
-	txMgr            spi.TransactionManager
-	extProc          contract.ExternalProcessingService
+	factory spi.StoreFactory
+	uuids   spi.UUIDGenerator
+	txMgr   spi.TransactionManager
+	extProc contract.ExternalProcessingService
+	// coord is the transaction coordination the engine opens ASYNC_NEW_TX
+	// processor scopes in: the one the callout coordinator registers its
+	// callouts with and the doors open callback scopes in.
+	coord            txcoord.Coordination
 	maxStateVisits   int
 	defaultWorkflows []spi.WorkflowDefinition
 	// clock supplies "now" for scheduled-transition arming (reconcileScheduledTasks)
@@ -181,6 +185,17 @@ func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.Tran
 	for _, opt := range opts {
 		opt(e)
 	}
+	if e.coord == nil {
+		if e.extProc != nil {
+			// Its processor scopes would sit where the doors and the
+			// owner's loop never look: a callback would re-parent to the root
+			// and a pause would release no gate.
+			panic("workflow.NewEngine: WithExternalProcessing needs WithCoordination, the coordination its callouts and callbacks share")
+		}
+		// An engine that makes no callouts has no callbacks and no processor
+		// scopes to share.
+		e.coord = txcoord.New(txMgr)
+	}
 
 	var defaultWF spi.WorkflowDefinition
 	if err := json.Unmarshal(defaultWorkflowJSON, &defaultWF); err != nil {
@@ -199,6 +214,19 @@ type EngineOption func(*Engine)
 func WithExternalProcessing(extProc contract.ExternalProcessingService) EngineOption {
 	return func(e *Engine) {
 		e.extProc = extProc
+	}
+}
+
+// WithCoordination sets the transaction coordination the engine opens
+// ASYNC_NEW_TX processor scopes in. It must be the one the external processing
+// service registers its callouts with, and the one the callback doors open
+// their scopes in: a processor scope is the parent of the callouts begun from
+// it and of their callbacks. It is required with WithExternalProcessing;
+// NewEngine panics without it. An engine with no external processing builds
+// one of its own.
+func WithCoordination(c txcoord.Coordination) EngineOption {
+	return func(e *Engine) {
+		e.coord = c
 	}
 }
 
@@ -246,12 +274,23 @@ func (e *Engine) rollbackSegment(ctx context.Context, openTxID, entryTxID string
 	if openTxID == "" || openTxID == entryTxID {
 		return
 	}
-	rbCtx, cancel := common.RollbackContext(ctx)
-	defer cancel()
-	if err := e.txMgr.Rollback(rbCtx, openTxID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
+	if err := e.rollbackSealed(ctx, openTxID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
 		slog.Warn("failed to roll back an engine-opened transaction",
 			"pkg", "workflow", "txID", openTxID, "err", err)
 	}
+}
+
+// rollbackSealed rolls back a transaction the engine owns: it seals the
+// transaction first, ignoring the answer — a rollback is what a refused seal
+// asks for — and the coordination forgets it after the rollback. The rollback
+// runs on common.RollbackContext, derived once the seal is done, so the
+// seal's wait does not spend the rollback's budget.
+func (e *Engine) rollbackSealed(ctx context.Context, txID string) error {
+	finish, _ := e.coord.Seal(ctx, txID)
+	defer finish()
+	rbCtx, cancel := common.RollbackContext(ctx)
+	defer cancel()
+	return e.txMgr.Rollback(rbCtx, txID)
 }
 
 // Execute runs the workflow engine for entity creation. It selects the matching
@@ -1037,12 +1076,13 @@ func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, rea
 // recordEvent records a single audit event, and reports whether the store
 // accepted it.
 func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) bool {
-	// A chain the fence refuses performs no store operation of any kind, an
-	// audit row included: on PostgreSQL it would be a statement on the
-	// operation's connection, after the owner has stopped waiting for this
-	// chain. The guard is here, and not at the error paths that record, so that
-	// no further site can appear later.
-	if fence.Check(ctx) != nil {
+	// A chain whose scope is refused (superseded, or marked rollback-only)
+	// performs no store operation of any kind, an audit row included: on
+	// PostgreSQL it would be a statement on the operation's connection, after
+	// the owner has stopped waiting for this chain, and in a marked scope it
+	// would be discarded anyway. The guard is here, and not at the error paths
+	// that record, so that no further site can appear later.
+	if txcoord.Check(ctx) != nil {
 		return false
 	}
 	event := spi.StateMachineEvent{
@@ -1092,12 +1132,22 @@ func (e *Engine) recordEventInOwnTx(auditStore spi.StateMachineAuditStore, ctx c
 			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", err)
 		return
 	}
+	// The transaction makes no callout, and seals before its write like every
+	// other the engine commits. The coordination forgets it once the commit or
+	// the rollback below is done: deferred first, so it runs after them.
+	finish, sealErr := e.coord.Seal(ownCtx, ownTxID)
+	defer finish()
 	committed := false
 	defer func() {
 		if !committed {
 			e.rollbackSegment(ownCtx, ownTxID, "")
 		}
 	}()
+	if sealErr != nil {
+		slog.Warn("state-machine audit event not recorded: its transaction was refused at its seal",
+			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", sealErr)
+		return
+	}
 	// An event recordEvent refuses leaves the transaction empty; it is rolled
 	// back rather than committed.
 	if !e.recordEvent(auditStore, ownCtx, entityID, txID, state, eventType, details, data) {

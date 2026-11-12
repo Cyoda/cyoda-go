@@ -20,7 +20,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -181,7 +181,7 @@ func newReqTimeoutHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.Tran
 	})
 
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	node := schema.NewObjectNode()
 	node.SetChild("name", schema.NewLeafNode(schema.String))
@@ -766,7 +766,7 @@ func TestDeleteEntitiesConditional_CtxCancelledMidLoop_RollsBackFailClosed(t *te
 	cancelingStore := &cancelingEntityStore{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	deleteFactory := &cancelingEntityFactory{StoreFactory: realFactory, store: cancelingStore}
 
-	hDelete := New(deleteFactory, realTxMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistencyFor(realTxMgr), platformclock.Real())
+	hDelete := New(deleteFactory, realTxMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(realTxMgr), newTestConsistencyFor(realTxMgr), platformclock.Real())
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.age","operatorType":"GREATER_OR_EQUAL","value":0}`)
 	_, delErr := hDelete.DeleteEntitiesConditional(cancelCtx, "Person", 1, cond, nil, true, 0)
@@ -926,7 +926,7 @@ func TestCreateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(
 	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
 	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr, platformclock.Real())
-	h := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(realTxMgr), platformclock.Real())
+	h := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(realTxMgr), newTestConsistencyFor(realTxMgr), platformclock.Real())
 
 	items := []CollectionItem{
 		{ModelName: "Person", ModelVersion: 1, Payload: json.RawMessage(`{"name":"A","age":1}`)},
@@ -999,7 +999,7 @@ func TestUpdateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(
 	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
 	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr, platformclock.Real())
-	hUpdate := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(realTxMgr), platformclock.Real())
+	hUpdate := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(realTxMgr), newTestConsistencyFor(realTxMgr), platformclock.Real())
 
 	items := []UpdateCollectionItem{
 		{EntityID: ids[0], Payload: json.RawMessage(`{"name":"X"}`)},

@@ -237,10 +237,11 @@ The compute member protocol allows external processes to serve as workflow proce
 - Write to the stream from one goroutine at a time — the gRPC streaming API forbids concurrent sends on one stream.
 - Answer requests, acknowledge events, or echo the server's keep-alive at least once per `CYODA_KEEPALIVE_TIMEOUT` seconds.
 - Authenticate every callback with the compute node's own client token (a current `client_credentials` token of its client), and echo the transaction token (`cyodatxtoken`) on every callback that must run in the callout's transaction — see `cyoda help cluster` for how the HTTP (`X-Tx-Token`) and gRPC (`tx-token`) doors carry it. A token belongs to one try of one callout. Once the server has given the callout to another member, or the callout has ended, a callback bearing the token is refused with `errors.CALLOUT_SUPERSEDED` (`410`) for as long as the transaction is open, and with `errors.TRANSACTION_NOT_FOUND` (`404`) once it has closed; a token naming no callout and try number at all is refused with `errors.UNAUTHORIZED` (`401`), the same as any malformed token; a token past its own expiry is refused with `errors.TRANSACTION_EXPIRED` (`410`). None of the four is retryable: stop working on that request.
-- Expect callbacks of one transaction to run **one after another**. Every callback — a read or a search as much as a write — holds its transaction for the time the server works on it, so two callbacks sent in parallel are served in turn, not at once. The server reads the whole request before it takes the transaction and sends the response after it has let go, so a slow upload or a slow reader holds nothing up; a callback body over 10 MiB is refused with `413` before that happens (HTTP only).
-- Do not queue callbacks without limit on one transaction. Because they are served one at a time, firing many at once buys no speed, and each one waiting holds its whole request in memory until its turn comes. At most `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) may wait; past that a callback is refused with `503` `errors.TOO_MANY_JOINED_REQUESTS`, having touched nothing. It is retryable: back off briefly and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
+- Send the callbacks of one transaction **in series**. On the in-tree backends (memory, SQLite, PostgreSQL) every callback — a read or a search as much as a write — holds its transaction for the time the server works on it, so two callbacks sent in parallel are served in turn, not at once. A callback whose write runs a workflow with a callout of its own pauses while that callout is out, and any other callback of the transaction that arrives then is refused with `503` `errors.TRANSACTION_BUSY`: retryable, send it again once the paused one has been answered. Only the callbacks of that inner callout are admitted. The server reads the whole request before it takes the transaction and sends the response after it has let go, so a slow upload or a slow reader holds nothing up; a callback body over 10 MiB is refused with `413` before that happens (HTTP only).
+- Each callback is **all-or-nothing**: a `2xx` answer means all its writes were kept in the transaction, and any error answer means none were. A retryable error leaves the transaction usable: send the callback again under the same token. A write answered with an error that is not retryable also makes the transaction rollback-only: the operation that called the member out fails with `409` `errors.TRANSACTION_ROLLBACK_ONLY` (under an `ASYNC_NEW_TX` processor, that processor fails instead and the operation goes on), and the callout is stopped. A read answered with a `4xx`, such as a `404`, keeps what it read and marks nothing. A kept callback is still undone with its transaction: callback answers are provisional until the operation that owns the transaction commits.
+- Do not queue callbacks without limit on one transaction. Because the in-tree backends serve them one at a time, firing many at once buys no speed, and each one waiting holds its whole request in memory until its turn comes. At most `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) may wait; past that a callback is refused with `503` `errors.TOO_MANY_JOINED_REQUESTS`, having touched nothing. It is retryable: back off briefly and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
 - Keep a callback's **answer** under `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB). The answer is held in memory for the same reason the request is: an answer that would pass the ceiling fails the callback with `413` `errors.JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short — on either door, and on the gRPC one the frames of a chunked collection count together. Not retryable: page a large read — `pageSize` and `pageNumber` on a get-all or a search — instead of asking for everything in one callback.
-- A callback never commits the transaction it joined — only the operation that began it does. A callback write whose workflow reaches a `COMMIT_BEFORE_DISPATCH` processor is refused with `409` `errors.COMMIT_IN_JOINED_TRANSACTION` at that processor: it is not dispatched, and the joined transaction is neither flushed nor committed. What the workflow did before it stays in the joined transaction, for the calling operation to keep or discard. Not retryable: make that write as an independent request, without the token, and handle its outcome in the processor.
+- A callback never commits the transaction it joined — only the operation that began it does. A callback write whose workflow reaches a `COMMIT_BEFORE_DISPATCH` processor is refused with `409` `errors.COMMIT_IN_JOINED_TRANSACTION` at that processor: it is not dispatched, and the joined transaction is neither flushed nor committed. Nothing the refused write did is kept, and, as a failed write, it makes the calling operation's transaction rollback-only (under an `ASYNC_NEW_TX` processor, that processor fails instead). Not retryable: make that write as an independent request, without the token, and handle its outcome in the processor.
 - A callback never administers a model or its workflows. A request carrying the token that would import, delete, lock, unlock, change the level of or set the unique keys of a model, or import a workflow — on either door — is refused with `400` `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` before the token is verified and before anything is read or written; the transaction is untouched. Not retryable: make that request as an independent request, without the token.
 - A callback is not abandoned by its member's connection dropping, nor by a deadline the member sets on its own callback call — see "API requests made under a transaction token" below for what continues, and what does not.
 
@@ -349,7 +350,7 @@ The smallest successful answer is
 changed nothing, and the workflow should carry on. There is no shape that means
 "I did nothing and something is wrong" — that is `success: false`.
 
-When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues — unless its savepoint cannot be created, undone or released, or a scheduled run refuses to dispatch it.) The processor's `STATE_PROCESS_RESULT` audit event records `error.message`, shortened as the client's message is, as `data.failReason`. A failure with no `error.message` records no `failReason`, and the client's message is then `processor returned failure`, whichever node the member is connected to. The record is written in the operation's transaction and kept only when that transaction commits: for a failed `ASYNC_NEW_TX` processor whose failure the operation goes on past, when the operation commits; and for a processor in a callback that joined another operation's transaction, when that operation commits. A failed `SYNC` or `ASYNC_SAME_TX` processor fails the operation, and its record is rolled back with it. A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary committed has its record written in a transaction of its own, so it is kept although the operation fails. (On a callback that joined another transaction, such a processor is refused before the boundary, and its record stays in the joined transaction; when the boundary itself fails, the record is rolled back with the failed operation, or is not kept when the boundary's commit was interrupted and its outcome is in doubt.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow; when `payload` is absent, or its `data` is null, the entity is left as it is in the transaction — including a write the processor made through its own joined callback (see `cyoda help workflows`) — and the transition continues.
+When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues — unless its savepoint cannot be created, undone or released, or a scheduled run refuses to dispatch it.) The processor's `STATE_PROCESS_RESULT` audit event records `error.message`, shortened as the client's message is, as `data.failReason`. A failure with no `error.message` records no `failReason`, and the client's message is then `processor returned failure`, whichever node the member is connected to. The record is written in the operation's transaction and kept only when that transaction commits: for a failed `ASYNC_NEW_TX` processor whose failure the operation goes on past, when the operation commits; and for a processor in a callback that joined another operation's transaction, when that callback's work is kept and that operation commits. A failed `SYNC` or `ASYNC_SAME_TX` processor fails the operation, and its record is rolled back with it. A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary committed has its record written in a transaction of its own, so it is kept although the operation fails. (On a callback that joined another transaction, such a processor is refused before the boundary, and its record is discarded with the callback's failed write; when the boundary itself fails, the record is rolled back with the failed operation, or is not kept when the boundary's commit was interrupted and its outcome is in doubt.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow; when `payload` is absent, or its `data` is null, the entity is left as it is in the transaction — including a write the processor made through its own joined callback (see `cyoda help workflows`) — and the transition continues.
 
 Returned data is subject to the same checks as an HTTP client write: it must be storable, and it must satisfy the model's schema. A processor may introduce a field the model does not declare only where the model's `changeLevel` would allow a client to — otherwise the transition fails with `WORKFLOW_FAILED` and rolls back. The engine holds no privilege here: whatever it stores, the API must be able to accept back.
 
@@ -471,24 +472,28 @@ and `EntityFunctionCalculationResponse.json` (see `cyoda help cloudevents`).
 **API requests made under a transaction token:**
 
 An API request made under a transaction token is not cancelled when its client
-goes away: once it has the transaction to itself it runs to completion on the
-node that holds the transaction. Until then — while it waits its turn behind
+goes away: once it has its turn on the transaction it runs to completion on the
+node that serves it. Until then — while it waits its turn behind
 another request under the same token — it has touched nothing, and a client that
 goes away is simply dropped. If the connection drops, or the node the request
-arrived at answers `503` because forwarding it took longer than
-`CYODA_PROXY_TIMEOUT`, the outcome of a write is **unknown** — it may have been
-applied to the transaction. Do not assume it failed. A deadline the compute
-member sets on its own gRPC call does not stop the request on the server either.
+arrived at answers a `503 TRANSACTION_NODE_UNAVAILABLE` that is not retryable —
+forwarding it failed after it was sent, or took longer than
+`CYODA_PROXY_TIMEOUT` — the outcome of a write is **unknown**: it may have been
+kept in the transaction. Do not assume it failed. A `503
+TRANSACTION_NODE_UNAVAILABLE` marked retryable means the request was never
+sent to the node that holds the transaction: nothing ran, and sending it again
+is safe. A deadline the compute member sets on its own gRPC call does not stop
+the request on the server either.
 
 The token is issued for one request on one compute node. If cyoda gives the
 same work to another compute node — this one did not answer within its answer
 limit, or its connection dropped — or once the request has ended, every further
-API request under that token is refused with `410 CALLOUT_SUPERSEDED`; a request
-that was already in progress finishes and is answered normally. A compute node
-that receives `CALLOUT_SUPERSEDED` must stop working on that request. While a
-compute node's request is in progress it has the transaction to itself: API
-requests under one token run one at a time, and cyoda does not interrupt one
-because its client went away.
+API request under that token is refused with `410 CALLOUT_SUPERSEDED`. A
+request already in progress at that moment runs to its end, and is then
+discarded and answered `410 CALLOUT_SUPERSEDED`: none of its writes are kept. A
+compute node that receives `CALLOUT_SUPERSEDED` must stop working on that
+request. On the in-tree backends the API requests under one token run one at a
+time, and cyoda does not interrupt one because its client went away.
 
 **Platform time on dispatched events:**
 
@@ -653,7 +658,7 @@ Within `text_data` payloads, errors are reported as:
 
 Operational 4xx errors carry the domain code (e.g. `CLIENT_ERROR`) and a human-readable message. Internal errors use `SERVER_ERROR` with a ticket UUID for server-side log correlation.
 
-Callout errors the client of the failed operation sees (all `503`, retryable):
+Callout errors the client of the failed operation sees (all `503`, retryable; none of them is an answer to a callback):
 
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no matching member appeared within `CYODA_DISPATCH_WAIT_TIMEOUT`
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — the member's stream dropped after it was given the work
@@ -661,14 +666,19 @@ Callout errors the client of the failed operation sees (all `503`, retryable):
 - `errors.DISPATCH_FORWARD_FAILED` — the answer of the node a callout was handed to was lost
 - `errors.CALLOUT_FAILED` — more than one try failed; the message lists them
 
+The client of the operation also sees `errors.TRANSACTION_ROLLBACK_ONLY` — `409`, not retryable — when a callback's write failed with an answer that is not retryable.
+
 Errors a compute member sees on a callback:
 
-- `errors.CALLOUT_SUPERSEDED` — `410` — the member was replaced, or its callout has ended
-- `errors.TRANSACTION_NOT_FOUND` — `404` — the transaction has ended
+- `errors.CALLOUT_SUPERSEDED` — `410` — the member was replaced, or its callout has ended; also a callback still in progress when that happened, whose writes are discarded
+- `errors.TRANSACTION_NOT_FOUND` — `404` — the transaction has ended, or its storage session ended under the callback
+- `errors.TRANSACTION_ROLLBACK_ONLY` — `409` — the part of the transaction the callback would run in can only be rolled back, because an earlier write under it failed
+- `errors.CONFLICT` — `409` — not retryable when the transaction lost a write race and cannot commit: the operation that owns it is retried, not the callback. On a backend with location-independent transactions a callback can also get a retryable `409 CONFLICT`, when another callback of the transaction wrote the same entity from the same version first; see `errors.CONFLICT`
+- `errors.TRANSACTION_BUSY` — `503` — retryable — another callback of the transaction is paused in a callout of its own
 - `errors.TRANSACTION_EXPIRED` — `410` — the token is past its expiry
 - `errors.UNAUTHORIZED` — `401` — the token does not name a callout and a try number at all (detail "invalid transaction token"); a callback whose bearer token fails gets the same code with the detail "authentication failed"
 - `errors.FORBIDDEN` — `403` — the transaction belongs to another tenant, or an on-behalf-of callback names a transaction whose origin is not its user
-- `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — the node that holds the transaction could not be reached; the transaction is likely lost, so stop working on that callout (the operation that began it fails, and its own client may run it again)
+- `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — the node that holds the transaction could not be reached. Retryable only when the request was not sent to that node: nothing ran, and sending it again is safe. Otherwise not retryable, and the outcome of a write is unknown. When the node is gone, the transaction is gone with it: stop working on that callout (the operation that began it fails, and its own client may run it again)
 - `errors.TOO_MANY_JOINED_REQUESTS` — `503` — more than `CYODA_CALLOUT_JOINED_MAX_WAITERS` callbacks wait on the transaction; retryable after a short back-off
 - `errors.JOINED_RESPONSE_TOO_LARGE` — `413` — the callback's answer would pass `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`; page the read instead
 

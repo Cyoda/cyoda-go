@@ -97,6 +97,12 @@ It must clear the longest legitimate idle gap, which is a compute-node callout b
 mid-flight. It applies per gap, not per transaction: a cascade writes between callouts,
 which restarts the clock, so a long cascade need only keep each gap under the ceiling.
 
+Each compute-node callback that joins a transaction, and each `ASYNC_NEW_TX` processor, runs in a
+savepoint of that transaction, which PostgreSQL holds as a subtransaction. More than 64 callbacks
+that write in one transaction overflow PostgreSQL's per-session subtransaction cache, which slows
+snapshots for every session of the server while that transaction is open. Keep the writing
+callbacks of one operation below that number.
+
 `CYODA_POSTGRES_STATEMENT_TIMEOUT` and `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` can also be set
 in `CYODA_POSTGRES_URL` (`?statement_timeout=...`). A value there is left alone unless the
 environment variable is also set, in which case the environment variable wins and the

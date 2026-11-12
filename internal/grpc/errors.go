@@ -53,7 +53,7 @@ func requestAttrs(ctx context.Context) []any {
 
 // buildErrorFields extracts code, message, and retryable flag from an error,
 // and logs the failure once through the funnel both doors share
-// (common.LogError), naming the request it answers (requestAttrs). An
+// (common.LogAnswer), naming the request it answers (requestAttrs). An
 // operational AppError answers its client-safe message, logged at its level
 // (INFO unless the refusing site set another); an internal or fatal one, or a
 // raw error that does not classify as operational, answers the generic text
@@ -77,8 +77,11 @@ func buildErrorFields(ctx context.Context, err error) (code, message string, ret
 		// (common.Internal keeps the cause, which carries the marker).
 		appErr = common.Internal("unclassified error", err)
 	}
-	// The one log line, as the HTTP door writes it, naming the request.
-	message = common.SanitizedText(appErr, common.LogError(ctx, appErr, requestAttrs(ctx)...))
+	common.RecordOutcome(ctx, appErr)
+	// The one log line, as the HTTP door writes it, naming the request. A
+	// joined request's line is written once its scope has ended
+	// (common.LogAnswer).
+	message = common.SanitizedText(appErr, common.LogAnswer(ctx, appErr, requestAttrs(ctx)...))
 	if appErr.Level == common.LevelOperational {
 		if appErr.Retryable {
 			r := true

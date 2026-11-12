@@ -57,7 +57,7 @@ func newTestDispatcherWith(t *testing.T, registry *MemberRegistry, selector Memb
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	return NewProcessorDispatcher(registry, selector, signer, 30*time.Second, 60*time.Second, 3*time.Second)
+	return NewProcessorDispatcher(registry, selector, signer, 30*time.Second, 60*time.Second, 3*time.Second, false)
 }
 
 // testCalloutAt is the platform time a test arms a callout with, as an owner
@@ -1373,5 +1373,43 @@ func TestDispatchCalloutToMember_SendsTheCalloutsIdentity(t *testing.T) {
 
 	if _, err := tryOnceAs(dispatcher, peerCtx, member, id, "req-identity", "tx-1", 5000); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestMintPass_NoOwnerWhenLocationIndependent: on a location-independent
+// backend any pnode serves the transaction's callbacks, so the pass names no
+// owner; it still names the transaction, the callout and the try's number.
+// On any other backend the pass names the owner.
+func TestMintPass_NoOwnerWhenLocationIndependent(t *testing.T) {
+	signer, err := token.NewSigner(make32(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := processorCall("x", false, 5*time.Second)
+	call.OwnerNodeID = "node-owner"
+
+	for _, tc := range []struct {
+		name                string
+		locationIndependent bool
+		wantOwner           string
+	}{
+		{"location-independent", true, ""},
+		{"owner-bound", false, "node-owner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewMemberRegistry()
+			d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), signer, 30*time.Second, 60*time.Second, 3*time.Second, tc.locationIndependent)
+			pass, err := d.mintPass(call, 2, 1)
+			if err != nil {
+				t.Fatalf("mintPass: %v", err)
+			}
+			claims := verifyPass(t, pass)
+			if claims.NodeID != tc.wantOwner {
+				t.Errorf("owner = %q; want %q", claims.NodeID, tc.wantOwner)
+			}
+			if claims.TxRef != call.TxID || claims.Callout != call.RequestID || claims.Major != 2 || claims.Minor != 1 {
+				t.Errorf("claims = %+v; want tx %s, callout %s, number (2,1)", claims, call.TxID, call.RequestID)
+			}
+		})
 	}
 }

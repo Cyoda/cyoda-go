@@ -78,7 +78,7 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 
 - `errors.BAD_REQUEST` — `400` — not retryable — request body, query parameter, or header is malformed or structurally invalid
 - `errors.CALLOUT_FAILED` — `503` — retryable — a processor, criterion or function callout was tried on more than one compute member and no try produced an answer; the message lists the tries
-- `errors.CALLOUT_SUPERSEDED` — `410` — not retryable — request carrying a transaction token belongs to a compute node that was replaced, or to a callout that has ended
+- `errors.CALLOUT_SUPERSEDED` — `410` — not retryable — request carrying a transaction token belongs to a compute node that was replaced, or to a callout that has ended; a request still in progress when that happened is discarded
 - `errors.CLOCK_BEFORE_RECORDED_TIME` — `409` — not retryable — a request to set the platform clock named a time earlier than the latest time the store has recorded; the clock is unchanged
 - `errors.CLOCK_CONTROL_DISABLED` — `403` — not retryable — a request to change the platform clock reached a node not started with clock control enabled
 - `errors.CLOCK_NOT_CONFIRMED` — `503` — not retryable — a node of the cluster did not confirm a platform clock change; nothing is rolled back
@@ -86,7 +86,7 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 - `errors.COMPOSITE_KEY_UNSUPPORTED` — `422` — not retryable — the storage backend does not enforce composite unique keys
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — retryable — the compute member tried for a callout went away, before or after it was handed the work
 - `errors.CONDITION_TYPE_MISMATCH` — `400` — not retryable — a search condition's operator applies to none of the field's declared data types, or a comparison or range operand parses into none of the types the operator applies to
-- `errors.CONFLICT` — `409` — retryable — generic 409 used by storage-level transaction serialization aborts (`RetryableConflict`); permanent business-logic conflicts use a specific code instead (e.g. `MODEL_ALREADY_LOCKED`, `ENTITY_MODIFIED`)
+- `errors.CONFLICT` — `409` — retryable, except on a request that joined a transaction which lost the race (its owner is retried) — generic 409 used by storage-level transaction serialization aborts; permanent business-logic conflicts use a specific code instead (e.g. `MODEL_ALREADY_LOCKED`, `ENTITY_MODIFIED`)
 - `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not certify a consistency time within its wait budget
 - `errors.DELETE_NOT_CONVERGED` — `409` — retryable — batched delete (`transactionSize`) kept finding newly created matching entities and was stopped at its batch cap; earlier batches stay deleted
 - `errors.DISPATCH_FORWARD_FAILED` — `503` — retryable — a callout was handed over to another cluster node and no usable answer came back; the work may have run
@@ -138,9 +138,11 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 - `errors.SERVER_ERROR` — `500` — retryable with caution — unclassified internal error; response includes `ticket` UUID for log correlation
 - `errors.STORAGE_UNAVAILABLE` — `503` — retryable — storage layer could not supply a connection within its acquire deadline, or the transaction was reclaimed by the idle-in-transaction ceiling
 - `errors.TOO_MANY_JOINED_REQUESTS` — `503` — retryable — `CYODA_CALLOUT_JOINED_MAX_WAITERS` requests made under a transaction token are already waiting for that transaction; back off and send the callback again
+- `errors.TRANSACTION_BUSY` — `503` — retryable — another callback of the same transaction is paused in a callout of its own; the refused callback ran nothing, and the compute node should send the callbacks of one transaction in series
 - `errors.TRANSACTION_EXPIRED` — `410` — not retryable — transaction token's `exp` claim is in the past
-- `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — not retryable — a request under a transaction token could not be completed on the node that owns the transaction (not alive, not reachable, or no answer within `CYODA_PROXY_TIMEOUT`)
-- `errors.TRANSACTION_NOT_FOUND` — `404` — not retryable — transaction ID does not correspond to an active transaction on this node
+- `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — retryable only when the request was not sent to the owner — a request under a transaction token could not be completed on the node that owns the transaction (not alive, not reachable, or no answer within `CYODA_PROXY_TIMEOUT`); once it may have been sent, the outcome of a write is unknown and it is not retryable
+- `errors.TRANSACTION_NOT_FOUND` — `404` — not retryable — transaction ID does not correspond to an active transaction on this node, or its storage session ended under a request that joined it
+- `errors.TRANSACTION_ROLLBACK_ONLY` — `409` — not retryable — a write that joined the transaction failed with an answer retrying cannot change; the transaction, or the part of it a request would run in, can only be rolled back
 - `errors.TRANSACTION_TIMEOUT` — `408` — retryable — client-requested transaction timeout expired before commit
 - `errors.TRANSITION_NOT_FOUND` — `400` — not retryable — requested workflow transition is not defined for the entity's current state
 - `errors.TRUSTED_KEY_CAP_REACHED` — `400` — not retryable — Per-tenant trusted-key cap reached.

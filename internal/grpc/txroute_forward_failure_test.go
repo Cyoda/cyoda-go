@@ -13,10 +13,12 @@ import (
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
@@ -315,22 +317,16 @@ func realForwardInterceptor(t *testing.T, grpcAddr string, proxyTimeout time.Dur
 	return ic, metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 }
 
-// Over a real connection: an owner whose port refuses connections, and one
-// that accepts the connection and never speaks, both answer 503
-// TRANSACTION_NODE_UNAVAILABLE within the proxy timeout.
-func TestTxRouteInterceptor_RealNetworkOwnerUnreachable(t *testing.T) {
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closedAddr := closed.Addr().String()
-	_ = closed.Close()
-
+// silentOwner returns the address of an owner that accepts connections and
+// never speaks: no transport to it becomes ready, so no call header is ever
+// sent to it.
+func silentOwner(t *testing.T) string {
+	t.Helper()
 	silent, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer silent.Close()
+	t.Cleanup(func() { _ = silent.Close() })
 	go func() {
 		for {
 			c, err := silent.Accept()
@@ -340,8 +336,22 @@ func TestTxRouteInterceptor_RealNetworkOwnerUnreachable(t *testing.T) {
 			defer c.Close() // hold the connection open, say nothing
 		}
 	}()
+	return silent.Addr().String()
+}
 
-	for name, addr := range map[string]string{"refused": closedAddr, "silent": silent.Addr().String()} {
+// Over a real connection: an owner whose port refuses connections, and one
+// that accepts the connection and never speaks, both answer the retryable 503
+// TRANSACTION_NODE_UNAVAILABLE within the proxy timeout: no header of the call
+// reached either.
+func TestTxRouteInterceptor_RealNetworkOwnerUnreachable(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedAddr := closed.Addr().String()
+	_ = closed.Close()
+
+	for name, addr := range map[string]string{"refused": closedAddr, "silent": silentOwner(t)} {
 		t.Run(name, func(t *testing.T) {
 			ic, ctx := realForwardInterceptor(t, addr, 300*time.Millisecond)
 			start := time.Now()
@@ -352,7 +362,9 @@ func TestTxRouteInterceptor_RealNetworkOwnerUnreachable(t *testing.T) {
 			if elapsed := time.Since(start); elapsed > 5*time.Second {
 				t.Fatalf("the wait was not bounded: %v", elapsed)
 			}
-			assertEnvelopeCode(t, resp, "req-net", "TRANSACTION_NODE_UNAVAILABLE")
+			if r := envelopeRetryable(t, resp, "req-net"); r == nil || !*r {
+				t.Fatalf("Retryable = %v, want true", r)
+			}
 		})
 	}
 }
@@ -443,9 +455,144 @@ func TestTxRouteInterceptor_StreamCallerGoneIsNotAnOutage(t *testing.T) {
 	}
 }
 
-// Over a real connection, a streamed forward to a refused port answers 503
-// TRANSACTION_NODE_UNAVAILABLE on the stream.
+// Over a real connection, a streamed forward to a refused port, and one to an
+// owner that never speaks, answer the retryable 503
+// TRANSACTION_NODE_UNAVAILABLE on the stream. The silent owner holds the call
+// until the proxy timeout fires with no header sent.
 func TestTxRouteInterceptor_RealNetworkStreamOwnerUnreachable(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedAddr := closed.Addr().String()
+	_ = closed.Close()
+
+	for name, addr := range map[string]string{"refused": closedAddr, "silent": silentOwner(t)} {
+		t.Run(name, func(t *testing.T) {
+			const proxyTimeout = 300 * time.Millisecond
+			ic, ctx := realForwardInterceptor(t, addr, proxyTimeout)
+			ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-net-stream"}}}
+			start := time.Now()
+			if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {
+				t.Fatalf("expected an envelope on the stream, got err: %v", err)
+			}
+			elapsed := time.Since(start)
+			if elapsed > 5*time.Second {
+				t.Fatalf("the wait was not bounded: %v", elapsed)
+			}
+			// The silent owner's answer is the timer's: the forward returned
+			// only once the proxy timeout had cancelled it.
+			if name == "silent" && elapsed < proxyTimeout {
+				t.Fatalf("answered after %v, before the proxy timeout %v fired", elapsed, proxyTimeout)
+			}
+			if len(ss.sent) != 1 {
+				t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
+			}
+			if r := envelopeRetryable(t, ss.sent[0], "req-net-stream"); r == nil || !*r {
+				t.Fatalf("Retryable = %v, want true", r)
+			}
+		})
+	}
+}
+
+// --- retryable only with proof that nothing was sent -------------------------
+
+// envelopeRetryable asserts ce is a TRANSACTION_NODE_UNAVAILABLE envelope for
+// reqID and returns its Error.Retryable as sent.
+func envelopeRetryable(t *testing.T, ce any, reqID string) *bool {
+	t.Helper()
+	assertEnvelopeCode(t, ce, reqID, "TRANSACTION_NODE_UNAVAILABLE")
+	return decodeTxResp(t, ce.(*cepb.CloudEvent)).Error.Retryable
+}
+
+// The registry says the owner is not live: nothing is sent, so a retry cannot
+// repeat anything. Both routed doors.
+func TestTxRoute_OwnerNotLive_Retryable(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-dead", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-dead", Major: 1})
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: false},
+	}}
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-dead"}, entityManageInfo(), mustNotRunUnary(t))
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	if r := envelopeRetryable(t, resp, "req-dead"); r == nil || !*r {
+		t.Fatalf("unary: Retryable = %v, want true", r)
+	}
+
+	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-dead-stream"}}}
+	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {
+		t.Fatalf("expected an envelope on the stream, got err: %v", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
+	}
+	// A refusal before the request message is read carries no request id.
+	if r := envelopeRetryable(t, ss.sent[0], ""); r == nil || !*r {
+		t.Fatalf("stream: Retryable = %v, want true", r)
+	}
+}
+
+// The pool's peer address guard refuses the owner's address before any
+// connection is set up: nothing was sent. Both routed doors, through the
+// production forward.
+func TestTxRoute_ForbiddenPeerAddress_Retryable(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-guard", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-guard", Major: 1})
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-B": {NodeID: "node-B", Addr: "http://127.0.0.1:8080", GRPCAddr: "127.0.0.1:19090", Alive: true},
+	}}
+	// allowLoopback=false: the production posture, under which the guard
+	// refuses the loopback address.
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, false, testProxyTimeout)
+	t.Cleanup(ic.pool.Close)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-guard"}, entityManageInfo(), mustNotRunUnary(t))
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	if r := envelopeRetryable(t, resp, "req-guard"); r == nil || !*r {
+		t.Fatalf("unary: Retryable = %v, want true", r)
+	}
+
+	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-guard-stream"}}}
+	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {
+		t.Fatalf("expected an envelope on the stream, got err: %v", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
+	}
+	if r := envelopeRetryable(t, ss.sent[0], "req-guard-stream"); r == nil || !*r {
+		t.Fatalf("stream: Retryable = %v, want true", r)
+	}
+}
+
+// A forward error that carries no proxy.NotSentProof — here a DeadlineExceeded
+// from the call — proves nothing about whether the owner received the request,
+// and the owner may have run it: the answer carries no retryable flag.
+func TestTxRoute_ForwardErrorWithoutProof_NotRetryable(t *testing.T) {
+	ic, ctx := forwardingInterceptor(t, testProxyTimeout)
+	ic.forwardUnary = func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+		return nil, status.Error(codes.DeadlineExceeded, "context deadline exceeded")
+	}
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-deadline"}, entityManageInfo(), mustNotRunUnary(t))
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	if r := envelopeRetryable(t, resp, "req-deadline"); r != nil {
+		t.Fatalf("Retryable = %v, want nil", *r)
+	}
+}
+
+// The owner's port refuses connections: grpc-go never opens a stream to it, so
+// no header of the request reached a transport. Nothing was sent: retryable.
+// Both routed doors, over a real connection.
+func TestTxRoute_DialRefused_Retryable(t *testing.T) {
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -453,13 +600,113 @@ func TestTxRouteInterceptor_RealNetworkStreamOwnerUnreachable(t *testing.T) {
 	addr := closed.Addr().String()
 	_ = closed.Close()
 
-	ic, ctx := realForwardInterceptor(t, addr, 300*time.Millisecond)
-	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-net-stream"}}}
+	ic, ctx := realForwardInterceptor(t, addr, 2*time.Second)
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-refused"}, entityManageInfo(), mustNotRunUnary(t))
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	if r := envelopeRetryable(t, resp, "req-refused"); r == nil || !*r {
+		t.Fatalf("unary: Retryable = %v, want true", r)
+	}
+
+	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-refused-stream"}}}
 	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {
 		t.Fatalf("expected an envelope on the stream, got err: %v", err)
 	}
 	if len(ss.sent) != 1 {
 		t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
 	}
-	assertEnvelopeCode(t, ss.sent[0], "req-net-stream", "TRANSACTION_NODE_UNAVAILABLE")
+	if r := envelopeRetryable(t, ss.sent[0], "req-refused-stream"); r == nil || !*r {
+		t.Fatalf("stream: Retryable = %v, want true", r)
+	}
+}
+
+// stallingOwner is a real owner that receives each call and never answers it.
+type stallingOwner struct {
+	cyodapb.UnimplementedCloudEventsServiceServer
+	received chan string
+}
+
+func (o *stallingOwner) EntityManage(ctx context.Context, ce *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+	o.received <- ce.Id
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (o *stallingOwner) EntityManageCollection(ce *cepb.CloudEvent, ss googlegrpc.ServerStreamingServer[cepb.CloudEvent]) error {
+	o.received <- ce.Id
+	<-ss.Context().Done()
+	return ss.Context().Err()
+}
+
+// awaitReceived fails the test unless the owner received the call named want
+// within a bound.
+func (o *stallingOwner) awaitReceived(t *testing.T, want string) {
+	t.Helper()
+	select {
+	case got := <-o.received:
+		if got != want {
+			t.Fatalf("owner received %q, want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("owner did not receive %q", want)
+	}
+}
+
+// awaitReady fails the test unless pool's connection to addr is ready within a
+// bound.
+func awaitReady(t *testing.T, pool *proxy.ClientPool, addr string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := pool.Get(ctx, addr)
+	if err != nil {
+		t.Fatalf("pool.Get(%s): %v", addr, err)
+	}
+	conn.Connect()
+	for state := conn.GetState(); state != connectivity.Ready; state = conn.GetState() {
+		if !conn.WaitForStateChange(ctx, state) {
+			t.Fatalf("connection to %s not ready: %s", addr, state)
+		}
+	}
+}
+
+// The owner received the call and did not answer within the proxy timeout: it
+// may have run the request, so a retry could repeat a write it kept. Not
+// retryable. Both routed doors, over a real connection.
+func TestTxRoute_OwnerTimesOutAfterSend_NotRetryable(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := &stallingOwner{received: make(chan string, 2)}
+	srv := googlegrpc.NewServer()
+	cyodapb.RegisterCloudEventsServiceServer(srv, owner)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	ic, ctx := realForwardInterceptor(t, lis.Addr().String(), 300*time.Millisecond)
+	// The connection is ready before the timed call, so the proxy timeout
+	// bounds only the owner's silence, never a slow transport set-up.
+	awaitReady(t, ic.pool, lis.Addr().String())
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-stalled"}, entityManageInfo(), mustNotRunUnary(t))
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	owner.awaitReceived(t, "req-stalled")
+	if r := envelopeRetryable(t, resp, "req-stalled"); r != nil {
+		t.Fatalf("unary: Retryable = %v, want nil", *r)
+	}
+
+	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-stalled-stream"}}}
+	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {
+		t.Fatalf("expected an envelope on the stream, got err: %v", err)
+	}
+	owner.awaitReceived(t, "req-stalled-stream")
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
+	}
+	if r := envelopeRetryable(t, ss.sent[0], "req-stalled-stream"); r != nil {
+		t.Fatalf("stream: Retryable = %v, want nil", *r)
+	}
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -61,7 +61,7 @@ func TestEntityPreCommitDatesFromClock(t *testing.T) {
 	}
 	clk := fakeclock.New(at)
 	engine := wfengine.NewEngine(f, common.NewDefaultUUIDGenerator(), txMgr, clk)
-	h := New(f, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), clk)
+	h := New(f, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), clk)
 
 	if _, err := h.CreateEntity(ctx, CreateEntityInput{
 		EntityName: "Order", ModelVersion: "1", Format: "JSON",

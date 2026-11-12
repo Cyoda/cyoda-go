@@ -121,6 +121,8 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		{Status: 503, Code: "DISPATCH_TIMEOUT"},                 // TestCalloutErrors_OneAttemptIsNotWrapped
 		{Status: 503, Code: "NO_COMPUTE_MEMBER_FOR_TAG"},        // TestProcessorNoMember_Returns503
 		{Status: 503, Code: "STORAGE_UNAVAILABLE"},              // TestE2E_SaturatedPool_HTTPReturns503/create
+		{Status: 409, Code: "TRANSACTION_ROLLBACK_ONLY"},        // TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_HTTP: the owner
+		{Status: 503, Code: "TRANSACTION_BUSY"},                 // TestCallbackScope_SiblingOfPausedCallbackBusy
 	},
 	"createCollection": {
 		{Status: 400, Code: "BAD_REQUEST"},                      // invalid JSON array or parameter
@@ -142,6 +144,8 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		{Status: 503, Code: "DISPATCH_FORWARD_FAILED"},          // TestCalloutHandOver_AnswerLost_NotRepeatSafe/*/http-collection
 		{Status: 503, Code: "STORAGE_UNAVAILABLE"},              // TestE2E_SaturatedPool_HTTPReturns503/create-collection
 		{Status: 500, Code: "SCHEDULE_FUNCTION_INVALID_RESULT"}, // TestScheduledFunction_MalformedResult_Returns500/create-collection
+		{Status: 413, Code: "JOINED_RESPONSE_TOO_LARGE"},        // TestCallbackScope_WriteOverResponseCeiling_413AndMarked/http
+		{Status: 409, Code: "TRANSACTION_ROLLBACK_ONLY"},        // TestCallbackScope_OwnerOps_RootMarked/http-create-collection: the owner
 	},
 	"updateSingleWithLoopback": {
 		{Status: 400, Code: "BAD_REQUEST"},        // unparseable body, or a payload carrying U+0000 (TestEntity_NulInPayload_400)
@@ -164,6 +168,7 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		{Status: 410, Code: "TRANSACTION_EXPIRED"},              // TestCalloutPass/expired-410
 		{Status: 503, Code: "STORAGE_UNAVAILABLE"},              // TestE2E_SaturatedPool_HTTPReturns503/loopback
 		{Status: 500, Code: "SCHEDULE_FUNCTION_INVALID_RESULT"}, // TestScheduledFunction_MalformedResult_Returns500/loopback
+		{Status: 409, Code: "TRANSACTION_ROLLBACK_ONLY"},        // TestCallbackScope_OwnerOps_RootMarked/http-update-loopback: the owner
 	},
 	"updateSingle": {
 		{Status: 400, Code: "TRANSITION_NOT_FOUND"},             // named transition absent from the model
@@ -186,6 +191,7 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		{Status: 503, Code: "DISPATCH_FORWARD_FAILED"},          // TestCalloutHandOver_AnswerLost_NotRepeatSafe/*/http-update-transition
 		{Status: 503, Code: "STORAGE_UNAVAILABLE"},              // TestE2E_SaturatedPool_HTTPReturns503/update-transition
 		{Status: 500, Code: "SCHEDULE_FUNCTION_INVALID_RESULT"}, // TestScheduledFunction_MalformedResult_Returns500/update-transition
+		{Status: 409, Code: "TRANSACTION_ROLLBACK_ONLY"},        // TestCallbackScope_OwnerOps_RootMarked/http-transition: the owner
 	},
 	"patchSingleWithLoopback": {
 		{Status: 400, Code: "BAD_REQUEST"}, // TestTransactionControl_InvalidParams400/PatchSingleWithLoopback: invalid/joined transactionTimeoutMillis
@@ -213,6 +219,7 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		{Status: 503, Code: "STORAGE_UNAVAILABLE"},              // TestE2E_SaturatedPool_HTTPReturns503/patch
 		{Status: 500, Code: "SCHEDULE_FUNCTION_INVALID_RESULT"}, // TestScheduledFunction_MalformedResult_Returns500/patch
 		{Status: 404, Code: "ENTITY_NOT_FOUND"},                 // TestE2E_EntityPatch_MergeAndPreconditions: an unknown entity id
+		{Status: 409, Code: "TRANSACTION_ROLLBACK_ONLY"},        // TestCallbackScope_OwnerOps_RootMarked/http-patch: the owner
 	},
 	// GET /scheduled-tasks. 401 and 500 are cross-cutting
 	// (universalCrossCuttingCodes in internal/e2e/zzz_errorcode_matrix_test.go).

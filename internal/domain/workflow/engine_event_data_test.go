@@ -9,6 +9,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -199,7 +200,8 @@ func TestEngineEventData_PauseProcessNamesInPipelineOrder(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
-	engine := NewEngine(factory, uuids, factory.NewTransactionManager(uuids), platformclock.Real(), WithExternalProcessing(&mockExternalProcessing{
+	txMgr := factory.NewTransactionManager(uuids)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithCoordination(txcoord.New(txMgr)), WithExternalProcessing(&mockExternalProcessing{
 		dispatchFunc: func(_ context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
 			return entity, nil
 		},

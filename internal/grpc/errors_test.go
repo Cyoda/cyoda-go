@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
@@ -106,9 +108,9 @@ func TestBuildErrorFields_HonoursAPinnedTicket(t *testing.T) {
 	}
 }
 
-// clientGoneCause is the join layer's own "the request ended before it took the
-// transaction's lock", as internal/domain/txjoin marks it. It is the one cause
-// a door's funnel may file as a departed client.
+// clientGoneCause is the coordination's own "the request ended while it
+// queued for the transaction's gate", as internal/txcoord marks it. It is the
+// one cause a door's funnel may file as a departed client.
 func clientGoneCause() error {
 	return fmt.Errorf("%w: %w", common.ErrClientGone, context.Canceled)
 }
@@ -120,7 +122,7 @@ func clientGoneCause() error {
 func TestBuildErrorFields_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T) {
 	records := captureSlog(t)
 
-	appErr := common.Internal("dispatch request ended before it took the transaction's lock", clientGoneCause())
+	appErr := common.Internal("dispatch request ended while it queued for the transaction's gate", clientGoneCause())
 	code, message, _ := buildErrorFields(context.Background(), appErr)
 
 	if code != "SERVER_ERROR" {
@@ -263,5 +265,25 @@ func TestBuildErrorFields_FeatureDeadlineTimeout_Untouched(t *testing.T) {
 	rec := findRecord(t, records, "internal error")
 	if rec.level != slog.LevelError {
 		t.Errorf("level = %v, want ERROR", rec.level)
+	}
+}
+
+// The sentinel is deliberately not on the recorded error's chain:
+// common.Internal keeps it as detail only (see its comment).
+func TestBuildErrorFields_RecordsOutcome(t *testing.T) {
+	ctx, o := common.WithOutcome(context.Background())
+	buildErrorFields(ctx, spi.ErrConflict)
+	if o.Code != common.ErrCodeConflict || !o.Retryable {
+		t.Errorf("recorded code=%q retryable=%v, want CONFLICT retryable", o.Code, o.Retryable)
+	}
+}
+
+// The dead-session sentinel must stay on the recorded chain through the
+// envelope funnel: the join layer classifies on it.
+func TestBuildErrorFields_RecordsOutcome_TxNotFoundSurvives(t *testing.T) {
+	ctx, o := common.WithOutcome(context.Background())
+	buildErrorFields(ctx, fmt.Errorf("x: %w", spi.ErrTxNotFound))
+	if !errors.Is(o.Err, spi.ErrTxNotFound) {
+		t.Errorf("o.Err = %v, want spi.ErrTxNotFound on the chain", o.Err)
 	}
 }

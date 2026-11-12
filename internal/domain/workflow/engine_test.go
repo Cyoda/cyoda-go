@@ -15,6 +15,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -813,7 +814,7 @@ func TestProcessorDispatchWithExtProc(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ext-proc", ModelVersion: "1.0"}
@@ -861,7 +862,7 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ext-async-new", ModelVersion: "1.0"}
@@ -922,7 +923,7 @@ func TestProcessorEmptyExecutionMode_FiresAsSync(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{returnErr: fmt.Errorf("processor failed")}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "empty-mode", ModelVersion: "1.0"}
@@ -977,7 +978,7 @@ func TestProcessorDispatchError(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{returnErr: fmt.Errorf("processor failed")}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ext-err", ModelVersion: "1.0"}
@@ -1013,7 +1014,7 @@ func TestProcessorDispatchModifiesEntityData(t *testing.T) {
 	mock := &mockExtProc{
 		returnEntity: &spi.Entity{Data: modifiedData},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ext-mod", ModelVersion: "1.0"}
@@ -1093,7 +1094,7 @@ func TestFunctionCriterionDispatched(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: true}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "func-crit", ModelVersion: "1.0"}
@@ -1165,7 +1166,7 @@ func TestFunctionCriterionReturnsFalse(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: false}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "func-false", ModelVersion: "1.0"}
@@ -1202,7 +1203,7 @@ func TestWorkflowFunctionCriterion(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: true}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "wf-func-crit", ModelVersion: "1.0"}
@@ -1534,7 +1535,7 @@ func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
 			}
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "async-fail-test", ModelVersion: "1.0"}
@@ -1601,7 +1602,7 @@ func TestAsyncNewTxEntityMutationsDiscarded(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "async-discard-test", ModelVersion: "1.0"}
@@ -1675,7 +1676,7 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cumulative-test", ModelVersion: "1.0"}
@@ -2020,7 +2021,7 @@ func TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-false", ModelVersion: "1.0"}
@@ -2212,7 +2213,7 @@ func TestEngine_SingleSegment_NoEngineCommit(t *testing.T) {
 			return e, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "single-seg", ModelVersion: "1.0"}
@@ -2356,7 +2357,7 @@ func TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict(t *testing
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CbdCASConflictWF", InitialState: "S_pre", Active: true,
@@ -2497,7 +2498,7 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-true", ModelVersion: "1.0"}
@@ -2653,7 +2654,7 @@ func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-audit", ModelVersion: "1.0"}
@@ -2798,7 +2799,7 @@ func TestEngine_Execute_ReturnsFinalSegmentTxOnCBDCascade(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-final-tx", ModelVersion: "1.0"}
@@ -2953,7 +2954,7 @@ func TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment(t *testing.T) {
 			return e, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-then-fail", ModelVersion: "1.0"}
@@ -3138,7 +3139,7 @@ func TestEngine_AutomatedCriterionNoMatch_RecordsReason(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: false, criteriaReason: "amount 5 below minimum 10"}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "auto-crit-reason", ModelVersion: "1.0"}
@@ -3276,7 +3277,7 @@ func TestEngine_ManualCriterionNoMatch_EnrichesError(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: false, criteriaReason: "reason X"}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "manual-crit-reason", ModelVersion: "1.0"}
@@ -3381,7 +3382,7 @@ func TestEngine_WorkflowSkipped_RecordsReason(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: false, criteriaReason: "tenant not eligible"}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "wf-skip-reason", ModelVersion: "1.0"}

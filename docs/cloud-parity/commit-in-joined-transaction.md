@@ -19,10 +19,10 @@ write is refused:
 - **When:** at the processor, before the segment is flushed, before any
   commit, and before the processor is dispatched. Earlier processors and
   earlier automated transitions of the same workflow have run — their callouts
-  were sent — and their effects are in the joined transaction, together with
-  the audit events the refused workflow recorded (its start, the processing
-  pause, and a failed result for the refused processor). All of it is the
-  owner's to keep or discard, as with any failed callback.
+  were sent. Their effects, and the audit events the refused workflow recorded
+  (its start, the processing pause, and a failed result for the refused
+  processor), are discarded with the refused write: a callback is
+  all-or-nothing (`callback-scopes.md`).
 - **Answer:** `409`, error code `COMMIT_IN_JOINED_TRANSACTION`, not retryable.
   The detail names the workflow and the processor. Over gRPC the code is the
   message prefix of the `CLIENT_ERROR` envelope.
@@ -30,8 +30,10 @@ write is refused:
   engine. On HTTP: create, create collection, update (loopback or transition,
   PUT or PATCH), update collection. On gRPC: `EntityManage` (create, update,
   patch, transition) and `EntityManageCollection` (create, update).
-- **Joined transaction afterwards:** open, uncommitted, not rolled back. The
-  owner decides its fate.
+- **Joined transaction afterwards:** open, uncommitted, and rollback-only:
+  the refusal is a failed write that is not retryable. The owner fails with
+  `409 TRANSACTION_ROLLBACK_ONLY`; under an `ASYNC_NEW_TX` processor that
+  processor fails instead and the owner goes on.
 - **Batch update isolation:** the refusal is never isolated as a per-item
   precondition failure, even when the item carries an `ifMatch`; the whole
   request fails.

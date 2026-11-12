@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -74,6 +75,9 @@ type catalog struct {
 // processor. Pass nil for either when the corresponding transport is unconfigured.
 func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 	callbackProcs, callbackCrit := newCallbackCatalog(gcb)
+	// retryableOnceFailed is whether inject-error-retryable-once has failed yet.
+	// A client serves one catalog for its life, so "once" is once per client.
+	var retryableOnceFailed atomic.Bool
 	return &catalog{
 		callbackProcessors: callbackProcs,
 		callbackCriteria:   callbackCrit,
@@ -115,6 +119,15 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 			},
 			"inject-error-not-retryable": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
 				return nil, &verdictError{msg: "inject-error-not-retryable: deliberate failure", retryable: false}
+			},
+			// inject-error-retryable-once fails its first run like
+			// inject-error-retryable and succeeds on every later run of this
+			// client, leaving the entity as it came.
+			"inject-error-retryable-once": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
+				if retryableOnceFailed.CompareAndSwap(false, true) {
+					return nil, &verdictError{msg: "inject-error-retryable-once: deliberate failure", retryable: true}
+				}
+				return entity, nil
 			},
 			"slow-configurable": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
 				var cfg struct {

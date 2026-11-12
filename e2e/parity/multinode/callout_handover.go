@@ -31,6 +31,7 @@ func init() {
 		NamedTest{Name: "Callout_HandOverMemberFailureWithoutText", Fn: RunCallout_HandOverMemberFailureWithoutText},
 		NamedTest{Name: "Callout_TwoTenantsShareATag", Fn: RunCallout_TwoTenantsShareATag},
 		NamedTest{Name: "Callout_HandOverNoPayloadKeepsCallbackWrite", Fn: RunCallout_HandOverNoPayloadKeepsCallbackWrite},
+		NamedTest{Name: "Callout_HandOverStopsOnMark", Fn: RunCallout_HandOverStopsOnMark},
 	)
 }
 
@@ -357,5 +358,74 @@ func RunCallout_HandOverNoPayloadKeepsCallbackWrite(t *testing.T, fixture MultiN
 	}
 	if got.Data["status"] != marker {
 		t.Errorf("status = %v; want %q, the callback's write", got.Data["status"], marker)
+	}
+}
+
+// RunCallout_HandOverStopsOnMark: the owner has no compute node for the
+// processor's tag, so the callout is handed over to the other pnode, which has
+// two. The first one tried makes a joined create whose own processor fails,
+// not retryably — a failed joined write — and then never answers, so once its
+// answer limit passed the peer would give the work to the second. The failed
+// write marks the transaction; the mark cancels the owner's callout, and with
+// it the hand-over in progress on the peer: the peer makes no further try, so
+// only one of its compute nodes is ever called out. The owner is refused 409
+// TRANSACTION_ROLLBACK_ONLY, naming the callback's code.
+func RunCallout_HandOverStopsOnMark(t *testing.T, fixture MultiNodeFixture) {
+	urls := mnRequire(t, fixture, 2)
+	tenant := fixture.NewTenant(t)
+	owner := client.NewClient(urls[0], tenant.Token)
+	const model, tag = "mn-ho-mark", "mn-ho-mark"
+	const xModel, xTag = "mn-ho-mark-x", "mn-ho-mark-x"
+	const proc = "cb-create-secondary-then-silent"
+	const answerLimit = 1500 * time.Millisecond
+
+	// x's processor fails, not retryably; it runs where the callback's create
+	// runs, on the owner. Every compute node is warmed up, so the owner knows
+	// each of them before the scenario's create.
+	xnode := mnWarmUp(t, fixture, owner, tenant, 0, "mn-ho-mark-xw", xTag)
+	cbRouteSetupModel(t, owner, xModel, cbRouteSampleSecondary,
+		mnWorkflow("mn-ho-mark-x-wf", mnProc("inject-error-not-retryable", "SYNC", xTag, "", nil)))
+	first := mnWarmUp(t, fixture, owner, tenant, 1, "mn-ho-mark-w1", tag)
+	second := mnWarmUp(t, fixture, owner, tenant, 1, "mn-ho-mark-w2", tag)
+	cbRouteSetupModel(t, owner, model, cbRouteSampleNoWriteback,
+		mnWorkflow("mn-ho-mark-wf", mnProc(proc, "SYNC", tag, cbRouteContext(xModel, "mn-ho-mark-marker"),
+			map[string]any{"idempotent": true, "retryPolicy": "FIXED", "responseTimeoutMs": answerLimit.Milliseconds()})))
+
+	status, body, err := owner.CreateEntityRaw(t, model, 1, mnSample)
+	if err != nil {
+		t.Fatalf("create through the owner: %v", err)
+	}
+	detail := AssertProblem(t, status, body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
+	if !strings.Contains(detail, "WORKFLOW_FAILED") {
+		t.Errorf("detail = %q; want it to name the callback's WORKFLOW_FAILED", detail)
+	}
+
+	// Without the mark, the peer would try the second compute node once the
+	// first one's answer limit passed. Wait past it before counting.
+	time.Sleep(2 * answerLimit)
+	tries := 0
+	for _, cc := range []parity.ComputeClient{first, second} {
+		for _, r := range cc.Received(t) {
+			if r.Name == proc {
+				tries++
+			}
+		}
+	}
+	if tries != 1 {
+		t.Errorf("the peer's compute nodes were called out %d times; want 1 — the mark ends the hand-over", tries)
+	}
+	xRuns := 0
+	for _, r := range xnode.Received(t) {
+		if r.Name == "inject-error-not-retryable" {
+			xRuns++
+		}
+	}
+	if xRuns != 1 {
+		t.Errorf("x's compute node ran x's processor %d times; want the one failed write", xRuns)
+	}
+	if all, err := owner.ListEntitiesByModel(t, xModel, 1); err != nil {
+		t.Fatalf("list x: %v", err)
+	} else if len(all) != 0 {
+		t.Errorf("%d x entities committed; want none", len(all))
 	}
 }

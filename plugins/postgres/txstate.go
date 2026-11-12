@@ -289,9 +289,9 @@ func (tm *TransactionManager) recordWriteIfInTx(ctx context.Context, entityID st
 	s.RecordWrite(entityID, preWriteVersion)
 }
 
-// ReleaseSavepoint drops the savepoint entry without touching the current
-// readSet/writeSet — work done after the push is kept. Mirrors postgres
-// RELEASE SAVEPOINT semantics.
+// ReleaseSavepoint drops the savepoint entry and every savepoint pushed after
+// it, without touching the current readSet/writeSet — work done after the push
+// is kept. Mirrors postgres RELEASE SAVEPOINT semantics.
 func (s *txState) ReleaseSavepoint(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -305,6 +305,6 @@ func (s *txState) ReleaseSavepoint(id string) error {
 	if idx < 0 {
 		return fmt.Errorf("%w (savepointID=%q)", spi.ErrSavepointNotFound, id)
 	}
-	s.savepoints = append(s.savepoints[:idx], s.savepoints[idx+1:]...)
+	s.savepoints = s.savepoints[:idx]
 	return nil
 }

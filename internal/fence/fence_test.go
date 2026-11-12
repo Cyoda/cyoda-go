@@ -7,15 +7,14 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
-func newFence() *Fence { return New(txgate.New()) }
+func newFence() *Fence { return New() }
 
 // begin registers a callout and ends it when the test finishes.
-func begin(t *testing.T, f *Fence, ctx context.Context, calloutID, txID string, outer []Pair) (context.Context, func()) {
+func begin(t *testing.T, f *Fence, ctx context.Context, calloutID string, outer []Pair) (context.Context, func()) {
 	t.Helper()
-	cctx, end := f.Begin(ctx, calloutID, txID, outer)
+	cctx, end := f.Begin(ctx, calloutID, outer)
 	t.Cleanup(end)
 	return cctx, end
 }
@@ -57,7 +56,7 @@ func TestAdmit_Currentness(t *testing.T) {
 		{
 			name: "begun but never advanced: no pass is current yet",
 			prepare: func(f *Fence, t *testing.T) {
-				begin(t, f, context.Background(), "c", "tx", nil)
+				begin(t, f, context.Background(), "c", nil)
 			},
 			pairs:   []Pair{{Callout: "c", Major: 0}},
 			refused: true,
@@ -65,7 +64,7 @@ func TestAdmit_Currentness(t *testing.T) {
 		{
 			name: "current major",
 			prepare: func(f *Fence, t *testing.T) {
-				begin(t, f, context.Background(), "c", "tx", nil)
+				begin(t, f, context.Background(), "c", nil)
 				f.Advance("c", 1)
 			},
 			pairs: []Pair{{Callout: "c", Major: 1}},
@@ -73,7 +72,7 @@ func TestAdmit_Currentness(t *testing.T) {
 		{
 			name: "lower major after the work went to another cnode",
 			prepare: func(f *Fence, t *testing.T) {
-				begin(t, f, context.Background(), "c", "tx", nil)
+				begin(t, f, context.Background(), "c", nil)
 				f.Advance("c", 1)
 				f.Advance("c", 2)
 			},
@@ -83,7 +82,7 @@ func TestAdmit_Currentness(t *testing.T) {
 		{
 			name: "a major that was never issued",
 			prepare: func(f *Fence, t *testing.T) {
-				begin(t, f, context.Background(), "c", "tx", nil)
+				begin(t, f, context.Background(), "c", nil)
 				f.Advance("c", 1)
 			},
 			pairs:   []Pair{{Callout: "c", Major: 2}},
@@ -92,7 +91,7 @@ func TestAdmit_Currentness(t *testing.T) {
 		{
 			name: "the number only goes up: a lower Advance changes nothing",
 			prepare: func(f *Fence, t *testing.T) {
-				begin(t, f, context.Background(), "c", "tx", nil)
+				begin(t, f, context.Background(), "c", nil)
 				f.Advance("c", 2)
 				f.Advance("c", 1)
 			},
@@ -102,7 +101,7 @@ func TestAdmit_Currentness(t *testing.T) {
 		{
 			name: "callout ended",
 			prepare: func(f *Fence, t *testing.T) {
-				_, end := f.Begin(context.Background(), "c", "tx", nil)
+				_, end := f.Begin(context.Background(), "c", nil)
 				f.Advance("c", 1)
 				end()
 			},
@@ -118,9 +117,9 @@ func TestAdmit_Currentness(t *testing.T) {
 		{
 			name: "enclosing callout no longer current",
 			prepare: func(f *Fence, t *testing.T) {
-				begin(t, f, context.Background(), "outer", "tx", nil)
+				begin(t, f, context.Background(), "outer", nil)
 				f.Advance("outer", 1)
-				begin(t, f, context.Background(), "inner", "tx", []Pair{{Callout: "outer", Major: 1}})
+				begin(t, f, context.Background(), "inner", []Pair{{Callout: "outer", Major: 1}})
 				f.Advance("inner", 1)
 				f.Advance("outer", 2)
 			},
@@ -130,9 +129,9 @@ func TestAdmit_Currentness(t *testing.T) {
 		{
 			name: "own and enclosing callout both current",
 			prepare: func(f *Fence, t *testing.T) {
-				begin(t, f, context.Background(), "outer", "tx", nil)
+				begin(t, f, context.Background(), "outer", nil)
 				f.Advance("outer", 1)
-				begin(t, f, context.Background(), "inner", "tx", []Pair{{Callout: "outer", Major: 1}})
+				begin(t, f, context.Background(), "inner", []Pair{{Callout: "outer", Major: 1}})
 				f.Advance("inner", 1)
 			},
 			pairs: []Pair{{Callout: "inner", Major: 1}, {Callout: "outer", Major: 1}},
@@ -178,7 +177,7 @@ func TestCheck_NeverAdmittedAlwaysPasses(t *testing.T) {
 
 func TestCheck_FollowsTheNumber(t *testing.T) {
 	f := newFence()
-	_, end := f.Begin(context.Background(), "c", "tx", nil)
+	_, end := f.Begin(context.Background(), "c", nil)
 	f.Advance("c", 1)
 	ctx, err := f.Admit(context.Background(), []Pair{{Callout: "c", Major: 1}})
 	if err != nil {
@@ -212,7 +211,7 @@ func TestCheck_FollowsTheNumber(t *testing.T) {
 
 func TestPairs_ReturnsACopy(t *testing.T) {
 	f := newFence()
-	begin(t, f, context.Background(), "c", "tx", nil)
+	begin(t, f, context.Background(), "c", nil)
 	f.Advance("c", 1)
 	in := []Pair{{Callout: "c", Major: 1}}
 	ctx, err := f.Admit(context.Background(), in)
@@ -234,7 +233,7 @@ func TestPairs_ReturnsACopy(t *testing.T) {
 // carries the higher minor.
 func TestAdmit_AbsorbsAHigherMinor(t *testing.T) {
 	f := newFence()
-	begin(t, f, context.Background(), "c", "tx", nil)
+	begin(t, f, context.Background(), "c", nil)
 	f.Advance("c", 3) // a hand-over under major 3
 
 	first, err := f.Admit(context.Background(), []Pair{{Callout: "c", Major: 3, Minor: 1}})
@@ -265,9 +264,9 @@ func TestAdmit_AbsorbsAHigherMinor(t *testing.T) {
 // A higher minor is absorbed only after EVERY pair on the pass was verified.
 func TestAdmit_RefusedPassAbsorbsNothing(t *testing.T) {
 	f := newFence()
-	begin(t, f, context.Background(), "outer", "tx", nil)
+	begin(t, f, context.Background(), "outer", nil)
 	f.Advance("outer", 1)
-	begin(t, f, context.Background(), "inner", "tx", []Pair{{Callout: "outer", Major: 1}})
+	begin(t, f, context.Background(), "inner", []Pair{{Callout: "outer", Major: 1}})
 	f.Advance("inner", 1)
 
 	lower, err := f.Admit(context.Background(), []Pair{{Callout: "inner", Major: 1, Minor: 1}, {Callout: "outer", Major: 1}})
@@ -288,7 +287,7 @@ func TestAdmit_RefusedPassAbsorbsNothing(t *testing.T) {
 func TestBegin_CallerCancellationIsNotASupersede(t *testing.T) {
 	f := newFence()
 	parent, cancel := context.WithCancel(context.Background())
-	cctx, _ := begin(t, f, parent, "c", "tx", nil)
+	cctx, _ := begin(t, f, parent, "c", nil)
 	cancel()
 	<-cctx.Done()
 	if cause := context.Cause(cctx); errors.Is(cause, ErrSuperseded) || !errors.Is(cause, context.Canceled) {
@@ -298,12 +297,12 @@ func TestBegin_CallerCancellationIsNotASupersede(t *testing.T) {
 
 func TestEnd_Idempotent_AndLeavesALaterCalloutAlone(t *testing.T) {
 	f := newFence()
-	_, end := f.Begin(context.Background(), "c", "tx", nil)
+	_, end := f.Begin(context.Background(), "c", nil)
 	f.Advance("c", 1)
 	end()
 	end()
 
-	begin(t, f, context.Background(), "d", "tx", nil)
+	begin(t, f, context.Background(), "d", nil)
 	f.Advance("d", 1)
 	end() // a stale end must not touch "d"
 	if _, err := f.Admit(context.Background(), []Pair{{Callout: "d", Major: 1}}); err != nil {
@@ -317,7 +316,7 @@ func TestEnd_RunsOnPanic(t *testing.T) {
 	f := newFence()
 	func() {
 		defer func() { _ = recover() }()
-		_, end := f.Begin(context.Background(), "c", "tx", nil)
+		_, end := f.Begin(context.Background(), "c", nil)
 		defer end()
 		f.Advance("c", 1)
 		panic("coordinator blew up")

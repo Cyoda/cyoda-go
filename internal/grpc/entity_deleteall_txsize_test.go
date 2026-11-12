@@ -17,7 +17,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -112,7 +112,7 @@ func newDeleteAllTxSizeEnv(t *testing.T) (svc *CloudEventsServiceImpl, ctx conte
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), rtm, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
-	entityHandler := entity.New(factory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(factory, rtm, common.NewDefaultUUIDGenerator(), engine, txcoord.New(rtm), newTestConsistency(t, factory), platformclock.Real())
 	modelHandler := model.New(factory, platformclock.Real())
 
 	svc = &CloudEventsServiceImpl{
@@ -413,7 +413,7 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	engineSeed := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), realTxMgr, platformclock.Real())
 	searchStoreSeed, _ := realFactory.AsyncSearchStore(context.Background())
 	searchServiceSeed := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreSeed, newTestConsistency(t, realFactory), platformclock.Real())
-	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txgate.New(), newTestConsistency(t, realFactory), platformclock.Real())
+	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txcoord.New(realTxMgr), newTestConsistency(t, realFactory), platformclock.Real())
 	svcSeed := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         realTxMgr,
@@ -441,7 +441,7 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	engineDelete := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), failMgr, platformclock.Real())
 	searchStoreDelete, _ := realFactory.AsyncSearchStore(context.Background())
 	searchServiceDelete := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreDelete, newTestConsistency(t, realFactory), platformclock.Real())
-	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txgate.New(), newTestConsistency(t, realFactory), platformclock.Real())
+	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txcoord.New(failMgr), newTestConsistency(t, realFactory), platformclock.Real())
 	svcDelete := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         failMgr,

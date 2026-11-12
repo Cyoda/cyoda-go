@@ -60,8 +60,10 @@ PostgreSQL transactions are bound to the connection that begins them (`pgx.Tx` i
 The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handle the request locally (token's owner is this node) or reverse-proxy to the owning node. Failure modes:
 
 - Signature mismatch or malformed token — `401 UNAUTHORIZED`. Expired token — `410 TRANSACTION_EXPIRED`.
-- Owner node not in the registry or marked dead by gossip — `503 Service Unavailable` (code `TRANSACTION_NODE_UNAVAILABLE`); the transaction is lost with its node, and the client retries its operation from scratch. Fail-closed semantics, no orphaned transactions.
-- Owner node unreachable, or no answer from it within `CYODA_PROXY_TIMEOUT` — the same `503`; the owner may be alive and may have run the request, so the outcome of a write is unknown.
+- The request was not sent to the owner node — the node is not in the registry or is marked dead by gossip, the peer address guard refused its address, or the connection to it could not be opened (on gRPC: the call failed before any of its headers went out) — `503 Service Unavailable` (code `TRANSACTION_NODE_UNAVAILABLE`), retryable: nothing ran, so sending the request again is safe. When the owner is in fact gone, its transaction is gone with it: the operation that owns it fails, and its client retries the operation from scratch. Fail-closed semantics, no orphaned transactions.
+- The request may have reached the owner — the connection failed after it was opened, or no answer came within `CYODA_PROXY_TIMEOUT` — the same `503`, not retryable: the owner may be alive and may have run the request, so the outcome of a write is unknown.
+
+A storage backend may coordinate transactions itself (the optional SPI capability `TransactionCoordinationCapable`). None of the in-tree backends does. On such a backend any node can serve any transaction: the token names no owning node, and every node serves the callback where it lands, without a proxy hop. A node picks this at start-up and logs it (`transaction coordination selected`, `locationIndependent=true`); an error from the backend when it is asked fails start-up. The callbacks of one transaction may then run at the same time, on one node or several. Of two that wrote the same entity from the same version, one keeps nothing and is answered `409 CONFLICT`, retryable. Nothing waits for a callback in progress: one still in progress when its callout moves on, or when the transaction is committed or rolled back, cannot complete, and is answered `410 CALLOUT_SUPERSEDED` with nothing kept.
 
 `CYODA_HMAC_SECRET` is a deployment secret. All nodes in a cluster must share the same value; it is also the root key for peer-to-peer dispatch authentication (HKDF-derived AEAD), so rotating it requires a cluster-wide restart — see `SECRET ROTATION`.
 
@@ -139,15 +141,17 @@ The cache lives in memory only, so a node restarted inside the 30-second skew wi
 The node that gives a callout to a compute member mints a signed token for that
 try and includes it as the `cyodatxtoken` CloudEvent extension attribute — also
 when the callout was handed over, in which case the token still names the
-owner. The compute member MUST echo this token on every callback:
+owner (on a location-independent backend it names no node; see `TRANSACTION
+ROUTING`). The compute member MUST echo this token on every callback:
 
 - HTTP CRUD callbacks: `X-Tx-Token` request header
 - gRPC EntityManage callbacks: `tx-token` metadata key
 
 The published API document declares the HTTP form: `X-Tx-Token` is an optional
 header parameter on the thirty entity, search, message, audit and platform-api
-operations a callback may reach, and each of those declares the statuses the
-join layer answers with — `401`, `403`, `404`, `410` and `413`. A client
+operations a callback uses, and every operation the join layer serves declares
+the statuses it answers with — `401`, `403`, `404`, `409`, `410`, `413` and
+`503`. A client
 generated from the document can therefore make a callback and read its refusal
 without extra hand-written code. The entity-model and workflow operations that
 change a model or its workflows do not declare it: model and workflow
@@ -157,16 +161,21 @@ the token is verified and before the request would be routed to the owning
 node (see `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION`).
 
 The receiving node verifies the token's HMAC and routes the callback to the
-transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above).
+transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above),
+or, on a location-independent backend, serves it where it lands.
 Without the echo the callback runs in a standalone transaction and cannot see
 what the cascade's transaction has saved so far. Callback acks are provisional until the
 owning transaction commits.
 
-The owner admits a callback only while the token's callout is in progress and the token belongs to the member that currently has the work. A callback from a member that was replaced, or whose callout has ended, is refused with `410 CALLOUT_SUPERSEDED` while the transaction is open, and with `404 TRANSACTION_NOT_FOUND` afterwards. Before the owner gives the work to the next member, and before the workflow carries on after a callout, it waits for any callback still in progress on the transaction to finish. Callbacks of one transaction are served one at a time.
+The owner admits a callback only while the token's callout is in progress and the token belongs to the member that currently has the work. A callback from a member that was replaced, or whose callout has ended, is refused with `410 CALLOUT_SUPERSEDED` while the transaction is open, and with `404 TRANSACTION_NOT_FOUND` afterwards. A callback still in progress when its callout moves on — the work goes to the next member, or the callout ends — runs to its end, and is then discarded and answered `410 CALLOUT_SUPERSEDED`: none of its writes are kept. On the in-tree backends the owner waits until every such callback has ended before it gives the work to the next member, and before the workflow carries on after a callout; on a location-independent backend nothing waits, and such a callback is refused completion when it ends.
 
-A callback's request and its answer are both held in memory on the owner while the transaction is held, each under its own ceiling: an over-size request body is refused with `413 BAD_REQUEST` (HTTP) at a fixed 10 MiB, and an answer past `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB) fails the callback with `413 JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short. Page a large read instead. A callback still waiting its turn when its member goes away is dropped — it has touched nothing, and the drop is logged at `DEBUG` with no ticket, since nothing was wrong on the server and there is nobody left to quote a ticket to; one that already has the transaction runs to completion.
+Each callback is all-or-nothing: either all its writes become part of the transaction, or none do. A `2xx` answer means they were kept. They are still undone with the part of the transaction above them — the transaction's rollback, or a failed `ASYNC_NEW_TX` processor the callback ran under. A callback that fails with a retryable answer keeps nothing, and the transaction goes on, so the compute member can send it again under the same token. A write that fails with an answer that is not retryable keeps nothing and makes the transaction rollback-only: the operation that owns it fails with `409 TRANSACTION_ROLLBACK_ONLY`. The mark also stops the callout the failed write was made under before its next try, so a later callback under its token is refused: with `409 TRANSACTION_ROLLBACK_ONLY` until the owner has ended the callout, and with `410 CALLOUT_SUPERSEDED` after. Under an `ASYNC_NEW_TX` processor the mark stops at the processor: the processor fails, and the operation goes on. A read that fails with a `4xx`, such as a `404`, keeps what it read and marks nothing.
 
-How many callbacks may wait for one transaction is bounded too, by `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) — each one waiting holds its whole request for as long as the callout lasts. Because callbacks of one transaction are served one at a time, firing many at once buys a compute member no speed; past the cap a callback is refused with `503 TOO_MANY_JOINED_REQUESTS` before its request is read, having touched nothing, while the callback holding the transaction and those already queued are unaffected. On that refusal, back off and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
+On the in-tree backends (memory, SQLite, PostgreSQL) the callbacks of one transaction are served one at a time, in the order they arrive. A callback whose write runs a workflow with a callout of its own pauses while that callout is out. While it is paused, only the callbacks of that inner callout are admitted: any other callback of the transaction is refused at once with `503 TRANSACTION_BUSY`, retryable. Compute members should send the callbacks of one transaction in series; on these backends parallel callbacks gain nothing. A location-independent backend runs them at the same time instead (see `TRANSACTION ROUTING`).
+
+A callback's request and its answer are both held in memory on the node that serves it while it runs, each under its own ceiling: an over-size request body is refused with `413 BAD_REQUEST` (HTTP) at a fixed 10 MiB, and an answer past `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB) fails the callback with `413 JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short. Page a large read instead. A callback still waiting its turn when its member goes away is dropped — it has touched nothing, and the drop is logged at `DEBUG` with no ticket, since nothing was wrong on the server and there is nobody left to quote a ticket to; one that already has the transaction runs to completion.
+
+How many callbacks may wait for one transaction is bounded too, by `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) — each one waiting holds its whole request for as long as the callout lasts. Because the in-tree backends serve the callbacks of one transaction one at a time, firing many at once buys a compute member no speed; past the cap a callback is refused with `503 TOO_MANY_JOINED_REQUESTS` before its request is read, having touched nothing, while the callback holding the transaction and those already queued are unaffected. On that refusal, back off and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
 
 See `workflows` and `docs/PROCESSOR_EXECUTION_MODES.md` for mode-specific
 semantics (`SYNC`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`).

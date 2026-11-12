@@ -6,6 +6,78 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Each callback is all-or-nothing, and a failed callback write fails the
+  operation.** A compute member's callback — a request carrying a transaction
+  token — now runs in a scope of its own: either all its writes become part of
+  the transaction, or none do, and a `2xx` is sent only for a callback whose
+  writes were kept. A callback that fails keeps nothing. Before, a failed
+  callback's writes stayed in the transaction, and the operation could commit
+  them. A callback answered with a retryable error leaves the transaction
+  usable, so it can be sent again in it. A callback write answered with an
+  error that is not retryable makes the transaction rollback-only: the callout
+  it was made under is stopped, and the operation fails with `409
+  TRANSACTION_ROLLBACK_ONLY` whatever the compute member answers (a lost write
+  race still answers the retryable `409 CONFLICT`). Under an `ASYNC_NEW_TX`
+  processor the mark stops at the processor: it fails, with everything its
+  callbacks wrote, and the operation goes on. A callback read that answers a
+  `4xx` keeps what it read and marks nothing. An `ASYNC_NEW_TX` processor's
+  rollback no longer undoes the acknowledged write of a callback that was not
+  under it. A callback whose write reaches a `COMMIT_BEFORE_DISPATCH` processor
+  (`409 COMMIT_IN_JOINED_TRANSACTION`) is such a failed write, so its owner now
+  fails where before it could commit what the refused workflow had done; so is
+  a joined conditional delete that fails, and a joined write whose answer
+  passes `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`. Every commit and rollback
+  of the operation's transaction refuses later callbacks; on the in-tree
+  backends it first waits for the callbacks still in progress, and on a
+  backend with location-independent transactions a callback still in
+  progress is refused completion instead. See `cyoda help cluster` and
+  `docs/cloud-parity/callback-scopes.md`.
+
+- **New error code `TRANSACTION_ROLLBACK_ONLY` (`409`, not retryable).** The
+  operation that owns a transaction gets it when a callback's write failed;
+  the message names the code that callback was answered with. A callback under
+  the failed part of the transaction gets it too, before it runs, reads
+  included. Over gRPC it is the message prefix of the `CLIENT_ERROR` envelope.
+  See `cyoda help errors TRANSACTION_ROLLBACK_ONLY`.
+
+- **New error code `TRANSACTION_BUSY` (`503`, retryable).** On the in-tree
+  backends a callback whose write runs a workflow with a callout of its own
+  pauses while that callout is out, and only that callout's callbacks are
+  admitted then. Any other callback of the transaction is refused at once with
+  this code, having run nothing; one already queued is refused when the pause
+  begins. Before, it waited for the whole of the inner callout. Send the
+  callbacks of one transaction in series. See `cyoda help errors
+  TRANSACTION_BUSY`.
+
+- **Three callback answers change.** A callback still in progress when its
+  callout moved on — the work went to another compute member, or the callout
+  ended — is discarded and answered `410 CALLOUT_SUPERSEDED`; before, it was
+  waited for, kept and answered normally. A callback whose PostgreSQL session
+  ended under it (the connection was lost, or the idle-in-transaction ceiling
+  reclaimed the transaction) is answered `404 TRANSACTION_NOT_FOUND`, not
+  retryable, where it was the retryable `503 STORAGE_UNAVAILABLE`; the
+  operation that owns the transaction keeps the retryable `503`. A callback
+  that fails in a transaction which has lost a write race is answered `409
+  CONFLICT` with `retryable` false, since a retry in that transaction cannot
+  succeed; the owning operation keeps the retryable `409`. A joined
+  server-streaming gRPC call that fails sends its error alone, never the frames
+  before it.
+
+- **`503 TRANSACTION_NODE_UNAVAILABLE` is retryable when the request was not
+  sent to the node that owns the transaction:** that node is not live, the
+  peer address guard refused its address, or the connection to it could not be
+  opened (on gRPC: the call failed before any of its headers went out). Nothing
+  ran, so sending the request again is safe. Once the request may have been
+  sent — the connection failed later, or no answer came within
+  `CYODA_PROXY_TIMEOUT` — the answer stays not retryable: the outcome of a
+  write is unknown. Before, every `TRANSACTION_NODE_UNAVAILABLE` was not
+  retryable. See `cyoda help errors TRANSACTION_NODE_UNAVAILABLE`.
+
+- **PostgreSQL: a message saved under a transaction token is no longer part
+  of that transaction,** as on memory and SQLite. It survives the rollback of
+  the operation the callback joined. Before, on PostgreSQL only, it was rolled
+  back with it.
+
 - **An async search's `expirationDate` is when it stops being readable, and
   it stops then.** The status answered `createTime + 24h`, while the job was
   deleted `CYODA_SEARCH_SNAPSHOT_TTL` (default `1h`) after it finished, so a
@@ -40,7 +112,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (other than the entity being gone) fails the request before any batch
   runs; it answered a per-id failure. In a request that joins another
   request's transaction, the delete commits and rolls back nothing itself:
-  the owner's transaction commits or rolls back as a whole. On memory, a
+  the owner's transaction commits or rolls back as a whole. A joined delete
+  that fails keeps nothing, and when its error is not retryable it makes the
+  owner's transaction rollback-only (`409 TRANSACTION_ROLLBACK_ONLY`). On memory, a
   transaction that deletes an entity another transaction deleted after its
   snapshot now loses a write race, as
   on SQLite and PostgreSQL, rather than answering it as already gone; on
@@ -548,9 +622,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   try's answer limit plus `CYODA_CALLOUT_PASS_ALLOWANCE` (default `30s`). The
   variable is ignored if set; remove it from deployment configuration.
 
-- **Every request that joins a transaction holds that transaction's lock — a
-  read as much as a write.** Two callbacks of one transaction used to run at
-  once; they are served one at a time, so a compute member that parallelises its
+- **On the in-tree backends, every request that joins a transaction holds that
+  transaction's lock — a read as much as a write.** Two callbacks of one transaction used to run at
+  once; on the in-tree backends they are served one at a time, so a compute member that parallelises its
   callbacks for speed gains nothing by it. The pass is verified before the
   request is read, the request is read whole before the lock is taken and its
   response is sent after the lock is released, and a joined request that holds
@@ -1252,11 +1326,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`400 BAD_REQUEST`). Move the member out of `config`. See
   `docs/workflow-schema-versioning.md`.
 
-- **Go 1.27.3 is required to build** (`go 1.26.9` → `go 1.27.3` in the root,
-  the three plugin modules and `go.work`), for `encoding/json/v2` and for the
+- **Go 1.27.4 is required to build** (`go 1.26.9` → `go 1.27.4` in the root,
+  the three plugin modules and `go.work`), for `encoding/json/v2`, for the
   `crypto/x509` fix of GO-2026-6809 (distrust of compromised intermediate
-  certificates). An out-of-tree plugin raises its own `go` directive with its
-  cyoda-go bump.
+  certificates) and for the `net/http` fix of GO-2026-6859. An out-of-tree
+  plugin raises its own `go` directive with its cyoda-go bump.
 
 - **Setting a model's unique keys without `uniqueKeys` is refused; it no
   longer removes every key.** The keys sent replace the model's keys. A
@@ -1302,6 +1376,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `ifMatch`. See `cyoda help errors.PRECONDITION_REQUIRED`.
 
 ### Added
+
+- **Location-independent transactions through an optional storage-plugin
+  capability.** A storage plugin can supply the coordination of its
+  transactions itself, through the SPI's optional
+  `TransactionCoordinationCapable` on its store factory. cyoda-go asks for it
+  once at start-up and logs the choice at INFO (`transaction coordination
+  selected`, `locationIndependent`); an error from the backend fails start-up.
+  On such a backend the pass a compute member receives names no owning node,
+  also for a callout handed over to another node, and every node serves a
+  callback where it lands, with no proxy hop. The callbacks of one transaction
+  may then run at the same time: of two that wrote the same entity from the
+  same version, one keeps nothing and is answered a retryable `409 CONFLICT`. The
+  scope rules and the answers are otherwise the same. None of the in-tree
+  backends (memory, SQLite, PostgreSQL) offers the capability. See `cyoda help
+  cluster` (TRANSACTION ROUTING).
 
 - **An async search that failed says why.** The async search status carries
   an optional `failureReason`, present only when the status is `FAILED`:
@@ -1562,33 +1651,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **`CYODA_CALLOUT_JOINED_MAX_WAITERS` (default `128`) bounds how many of a
   compute member's callbacks may queue for one transaction**, and a new
   retryable `503` `TOO_MANY_JOINED_REQUESTS` is what the member is told past
-  it. Callbacks of one transaction are served one at a time, so firing many at
-  once buys a member no speed — but each one waiting held its whole request in
-  memory for as long as the callout lasted, with nothing bounding how many
-  there could be. The refusal comes before the request body is read where the
-  door allows that, and touches neither the transaction nor the callbacks
-  already queued. On it, back off and send the callback again; a processor that
-  lets it escape fails its callout, and the operation is rolled back. Zero or
-  negative refuses to start — an unbounded queue is what the cap exists to
-  prevent. The transaction owner's own wait, the fence's, and a suspended
-  callback's resume are never refused.
+  it. On the in-tree backends the callbacks of one transaction are served one
+  at a time, so firing many at once buys a member no speed — but each one
+  waiting held its whole request in memory for as long as the callout lasted,
+  with nothing bounding how many there could be. The refusal comes before the
+  request body is read where the door allows that, and touches neither the
+  transaction nor the callbacks already queued. On it, back off and send the
+  callback again; a processor that lets it escape fails its callout, and the
+  operation is rolled back. Zero or negative refuses to start — an unbounded
+  queue is what the cap exists to prevent. A paused callback's resume is never
+  refused.
 
 - **The published API document declares the transaction routing token and the
-  statuses a joined request is refused with.** `X-Tx-Token` is a new optional
+  statuses a joined request is answered with.** `X-Tx-Token` is a new optional
   header parameter (`components.parameters.TxToken`) on the thirty entity,
   search, message, audit and platform-api operations a compute member's
-  callback may reach, and each of those now declares `401`, `403`, `404`,
-  `410` and `413` — three of them new shared response components,
-  `TransactionNotFound`, `TransactionGone` and `JoinedPayloadTooLarge`. `410`
-  appeared nowhere in the document before, so a client generated from it had
-  no way to send a callback and no way to read the refusal, and an operation
-  declaring no `default` response could not describe one at all. The `410`
-  response names both codes that share the status, `TRANSACTION_EXPIRED` and
-  `CALLOUT_SUPERSEDED`; `properties.errorCode` tells them apart. The eleven
-  entity-model and workflow operations are deliberately excluded — changing a
-  model or a workflow from inside a callout is not supported — as are the
-  OAuth, client and account operations. Nothing existing changed: the
-  parameter is optional and the responses are additions.
+  callback may reach. Fifty-five operations, those thirty among them, declare
+  `401`, `403`, `404`, `409`, `410`, `413` and `503`, the statuses the join
+  layer answers a joined request with; four new shared response components
+  carry them where an operation has no answer of its own for the status:
+  `TransactionNotFound`, `TransactionGone`, `TransactionRollbackOnly` and
+  `JoinedPayloadTooLarge`. `410` appeared nowhere in the document before, so a
+  client generated from it had no way to send a callback and no way to read
+  the refusal, and an operation declaring no `default` response could not
+  describe one at all. The `410` response names both codes that share the
+  status, `TRANSACTION_EXPIRED` and `CALLOUT_SUPERSEDED`;
+  `properties.errorCode` tells them apart. The seven model and workflow
+  administration operations carry neither the parameter nor `410` or `413`:
+  they refuse a request carrying the header with `400
+  MODEL_ADMIN_IN_JOINED_TRANSACTION` before the token is read — changing a
+  model or a workflow from inside a callout is not supported. Nothing existing
+  changed: the parameter is optional and the responses are additions.
 
 - **Audit events carry `version` (entity change) or `eventId` (state
   machine).** `EntityChangeAuditEventDto.version` is the entity's version
@@ -2582,6 +2675,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   -6604, -6605, -6607, -6608, -6610, -6611, -6612, -6613 and -6617.
   The `x/net` bump moves the other `golang.org/x` modules with it; the plugin
   modules carry the same versions as the root.
+
+- Bumped the Go toolchain `go 1.27.3` → `go 1.27.4` (root, all three plugin
+  modules and `go.work`) to clear GO-2026-6859, an HTTP/1 server crash in
+  `net/http` from a `MaxBytesReader` header race, fixed in go1.27.4.
 
 ## [0.8.4] — 2026-09-09
 

@@ -112,10 +112,11 @@ func (d *ProcessorDispatcher) RunLocal(ctx context.Context, call Callout, maxTri
 		member := d.selector.Select(untried)
 		tried[member] = struct{}{}
 		major, minor := call.Number.Next()
-		// Numbering waits for the transaction's lock on the owner, and a joined
-		// write in progress can hold it past the callout's deadline. A try that
-		// would start after it does not start at all: it charges no try and
-		// names no member. The count is taken once the try is certain.
+		// Numbering waits on the owner for the joined requests of the
+		// callout's earlier passes still in progress, and one can run past
+		// the callout's deadline. A try that would start after it does not
+		// start at all: it charges no try and names no member. The count is
+		// taken once the try is certain.
 		if err := ctx.Err(); err != nil {
 			if calloutDeadlinePassed(ctx) {
 				break
