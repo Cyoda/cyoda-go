@@ -2676,6 +2676,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   The `x/net` bump moves the other `golang.org/x` modules with it; the plugin
   modules carry the same versions as the root.
 
+- Bumped the Go toolchain `go 1.27.3` → `go 1.27.4` (root, all three plugin
+  modules and `go.work`) to clear GO-2026-6859, an HTTP/1 server crash in
+  `net/http` from a `MaxBytesReader` header race, fixed in go1.27.4.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking

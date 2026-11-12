@@ -1,6 +1,6 @@
 module github.com/cyoda-platform/cyoda-go/plugins/sqlite
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261112012612-d45711b2c8c8
