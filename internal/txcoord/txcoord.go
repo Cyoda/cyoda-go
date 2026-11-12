@@ -115,10 +115,14 @@ type Scope interface {
 	// End ends a callback scope by the table of how a scope ends: it returns
 	// the rewritten answer, or nil to send the handler's own. It releases the
 	// scope's savepoint or rolls back to it, then the gate. A scope that
-	// cannot be discarded is answered 500 SERVER_ERROR, not retryable, and
-	// leaves the transaction broken. o is what the request was answered with;
-	// nil, or a status below 400 without a panic, is a success. Call it
-	// exactly once, after the handler returned.
+	// cannot be discarded is answered 500 SERVER_ERROR, not retryable,
+	// except in row 3, which answers 404. The in-process coordination then
+	// records the transaction as broken. The durable one records nothing:
+	// the scope is never completed, so the commit does not keep it, and the
+	// backend must fail Seal when the discard carried a mark it could not
+	// record. o is what the request was answered with; nil, or a status
+	// below 400 without a panic, is a success. Call it exactly once, after
+	// the handler returned.
 	End(o *common.Outcome) *common.AppError
 	// Close ends a processor scope. procErr nil and the scope current and
 	// unmarked: kept, returns nil. Otherwise discarded; returns procErr, or

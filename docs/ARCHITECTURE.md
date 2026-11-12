@@ -616,9 +616,13 @@ the first matching row:
 | 8 | non-retryable `4xx` of a read | completed | none | the handler's |
 | 9 | non-retryable `5xx` of a read | discarded | none | the handler's |
 
-A scope whose discard fails did not end as its row answers: whatever the row,
-`End` replaces the answer with `500 SERVER_ERROR`, not retryable
-(`endAnswer`, `internal/txcoord/end.go`), and the transaction is broken.
+A scope whose discard fails did not end as its row answers: except in row 3,
+which answers `404` whatever its own discard did, `End` replaces the answer
+with `500 SERVER_ERROR`, not retryable (`endAnswer`,
+`internal/txcoord/end.go`). Only the scope's own discard counts, not a failed
+discard of another scope that the request's error carries. The in-process
+coordination then records the transaction as broken (see **Marks**); the
+durable coordination does not (see **Location-independent transactions**).
 
 A release that fails after a success is judged again as a failed request, and
 otherwise answers `500 SERVER_ERROR` — on PostgreSQL, a handler that swallowed
@@ -643,13 +647,13 @@ member answered, so a processor, a function criterion and a schedule function
 fail alike on a marked scope. A processor scope stops the climb: an
 `ASYNC_NEW_TX` processor whose scope is marked is discarded with everything
 under it, counts as failed (non-fatal, logged and recorded as any failure of
-the mode) and passes no mark up. A session that ended, a rollback to a
-savepoint that failed, or a discard that failed (answered `500 SERVER_ERROR`,
-not retryable) leaves the transaction **broken**, which is separate
-from marked: later joined requests are refused with `404
-TRANSACTION_NOT_FOUND`, and the owner fails with the broken cause, classified
-as usual (a dead PostgreSQL session is the retryable `503
-STORAGE_UNAVAILABLE`).
+the mode) and passes no mark up. In the in-process coordination, a session
+that ended, a rollback to a savepoint that failed, or a discard that failed
+(answered `500 SERVER_ERROR`, not retryable, except in row 3) leaves the
+transaction **broken**, which is separate from marked: later joined requests
+are refused with `404 TRANSACTION_NOT_FOUND`, and the owner fails with the
+broken cause, classified as usual (a dead PostgreSQL session is the retryable
+`503 STORAGE_UNAVAILABLE`).
 
 **The stack rule.** A scope's writes, with those of its descendants, must stay
 contiguous, so that rolling back to its savepoint undoes exactly its own work.
@@ -806,7 +810,11 @@ locally (`proxy.HTTPRouting`, `proxy.ResolveNodeInfo`), so a callback is served
 by the node it reaches, and `Join` allows concurrent operations from any
 number of goroutines and nodes. The backend holds the scopes, the marks and the
 fencing numbers. The rules of the scope tree, the table of how a scope ends and
-the marks are the same; there is no gate and no stack rule, a pause only checks
+the marks are the same, except that nothing records a transaction as broken: a
+scope whose `DiscardScope` failed is answered `500 SERVER_ERROR` (row 3
+excepted) and is never completed, so `Commit` does not keep its writes, and a
+failed `DiscardScope` with a mark's code is covered by the obligation below
+that `Seal` must fail. There is no gate and no stack rule, a pause only checks
 the scope again on resume, and nothing waits: a scope in progress when its
 callout advances or ends, or when the transaction is sealed, cannot complete,
 so it is discarded and answered `410 CALLOUT_SUPERSEDED`. Nothing cancels a

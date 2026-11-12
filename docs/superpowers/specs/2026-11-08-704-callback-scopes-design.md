@@ -136,7 +136,7 @@ Precedence runs top to bottom:
 |---|---|---|---|---|
 | 1 | Its pass is no longer current (callout advanced or ended) | discarded | none | `410 CALLOUT_SUPERSEDED`, not retryable |
 | 2 | The transaction lost a write race (`TransactionManager.LostRace`) and the request failed | discarded | none | `409 CONFLICT`, **not retryable** |
-| 3 | The transaction's session has ended (PostgreSQL dead transaction, both shapes, section 9) | discarded if possible | none (root records it as broken, section 3) | `404 TRANSACTION_NOT_FOUND`, not retryable |
+| 3 | The transaction's session has ended (PostgreSQL dead transaction, both shapes, section 9) | discarded if possible | none (in-process, the root records it as broken, section 3) | `404 TRANSACTION_NOT_FOUND`, not retryable |
 | 4 | The scope is marked (a descendant's write failed) | discarded | parent, if this request is a write | `409 TRANSACTION_ROLLBACK_ONLY`, not retryable |
 | 5 | The handler succeeded | completed | none | the handler's answer |
 | 6 | Retryable failure | discarded | none | the handler's answer |
@@ -215,10 +215,16 @@ frames and the buffered HTTP body are dropped.
   - A Discard whose rollback fails, or a dead session (row 3), leaves the
     transaction unusable. That is an infrastructure failure, not a joined
     write's failure.
-  - The request whose Discard failed is answered `500 SERVER_ERROR`, not
-    retryable, whatever its row would have answered: its writes may still be
-    in the transaction, and a retry in it cannot succeed.
-  - The root records the cause as **broken**, which is separate from marked.
+  - The request whose own Discard failed is answered `500 SERVER_ERROR`, not
+    retryable, whatever its row would have answered (except row 3, which
+    answers `404`): its writes may still be in the transaction, and a retry in
+    it cannot succeed. A failed Discard of another scope, which the request's
+    error may carry, does not change the answer.
+  - In the in-process coordination, the root records the cause as **broken**,
+    which is separate from marked. The durable coordination records nothing:
+    a scope whose `DiscardScope` failed is never completed, so `Commit` does
+    not keep its writes, and a failed `DiscardScope` with a mark's code is
+    covered by the SPI's obligation that `Seal` must fail.
   - Seal then fails with that cause, classified as today. For example a dead
     PostgreSQL session gives the owner the retryable
     `503 STORAGE_UNAVAILABLE`.

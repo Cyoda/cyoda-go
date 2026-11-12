@@ -1326,11 +1326,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`400 BAD_REQUEST`). Move the member out of `config`. See
   `docs/workflow-schema-versioning.md`.
 
-- **Go 1.27.3 is required to build** (`go 1.26.9` → `go 1.27.3` in the root,
-  the three plugin modules and `go.work`), for `encoding/json/v2` and for the
+- **Go 1.27.4 is required to build** (`go 1.26.9` → `go 1.27.4` in the root,
+  the three plugin modules and `go.work`), for `encoding/json/v2`, for the
   `crypto/x509` fix of GO-2026-6809 (distrust of compromised intermediate
-  certificates). An out-of-tree plugin raises its own `go` directive with its
-  cyoda-go bump.
+  certificates) and for the `net/http` fix of GO-2026-6859. An out-of-tree
+  plugin raises its own `go` directive with its cyoda-go bump.
 
 - **Setting a model's unique keys without `uniqueKeys` is refused; it no
   longer removes every key.** The keys sent replace the model's keys. A
