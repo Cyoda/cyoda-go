@@ -803,13 +803,12 @@ logged at INFO (`transaction coordination selected`, `locationIndependent`).
 `CachingStoreFactory` forwards the capability of the factory it wraps
 (`internal/cluster/modelcache/factory.go`). A transaction of such a store is
 location-independent: the pass names no owner (`mintPass`,
-`internal/grpc/dispatch.go`), and neither does a hand-over
-(`newHandOverRequest`), which a receiving node of such a store accepts
-(`DispatchCalloutRequest.validate`); both proxies serve a pass with no owner
-locally (`proxy.HTTPRouting`, `proxy.ResolveNodeInfo`), so a callback is served
-by the node it reaches, and `Join` allows concurrent operations from any
-number of goroutines and nodes. The backend holds the scopes, the marks and the
-fencing numbers. The rules of the scope tree, the table of how a scope ends and
+`internal/grpc/dispatch.go`), also on a node a callout was handed over to,
+whose `mintPass` leaves out the owner the hand-over names; both proxies serve
+a pass with no owner locally (`proxy.HTTPRouting`, `proxy.ResolveNodeInfo`), so
+a callback is served by the node it reaches, and `Join` allows concurrent
+operations from any number of goroutines and nodes. The backend holds the
+scopes, the marks and the fencing numbers. The rules of the scope tree, the table of how a scope ends and
 the marks are the same, except that nothing records a transaction as broken: a
 scope whose `DiscardScope` failed is answered `500 SERVER_ERROR` (row 3
 excepted) and is never completed, so `Commit` does not keep its writes, and a
@@ -1288,8 +1287,8 @@ request carries the callout kind, the entity payload and meta, the workflow/tran
 the callout's txID, the tenant, the callout's attributed and executor principals and the executor's roles (all four principal fields required), a request id the
 owner mints and uses for every try, the callout's platform time (`atUnixMicro`,
 required), how many tries and how long an answer may
-take, the owner's node id (empty on a location-independent backend, whose
-receiving node accepts a hand-over without one, and only there) and the
+take, the owner's node id (required on every backend; on a
+location-independent one the receiving node's passes leave it out) and the
 fencing number the peer's tries are numbered under, the enclosing callouts (empty unless the callout was made from inside a
 callback), whether the work may be given to a second compute member after a
 hand-off, and one kind-specific member (`Processor`, `Criterion` + `Target` +

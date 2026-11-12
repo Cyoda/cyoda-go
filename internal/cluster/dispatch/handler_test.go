@@ -54,7 +54,7 @@ func (f *fakeRunner) RunLocal(ctx context.Context, call internalgrpc.Callout, ma
 func newHandlerMux(t *testing.T, runner LocalRunner, auth PeerAuth) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
-	NewDispatchHandler(runner, auth, false).Register(mux)
+	NewDispatchHandler(runner, auth).Register(mux)
 	return mux
 }
 
@@ -341,6 +341,41 @@ func TestHandler_PassMintedOnThePeerNamesTheOwner(t *testing.T) {
 	}
 	if len(claims.Outer) != 1 || claims.Outer[0] != (token.Pair{Callout: "outer-rid", Major: 3, Minor: 1}) {
 		t.Errorf("pass Outer = %+v, want the hand-over's enclosing pairs", claims.Outer)
+	}
+}
+
+// On a location-independent backend the pass the receiving pnode mints names no
+// owner, although the hand-over names the sending pnode: any pnode serves the
+// transaction's callbacks, so they are served where they land. The receiving
+// pnode's dispatcher decides it, over a real signer.
+func TestHandler_PassMintedOnALocationIndependentPeerNamesNoOwner(t *testing.T) {
+	signer, err := token.NewSigner(testSecret32)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	reg, cnode := attachedCnode(t, "tenant-1", "python")
+	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
+		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second, true)
+
+	auth := newAEAD(t)
+	req := validRequest(t, "processor")
+	if req.OwnerNodeID != "owner-node" {
+		t.Fatalf("hand-over owner = %q; want the sending pnode", req.OwnerNodeID)
+	}
+	resp := postHandOver(t, newHandlerMux(t, local, auth), auth, req)
+	if resp.Outcome != OutcomeOK {
+		t.Fatalf("%+v", resp)
+	}
+
+	claims, err := signer.Verify(cnode.onlyPass(t))
+	if err != nil {
+		t.Fatalf("verify the pass the cnode was given: %v", err)
+	}
+	if claims.NodeID != "" {
+		t.Errorf("pass NodeID = %q, want none on a location-independent backend", claims.NodeID)
+	}
+	if claims.TxRef != "tx-1" || claims.Callout != "rid-1" || claims.Major != 5 || claims.Minor != 1 {
+		t.Errorf("pass TxRef/Callout/numbers = %q/%q/(%d,%d)", claims.TxRef, claims.Callout, claims.Major, claims.Minor)
 	}
 }
 

@@ -531,7 +531,7 @@ func New(cfg Config) *App {
 		var peers callout.PeerRouter
 		if cfg.Cluster.Enabled {
 			peerRouter, err := clusterdispatch.NewPeerRouter(a.nodeRegistry, a.selfNodeID,
-				clusterdispatch.NewRandomSelector(), forwarder, observability.Meter(), locationIndependent)
+				clusterdispatch.NewRandomSelector(), forwarder, observability.Meter())
 			if err != nil {
 				slog.Error("failed to construct the peer router", "pkg", "cluster", "err", err)
 				os.Exit(1)
@@ -783,7 +783,7 @@ func New(cfg Config) *App {
 	// off: with it off (testClock nil) every push is refused, so a change
 	// fails on that node rather than passing it by.
 	if cfg.Cluster.Enabled {
-		clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth, locationIndependent).Register(rootMux)
+		clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth).Register(rootMux)
 		clusterdispatch.NewClockHandler(peerAuth, platformclock.NewHolder(testClock)).Register(rootMux)
 		clusterdispatch.NewStatusHandler(peerAuth, statusSelf).Register(rootMux)
 	}

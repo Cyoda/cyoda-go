@@ -614,13 +614,12 @@ on another pnode when its enclosing scope is superseded or marked.
   (`internal/cluster/modelcache/factory.go:97-106`).
 - **Routing.**
   - `mintPass` leaves the owner out of the pass (`internal/grpc/dispatch.go:94-101`).
+    It is the only place that decides it: a hand-over names its sending pnode
+    on every backend, and every pnode requires that name
+    (`internal/cluster/dispatch/handover.go`), so the pass a receiving pnode
+    mints for a handed-over callout names no owner either.
   - Both proxies serve a pass without an owner locally
     (`internal/cluster/proxy/http.go:80`, `internal/cluster/proxy/grpc.go:61`).
-  - The peer router leaves the owner out of a hand-over, as the passes do
-    (`internal/cluster/dispatch/peer_router.go`), and a location-independent
-    pnode accepts a hand-over that names no owner
-    (`internal/cluster/dispatch/handover.go`). A pnode that is not
-    location-independent refuses it.
 - **Tests.**
   - No in-tree plugin implements the capability. cyoda-go's side is tested
     against a test double: a coordinator over the memory plugin that keeps each

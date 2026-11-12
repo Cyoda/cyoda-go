@@ -65,7 +65,7 @@ func TestNewHandOverRequest(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			call := ownerCallout(t, kind)
 			call.RepeatSafe = kind != "processor"
-			req, err := newHandOverRequest("owner-node", false, call, 3, 7)
+			req, err := newHandOverRequest("owner-node", call, 3, 7)
 			if err != nil {
 				t.Fatalf("newHandOverRequest: %v", err)
 			}
@@ -104,7 +104,7 @@ func TestNewHandOverRequest(t *testing.T) {
 					t.Errorf("Function = %+v", req.Function)
 				}
 			}
-			if err := req.validate(false); err != nil {
+			if err := req.validate(); err != nil {
 				t.Errorf("what the owner builds must validate on the peer: %v", err)
 			}
 		})
@@ -130,7 +130,7 @@ func TestNewHandOverRequest_RefusesWhatCannotBeHandedOver(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			call := ownerCallout(t, "processor")
 			tt.mutate(&call)
-			if _, err := newHandOverRequest("owner-node", false, call, tt.tries, tt.major); err == nil {
+			if _, err := newHandOverRequest("owner-node", call, tt.tries, tt.major); err == nil {
 				t.Fatal("expected an error")
 			}
 		})
@@ -139,7 +139,7 @@ func TestNewHandOverRequest_RefusesWhatCannotBeHandedOver(t *testing.T) {
 
 func validRequest(t *testing.T, kind string) DispatchCalloutRequest {
 	t.Helper()
-	req, err := newHandOverRequest("owner-node", false, ownerCallout(t, kind), 2, 5)
+	req, err := newHandOverRequest("owner-node", ownerCallout(t, kind), 2, 5)
 	if err != nil {
 		t.Fatalf("newHandOverRequest: %v", err)
 	}
@@ -150,7 +150,7 @@ func validRequest(t *testing.T, kind string) DispatchCalloutRequest {
 func TestRequestValidate_EpochPlatformTimeAccepted(t *testing.T) {
 	req := validRequest(t, "processor")
 	req.AtUnixMicro = ptrInt64(0)
-	if err := req.validate(false); err != nil {
+	if err := req.validate(); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 }
@@ -201,7 +201,7 @@ func TestRequestValidate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := validRequest(t, "processor")
 			tt.mutate(&req)
-			err := req.validate(false)
+			err := req.validate()
 			if err == nil {
 				t.Fatal("expected an error")
 			}
@@ -229,11 +229,11 @@ func outerPairs(n int) []WirePair {
 func TestRequestValidate_EnclosingPairsBound(t *testing.T) {
 	req := validRequest(t, "processor")
 	req.Outer = outerPairs(maxOuterPairs)
-	if err := req.validate(false); err != nil {
+	if err := req.validate(); err != nil {
 		t.Errorf("%d enclosing pairs must validate: %v", maxOuterPairs, err)
 	}
 	req.Outer = outerPairs(maxOuterPairs + 1)
-	if err := req.validate(false); err == nil {
+	if err := req.validate(); err == nil {
 		t.Errorf("%d enclosing pairs must be refused", maxOuterPairs+1)
 	}
 }
@@ -853,42 +853,4 @@ func TestReadAnswer_MemberTextHoldingNULIsNotBelieved(t *testing.T) {
 			Attempts: []WireAttempt{{MemberID: "m1", Kind: "member_failed", Cause: "card declined"}},
 		}, 3))
 	})
-}
-
-// TestHandOver_EmptyOwnerAcceptedOnlyWhenLocationIndependent: a hand-over that
-// names no owner is one of a location-independent transaction. A pnode whose
-// backend coordinates transactions itself runs it; any other pnode refuses it
-// (it could not route the callbacks), as a terminal answer with no try made.
-func TestHandOver_EmptyOwnerAcceptedOnlyWhenLocationIndependent(t *testing.T) {
-	for _, tc := range []struct {
-		name                string
-		locationIndependent bool
-		wantRun             bool
-	}{
-		{"location-independent pnode runs it", true, true},
-		{"owner-bound pnode refuses it", false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			auth := newAEAD(t)
-			runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
-			mux := http.NewServeMux()
-			NewDispatchHandler(runner, auth, tc.locationIndependent).Register(mux)
-			req := validRequest(t, "processor")
-			req.OwnerNodeID = ""
-
-			resp := postHandOver(t, mux, auth, req)
-			if tc.wantRun {
-				if runner.calls != 1 || resp.Outcome != "ok" {
-					t.Fatalf("calls = %d, outcome = %q; want the hand-over run", runner.calls, resp.Outcome)
-				}
-				if runner.gotCall.OwnerNodeID != "" {
-					t.Errorf("owner = %q; want none", runner.gotCall.OwnerNodeID)
-				}
-				return
-			}
-			if runner.calls != 0 || resp.Outcome != "terminal" || resp.TriesUsed == nil || *resp.TriesUsed != 0 {
-				t.Fatalf("calls = %d, resp = %+v; want a terminal refusal with no try", runner.calls, resp)
-			}
-		})
-	}
 }

@@ -74,14 +74,8 @@ type HandOverAnswer struct {
 
 // newHandOverRequest puts call on the wire for a peer that may make triesLeft
 // tries under fencing number major, with the identity the owner computed for
-// it. It names selfNodeID as the owner, except on a location-independent
-// backend, whose passes name no owner. An error means the callout cannot be
-// handed over at all — to any peer.
-func newHandOverRequest(selfNodeID string, locationIndependent bool, call internalgrpc.Callout, triesLeft int, major uint32) (DispatchCalloutRequest, error) {
-	ownerNodeID := selfNodeID
-	if locationIndependent {
-		ownerNodeID = ""
-	}
+// it. An error means the callout cannot be handed over at all — to any peer.
+func newHandOverRequest(ownerNodeID string, call internalgrpc.Callout, triesLeft int, major uint32) (DispatchCalloutRequest, error) {
 	src := call.Source
 	switch {
 	case src.Entity == nil:
@@ -126,7 +120,7 @@ func newHandOverRequest(selfNodeID string, locationIndependent bool, call intern
 	for _, p := range call.Outer {
 		req.Outer = append(req.Outer, WirePair{Callout: p.Callout, Major: p.Major, Minor: p.Minor})
 	}
-	if err := req.validate(locationIndependent); err != nil {
+	if err := req.validate(); err != nil {
 		return DispatchCalloutRequest{}, err
 	}
 	return req, nil
@@ -154,12 +148,7 @@ func newHandOverRequest(selfNodeID string, locationIndependent bool, call intern
 // since the receiving pnode attaches them as received and has nothing to
 // substitute for one that is missing. So is the callout's platform time: the
 // receiving pnode sends it on every try and never substitutes its own clock's.
-//
-// The owner may be left out only when noOwnerAccepted: on a location-independent
-// backend any pnode serves the transaction's callbacks, so the passes name no
-// owner. Elsewhere a pass without an owner could not be routed to the pnode
-// that holds the transaction, so the hand-over is refused.
-func (req *DispatchCalloutRequest) validate(noOwnerAccepted bool) error {
+func (req *DispatchCalloutRequest) validate() error {
 	switch {
 	case req.TenantID == "":
 		return errors.New("tenantID is empty")
@@ -177,7 +166,7 @@ func (req *DispatchCalloutRequest) validate(noOwnerAccepted bool) error {
 		return errors.New("answerLimitMs is below 1")
 	case req.AnswerLimitMs > maxAnswerLimitMs:
 		return errors.New("answerLimitMs does not fit a duration")
-	case req.OwnerNodeID == "" && !noOwnerAccepted:
+	case req.OwnerNodeID == "":
 		return errors.New("ownerNodeID is empty")
 	case req.Major < 1:
 		return errors.New("major is below 1")

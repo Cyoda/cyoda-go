@@ -1383,9 +1383,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `TransactionCoordinationCapable` on its store factory. cyoda-go asks for it
   once at start-up and logs the choice at INFO (`transaction coordination
   selected`, `locationIndependent`); an error from the backend fails start-up.
-  On such a backend the pass a compute member receives, and a callout handed
-  over to another node, name no owning node, and every node serves a callback
-  where it lands, with no proxy hop. The callbacks of one transaction may then
+  On such a backend the pass a compute member receives names no owning node,
+  also for a callout handed over to another node, and every node serves a
+  callback where it lands, with no proxy hop. The callbacks of one transaction may then
   run at the same time: of two that wrote the same entity from the same
   version, one keeps nothing and is answered a retryable `409 CONFLICT`. The
   scope rules and the answers are otherwise the same. None of the in-tree

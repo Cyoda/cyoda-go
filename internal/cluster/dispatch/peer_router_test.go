@@ -53,7 +53,7 @@ func (f *answeringForwarder) ForwardCallout(_ context.Context, peerNodeID, addr 
 
 func newTestRouter(t *testing.T, registry contract.NodeRegistry, fwd DispatchForwarder) *PeerRouter {
 	t.Helper()
-	r, err := NewPeerRouter(registry, "self-node", inOrderSelector{}, fwd, nil, false)
+	r, err := NewPeerRouter(registry, "self-node", inOrderSelector{}, fwd, nil)
 	if err != nil {
 		t.Fatalf("NewPeerRouter: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestPeerRouter_CountsHandOversByOutcome(t *testing.T) {
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 
 	fwd := &answeringForwarder{}
-	router, err := NewPeerRouter(&stubNodeRegistry{}, "self-node", inOrderSelector{}, fwd, mp.Meter("test"), false)
+	router, err := NewPeerRouter(&stubNodeRegistry{}, "self-node", inOrderSelector{}, fwd, mp.Meter("test"))
 	if err != nil {
 		t.Fatalf("NewPeerRouter: %v", err)
 	}
@@ -599,31 +599,20 @@ func TestPeerRouter_CountsHandOversByOutcome(t *testing.T) {
 	}
 }
 
-// TestPeerRouter_HandOverOwnerFollowsLocationIndependence: a pnode whose
-// backend is location-independent hands a callout over with no owner, as its
-// passes name none; any other pnode names itself.
-func TestPeerRouter_HandOverOwnerFollowsLocationIndependence(t *testing.T) {
-	for _, tc := range []struct {
-		name                string
-		locationIndependent bool
-		wantOwner           string
-	}{
-		{"location-independent", true, ""},
-		{"owner-bound", false, "self-node"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fwd := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1)}}
-			r, err := NewPeerRouter(&stubNodeRegistry{}, "self-node", inOrderSelector{}, fwd, nil, tc.locationIndependent)
-			if err != nil {
-				t.Fatal(err)
-			}
-			r.HandOver(testContext(), node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "processor"), 3, 2)
-			if fwd.calls != 1 {
-				t.Fatalf("forwarded %d hand-overs; want 1", fwd.calls)
-			}
-			if fwd.got.OwnerNodeID != tc.wantOwner {
-				t.Errorf("owner = %q; want %q", fwd.got.OwnerNodeID, tc.wantOwner)
-			}
-		})
+// TestPeerRouter_HandOverNamesItsSender: a pnode hands a callout over naming
+// itself as the owner, whatever the backend. Whether the pass the peer mints
+// names an owner is the peer's dispatcher's decision, not the hand-over's.
+func TestPeerRouter_HandOverNamesItsSender(t *testing.T) {
+	fwd := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: OutcomeOK, TriesUsed: intPtr(1)}}
+	r, err := NewPeerRouter(&stubNodeRegistry{}, "self-node", inOrderSelector{}, fwd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.HandOver(testContext(), node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "processor"), 3, 2)
+	if fwd.calls != 1 {
+		t.Fatalf("forwarded %d hand-overs; want 1", fwd.calls)
+	}
+	if fwd.got.OwnerNodeID != "self-node" {
+		t.Errorf("owner = %q; want the sending pnode", fwd.got.OwnerNodeID)
 	}
 }

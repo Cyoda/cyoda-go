@@ -101,7 +101,7 @@ func TestDispatchHandler_RefusesToWriteAnOversizedAnswer(t *testing.T) {
 	auth := newTestPeerAuth(t)
 	runner := &sizeRunner{data: bytes.Repeat([]byte("x"), dispatch.MaxEnvelopeSize+1)}
 	mux := http.NewServeMux()
-	dispatch.NewDispatchHandler(runner, auth, false).Register(mux)
+	dispatch.NewDispatchHandler(runner, auth).Register(mux)
 
 	req := makeProcessorReq()
 	req.RequestID, req.TriesLeft, req.AnswerLimitMs, req.OwnerNodeID, req.Major = "rid-size", 1, 1000, "node-owner", 1
