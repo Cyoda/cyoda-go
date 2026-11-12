@@ -82,15 +82,20 @@ type ending interface {
 	// the answer itself.
 	complete(class RequestClass) (*common.AppError, *parentMark, error)
 	// discard ends the scope discarded, passing mark to the parent when it is
-	// not nil (an implementation may leave that to its caller). It returns
-	// the cause that leaves the transaction broken when the discard fails.
+	// not nil (an implementation may leave that to its caller). It returns a
+	// *discardFailure when the discard fails, which endAnswer answers as a
+	// 500; the in-process coordination also records it as the cause that
+	// leaves the transaction broken.
 	discard(mark *parentMark) error
 }
 
 // decide decides a callback scope's end by the first matching row, and
 // completes or discards the scope. It returns the rewritten answer (nil: the
-// handler's own), the mark to set on the parent (nil for none), and the cause
-// that leaves the transaction broken (nil when it is not).
+// handler's own), the mark to set on the parent (nil for none), and the
+// infrastructure failure the scope ended with (nil for none): a failed
+// discard, or row 3's ended session. endAnswer reads it for the request's
+// answer; only the in-process coordination records it, as the cause that
+// leaves the transaction broken.
 func decide(e ending, class RequestClass, f *failure) (*common.AppError, *parentMark, error) {
 	superseded, code, marked, failed := e.standing()
 	if failed != nil {
@@ -106,7 +111,8 @@ func decide(e ending, class RequestClass, f *failure) (*common.AppError, *parent
 		return lostRaceAnswer(), nil, e.discard(nil)
 	}
 	// Row 3: the transaction's session has ended. The scope is discarded if
-	// that is still possible; the transaction is broken either way.
+	// that is still possible, and the request answers 404 whatever the
+	// discard did.
 	if f != nil && errors.Is(f.err, spi.ErrTxNotFound) {
 		_ = e.discard(nil)
 		return transactionNotFound(f.err), nil, sessionEnded(f.err)

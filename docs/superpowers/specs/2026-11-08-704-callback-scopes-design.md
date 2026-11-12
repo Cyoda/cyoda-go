@@ -211,25 +211,25 @@ frames and the buffered HTTP body are dropped.
 
   This is the reason row 2 gives: a stale snapshot may be what made the
   callback's write fail, and on a fresh transaction it may succeed.
-- **Broken transaction.**
+- **A failed Discard.** On both coordinations, the request whose own Discard
+  failed is answered `500 SERVER_ERROR`, not retryable, whatever its row would
+  have answered (except row 3, which answers `404`): its writes may still be
+  in the transaction, and a retry in it cannot succeed. A failed Discard of
+  another scope, which the request's error may carry, does not change the
+  answer. That is an infrastructure failure, not a joined write's failure.
+- **Broken transaction (in-process coordination only).**
   - A Discard whose rollback fails, or a dead session (row 3), leaves the
-    transaction unusable. That is an infrastructure failure, not a joined
-    write's failure.
-  - The request whose own Discard failed is answered `500 SERVER_ERROR`, not
-    retryable, whatever its row would have answered (except row 3, which
-    answers `404`): its writes may still be in the transaction, and a retry in
-    it cannot succeed. A failed Discard of another scope, which the request's
-    error may carry, does not change the answer.
-  - In the in-process coordination, the root records the cause as **broken**,
-    which is separate from marked. The durable coordination records nothing:
-    a scope whose `DiscardScope` failed is never completed, so `Commit` does
-    not keep its writes, and a failed `DiscardScope` with a mark's code is
-    covered by the SPI's obligation that `Seal` must fail.
+    transaction unusable: the root records the cause as **broken**, which is
+    separate from marked.
   - Seal then fails with that cause, classified as today. For example a dead
     PostgreSQL session gives the owner the retryable
     `503 STORAGE_UNAVAILABLE`.
   - A broken transaction refuses further joined requests with
     `404 TRANSACTION_NOT_FOUND`.
+- **The capable path records nothing.** The durable coordination has no
+  broken state. A scope whose `DiscardScope` failed is never completed, so
+  `Commit` does not keep its writes, and a mark that a failed `DiscardScope`
+  did not record is covered by the SPI's obligation that `Seal` must fail.
 
 ### 4. The coordination interface (cyoda-go internal)
 
