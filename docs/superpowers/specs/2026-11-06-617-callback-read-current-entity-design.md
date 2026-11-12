@@ -497,7 +497,9 @@ longer passes anything to storage.
 
   So postgres keeps a separate lifecycle row per model: a new table
   `model_lifecycle (tenant_id, model_name, model_version, generation)`,
-  primary key `(tenant_id, model_name, model_version)`, with row-level
+  primary key `(tenant_id, model_name, model_version)`, no foreign key to
+  `models` (the probe below inserts a row for a model that may not exist),
+  `generation` with a default, with row-level
   security and the same tenant policy as `models` (`000001_initial_schema.up.sql`
   ~:145-146); created with the model, deleted with it, filled for existing
   models by the migration. Every change of a model's state or unique keys
@@ -680,13 +682,22 @@ Per backend:
 
 - postgres: each operation, in a `READ COMMITTED` transaction
   (`model_store.go` ~:428-433), writes the `models` row, then bumps the
-  lifecycle row (the order of §4.2), then checks state and counts entities in
-  later statements, which see every commit before the bump, and rolls back on
-  a refusal. Every state check reads the state the operation's own write
-  replaced, never a later read (which would see the new document):
+  lifecycle row (the order of §4.2), and rolls back on a refusal. The state
+  check reads the state the operation's own write replaced, never a later read
+  (which would see the new document); the entity count is a later statement,
+  which sees every commit before the bump. A missing model stays
+  `ErrNotFound`. A commit that took `FOR SHARE` first makes the bump wait until
+  it ends; a bump committed first makes the commit fail `40001`.
   - `Lock` moves into `inWriteTx` (today it is not in a transaction): the
-    conditional `UPDATE` first (§4.2), then the fold and savepoint as today
-    when it changed the state, then the bump.
+    conditional `UPDATE` first (§4.2); on zero rows, an existence check tells
+    "already `LOCKED`" (return, no bump) from "not found" (`ErrNotFound`);
+    then the fold and savepoint as today when it changed the state, then the
+    bump. Folding after the `UPDATE` stores the same schema (the `UPDATE`
+    changes only `{state}`, ~:338-349; the fold reads `doc.schema`,
+    ~:573-590), and it closes a race today's order has: `ExtendSchema` does
+    not check the state, so a delta committed between today's fold and the
+    savepoint insert is lost; with the row held, `ExtendSchema`'s claim waits.
+    The comment claiming no writer can race (~:204-206) is deleted.
   - `Unlock` already writes the `models` row first (~:254-260); it then bumps
     and counts.
   - `Delete` (one statement today, ~:142-167) becomes `DELETE … RETURNING
@@ -696,9 +707,9 @@ Per backend:
     WHERE models.doc->>'state' <> 'LOCKED' RETURNING 1`: no row returned on a
     conflict is `ErrModelLocked` (`READ COMMITTED` re-checks the `WHERE`
     against the latest row version, so a lock committed in between is seen);
-    then bump or insert the lifecycle row. A commit that took `FOR SHARE` first
-  makes the bump wait until it ends; a bump committed first makes the commit
-  fail `40001`.
+    then bump or insert the lifecycle row. The `model_schema_extensions`
+    `DELETE` in the same statement (~:67-78) runs even when the update is
+    refused; the refusal's rollback undoes it.
 - memory: `Unlock`, `Delete` and `Save` check and change under `entityMu`
   (write), the lock entity commits hold, counting with an internal helper that
   takes no lock (`EntityStore.Count` takes `entityMu.RLock`,
@@ -823,7 +834,7 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | postgres interleave, non-transactional save: the save waits on an unlock's uncommitted bump → refused `ErrModelNotLocked` after the unlock commits | postgres plugin unit | — | — | — |
 | postgres: `Unlock` against a writer that extended the schema → no deadlock; the unlock waits, then answers `MODEL_HAS_ENTITIES` or proceeds | postgres plugin unit | — | — | — |
 | postgres: a model created and locked after a writer's snapshot → writer's commit `409 CONFLICT`, retry commits; a model that never existed → `ErrModelNotLocked` | postgres plugin unit | — | — | — |
-| postgres interleave: Lock uncommitted, Unlock decides, entity commit → never an entity in an unlocked model (round-3 case) | postgres plugin unit | — | — | — |
+| postgres interleave: a Lock not yet committed, then an Unlock, then an entity commit of the model → never an entity in an unlocked model | postgres plugin unit | — | — | — |
 | postgres interleave: `SetUniqueKeys` read `UNLOCKED`, Lock commits, then `Save` → `ErrModelLocked`, keys unchanged | postgres plugin unit | — | — | — |
 | postgres: lifecycle row bumped and committed after a writer's snapshot → writer's commit `409 CONFLICT` (40001) | postgres plugin unit | (covered by the e2e row above) | — | — |
 
