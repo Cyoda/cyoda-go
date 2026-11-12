@@ -10,7 +10,7 @@ the changes earlier processors made. On a create it must be found.
 
 Today the engine keeps the anchor in memory across the cascade and saves it to
 the transaction only at the end (`internal/domain/entity/service.go` create
-save at ~:348, update save at ~:2344) and before a `COMMIT_BEFORE_DISPATCH`
+save at ~:345, update save at ~:2323) and before a `COMMIT_BEFORE_DISPATCH`
 processor. A callback read returns the last saved copy: the pre-request entity
 on update, not found on create.
 
@@ -66,17 +66,22 @@ makes the transaction hold the current anchor (§2.2). "Write path" means both:
 the dispatch carries a transaction id (`cc.txID != ""`) **and** a transaction
 is in the context (`spi.GetTransaction(ctx) != nil`). Either alone is not
 enough: `resolveAuditTxID` mints an id when the entity has none
-(`engine.go` ~:1006-1011) and a pass is minted from the id alone
-(`internal/grpc/dispatch.go` ~:90), so with an id and no transaction a save
+(`engine.go` ~:1045-1050) and a pass is minted from the id alone
+(`internal/grpc/dispatch.go` `mintPass` ~:94), so with an id and no transaction a save
 would be an auto-commit write; the read path passes no id but its context can
 carry a joined transaction.
+
+The save comes before `beforeDispatch` (`run_guard.go` ~:248, which calls
+`MarkUnsafe` at ~:273), as the `readAnchor` before a `SYNC` processor does
+today (`engine_processors.go` ~:236-243). A save that fails has dispatched
+nothing, so it must not mark the run as having reached unsafe work.
 
 | Callout | Dispatch site | Notes |
 |---|---|---|
 | `SYNC` / `ASYNC_SAME_TX` processor | `internal/domain/workflow/engine_processors.go` (`executeSyncProcessor`, `Pause` at ~:257, dispatch at ~:261) | |
 | `ASYNC_NEW_TX` processor | `engine_processors.go` (`e.coord.OpenChild` at ~:337, dispatch at ~:368) | Save **before** `OpenChild`, in the chain's own scope, so discarding the processor scope (a processor failure) does not roll back the save. |
 | Function criterion — workflow selection, manual transition, automated cascade transition | `criterion_eval.go` `dispatchCriterionFunction` (`Pause` at ~:173, dispatch at ~:177), reached from `selectWorkflow` (`engine.go` ~:575) and the transition paths | On create, workflow selection runs before the anchor has a state; the save stores it with an empty state and a callback read sees it so. |
-| Schedule function | `arm.go` `armViaFunction` (`Pause` at ~:269, dispatch at ~:273) | Runs from `reconcileScheduledTasks` after the cascade, before the final save. |
+| Schedule function | `arm.go` `armViaFunction` (`Pause` at ~:269, dispatch at ~:273) | Runs from `reconcileScheduledTasks` after the cascade, before the final save. On the client doors that is inside the engine (`engine.go` ~:364, ~:452, ~:554), before the door's `Seal` (`service.go` ~:342, ~:2317). In a scheduled fire it runs today after the fire's `Seal` (`fire_scheduled.go` ~:318, ~:355), so its callbacks are refused `410`; §2.6 fixes that. |
 
 Not covered, because they need no save:
 
@@ -84,8 +89,8 @@ Not covered, because they need no save:
   before the dispatch. With `startNewTxOnDispatch: true`, TX_post reads TX_pre's
   committed version (`requireAnchorCommittedBy`), which is the in-memory anchor.
   With `false`, the dispatch carries no token.
-- `resolveWorkflowForQuery` (`engine.go` ~:622): the read path that lists an
-  entity's available transitions. It shares `selectWorkflow` (`engine.go` ~:550)
+- `resolveWorkflowForQuery` (`engine.go` ~:661): the read path that lists an
+  entity's available transitions. It shares `selectWorkflow` (`engine.go` ~:575)
   with the write paths but passes an empty transaction id, and its context can
   still carry a joined transaction. It must not save; the save is keyed on the
   dispatch's transaction id, not on a transaction being present in context.
@@ -101,7 +106,7 @@ not yet stored the anchor. On any other path "not found" means a callback
 deleted the anchor in this transaction; the engine saves nothing, so the
 callout and its callbacks see the delete, and the outcome of that delete is
 left to the code that already handles it (a scheduled fire's "deleted in this
-transaction" outcome, `fire_scheduled.go` ~:299-312; a client door's final
+transaction" outcome, `fire_scheduled.go` ~:333-341; a client door's final
 save).
 
 - The comparison is against a fresh read, never against a record the engine
@@ -111,28 +116,30 @@ save).
   criterion, a schedule function, a callback that runs a nested transition on
   the anchor).
 - A false "differs" only costs a redundant save, which one version per
-  transaction (§3) makes invisible in history. postgres and sqlite return
-  re-encoded bytes, so after a save there the next comparison usually differs
-  and saves again; that is accepted. A false "equal" cannot happen: equal bytes
+  transaction (§3) makes invisible in history. postgres returns re-encoded
+  bytes (JSONB, `_meta` merged into `doc`) for the transaction's own pending
+  write, so after a save there the next comparison usually differs and saves
+  again; that is accepted. memory and sqlite return the buffered bytes
+  (`plugins/sqlite/entity_store.go` ~:625-627). A false "equal" cannot happen: equal bytes
   and equal state are the same content.
 - Saving nothing when nothing changed is required, not an optimisation. A
   scheduled fire runs function criteria (workflow selection,
-  `fire_scheduled.go` ~:224; the transition criterion through `fireTransition`
-  → `engine.go` ~:757) and then may decline or cancel and still **commit** its
-  task removal and audit event (~:229-239, ~:268-273). A save of an unchanged
+  `fire_scheduled.go` ~:239; the transition criterion through `fireTransition`
+  → `engine.go` ~:796) and then may cancel or decline and still **commit** its
+  task removal and audit event (cancel ~:243-262, decline ~:296-306). A save of an unchanged
   anchor there would commit a version that changes nothing, with a new
   transaction id that fails every client's stored `If-Match`.
 - Meta-only changes (the scheduled fire's attribution stamp, `fire_scheduled.go`
-  ~:241-244) do not count; they reach storage with the next content save.
+  ~:267-269) do not count; they reach storage with the next content save.
 
 ### 2.3 How
 
 - The read and the save use the dispatch's transaction context. The save is a
   plain `EntityStore.Save` of the in-memory anchor, with the attribution the
   request already set on the anchor's meta
-  (`service.go` ~:282-295 create, ~:2280-2296 update; a scheduled fire keeps
+  (`service.go` ~:282-295 create, ~:2255-2274 update; a scheduled fire keeps
   the stored meta and sets change user and executor, `fire_scheduled.go`
-  ~:241-244).
+  ~:267-269).
 - **Gate.** The save runs in the chain's scope, before `txcoord.Pause`
   releases the chain's gate for the dispatch, and never acquires the gate
   itself. A joined chain holds the gate from `Coordination.Enter`
@@ -142,15 +149,18 @@ save).
   on the transaction between two callouts, because ending a callout refuses all
   its passes from then on and waits until no scope admitted under it is still
   open (`Coordination.BeginCallout`'s `end`, `internal/txcoord/txcoord.go`;
-  deferred on every exit of `internal/callout/coordinator.go` ~:166). Neither
-  `Seal` nor the owner's final save and commit is changed by this work.
+  deferred on every exit of `internal/callout/coordinator.go` ~:166). The owner's
+  final save and commit are not changed by this work. `Seal` moves only in the
+  scheduled fire (§2.6).
 - **Errors.** A failure of this read or save is marked with an engine infrastructure
   sentinel, as `readAnchor` failures are (`errors.Join(ErrProcessorOutputInfra,
-  err)` at `engine_processors.go` ~:247-250, or a new sentinel of the same family
-  named for this save and added to `engineConflictIsTransactionConflict`,
-  `service.go` ~:2775-2782). So a conflict from the save is a transaction
+  err)` at `engine_processors.go` ~:239-242, or a new sentinel of the same family
+  named for this save and added both to `engineConflictIsTransactionConflict`
+  (`service.go` ~:2775-2782) and to `classifyWorkflowError`'s infrastructure
+  list (~:2859-2873), which maps it through `common.Internal`; without the
+  second, it falls to `400 WORKFLOW_FAILED`). So a conflict from the save is a transaction
   conflict (retryable `409 CONFLICT`), never `412 ENTITY_MODIFIED`, and the
-  collection update loop (`service.go` ~:2635-2644) never isolates it as an
+  collection update loop (`service.go` ~:2601-2612) never isolates it as an
   item failure and carries on in a failed transaction. A storage outage maps to
   `503`, any other failure to `500` with a ticket, never a `400
   WORKFLOW_FAILED` carrying driver text. Unique-key errors cannot arise from
@@ -159,10 +169,14 @@ save).
 ### 2.4 Detecting a callback's write
 
 `adoptCallbackWrite` (`anchor.go`) keeps a callback's write to the anchor when a
-`SYNC`/`ASYNC_SAME_TX` processor returned no data; that is unchanged in scope
-(no other dispatch adopts a callback's write today, and none does after). Both
+`SYNC`/`ASYNC_SAME_TX` processor returned no data. The only other adopter,
+`COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch: true`
+(`engine_processors.go` ~:526), adopts against an empty "before" view, because
+TX_post has written nothing before its dispatch; it gets no pre-dispatch save
+(§2.1) and is unchanged. No other dispatch adopts a callback's write, before or
+after this work. Both
 sides of the comparison stay **store reads**: the "before" read
-(`readAnchor`, `engine_processors.go` ~:249) now runs after the pre-dispatch
+(`readAnchor`, `engine_processors.go` ~:241) now runs after the pre-dispatch
 save, and the "after" read after the dispatch, as today. Comparing a store read
 with the engine's own bytes is not allowed: postgres (JSONB, `_meta` merged
 into `doc`) and sqlite (`jsonb(?)`) return different bytes from the ones saved.
@@ -179,28 +193,56 @@ write, as today.
   read of the anchor under the token returns at dispatch.** After the §2.2 step
   the engine sets `entity.Meta.TransactionID` to the transaction id of the
   stored anchor: the dispatch's transaction id after a save, the id the read
-  returned otherwise. The same assignment follows every other engine write of
+  returned otherwise. When the read finds no anchor (a callback deleted it in
+  this transaction, §2.2), nothing is saved and `entity.Meta.TransactionID` is
+  left as it is: a callback read under the token gets `404`, so there is no
+  stored id for a callback to match. The same assignment follows every other engine write of
   the anchor: the `COMMIT_BEFORE_DISPATCH` TX_pre flush
-  (`flushAndCommitSegment`, `engine_processors.go` ~:596) and the post-dispatch
-  apply `CompareAndSave` (~:548). Nothing assigns it today: the payload takes
-  `entity.Meta.TransactionID` (`internal/grpc/dispatch.go` ~:127), stores copy
+  (`flushAndCommitSegment`, `engine_processors.go` ~:594) and the post-dispatch
+  apply `CompareAndSave` (~:533). Nothing assigns it today: the payload takes
+  `entity.Meta.TransactionID` (`internal/grpc/dispatch.go` ~:134), stores copy
   the entity and write nothing back, and the update path sets it to the
-  current transaction id up front (`service.go` ~:2286) while the stored anchor
+  current transaction id up front (`service.go` ~:2266) while the stored anchor
   still carries the previous commit's id, so a callback's `If-Match` with the
   payload's id fails `412` today; a scheduled fire sends the committed id
-  (`fire_scheduled.go` ~:248). After this work a callback `If-Match` with the
+  (`fire_scheduled.go` ~:273). After this work a callback `If-Match` with the
   payload's id matches on every path, `COMMIT_BEFORE_DISPATCH` with
   `startNewTxOnDispatch: true` included (the payload carries the id TX_post
   reads). The builder audits every engine reader of `entity.Meta.TransactionID`
   for a dependency on the old value.
 - **Scheduled fire precondition.** The fire's `expectedTxID` (the precondition
-  of its final persist, `fire_scheduled.go` ~:248) and the attribution stamp
-  (~:241-244) move before `resolveWorkflow` (~:224), so they are taken from the
+  of its final persist, `fire_scheduled.go` ~:273) and the attribution stamp
+  (~:267-269) move before `resolveWorkflow` (~:239), so they are taken from the
   entity as first read, before any callout. The `expectedTxID == ""` refusal
   stays where it is (its audit event names the selected workflow) and tests
   the captured value.
 
-## 3. Storage: one version per entity per transaction (SPI contract)
+### 2.6 Scheduled fire: `Seal` after the schedule functions
+
+The client doors reconcile scheduled tasks inside the engine, so a schedule
+function's callouts end before the door's `Seal`. The scheduled fire seals
+first (`fire_scheduled.go` ~:318) and reconciles after (~:355), so every
+callback of its schedule functions is refused `410` (`internal/txcoord/inprocess.go`
+~:266 sets `sealed`, ~:440-443 refuses). That is a defect of its own, fixed here
+because §2.1's save before a schedule function serves no one while it stands.
+
+The fire's end becomes, in order:
+
+1. the cascade (unchanged);
+2. the anchor read and the "deleted in this transaction" outcome (~:333-341),
+   unchanged and still before any schedule function;
+3. `removeOwnLife`, then `reconcileScheduledTasks` (its schedule functions save
+   the anchor first, §2.1, and their callbacks are admitted);
+4. `Seal`;
+5. a second anchor read, which decides `writtenHere`. A fire whose target state
+   arms a function schedule has now written the anchor in this transaction, so
+   the final `CompareAndSave` names this transaction's id. If this read finds no
+   anchor, a schedule function's callback deleted the entity the fire has just
+   re-armed: the run fails and rolls back (fail closed), a failed run as in
+   §4.3;
+6. the final `CompareAndSave` and the commit (unchanged).
+
+
 
 ### 3.1 The rule
 
@@ -309,10 +351,11 @@ Today the backends disagree:
   `replaceClaims`) against the immediate unique index `unique_claims_uq`.
 - memory checks at commit on the final buffered entities, but ignores a
   committed claim only when its holder is in `tx.Deletes`
-  (`plugins/memory/txmanager.go` ~:970-975), so a holder this transaction
+  (`plugins/memory/txmanager.go`: set built ~:951-955, checked ~:981), so a holder this transaction
   re-keys still blocks the value.
 - sqlite runs `replaceClaims` per entity at commit, in map order, against an
-  immediate unique index (`plugins/sqlite/txmanager.go` ~:1121-1137).
+  immediate unique index (`plugins/sqlite/txmanager.go`: map loop ~:1037, `replaceClaims`
+~:1139-1143).
 
 So a swap of key values between two entities in one transaction, or a chain of
 moves, is refused on memory, refused or accepted by map order on sqlite, and
@@ -372,7 +415,7 @@ partial key is `422` before the transaction begins) stays.
   signature). The recorded set must be right after `ROLLBACK TO SAVEPOINT`:
   either snapshot it with the savepoint, or at commit keep only the ids whose
   `entities` row this transaction wrote. The claim release in `deleteOn`
-  (`entity_store.go` ~:878) **moves to commit** (step 1), and the model-wide
+  (`entity_store.go` ~:884) **moves to commit** (step 1), and the model-wide
   claim `DELETE` in `DeleteAll` (~:935) is removed inside a transaction: its
   per-entity deletes (~:927-931) already record every id, and a model-wide
   release at commit would drop the claims of entities a rolled-back savepoint
@@ -401,12 +444,14 @@ classifies a 23505 on `unique_claims_uq` by constraint name
 ### 4.3 Scheduled fires carry the model's unique keys
 
 `fireScheduled` begins its transaction without `spi.WithUniqueKeys`
-(`fire_scheduled.go` ~:145; the only callers are in `service.go` ~:195, :2065,
-:2560). memory then releases the entity's claims and inserts none
+(`fire_scheduled.go` ~:146; the only callers are in `service.go` ~:196, :2064,
+:2532). memory then releases the entity's claims and inserts none
 (`txmanager.go` ~:958-963, ~:1114-1117); postgres and sqlite skip claim work and
 keep stale claims. The fire attaches the anchor model's keys, as the entity
 service does. A fire whose final entity breaks a key then fails at commit,
-the entity unchanged. That is a failed run like any other
+the entity unchanged by that transaction. (A segmented fire, through a
+`COMMIT_BEFORE_DISPATCH` processor, has already committed its earlier segments;
+each segment's commit is checked on its own final entities, §4.1.) That is a failed run like any other
 (`internal/scheduler/bookkeeping.go` `decideBookkeeping`): the task ends
 `FAILED` at once if unsafe work was reached, otherwise the attempt is recorded
 and retried with backoff, ending `FAILED` (`FailureExpiredAfterFailedAttempts`)
@@ -436,16 +481,19 @@ asserts this outcome.
 | `GET /entity/{id}?transactionId=X`, X committed | X's first save | X's final entity |
 | `GET /entity/{id}?transactionId=X`, X not committed, caller outside X | `404 ENTITY_NOT_FOUND` | unchanged |
 | same, caller inside X (callback with X's token) | postgres: X's first uncommitted save; memory/sqlite: 404 | `404 ENTITY_NOT_FOUND` everywhere |
-| Unique key violated only by an intermediate state | commits, except on postgres when that state was saved (a callback's write, a `COMMIT_BEFORE_DISPATCH` TX_post write, a claim made before its holder is freed): `409`/`422` | commits everywhere |
+| Unique key violated only by an intermediate state | commits, except on postgres when that state was saved (a callback's write, a `COMMIT_BEFORE_DISPATCH` TX_post write, a claim made before its holder is freed): `409`/`422` | commits everywhere, except a state a `COMMIT_BEFORE_DISPATCH` TX_pre commits: that is a real commit and is checked like any other (§4.1) |
 | Two entities swap key values, or a chain of moves, in one transaction | memory: `409`; sqlite: `409` or commits by map order; postgres: `409` unless saves free first | commits everywhere |
 | Unique key violated by the final entity | `409 UNIQUE_VIOLATION` (`422` partial) | unchanged codes; postgres reports at commit |
-| A joined callback's write that duplicates a key or leaves a partial key (postgres) | the callback request gets `409`/`422` | the callback request succeeds; the owner's commit fails `409`/`422` (as memory/sqlite today) |
+| A joined callback's write whose final entity duplicates a key (postgres) | the callback request gets `409` | the callback request succeeds; the owner's commit fails `409` (as memory/sqlite today) |
+| A joined callback whose request body leaves a partial key | `422` at the callback, every backend (`withUniqueKeys`, `service.go` ~:264, ~:2246); the failed write marks the owner (#704) | unchanged |
+| A joined callback whose processors' returned data leaves a partial key (postgres) | the callback request gets `422` | the callback request succeeds; the owner's commit fails `422` (as memory/sqlite today) |
 | A scheduled fire that changes a key field | memory drops the entity's claims; postgres/sqlite keep stale claims | claims follow the final entity; a fire that breaks a key fails (§4.3) |
 | A callback's `If-Match` with the payload's `meta.transactionId` on the anchor | update path: `412`; scheduled fire: matches | matches on every path (§2.5) |
 | A scheduled fire that declines or is cancelled after running a function criterion | no entity version | unchanged: no entity version (§2.2) |
 | Reading an entity's available transitions under a transaction token (function criteria run) | no write | unchanged: no write (§2.1) |
 | A processor writes its own anchor **without** the token (a standalone transaction) | the cascade fails `409` (memory/sqlite at commit; postgres at its final save) | memory/sqlite: unchanged. postgres: the stray write waits on the anchor's row lock, which the cascade holds from its first pre-callout save; the callout times out (its callout failure, e.g. `503 DISPATCH_TIMEOUT`), the cascade rolls back, then the stray write commits. Fails closed on all backends. Documented as: a processor writes the entity it runs for only with the token. |
 | Another client writes the anchor during a callout (postgres) | client commits; cascade fails `409` | client waits until the cascade ends; one side wins, the other gets `409`. A wait longer than the statement timeout (`CYODA_POSTGRES_STATEMENT_TIMEOUT`, default 5 min) cancels the client's statement. Consistent outcome, not a precise interleave. |
+| Another transaction that read the anchor commits during a callout (postgres) | commits | waits at commit (read-set validation takes `FOR SHARE`, `plugins/postgres/commit_validator.go` ~:44) until the cascade ends, then validates as today. A processor's own tokenless transaction that read its anchor therefore waits on its own callout, which times out, as for the stray write above. Documented with the stray write. |
 
 No new error codes. No new status codes on any endpoint.
 
@@ -459,10 +507,10 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | | `404 ENTITY_NOT_FOUND` | X not committed (inside or outside X); X never wrote the entity; X deleted it |
 | `POST /entity/{format}/{name}/{version}`, `PUT/PATCH /entity/...`, transitions, collections — HTTP and gRPC | `409 UNIQUE_VIOLATION` | final entity duplicates a key (now at commit on postgres) |
 | | `422 INVALID_UNIQUE_KEY` | final entity has a partial composite key (now at commit on postgres) |
-| | `409 UNIQUE_VIOLATION` / `422 INVALID_UNIQUE_KEY` | a joined callback's write left a duplicate or partial key in the final entities (postgres: was refused on the callback request) |
+| | `409 UNIQUE_VIOLATION` / `422 INVALID_UNIQUE_KEY` | a joined callback's write left a duplicate key, or its processors' returned data a partial key, in the final entities (postgres: was refused on the callback request) |
 | | `409 CONFLICT` (retryable) | the pre-callout save meets a conflict; two commits claim each other's values (`40P01`) |
 | | `503` / `500` | the pre-callout save meets a storage outage / other failure |
-| Joined callback writes (`X-Tx-Token` / gRPC `tx-token`) | `2xx` instead of `409`/`422` on postgres | a key clash or partial key is now found at the owner's commit |
+| Joined callback writes (`X-Tx-Token` / gRPC `tx-token`) | `2xx` instead of `409`/`422` on postgres | a key clash, or a partial key from the callback's processors' returned data, is now found at the owner's commit; a partial key in the callback's body stays `422` at the callback |
 | `GET /entity/{id}` and search/count under `X-Tx-Token` / gRPC `tx-token` from a callback | `200` | returns the current anchor |
 
 ## 7. Test coverage matrix
@@ -474,13 +522,21 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | Function criterion (cascade) reads anchor → current state/data | engine unit | yes | yes | — |
 | Workflow-selection criterion on create reads anchor → found, empty state | engine unit | yes | — | — |
 | ASYNC_NEW_TX processor reads anchor → current; failure keeps the pre-dispatch save | engine unit | yes | — | — |
-| Schedule function reads anchor → current | engine unit | yes | — | — |
+| Schedule function reads anchor → current, on a client door and in a scheduled fire (the fire is `410` today, §2.6) | engine unit | yes | — | — |
+| Scheduled fire: a schedule function's callback deletes the anchor → run fails, nothing committed (§2.6) | engine unit | — | — | — |
 | Callback search under token finds anchor by its current data | — | yes | yes | yes |
+| Callback count and page under token count/list the anchor by its current data | — | yes | yes | yes |
 | Callback write adopted when processor returns no data (rule §2.4) | engine unit (`engine_cbd_callback_test`, `fire_callback_test` updated) | existing | — | — |
 | One version per transaction: each §3.1 row | spitest + per-plugin unit | — | yes (history via `/changes`) | — |
 | Savepoint rollback restores pending version | spitest | — | — | — |
 | `?transactionId` → final entity after commit | — | yes | yes | n/a (no gRPC by-tx read) |
 | `?transactionId=X` inside X → 404 | spitest | yes | yes | n/a |
+| `?transactionId=X`, X deleted the entity → 404 | spitest | yes | — | n/a |
+| Joined callback body with a partial key → 422 at the callback, owner marked | — | existing (#704) | — | existing |
+| Joined callback's processor returns data with a partial key → callback 2xx, owner commit 422 | — | yes | — | — |
+| postgres: another client writes the anchor during a callout → waits; one winner, loser `409` | — | yes (isolated, not parity) | — | — |
+| postgres: a processor's tokenless write of its own anchor → callout times out, cascade rolls back, stray write then commits | — | yes (isolated, not parity) | — | — |
+| postgres: another transaction that read the anchor commits during a callout → waits, then validates | — | yes (isolated, not parity) | — | — |
 | Unique key: intermediate duplicate then fixed → commits | plugin unit | yes | yes | — |
 | Unique key: final duplicate → 409 at commit; partial → 422 | plugin unit | existing (`unique_keys_*`) | existing | existing |
 | Unique key: free-after-claim in one tx → commits | plugin unit (`SameTxReclaim*` rewritten) | — | yes | — |
@@ -517,13 +573,9 @@ showing the old outcome) on the unfixed code, or it is dropped.
 - `internal/domain/workflow/engine_cbd_callback_test.go`
   `TestProcessorCallback_FirstWriteOfCommittedBytes_IsAdopted` (relies on the
   stale read).
-- The scheduled fire's final persist (`fire_scheduled.go` ~:297-337): the
-  anchor read and `writtenHere` (~:314) are taken **after**
-  `reconcileScheduledTasks` (~:327), whose schedule function (`arm.go` ~:275)
-  can now save the anchor. Taken before it, a fire whose target state arms a
-  function schedule would `CompareAndSave` against the committed id over its
-  own pending write and fail on every attempt. The comment on `writtenHere`
-  about which runs take that branch is rewritten.
+- The scheduled fire's end (`fire_scheduled.go` ~:316-375), reordered per §2.6.
+  The comment on `writtenHere` about which runs take that branch is rewritten.
+  The fire's existing tests that pin `Seal` before reconcile, if any, change.
 - `SameTxReclaim*` in the three plugins' `unique_claims_test.go`.
 - Any e2e/parity test counting `/changes` entries after a joined-callback write
   or a COMMIT_BEFORE_DISPATCH run (to be found by the builder; grep `changes`
@@ -553,10 +605,11 @@ showing the old outcome) on the unfixed code, or it is dropped.
   `transactionId`, if it says otherwise (builder greps).
 - `cmd/cyoda/help/content/workflows.md`: on postgres a callout that carries the
   transaction token holds the entity's row lock while it runs, so another
-  writer of that entity waits until the workflow ends.
-- `docs/ARCHITECTURE.md` ~:1680 ("returns the *earliest* version").
-- `api/openapi.yaml` ~:5551 (free-before-claim in the unique-keys operation).
-- The comment on `getEntityByTransactionID` (`service.go` ~:372-380, "earliest
+  writer of that entity, and another transaction that read it, wait at their
+  write or commit until the workflow ends.
+- `docs/ARCHITECTURE.md` ~:1838 ("returns the *earliest* version").
+- `api/openapi.yaml` ~:5742 (free-before-claim in the unique-keys operation).
+- The comment on `getEntityByTransactionID` (`service.go` ~:363-371, "earliest
   matching version").
 - SPI `unique.go` / `unique_context.go`: state the commit-time claim rule (§4.1)
   and that every write of a keyed entity carries its keys.
@@ -573,7 +626,8 @@ showing the old outcome) on the unfixed code, or it is dropped.
 ## 10. Left to the builder
 
 - The exact sentinel name for the pre-callout save's failure (§2.3), as long as
-  it is in `engineConflictIsTransactionConflict`'s list.
+  it is in `engineConflictIsTransactionConflict`'s list and in
+  `classifyWorkflowError`'s infrastructure list.
 - The SQL shape of postgres's pending-row detection.
 - How postgres keeps its record of the entities a transaction wrote exact
   across savepoint rollbacks (§4.2 names two acceptable ways).
