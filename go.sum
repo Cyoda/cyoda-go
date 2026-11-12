@@ -77,10 +77,16 @@ github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261112012612-d45711b2c8c8 h1:R
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261112012612-d45711b2c8c8/go.mod h1:AjUU/919ziLBvx3Ohsq5NYtaVWfxEL1EFi1NWignu9M=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261106010202-36668cd743c1 h1:TGp2EFP7E8+oVFICfrRzjkure9z8jLZKEwhGZZBzFpI=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261106010202-36668cd743c1/go.mod h1:cH5oNZccmRL2FA2t3VObKnZpw32VxQmbeE0GwYCD2Fw=
+github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261112012722-59d9194d5875 h1:yM6I6rEMBzyQ3aid42bPMP34KJ3HpVemmRfdSTpqV54=
+github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261112012722-59d9194d5875/go.mod h1:6Gtp9giJL4G4aQf883jUkaRVgG0EH3fRklM8lVMDg10=
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261106010202-36668cd743c1 h1:jeFd3klk7K9+ZRsgPwD0/8P2mcMOpxYGu0WyKf6qIH0=
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261106010202-36668cd743c1/go.mod h1:Oj/N/9m569geVKJjJ0IG1xpo/AwAs4BoRozhPzaZnas=
+github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261112012722-59d9194d5875 h1:uVZVwhgrw4vrD7aFmnRPEdeMiMh6hODkGz9TbIgfiDE=
+github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261112012722-59d9194d5875/go.mod h1:42XjgsDNAeky8PoN+S3KFJcVh1uts/hKMFEP7EskbNo=
 github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261106010202-36668cd743c1 h1:RRy63KEaaDaXO/axT+lLZuqwxDHB5VzvW1PDo9lKSMw=
 github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261106010202-36668cd743c1/go.mod h1:MbzPFb0Ig5/V0u6KH1FHIECf1LEZROiaokyi6bhEg/A=
+github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261112012722-59d9194d5875 h1:fgAgixmI7tUBA+EG3C5BnGVsBAEm46EIxTzEqc83OXw=
+github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261112012722-59d9194d5875/go.mod h1:ywIKoTr4ZfMnwiILSyrvRtGYFStv2w2KPEyuXfBgENg=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dhui/dktest v0.4.6 h1:+DPKyScKSEp3VLtbMDHcUq6V5Lm5zfZZVb0Sk7Ahom4=
