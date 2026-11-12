@@ -573,6 +573,12 @@ type RollbackOnlyError struct {
    - After it returns, `OpenScope` refuses and `CompleteScope` refuses with
      `ErrCalloutSuperseded`.
    - Commit after a successful Seal commits the root and every completed scope.
+   - A coordinator never lets `Seal` succeed after a mark it failed to record.
+     When `DiscardScope` with a non-empty code cannot record the mark, the
+     coordinator makes the transaction's `Seal` fail, for example by keeping
+     the scope unresolved so that `Seal` fails, or by having `Seal` wait until
+     the scope's lease expires and then treat it as rollback-only. A
+     `DiscardScope` error does not release the coordinator from this.
 9. **Concurrency.** `Join` on a capable store allows concurrent operations on one
    transaction from any number of goroutines and pnodes. This changes the
    SPI's `Join` text, "only one operation at a time per transaction"

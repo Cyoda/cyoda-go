@@ -616,6 +616,10 @@ the first matching row:
 | 8 | non-retryable `4xx` of a read | completed | none | the handler's |
 | 9 | non-retryable `5xx` of a read | discarded | none | the handler's |
 
+A scope whose discard fails did not end as its row answers: whatever the row,
+`End` replaces the answer with `500 SERVER_ERROR`, not retryable
+(`endAnswer`, `internal/txcoord/end.go`), and the transaction is broken.
+
 A release that fails after a success is judged again as a failed request, and
 otherwise answers `500 SERVER_ERROR` — on PostgreSQL, a handler that swallowed
 a statement error and answered `2xx` meets `25P02` there. Row 2 is not
@@ -639,8 +643,9 @@ member answered, so a processor, a function criterion and a schedule function
 fail alike on a marked scope. A processor scope stops the climb: an
 `ASYNC_NEW_TX` processor whose scope is marked is discarded with everything
 under it, counts as failed (non-fatal, logged and recorded as any failure of
-the mode) and passes no mark up. A session that ended, or a rollback to a
-savepoint that failed, leaves the transaction **broken**, which is separate
+the mode) and passes no mark up. A session that ended, a rollback to a
+savepoint that failed, or a discard that failed (answered `500 SERVER_ERROR`,
+not retryable) leaves the transaction **broken**, which is separate
 from marked: later joined requests are refused with `404
 TRANSACTION_NOT_FOUND`, and the owner fails with the broken cause, classified
 as usual (a dead PostgreSQL session is the retryable `503
@@ -811,7 +816,10 @@ after it begins the callout and at every `Advance` — before each try and each
 hand-over — and stops the callout when the scope can no longer complete. Of
 two callback scopes that wrote the same entity from the same version, the
 second to complete is discarded and answered the retryable `409 CONFLICT`. No
-in-tree backend implements the capability.
+in-tree backend implements the capability. A coordinator must never let `Seal`
+succeed after a mark it failed to record: when `DiscardScope` with a code
+cannot record the mark, the transaction's `Seal` must still fail, and a
+`DiscardScope` error does not release it from this.
 
 **Savepoints under `ASYNC_NEW_TX`.** The processor runs in a processor scope of
 its own, which takes a savepoint of the parent transaction. Its own failure,

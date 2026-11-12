@@ -1652,14 +1652,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   compute member's callbacks may queue for one transaction**, and a new
   retryable `503` `TOO_MANY_JOINED_REQUESTS` is what the member is told past
   it. On the in-tree backends the callbacks of one transaction are served one
-  at a time, so firing many at once buys a member no speed — but each one waiting held its whole request in
-  memory for as long as the callout lasted, with nothing bounding how many
-  there could be. The refusal comes before the request body is read where the
-  door allows that, and touches neither the transaction nor the callbacks
-  already queued. On it, back off and send the callback again; a processor that
-  lets it escape fails its callout, and the operation is rolled back. Zero or
-  negative refuses to start — an unbounded queue is what the cap exists to
-  prevent. A paused callback's resume is never refused.
+  at a time, so firing many at once buys a member no speed — but each one
+  waiting held its whole request in memory for as long as the callout lasted,
+  with nothing bounding how many there could be. The refusal comes before the
+  request body is read where the door allows that, and touches neither the
+  transaction nor the callbacks already queued. On it, back off and send the
+  callback again; a processor that lets it escape fails its callout, and the
+  operation is rolled back. Zero or negative refuses to start — an unbounded
+  queue is what the cap exists to prevent. A paused callback's resume is never
+  refused.
 
 - **The published API document declares the transaction routing token and the
   statuses a joined request is answered with.** `X-Tx-Token` is a new optional
@@ -1679,8 +1680,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   administration operations carry neither the parameter nor `410` or `413`:
   they refuse a request carrying the header with `400
   MODEL_ADMIN_IN_JOINED_TRANSACTION` before the token is read — changing a
-  model or a workflow from inside a callout is not supported. Nothing existing changed: the parameter is optional and the
-  responses are additions.
+  model or a workflow from inside a callout is not supported. Nothing existing
+  changed: the parameter is optional and the responses are additions.
 
 - **Audit events carry `version` (entity change) or `eventId` (state
   machine).** `EntityChangeAuditEventDto.version` is the entity's version

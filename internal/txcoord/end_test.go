@@ -365,16 +365,26 @@ func TestEnd_DiscardFails500AndBreaks(t *testing.T) {
 		class     RequestClass
 		outcome   *common.Outcome
 		supersede bool
+		lost      bool
+		marked    bool
 	}{
-		{"row 1, superseded", Write, &common.Outcome{}, true},
-		{"row 6, retryable", Write, retryable, false},
-		{"row 7, non-retryable write", Write, failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed), false},
-		{"row 9, read 5xx", Read, failed(http.StatusInternalServerError, common.ErrCodeServerError), false},
+		{"row 1, superseded", Write, &common.Outcome{}, true, false, false},
+		{"row 2, lost race", Write, failed(http.StatusBadRequest, common.ErrCodeBadRequest), false, true, false},
+		{"row 4, marked scope", Write, &common.Outcome{}, false, false, true},
+		{"row 6, retryable", Write, retryable, false, false, false},
+		{"row 7, non-retryable write", Write, failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed), false, false, false},
+		{"row 9, read 5xx", Read, failed(http.StatusInternalServerError, common.ErrCodeServerError), false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
 			_, endC1 := e.callout(e.ownerCtx, "c1")
 			a, actx := e.mustEnter(tc.class, pair("c1", 1))
+			if tc.marked {
+				_ = markedByChild(t, e, actx)
+			}
+			if tc.lost {
+				e.tm.lost.Store(true)
+			}
 			rbErr := errors.New("the connection is gone")
 			e.tm.failRollback.Store(&rbErr)
 
@@ -399,7 +409,14 @@ func TestEnd_DiscardFails500AndBreaks(t *testing.T) {
 			mustCode(t, err, http.StatusNotFound, common.ErrCodeTransactionNotFound, false)
 
 			endC1()
-			if err := e.seal(); !errors.Is(err, rbErr) {
+			err = e.seal()
+			if tc.lost {
+				// A lost race is reported before the broken cause (see Check),
+				// as the retryable conflict the owner is retried on.
+				if !errors.Is(err, spi.ErrTxAborted) {
+					t.Fatalf("Seal = %v; want the lost race (spi.ErrTxAborted)", err)
+				}
+			} else if !errors.Is(err, rbErr) {
 				t.Fatalf("Seal = %v; want the discard's cause", err)
 			}
 		})

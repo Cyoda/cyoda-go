@@ -558,9 +558,10 @@ func (s *scope) releaseGate() {
 	}
 }
 
-// pause implements Pause for s, on the chain whose context is ctx. The gate is held by the nearest callback scope
-// on s's chain; s itself goes on the paused stack, because the callout it makes
-// is registered with s and its callbacks open under s.
+// pause implements Pause for s, on the chain whose context is ctx. The gate is
+// held by the nearest callback scope on s's chain; s itself goes on the paused
+// stack, because the callout it makes is registered with s and its callbacks
+// open under s.
 func (c *inProcess) pause(ctx context.Context, s *scope) func() error {
 	holder, release := func() (*scope, func()) {
 		c.mu.Lock()
