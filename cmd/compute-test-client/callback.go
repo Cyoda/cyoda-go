@@ -924,6 +924,37 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			}
 			return &Entity{ID: entity.ID, State: entity.State}, nil
 		},
+		// cb-unlock-then-tag — unlocks cfg.SecondaryModel/SecondaryVersion with
+		// an UNJOINED call (a joined admin call is refused), then returns the
+		// entity with a field "tag" the model does not hold. The model was
+		// LOCKED when the request read it and is UNLOCKED when the engine
+		// extends it with the field.
+		"cb-unlock-then-tag": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			version := cfg.SecondaryVersion
+			if version == 0 {
+				version = 1
+			}
+			res, err := cb.do(ctx, http.MethodPut, fmt.Sprintf("/api/model/%s/%d/unlock", cfg.SecondaryModel, version), "", "", "")
+			if err != nil {
+				return nil, fmt.Errorf("callback unlock: %w", err)
+			}
+			if res.Status != http.StatusOK {
+				return nil, fmt.Errorf("callback unlock status=%d body=%s", res.Status, res.Body)
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["tag"] = "foo"
+			out, err := json.Marshal(data)
+			if err != nil {
+				return nil, err
+			}
+			return &Entity{ID: entity.ID, State: entity.State, Data: out}, nil
+		},
 		"cb-ifmatch-update": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
 			if err := requireCB(cb); err != nil {
 				return nil, err
