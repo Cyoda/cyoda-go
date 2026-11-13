@@ -19,7 +19,9 @@ when an extension becomes visible.
 2. An extension is the initiator's own business until its call returns. It
    **must** be visible when the call returns to the initiator; it **may** be
    visible to others earlier. A simpler design that relies on this is
-   preferred, with its side effects documented.
+   preferred, with its side effects documented. Across nodes, the
+   invalidation broadcast is sufficient: a node that does not receive it is
+   partitioned or down, which cluster management handles.
 3. The mechanism must not materially slow down transactional throughput.
 4. No returned extension is ever lost, and the backends behave the same on
    everything the contract guarantees.
@@ -31,9 +33,10 @@ when an extension becomes visible.
 - The steady state (data that fits the schema) does no extra work.
 - A write that extends pays one short transaction, never a lock held for the
   length of another request.
-- The model cache never keeps a schema older than a returned extension longer
-  than the invalidation broadcast takes, and never serves a schema that
-  storage does not hold.
+- The model cache never serves a schema that storage does not hold. On the
+  extending node it never serves one older than a returned extension; on
+  other nodes, not after the invalidation broadcast has arrived (or, if a
+  broadcast is lost, after the cache lease).
 - All documentation and `cyoda help` describe the mechanism the same way, and
   correctly (§12).
 
@@ -349,10 +352,15 @@ model `Save` retries); its doc stops naming schema extension.
 4. Writers that bring different types for one field leave the model admitting
    both.
 5. A failed request may still have extended the model; retrying it is safe.
-6. Guarantee: once a write that extends has returned `2xx`, the initiator sees
-   the field on every node: a node that has not yet received the invalidation
-   refreshes once before it refuses anything on schema grounds, and export
-   reads storage (§4.9a).
+6. Once a write that extends has returned `2xx`, the node that served it has
+   the new schema. Another node has it when the invalidation broadcast
+   arrives (normally milliseconds; if a broadcast is lost, when the cache
+   lease, `CYODA_MODEL_CACHE_LEASE`, ends). Until then, on that node:
+   anything that would refuse on schema grounds refreshes once first, so the
+   new field is not refused, and export reads storage (§4.9a); but a query
+   that does not refuse is planned against the older schema and can silently
+   miss the new field or a widened type (e.g. `code = 42` after `code` was
+   widened from string to string-or-integer finds no integer match there).
 
 ## 6. Performance
 
@@ -385,7 +393,7 @@ all adding the same field, run before and after; the PR reports the numbers.
 | Two writes extend the same model (PUT, collection update, processor output), postgres | second `409 CONFLICT` (processor output `500`) | both succeed |
 | An extending write fails or rolls back | memory, sqlite, postgres creates: field kept; postgres in-transaction paths: discarded | field kept on every backend and path (§5.2) |
 | Another client reads the model while an extending write is in progress | depends on backend and path | may see the new field (§5.1) |
-| The initiator searches on, PATCHes, validates or exports the new field right after its write returned, on another node | search: `400 INVALID_FIELD_PATH` possible until the broadcast arrives (negative cache); PATCH, validate: `400 VALIDATION_FAILED`; export: field missing | works (one refresh, or export from storage) |
+| The initiator searches on, PATCHes, validates or exports the new field right after its write returned, on another node, before the broadcast arrives | search: `400 INVALID_FIELD_PATH` possible (negative cache, no lease); PATCH, validate: `400 VALIDATION_FAILED`; export: field missing | not refused (one refresh), export from storage; a query that does not refuse may still miss the new field or a widened type until the broadcast arrives (§5.6) |
 | An operator changes `changeLevel` while a write extends under the old level | postgres: conflicts with the write's lock | the extension is refused with a retryable `409 CONFLICT`; the retry validates under the new level |
 | A criterion in the same request on the field just added | works through the shared cache on most paths | works on every path (§4.6) |
 | A storage failure during processor-output extension | `500` | `503` (retryable) |
@@ -443,7 +451,8 @@ outside `docs/superpowers/`, `cmd/cyoda/help/`, `README.md`) is empty.
 | Concurrent PUTs, collection updates, collection creates and processor-output writes each adding fields → all `2xx`, every field in the schema | — | — | extend `model_schema_extensions_test.go` ~:36-75 (today creates only) to every door (isolated, not parity) | — | new (concurrent gRPC writes, envelope `Success=true`) |
 | A write adds a field nested under a parent another write added after this transaction began → `2xx` | postgres plugin | — | new | — | — |
 | Criterion in the same request on the field just added | engine unit | — | new | new | — |
-| Initiator's search, PATCH, model validation and export on its new field on another node before the broadcast → `2xx`, field present | search, entity and model service units | — | — | new, multi-node harness (`e2e/parity/postgres/multinode_test.go`) | — |
+| On a node whose cache is older than the model (broadcast not yet received): search, PATCH and model validation on the new field are not refused; export has the field | search, entity and model service units (a cache entry seeded older than storage; no production hook) | — | — | — | — |
+| Multi-node: an extension on node A is visible on node B after the broadcast | — | — | — | new, multi-node harness (`e2e/parity/postgres/multinode_test.go`) | — |
 | Type mismatch on a known path (`CONDITION_TYPE_MISMATCH`) refreshes once | search unit | — | — | — | — |
 | Refresh-on-refusal through the gRPC search door | — | — | — | — | new |
 | A refresh never joins a flight started before it; an extension error still evicts and broadcasts | modelcache unit | — | — | — | — |
