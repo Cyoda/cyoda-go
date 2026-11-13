@@ -19,7 +19,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -296,11 +298,15 @@ type sharedPanic struct{ value any }
 func (p *sharedPanic) Error() string { return fmt.Sprintf("panic in shared model call: %v", p.value) }
 
 // recovering wraps a shared call's function so a panic in it becomes a
-// sharedPanic result.
+// sharedPanic result. The panic is logged here, with the stack it was raised
+// on: if every caller has left, no door will answer it, and the re-raise in a
+// caller that is still waiting starts a new stack.
 func recovering(fn func() (any, error)) func() (any, error) {
 	return func() (v any, err error) {
 		defer func() {
 			if r := recover(); r != nil {
+				slog.Error("panic in a shared model store call",
+					"pkg", "modelcache", "panic", fmt.Sprintf("%v", r), "stack", string(debug.Stack()))
 				v, err = nil, &sharedPanic{value: r}
 			}
 		}()
