@@ -1904,14 +1904,17 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 		return fields, nil
 	}
 
-	fresh, err := refreshOnUnknownPaths(ctx, modelStore, modelRef, missing, func(f map[string]schema.FieldDescriptor) []string {
+	fresh, still, err := refreshOnUnknownPaths(ctx, modelStore, modelRef, missing, func(f map[string]schema.FieldDescriptor) []string {
 		return findUnknownPaths(missing, f)
 	})
 	if err != nil {
 		return nil, err
 	}
-	if fresh == nil {
+	switch {
+	case fresh == nil:
 		return nil, invalidPathError(missing)
+	case len(still) > 0:
+		return nil, invalidPathError(still)
 	}
 	// The refresh is authoritative — hand back the schema the paths
 	// actually validated against, not the stale one.
@@ -1972,7 +1975,7 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 	// under-report what is missing here.
 	missing := findUnknownSortPaths(normalisedDataSortPaths(keys), fields)
 
-	fresh, err := refreshOnUnknownPaths(ctx, modelStore, modelRef, missing, func(f map[string]schema.FieldDescriptor) []string {
+	fresh, _, err := refreshOnUnknownPaths(ctx, modelStore, modelRef, missing, func(f map[string]schema.FieldDescriptor) []string {
 		return findUnknownSortPaths(missing, f)
 	})
 	if err != nil {

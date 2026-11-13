@@ -12,13 +12,13 @@ import (
 func init() {
 	Register(
 		NamedTest{
-			Name: "UnknownModel_BoundedRefresh_ColdCacheSucceeds",
-			Fn:   RunUnknownModel_BoundedRefresh_ColdCacheSucceeds,
+			Name: "UnknownModel_ColdCache_ReadsStore",
+			Fn:   RunUnknownModel_ColdCache_ReadsStore,
 		},
 	)
 }
 
-// RunUnknownModel_BoundedRefresh_ColdCacheSucceeds proves that
+// RunUnknownModel_ColdCache_ReadsStore proves that
 // a model-scoped operation reaching a node whose model cache is cold does not
 // answer a false 404: the cache holds no entry for a model it has not read, so
 // EnsureModelRegistered's Get reads the authoritative store.
@@ -35,7 +35,7 @@ func init() {
 //
 // Not in the main parity registry — this is an isolated cluster test exercising
 // the cluster-specific cold-cache read path, not a cross-backend contract.
-func RunUnknownModel_BoundedRefresh_ColdCacheSucceeds(t *testing.T, fixture MultiNodeFixture) {
+func RunUnknownModel_ColdCache_ReadsStore(t *testing.T, fixture MultiNodeFixture) {
 	t.Helper()
 	urls := fixture.BaseURLs()
 	if len(urls) < 2 {

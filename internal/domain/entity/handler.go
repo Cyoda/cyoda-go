@@ -160,7 +160,7 @@ func classifyBeginErr(err error) *common.AppError {
 	return common.Internal("failed to begin transaction", err)
 }
 
-// classifyValidateOrExtendErr determines whether a validateOrExtend error is
+// classifyValidateOrExtendErr determines whether an ingest.ValidateOrExtend error is
 // internal (5xx) or operational (4xx) and returns the appropriate AppError.
 //
 // Classification is sentinel-based to keep it robust against wording drift
@@ -185,9 +185,9 @@ func classifyBeginErr(err error) *common.AppError {
 // The catch-all puts err.Error() in the response body verbatim — a 4xx carries
 // full domain detail by contract. That makes it a leak the moment a feeder
 // hands it something infrastructural, so every feeder marks its store failures
-// with ErrInternalSchema: validateOrExtend does.
+// with ErrInternalSchema: ingest.ValidateOrExtend does.
 func classifyValidateOrExtendErr(err error) *common.AppError {
-	// Pass-through: validateOrExtend may return a *common.AppError directly
+	// Pass-through: ingest.ValidateOrExtend may return a *common.AppError directly
 	// for pre-classified operational errors (e.g. unique-key widening guard).
 	var preClassified *common.AppError
 	if errors.As(err, &preClassified) {

@@ -3,6 +3,7 @@ package search_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -135,4 +137,65 @@ func TestSearch_OwnNewField_AfterRacingSearch_Found(t *testing.T) {
 	if len(results) != 1 || results[0].Meta.ID != "e1" {
 		t.Fatalf("S2: want e1, got %d results", len(results))
 	}
+}
+
+// TestRefusal_NamesOnlyPathsTheRefreshedSchemaLacks pins that a refusal is
+// decided on the refreshed schema: the cached schema lacks x and y, the
+// refreshed one has x, so the 400 names y alone and never a path the model has.
+func TestRefusal_NamesOnlyPathsTheRefreshedSchemaLacks(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	newSvc := func(t *testing.T) (*search.SearchService, *refreshingModelStore) {
+		t.Helper()
+		base := memory.NewStoreFactory()
+		t.Cleanup(func() { base.Close() })
+		ms := &refreshingModelStore{
+			getQueue:     []*spi.ModelDescriptor{buildSearchDescriptor(t, ref, "a"), buildSearchDescriptor(t, ref, "a")},
+			refreshQueue: []*spi.ModelDescriptor{buildSearchDescriptor(t, ref, "a", "x")},
+		}
+		factory := &modelStoreFactory{StoreFactory: base, modelStore: ms}
+		searchStore, _ := base.AsyncSearchStore(context.Background())
+		return search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()), ms
+	}
+	refusal := func(t *testing.T, err error) string {
+		t.Helper()
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeInvalidFieldPath {
+			t.Fatalf("want INVALID_FIELD_PATH, got %v", err)
+		}
+		return appErr.Message
+	}
+
+	t.Run("condition", func(t *testing.T) {
+		svc, _ := newSvc(t)
+		cond := &predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{
+			&predicate.SimpleCondition{JsonPath: "$.x", OperatorType: "EQUALS", Value: "1"},
+			&predicate.SimpleCondition{JsonPath: "$.y", OperatorType: "EQUALS", Value: "1"},
+		}}
+		_, err := svc.Search(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{Limit: 10})
+		msg := refusal(t, err)
+		if !strings.Contains(msg, "$.y") || strings.Contains(msg, "$.x") {
+			t.Errorf("refusal must name $.y only, got %q", msg)
+		}
+	})
+
+	t.Run("sort", func(t *testing.T) {
+		svc, _ := newSvc(t)
+		keys := []search.OrderKey{{Path: "$.x", Source: spi.SourceData}, {Path: "$.y", Source: spi.SourceData}}
+		_, err := svc.ResolveSortKeysForTest(tenantCtx("tenant-1"), ref, keys)
+		msg := refusal(t, err)
+		if !strings.Contains(msg, "y") || strings.Contains(msg, "x") {
+			t.Errorf("refusal must name y only, got %q", msg)
+		}
+	})
+
+	t.Run("ValidateKnownPaths", func(t *testing.T) {
+		_, ms := newSvc(t)
+		fields := map[string]schema.FieldDescriptor{}
+		_, err := search.ValidateKnownPaths(context.Background(), ms, ref, []string{"$.x", "$.y"}, fields)
+		msg := refusal(t, err)
+		if !strings.Contains(msg, "$.y") || strings.Contains(msg, "$.x") {
+			t.Errorf("refusal must name $.y only, got %q", msg)
+		}
+	})
 }
