@@ -210,3 +210,34 @@ func cloneByMarshal(t *testing.T, n *ModelNode) *ModelNode {
 
 // Guard against unused import.
 var _ spi.SchemaDelta
+
+// TestDiff_SameFieldsSameBytes: the delta is a function of (old, new) only, so
+// coalescing identical concurrent extensions can compare bytes. Map iteration
+// order must not leak into the op order.
+func TestDiff_SameFieldsSameBytes(t *testing.T) {
+	old := NewObjectNode()
+	old.SetChild("a", NewLeafNode(String))
+	fields := []string{"b", "c", "d", "e"}
+	build := func(order []string) []byte {
+		doc := map[string]any{"a": "x"}
+		for _, f := range order {
+			doc[f] = "x"
+		}
+		n, err := Extend(old, doc, spi.ChangeLevelStructural)
+		if err != nil {
+			t.Fatalf("Extend new: %v", err)
+		}
+		d, err := Diff(old, n)
+		if err != nil {
+			t.Fatalf("Diff: %v", err)
+		}
+		return d
+	}
+	want := build(fields)
+	rev := []string{"e", "d", "c", "b"}
+	for i := 0; i < 50; i++ {
+		if got := build(rev); string(got) != string(want) {
+			t.Fatalf("iteration %d: delta bytes differ:\nwant: %s\ngot:  %s", i, want, got)
+		}
+	}
+}

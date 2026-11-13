@@ -2,6 +2,8 @@ package schema
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -138,7 +140,10 @@ func isolateBranch(n *ModelNode, k NodeKind) *ModelNode {
 
 func diffObject(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	newChildren := newN.Object().Children()
-	for name, newChild := range newChildren {
+	// Sorted: the delta bytes are a function of (old, new) only, so identical
+	// concurrent extensions can be coalesced by comparing them.
+	for _, name := range slices.Sorted(maps.Keys(newChildren)) {
+		newChild := newChildren[name]
 		oldChild := oldN.Object().Child(name)
 		if oldChild == nil {
 			raw, err := Marshal(newChild)
@@ -152,7 +157,7 @@ func diffObject(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 			return err
 		}
 	}
-	for name := range oldN.Object().Children() {
+	for _, name := range slices.Sorted(maps.Keys(oldN.Object().Children())) {
 		if _, ok := newChildren[name]; !ok {
 			return fmt.Errorf("property removal at %q is not additive", joinSchemaPath(path, name))
 		}
