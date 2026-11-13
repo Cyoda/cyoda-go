@@ -120,9 +120,8 @@ covers only unknown paths (`path_validate.go` ~:314-357).
 
 ## 3. The contract (SPI)
 
-`ModelStore.ExtendSchema(ctx, ref, level, delta) (changed bool, err error)`,
-where `level` is the `changeLevel` the caller computed the delta under and
-`changed` says whether the schema grew (both new):
+`ModelStore.ExtendSchema(ctx, ref, level, delta) error`, where `level` is the
+`changeLevel` the caller computed the delta under (a new parameter):
 
 1. **Commits on its own.** It never joins a transaction on `ctx`. When it
    returns nil the delta is durably committed, whatever then happens to the
@@ -183,7 +182,7 @@ model `Save` retries); its doc stops naming schema extension.
 3. **A delta the schema already holds writes nothing.** Under the lock, the
    backend applies the delta to the current fold and asks `schema.Diff`
    (`internal/domain/model/schema/diff.go` ~:17) for the difference, which is
-   nil for a semantic no-op. Nil: no row, no broadcast, success. Otherwise the
+   nil for a semantic no-op. Nil: no row, success. Otherwise the
    row holds that difference (the reduced delta), not the caller's delta. N
    writers adding the same field write one row.
 4. **postgres: a dedicated pool for the model store.** Model reads and
