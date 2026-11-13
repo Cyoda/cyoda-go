@@ -120,8 +120,7 @@ covers only unknown paths (`path_validate.go` ~:314-357).
 
 ## 3. The contract (SPI)
 
-`ModelStore.ExtendSchema(ctx, ref, level, delta) error`, where `level` is the
-`changeLevel` the caller computed the delta under (a new parameter):
+`ModelStore.ExtendSchema(ctx, ref, delta)` (signature unchanged):
 
 1. **Commits on its own.** It never joins a transaction on `ctx`. When it
    returns nil the delta is durably committed, whatever then happens to the
@@ -141,10 +140,7 @@ covers only unknown paths (`path_validate.go` ~:314-357).
 6. **Errors:** `spi.ErrNotFound` (no model); a new `spi.ErrModelNotLocked`
    when the model is not `LOCKED` under the backend's lock (`409
    MODEL_NOT_LOCKED`, an existing code; a model-lifecycle conflict, not an
-   extension conflict); `spi.ErrConflict` when the model's `changeLevel` under
-   the lock is not `level` (an operator changed it after the caller read the
-   model; retryable `409 CONFLICT`, and the retry validates under the new
-   level); a delta `applyFunc` refuses; storage unavailable; a `ctx` error. A non-nil error means the outcome is unknown; a retry is safe
+   extension conflict); a delta `applyFunc` refuses; storage unavailable; a `ctx` error. A non-nil error means the outcome is unknown; a retry is safe
    (§3.3).
 
 `ModelStore.Get` reads the latest committed model and ignores any transaction
@@ -164,8 +160,8 @@ model `Save` retries); its doc stops naming schema extension.
    `BEGIN`, `set_config` (tenant), `SELECT … FROM models … FOR NO KEY UPDATE`
    (the per-model lock: it writes no row version, conflicts with the
    `UPDATE models` of `Lock`, `Unlock`, `SetChangeLevel` and `Save` and with
-   `Delete`, and serialises extenders of one model), the `LOCKED` and
-   `changeLevel` checks (§3.6), the fold (one statement, §4.8), the no-op
+   `Delete`, and serialises extenders of one model), the `LOCKED` check
+   (§3.6), the fold (one statement, §4.8), the no-op
    check and the insert of the reduced delta (§4.3), the savepoint when due,
    `COMMIT`. A transaction that holds a `models` row lock never acquires a
    second connection: every statement of an extension, and of `Lock`,
@@ -212,8 +208,8 @@ model `Save` retries); its doc stops naming schema extension.
    - Reads beyond the pool's capacity under load wait for the acquire timeout
      and answer the pool's existing retryable `503`, as every store read does.
 5. **Identical deltas on one node share one call.** The caching layer
-   coalesces concurrent `ExtendSchema` calls with the same tenant, model,
-   `level` and delta into one call (single-flight); every caller gets its
+   coalesces concurrent `ExtendSchema` calls with the same tenant, model and
+   delta into one call (single-flight); every caller gets its
    result.
    Different deltas are not merged: each is its own short transaction. The
    shared call runs on a context detached from any one caller's cancellation
@@ -320,7 +316,7 @@ model `Save` retries); its doc stops naming schema extension.
 12. **The savepoint interval counts this model's deltas** (postgres: deltas
     since its latest savepoint; sqlite numbers per model already).
 13. **memory and sqlite.** memory keeps applying in place under `modelMu` and
-    adds the `LOCKED`, `changeLevel` and no-op checks; its `Lock`, `Unlock`,
+    adds the `LOCKED` and no-op checks; its `Lock`, `Unlock`,
     `SetChangeLevel` and `IsLocked` return `spi.ErrNotFound` for a missing
     model, as the other backends do (today a bare "not found",
     `plugins/memory/model_store.go` ~:71, ~:82, ~:93, ~:103). sqlite keeps its own write
@@ -371,6 +367,12 @@ model `Save` retries); its doc stops naming schema extension.
    that does not refuse is planned against the older schema and can silently
    miss the new field or a widened type (e.g. `code = 42` after `code` was
    widened from string to string-or-integer finds no integer match there).
+7. A `changeLevel` change takes effect on each node as its model cache picks
+   it up (the invalidation broadcast; the cache lease if it is lost). Until
+   then, a node keeps admitting or refusing extensions by the old level, and an
+   extension computed under the old level can commit just after the change.
+   The change level is set when a model is defined and rarely changes after
+   it is locked; the help says so (§12).
 
 ## 6. Performance
 
@@ -406,7 +408,7 @@ all adding the same field, run before and after; the PR reports the numbers.
 | An extending write fails or rolls back | memory, sqlite, postgres creates: field kept; postgres in-transaction paths: discarded | field kept on every backend and path (§5.2) |
 | Another client reads the model while an extending write is in progress | depends on backend and path | may see the new field (§5.1) |
 | The initiator searches on, PATCHes, validates or exports the new field right after its write returned, on another node, before the broadcast arrives | search: `400 INVALID_FIELD_PATH` possible (negative cache, no lease); PATCH, validate: `400 VALIDATION_FAILED`; export: field missing | not refused (one refresh), export from storage; a query that does not refuse may still miss the new field or a widened type until the broadcast arrives (§5.6) |
-| An operator changes `changeLevel` while a write extends under the old level | postgres: conflicts with the write's lock | the extension is refused with a retryable `409 CONFLICT`; the retry validates under the new level |
+| An operator changes `changeLevel` on a locked model | takes effect as each node's cache picks it up (postgres: an in-transaction extender conflicts with it) | takes effect as each node's cache picks it up (§5.7) |
 | A criterion in the same request on the field just added | works through the shared cache on most paths | works on every path (§4.6) |
 | A storage failure during processor-output extension | `500` | `503` (retryable) |
 | Extension after the model was unlocked mid-request | postgres: appended to the unlocked model's log | `409 MODEL_NOT_LOCKED` on every backend |
@@ -419,7 +421,6 @@ all adding the same field, run before and after; the PR reports the numbers.
 | | `409 MODEL_NOT_LOCKED` | the model was unlocked after the request read it, before its extension |
 | | `400 VALIDATION_FAILED` / change-level refusals | unchanged |
 | | `503` (retryable) | storage unavailable during an extension (processor output was `500`) |
-| | `409 CONFLICT` (retryable) | the model's `changeLevel` changed between the request's read and its extension |
 | Search, criteria (`INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`), PATCH and model validation (`VALIDATION_FAILED`) | `2xx` instead of `400` | a field another node just added or widened, before the broadcast arrives |
 | `GET /model/...` export | `200` with the field | export reads storage |
 
@@ -458,7 +459,6 @@ outside `docs/superpowers/`, `cmd/cyoda/help/`, `README.md`) is empty.
 | A delta the schema already holds: no row, no invalidation | per-plugin | new | — | — | — |
 | Two extenders of one model concurrently: both succeed, both deltas in the schema, never `ErrConflict` | per-plugin | new | — | — | — |
 | Extension of a model that is not `LOCKED` → `ErrModelNotLocked` | per-plugin | new | new: a create whose processor returns a new field, with the test compute node unlocking the model during the callout (the entity is uncommitted, so the unlock succeeds); `409 MODEL_NOT_LOCKED` | — | new, same setup over gRPC (envelope `Error.Code`) |
-| `changeLevel` changed between read and extension → `ErrConflict` | per-plugin | new | coverage waiver: the e2e (a test compute node changing `changeLevel` during the callout) would pass on today's postgres too (its write claim answers `409` already), so it cannot prove the change; the spitest and plugin cases do | — | coverage waiver, same reason |
 | `Get` ignores the transaction on `ctx` | per-plugin | new | — | — | — |
 | Concurrent PUTs, collection updates, collection creates and processor-output writes each adding fields → all `2xx`, every field in the schema | — | — | extend `model_schema_extensions_test.go` ~:36-75 (today creates only) to every door (isolated, not parity) | — | new (concurrent gRPC writes, envelope `Success=true`) |
 | A write adds a field nested under a parent another write added after this transaction began → `2xx` | postgres plugin | — | new | — | — |
@@ -493,7 +493,7 @@ that cannot go RED is dropped.
   path cache, new variable), `COMPATIBILITY.md`.
 - `docs/cloud-parity/710-schema-extensions.md`: the contract and the side
   effects.
-- Issue in `cyoda-go-cassandra`: §3 (the `level` parameter; no
+- Issue in `cyoda-go-cassandra`: §3 (no
   `ErrRetryExhausted` for contention, retry until `ctx` ends, so its
   `CYODA_SCHEMA_EXTEND_MAX_RETRIES` budget, `internal/config/config.go`
   ~:242, goes; the no-op check; `ErrModelNotLocked`; `Get` ignores the
@@ -515,7 +515,10 @@ over `README.md`, `CONTRIBUTING.md`, `COMPATIBILITY.md`, `docs/` (outside
   model-administration paragraph, ~:343-345, the ERRORS list ~:348-361 which
   gains `MODEL_NOT_LOCKED`): when an extension happens, that it never
   conflicts, that it is visible when the write returns and may be earlier,
-  the side effects, the `409 MODEL_NOT_LOCKED` and `changeLevel` cases.
+  the side effects, the `409 MODEL_NOT_LOCKED` case, and on the
+  `changeLevel` operation (~:129-131) that a change on a locked model takes
+  effect as each node's model cache picks it up, and that the level is
+  normally set before the model is locked (§5.7).
 - `cmd/cyoda/help/content/config/schema.md`: what the savepoint interval bounds
   (the deltas a read folds, per model; the current "reduce recovery time after
   a crash" is wrong), the retry variable removed, the examples.
