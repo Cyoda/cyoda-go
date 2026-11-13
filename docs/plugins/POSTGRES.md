@@ -197,7 +197,8 @@ the caller's transaction, and runs on a pool of its own, sized by
 `CYODA_POSTGRES_MODEL_CONNS` (default `8`, floor `2`), so entity transactions
 cannot starve model reads, extensions or model administration. The pool takes
 the main pool's statement and idle-in-transaction ceilings and sets
-`lock_timeout` to `0`.
+`lock_timeout` to `0`. It reports through the `cyoda.storage.pool.connections`
+gauge under `pool="model"`.
 
 **Reads.** `Get` reads the doc, the latest savepoint and the deltas after it
 in one statement, so one snapshot: a read racing `Unlock` sees it whole or

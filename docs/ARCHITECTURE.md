@@ -2779,7 +2779,7 @@ spans and metrics under a plugin-specific namespace. The `memory`
 and `sqlite` plugins emit no plugin-level telemetry. The `postgres`
 plugin registers seven `cyoda.storage.pool.*` instruments, all
 labeled `backend="postgres"`: connections by state and by pool
-(`main`, `scheduler`, `heartbeat`; the model pool is not reported), and, for the main pool, max
+(`main`, `scheduler`, `heartbeat`, `model`), and, for the main pool, max
 connections, acquires, empty acquires, canceled acquires, acquire
 duration and empty-acquire wait. It reads them from
 `pgxpool.Stat()` and registers them unconditionally at `NewFactory` — pool saturation is

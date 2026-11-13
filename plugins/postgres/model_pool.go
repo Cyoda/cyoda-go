@@ -92,6 +92,18 @@ func (f *StoreFactory) modelPool() (*modelPool, error) {
 	return m, nil
 }
 
+// openModelPoolOrNil returns the model pool's connections if the pool is open,
+// and nil otherwise. It never opens the pool: the pool metrics read it on
+// every scrape.
+func (f *StoreFactory) openModelPoolOrNil() *pgxpool.Pool {
+	f.modelsMu.Lock()
+	defer f.modelsMu.Unlock()
+	if f.models == nil {
+		return nil
+	}
+	return f.models.pool
+}
+
 // closeModelPool closes the model pool if it is open and marks it closed for
 // good.
 func (f *StoreFactory) closeModelPool() {

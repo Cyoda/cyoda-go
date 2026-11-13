@@ -263,7 +263,7 @@ func NewStoreFactoryWithStatementTimeoutForTest(pool *pgxpool.Pool, d time.Durat
 // unexported production symbol through this idiom. Test-only; never call
 // from production code.
 func RegisterPoolMetricsForTest(meter metric.Meter, f *StoreFactory) (func(), error) {
-	return registerPoolMetrics(meter, f.pool, &f.sched)
+	return registerPoolMetrics(meter, f.pool, &f.sched, f.openModelPoolOrNil)
 }
 
 // MeterNameForTest exposes meterName for the same reason.
