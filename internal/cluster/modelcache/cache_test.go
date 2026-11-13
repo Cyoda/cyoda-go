@@ -22,13 +22,16 @@ type stubStore struct {
 }
 
 func (s *stubStore) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
-	s.mu.Lock()
-	s.gets++
-	s.mu.Unlock()
+	desc, err := func() (*spi.ModelDescriptor, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.gets++
+		return s.desc, s.err
+	}()
 	if s.delay > 0 {
 		time.Sleep(s.delay)
 	}
-	return s.desc, s.err
+	return desc, err
 }
 func (s *stubStore) Save(context.Context, *spi.ModelDescriptor) error     { return nil }
 func (s *stubStore) GetAll(context.Context) ([]spi.ModelRef, error)       { return nil, nil }
@@ -41,6 +44,12 @@ func (s *stubStore) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLeve
 }
 func (s *stubStore) ExtendSchema(context.Context, spi.ModelRef, spi.SchemaDelta) error {
 	return nil
+}
+
+func (s *stubStore) setDesc(d *spi.ModelDescriptor) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.desc = d
 }
 
 func (s *stubStore) getCount() int {
@@ -186,9 +195,7 @@ func TestCachingModelStore_ExtendSchema_ReturnsPostExtensionSchema(t *testing.T)
 	}
 
 	// Simulate the inner store now holding the post-extension schema.
-	inner.mu.Lock()
-	inner.desc = v2
-	inner.mu.Unlock()
+	inner.setDesc(v2)
 
 	// ExtendSchema through the cache — invalidation must fire.
 	if err := c.ExtendSchema(context.Background(), ref, spi.SchemaDelta(`[]`)); err != nil {

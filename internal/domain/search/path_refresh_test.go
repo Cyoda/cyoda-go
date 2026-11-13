@@ -29,11 +29,13 @@ type heldReadModelStore struct {
 }
 
 func (s *heldReadModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
-	s.mu.Lock()
-	read := s.current
-	hold, reached := s.hold, s.reached
-	s.hold, s.reached = nil, nil
-	s.mu.Unlock()
+	read, hold, reached := func() (*spi.ModelDescriptor, chan struct{}, chan struct{}) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		read, hold, reached := s.current, s.hold, s.reached
+		s.hold, s.reached = nil, nil
+		return read, hold, reached
+	}()
 	if hold != nil {
 		close(reached)
 		<-hold
@@ -43,9 +45,11 @@ func (s *heldReadModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDescr
 
 func (s *heldReadModelStore) armHold() (release func(), reached <-chan struct{}) {
 	h, r := make(chan struct{}), make(chan struct{})
-	s.mu.Lock()
-	s.hold, s.reached = h, r
-	s.mu.Unlock()
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.hold, s.reached = h, r
+	}()
 	return func() { close(h) }, r
 }
 
@@ -74,13 +78,13 @@ func (s *heldReadModelStore) SetChangeLevel(context.Context, spi.ModelRef, spi.C
 
 var _ spi.ModelStore = (*heldReadModelStore)(nil)
 
-// TestSearch_OwnNewField_AfterRacingSearch_Found pins that a search naming a
-// field the client's own write has just added is answered from storage, not
-// from a remembered refusal or a stale fill. Search S1 names the field before
-// it exists and is held after its refresh has read storage; the extension then
-// adds the field and invalidates. The cache drops S1's straddling fill, so S1's
-// recheck reads the extended schema and finds the field. Search S2 on the same
-// field must find it too.
+// TestSearch_OwnNewField_AfterRacingSearch_Found pins the model cache's fill
+// guard end to end through search: a search naming a field the client's own
+// write has just added is answered from storage, not from a remembered refusal
+// or a stale fill. Search S1 names the field before it exists and is held
+// after its refresh has read storage; the extension then adds the field and
+// invalidates. The guard drops S1's straddling fill, so S1's recheck reads the
+// extended schema and S1 succeeds. Search S2 on the same field finds it too.
 func TestSearch_OwnNewField_AfterRacingSearch_Found(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()

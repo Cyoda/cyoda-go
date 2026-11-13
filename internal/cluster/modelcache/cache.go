@@ -150,20 +150,19 @@ func (c *CachingModelStore) generation(key cacheKey) uint64 {
 	return c.generations[key]
 }
 
-// bump advances key's invalidation generation and returns the new value. Every
-// fill that recorded an earlier generation is dropped from then on.
-func (c *CachingModelStore) bump(key cacheKey) uint64 {
+// bump advances key's invalidation generation. Every fill that recorded an
+// earlier generation is dropped from then on.
+func (c *CachingModelStore) bump(key cacheKey) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.generations[key]++
-	return c.generations[key]
 }
 
 // storeIfGeneration caches desc under key only if key's generation is still
 // gen, the value recorded before the read that produced desc. Otherwise an
 // invalidation landed during the read, desc may predate it, and nothing is
-// stored. Reports whether desc was stored.
-func (c *CachingModelStore) storeIfGeneration(key cacheKey, gen uint64, desc *spi.ModelDescriptor) bool {
+// stored.
+func (c *CachingModelStore) storeIfGeneration(key cacheKey, gen uint64, desc *spi.ModelDescriptor) {
 	// Derived outside the lock: parsing is the expensive part and depends only
 	// on desc, so holding the write lock across it would serialise every reader
 	// behind an unrelated model's parse.
@@ -171,7 +170,7 @@ func (c *CachingModelStore) storeIfGeneration(key cacheKey, gen uint64, desc *sp
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.generations[key] != gen {
-		return false
+		return
 	}
 	c.entries[key] = cacheEntry{
 		desc:      desc,
@@ -179,7 +178,6 @@ func (c *CachingModelStore) storeIfGeneration(key cacheKey, gen uint64, desc *sp
 		node:      node,
 		nodeErr:   nodeErr,
 	}
-	return true
 }
 
 func (c *CachingModelStore) evict(key cacheKey) {
@@ -230,7 +228,7 @@ func (c *CachingModelStore) jitteredLeaseLocked() time.Duration {
 func (c *CachingModelStore) readThrough(ctx context.Context, key cacheKey, inner spi.ModelStore) (*spi.ModelDescriptor, error) {
 	for {
 		gen := c.generation(key)
-		ch := c.reads.DoChan(flightKey(key, gen), func() (any, error) {
+		ch := c.reads.DoChan(flightKey(key, gen), recovering(func() (any, error) {
 			desc, err := inner.Get(ctx, key.ref)
 			if err != nil {
 				return nil, sharedCallError(ctx, err)
@@ -239,7 +237,7 @@ func (c *CachingModelStore) readThrough(ctx context.Context, key cacheKey, inner
 				c.storeIfGeneration(key, gen, desc)
 			}
 			return desc, nil
-		})
+		}))
 		v, retry, err := awaitShared(ctx, ch)
 		if retry {
 			continue
@@ -254,16 +252,15 @@ func (c *CachingModelStore) readThrough(ctx context.Context, key cacheKey, inner
 
 // extend runs inner.ExtendSchema once for every concurrent caller with the same
 // tenant, model and delta, on the first caller's context. When the inner call
-// returns, whatever it returned, the shared call itself invalidates key: the
-// extension may have committed even when it failed, and the callers may all
-// have left by then.
+// ends, however it ended (a result, an error or a panic), the shared call
+// itself invalidates key: the extension may have committed even when it
+// failed, and the callers may all have left by then.
 func (c *CachingModelStore) extend(ctx context.Context, key cacheKey, delta spi.SchemaDelta, inner spi.ModelStore) error {
 	for {
-		ch := c.extends.DoChan(extendKey(key, delta), func() (any, error) {
-			err := inner.ExtendSchema(ctx, key.ref, delta)
-			c.invalidate(key)
-			return nil, sharedCallError(ctx, err)
-		})
+		ch := c.extends.DoChan(extendKey(key, delta), recovering(func() (any, error) {
+			defer c.invalidate(key)
+			return nil, sharedCallError(ctx, inner.ExtendSchema(ctx, key.ref, delta))
+		}))
 		_, retry, err := awaitShared(ctx, ch)
 		if !retry {
 			return err
@@ -289,15 +286,41 @@ func sharedCallError(ctx context.Context, err error) error {
 	return &leaderEndedError{err: err}
 }
 
+// sharedPanic carries a panic out of a shared call. DoChan runs the call on a
+// goroutine of its own, where singleflight re-raises a panic beyond any
+// recovery and the process dies; recovering it there and re-raising it in each
+// waiting caller (awaitShared) puts it back on a request goroutine, whose door
+// answers it as it answers any other panic.
+type sharedPanic struct{ value any }
+
+func (p *sharedPanic) Error() string { return fmt.Sprintf("panic in shared model call: %v", p.value) }
+
+// recovering wraps a shared call's function so a panic in it becomes a
+// sharedPanic result.
+func recovering(fn func() (any, error)) func() (any, error) {
+	return func() (v any, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				v, err = nil, &sharedPanic{value: r}
+			}
+		}()
+		return fn()
+	}
+}
+
 // awaitShared waits for a shared call's result or for the caller's own ctx to
 // end, whichever comes first, so no caller stays blocked on another caller's
 // call. retry reports that the call failed after its first caller's context
-// ended while this caller's is live: the caller starts a new call.
+// ended while this caller's is live: the caller starts a new call. A panic in
+// the call is raised again here, in the caller.
 func awaitShared(ctx context.Context, ch <-chan singleflight.Result) (v any, retry bool, err error) {
 	select {
 	case <-ctx.Done():
 		return nil, false, ctx.Err()
 	case res := <-ch:
+		if p, ok := res.Err.(*sharedPanic); ok {
+			panic(p.value)
+		}
 		var ended *leaderEndedError
 		if errors.As(res.Err, &ended) {
 			if ctx.Err() == nil {

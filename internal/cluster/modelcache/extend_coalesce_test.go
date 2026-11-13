@@ -87,7 +87,7 @@ func TestExtendCoalesce_IdenticalDeltasOneCall(t *testing.T) {
 		}()
 	}
 	waitSignal(t, inner.extEntered, "the first extension to reach storage")
-	settle()
+	waitParked(t, n)
 	close(release)
 	wg.Wait()
 	close(errs)
@@ -124,7 +124,7 @@ func TestExtendCoalesce_FollowerLeavesOnOwnContext(t *testing.T) {
 	followerCtx, cancel := context.WithCancel(tenantCtx())
 	followerDone := make(chan error, 1)
 	go func() { followerDone <- s.ExtendSchema(followerCtx, testRef, testDelta) }()
-	settle()
+	waitParked(t, 2)
 	cancel()
 
 	select {
@@ -171,7 +171,7 @@ func TestExtendCoalesce_LeaderCancelled_LiveFollowerRetries(t *testing.T) {
 
 	followerDone := make(chan error, 1)
 	go func() { followerDone <- s.ExtendSchema(tenantCtx(), testRef, testDelta) }()
-	settle()
+	waitParked(t, 2)
 	cancel()
 
 	if err := <-leaderDone; err == nil {

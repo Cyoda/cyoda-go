@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -168,9 +170,30 @@ func waitSignal(t *testing.T, ch <-chan struct{}, what string) {
 	}
 }
 
-// settle gives goroutines that were just started time to reach their
-// single-flight join. Joining cannot be observed without a production hook.
-func settle() { time.Sleep(50 * time.Millisecond) }
+// waitParked waits until n goroutines are waiting on a shared call — parked in
+// awaitShared, which a caller enters only after DoChan has registered it with
+// the call — or fails the test. It reads the goroutine dump, so it needs no
+// hook in the code under test.
+func waitParked(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	buf := make([]byte, 1<<20)
+	for {
+		k := runtime.Stack(buf, true)
+		if k == len(buf) {
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		if got := strings.Count(string(buf[:k]), "modelcache.awaitShared("); got >= n {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d callers to wait on a shared call", n)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
 
 // TestFillGuard_DropsFillThatStraddlesInvalidation: a miss read that began
 // before an invalidation must not store what it read, whether the invalidation
@@ -251,7 +274,7 @@ func TestMissFlight_PerGeneration(t *testing.T) {
 
 	wg.Add(1)
 	go get() // reader A2, same generation
-	settle()
+	waitParked(t, 2)
 	if got := inner.getCount(); got != 1 {
 		t.Fatalf("inner Get calls = %d after a second miss at the same generation, want 1 (coalesced)", got)
 	}
@@ -288,7 +311,7 @@ func TestMissFlight_WaiterLeavesOnOwnContext(t *testing.T) {
 		_, err := s.Get(ctx, testRef)
 		waiter <- err
 	}()
-	settle()
+	waitParked(t, 2)
 	cancel()
 	select {
 	case err := <-waiter:
@@ -340,7 +363,7 @@ func TestMissFlight_LeaderCancelled_LiveWaiterReadsAgain(t *testing.T) {
 		}
 		waiter <- err
 	}()
-	settle()
+	waitParked(t, 2)
 	if got := inner.getCount(); got != 1 {
 		t.Fatalf("inner Get calls = %d before the cancel, want 1 (the waiter joins)", got)
 	}
