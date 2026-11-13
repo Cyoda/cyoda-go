@@ -46,6 +46,11 @@ type config struct {
 	// claims, run bookkeeping and the async-search heartbeat and claim.
 	// Heartbeat has one more connection of its own on top of it.
 	SchedulerConns int32
+
+	// ModelConns is the size of the model store's own pool (model_pool.go):
+	// model reads, schema extensions and model administration. Extensions use
+	// at most half of it.
+	ModelConns int32
 }
 
 // Ceiling defaults. Named here rather than inline so parseConfig,
@@ -74,6 +79,28 @@ func envSchedulerConns(getenv func(string) string) (int32, error) {
 	v := getenv(key)
 	if v == "" {
 		return defaultSchedulerConns, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a valid connection count: %w", key, v, err)
+	}
+	if n < 2 {
+		return 0, fmt.Errorf("%s=%q must be at least 2", key, v)
+	}
+	return int32(n), nil
+}
+
+// defaultModelConns sizes the model pool.
+const defaultModelConns int32 = 8
+
+// envModelConns reads CYODA_POSTGRES_MODEL_CONNS. A malformed or too-small
+// value is an error, as for envSchedulerConns. Two is the floor: extensions
+// take at most half the pool, so one connection stays for reads.
+func envModelConns(getenv func(string) string) (int32, error) {
+	const key = "CYODA_POSTGRES_MODEL_CONNS"
+	v := getenv(key)
+	if v == "" {
+		return defaultModelConns, nil
 	}
 	n, err := strconv.ParseInt(v, 10, 32)
 	if err != nil {
@@ -123,6 +150,9 @@ func parseConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if cfg.SchedulerConns, err = envSchedulerConns(getenv); err != nil {
+		return config{}, err
+	}
+	if cfg.ModelConns, err = envModelConns(getenv); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
@@ -274,6 +304,7 @@ func (d DBConfig) toInternal() config {
 		MigrateLockTimeout:     defaultMigrateLockTimeout,
 		SearchStatementTimeout: defaultSearchStatementTimeout,
 		SchedulerConns:         defaultSchedulerConns,
+		ModelConns:             defaultModelConns,
 	}
 }
 

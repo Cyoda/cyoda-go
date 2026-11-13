@@ -24,6 +24,9 @@ type StoreFactory struct {
 	// sched holds the scheduler's own pools (scheduler_pool.go), opened on
 	// first use and closed by Close.
 	sched schedulerPools
+	// models is the model store's own pool (model_pool.go), opened by
+	// Plugin.NewFactory; nil on a factory built without it.
+	models *modelPool
 	// keys caches each tenant's marker key; see tenantKeys. The factory owns
 	// it from construction and never replaces it: its entity stores use it
 	// for their non-transactional writes, and InitTransactionManager hands
@@ -88,6 +91,7 @@ func defaultStoreConfig() config {
 		MigrateLockTimeout:     defaultMigrateLockTimeout,
 		SearchStatementTimeout: defaultSearchStatementTimeout,
 		SchedulerConns:         defaultSchedulerConns,
+		ModelConns:             defaultModelConns,
 	}
 }
 
@@ -335,6 +339,7 @@ func (f *StoreFactory) Close() error {
 		f.unregisterMetrics()
 	}
 	f.closeSchedulerPools()
+	f.models.close()
 	f.pool.Close()
 	return nil
 }

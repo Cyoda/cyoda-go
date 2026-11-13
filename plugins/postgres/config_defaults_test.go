@@ -36,6 +36,7 @@ func TestConfigVars_DefaultsMatchParseConfig(t *testing.T) {
 		"CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT":     cfg.MigrateLockTimeout.String(),
 		"CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT": cfg.SearchStatementTimeout.String(),
 		"CYODA_POSTGRES_SCHEDULER_CONNS":          strconv.Itoa(int(cfg.SchedulerConns)),
+		"CYODA_POSTGRES_MODEL_CONNS":              strconv.Itoa(int(cfg.ModelConns)),
 	}
 
 	for _, v := range (&plugin{}).ConfigVars() {

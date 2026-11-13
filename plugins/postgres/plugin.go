@@ -27,6 +27,7 @@ func (p *plugin) ConfigVars() []spi.ConfigVar {
 		{Name: "CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT", Description: "Maximum lock wait during schema migration; 0 disables", Default: "5m"},
 		{Name: "CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", Description: "Statement ceiling for async search scans; 0 disables", Default: "30m"},
 		{Name: "CYODA_POSTGRES_SCHEDULER_CONNS", Description: "Connections in the scheduler's own pool (claims, run bookkeeping, async-search heartbeats); at least 2. The scheduler heartbeat has one more of its own", Default: "10"},
+		{Name: "CYODA_POSTGRES_MODEL_CONNS", Description: "Connections in the model store's own pool (model reads, schema extensions, model administration); extensions use at most half; at least 2", Default: "8"},
 		{Name: "CYODA_SCHEMA_SAVEPOINT_INTERVAL", Description: "Rows per savepoint during schema extension", Default: "64"},
 	}
 }
@@ -56,10 +57,17 @@ func (p *plugin) NewFactory(
 		pool.Close()
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
+	factory.models, err = newModelPool(ctx, pool.Config(), cfg.ModelConns, cfg.AcquireTimeout)
+	if err != nil {
+		factory.closeSchedulerPools()
+		pool.Close()
+		return nil, fmt.Errorf("postgres: %w", err)
+	}
 	factory.initTransactionManager(&defaultUUIDGenerator{})
 	unregister, err := registerPoolMetrics(otel.Meter(meterName), pool, &factory.sched)
 	if err != nil {
 		factory.closeSchedulerPools()
+		factory.models.close()
 		pool.Close()
 		return nil, fmt.Errorf("postgres: %w", err)
 	}

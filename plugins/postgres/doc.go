@@ -15,6 +15,7 @@
 //	CYODA_POSTGRES_MAX_CONN_IDLE_TIME default 5m
 //	CYODA_POSTGRES_AUTO_MIGRATE       default true  (runs embedded SQL migrations at startup)
 //	CYODA_POSTGRES_SCHEDULER_CONNS    default 10    (scheduler's own pool; at least 2)
+//	CYODA_POSTGRES_MODEL_CONNS        default 8     (model store's own pool; extensions use at most half; at least 2)
 //
 // Ceilings, each accepting 0 to disable. All but the acquire timeout are
 // applied server-side; pgxpool.Config has no acquire-timeout field, so that
@@ -63,6 +64,13 @@
 // the underlying pgx.Tx on every call from the passed-in context — so
 // the active tx, discovered via spi.GetTransaction(ctx), is always used
 // when one is present, and the pool is used otherwise.
+//
+// # Model pool
+//
+// Model reads, schema extensions and model administration run on a pool of
+// their own (CYODA_POSTGRES_MODEL_CONNS) with lock_timeout 0, so entity
+// transactions cannot starve them. Extensions hold at most half its
+// connections. See model_pool.go.
 //
 // # Scheduler pool
 //
