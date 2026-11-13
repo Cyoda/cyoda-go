@@ -17,8 +17,9 @@ On a backend whose transaction lives in one node's memory or connection
 (memory, SQLite, PostgreSQL), access to a transaction's shared buffer /
 connection is serialised by a **per-transaction exclusive gate** keyed by tx
 id. The gate covers **every** joined request, not only entity writes: a joined
-read, a joined search, the model load and model extension of a joined create,
-and every non-entity handler behind the callback door all hold it from before
+read, a joined search, the model load and model extension of a joined create
+(which use the model store's own connections, never the transaction's, but
+run inside the request), and every non-entity handler behind the callback door all hold it from before
 the request's first store operation until the request's scope has ended. Two
 joined requests at once — a read alongside a write, or two reads — are
 otherwise unsafe on every such backend: `concurrent map writes` on memory and
