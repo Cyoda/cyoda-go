@@ -103,25 +103,24 @@ func TestModelPool_ExtensionSlots_LeaveConnectionsForReads(t *testing.T) {
 		t.Fatalf("extension slots = %d, want 2 for 4 connections", got)
 	}
 	ctx := context.Background()
-	rel1, err := m.acquireExtension(ctx)
+	c1, rel1, err := m.acquireExtension(ctx)
 	if err != nil {
 		t.Fatalf("first extension: %v", err)
 	}
-	rel2, err := m.acquireExtension(ctx)
+	var one int
+	if err := c1.QueryRow(ctx, "SELECT 1").Scan(&one); err != nil || one != 1 {
+		t.Fatalf("returned connection unusable: %v", err)
+	}
+	_, rel2, err := m.acquireExtension(ctx)
 	if err != nil {
 		t.Fatalf("second extension: %v", err)
 	}
 
-	third, cancel := context.WithCancel(ctx)
-	done := make(chan error, 1)
-	go func() {
-		_, err := m.acquireExtension(third)
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		t.Fatalf("third extension returned while both slots were held: %v", err)
-	case <-time.After(300 * time.Millisecond):
+	// Both slots are held: a third waits until its context ends.
+	third, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	if _, _, err := m.acquireExtension(third); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("third extension err = %v, want context.DeadlineExceeded", err)
 	}
 
 	// A read still gets one of the two connections the slots left over.
@@ -133,16 +132,55 @@ func TestModelPool_ExtensionSlots_LeaveConnectionsForReads(t *testing.T) {
 	}
 	conn.Release()
 
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Errorf("cancelled third extension err = %v, want context.Canceled", err)
+	cancelled, cancel2 := context.WithCancel(ctx)
+	cancel2()
+	if _, _, err := m.acquireExtension(cancelled); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled extension err = %v, want context.Canceled", err)
 	}
 
 	rel1()
 	rel2()
-	rel3, err := m.acquireExtension(ctx)
+	_, rel3, err := m.acquireExtension(ctx)
 	if err != nil {
 		t.Fatalf("extension after release: %v", err)
 	}
 	rel3()
+}
+
+func TestModelPool_FailedAcquireFreesSlot(t *testing.T) {
+	base, err := pgxpool.ParseConfig(testDBURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModelPool(context.Background(), base, 2, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("newModelPool: %v", err)
+	}
+	t.Cleanup(m.close)
+
+	ctx := context.Background()
+	var holders []*pgxpool.Conn
+	for i := 0; i < 2; i++ {
+		c, err := m.pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("holder %d: %v", i, err)
+		}
+		holders = append(holders, c)
+	}
+	_, _, err = m.acquireExtension(ctx)
+	if err == nil {
+		t.Fatal("acquireExtension succeeded on an exhausted pool")
+	}
+	var su interface{ StorageUnavailable() bool }
+	if !errors.As(err, &su) || !su.StorageUnavailable() {
+		t.Errorf("err = %v, want the retryable storage-unavailable answer", err)
+	}
+	for _, c := range holders {
+		c.Release()
+	}
+	_, rel, err := m.acquireExtension(ctx)
+	if err != nil {
+		t.Fatalf("acquireExtension after holders released (slot leaked?): %v", err)
+	}
+	rel()
 }

@@ -60,21 +60,22 @@ func newModelPool(ctx context.Context, base *pgxpool.Config, conns int32, acquir
 }
 
 // acquireExtension takes an extension slot, waiting until ctx ends, then a
-// connection bounded by the acquire timeout. The returned release frees both.
-func (m *modelPool) acquireExtension(ctx context.Context) (release func(), err error) {
+// connection bounded by the acquire timeout. The release frees the connection
+// and then the slot. On error nothing is held.
+func (m *modelPool) acquireExtension(ctx context.Context) (*pgxpool.Conn, func(), error) {
 	select {
 	case m.extSlots <- struct{}{}:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	}
 	acquireCtx, cancel := newAcquireContext(ctx, m.acquireTimeout)
 	defer cancel()
 	conn, err := m.pool.Acquire(acquireCtx)
 	if err != nil {
 		<-m.extSlots
-		return nil, classifyAcquireErr(ctx, acquireCtx, "model extension acquire", err)
+		return nil, nil, classifyAcquireErr(ctx, acquireCtx, "model extension acquire", err)
 	}
-	return func() {
+	return conn, func() {
 		conn.Release()
 		<-m.extSlots
 	}, nil
