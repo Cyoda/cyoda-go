@@ -909,6 +909,12 @@ showing the old outcome) on the unfixed code, or it is dropped.
   change; `Delete` and `Save` refuse a `LOCKED` model (`ErrModelLocked`); all
   three are new in the SPI; `EntityStore` commit/save refuse a model that is not `LOCKED`
   (`ErrModelNotLocked`). spitest cases per §7.
+- `cmd/cyoda/help/content/models.md` ~:341 ("an import that overlaps a lock can
+  save the model back as `UNLOCKED`"): an import or unique-key change that
+  overlaps a lock is now refused `409 MODEL_ALREADY_LOCKED`. The rest of the
+  paragraph stays: model administration runs from one place, and two
+  overlapping imports or key changes on an unlocked model have no defined
+  order (the later save wins).
 - `cmd/cyoda/help/content/errors/MODEL_NOT_LOCKED.md` and
   `MODEL_HAS_ENTITIES.md`: the write side is checked at commit;
   unlock/delete check entities atomically.
