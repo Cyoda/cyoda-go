@@ -45,6 +45,13 @@ half-way through its workflow, in the owner's transaction; the scope's
 rollback removes that write. This spec relies on that rule and does not
 restate it.
 
+### Builds on the schema-extension change (#710)
+
+#710 lands first: schema-extension appends stay in the entity transaction and
+take no lock, the savepoint fold runs in a transaction of its own, and no
+ingestion path writes the `models` row. §4.2's postgres model check is
+re-read against #710's final design before this spec's plan is written.
+
 ### Non-goals
 
 - The cassandra plugin (out of tree). An issue is filed in
