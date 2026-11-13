@@ -1430,7 +1430,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   entity transactions cannot starve it. Extensions hold at most half its
   connections, so model reads always have the rest; a smaller or malformed
   value fails startup. Each node opens up to this many more PostgreSQL
-  connections. See `cyoda help config database`.
+  connections. The pool reports through `cyoda.storage.pool.connections`
+  under `pool="model"`. See `cyoda help config database`.
 
 - **Location-independent transactions through an optional storage-plugin
   capability.** A storage plugin can supply the coordination of its
