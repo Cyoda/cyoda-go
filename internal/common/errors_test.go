@@ -16,6 +16,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 )
 
 func TestOperationalError(t *testing.T) {
@@ -858,5 +859,22 @@ func TestInternal_EpochMismatchIsARetryable409(t *testing.T) {
 	}
 	if strings.Contains(e.Message, "shard revoked") {
 		t.Fatalf("the client-facing message leaked the store's wording: %q", e.Message)
+	}
+}
+
+func TestInternal_ModelNotLocked_Is409(t *testing.T) {
+	err := fmt.Errorf("%w: %w", ingest.ErrInternalSchema, spi.ErrModelNotLocked)
+	appErr := common.Internal("x", err)
+	if appErr.Status != http.StatusConflict {
+		t.Errorf("status = %d, want 409", appErr.Status)
+	}
+	if appErr.Code != common.ErrCodeModelNotLocked {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeModelNotLocked)
+	}
+	if appErr.Retryable {
+		t.Error("MODEL_NOT_LOCKED must not be retryable")
+	}
+	if appErr.Detail == "" {
+		t.Error("store text must be kept as Detail")
 	}
 }

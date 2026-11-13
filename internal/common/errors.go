@@ -270,6 +270,11 @@ func Internal(message string, err error) *AppError {
 	if appErr := EpochMismatch(err); appErr != nil {
 		return appErr
 	}
+	// A schema extension reached a model that is not locked. The store's text
+	// stays as Detail; it is logged and never answered.
+	if err != nil && errors.Is(err, spi.ErrModelNotLocked) {
+		return withDetail(Operational(http.StatusConflict, ErrCodeModelNotLocked, "the model is not locked"), err)
+	}
 	// The three sentinel answers below keep the store's text as Detail, which
 	// is logged and never answered. It is not attached as a cause: a cause
 	// would put the sentinel in the answer's unwrap chain, where a caller
