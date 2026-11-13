@@ -57,7 +57,7 @@ func (e *Engine) applyProcessorData(ctx context.Context, entity *spi.Entity, des
 
 	modelStore, err := e.factory.ModelStore(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: %s", ErrProcessorOutputInfra, err)
+		return fmt.Errorf("%w: %w", ErrProcessorOutputInfra, err)
 	}
 
 	resolved, err := desc.get(ctx, modelStore, entity)
@@ -65,12 +65,17 @@ func (e *Engine) applyProcessorData(ctx context.Context, entity *spi.Entity, des
 		return err
 	}
 
-	if err := ingest.ValidateOrExtend(ctx, modelStore, resolved, parsed); err != nil {
+	extended, err := ingest.ValidateOrExtend(ctx, modelStore, resolved, parsed)
+	if err != nil {
 		if errors.Is(err, ingest.ErrInternalSchema) {
-			return fmt.Errorf("%w: %s", ErrProcessorOutputInfra, err)
+			// Kept with %w: the store's own classification (storage
+			// unavailable, model not locked) must reach the handler's answer.
+			return fmt.Errorf("%w: %w", ErrProcessorOutputInfra, err)
 		}
 		return fmt.Errorf("%w: %s", ErrProcessorOutputRejected, err)
 	}
+	// The next processor of the pipeline checks against the extended schema.
+	desc.adopt(extended)
 
 	entity.Data = data
 	return nil
@@ -83,17 +88,22 @@ func (e *Engine) applyProcessorData(ctx context.Context, entity *spi.Entity, des
 // descriptor at all — requiring one would impose a new precondition the rule
 // does not ask for.
 //
-// At most once, because that is correctness rather than an optimisation. The
-// model cache is not transaction-aware and ExtendSchema invalidates it before
-// the surrounding transaction commits, so re-reading between processors could
-// repopulate the cache from the pre-extension schema and then reject the next
-// processor's legitimate field. One descriptor carried across the pipeline
-// cannot see that flap, and a stale-narrow descriptor is harmless because
-// extension deltas are additive.
+// At most once, because the model cache is not transaction-aware: a schema
+// extension invalidates it before the surrounding transaction commits, so a
+// re-read between processors could repopulate it from the pre-extension schema
+// and reject the next processor's legitimate field. The memo carries one
+// descriptor across the pipeline and adopts the descriptor each successful
+// extension returns, so every later processor checks against the schema the
+// earlier ones extended — and an already-extended field is not extended again.
 type modelDescMemo struct {
 	desc   *spi.ModelDescriptor
 	err    error
 	loaded bool
+}
+
+// adopt replaces the memoised descriptor with the one an extension returned.
+func (m *modelDescMemo) adopt(desc *spi.ModelDescriptor) {
+	m.desc = desc
 }
 
 // get returns the descriptor, loading it on first call.
@@ -109,7 +119,7 @@ func (m *modelDescMemo) get(ctx context.Context, modelStore spi.ModelStore, enti
 	desc, err := modelStore.Get(ctx, entity.Meta.ModelRef)
 	switch {
 	case err != nil:
-		m.err = fmt.Errorf("%w: model %s: %s", ErrProcessorOutputInfra, entity.Meta.ModelRef, err)
+		m.err = fmt.Errorf("%w: model %s: %w", ErrProcessorOutputInfra, entity.Meta.ModelRef, err)
 	case desc == nil:
 		m.err = fmt.Errorf("%w: model %s not found", ErrProcessorOutputInfra, entity.Meta.ModelRef)
 	default:

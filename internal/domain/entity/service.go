@@ -254,7 +254,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	}
 
 	// Validate or extend model schema
-	if err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
+	if _, err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
 		return nil, classifyValidateOrExtendErr(err)
 	}
 
@@ -1968,7 +1968,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		}
 
 		// Validate or extend model schema
-		if err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
+		if _, err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
 			return nil, classifyValidateOrExtendErr(err)
 		}
 
@@ -2235,7 +2235,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			return nil, classifyValidateOrExtendErr(vErr)
 		}
 	} else {
-		if vErr := ingest.ValidateOrExtend(txCtx, modelStore, desc, parsedData); vErr != nil {
+		if _, vErr := ingest.ValidateOrExtend(txCtx, modelStore, desc, parsedData); vErr != nil {
 			return nil, classifyValidateOrExtendErr(vErr)
 		}
 	}
@@ -2531,7 +2531,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		// its keys to the next item; spi.WithUniqueKeys overwrites any prior value.
 		currentCtx = spi.WithUniqueKeys(currentCtx, desc.UniqueKeys)
 
-		if err := ingest.ValidateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
+		if _, err := ingest.ValidateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
 			return nil, classifyValidateOrExtendErr(err)
 		}
 

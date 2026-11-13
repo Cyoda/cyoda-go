@@ -27,7 +27,7 @@ func TestValidateOrExtend_RootIsAnObjectAtEveryChangeLevel(t *testing.T) {
 			desc := descWithChangeLevel(t)
 			desc.ChangeLevel = level
 			store := &recordingModelStore{}
-			err := ValidateOrExtend(context.Background(), store, desc, root)
+			_, err := ValidateOrExtend(context.Background(), store, desc, root)
 			if err == nil {
 				t.Errorf("level %q, %s root: accepted", level, kind)
 				continue

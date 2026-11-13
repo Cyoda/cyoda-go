@@ -87,7 +87,7 @@ func TestValidateOrExtend_NoChangeLevel_ValidatesOnly(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"alice"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
+	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
 		t.Fatalf("validateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 0 || ms.saveCalls != 0 {
@@ -106,7 +106,7 @@ func TestValidateOrExtend_NoChangeLevel_UnknownField_Fails(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"a","email":"b@c.d"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
+	_, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
 	if err == nil || !strings.Contains(err.Error(), "validation failed") {
 		t.Errorf("expected validation failure, got %v", err)
 	}
@@ -123,7 +123,7 @@ func TestValidateOrExtend_ChangeLevel_NoDelta_NoExtendCall(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"alice"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
+	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
 		t.Fatalf("validateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 0 {
@@ -144,7 +144,7 @@ func TestValidateOrExtend_ChangeLevel_NewField_CallsExtendSchema(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"alice","email":"a@b.c"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
+	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
 		t.Fatalf("validateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 1 {
@@ -198,7 +198,7 @@ func TestValidateOrExtend_WideningKeyedNullLeaf_Returns422(t *testing.T) {
 	data := map[string]any{
 		"score": map[string]any{"sub": "val"},
 	}
-	err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
+	_, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
 	if err == nil {
 		t.Fatal("expected error for key-field widening, got nil")
 	}
@@ -233,7 +233,7 @@ func TestValidateOrExtend_WideningKeyedScalarLeaf_Returns422(t *testing.T) {
 
 	data := map[string]any{"score": map[string]any{"sub": "val"}}
 
-	err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
+	_, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
 	if err == nil {
 		t.Fatal("expected error for a keyed field gaining a container branch, got nil")
 	}
@@ -269,7 +269,7 @@ func TestValidateOrExtend_AddNewField_NotTouchingKeyedField_Succeeds(t *testing.
 		"score":    nil,
 		"category": "sports",
 	}
-	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
+	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
 		t.Fatalf("validateOrExtend unexpected error: %v", err)
 	}
 	if ms.extendCalls != 1 {

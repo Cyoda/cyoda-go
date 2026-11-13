@@ -27,7 +27,7 @@ import (
 // exercising the same seam a caller-contract regression (a decoder losing its
 // UseNumber option) would actually hit.
 func TestValidateOrExtend_UnsupportedValueRoutesToInternalSchema(t *testing.T) {
-	err := ValidateOrExtend(context.Background(), &recordingModelStore{}, descWithChangeLevel(t),
+	_, err := ValidateOrExtend(context.Background(), &recordingModelStore{}, descWithChangeLevel(t),
 		map[string]any{"x": float64(1.5)})
 	if err == nil {
 		t.Fatal("want an error for a float64 value reaching schema admission")
