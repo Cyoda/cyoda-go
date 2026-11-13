@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 
@@ -14,7 +15,7 @@ type StoreFactory struct {
 	pool              *pgxpool.Pool
 	cfg               config              // plugin config; threaded into stores that read config fields (e.g. modelStore)
 	tm                *TransactionManager // may be nil if transactions not configured
-	applyFunc         ApplyFunc           // set via SetApplyFunc; used by modelStore.Get to fold the schema delta log
+	applyFunc         ApplyFunc           // set via SetApplyFunc; folds the schema extension log and checks each extension
 	unregisterMetrics func()              // stops the pool-stat OTel callback; nil when NewStoreFactory/newStoreFactoryWithConfig built this factory outside Plugin.NewFactory
 	// uuids is the id generator the transaction manager carries, mirrored
 	// here whenever the manager is wired in (setTransactionManager) so that
@@ -25,8 +26,11 @@ type StoreFactory struct {
 	// first use and closed by Close.
 	sched schedulerPools
 	// models is the model store's own pool (model_pool.go), opened by
-	// Plugin.NewFactory; nil on a factory built without it.
-	models *modelPool
+	// Plugin.NewFactory or on first use (modelPool), and closed by Close.
+	// modelsMu guards it and modelsClosed.
+	modelsMu     sync.Mutex
+	models       *modelPool
+	modelsClosed bool
 	// keys caches each tenant's marker key; see tenantKeys. The factory owns
 	// it from construction and never replaces it: its entity stores use it
 	// for their non-transactional writes, and InitTransactionManager hands
@@ -95,8 +99,9 @@ func defaultStoreConfig() config {
 	}
 }
 
-// SetApplyFunc installs the replay function used by modelStore.Get
-// to fold the extension log. It may be called at most once —
+// SetApplyFunc installs the apply function the model store folds the
+// extension log with and checks each extension against; ExtendSchema
+// refuses to run without it. It may be called at most once —
 // typically at factory-construction time in app/app.go.
 // Calling it twice is a programmer error (panic).
 //
@@ -250,7 +255,11 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelStore{q: f.querier(), pool: f.pool, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
+	models, err := f.modelPool()
+	if err != nil {
+		return nil, err
+	}
+	return newModelStore(models, tid, f.applyFunc, f.cfg), nil
 }
 
 // KeyValueStore never joins the caller's transaction (spi.KeyValueStore
@@ -339,7 +348,7 @@ func (f *StoreFactory) Close() error {
 		f.unregisterMetrics()
 	}
 	f.closeSchedulerPools()
-	f.models.close()
+	f.closeModelPool()
 	f.pool.Close()
 	return nil
 }

@@ -170,8 +170,8 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, erro
 // bug that motivated this function's transaction: a future caller passing a
 // q that quietly disagrees with s.q would split writes across two
 // connections again, the same partial-write shape this function exists to
-// prevent. (Contrast compareTxID/extendSchemaBody, which take q because
-// their receiver is deliberately NOT always repointed to match it.)
+// prevent. (Contrast compareTxID, which takes q because its receiver is
+// deliberately NOT always repointed to match it.)
 func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, error) {
 	// Defensive copy — stores own their copies (Ownership Rule 4).
 	e := *entity
@@ -540,8 +540,8 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
 	// The tenant the RLS policies read, as every other transaction this plugin
-	// opens sets it (TransactionManager.Begin, ExtendSchema's self-wrap, the
-	// async-search scan). set_config rather than SET LOCAL because
+	// opens sets it (TransactionManager.Begin, the model store's transactions,
+	// the async-search scan). set_config rather than SET LOCAL because
 	// PostgreSQL's SET takes no bound parameters.
 	if _, err := tx.Exec(ctx,
 		"SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {

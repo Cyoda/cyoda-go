@@ -3,13 +3,13 @@ package postgres_test
 // self_wrap_acquire_test.go — the acquires that are NOT
 // TransactionManager.Begin.
 //
-// Several code paths in this plugin open a transaction of their own on the
-// pool: Begin, ExtendSchema's self-wrap, the async-search scan's own-ceiling
+// Several code paths in this plugin open a transaction of their own: Begin,
+// a schema extension (on the model pool), the async-search scan's own-ceiling
 // transaction, and the transaction a non-transactional CompareAndSave takes its
-// row lock in. They all contend for the same connections, so they can all fail
-// for the same transient reason — and a client must be told the same thing
-// about it whichever one it reached. Begin has been tested since the ceiling
-// work landed (acquire_test.go); these are the others.
+// row lock in. Each can fail to get a connection for the same transient reason
+// — and a client must be told the same thing about it whichever one it
+// reached. Begin has been tested since the ceiling work landed
+// (acquire_test.go); these are the others.
 //
 // Each is tested in both directions, because the interesting half is the one a
 // classifier keyed on context.DeadlineExceeded alone would get wrong: a caller
@@ -49,38 +49,55 @@ func newSaturatedFactory(t *testing.T, acquire time.Duration) (*postgres.StoreFa
 	return postgres.NewStoreFactoryWithAcquireTimeoutForTest(pool, acquire), ctx
 }
 
-// --- ExtendSchema's self-wrap ------------------------------------------------
+// --- a schema extension's connection from the model pool ---------------------
 
-// extendSchemaOnSaturatedPool drives ExtendSchema with NO ambient transaction on
-// ctx, which is the branch that self-wraps a pgx.Tx off the pool. The delta is
-// never applied — the acquire fails first — so no schema state is needed.
-func extendSchemaOnSaturatedPool(t *testing.T, callerCtx context.Context, f *postgres.StoreFactory) error {
+// newSaturatedModelPoolFactory returns a factory with a short acquire deadline
+// whose model pool has every connection held, so a schema extension gets its
+// slot but no connection.
+func newSaturatedModelPoolFactory(t *testing.T, acquire time.Duration) (*postgres.StoreFactory, context.Context) {
+	t.Helper()
+	f := postgres.NewStoreFactoryWithAcquireTimeoutForTest(newTestPool(t), acquire)
+	f.SetApplyFunc(func(base []byte, _ spi.SchemaDelta) ([]byte, error) { return base, nil })
+	t.Cleanup(func() { postgres.CloseModelPoolForTest(f) })
+
+	models := postgres.ModelPoolForTest(t, f)
+	for i := int32(0); i < models.Config().MaxConns; i++ {
+		conn, err := models.Acquire(context.Background())
+		if err != nil {
+			t.Fatalf("hold model pool connection %d: %v", i, err)
+		}
+		t.Cleanup(conn.Release) // before the pool closes (LIFO)
+	}
+	return f, ctxWithTenant("self-wrap-tenant")
+}
+
+// extendSchemaOnSaturatedModelPool drives ExtendSchema against the saturated
+// model pool. The delta is never applied — the acquire fails first — so no
+// schema state is needed.
+func extendSchemaOnSaturatedModelPool(t *testing.T, callerCtx context.Context, f *postgres.StoreFactory) error {
 	t.Helper()
 	ms, err := f.ModelStore(callerCtx)
 	if err != nil {
 		t.Fatalf("ModelStore: %v", err)
 	}
-	if spi.GetTransaction(callerCtx) != nil {
-		t.Fatal("caller ctx carries a transaction; ExtendSchema would not self-wrap")
-	}
 	return ms.ExtendSchema(callerCtx, spi.ModelRef{EntityName: "Widget", ModelVersion: "1"},
 		spi.SchemaDelta(`{"op":"add","path":"/properties/x"}`))
 }
 
-// A schema extension that cannot get a connection is transient contention on the
-// shared pool, exactly like the sibling acquire in Begin. Telling the client
+// A schema extension that cannot get a connection is transient contention on
+// the model pool, exactly like the sibling acquire in Begin. Telling the client
 // "server error, here is a ticket" for a condition the next attempt would likely
 // survive is the wrong answer, and it differs from what the same saturation
 // reports through every other door.
 func TestExtendSchema_PoolSaturated_ReportsStorageUnavailable(t *testing.T) {
-	f, ctx := newSaturatedFactory(t, 200*time.Millisecond)
+	f, ctx := newSaturatedModelPoolFactory(t, 200*time.Millisecond)
 
 	start := time.Now()
-	err := extendSchemaOnSaturatedPool(t, ctx, f)
+	err := extendSchemaOnSaturatedModelPool(t, ctx, f)
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatal("ExtendSchema succeeded on a one-connection pool with the only connection held")
+		t.Fatal("ExtendSchema succeeded with every model pool connection held")
 	}
 	if !storageUnavailable(err) {
 		t.Fatalf("acquire failure not marked storage-unavailable: %v", err)
@@ -90,19 +107,19 @@ func TestExtendSchema_PoolSaturated_ReportsStorageUnavailable(t *testing.T) {
 	}
 }
 
-// The other direction. pool.Begin surfaces a context error both when OUR acquire
-// deadline expired and when the CALLER's did; reporting the caller's own timeout
-// as a retryable server condition would be a lie about who failed.
+// The other direction. The acquire surfaces a context error both when OUR
+// acquire deadline expired and when the CALLER's did; reporting the caller's own
+// timeout as a retryable server condition would be a lie about who failed.
 func TestExtendSchema_CallerDeadlineOnSaturatedPool_IsNotStorageUnavailable(t *testing.T) {
 	// The plugin's own deadline is long; the caller's is short, so the caller's
 	// is what expires even though the pool genuinely is saturated.
-	f, ctx := newSaturatedFactory(t, 30*time.Second)
+	f, ctx := newSaturatedModelPoolFactory(t, 30*time.Second)
 	callerCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
 
-	err := extendSchemaOnSaturatedPool(t, callerCtx, f)
+	err := extendSchemaOnSaturatedModelPool(t, callerCtx, f)
 	if err == nil {
-		t.Fatal("ExtendSchema succeeded on a one-connection pool with the only connection held")
+		t.Fatal("ExtendSchema succeeded with every model pool connection held")
 	}
 	if storageUnavailable(err) {
 		t.Fatalf("the caller's own deadline was reported as a server-side outage: %v", err)

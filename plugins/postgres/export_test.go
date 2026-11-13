@@ -298,6 +298,21 @@ func SchedulerPoolForTest(t testing.TB, f *StoreFactory) *pgxpool.Pool {
 // opened. Fixtures that close only the main pool call it. Test-only.
 func CloseSchedulerPoolsForTest(f *StoreFactory) { f.closeSchedulerPools() }
 
+// ModelPoolForTest returns the factory's model pool, opening it if needed.
+// Test-only.
+func ModelPoolForTest(t testing.TB, f *StoreFactory) *pgxpool.Pool {
+	t.Helper()
+	m, err := f.modelPool()
+	if err != nil {
+		t.Fatalf("model pool: %v", err)
+	}
+	return m.pool
+}
+
+// CloseModelPoolForTest closes the model pool a test factory opened.
+// Fixtures that close only the main pool call it. Test-only.
+func CloseModelPoolForTest(f *StoreFactory) { f.closeModelPool() }
+
 // EntityClaimLockSQLForTest takes, and waits for, the advisory lock a claim
 // takes on the entity ($1 = tenant id, $2 = entity id), so a test can play a
 // claimer that holds an entity without committing.

@@ -19,7 +19,7 @@ func setupModelTest(t *testing.T) *postgres.StoreFactory {
 		t.Fatalf("migration failed: %v", err)
 	}
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
-	return postgres.NewStoreFactory(pool)
+	return newClosingStoreFactory(t, pool)
 }
 
 func makeDescriptor(name, version string) *spi.ModelDescriptor {

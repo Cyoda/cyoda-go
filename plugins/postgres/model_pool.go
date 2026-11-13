@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -44,19 +45,61 @@ func modelPoolConfig(base *pgxpool.Config, conns int32) *pgxpool.Config {
 // newModelPool opens the pool from the main pool's configuration and connects
 // one session, so a deployment that cannot reach the database fails at startup.
 func newModelPool(ctx context.Context, base *pgxpool.Config, conns int32, acquireTimeout time.Duration) (*modelPool, error) {
+	m, err := openModelPool(ctx, base, conns, acquireTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.pool.Ping(ctx); err != nil {
+		m.close()
+		return nil, fmt.Errorf("failed to connect the model pool: %w", err)
+	}
+	return m, nil
+}
+
+// openModelPool creates the pool without connecting a session.
+func openModelPool(ctx context.Context, base *pgxpool.Config, conns int32, acquireTimeout time.Duration) (*modelPool, error) {
 	pool, err := pgxpool.NewWithConfig(ctx, modelPoolConfig(base, conns))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create the model pool: %w", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("failed to connect the model pool: %w", err)
 	}
 	return &modelPool{
 		pool:           pool,
 		extSlots:       make(chan struct{}, max(1, conns/2)),
 		acquireTimeout: acquireTimeout,
 	}, nil
+}
+
+// modelPool returns the factory's model pool. Plugin.NewFactory opens it at
+// startup; a factory built by another constructor opens it on first use, as
+// the scheduler pools are. Once closeModelPool has run it is never reopened.
+func (f *StoreFactory) modelPool() (*modelPool, error) {
+	f.modelsMu.Lock()
+	defer f.modelsMu.Unlock()
+	if f.modelsClosed {
+		return nil, errors.New("failed to open the model pool: already closed")
+	}
+	if f.models != nil {
+		return f.models, nil
+	}
+	if f.pool == nil {
+		return nil, errors.New("failed to open the model pool: the store factory has no connection pool")
+	}
+	m, err := openModelPool(context.Background(), f.pool.Config(), f.cfg.ModelConns, f.cfg.AcquireTimeout)
+	if err != nil {
+		return nil, err
+	}
+	f.models = m
+	return m, nil
+}
+
+// closeModelPool closes the model pool if it is open and marks it closed for
+// good.
+func (f *StoreFactory) closeModelPool() {
+	f.modelsMu.Lock()
+	defer f.modelsMu.Unlock()
+	f.modelsClosed = true
+	f.models.close()
+	f.models = nil
 }
 
 // acquireExtension takes an extension slot, waiting until ctx ends, then a

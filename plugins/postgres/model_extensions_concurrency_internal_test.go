@@ -3,132 +3,156 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// TestExtendSchema_OverlappingTx_CommittedDeltaSurvivesSavepointFold —
-// the schema-fold delta-loss corruption path.
-//
-// Two overlapping REPEATABLE READ transactions extend the same
-// auto-evolving model, and the slower one's delta crosses the savepoint
-// interval. The savepoint fold then runs inside a snapshot taken before
-// the other transaction committed, so without per-(tenant, model) write
-// serialization it folds WITHOUT that committed delta — and because
-// fold-on-read replays only deltas with seq greater than the savepoint's,
-// the missed delta is excluded from every future fold: a committed
-// additive field is silently and permanently lost.
-//
-// Contract under test: ExtendSchema serialises per (tenant, model). The
-// overlapping writer must either fold correctly or fail with a conflict,
-// in which case the caller retries in a fresh transaction (first
-// committer wins, same as entity writes). Either way, once both writers
-// have committed, a fold must contain BOTH fields.
-func TestExtendSchema_OverlappingTx_CommittedDeltaSurvivesSavepointFold(t *testing.T) {
-	const interval = 2
-	fx := newPGFixtureWithInterval(t, interval)
+// TestExtendSchema_InEntityTx_NeverConflicts — two entity transactions that
+// stay open each extend the same model at the same time. An extension
+// never joins the caller's transaction, so neither waits for the other's
+// transaction to end and neither fails: both return nil and both deltas
+// are in the model.
+func TestExtendSchema_InEntityTx_NeverConflicts(t *testing.T) {
+	fx := newPGFixtureSized(t, 64, 10)
 	fx.store.applyFunc = setUnionApplyFunc
-	fx.factory.InitTransactionManager(newTestUUIDGenerator())
-	tm, err := fx.factory.TransactionManager(fx.ctx)
-	if err != nil {
-		t.Fatalf("TransactionManager: %v", err)
-	}
-
+	tm := fx.txManager(t)
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
-	fx.SaveModel(t, ref, []byte{})
+	fx.SaveModel(t, ref, []byte(`[]`))
 
-	// T1 begins first and pins its REPEATABLE READ snapshot with a read,
-	// so everything T2 commits from here on is invisible to T1.
-	tx1ID, tx1Ctx := beginGuarded(t, tm, fx.ctx)
-	if _, err := fx.store.Get(tx1Ctx, ref); err != nil {
-		t.Fatalf("T1 snapshot-pinning Get: %v", err)
-	}
-
-	// T2 adds "fieldB" and commits. One delta < interval: no savepoint.
-	tx2ID, tx2Ctx := beginGuarded(t, tm, fx.ctx)
-	if err := fx.store.ExtendSchema(tx2Ctx, ref, spi.SchemaDelta(`"fieldB"`)); err != nil {
-		t.Fatalf("T2 ExtendSchema: %v", err)
-	}
-	if err := tm.Commit(fx.ctx, tx2ID); err != nil {
-		t.Fatalf("T2 Commit: %v", err)
+	var txCtxs [2]context.Context
+	for i := range txCtxs {
+		_, txCtxs[i] = beginGuarded(t, tm, fx.ctx)
+		fx.pinSnapshot(t, txCtxs[i])
 	}
 
-	// T1 adds "fieldA": its delta crosses the savepoint interval, so the
-	// fold fires inside T1's stale snapshot — which cannot see "fieldB".
-	err = fx.store.ExtendSchema(tx1Ctx, ref, spi.SchemaDelta(`"fieldA"`))
-	if err == nil {
-		err = tm.Commit(fx.ctx, tx1ID)
-	} else {
-		_ = tm.Rollback(fx.ctx, tx1ID)
+	var errs [2]error
+	var wg sync.WaitGroup
+	for i := range txCtxs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(txCtxs[i], 5*time.Second)
+			defer cancel()
+			errs[i] = fx.store.ExtendSchema(ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"f%d"`, i)))
+		}()
 	}
-	if err != nil {
-		// The serialised contract may reject the overlapping writer, but
-		// only as spi.ErrConflict — that classification is what the kernel
-		// turns into a retryable 409; an unclassified error would surface
-		// as a 500 with no retry guidance. The caller's remedy is a retry
-		// in a fresh transaction, which must then succeed.
-		if !errors.Is(err, spi.ErrConflict) {
-			t.Fatalf("overlapping writer rejected with a non-conflict error: %v", err)
-		}
-		retryID, retryCtx := beginGuarded(t, tm, fx.ctx)
-		if err := fx.store.ExtendSchema(retryCtx, ref, spi.SchemaDelta(`"fieldA"`)); err != nil {
-			t.Fatalf("retry ExtendSchema: %v", err)
-		}
-		if err := tm.Commit(fx.ctx, retryID); err != nil {
-			t.Fatalf("retry Commit: %v", err)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("ExtendSchema from open entity transaction %d: %v", i, err)
 		}
 	}
 
-	// Both writers have committed: the fold must contain both fields.
 	got, err := fx.store.Get(fx.ctx, ref)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	for _, field := range []string{"fieldA", "fieldB"} {
-		if !bytes.Contains(got.Schema, []byte(field)) {
-			t.Errorf("committed delta %q lost from fold; folded schema = %s", field, got.Schema)
+	for _, f := range []string{"f0", "f1"} {
+		if !bytes.Contains(got.Schema, []byte(f)) {
+			t.Errorf("delta %q missing from the model; schema = %s", f, got.Schema)
 		}
 	}
 }
 
-// TestExtendSchema_ConcurrentSelfWrap_SavepointCrossing_NoLostDelta —
-// the self-wrap (no ambient transaction) flavour of the same corruption
-// path, driven as a stress test: N concurrent writers each add a distinct
-// token with a savepoint interval small enough that many folds fire
-// mid-storm. Every committed delta must survive into the final fold; a
-// savepoint that folded over a delta it could not yet see loses that
-// token permanently.
-func TestExtendSchema_ConcurrentSelfWrap_SavepointCrossing_NoLostDelta(t *testing.T) {
+// TestExtendSchema_SavepointUnderLock_KeepsEveryLowerSeqDelta — 24 entity
+// transactions, each with a snapshot taken before any extension, extend
+// one model concurrently with a savepoint interval of 2, so savepoints are
+// folded mid-storm. A savepoint is folded under the model's row lock from
+// the latest committed state, never from a caller's snapshot, so every
+// savepoint holds every delta with a lower seq, and the final fold holds
+// every field.
+func TestExtendSchema_SavepointUnderLock_KeepsEveryLowerSeqDelta(t *testing.T) {
 	const (
 		n        = 24
-		interval = 3
+		interval = 2
 	)
-	fx := newPGFixtureWithInterval(t, interval)
+	fx := newPGFixtureSized(t, interval, n+6)
 	fx.store.applyFunc = setUnionApplyFunc
-
+	tm := fx.txManager(t)
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
-	fx.SaveModel(t, ref, []byte{})
+	fx.SaveModel(t, ref, []byte(`[]`))
 
-	var wg sync.WaitGroup
-	wg.Add(n)
+	txIDs := make([]string, n)
+	txCtxs := make([]context.Context, n)
 	for i := 0; i < n; i++ {
-		i := i
+		txIDs[i], txCtxs[i] = beginGuarded(t, tm, fx.ctx)
+		fx.pinSnapshot(t, txCtxs[i])
+	}
+
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			delta := spi.SchemaDelta(fmt.Sprintf(`"d%02d"`, i))
-			if err := fx.store.ExtendSchema(fx.ctx, ref, delta); err != nil {
-				t.Errorf("ExtendSchema #%d: %v", i, err)
+			ctx, cancel := context.WithTimeout(txCtxs[i], 30*time.Second)
+			defer cancel()
+			if err := fx.store.ExtendSchema(ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%02d"`, i))); err != nil {
+				errs[i] = fmt.Errorf("ExtendSchema: %w", err)
+				return
+			}
+			if err := tm.Commit(ctx, txIDs[i]); err != nil {
+				errs[i] = fmt.Errorf("Commit: %w", err)
 			}
 		}()
 	}
 	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("extender %d: %v", i, err)
+		}
+	}
+
+	// Every savepoint holds every delta with a lower seq.
+	rows, err := fx.db.Query(context.Background(), `
+		SELECT seq, kind, payload FROM model_schema_extensions
+		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
+		ORDER BY seq`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var below []string
+	savepoints := 0
+	for rows.Next() {
+		var (
+			seq     int64
+			kind    string
+			payload []byte
+		)
+		if err := rows.Scan(&seq, &kind, &payload); err != nil {
+			t.Fatalf("scan log: %v", err)
+		}
+		if kind == "delta" {
+			var tok string
+			if err := json.Unmarshal(payload, &tok); err != nil {
+				t.Fatalf("decode delta %s: %v", payload, err)
+			}
+			below = append(below, tok)
+			continue
+		}
+		savepoints++
+		for _, tok := range below {
+			if !bytes.Contains(payload, []byte(`"`+tok+`"`)) {
+				t.Errorf("savepoint at seq %d misses lower-seq delta %q; payload = %s", seq, tok, payload)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if savepoints == 0 {
+		t.Error("no savepoint was folded; the test did not exercise the savepoint path")
+	}
 
 	got, err := fx.store.Get(fx.ctx, ref)
 	if err != nil {
@@ -142,15 +166,11 @@ func TestExtendSchema_ConcurrentSelfWrap_SavepointCrossing_NoLostDelta(t *testin
 	}
 }
 
-// TestExtendSchema_MissingModel_UnwiredApplyFunc_ErrNotFound — the
-// write-claim's zero-row arm. With applyFunc wired, the pre-persist
-// check already reported ErrNotFound for a missing model; with it
-// unwired, ExtendSchema used to append an orphan delta row for a model
-// that does not exist. The claim UPDATE closes that hole: zero rows
-// matched means no model to extend, ErrNotFound, and nothing persisted.
-func TestExtendSchema_MissingModel_UnwiredApplyFunc_ErrNotFound(t *testing.T) {
+// TestExtendSchema_MissingModel_ErrNotFound_NoRows — the lock statement
+// finds no model row: ErrNotFound, and no orphan delta row is appended.
+func TestExtendSchema_MissingModel_ErrNotFound_NoRows(t *testing.T) {
 	fx := newPGFixture(t)
-	fx.store.applyFunc = nil
+	fx.store.applyFunc = setUnionApplyFunc
 	ref := spi.ModelRef{EntityName: "Ghost", ModelVersion: "1"}
 
 	err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"d0"`))
@@ -170,11 +190,11 @@ func TestExtendSchema_MissingModel_UnwiredApplyFunc_ErrNotFound(t *testing.T) {
 	}
 }
 
-// TestExtendSchema_SelfWrap_SetsTenantGUCForRLS — the self-wrap
-// transaction must set app.current_tenant like every other transaction
-// this plugin opens (TransactionManager.Begin, the async-search scan),
-// so the tenant-isolation RLS policies on models and
-// model_schema_extensions apply to its statements.
+// TestExtendSchema_SetsTenantGUCForRLS — the extension's transaction must
+// set app.current_tenant like every other transaction this plugin opens
+// (TransactionManager.Begin, the async-search scan), so the
+// tenant-isolation RLS policies on models and model_schema_extensions apply
+// to its statements.
 //
 // The usual fixtures cannot see this: the test role owns the tables (and
 // the container's bootstrap user is superuser), so RLS never applies and
@@ -182,13 +202,13 @@ func TestExtendSchema_MissingModel_UnwiredApplyFunc_ErrNotFound(t *testing.T) {
 // (rls_test.go), but every transaction of the plugin sets the tenant; to
 // check that this one does, this test runs ExtendSchema through a
 // dedicated non-superuser role, for which ENABLE ROW LEVEL SECURITY
-// applies. An unset GUC evaluates the policies to NULL and the write-claim
-// UPDATE sees zero rows: fail-closed ErrNotFound instead of an extension.
-func TestExtendSchema_SelfWrap_SetsTenantGUCForRLS(t *testing.T) {
+// applies. An unset GUC evaluates the policies to NULL and the lock
+// statement sees zero rows: fail-closed ErrNotFound instead of an extension.
+func TestExtendSchema_SetsTenantGUCForRLS(t *testing.T) {
 	fx := newPGFixture(t)
 	fx.store.applyFunc = setUnionApplyFunc
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
-	fx.SaveModel(t, ref, []byte{}) // seeded as owner: RLS does not apply
+	fx.SaveModel(t, ref, []byte(`[]`)) // seeded as owner: RLS does not apply
 
 	const probeRole = "cyoda_rls_probe"
 	for _, stmt := range []string{
@@ -224,13 +244,14 @@ func TestExtendSchema_SelfWrap_SetsTenantGUCForRLS(t *testing.T) {
 
 	factory := NewStoreFactory(probePool)
 	factory.SetApplyFunc(setUnionApplyFunc)
+	t.Cleanup(factory.closeModelPool)
 	ms, err := factory.ModelStore(fx.ctx)
 	if err != nil {
 		t.Fatalf("probe ModelStore: %v", err)
 	}
 
 	if err := ms.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"d0"`)); err != nil {
-		t.Fatalf("self-wrap ExtendSchema under RLS (non-owner role): %v", err)
+		t.Fatalf("ExtendSchema under RLS (non-owner role): %v", err)
 	}
 
 	// Assert through the owner pool: the delta really landed.

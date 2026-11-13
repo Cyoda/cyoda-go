@@ -60,6 +60,7 @@ func openClockFactory(c spi.Clock) (*postgres.StoreFactory, func() error, error)
 	f.InitTransactionManager(newTestUUIDGenerator())
 	closeF := func() error {
 		postgres.CloseSchedulerPoolsForTest(f)
+		postgres.CloseModelPoolForTest(f)
 		pool.Close()
 		return drop()
 	}
