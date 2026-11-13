@@ -56,6 +56,17 @@ type factory struct {
 	co *coordinator
 }
 
+// SetApplyFunc forwards the schema-replay function to the inner factory, which
+// ExtendSchema needs; the double offers it only where the inner factory does.
+// It panics, as the inner does, if called twice.
+func (f *factory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+	if s, ok := f.StoreFactory.(interface {
+		SetApplyFunc(func(base []byte, delta spi.SchemaDelta) ([]byte, error))
+	}); ok {
+		s.SetApplyFunc(fn)
+	}
+}
+
 // TransactionCoordinator implements spi.TransactionCoordinationCapable.
 func (f *factory) TransactionCoordinator(context.Context) (spi.TransactionCoordinator, error) {
 	return f.co, nil

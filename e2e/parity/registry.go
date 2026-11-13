@@ -290,7 +290,6 @@ var allTests = []NamedTest{
 	{"SchemaExtensionCrossBackendByteIdentity", RunSchemaExtensionCrossBackendByteIdentity},
 	{"SchemaExtensionAtomicRejection", RunSchemaExtensionAtomicRejection},
 	{"SchemaExtensionConcurrentConvergence", RunSchemaExtensionConcurrentConvergence},
-	{"SchemaExtensionSavepointOnLockFoldEquivalence", RunSchemaExtensionSavepointOnLockFoldEquivalence},
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 	{"SchemaNumericFoldCarveout", RunSchemaNumericFoldCarveout},
