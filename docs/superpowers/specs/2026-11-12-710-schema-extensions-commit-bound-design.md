@@ -172,7 +172,11 @@ deleted, or deleted and created again, after the extension fails its commit
 with `spi.ErrConflict` (retryable `409`; the retry reads the model as it is
 now). A delta is never installed on a model that is gone or on a new model of
 the same name. Each backend records the model's identity when the delta is
-staged or appended and checks it at commit (§6.1-§6.3). The commit of an
+staged or appended and checks it at commit (§6.1-§6.3). A model's identity is
+its **incarnation**: it begins when the model is first saved, survives `Save`
+of the existing model (re-import, unique keys), `Lock`, `Unlock` and
+`SetChangeLevel`, and ends with `Delete`; saving the name again starts a new
+incarnation. Only the end of the incarnation fails an extending writer. The commit of an
 entity into a model that is no longer `LOCKED` is refused on every backend by
 #617, which follows this change.
 
@@ -184,8 +188,15 @@ entity into a model that is no longer `LOCKED` is refused on every backend by
   schema, which can be newer than a postgres transaction's snapshot). When that
   gives a nil delta, nothing changes (the steady state, served from the
   cache). When it gives a delta, it re-reads the descriptor through the
-  transaction's own view (`ModelStore.Get` with the transaction's context,
-  which bypasses the cache only for this) and re-diffs from it. A delta diffed
+  transaction's own view and re-diffs from it. The caching store offers that
+  read as its own method (`GetTransactionView(ctx, ref)`: the inner store with
+  the transaction's context, never the shared entry, never a fill), and
+  `ValidateOrExtend` uses it; a plain `Get` in a transaction that has not
+  extended the model cannot be told apart and would answer from the cache
+  again. The re-diff uses the whole descriptor of the transaction's view
+  (`ChangeLevel`, `UniqueKeys` and the unique-key guard, `validate.go`
+  ~:135-145), and its refusal is the final answer. It reads once; it cannot
+  loop. A delta diffed
   from a newer schema than the transaction's can name a parent the transaction
   cannot see (`resolvePath`, `apply.go` ~:216-218: "missing segment"), which
   would fail the write because another transaction extended the model (§3.3).
@@ -281,7 +292,10 @@ through it.
   staged deltas applied, in order.
 - `Savepoint` records the staged length per ref in `savepointSnapshot`;
   `RollbackToSavepoint` truncates to it.
-- Staging records the model's identity (the stored descriptor pointer). Taking
+- Staging records the model's incarnation: an id the model store gives an
+  entry when it first stores the model and keeps across `Save` of the existing
+  model (which replaces the descriptor pointer), `Lock`, `Unlock` and
+  `SetChangeLevel`; `Delete` ends it. Taking
   the transaction's view of the model inside `ExtendSchema` must not take
   `tx.OpMu.RLock` a second time (with `Commit`'s `OpMu.Lock` pending,
   `txmanager.go` ~:845, that deadlocks).
@@ -290,9 +304,12 @@ through it.
   are never nested. Before its last abort path it takes `modelMu` (inside
   `entityMu`, a new order; no path takes `modelMu` and then `entityMu`) and
   holds it until the new schemas are installed: it checks each model is the
-  one staged against (same pointer; else `spi.ErrConflict`, nothing applied),
-  computes the new schemas (a refusal fails the commit closed), and after the
-  last abort path installs them, all without releasing `modelMu`.
+  one staged against (same incarnation; else `spi.ErrConflict`), computes the
+  new schemas, and installs them. That check is the commit's last abort path,
+  so check, compute and install are one `modelMu` section (an IIFE). On a
+  refusal the section returns first, releasing `modelMu`, and the commit then
+  aborts as `abortClaim` does (`txmanager.go` ~:930-938), taking `m.mu`
+  outside it; `m.mu` and `modelMu` are never nested.
 
 ### 6.2 sqlite
 
@@ -302,8 +319,12 @@ through it.
   `CYODA_SCHEMA_EXTEND_MAX_RETRIES` are deleted.
 - `Get` with a transaction folds the committed log (`foldLockedOn` on the read
   connection) and applies the staged deltas.
-- Staging records the model's identity (the `rowid` of its `models` row; a
-  delete and re-create gives a new one). `flushToSQLite` checks, in its
+- Staging records the model's incarnation: an id kept in the `models` row's
+  `doc`, set when the model is first saved and carried over by `Save` of the
+  existing model (`INSERT OR REPLACE`, `model_store.go` ~:63, deletes and
+  re-inserts the row, and the table is `WITHOUT ROWID`,
+  `000001_initial_schema.up.sql` ~:45-51, so neither a rowid nor the row itself
+  can serve); `Delete` ends it. `flushToSQLite` checks, in its
   `sqlTx`, that each extended model has the same identity (else
   `spi.ErrConflict`) and that its fold accepts the staged deltas (a refusal
   fails the commit, nothing applied), then inserts the staged deltas into
@@ -330,18 +351,20 @@ through it.
   the savepoint and the deltas (`model_extensions.go` ~:50-73) are three
   statements; outside a `REPEATABLE READ` transaction a compaction or an
   `Unlock` committing between them would give the old savepoint or `doc` with
-  the folded deltas already deleted.
+  the folded deltas already deleted. A delta already folded into the
+  savepoint is applied again, which changes nothing (§6.5); a delta committed
+  after the savepoint was written, whatever its `seq`, is applied.
 - **Identity check at commit.** Before the commit stamp (`cyoda_stamp`,
   `transaction_manager.go` ~:416-421), a transaction that extended models
   takes `SELECT … FOR KEY SHARE` on each extended model's `models` row. Under
   `REPEATABLE READ`, a row deleted after the snapshot (a delete, or a delete
-  and re-create) fails it with `40001` (`spi.ErrConflict`); a missing row
-  fails the commit the same way. `FOR KEY SHARE` does not conflict with a
-  non-key `UPDATE` (`SetChangeLevel`, `Lock`/`Unlock`'s state write, `Save` of
-  an existing row) or with compaction's lock, so no other model operation
-  fails an extending writer. A delta already folded into the savepoint
-  is applied again, which changes nothing (§6.5); a delta committed after the savepoint was written, whatever its
-  `seq`, is applied.
+  and re-create, also behind earlier updates such as `Unlock` then `Delete`)
+  fails it with `40001` (`spi.ErrConflict`): the end of the incarnation. `FOR
+  KEY SHARE` does not conflict with a non-key `UPDATE` (`SetChangeLevel`,
+  `Lock`/`Unlock`'s state write, the `Save` upsert of an existing row, all
+  non-key on the primary key `(tenant_id, model_name, model_version)`) or with
+  compaction's lock, so no other model operation fails an extending writer —
+  the same incarnation rule memory and sqlite apply.
 - **Compaction** replaces the savepoint-in-the-writer: in a `READ COMMITTED`
   transaction of its own, take `SELECT … FOR NO KEY UPDATE` on the model's
   `models` row (serialising compactions with each other and with `Unlock`,
@@ -442,11 +465,10 @@ caused by a concurrent extension disappears.
 | postgres `Unlock`: a delta committing between its fold and its delete survives | postgres plugin | — | — | — | — |
 | Fold re-apply/reorder property (§6.5) | schema property test | — | — | — | — |
 | A write adds a field nested under a parent another transaction added after this transaction began (postgres snapshot older than the cache) → `2xx`, field in the schema | entity service unit + postgres plugin | — | new (isolated) | — | — |
-| A model deleted (and re-created) under an extending transaction → commit `409 CONFLICT` retryable, nothing applied, on every backend | per-plugin | new | — | — | — |
+| A model deleted (and re-created), including `Unlock` then `Delete`, under an extending transaction → commit `409 CONFLICT` retryable, nothing applied, on every backend; a re-import (`Save` of the existing model) does not fail it | per-plugin | new | — | — | — |
 | `SetChangeLevel` / compaction during an extending transaction → the transaction commits | postgres plugin | — | — | — | — |
 | Fold during a concurrent `Unlock` or compaction (outside a transaction) never misses a committed delta | postgres plugin | — | — | — | — |
 | Multi-node: an extension is not visible on node B before commit, visible after the broadcast; the negative path cache on B expires by lease | — | — | — | new, multi-node harness (`e2e/parity/postgres/multinode_test.go`) | — |
-| memory/sqlite: a model replaced under an extending transaction fails its commit, nothing applied | per-plugin | — | — | — | — |
 | postgres compaction: a delta committed after a compaction with a lower `seq` is in the fold; concurrent compactions lose nothing; compaction failure leaves reads correct | postgres plugin | — | — | — | — |
 | Interval counts the model's own deltas | postgres + sqlite plugin | — | — | — | — |
 | Processor-output storage failure → `503` | workflow unit (failing store double) | — | waived: a storage outage cannot be produced in e2e without a test hook in production code | — | waived, same reason |
