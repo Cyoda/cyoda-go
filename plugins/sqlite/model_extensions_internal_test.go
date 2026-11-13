@@ -194,7 +194,7 @@ func TestSQLite_foldLocked_NoDeltas_ReturnsBase(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte(`{"base":true}`))
 
-	got, err := fx.store.foldLocked(fx.ctx, ref, []byte(`{"base":true}`))
+	got, err := foldViaTx(t, fx, ref, []byte(`{"base":true}`))
 	if err != nil {
 		t.Fatalf("foldLocked: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestSQLite_foldLocked_MultipleDeltas_AppliesInOrder(t *testing.T) {
 		}
 	}
 
-	got, err := fx.store.foldLocked(fx.ctx, ref, []byte{})
+	got, err := foldViaTx(t, fx, ref, []byte{})
 	if err != nil {
 		t.Fatalf("foldLocked: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestSQLite_ExtendSchema_SavepointAtConfigInterval(t *testing.T) {
 		}
 	}
 
-	seq, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	seq, err := savepointSeqViaTx(t, fx, ref)
 	if err != nil {
 		t.Fatalf("lastSavepointSeq: %v", err)
 	}
@@ -310,14 +310,14 @@ func TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
 	if err := fx.store.Lock(fx.ctx, ref); err != nil {
 		t.Fatalf("Lock: %v", err)
 	}
-	beforeUnlock, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	beforeUnlock, err := savepointSeqViaTx(t, fx, ref)
 	if err != nil {
 		t.Fatalf("lastSavepointSeq pre-unlock: %v", err)
 	}
 	if err := fx.store.Unlock(fx.ctx, ref); err != nil {
 		t.Fatalf("Unlock: %v", err)
 	}
-	afterUnlock, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	afterUnlock, err := savepointSeqViaTx(t, fx, ref)
 	if err != nil {
 		t.Fatalf("lastSavepointSeq post-unlock: %v", err)
 	}
@@ -328,13 +328,15 @@ func TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
 
 // TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr — §4.2.
 // Cancelling ctx before ExtendSchema must return context.Canceled
-// (wrapped) — not ErrRetryExhausted — since the retry loop checks
-// ctx.Err() at the top of each attempt.
+// (wrapped) since the retry loop checks ctx.Err() at the top of each attempt.
 func TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr(t *testing.T) {
 	fx := newSQLiteFixture(t)
 	fx.store.applyFunc = setUnionApplyFunc
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte(`[]`))
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(fx.ctx)
 	cancel()
@@ -636,10 +638,10 @@ func TestSQLite_ExtendSchema_BusyRetriedUntilContextEnds(t *testing.T) {
 	if _, err := fx.factory.db.ExecContext(context.Background(), "PRAGMA busy_timeout = 10"); err != nil {
 		t.Fatalf("override busy_timeout: %v", err)
 	}
-	dbPath := filepath.Join(filepath.Dir(fx.factory.cfg.Path), filepath.Base(fx.factory.cfg.Path))
+	dbPath := fx.factory.cfg.Path
 
 	hold := func() (*sql.Tx, func()) {
-		holderDB, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_txlock=immediate&_busy_timeout=10", dbPath))
+		holderDB, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_txlock=immediate&_pragma=busy_timeout(10)", dbPath))
 		if err != nil {
 			t.Fatalf("open holder DB: %v", err)
 		}
@@ -674,6 +676,10 @@ func TestSQLite_ExtendSchema_BusyRetriedUntilContextEnds(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want errors.Is(_, context.DeadlineExceeded)", err)
+	}
+	// Contention is not a client-retryable conflict (design 3.4).
+	if errors.Is(err, spi.ErrConflict) {
+		t.Errorf("err = %v, must not satisfy errors.Is(_, spi.ErrConflict)", err)
 	}
 }
 
@@ -711,6 +717,9 @@ func TestSQLite_Get_OneReadTransaction_NoTornReadWithUnlock(t *testing.T) {
 	const cycles, readers = 60, 6
 
 	stop := make(chan struct{})
+	var stopOnce sync.Once
+	stopReaders := func() { stopOnce.Do(func() { close(stop) }) }
+	defer stopReaders()
 	var wg sync.WaitGroup
 	errc := make(chan error, readers+1)
 	for r := 0; r < readers; r++ {
@@ -753,10 +762,31 @@ func TestSQLite_Get_OneReadTransaction_NoTornReadWithUnlock(t *testing.T) {
 			t.Fatalf("Lock %d: %v", i, err)
 		}
 	}
-	close(stop)
+	stopReaders()
 	wg.Wait()
 	close(errc)
 	for err := range errc {
 		t.Error(err)
 	}
+}
+
+// foldViaTx folds ref's log over base inside a read transaction, as Get does.
+func foldViaTx(t *testing.T, fx *sqliteFixture, ref spi.ModelRef, base []byte) ([]byte, error) {
+	t.Helper()
+	tx, err := fx.store.readDB.BeginTx(fx.ctx, nil)
+	if err != nil {
+		t.Fatalf("begin read tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	return fx.store.foldLockedInTx(fx.ctx, tx, ref, base)
+}
+
+func savepointSeqViaTx(t *testing.T, fx *sqliteFixture, ref spi.ModelRef) (int64, error) {
+	t.Helper()
+	tx, err := fx.store.readDB.BeginTx(fx.ctx, nil)
+	if err != nil {
+		t.Fatalf("begin read tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	return fx.store.lastSavepointSeqInTx(fx.ctx, tx, ref)
 }

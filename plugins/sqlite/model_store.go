@@ -11,6 +11,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	sqlite3 "github.com/ncruces/go-sqlite3"
 )
 
 type modelStore struct {
@@ -221,7 +222,7 @@ func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 		return fmt.Errorf("failed to unmarshal model doc: %w", err)
 	}
 
-	// Idempotence: already-locked is a no-op — no second savepoint.
+	// Idempotence: already-locked is a no-op.
 	if doc.State == spi.ModelLocked {
 		if err := tx.Commit(); err != nil {
 			return classifyError(fmt.Errorf("commit lock (no-op): %w", err))
@@ -397,8 +398,11 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 		return fmt.Errorf("sqlite: ApplyFunc not wired (call WithApplyFunc when creating StoreFactory)")
 	}
 	// SQLite's per-connection busy_timeout absorbs most writer contention;
-	// the residual SQLITE_BUSY (classifyError maps it to spi.ErrConflict) is
-	// retried until ctx ends. Any other error is returned at once.
+	// the residual SQLITE_BUSY is retried until ctx ends, after a short
+	// ctx-aware pause so a zero busy_timeout cannot hot-spin. Any other error
+	// returns at once. The last BUSY error is rendered with %v, never %w:
+	// contention is not a client-retryable conflict, so the error returned
+	// when ctx ends must not satisfy errors.Is(_, spi.ErrConflict).
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("ExtendSchema cancelled after %d attempts: %w", attempt-1, err)
@@ -407,14 +411,22 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 		if err == nil {
 			return nil
 		}
-		if !errors.Is(err, spi.ErrConflict) {
+		if !errors.Is(err, sqlite3.BUSY) {
+			if cerr := ctx.Err(); cerr != nil {
+				return fmt.Errorf("ExtendSchema cancelled after %d attempts: %w (last: %v)", attempt, cerr, err)
+			}
 			return err
 		}
-		if cerr := ctx.Err(); cerr != nil {
-			return fmt.Errorf("ExtendSchema cancelled after %d attempts: %w (last: %w)", attempt, cerr, err)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("ExtendSchema cancelled after %d attempts: %w (last: %v)", attempt, ctx.Err(), err)
+		case <-time.After(busyRetryPause):
 		}
 	}
 }
+
+// busyRetryPause is the pause between ExtendSchema attempts after SQLITE_BUSY.
+const busyRetryPause = 5 * time.Millisecond
 
 func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
 	tx, err := s.db.BeginTx(ctx, nil)

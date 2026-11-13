@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -168,9 +169,15 @@ func TestSQLite_ExtendSchema_MissingApplyFunc_Errors(t *testing.T) {
 		Ref: ref, State: spi.ModelUnlocked, ChangeLevel: spi.ChangeLevelStructural,
 		Schema: []byte(`{}`), UpdateDate: time.Now().UTC(),
 	})
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 	err = ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`))
 	if err == nil {
 		t.Fatal("expected error when ApplyFunc not wired")
+	}
+	if errors.Is(err, spi.ErrModelNotLocked) {
+		t.Fatalf("model is locked, error must be the wiring error, got %v", err)
 	}
 }
 
@@ -180,8 +187,8 @@ func TestSQLite_ExtendSchema_ModelNotFound(t *testing.T) {
 	ms, _ := f.ModelStore(ctx)
 	ref := spi.ModelRef{EntityName: "Missing", ModelVersion: "1"}
 	err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`))
-	if err == nil {
-		t.Fatal("expected error on missing model")
+	if !errors.Is(err, spi.ErrNotFound) {
+		t.Fatalf("err = %v, want errors.Is(_, spi.ErrNotFound)", err)
 	}
 }
 
