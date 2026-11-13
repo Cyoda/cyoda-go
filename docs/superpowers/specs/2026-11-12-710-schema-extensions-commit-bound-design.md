@@ -166,15 +166,34 @@ naming schema extension.
 **A model changed while an extending transaction is open.** `Unlock`, `Save`
 and `Delete` of a model with writers in flight stay outside the operator
 contract (`docs/CONSISTENCY.md` "Operator Contract for Unlock": drain first),
-as today; the window is now the transaction rather than one call. No backend
-installs a delta on a model that is gone: memory and sqlite fail the commit
-(§6.1, §6.2). The commit of an entity into a model that is no longer `LOCKED`
-is refused on every backend by #617, which follows this change.
+as today; the window is now the transaction rather than one call. Within it,
+every backend gives the same answer: an extending transaction whose model was
+deleted, or deleted and created again, after the extension fails its commit
+with `spi.ErrConflict` (retryable `409`; the retry reads the model as it is
+now). A delta is never installed on a model that is gone or on a new model of
+the same name. Each backend records the model's identity when the delta is
+staged or appended and checks it at commit (§6.1-§6.3). The commit of an
+entity into a model that is no longer `LOCKED` is refused on every backend by
+#617, which follows this change.
 
 ## 4. Callers: every extension inside the entity transaction
 
+- **The delta is diffed against the schema the transaction sees.**
+  `ValidateOrExtend` validates against the descriptor it is given (in a
+  transaction that has not extended the model, the shared cache's committed
+  schema, which can be newer than a postgres transaction's snapshot). When that
+  gives a nil delta, nothing changes (the steady state, served from the
+  cache). When it gives a delta, it re-reads the descriptor through the
+  transaction's own view (`ModelStore.Get` with the transaction's context,
+  which bypasses the cache only for this) and re-diffs from it. A delta diffed
+  from a newer schema than the transaction's can name a parent the transaction
+  cannot see (`resolvePath`, `apply.go` ~:216-218: "missing segment"), which
+  would fail the write because another transaction extended the model (§3.3).
+  Re-diffed from the transaction's view it applies to the transaction's fold,
+  and to every later fold, which contains that view (§6.5).
 - `CreateEntity` validates-or-extends after `Begin`, with the transaction's
-  context.
+  context, and keeps today's order of answers: `ValidateOrExtend` (`400`)
+  before `withUniqueKeys` (`422`), so `withUniqueKeys` moves after it.
 - `CreateEntityCollection` keeps validating **every** item before any item
   runs: after `Begin`, a first loop validates-and-extends every item on the
   opening transaction's context (each item reads the model with that context,
@@ -213,10 +232,19 @@ transaction extended (§3.5). It keeps no per-transaction state of its own.
 
 - A fill from inside a transaction reads the inner store **without** the
   transaction (committed state), so a fill never carries uncommitted data.
+  The SPI gains `spi.WithoutTransaction(ctx)` for this (today it has only
+  `WithTransaction` and `GetTransaction`, `txcontext.go` ~:132-142); every
+  plugin resolves its connection from the transaction on `ctx`, which the
+  builder confirms per plugin.
 - **Fill guard.** Each key has an invalidation generation. A fill records the
   generation before it reads and stores only if it is unchanged; an
   invalidation in between makes the fill return its result without storing it.
-  The negative path cache follows the same rule. (This race exists today; the
+  Both a local invalidation and one received by gossip (`cache.go` ~:325-331)
+  bump the generation. The negative path cache follows the same rule, and gets
+  the same lease as the descriptor cache (`CYODA_MODEL_CACHE_LEASE`): today it
+  is bounded by size only (`path_validation_cache.go` ~:235-237), so a node
+  that misses a best-effort invalidation broadcast (`gossip_broadcast.go`
+  ~:30) would refuse a committed field indefinitely. (This race exists today; the
   commit-bound promise makes it matter.)
 
 **Invalidation at commit.** The caching factory's transaction manager wraps
@@ -225,6 +253,11 @@ inner `Commit` returns, **whatever its result** (a commit that reports a
 network error may have committed; invalidating is always harmless), it evicts
 each ref locally, notifies local subscribers and broadcasts `model.invalidate`.
 `ExtendSchema` no longer invalidates. Rollback invalidates nothing.
+
+`CachingModelStore`'s own `Get` / `RefreshAndGet` / `SchemaNode` /
+`ExtendSchema` (`cache.go` ~:141-229) are built in production only with a nil
+inner (`factory.go` ~:38) and serve tests; they go, leaving the cache state,
+so no test pins invalidation inside `ExtendSchema`.
 
 Today the app takes its transaction manager from the plugin factory, not the
 caching one (`app/app.go` ~:268-277); it takes it from the caching factory
@@ -248,15 +281,18 @@ through it.
   staged deltas applied, in order.
 - `Savepoint` records the staged length per ref in `savepointSnapshot`;
   `RollbackToSavepoint` truncates to it.
+- Staging records the model's identity (the stored descriptor pointer). Taking
+  the transaction's view of the model inside `ExtendSchema` must not take
+  `tx.OpMu.RLock` a second time (with `Commit`'s `OpMu.Lock` pending,
+  `txmanager.go` ~:845, that deadlocks).
 - `Commit` captures the staged deltas in its step-3 `m.mu` section, as it
   captures the audit operations (`txmanager.go` ~:912); `m.mu` and `modelMu`
-  are never nested. Before its last abort path it computes the new schemas
-  under `modelMu` (taken inside `entityMu`, a new order; no path takes
-  `modelMu` and then `entityMu`); a model that is gone, or a delta `applyFunc`
-  refuses, aborts the commit (fail closed, nothing applied). After the last
-  abort path it installs them. Additive deltas apply onto any schema that
-  contains their base (§6.5), so a refusal means the model was replaced under
-  the transaction.
+  are never nested. Before its last abort path it takes `modelMu` (inside
+  `entityMu`, a new order; no path takes `modelMu` and then `entityMu`) and
+  holds it until the new schemas are installed: it checks each model is the
+  one staged against (same pointer; else `spi.ErrConflict`, nothing applied),
+  computes the new schemas (a refusal fails the commit closed), and after the
+  last abort path installs them, all without releasing `modelMu`.
 
 ### 6.2 sqlite
 
@@ -266,9 +302,11 @@ through it.
   `CYODA_SCHEMA_EXTEND_MAX_RETRIES` are deleted.
 - `Get` with a transaction folds the committed log (`foldLockedOn` on the read
   connection) and applies the staged deltas.
-- `flushToSQLite` checks, in its `sqlTx`, that each extended model still
-  exists and that its fold accepts the staged deltas (a refusal fails the
-  commit, nothing applied), then inserts the staged deltas into
+- Staging records the model's identity (the `rowid` of its `models` row; a
+  delete and re-create gives a new one). `flushToSQLite` checks, in its
+  `sqlTx`, that each extended model has the same identity (else
+  `spi.ErrConflict`) and that its fold accepts the staged deltas (a refusal
+  fails the commit, nothing applied), then inserts the staged deltas into
   `model_schema_extensions`. sqlite commits one at a time (commit gate, one writer
   connection), so no other transaction's delta is in flight in the table and
   `seq` order is commit order: the flush may also write a savepoint, in the
@@ -286,18 +324,29 @@ through it.
   is deleted with §3.1. The transaction's state records the refs it extended
   (`ExtendedModels`, and the compaction trigger below); a savepoint rollback
   may leave a ref recorded, which costs only an invalidation and a count.
-- **Fold on read:** the model's one savepoint, if any, then **every** delta
-  row of the model, in `seq` order, read in **one statement** (or one
-  snapshot). Today the savepoint and the deltas are two statements
-  (`model_extensions.go` ~:50-73); outside a `REPEATABLE READ` transaction a
-  compaction committing between them would leave the old savepoint with the
-  folded deltas already deleted. A delta already folded into the savepoint
+- **Fold on read:** the model's base (`models.doc`), its one savepoint, if
+  any, then **every** delta row of the model, in `seq` order, all read in
+  **one statement** (or one snapshot). Today `doc` (`model_store.go` ~:89-96),
+  the savepoint and the deltas (`model_extensions.go` ~:50-73) are three
+  statements; outside a `REPEATABLE READ` transaction a compaction or an
+  `Unlock` committing between them would give the old savepoint or `doc` with
+  the folded deltas already deleted.
+- **Identity check at commit.** Before the commit stamp (`cyoda_stamp`,
+  `transaction_manager.go` ~:416-421), a transaction that extended models
+  takes `SELECT … FOR KEY SHARE` on each extended model's `models` row. Under
+  `REPEATABLE READ`, a row deleted after the snapshot (a delete, or a delete
+  and re-create) fails it with `40001` (`spi.ErrConflict`); a missing row
+  fails the commit the same way. `FOR KEY SHARE` does not conflict with a
+  non-key `UPDATE` (`SetChangeLevel`, `Lock`/`Unlock`'s state write, `Save` of
+  an existing row) or with compaction's lock, so no other model operation
+  fails an extending writer. A delta already folded into the savepoint
   is applied again, which changes nothing (§6.5); a delta committed after the savepoint was written, whatever its
   `seq`, is applied.
 - **Compaction** replaces the savepoint-in-the-writer: in a `READ COMMITTED`
-  transaction of its own, take `SELECT … FOR UPDATE` on the model's `models`
-  row (serialising compactions with each other and with `Unlock`, `Save` and
-  `Delete`, which write that row; a lock without an update makes no other
+  transaction of its own, take `SELECT … FOR NO KEY UPDATE` on the model's
+  `models` row (serialising compactions with each other and with `Unlock`,
+  `Save` and `Delete`, which write that row, while staying compatible with the
+  writers' `FOR KEY SHARE`; a lock without an update makes no other
   transaction fail, and no foreign key references `models`). Only after the
   lock: read the model's state, the savepoint and the deltas; skip if the row
   is gone or the model is `UNLOCKED`, and re-check the delta count (two nodes
@@ -355,7 +404,7 @@ builder stops and brings it back.
 | Area | Before | After |
 |---|---|---|
 | Two transactions extend the same model (PUT, collection update, processor output), postgres | second gets `409 CONFLICT` (processor output: `500`) | both succeed |
-| A write that extends a model rolls back (failed workflow, failed transition) | memory, sqlite, and postgres creates: extension kept; postgres in-transaction paths: discarded | discarded on every backend and path |
+| A write that extends a model rolls back (failed workflow, failed transition) | memory, sqlite, and postgres creates: extension kept; postgres in-transaction paths: discarded | discarded on every backend and path. A segmented run (`COMMIT_BEFORE_DISPATCH`) keeps what its committed segments extended, as it keeps their entities; a collection create extends every item before the first segment commits (§4) |
 | Another client reads the model (`GET /model/...` export, search on a new field) while an extending write is in progress | memory, sqlite, postgres creates: sees the new field; postgres in-transaction paths: does not, except through the shared cache | does not; after the write commits, sees it on this node at once and on others when the invalidation broadcast arrives (export reads through the cache and is eventually consistent by design, `model/service.go` ~:119-121) |
 | A criterion or joined-callback search in the extending request on the new field | works through the shared cache on most paths | works: the transaction's own reads see its extension |
 | A storage failure during processor-output extension | `500` | `503` (retryable) |
@@ -392,6 +441,11 @@ caused by a concurrent extension disappears.
 | `ExtendedModels`: names the extended refs, empty after commit/rollback | per-plugin | new | — | — | — |
 | postgres `Unlock`: a delta committing between its fold and its delete survives | postgres plugin | — | — | — | — |
 | Fold re-apply/reorder property (§6.5) | schema property test | — | — | — | — |
+| A write adds a field nested under a parent another transaction added after this transaction began (postgres snapshot older than the cache) → `2xx`, field in the schema | entity service unit + postgres plugin | — | new (isolated) | — | — |
+| A model deleted (and re-created) under an extending transaction → commit `409 CONFLICT` retryable, nothing applied, on every backend | per-plugin | new | — | — | — |
+| `SetChangeLevel` / compaction during an extending transaction → the transaction commits | postgres plugin | — | — | — | — |
+| Fold during a concurrent `Unlock` or compaction (outside a transaction) never misses a committed delta | postgres plugin | — | — | — | — |
+| Multi-node: an extension is not visible on node B before commit, visible after the broadcast; the negative path cache on B expires by lease | — | — | — | new, multi-node harness (`e2e/parity/postgres/multinode_test.go`) | — |
 | memory/sqlite: a model replaced under an extending transaction fails its commit, nothing applied | per-plugin | — | — | — | — |
 | postgres compaction: a delta committed after a compaction with a lower `seq` is in the fold; concurrent compactions lose nothing; compaction failure leaves reads correct | postgres plugin | — | — | — | — |
 | Interval counts the model's own deltas | postgres + sqlite plugin | — | — | — | — |
