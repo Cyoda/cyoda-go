@@ -168,7 +168,8 @@ and `Delete` of a model with writers in flight stay outside the operator
 contract (`docs/CONSISTENCY.md` "Operator Contract for Unlock": drain first),
 as today; the window is now the transaction rather than one call. Within it,
 every backend gives the same answer: an extending transaction whose model was
-deleted, or deleted and created again, after the extension fails its commit
+deleted, or deleted and created again, after the transaction's view of the
+model was taken fails its commit
 with `spi.ErrConflict` (retryable `409`; the retry reads the model as it is
 now). A delta is never installed on a model that is gone or on a new model of
 the same name. Each backend records the model's identity when the delta is
@@ -176,7 +177,12 @@ staged or appended and checks it at commit (§6.1-§6.3). A model's identity is
 its **incarnation**: it begins when the model is first saved, survives `Save`
 of the existing model (re-import, unique keys), `Lock`, `Unlock` and
 `SetChangeLevel`, and ends with `Delete`; saving the name again starts a new
-incarnation. Only the end of the incarnation fails an extending writer. The commit of an
+incarnation. Only the end of the incarnation fails an extending writer. The
+view is taken when each backend reads the model for the transaction: postgres
+at its snapshot (`Begin`), memory and sqlite when the delta is staged (they
+read the current model). A delete and re-create inside that window fails the
+commit on every backend; one before it is simply the model the transaction
+sees. The commit of an
 entity into a model that is no longer `LOCKED` is refused on every backend by
 #617, which follows this change.
 
@@ -292,10 +298,13 @@ through it.
   staged deltas applied, in order.
 - `Savepoint` records the staged length per ref in `savepointSnapshot`;
   `RollbackToSavepoint` truncates to it.
-- Staging records the model's incarnation: an id the model store gives an
-  entry when it first stores the model and keeps across `Save` of the existing
-  model (which replaces the descriptor pointer), `Lock`, `Unlock` and
-  `SetChangeLevel`; `Delete` ends it. Taking
+- Staging records the model's incarnation: an id the model store keeps beside
+  each entry (a parallel map or a wrapper around the descriptor in
+  `modelData`, `store_factory.go` ~:107), given when the model is first
+  stored, kept by `Save` of the existing model (which replaces the descriptor
+  pointer, `model_store.go` ~:32), `Lock`, `Unlock` and `SetChangeLevel`, and
+  removed by `Delete` (~:62). Staging reads it under `modelMu` and writes the
+  staging map under `m.mu`, in separate sections. Taking
   the transaction's view of the model inside `ExtendSchema` must not take
   `tx.OpMu.RLock` a second time (with `Commit`'s `OpMu.Lock` pending,
   `txmanager.go` ~:845, that deadlocks).
@@ -319,12 +328,18 @@ through it.
   `CYODA_SCHEMA_EXTEND_MAX_RETRIES` are deleted.
 - `Get` with a transaction folds the committed log (`foldLockedOn` on the read
   connection) and applies the staged deltas.
-- Staging records the model's incarnation: an id kept in the `models` row's
-  `doc`, set when the model is first saved and carried over by `Save` of the
-  existing model (`INSERT OR REPLACE`, `model_store.go` ~:63, deletes and
-  re-inserts the row, and the table is `WITHOUT ROWID`,
-  `000001_initial_schema.up.sql` ~:45-51, so neither a rowid nor the row itself
-  can serve); `Delete` ends it. `flushToSQLite` checks, in its
+- Staging records the model's incarnation: an id kept as a field of the
+  `models` row's `doc` (`modelDoc`; not exposed through `unmarshalModelDoc`,
+  ~:405), set when the model is first saved. `Save` builds `doc` fresh
+  (~:37-45) and runs `INSERT OR REPLACE` (~:63), which deletes and re-inserts
+  the row, and the table is `WITHOUT ROWID` (`000001_initial_schema.up.sql`
+  ~:45-51), so neither a rowid nor the row can serve: `Save` first reads the
+  existing row's id in its (immediate) write transaction and carries it over.
+  `Lock` and `Unlock` rewrite `doc` whole and keep it. `Delete` ends it.
+- `SetChangeLevel` reads and then writes `doc` in two statements outside a
+  transaction (~:369-401): a `Delete` and `Save` between them is overwritten
+  with the old `doc`, schema and incarnation included. It moves into one write
+  transaction, as `Lock` and `Unlock` are. `flushToSQLite` checks, in its
   `sqlTx`, that each extended model has the same identity (else
   `spi.ErrConflict`) and that its fold accepts the staged deltas (a refusal
   fails the commit, nothing applied), then inserts the staged deltas into
@@ -465,7 +480,8 @@ caused by a concurrent extension disappears.
 | postgres `Unlock`: a delta committing between its fold and its delete survives | postgres plugin | — | — | — | — |
 | Fold re-apply/reorder property (§6.5) | schema property test | — | — | — | — |
 | A write adds a field nested under a parent another transaction added after this transaction began (postgres snapshot older than the cache) → `2xx`, field in the schema | entity service unit + postgres plugin | — | new (isolated) | — | — |
-| A model deleted (and re-created), including `Unlock` then `Delete`, under an extending transaction → commit `409 CONFLICT` retryable, nothing applied, on every backend; a re-import (`Save` of the existing model) does not fail it | per-plugin | new | — | — | — |
+| A model deleted (and re-created), including `Unlock` then `Delete`, under an extending transaction → commit `409 CONFLICT` retryable, nothing applied, on every backend; a re-import (`Save` of the existing model) does not fail it. The postgres case proves that `FOR KEY SHARE` follows the update chain past `Unlock`'s non-key update to the delete | per-plugin | new | — | — | — |
+| sqlite `SetChangeLevel` racing a `Delete` + `Save` does not write the old model back | sqlite plugin | — | — | — | — |
 | `SetChangeLevel` / compaction during an extending transaction → the transaction commits | postgres plugin | — | — | — | — |
 | Fold during a concurrent `Unlock` or compaction (outside a transaction) never misses a committed delta | postgres plugin | — | — | — | — |
 | Multi-node: an extension is not visible on node B before commit, visible after the broadcast; the negative path cache on B expires by lease | — | — | — | new, multi-node harness (`e2e/parity/postgres/multinode_test.go`) | — |
