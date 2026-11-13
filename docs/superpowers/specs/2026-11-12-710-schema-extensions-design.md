@@ -117,7 +117,8 @@ covers only unknown paths (`path_validate.go` ~:314-357).
 
 ## 3. The contract (SPI)
 
-`ModelStore.ExtendSchema(ctx, ref, delta)`:
+`ModelStore.ExtendSchema(ctx, ref, level, delta)`, where `level` is the
+`changeLevel` the caller computed the delta under (a new parameter):
 
 1. **Commits on its own.** It never joins a transaction on `ctx`. When it
    returns nil the delta is durably committed, whatever then happens to the
@@ -130,14 +131,17 @@ covers only unknown paths (`path_validate.go` ~:314-357).
 4. **Never a conflict.** Contention with other extenders or with entity
    transactions never produces an error: the backend waits (or retries) until
    `ctx` ends. It never returns `spi.ErrConflict` or `spi.ErrRetryExhausted`
-   for contention.
+   for contention. (A store saturated by load still answers its existing
+   retryable unavailable error, as any store operation does.)
 5. **Loss-free.** The folded schema includes every delta whose call returned
    nil.
 6. **Errors:** `spi.ErrNotFound` (no model); a new `spi.ErrModelNotLocked`
    when the model is not `LOCKED` under the backend's lock (`409
    MODEL_NOT_LOCKED`, an existing code; a model-lifecycle conflict, not an
-   extension conflict); a delta `applyFunc` refuses; storage unavailable; a
-   `ctx` error. A non-nil error means the outcome is unknown; a retry is safe
+   extension conflict); `spi.ErrConflict` when the model's `changeLevel` under
+   the lock is not `level` (an operator changed it after the caller read the
+   model; retryable `409 CONFLICT`, and the retry validates under the new
+   level); a delta `applyFunc` refuses; storage unavailable; a `ctx` error. A non-nil error means the outcome is unknown; a retry is safe
    (§3.3).
 
 `ModelStore.Get` reads the latest committed model and ignores any transaction
@@ -157,9 +161,13 @@ model `Save` retries); its doc stops naming schema extension.
    `BEGIN`, `set_config` (tenant), `SELECT … FROM models … FOR NO KEY UPDATE`
    (the per-model lock: it writes no row version, conflicts with the
    `UPDATE models` of `Lock`, `Unlock`, `SetChangeLevel` and `Save` and with
-   `Delete`, and serialises extenders of one model), the `LOCKED` check, the
-   fold (one statement, §4.8), the no-op check (§4.3), the insert, the
-   savepoint when due, `COMMIT`. The lock is held only for this transaction,
+   `Delete`, and serialises extenders of one model), the `LOCKED` and
+   `changeLevel` checks (§3.6), the fold (one statement, §4.8), the no-op
+   check and the insert of the reduced delta (§4.3), the savepoint when due,
+   `COMMIT`. A transaction that holds a `models` row lock never acquires a
+   second connection: every statement of an extension, and of `Lock`,
+   `Unlock`, `SetChangeLevel`, `Save` and `Delete` (all on the model pool,
+   §4.4), runs on its own transaction's connection, `Lock`'s fold included. The lock is held only for this transaction,
    never for an entity transaction, so extenders of one model wait a few round
    trips at most and never fail. Every statement after the lock sees every
    earlier extension's commit, so `seq` order is commit order and a savepoint
@@ -169,8 +177,9 @@ model `Save` retries); its doc stops naming schema extension.
 3. **A delta the schema already holds writes nothing.** Under the lock, the
    backend applies the delta to the current fold and asks `schema.Diff`
    (`internal/domain/model/schema/diff.go` ~:17) for the difference, which is
-   nil for a semantic no-op. Nil: no row, no invalidation, success. N writers
-   adding the same field write one row.
+   nil for a semantic no-op. Nil: no row, no broadcast, success. Otherwise the
+   row holds that difference (the reduced delta), not the caller's delta. N
+   writers adding the same field write one row.
 4. **postgres: a dedicated pool for the model store.** Model reads and
    extensions use a small pool of their own, as the scheduler does
    (`plugins/postgres/scheduler_pool.go` ~:89-93,
@@ -180,13 +189,25 @@ model `Save` retries); its doc stops naming schema extension.
    requests that each hold one and wait for another block one another until
    the acquire timeout. A model-pool holder never waits on the main pool or on
    entity rows, so there is no cycle. New variable
-   `CYODA_POSTGRES_MODEL_CONNS` (default `4`, at least `1`; a smaller or
-   malformed value fails startup). Exhaustion makes an extending write wait,
-   then fail closed with the pool's existing retryable `503`.
+   `CYODA_POSTGRES_MODEL_CONNS` (default `4`, at least `2`; a smaller or
+   malformed value fails startup). Model administration (`Lock`, `Unlock`,
+   `SetChangeLevel`, `Save`, `Delete`) uses it too.
+   - **Extenders queue before they take a connection.** On each node,
+     extenders of one (tenant, model) take turns in-process; only the one whose
+     turn it is takes a connection, so waiting for the row lock never holds
+     more than one connection per model per node. At most `CONNS − 1`
+     extensions hold connections at once, so model reads always have at least
+     one. Both waits last until `ctx` ends (§3.4), never until the pool's
+     acquire timeout.
+   - Reads beyond the pool's capacity under load wait for the acquire timeout
+     and answer the pool's existing retryable `503`, as every store read does.
 5. **Identical deltas on one node share one call.** The caching layer
    coalesces concurrent `ExtendSchema` calls with the same tenant, model and
    delta into one call (single-flight); every caller gets its result.
-   Different deltas are not merged: each is its own short transaction.
+   Different deltas are not merged: each is its own short transaction. The
+   shared call runs on a context detached from any one caller's cancellation
+   (`context.WithoutCancel`); each caller waits for it on its own context
+   (`DoChan`), so one caller giving up never fails the others.
 6. **`ModelStore.Get` ignores the entity transaction on every backend.** It
    reads committed state (postgres: on the model pool). So a workflow
    criterion later in the same request sees the field the request just added,
@@ -196,30 +217,54 @@ model `Save` retries); its doc stops naming schema extension.
 7. **The model cache.**
    - **Fill guard.** Each key has an invalidation generation, bumped by every
      local invalidation and every one received by broadcast
-     (`cache.go` ~:325-331). A fill records it before reading and stores only
-     if it is unchanged.
-   - **Misses are coalesced.** `Get` and `SchemaNode` misses go through
-     single-flight, as `RefreshAndGet` does, so an invalidation of a hot model
-     costs one read per node.
-   - **Invalidate only on change.** `ExtendSchema` invalidates (locally and by
-     broadcast) after the extension committed, and only when it changed the
-     schema.
+     (`cache.go` ~:325-331), and kept when the entry is evicted (`evict`
+     deletes the entry, ~:307-311). A fill records it before reading and stores
+     only if it is unchanged.
+   - **Misses are coalesced, per generation.** `Get`, `SchemaNode` and
+     `RefreshAndGet` misses go through single-flight keyed by (key,
+     generation): a read that starts after an invalidation never joins one
+     that started before it (today the key is the key alone,
+     `cache.go` ~:369-371). An invalidation of a hot model costs one read per
+     node. The shared read runs detached from any one caller's cancellation, as
+     in §4.5.
+   - **After an extension call:** a caller whose delta was non-nil had a cache
+     entry without it, so the cache evicts that entry locally whatever the
+     backend found; it broadcasts `model.invalidate` only when the schema
+     changed. So the extending node never keeps serving the old schema, and a
+     no-op does not flood the cluster.
    - `CachingModelStore`'s own `Get` / `RefreshAndGet` / `SchemaNode` /
      `ExtendSchema` (`cache.go` ~:141-229) are built in production only with a
      nil inner (`factory.go` ~:38) and serve tests; they go, leaving the cache
      state.
-8. **postgres reads a model in one statement**: base (`models.doc`), the
-   latest savepoint and the later deltas. Today it is three statements; a read
-   that races an `Unlock` (which rewrites `doc` and clears the log) could
-   combine the old `doc` with the cleared log.
+8. **A model is read in one snapshot.** postgres: one statement (base
+   `models.doc`, the latest savepoint, the later deltas); today three. sqlite:
+   one read transaction (today `Get` reads the doc and then the log in
+   separate statements, `sqlite/model_store.go` ~:99-121,
+   `model_extensions.go` ~:23-24). A read that races an `Unlock` (which
+   rewrites `doc` and clears the log) could otherwise combine the old `doc`
+   with the cleared log.
 9. **The negative path cache is deleted.** It exists to absorb floods of
    invalid requests; cyoda-go adds no such bounds. With no lease and no
    generation it can answer `400 INVALID_FIELD_PATH` for a field that exists,
    on a node that has not yet received the invalidation, which breaks
-   requirement 2 for the initiator. The bounded refresh (`path_validate.go`
-   ~:314-357) becomes the only mechanism, and also covers a type mismatch on a
-   known path (a field whose type another write widened), not only an unknown
-   path.
+   requirement 2 for the initiator.
+9a. **Every read that answers a client from a cached schema either refreshes
+   once or reads storage.** A node that has not yet received an invalidation
+   holds an older schema. So:
+   - **Refusals refresh once.** A refusal on schema grounds re-reads the model
+     once (`RefreshAndGet`) and decides again: search and criterion path
+     checks (`INVALID_FIELD_PATH`), type checks on a known path
+     (`CONDITION_TYPE_MISMATCH`, `condition_type_validate.go` ~:367-370; a
+     field whose type another write widened), PATCH's strict validation
+     (`service.go` ~:2233-2236, `400 VALIDATION_FAILED`) and
+     `ValidateModel` (`model/service.go` ~:513). The three copies of the
+     refresh today (`ValidateKnownPaths`, `validateConditionPaths`
+     `service.go` ~:1883-1993, the sort-key path ~:2097-2180) become one
+     helper; `ValidateWithRefresh` (`handler.go` ~:162-202, today without a
+     production caller) is that helper for validation.
+   - **Export reads storage.** `ExportModel` (`model/service.go` ~:243) gives
+     no refusal to refresh on, so it reads the model from storage, not the
+     cache.
 10. **`ValidateOrExtend` returns the extended descriptor.** The processor
     pipeline's memo (`processor_output.go` ~:80-119) adopts it, so a later
     processor returning the same field does not extend again; the memo's
@@ -234,14 +279,33 @@ model `Save` retries); its doc stops naming schema extension.
 12. **The savepoint interval counts this model's deltas** (postgres: deltas
     since its latest savepoint; sqlite numbers per model already).
 13. **memory and sqlite.** memory keeps applying in place under `modelMu` and
-    adds the `LOCKED` and no-op checks. sqlite keeps its own write
-    transaction, adds both checks, and retries `SQLITE_BUSY` until `ctx` ends
+    adds the `LOCKED`, `changeLevel` and no-op checks; its `Lock`, `Unlock`,
+    `SetChangeLevel` and `IsLocked` return `spi.ErrNotFound` for a missing
+    model, as the other backends do (today a bare "not found",
+    `plugins/memory/model_store.go` ~:71, ~:82, ~:93, ~:103). sqlite keeps its own write
+    transaction, adds the same checks, and retries `SQLITE_BUSY` until `ctx` ends
     instead of within a budget: `SchemaExtendMaxRetries` and
     `CYODA_SCHEMA_EXTEND_MAX_RETRIES` are deleted. Both already read the model
     ignoring the entity transaction.
 14. **postgres `Lock`** moves into one `READ COMMITTED` transaction and
     decides "was unlocked" from its own conditional update, so its savepoint is
     written only on the real `UNLOCKED → LOCKED` edge.
+15. **Error mapping.** `ValidateOrExtend` tags store errors with
+    `ErrInternalSchema` (`validate.go` ~:164) and the doors send that to
+    `common.Internal` (`handler.go` ~:271; processor output through
+    `classifyWorkflowError`, `service.go` ~:2859). `common.Internal`
+    (`internal/common/errors.go` ~:266-300) maps `spi.ErrModelNotLocked` to
+    `409 MODEL_NOT_LOCKED` before its generic case, so every door answers it
+    without a branch of its own; `spi.ErrConflict` already maps to a retryable
+    `409 CONFLICT`.
+16. **Model administration overlapping an extension.** `SetUniqueKeys` and
+    import read the model and then `Save` it whole (`model/service.go`
+    ~:631-669, `postgres/model_store.go` ~:67-79); a `Lock` and an extension
+    landing between the read and the `Save` would be overwritten. That is two
+    administration calls overlapping on one model, which the help already puts
+    outside the contract (model administration runs from one place,
+    `cmd/cyoda/help/content/models.md` ~:341). #617 makes `Save` refuse a
+    `LOCKED` model at write time.
 
 ## 5. Side effects (documented, §12)
 
@@ -259,7 +323,8 @@ model `Save` retries); its doc stops naming schema extension.
 5. A failed request may still have extended the model; retrying it is safe.
 6. Guarantee: once a write that extends has returned `2xx`, the initiator sees
    the field on every node: a node that has not yet received the invalidation
-   refreshes once on the unknown path or the type mismatch.
+   refreshes once before it refuses anything on schema grounds, and export
+   reads storage (§4.9a).
 
 ## 6. Performance
 
@@ -291,7 +356,8 @@ all adding the same field, run before and after; the PR reports the numbers.
 | Two writes extend the same model (PUT, collection update, processor output), postgres | second `409 CONFLICT` (processor output `500`) | both succeed |
 | An extending write fails or rolls back | memory, sqlite, postgres creates: field kept; postgres in-transaction paths: discarded | field kept on every backend and path (§5.2) |
 | Another client reads the model while an extending write is in progress | depends on backend and path | may see the new field (§5.1) |
-| The initiator searches on the new field right after its write returned, on another node | `400 INVALID_FIELD_PATH` possible until the broadcast arrives (negative cache) | `200` (one refresh) |
+| The initiator searches on, PATCHes, validates or exports the new field right after its write returned, on another node | search: `400 INVALID_FIELD_PATH` possible until the broadcast arrives (negative cache); PATCH, validate: `400 VALIDATION_FAILED`; export: field missing | works (one refresh, or export from storage) |
+| An operator changes `changeLevel` while a write extends under the old level | postgres: conflicts with the write's lock | the extension is refused with a retryable `409 CONFLICT`; the retry validates under the new level |
 | A criterion in the same request on the field just added | works through the shared cache on most paths | works on every path (§4.6) |
 | A storage failure during processor-output extension | `500` | `503` (retryable) |
 | Extension after the model was unlocked mid-request | postgres: appended to the unlocked model's log | `409 MODEL_NOT_LOCKED` on every backend |
@@ -304,14 +370,21 @@ all adding the same field, run before and after; the PR reports the numbers.
 | | `409 MODEL_NOT_LOCKED` | the model was unlocked after the request read it, before its extension |
 | | `400 VALIDATION_FAILED` / change-level refusals | unchanged |
 | | `503` (retryable) | storage unavailable, or the model pool exhausted, during an extension (processor output was `500`) |
-| Search, criteria (`INVALID_FIELD_PATH`) | `200` instead of `400` | a field another node just added, before the broadcast arrives |
+| | `409 CONFLICT` (retryable) | the model's `changeLevel` changed between the request's read and its extension |
+| Search, criteria (`INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`), PATCH and model validation (`VALIDATION_FAILED`) | `2xx` instead of `400` | a field another node just added or widened, before the broadcast arrives |
+| `GET /model/...` export | `200` with the field | export reads storage |
 
 ## 9. What the design deletes
 
 The postgres write claim and its comment; the postgres ambient-transaction
 extension path; `CachingModelStore`'s read/extend methods; the negative path
 cache (`search.PathValidationCache`, its wiring at `app/app.go` ~:452-453,
-`markPathsAbsent` / `cachedAbsentPaths`, their tests); the sqlite retry budget
+`WithPathValidationCache`, `markPathsAbsent`, `markPathsPresent`,
+`cachedAbsentPaths`, `pathSurface` / `surfaceSort`, `search/service.go`
+~:497-504, ~:2020-2080, and their tests), and with it the cache's local
+subscribers it was the only user of (`SubscribeLocal`,
+`notifyLocalSubscribers`, `localSubs`, `cache.go` ~:46-57, ~:334-360,
+`factory.go` ~:108-115); the two copies of the refresh that §4.9a merges; the sqlite retry budget
 (`SchemaExtendMaxRetries`, `CYODA_SCHEMA_EXTEND_MAX_RETRIES` in sqlite
 `config.go`, `plugin.go`, help, `docs/ARCHITECTURE.md`, `DefaultConfig` and
 `README.md` where listed); the postgres-only conflict tests
@@ -321,7 +394,7 @@ back with its transaction (`plugins/postgres/model_extensions_test.go`
 ~:298-339, `internal/e2e/workflow_proc_output_test.go` ~:135
 `TestWorkflowProcOutput_ExtensionRollsBackWithTheTransition`) are rewritten
 to the new rule (the field is kept). Exit check:
-`grep -rn "SchemaExtendMaxRetries\|SCHEMA_EXTEND_MAX_RETRIES\|SET doc = doc\|PathValidationCache\|markPathsAbsent"`
+`grep -rn "SchemaExtendMaxRetries\|SCHEMA_EXTEND_MAX_RETRIES\|SET doc = doc\|PathValidationCache\|markPathsAbsent\|markPathsPresent\|SubscribeLocal\|notifyLocalSubscribers"`
 over cyoda-go, the SPI and the plugins (`--include='*.go'`, plus `docs/`
 outside `docs/superpowers/`, `cmd/cyoda/help/`, `README.md`) is empty.
 
@@ -332,17 +405,20 @@ outside `docs/superpowers/`, `cmd/cyoda/help/`, `README.md`) is empty.
 | Extension visible to `Get` on return; kept after the caller's transaction rolls back | per-plugin | new | rewritten processor-output test (field kept) | new | — |
 | A delta the schema already holds: no row, no invalidation | per-plugin | new | — | — | — |
 | Two extenders of one model concurrently: both succeed, both deltas in the schema, never `ErrConflict` | per-plugin | new | — | — | — |
-| Extension of a model that is not `LOCKED` → `ErrModelNotLocked` | per-plugin | new | new (`409 MODEL_NOT_LOCKED`) | — | new (envelope) |
+| Extension of a model that is not `LOCKED` → `ErrModelNotLocked` | per-plugin | new | new: a create whose processor returns a new field, with the test compute node unlocking the model during the callout (the entity is uncommitted, so the unlock succeeds); `409 MODEL_NOT_LOCKED` | — | new, same setup over gRPC (envelope `Error.Code`) |
+| `changeLevel` changed between read and extension → `ErrConflict` | per-plugin | new | — | — | — |
 | `Get` ignores the transaction on `ctx` | per-plugin | new | — | — | — |
-| Concurrent PUTs, collection updates, collection creates and processor-output writes each adding fields → all `2xx`, every field in the schema | — | — | new (isolated, not parity) | — | new (concurrent gRPC writes, envelope `Success=true`) |
+| Concurrent PUTs, collection updates, collection creates and processor-output writes each adding fields → all `2xx`, every field in the schema | — | — | extend `model_schema_extensions_test.go` ~:36-75 (today creates only) to every door (isolated, not parity) | — | new (concurrent gRPC writes, envelope `Success=true`) |
 | A write adds a field nested under a parent another write added after this transaction began → `2xx` | postgres plugin | — | new | — | — |
 | Criterion in the same request on the field just added | engine unit | — | new | new | — |
-| Initiator's search on its new field on another node before the broadcast → `200` | search unit | — | — | new, multi-node harness (`e2e/parity/postgres/multinode_test.go`) | — |
-| Type mismatch on a known path refreshes once | search unit | — | — | — | — |
-| Fill guard drops a fill that straddles an invalidation (local and broadcast); misses coalesced | modelcache unit | — | — | — | — |
-| Identical concurrent `ExtendSchema` calls on one node → one storage call | modelcache unit | — | — | — | — |
+| Initiator's search, PATCH, model validation and export on its new field on another node before the broadcast → `2xx`, field present | search, entity and model service units | — | — | new, multi-node harness (`e2e/parity/postgres/multinode_test.go`) | — |
+| Type mismatch on a known path (`CONDITION_TYPE_MISMATCH`) refreshes once | search unit | — | — | — | — |
+| Fill guard drops a fill that straddles an invalidation (local and broadcast, also after eviction); a read starting after an invalidation never joins a flight started before it; one caller's cancellation does not fail the others | modelcache unit | — | — | — | — |
+| Identical concurrent `ExtendSchema` calls on one node → one storage call; a non-nil delta that turns out a no-op still evicts locally, without a broadcast | modelcache unit | — | — | — | — |
 | postgres: a savepoint under the lock keeps every lower-`seq` delta; the interval counts the model's deltas; a one-statement read during `Unlock` misses nothing | postgres plugin | — | — | — | — |
-| postgres: model pool exhausted → extending write `503`, no deadlock with the main pool | postgres plugin | — | — | — | — |
+| postgres: extenders of one model queue in-process (one connection per model per node); at most `CONNS − 1` extension connections; model reads proceed during an extension burst; `Lock`'s fold takes no second connection; no deadlock with the main pool | postgres plugin | — | — | — | — |
+| sqlite: a read racing `Unlock` misses nothing (one read transaction) | sqlite plugin | — | — | — | — |
+| memory: `Lock`/`Unlock`/`SetChangeLevel`/`IsLocked` on a missing model → `spi.ErrNotFound` | memory plugin | existing model cases extended | — | — | — |
 | sqlite: `SQLITE_BUSY` retried until `ctx` ends | sqlite plugin | — | — | — | — |
 | postgres `Lock` decides on its own update | postgres plugin | — | — | — | — |
 | Processor-output storage failure → `503` | workflow unit (failing store double) | — | waived: a storage outage cannot be produced in e2e without a test hook in production code | — | waived, same reason |
@@ -362,9 +438,11 @@ that cannot go RED is dropped.
   path cache, new variable), `COMPATIBILITY.md`.
 - `docs/cloud-parity/710-schema-extensions.md`: the contract and the side
   effects.
-- Issue in `cyoda-go-cassandra`: §3 (no `ErrRetryExhausted` for contention,
-  retry until `ctx` ends; the no-op check; `ErrModelNotLocked`; `Get` ignores
-  the transaction).
+- Issue in `cyoda-go-cassandra`: §3 (the `level` parameter; no
+  `ErrRetryExhausted` for contention, retry until `ctx` ends, so its
+  `CYODA_SCHEMA_EXTEND_MAX_RETRIES` budget, `internal/config/config.go`
+  ~:242, goes; the no-op check; `ErrModelNotLocked`; `Get` ignores the
+  transaction).
 
 ## 12. Documentation: one description, everywhere
 
@@ -373,14 +451,16 @@ cache, field-path validation or the variables this change touches, reads each
 document in full (not only the matching lines), and makes them say the same
 thing: §3's contract, §5's side effects, and §4's mechanics at the level each
 document works at. Present tense, no history. Sites found by
-`grep -rniE "extendschema|schema extension|extension log|savepoint|SCHEMA_EXTEND|changeLevel|change level|extends? the (model|schema)|model extension|commit-bound|path validation|MODEL_CACHE_LEASE|RefreshAndGet"`
+`grep -rniE "extendschema|schema extension|extension log|savepoint|SCHEMA_EXTEND|changeLevel|change level|extends? the (model|schema)|model extension|commit-bound|path validation|path-validation|MODEL_CACHE_LEASE|RefreshAndGet|POSTGRES_.*CONNS|connection pool|pools?\b"`
 over `README.md`, `CONTRIBUTING.md`, `COMPATIBILITY.md`, `docs/` (outside
-`docs/superpowers/`), `cmd/cyoda/help/content/` and `api/openapi.yaml`:
+`docs/superpowers/`, `docs/cloud-parity/` included), `cmd/cyoda/help/content/`,
+`api/openapi.yaml` and the `plugins/*/doc.go` and `plugin.go` files:
 
 - `cmd/cyoda/help/content/models.md` (~:77, ~:98, ~:334, ~:341 the
-  model-administration paragraph, ~:343-345): when an extension happens, that
-  it never conflicts, that it is visible when the write returns and may be
-  earlier, the side effects, the `409 MODEL_NOT_LOCKED` case.
+  model-administration paragraph, ~:343-345, the ERRORS list ~:348-361 which
+  gains `MODEL_NOT_LOCKED`): when an extension happens, that it never
+  conflicts, that it is visible when the write returns and may be earlier,
+  the side effects, the `409 MODEL_NOT_LOCKED` and `changeLevel` cases.
 - `cmd/cyoda/help/content/config/schema.md`: what the savepoint interval bounds
   (the deltas a read folds, per model; the current "reduce recovery time after
   a crash" is wrong), the retry variable removed, the examples.
@@ -395,18 +475,30 @@ over `README.md`, `CONTRIBUTING.md`, `COMPATIBILITY.md`, `docs/` (outside
   now also for type mismatches; no negative cache), `MODEL_NOT_LOCKED.md` (the
   extension case), `CONFLICT.md` (never from extensions),
   `INVALID_CHANGE_LEVEL.md`, `INCOMPATIBLE_TYPE.md`, `VALIDATION_FAILED.md`,
-  `MODEL_ADMIN_IN_JOINED_TRANSACTION.md`.
+  `MODEL_ADMIN_IN_JOINED_TRANSACTION.md`, `CONDITION_TYPE_MISMATCH.md` (the
+  refresh), `STORAGE_UNAVAILABLE.md` (processor output's `503`).
 - `docs/CONSISTENCY.md` §3a: the five invariants rewritten to §3 (invariant 1:
   no conflict; invariant 2: visible on return, may be earlier, kept on
   failure) and the Unlock operator contract's postgres paragraph.
 - `docs/ARCHITECTURE.md`: the extension log and savepoints (~:331-339), the
   model cache and invalidation (~:944-949), the negative path cache, the
   postgres pools, the config tables (~:2515, ~:2567, ~:2582-2583).
-- `docs/FEATURES.md`, `docs/PRD.md`, `docs/plugins/*.md`: extension wording.
+- `docs/FEATURES.md`, `docs/PRD.md`, `docs/plugins/*.md`: extension wording;
+  `docs/plugins/POSTGRES.md` (~:220, ~:503) the pools and variables.
+- `docs/CONCURRENCY.md` (~:61, ~:108): the lock inventory (the path-validation
+  cache goes; the model pool and the per-model extender queue come).
+- `docs/cloud-parity/model-administration-not-joined.md` (~:36-39: says an
+  extension is "bound to the entity's commit", contradicting §3) and
+  `docs/cloud-parity/nested-join-tx-serialisation.md` (~:20).
+- `plugins/postgres/plugin.go` (variable list), `plugins/postgres/doc.go`
+  (~:17, ~:70), `docs/ARCHITECTURE.md` ~:2972 (connection count: main +
+  scheduler + heartbeat, now + model pool).
 - `api/openapi.yaml`: the `changeLevel` operation (~:5344-5470) and every
   response description that mentions extension, `409` or `INVALID_FIELD_PATH`;
   then `go generate ./api`.
-- `README.md`: configuration reference (new variable, removed variable).
+- `README.md`: today it mentions none of these (the grep finds nothing);
+  checked again after the change, and the configuration reference gains the
+  new variable if it lists the postgres pools.
 - SPI docs (§11) and the `docs/cloud-parity/` entry.
 - Code comments that describe the old mechanics: `validate.go` ~:161-162
   ("participates in the ambient entity transaction so visibility is
@@ -425,3 +517,7 @@ reviewer reads `cyoda help models`, `cyoda help config schema` and
 - How the no-op check is computed (apply then `schema.Diff`, or an equivalent
   the property tests cover).
 - The coalescing key's exact form (§4.5).
+- Whether `ValidateOrExtend` validates against the cache's parsed node
+  instead of re-parsing the schema on every write (`validate.go` ~:85), once
+  it has confirmed that admission never mutates the node: a free saving on the
+  steady state.
