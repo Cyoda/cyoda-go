@@ -3,6 +3,8 @@ package search_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -13,21 +15,49 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// TestResolveSortKeys_NegativeCache_CollapsesRepeatedRequests is the sort-key
-// counterpart of TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath
-// (path_validation_cache_test.go). A DATA sort key absent from BOTH the
-// cached and the authoritative schema costs one Get + one bounded
-// RefreshAndGet on the FIRST request; every repeat must hit
-// PathValidationCache.IsAbsent and short-circuit before touching the model
-// store at all.
-//
-// Before this fix, resolveSortKeys never consulted the negative cache and
-// never called markPathsAbsent: a repeated bogus sort key paid a full
-// RefreshAndGet — an authoritative model-store read plus a full schema
-// re-parse — on every single request, indefinitely, and RefreshAndGet
-// repopulates the shared model-descriptor cache, pushing the cost onto
-// legitimate concurrent readers of the same model.
-func TestResolveSortKeys_NegativeCache_CollapsesRepeatedRequests(t *testing.T) {
+// countingModelStore serves one fixed descriptor and counts Get and
+// RefreshAndGet calls, so a test can assert the store-call shape of a request.
+type countingModelStore struct {
+	mu           sync.Mutex
+	descriptor   *spi.ModelDescriptor
+	getCount     atomic.Int64
+	refreshCount atomic.Int64
+}
+
+func (s *countingModelStore) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
+	s.getCount.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.descriptor, nil
+}
+
+func (s *countingModelStore) RefreshAndGet(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
+	s.refreshCount.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.descriptor, nil
+}
+
+func (s *countingModelStore) Save(context.Context, *spi.ModelDescriptor) error     { return nil }
+func (s *countingModelStore) GetAll(context.Context) ([]spi.ModelRef, error)       { return nil, nil }
+func (s *countingModelStore) Delete(context.Context, spi.ModelRef) error           { return nil }
+func (s *countingModelStore) Lock(context.Context, spi.ModelRef) error             { return nil }
+func (s *countingModelStore) Unlock(context.Context, spi.ModelRef) error           { return nil }
+func (s *countingModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) { return true, nil }
+func (s *countingModelStore) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLevel) error {
+	return nil
+}
+func (s *countingModelStore) ExtendSchema(context.Context, spi.ModelRef, spi.SchemaDelta) error {
+	return nil
+}
+
+var _ spi.ModelStore = (*countingModelStore)(nil)
+
+// TestResolveSortKeys_UnknownField_OneRefreshPerRequest pins that a DATA sort
+// key absent from the cached and the authoritative schema is refused each time
+// and costs exactly one bounded RefreshAndGet per request: a refusal is not
+// remembered between requests.
+func TestResolveSortKeys_UnknownField_OneRefreshPerRequest(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	desc := buildSearchDescriptor(t, ref, "a")
 	ms := &countingModelStore{descriptor: desc}
@@ -39,9 +69,7 @@ func TestResolveSortKeys_NegativeCache_CollapsesRepeatedRequests(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
-	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
-		WithPathValidationCache(cache)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	keys := []search.OrderKey{{Path: "$.reallyMissing", Source: spi.SourceData}}
@@ -53,11 +81,10 @@ func TestResolveSortKeys_NegativeCache_CollapsesRepeatedRequests(t *testing.T) {
 		}
 	}
 
-	if got := ms.getCount.Load(); got > 1 {
-		t.Errorf("inner Get count: want <=1 (negative cache short-circuits every repeat), got %d", got)
-	}
-	if got := ms.refreshCount.Load(); got > 1 {
-		t.Errorf("inner RefreshAndGet count: want exactly 1 (bounded, then negative-cached), got %d", got)
+	// One bounded refresh per request, and no more: a refusal is not
+	// remembered, so each repeat reads again and pays exactly one refresh.
+	if got := ms.refreshCount.Load(); got != reqCount {
+		t.Errorf("inner RefreshAndGet count: want %d (one per request), got %d", reqCount, got)
 	}
 }
 
@@ -177,17 +204,11 @@ func TestResolveSortKeys_MetaFieldUnknown_NoRefresh(t *testing.T) {
 	}
 }
 
-// TestResolveSortKeys_NegativeCache_EngagesForContainerPath is
-// TestResolveSortKeys_NegativeCache_CollapsesRepeatedRequests' container
-// counterpart. The schema declares only "$.address.street" — a sort key
-// naming the interior node "$.address" itself is rejected by resolveOrderBy
-// (it is not a scalar leaf), but before this fix the negative-cache
-// membership check (isPathKnown) is the CONDITION-path predicate, which
-// treats "$.address" as known because a leaf descends from it. That mismatch
-// made missing (and therefore markPathsAbsent) a no-op, so the negative
-// cache never engaged and every repeat request paid a full authoritative
-// model-store read plus a schema re-parse.
-func TestResolveSortKeys_NegativeCache_EngagesForContainerPath(t *testing.T) {
+// TestResolveSortKeys_ContainerPath_OneRefreshPerRequest is the container
+// counterpart. The schema declares only "$.address.street"; a sort key naming
+// the interior node "$.address" is refused (it is not a scalar leaf) after one
+// bounded refresh, on every request.
+func TestResolveSortKeys_ContainerPath_OneRefreshPerRequest(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	root := schema.NewObjectNode()
 	addr := schema.NewObjectNode()
@@ -207,9 +228,7 @@ func TestResolveSortKeys_NegativeCache_EngagesForContainerPath(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
-	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
-		WithPathValidationCache(cache)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	keys := []search.OrderKey{{Path: "$.address", Source: spi.SourceData}}
@@ -221,23 +240,18 @@ func TestResolveSortKeys_NegativeCache_EngagesForContainerPath(t *testing.T) {
 		}
 	}
 
-	if got := ms.getCount.Load(); got > 1 {
-		t.Errorf("inner Get count: want <=1 (negative cache short-circuits every repeat), got %d", got)
-	}
-	if got := ms.refreshCount.Load(); got > 1 {
-		t.Errorf("inner RefreshAndGet count: want exactly 1 (bounded, then negative-cached), got %d", got)
+	// One bounded refresh per request, and no more: a refusal is not
+	// remembered, so each repeat reads again and pays exactly one refresh.
+	if got := ms.refreshCount.Load(); got != reqCount {
+		t.Errorf("inner RefreshAndGet count: want %d (one per request), got %d", reqCount, got)
 	}
 }
 
-// TestResolveSortKeys_NegativeCache_EngagesForArrayPath is the array-path
-// sibling of TestResolveSortKeys_NegativeCache_EngagesForContainerPath: the
-// schema records the array's element once, under the wildcard key
-// "$.tags[*]", and never the bare container "$.tags". resolveOrderBy
-// rejects "$.tags" as an unknown sort field (it is not a scalar leaf key),
-// but isPathKnown's container-prefix matching considers "$.tags" known
-// because "$.tags[*]" descends from it, so the negative cache never engaged
-// for this shape either.
-func TestResolveSortKeys_NegativeCache_EngagesForArrayPath(t *testing.T) {
+// TestResolveSortKeys_ArrayPath_OneRefreshPerRequest is the array-path sibling:
+// the schema records the element under "$.tags[*]" and never the bare
+// container "$.tags", which is refused as a sort key after one bounded refresh,
+// on every request.
+func TestResolveSortKeys_ArrayPath_OneRefreshPerRequest(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	root := schema.NewObjectNode()
 	root.SetChild("tags", schema.NewArrayNode(schema.NewLeafNode(schema.String)))
@@ -255,9 +269,7 @@ func TestResolveSortKeys_NegativeCache_EngagesForArrayPath(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
-	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
-		WithPathValidationCache(cache)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	keys := []search.OrderKey{{Path: "$.tags", Source: spi.SourceData}}
@@ -269,10 +281,9 @@ func TestResolveSortKeys_NegativeCache_EngagesForArrayPath(t *testing.T) {
 		}
 	}
 
-	if got := ms.getCount.Load(); got > 1 {
-		t.Errorf("inner Get count: want <=1 (negative cache short-circuits every repeat), got %d", got)
-	}
-	if got := ms.refreshCount.Load(); got > 1 {
-		t.Errorf("inner RefreshAndGet count: want exactly 1 (bounded, then negative-cached), got %d", got)
+	// One bounded refresh per request, and no more: a refusal is not
+	// remembered, so each repeat reads again and pays exactly one refresh.
+	if got := ms.refreshCount.Load(); got != reqCount {
+		t.Errorf("inner RefreshAndGet count: want %d (one per request), got %d", reqCount, got)
 	}
 }

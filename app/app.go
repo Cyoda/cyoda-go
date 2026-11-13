@@ -440,23 +440,11 @@ func New(cfg Config) *App {
 			"error", err.Error())
 		os.Exit(1)
 	}
-	// Negative cache for pre-execution field-path validation. Wired
-	// to the descriptor cache via SubscribeLocal: every model
-	// invalidation (local mutation OR gossip-received event) drops
-	// the corresponding negative-cache bucket. This works on
-	// single-node and multi-node alike: subscribing to the descriptor
-	// cache rather than to the broadcaster directly is what makes
-	// single-node deployments, where the broadcaster is nil, receive
-	// invalidations at all. Per-(tenant, ref) bucketed otter caches
-	// isolate cross-tenant eviction.
-	pathValidationCache := search.NewPathValidationCache()
-	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
 	// Bounded async-search worker pool, sized from config (validated by
 	// cfg.Validate at the top of New).
 	a.searchPool = search.NewWorkerPool(cfg.SearchAsync.Workers, cfg.SearchAsync.QueueLen)
 	a.searchService = search.
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency, clk).
-		WithPathValidationCache(pathValidationCache).
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
 		WithHealthLatch(a.healthLatch).
 		WithAsyncPool(a.searchPool).

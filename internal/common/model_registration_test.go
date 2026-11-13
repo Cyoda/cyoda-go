@@ -21,15 +21,13 @@ func (f fakeModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDescriptor
 	return &spi.ModelDescriptor{}, nil
 }
 
+// refreshingStore has a RefreshAndGet that finds the model; EnsureModelRegistered
+// must not call it.
 type refreshingStore struct {
 	fakeModelStore
-	refreshErr error
 }
 
 func (r refreshingStore) RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
-	if r.refreshErr != nil {
-		return nil, r.refreshErr
-	}
 	return &spi.ModelDescriptor{}, nil
 }
 
@@ -46,21 +44,14 @@ func TestEnsureModelRegistered(t *testing.T) {
 		t.Fatalf("unknown model: want 404 MODEL_NOT_FOUND, got %v", err)
 	}
 
-	// Not found in cache but refresh finds it → nil (multi-node peer registration).
-	if err := EnsureModelRegistered(context.Background(), refreshingStore{fakeModelStore: fakeModelStore{getErr: spi.ErrNotFound}}, ref); err != nil {
-		t.Fatalf("peer-registered model: want nil after refresh, got %v", err)
+	// Not found: the answer is the Get's, even when the store could refresh.
+	if err := EnsureModelRegistered(context.Background(), refreshingStore{fakeModelStore: fakeModelStore{getErr: spi.ErrNotFound}}, ref); err == nil || err.Status != http.StatusNotFound {
+		t.Fatalf("refreshable store, unknown model: want 404 from Get alone, got %v", err)
 	}
 
-	// Not found in cache and refresh also not found → 404 MODEL_NOT_FOUND.
-	err = EnsureModelRegistered(context.Background(), refreshingStore{fakeModelStore: fakeModelStore{getErr: spi.ErrNotFound}, refreshErr: spi.ErrNotFound}, ref)
-	if err == nil || err.Status != http.StatusNotFound || err.Code != ErrCodeModelNotFound {
-		t.Fatalf("refresh-miss: want 404 MODEL_NOT_FOUND, got %v", err)
-	}
-
-	// RefreshAndGet returns a non-ErrNotFound error (store failure) → Internal/500, NOT 404.
-	storeErr := errors.New("boom")
-	err = EnsureModelRegistered(context.Background(), refreshingStore{fakeModelStore: fakeModelStore{getErr: spi.ErrNotFound}, refreshErr: storeErr}, ref)
+	// A store failure on Get is Internal/500, NOT 404.
+	err = EnsureModelRegistered(context.Background(), fakeModelStore{getErr: errors.New("boom")}, ref)
 	if err == nil || err.Status != http.StatusInternalServerError {
-		t.Fatalf("refresh-store-error: want 500 Internal, got %v", err)
+		t.Fatalf("store error: want 500 Internal, got %v", err)
 	}
 }

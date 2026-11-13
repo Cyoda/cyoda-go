@@ -14,7 +14,6 @@ require (
 	github.com/hashicorp/memberlist v0.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
-	github.com/maypok86/otter/v2 v2.3.0
 	github.com/moby/moby/api v1.56.0
 	github.com/moby/moby/client v0.5.0
 	github.com/muesli/termenv v0.16.0

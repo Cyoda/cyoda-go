@@ -336,11 +336,6 @@ type SearchService struct {
 	cons        *consistency.Service
 	clock       spi.Clock
 
-	// pathCache is an optional negative cache for unknown field-path
-	// validation. nil-safe: when unset, validation falls back to the
-	// inner-store Get + bounded RefreshAndGet pair on every request.
-	pathCache *PathValidationCache
-
 	// maxSortKeys caps the number of sort keys accepted per request across
 	// all entry points (HTTP, gRPC, sync, async). Zero means use the
 	// built-in default of 16.
@@ -492,17 +487,6 @@ func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchS
 		searchStore: searchStore,
 		clock:       clock,
 	}
-}
-
-// WithPathValidationCache wires a negative cache for field-path
-// validation. Returns the receiver so the call can chain after
-// NewSearchService. The cache is optional; without it every
-// validation attempt routes through the inner ModelStore. With it,
-// confirmed-absent paths short-circuit until a schema-change event
-// invalidates the (tenant, modelRef) bucket.
-func (s *SearchService) WithPathValidationCache(c *PathValidationCache) *SearchService {
-	s.pathCache = c
-	return s
 }
 
 // WithHealthLatch wires the health latch the async-search goroutine trips
@@ -1865,13 +1849,12 @@ func AlreadyTerminalError(jobID, currentStatus string) *common.AppError {
 }
 
 // validateConditionPaths runs the pre-execution field-path validation
-// step for Search. The cached schema is consulted first; if any path
-// referenced by the condition is absent, exactly one RefreshAndGet is
-// issued (when the store implements it) and the recheck decides the
-// outcome. This mirrors the semantics of
-// entity.Handler.ValidateWithRefresh — a stale-schema search referencing
-// a peer's freshly-extended path succeeds after one bounded refresh,
-// and a truly-unknown path surfaces as 4xx without a refresh loop.
+// step for Search. The model's schema is read first; if any path referenced by
+// the condition is absent, refreshOnUnknownPaths issues exactly one
+// RefreshAndGet (when the store implements it) and the recheck decides the
+// outcome. A stale-schema search referencing a freshly-extended path succeeds
+// after one bounded refresh, and a truly-unknown path surfaces as 4xx without a
+// refresh loop. No refusal is remembered: the next request reads again.
 //
 // Returns nil when validation passes or when no data-field paths are
 // addressed (lifecycle-only conditions). A genuinely unknown path surfaces
@@ -1894,16 +1877,6 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 		return nil, nil
 	}
 
-	// Negative cache fast-path: if any path is recorded as confirmed
-	// absent for this (tenant, modelRef) at the current generation,
-	// short-circuit without touching the inner store. This collapses
-	// a serial flood of bad requests into one inner-store round-trip
-	// per (tenant, modelRef, path) tuple between schema events.
-	tenant := common.TenantFromContext(ctx)
-	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, surfaceCondition, paths); len(cachedMissing) > 0 {
-		return nil, invalidPathError(cachedMissing)
-	}
-
 	fields, err := loadFieldsMap(ctx, modelStore, modelRef)
 	if err != nil {
 		// Fail closed. The schema is what decides whether this condition's
@@ -1924,185 +1897,37 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 	// A nil fields map is NOT "nothing to validate against" — it is a model
 	// declaring no fields, against which every data path the condition names
 	// is unknown. findUnknownPaths reports exactly that, and the bounded
-	// single-refresh retry below still gets its chance to discover a schema
-	// this node has not yet seen. Returning early here accepted any path at
-	// all on such a model.
+	// refresh below still gets its chance to discover a schema this node has
+	// not yet seen.
 	missing := findUnknownPaths(paths, fields)
 	if len(missing) == 0 {
-		s.markPathsPresent(tenant, modelRef, surfaceCondition, paths)
 		return fields, nil
 	}
 
-	// Some paths are unknown to the cached schema. Refresh exactly once
-	// before declaring the request invalid — the bound is required to
-	// avoid amplifying a misconfigured client into a refresh storm.
-	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, modelRef)
-	if !refreshed {
-		// Store has no cache layer — the cached miss is authoritative.
-		s.markPathsAbsent(tenant, modelRef, surfaceCondition, missing)
+	fresh, err := refreshOnUnknownPaths(ctx, modelStore, modelRef, missing, func(f map[string]schema.FieldDescriptor) []string {
+		return findUnknownPaths(missing, f)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if fresh == nil {
 		return nil, invalidPathError(missing)
 	}
-	if refreshErr != nil {
-		if errors.Is(refreshErr, spi.ErrNotFound) {
-			// Model was deleted between Get and RefreshAndGet — fall
-			// back to the cached fields outcome (paths are unknown
-			// because there is no model). Do NOT populate the negative
-			// cache: there is no schema authority to invalidate against.
-			return nil, invalidPathError(missing)
-		}
-		// A refresh failure that is NOT "the model is gone" means we cannot
-		// tell "these fields are genuinely undeclared" from "the cache is
-		// merely stale and we couldn't confirm which" — the two are
-		// indistinguishable without a successful refresh. Per
-		// correctness-over-availability this is infrastructure, not a
-		// client fault, and must not fold into the same 400
-		// INVALID_FIELD_PATH the genuine-unknown-path case above returns:
-		// that would report a model-store outage as the caller's own
-		// mistake, in exactly the peer-added-field window the refresh
-		// exists to serve. Mirrors ValidateKnownPaths' own ErrPathRefreshInfra
-		// branch (path_validate.go) — this method predates that shared
-		// helper and keeps its own negative-cache-aware implementation, but
-		// the two must not diverge on THIS classification. Deliberately NOT
-		// negative-cached: an infra failure says nothing about whether the
-		// path exists.
-		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
-			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
-	}
-	if freshFields == nil {
-		// The refresh produced no schema, so the descriptor carries none.
-		// Deliberately NOT negative-cached, for the same reason as the
-		// ErrNotFound branch above: the cache records "this path is absent
-		// from a schema we read", and here there is no schema to have read
-		// it from. The cost is a Get + RefreshAndGet per repeat request on
-		// such a model. Unreachable through the model API — every Save
-		// writes marshalled schema bytes, and an empty schema still yields a
-		// non-nil fields map that takes the cached route above — so this is
-		// a bound on an out-of-band or legacy row, not on anything a caller
-		// can provoke.
-		return nil, invalidPathError(missing)
-	}
-
-	stillMissing := findUnknownPaths(missing, freshFields)
-	if len(stillMissing) == 0 {
-		s.markPathsPresent(tenant, modelRef, surfaceCondition, paths)
-		// The refresh is authoritative — hand back the schema the paths
-		// actually validated against, not the stale one.
-		return freshFields, nil
-	}
-	s.markPathsAbsent(tenant, modelRef, surfaceCondition, stillMissing)
-	return nil, invalidPathError(stillMissing)
-}
-
-// pathSurface discriminates WHICH validation surface asked the negative
-// cache about a path. The condition surface (validateConditionPaths) and
-// the sort-key surface (resolveSortKeys) share one *PathValidationCache
-// instance, but they do NOT agree on what "absent" means for the same
-// spelling: a sort key must denote an exact scalar leaf, so resolveOrderBy
-// (via findUnknownSortPaths) rejects a container path ("$.address" when
-// only "$.address.street" is declared) or an array-container path
-// ("$.tags" when the schema records only "$.tags[*]") that the CONDITION
-// surface deliberately ACCEPTS (a bare path may legitimately address a
-// container or array field for a condition — see isPathKnown /
-// TestSearch_SimpleConditionOnContainerPath_NotNull_IsAccepted).
-//
-// Without a namespace, a rejected sort key on "$.tags" would call
-// markPathsAbsent("$.tags"), and the very next legitimate condition on
-// "$.tags" would hit cachedAbsentPaths and 400 — a valid search
-// permanently broken by an unrelated sort request on a stable schema,
-// until a schema change fires InvalidateRef or otter evicts. Namespacing
-// the cache KEY (not the underlying otter cache/bucket — one instance,
-// one bucket per (tenant, ref), namespaced keys within it) keeps each
-// surface reading back only what it wrote. sort→sort and condition→sort
-// need no isolation (resolveOrderBy can never reject a key
-// findUnknownPaths would also reject, and condition→sort is a strict
-// subset), so ONLY the sort surface needs its own namespace; the
-// condition surface keeps the bare, unnamespaced path spelling.
-type pathSurface string
-
-const (
-	// surfaceCondition is validateConditionPaths' namespace — the bare
-	// path spelling, unchanged from before this type existed.
-	surfaceCondition pathSurface = ""
-	// surfaceSort is resolveSortKeys' namespace.
-	surfaceSort pathSurface = "sort"
-)
-
-// namespacedCacheKey prefixes path with surface's discriminator so the
-// condition and sort surfaces can never read back an entry the other
-// wrote. surfaceCondition's empty discriminator keeps its keys identical
-// to the path itself — no behavior change for the surface that owned this
-// cache before resolveSortKeys started using it.
-func namespacedCacheKey(surface pathSurface, path string) string {
-	if surface == surfaceCondition {
-		return path
-	}
-	return string(surface) + "\x00" + path
-}
-
-// cachedAbsentPaths returns the subset of paths recorded as confirmed
-// absent in the negative cache for (tenant, modelRef, surface) at the
-// current generation. Returns nil when the cache is unset or no path
-// matches. Returned paths keep the caller's own spelling — only the
-// cache KEY is namespaced.
-func (s *SearchService) cachedAbsentPaths(tenant string, ref spi.ModelRef, surface pathSurface, paths []string) []string {
-	if s.pathCache == nil {
-		return nil
-	}
-	var out []string
-	for _, p := range paths {
-		if s.pathCache.IsAbsent(tenant, ref, namespacedCacheKey(surface, p)) {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// markPathsAbsent records each path as confirmed absent for (tenant,
-// modelRef, surface). No-op when the cache is unset.
-func (s *SearchService) markPathsAbsent(tenant string, ref spi.ModelRef, surface pathSurface, paths []string) {
-	if s.pathCache == nil {
-		return
-	}
-	for _, p := range paths {
-		s.pathCache.MarkAbsent(tenant, ref, namespacedCacheKey(surface, p))
-	}
-}
-
-// markPathsPresent removes each path from the negative cache for
-// (tenant, modelRef, surface). Defensive: ensures a path that previously
-// resolved as absent and now resolves as present is reflected without
-// waiting for an invalidation event. No-op when the cache is unset.
-func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, surface pathSurface, paths []string) {
-	if s.pathCache == nil {
-		return
-	}
-	for _, p := range paths {
-		s.pathCache.MarkPresent(tenant, ref, namespacedCacheKey(surface, p))
-	}
+	// The refresh is authoritative — hand back the schema the paths
+	// actually validated against, not the stale one.
+	return fresh, nil
 }
 
 // resolveSortKeys turns the request OrderKeys into typed OrderSpecs, validating
 // scalar-leaf data paths and the meta allowlist. Returns a 400-classified
 // AppError on bad input.
 //
-// A DATA sort key absent from the cached schema is refreshed exactly once
-// before it is refused — mirroring validateConditionPaths' bounded-refresh
-// contract for condition paths. Without this, a field a peer
-// node had just added sorted successfully on the node that already saw the
-// extension and 400'd on one still running the stale cache — the same field
-// answering two ways depending only on which node's cache happened to be
-// warm. The bound is required: an unbounded refresh turns a misconfigured
-// client naming a field that will never exist into a refresh storm.
-//
-// The refresh bound is per-REQUEST on its own — one RefreshAndGet per call —
-// which is not enough: a repeated bogus sort key would still pay one
-// RefreshAndGet (an authoritative model-store read plus a full schema
-// re-parse, and RefreshAndGet repopulates the shared model-descriptor cache,
-// pushing the cost onto legitimate concurrent readers of the same model)
-// PER REQUEST, indefinitely. So this routes through the same negative cache
-// validateConditionPaths uses — s.cachedAbsentPaths / s.markPathsAbsent /
-// s.markPathsPresent — bounding it per (tenant, model, path) the way the
-// condition-path equivalent already is.
+// A DATA sort key absent from the schema is refreshed exactly once before it
+// is refused (refreshOnUnknownPaths), as for condition paths: a field a peer
+// node had just added sorts on every node, not only the ones that already saw
+// the extension. The bound is required: an unbounded refresh turns a
+// misconfigured client naming a field that will never exist into a refresh
+// storm. No refusal is remembered between requests.
 func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelRef, keys []OrderKey) ([]spi.OrderSpec, error) {
 	if len(keys) == 0 {
 		return nil, nil
@@ -2120,18 +1945,6 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, cerr.Error())
 	}
 
-	// Negative cache fast-path, mirroring validateConditionPaths: if every
-	// DATA sort key this request names is already recorded absent for this
-	// (tenant, modelRef) at the current generation, refuse without touching
-	// the model store at all. Only SourceData keys are candidates — a META
-	// key's outcome never depends on the model schema, so it is never
-	// negative-cached and never gates this fast path.
-	tenant := common.TenantFromContext(ctx)
-	dataPaths := normalisedDataSortPaths(keys)
-	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, surfaceSort, dataPaths); len(cachedMissing) > 0 {
-		return nil, unknownSortFieldError(cachedMissing)
-	}
-
 	modelStore, err := s.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get model store: %w", err)
@@ -2142,77 +1955,43 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 	}
 	specs, rerr := resolveOrderBy(keys, fields)
 	if rerr == nil {
-		s.markPathsPresent(tenant, modelRef, surfaceSort, dataPaths)
 		return specs, nil
 	}
 	if !errors.Is(rerr, errUnknownSortField) {
 		// Grammar, an unknown META field, an array field or an unresolvable
 		// sort kind — none of these can change on refresh, and none of them
-		// is schema-path absence, so none of them is negative-cached.
+		// is schema-path absence.
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
 
 	// The exact missing subset, independent of resolveOrderBy's
 	// first-error short-circuit. findUnknownSortPaths — not
-	// validateConditionPaths' findUnknownPaths — applies resolveOrderBy's
-	// own exact-key membership test: a sort key must denote a single
-	// scalar leaf, so the CONDITION-path predicate's container/array
-	// widening (correct there, where a bare path may legitimately address
-	// a container) would silently under-report what is actually missing
-	// here and leave the negative cache never engaging for those shapes.
-	missing := findUnknownSortPaths(dataPaths, fields)
+	// findUnknownPaths — applies resolveOrderBy's own exact-key membership
+	// test: a sort key must denote a single scalar leaf, so the
+	// condition-path predicate's container/array widening would
+	// under-report what is missing here.
+	missing := findUnknownSortPaths(normalisedDataSortPaths(keys), fields)
 
-	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, modelRef)
-	if !refreshed {
-		// Store has no cache layer — the cached miss is authoritative,
-		// exactly the validateConditionPaths case of the same name.
-		s.markPathsAbsent(tenant, modelRef, surfaceSort, missing)
+	fresh, err := refreshOnUnknownPaths(ctx, modelStore, modelRef, missing, func(f map[string]schema.FieldDescriptor) []string {
+		return findUnknownSortPaths(missing, f)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if fresh == nil {
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
-	if refreshErr != nil {
-		if errors.Is(refreshErr, spi.ErrNotFound) {
-			// Model was deleted between Get and RefreshAndGet — no schema
-			// authority left, the cached miss stands. Deliberately NOT
-			// negative-cached: there is no schema authority to invalidate
-			// this entry against later, same as validateConditionPaths.
-			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
-		}
-		// A refresh failure that is NOT "the model is gone" means we cannot
-		// tell "these sort fields are genuinely undeclared" from "the cache
-		// is merely stale and we couldn't confirm which" — the two are
-		// indistinguishable without a successful refresh. Per
-		// correctness-over-availability this is infrastructure, not a
-		// client fault — mirrors ValidateKnownPaths' and
-		// validateConditionPaths' own ErrPathRefreshInfra branch (this
-		// method predates the shared helper and keeps its own
-		// negative-cache-aware implementation, but all three "known field
-		// path" surfaces must not diverge on THIS classification).
-		// Deliberately NOT negative-cached: an infra failure says nothing
-		// about whether the sort field exists.
-		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
-			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
-	}
-	if freshFields == nil {
-		// The refresh produced no schema. Deliberately NOT negative-cached,
-		// same as validateConditionPaths: there is no schema authority to
-		// invalidate this entry against later.
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
-	}
-	specs, rerr = resolveOrderBy(keys, freshFields)
+	specs, rerr = resolveOrderBy(keys, fresh)
 	if rerr != nil {
-		if errors.Is(rerr, errUnknownSortField) {
-			s.markPathsAbsent(tenant, modelRef, surfaceSort, findUnknownSortPaths(missing, freshFields))
-		}
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
-	s.markPathsPresent(tenant, modelRef, surfaceSort, dataPaths)
 	return specs, nil
 }
 
 // normalisedDataSortPaths returns the deduplicated, canonicalised
-// (spi.NormalisePath) paths of the DATA sort keys in keys — the subset the
-// negative cache applies to. A META key carries no data-schema dependency
-// and is never included.
+// (spi.NormalisePath) paths of the DATA sort keys in keys — the subset
+// that depends on the model schema. A META key carries none and is never
+// included.
 func normalisedDataSortPaths(keys []OrderKey) []string {
 	seen := make(map[string]struct{}, len(keys))
 	var out []string
@@ -2228,16 +2007,6 @@ func normalisedDataSortPaths(keys []OrderKey) []string {
 		out = append(out, p)
 	}
 	return out
-}
-
-// unknownSortFieldError builds the 4xx response for one or more sort-key
-// paths the negative cache already knows to be absent from the model schema.
-func unknownSortFieldError(paths []string) error {
-	return common.Operational(
-		http.StatusBadRequest,
-		common.ErrCodeInvalidFieldPath,
-		fmt.Sprintf("unknown sort field(s): %s", strings.Join(paths, ", ")),
-	)
 }
 
 // invalidPathError builds the 4xx response surfaced when one or more

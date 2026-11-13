@@ -58,22 +58,6 @@ func (s *SearchService) RegisteredJobCountForTest() int {
 	return len(s.registry)
 }
 
-// PathValidationBucketMapCap returns the configured maximum number of
-// (tenant, ref) buckets the path-validation cache will retain.
-// Used by tests to drive the LRU eviction path.
-func PathValidationBucketMapCap() int {
-	return pathValidationBucketMapCap
-}
-
-// PathValidationCacheBucketCount returns the current number of
-// non-empty buckets in the cache. Test-only introspection used by
-// the LRU stress tests.
-func PathValidationCacheBucketCount(c *PathValidationCache) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.buckets)
-}
-
 // ResolveSortKeysForTest exposes resolveSortKeys so an external test can
 // drive its bounded-refresh contract directly, the same way
 // TestSearch_StaleSchema_RefreshesOnceAndSucceeds (path_validate_test.go)

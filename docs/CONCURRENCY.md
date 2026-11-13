@@ -58,7 +58,6 @@ scopes. The scope determines what protects it.
 | **Committed-log window** (memory/sqlite only) | Per-node-process | `m.mu` — pruned on each commit |
 | **Submit-time cache** | Per-node-process | `m.mu`; sqlite also persists to a table |
 | **Model cache** (cluster broadcast invalidation) | Per-node | `modelcache.mu` (RWMutex); gossip-driven invalidation |
-| **Path-validation cache** | Per-node | `path_validation_cache.mu` (RWMutex) |
 | **Gossip member registry** | Per-node | `gossip.mu` + `gossipDelegate.subsMu` |
 | **Transaction lifetime bound** | Per-request (goroutine-local `defer`) | Deferred release on every exit path including a panic; backstopped by PostgreSQL `idle_in_transaction_session_timeout` / `statement_timeout` (see `docs/PRD.md` "Transaction Timeouts") |
 | **AEAD nonce-replay cache** | Per-node | `nonce_cache.mu`; bounded TTL eviction |
@@ -105,7 +104,6 @@ for completeness):
 - `internal/txcoord/durable.go:36` and `:121` — the durable coordination (a backend that offers `TransactionCoordinationCapable`): `durable.mu` on the map of callouts this node runs the loop of, and each `durableCallout.mu` on the error its end recorded. Each is held for one map or field access, brief, never across a call to the backend's coordinator.
 - `internal/cluster/registry/gossip.go` — multiple mutexes: `mu` on node meta, `subsMu` on subscription map, plus the gossipDelegate's broadcast queue.
 - `internal/cluster/dispatch/nonce_cache.go` — Mutex; AEAD replay-window enforcement.
-- `internal/domain/search/path_validation_cache.go` — RWMutex on validation results.
 - `internal/grpc/members.go` — multiple mutexes governing gRPC member streams.
 - `internal/auth/replica.go:89-94` — signing-key store: `mu` (RWMutex) on the node copy, brief; `adminMu`, held across an admin write's KV reads and writes; `reconcileMu`, held across a re-read's KV `List`.
 - `internal/auth/kv_m2m_store.go:56` — `createLocks`: 64 striped mutexes, chosen by a hash of the tenant id, that serialise M2M client creates of one tenant on one node. One is held across a `Get`, an optional `List` (only when a cap is configured), one `PutIfAbsent` and, on failure, one `DeleteIfEqual` (bounded by `undoTimeout`, 30 s). A create that waits on a slow store therefore delays the creates of every tenant on the same stripe, on that node. The KV store never joins a transaction.

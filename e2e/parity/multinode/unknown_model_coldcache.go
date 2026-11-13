@@ -19,8 +19,9 @@ func init() {
 }
 
 // RunUnknownModel_BoundedRefresh_ColdCacheSucceeds proves that
-// EnsureModelRegistered's bounded RefreshAndGet prevents a false 404 when a
-// model-scoped operation reaches a node whose model cache is cold.
+// a model-scoped operation reaching a node whose model cache is cold does not
+// answer a false 404: the cache holds no entry for a model it has not read, so
+// EnsureModelRegistered's Get reads the authoritative store.
 //
 // Scenario:
 //  1. Register (import + lock) the model on node A.
@@ -28,13 +29,12 @@ func init() {
 //     seen this tenant's model (cold in-process cache).
 //  3. Assert the op succeeds (200) — NOT 404 MODEL_NOT_FOUND.
 //
-// If the bounded refresh were removed (or EnsureModelRegistered only consulted
-// its in-process cache), node B would return 404 because the model was written
-// to the authoritative store via node A, not via node B. The test would fail on
-// the MODEL_NOT_FOUND guard below.
+// If a miss were answered from node B's in-process state alone, node B would
+// return 404 because the model was written to the authoritative store via node
+// A, not via node B. The test would fail on the MODEL_NOT_FOUND guard below.
 //
 // Not in the main parity registry — this is an isolated cluster test exercising
-// the cluster-specific cold-cache→refresh path, not a cross-backend contract.
+// the cluster-specific cold-cache read path, not a cross-backend contract.
 func RunUnknownModel_BoundedRefresh_ColdCacheSucceeds(t *testing.T, fixture MultiNodeFixture) {
 	t.Helper()
 	urls := fixture.BaseURLs()
@@ -59,8 +59,8 @@ func RunUnknownModel_BoundedRefresh_ColdCacheSucceeds(t *testing.T, fixture Mult
 
 	// Step 2: issue GET /api/entity/stats/{model}/{version} on node B (index 1).
 	// Node B has no in-process knowledge of this tenant's model yet (cold cache).
-	// EnsureModelRegistered must perform a bounded RefreshAndGet against the
-	// shared authoritative store (postgres) and find the model registered via A.
+	// EnsureModelRegistered's Get falls through to the shared authoritative
+	// store (postgres) and finds the model registered via A.
 	cB := client.NewClient(urls[1], tenant.Token)
 	statsPath := fmt.Sprintf("/api/entity/stats/%s/%d", modelName, modelVersion)
 	status, body, err := cB.DoJSONBodyRaw(t, http.MethodGet, statsPath, nil)
@@ -78,7 +78,7 @@ func RunUnknownModel_BoundedRefresh_ColdCacheSucceeds(t *testing.T, fixture Mult
 		_ = json.Unmarshal(body, &envelope)
 		if envelope.Properties.ErrorCode == "MODEL_NOT_FOUND" {
 			t.Fatalf("cold-cache false-404: node B returned MODEL_NOT_FOUND for a model registered on node A; "+
-				"EnsureModelRegistered's bounded RefreshAndGet did not consult the authoritative store (body: %s)", string(body))
+				"EnsureModelRegistered did not consult the authoritative store (body: %s)", string(body))
 		}
 		t.Fatalf("node B returned 404 (body: %s)", string(body))
 	}

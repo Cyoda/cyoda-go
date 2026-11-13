@@ -112,14 +112,12 @@ func parseVersion(v string) int32 {
 	return int32(n)
 }
 
-// getModelFresh returns the model descriptor, bypassing any per-request
-// cache layer when the store supports RefreshAndGet. In multi-node
-// cluster deployments this eliminates a stale-cache race window
-// between a peer's mutation and its gossip-borne invalidation.
-// Admin-path gating reads (ImportModel, LockModel, UnlockModel,
-// DeleteModel, SetChangeLevel) use this; routine display/listing
-// reads (ExportModel, ListModels, ValidateModel) keep the cache for
-// throughput — eventual consistency is acceptable for those paths.
+// getModelFresh reads the model from storage, bypassing the cache entry,
+// when the store supports RefreshAndGet, and through Get otherwise. The admin
+// operations that gate on the model's state (ImportModel, LockModel,
+// UnlockModel, DeleteModel, SetChangeLevel) use it, so the decision is made on
+// what storage holds now and not on what this node cached; routine display and
+// listing reads (ExportModel, ListModels, ValidateModel) use the cache.
 func getModelFresh(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
 	type refresher interface {
 		RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error)

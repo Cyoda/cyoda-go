@@ -20,7 +20,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
@@ -150,57 +149,6 @@ func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) erro
 	})
 }
 
-// validateOrExtend validates parsedData against the model schema. When
-// changeLevel is set, it computes an additive schema delta via schema.Diff
-// and appends it to the model's extension log via ModelStore.ExtendSchema.
-// That call participates in the ambient entity transaction, so visibility
-// is commit-bound. Writes whose data already fits the schema (nil delta —
-// the steady state) touch no "models" row and cannot contend; writes that
-// genuinely extend the same model serialise per (tenant, model) inside the
-// plugin, and a concurrent extender surfaces a retryable conflict rather
-// than folding a savepoint over a delta it cannot yet see.
-// Returns an error on validation or extension failure.
-// ValidateWithRefresh runs strict schema validation with a bounded
-// refresh-on-stale safety net. One refresh attempt, only on unknown-
-// schema-element errors — the signal that our cached schema is behind
-// a peer's ExtendSchema. Other validation failures surface directly.
-// Stores that don't implement RefreshAndGet (no caching layer) skip
-// the refresh and return the original errors. See spec §4.3.
-//
-// Both model-store reads are marked with ingest.ErrInternalSchema on failure.
-// Callers classify this function's errors with classifyValidateOrExtendErr,
-// whose catch-all is a 400 VALIDATION_FAILED carrying err.Error() verbatim: unmarked,
-// a store outage would be reported to the caller as a fault in THEIR payload,
-// with the driver's own text and SQLSTATE in the response body. Neither read
-// can fail for a reason the caller caused, so both are 5xx-with-a-ticket.
-func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, data any) error {
-	desc, err := modelStore.Get(ctx, ref)
-	if err != nil {
-		return fmt.Errorf("%w: load model %s/%s: %w", ingest.ErrInternalSchema, ref.EntityName, ref.ModelVersion, err)
-	}
-	errs := ingest.ValidateDescriptor(desc, data)
-	if errs == nil {
-		return nil
-	}
-	if !schema.HasUnknownSchemaElement(errs) {
-		return ingest.ValidationErrorsToError(errs)
-	}
-	refresher, ok := modelStore.(interface {
-		RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error)
-	})
-	if !ok {
-		return ingest.ValidationErrorsToError(errs) // plugin has no cache
-	}
-	freshDesc, rErr := refresher.RefreshAndGet(ctx, ref)
-	if rErr != nil {
-		return fmt.Errorf("%w: refresh model %s/%s: %w", ingest.ErrInternalSchema, ref.EntityName, ref.ModelVersion, rErr)
-	}
-	if errs2 := ingest.ValidateDescriptor(freshDesc, data); errs2 != nil {
-		return ingest.ValidationErrorsToError(errs2)
-	}
-	return nil
-}
-
 // classifyBeginErr maps a transaction-Begin failure to a status code. It is
 // the named entry point every Begin site calls; a transient pool outage keeps
 // its own 503 rather than the "failed to begin transaction" message
@@ -237,9 +185,7 @@ func classifyBeginErr(err error) *common.AppError {
 // The catch-all puts err.Error() in the response body verbatim — a 4xx carries
 // full domain detail by contract. That makes it a leak the moment a feeder
 // hands it something infrastructural, so every feeder marks its store failures
-// with ErrInternalSchema: validateOrExtend does, and so does ValidateWithRefresh
-// (a ready-to-use wrapper with no production call site yet — the marking is what
-// lets it be wired to a door without re-opening the hole).
+// with ErrInternalSchema: validateOrExtend does.
 func classifyValidateOrExtendErr(err error) *common.AppError {
 	// Pass-through: validateOrExtend may return a *common.AppError directly
 	// for pre-classified operational errors (e.g. unique-key widening guard).
