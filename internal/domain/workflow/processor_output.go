@@ -88,10 +88,12 @@ func (e *Engine) applyProcessorData(ctx context.Context, entity *spi.Entity, des
 // descriptor at all — requiring one would impose a new precondition the rule
 // does not ask for.
 //
-// At most once, because one read serves the whole pipeline: the memo carries
-// one descriptor across it and adopts the descriptor each successful extension
-// returns, so every later processor checks against the schema the earlier ones
-// extended, and a field an earlier processor added is not extended again.
+// At most once, because the descriptor ValidateOrExtend returns after an
+// extension already carries the extended schema: the memo adopts it, so every
+// later processor checks against the schema the earlier ones extended, and a
+// field an earlier processor added is not extended again. Re-reading the model
+// per processor would add a model read per processor for no gain — after an
+// extension, a storage read, since every extension evicts the cache entry.
 type modelDescMemo struct {
 	desc   *spi.ModelDescriptor
 	err    error

@@ -182,7 +182,7 @@ func TestWriteConfigAllText_ShowsType(t *testing.T) {
 // does not advertise a knob that does nothing. (A retired name left in Go
 // source is caught the other way round, by TestConfig_EnvVarCoverage.)
 func TestRetiredSettings_Absent(t *testing.T) {
-	retired := []string{"CYODA_TX_TOKEN_TTL"}
+	retired := []string{"CYODA_TX_TOKEN_TTL", "CYODA_SCHEMA_EXTEND_MAX_RETRIES"}
 
 	for _, v := range RootConfigVars() {
 		for _, name := range retired {

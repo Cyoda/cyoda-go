@@ -169,10 +169,11 @@ func classifyBeginErr(err error) *common.AppError {
 //   - *ingest.IncompatibleTypeError  → 4xx INCOMPATIBLE_TYPE with structured Props
 //     (fieldPath, expectedType, actualType) — Cloud's
 //     FoundIncompatibleTypeWithEntityModelException equivalent
-//   - ingest.ErrInternalSchema       → common.Internal: 5xx with logged ticket
-//     (codec/diff/store failure), except the store answers it routes — 503
-//     STORAGE_UNAVAILABLE, 409 MODEL_NOT_LOCKED for an extension of a model
-//     that is not locked
+//   - ingest.ErrInternalSchema       → common.Internal: a 5xx with a logged
+//     ticket for a codec, diff or store failure, except for the store errors
+//     common.Internal routes itself: a storage outage is 503
+//     STORAGE_UNAVAILABLE, and an extension of a model that is not locked is
+//     409 MODEL_NOT_LOCKED
 //   - anything else           → 4xx VALIDATION_FAILED (change-level violation,
 //     other validation failure, malformed walk input)
 //
@@ -186,9 +187,9 @@ func classifyBeginErr(err error) *common.AppError {
 // body, bad transactionWindow, unstorable bytes).
 //
 // The catch-all puts err.Error() in the response body verbatim — a 4xx carries
-// full domain detail by contract. That makes it a leak the moment a feeder
-// hands it something infrastructural, so every feeder marks its store failures
-// with ErrInternalSchema: ingest.ValidateOrExtend does.
+// full domain detail by contract. An infrastructural error reaching it would
+// leak, so every feeder marks its store failures with ErrInternalSchema, as
+// ingest.ValidateOrExtend does.
 func classifyValidateOrExtendErr(err error) *common.AppError {
 	// Pass-through: ingest.ValidateOrExtend may return a *common.AppError directly
 	// for pre-classified operational errors (e.g. unique-key widening guard).

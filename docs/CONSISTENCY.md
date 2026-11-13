@@ -219,12 +219,19 @@ commit. Five invariants hold on every backend:
    kept after it fails, and on another node only after the model cache
    invalidation broadcast — is set out in `cyoda help models` (SCHEMA
    EXTENSION).
-3. **Commutativity and idempotence.** Well-formed deltas fold
-   order-independently: two extensions of the same model produce the
-   same folded schema regardless of the interleaving. A delta the
-   schema already holds is a successful no-op that writes nothing, so
-   retrying an extension whose outcome is unknown is safe. Every delta
-   whose call returned nil is in the folded schema.
+3. **Commutativity, idempotence, loss-freedom.** Applying a set of
+   well-formed deltas gives the same schema in any order, so the order
+   of the extension log does not decide the folded schema
+   (`internal/domain/model/schema/commutativity_property_test.go`,
+   `fold_order_test.go`). Which deltas a set of writes produces can
+   depend on the order of the writes: for structural extension (new
+   fields, new kinds, the nullable marker) concurrent writers converge
+   on the same schema, but for numeric- and temporal-leaf widening the
+   property is that every reachable schema is monotone and admits
+   every value written (`docs/cloud-parity/numeric-type-admission.md`).
+   A delta the schema already holds is a successful no-op that writes
+   nothing, so retrying an extension whose outcome is unknown is safe.
+   Every delta whose call returned nil is in the folded schema.
 4. **Validation-monotonicity.** Every op in the catalog strictly
    broadens the accepted-value set. Documents that validate against
    the base always validate against the extended schema. An op that

@@ -69,8 +69,8 @@ transaction. `ExtendSchema` runs in a write transaction of its own, never
 the caller's: it refuses a model that is not `LOCKED`
 (`spi.ErrModelNotLocked`), writes nothing for a delta the schema already
 holds, appends the delta, and appends a savepoint once
-`CYODA_SCHEMA_SAVEPOINT_INTERVAL` of the model's log rows follow its latest
-one. A `SQLITE_BUSY` the busy timeout did not absorb is retried after a
+`CYODA_SCHEMA_SAVEPOINT_INTERVAL` of the model's deltas follow its latest
+savepoint. A `SQLITE_BUSY` the busy timeout did not absorb is retried after a
 short pause until the caller's context ends; there is no retry budget, and
 contention is never reported as a conflict. `Lock` changes the state only
 and writes no savepoint; `Unlock` folds the log into the doc and clears it
@@ -102,7 +102,7 @@ public-API-facing statement of this rule.
 | `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | Wait time for write lock before returning `SQLITE_BUSY` |
 | `CYODA_SQLITE_CACHE_SIZE` | `64000` (KiB) | Page cache size in KiB, **per connection** (one writer plus the reader pool) |
 | `CYODA_SQLITE_READER_POOL_SIZE` | `GOMAXPROCS` clamped to `4`..`8` | Max concurrent reader connections. Minimum 1; a value below it falls back to the default |
-| `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | A model's log rows per savepoint; bounds how many deltas a read folds. Minimum 1; a value below it falls back to the default. Shared with the postgres plugin — not plugin-namespaced |
+| `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | A model's deltas per savepoint (counted since its latest savepoint); bounds how many deltas a read folds. Minimum 1; a value below it falls back to the default. Shared with the postgres plugin — not plugin-namespaced |
 
 ## Operational notes and limits
 

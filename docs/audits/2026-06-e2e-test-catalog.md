@@ -64,8 +64,8 @@ release blockers.
    does, and only with the registry's home-node assumption.
 6. **Stress ceiling is 25 concurrent creates.** Largest concurrency in the
    suite: `TestTransaction_StressTest` (25 parallel creates),
-   `TestModelSchemaExtensions_ConcurrentUpdatesNoConflict` (8 parallel
-   schema extends), `RunSchemaExtensionConcurrentConvergence` (10
+   `TestSchemaExtension_ConcurrentEveryDoor_No409` (parallel
+   schema extends on every write door), `RunSchemaExtensionConcurrentConvergence` (10
    parallel). Multi-node parity caps at N×N reads where N is "cluster
    size". There is no sustained-load test, no soak test, no QPS-target
    test. If v0.8.0 needs to claim a performance posture, the suite cannot
@@ -897,10 +897,10 @@ Internal E2E tests use an in-process `localproc.LocalProcessingService` to regis
 
 ### Schema extension and concurrent state transitions
 
-#### TestModelSchemaExtensions_ConcurrentUpdatesNoConflict (internal/e2e/model_schema_extensions_test.go:25)
-**Aim:** 8 parallel entity creates under STRUCTURAL do not cause 409 CONFLICT.
-**Asserts:** All 8 return 200; folded schema contains all field_0..field_7
-**Notes:** Regression for hot-row serialization bug
+#### TestSchemaExtension_ConcurrentEveryDoor_No409 (internal/e2e/model_schema_extensions_test.go)
+**Aim:** Concurrent extending writes on every door (create, update, collection create and update, processor output) under STRUCTURAL never answer 409 CONFLICT.
+**Asserts:** Every write 2xx; folded schema contains every field
+**Notes:** Each request sent once, behind a start barrier
 
 #### TestModelSchemaExtensions_SequentialFoldAcrossRequests (internal/e2e/model_schema_extensions_test.go:105)
 **Aim:** 6 sequential entity creates accumulate schema extensions.

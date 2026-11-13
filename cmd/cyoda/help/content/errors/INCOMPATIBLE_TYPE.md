@@ -33,7 +33,7 @@ The problem-detail body carries the structured fields below in `properties`, so 
 - `expectedType` — array of declared DataType names for that path (e.g. `["INTEGER"]`); usually one entry, more than one when the schema's TypeSet has been widened by a prior extension
 - `actualType` — the DataType inferred from the supplied value (e.g. `"DOUBLE"`, `"STRING"`)
 
-Not retryable. The caller must either correct the payload (cast/format the value into the declared type) or have the model's `changeLevel` permit the widening (`TYPE` or above), so that the write extends the field's TypeSet (`cyoda help models`, SCHEMA EXTENSION).
+Not retryable. The caller must either correct the payload (cast/format the value into the declared type) or have the model's `changeLevel` permit the widening (`TYPE` or above; `ARRAY_ELEMENTS` or above for the element of an array), so that the write extends the field's TypeSet (`cyoda help models`, SCHEMA EXTENSION).
 
 This code is distinct from:
 
