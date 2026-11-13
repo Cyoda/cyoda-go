@@ -11,6 +11,22 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
+// schemaNodeStore is the parsed-schema read the search package consumes.
+type schemaNodeStore interface {
+	spi.ModelStore
+	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
+}
+
+func newSchemaNodeStore(t *testing.T, inner spi.ModelStore, clk modelcache.Clock) schemaNodeStore {
+	t.Helper()
+	ms := newModelStore(t, inner, nil, clk, time.Minute)
+	sn, ok := ms.(schemaNodeStore)
+	if !ok {
+		t.Fatalf("model store %T has no SchemaNode", ms)
+	}
+	return sn
+}
+
 func schemaBytes(t *testing.T) []byte {
 	t.Helper()
 	root := schema.NewObjectNode()
@@ -40,7 +56,7 @@ func TestSchemaNode_ParsedOncePerCacheEntry(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	inner := &stubStore{desc: descWithSchema(t, ref)}
 	clk := &manualClock{now: time.Now()}
-	c := modelcache.New(inner, nil, clk, time.Minute)
+	c := newSchemaNodeStore(t, inner, clk)
 	ctx := context.Background()
 
 	n1, err := c.SchemaNode(ctx, ref)
@@ -81,7 +97,7 @@ func TestSchemaNode_ReparsedAfterLeaseExpiry(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	inner := &stubStore{desc: descWithSchema(t, ref)}
 	clk := &manualClock{now: time.Now()}
-	c := modelcache.New(inner, nil, clk, time.Minute)
+	c := newSchemaNodeStore(t, inner, clk)
 	ctx := context.Background()
 
 	n1, err := c.SchemaNode(ctx, ref)
@@ -106,7 +122,7 @@ func TestSchemaNode_UnlockedModelParsesButIsNotCached(t *testing.T) {
 	unlocked.State = spi.ModelUnlocked
 	inner := &stubStore{desc: unlocked}
 	clk := &manualClock{now: time.Now()}
-	c := modelcache.New(inner, nil, clk, time.Minute)
+	c := newSchemaNodeStore(t, inner, clk)
 	ctx := context.Background()
 
 	n1, err := c.SchemaNode(ctx, ref)
@@ -131,7 +147,7 @@ func TestSchemaNode_NoSchemaBoundIsNotAnError(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	inner := &stubStore{desc: &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}}
 	clk := &manualClock{now: time.Now()}
-	c := modelcache.New(inner, nil, clk, time.Minute)
+	c := newSchemaNodeStore(t, inner, clk)
 
 	node, err := c.SchemaNode(context.Background(), ref)
 	if err != nil {
@@ -152,7 +168,7 @@ func TestSchemaNode_UnparseableSchemaErrorIsStable(t *testing.T) {
 		Schema: []byte(`{not json`),
 	}}
 	clk := &manualClock{now: time.Now()}
-	c := modelcache.New(inner, nil, clk, time.Minute)
+	c := newSchemaNodeStore(t, inner, clk)
 	ctx := context.Background()
 
 	_, err1 := c.SchemaNode(ctx, ref)
@@ -191,7 +207,7 @@ func TestSchemaNode_TenantIsolation(t *testing.T) {
 		"tenant-a": bytesA,
 		"tenant-b": bytesB,
 	}, ref: ref}
-	c := modelcache.New(inner, nil, &manualClock{now: time.Now()}, time.Minute)
+	c := newSchemaNodeStore(t, inner, &manualClock{now: time.Now()})
 
 	ctxA := withTenantContext(context.Background(), "tenant-a")
 	ctxB := withTenantContext(context.Background(), "tenant-b")

@@ -76,10 +76,11 @@ var _ spi.ModelStore = (*heldReadModelStore)(nil)
 
 // TestSearch_OwnNewField_AfterRacingSearch_Found pins that a search naming a
 // field the client's own write has just added is answered from storage, not
-// from a remembered refusal. Search S1 names the field before it exists and is
-// held after its refresh has read storage; the extension then adds the field
-// and invalidates; S1 completes and is refused. Search S2 on the same field
-// must find it.
+// from a remembered refusal or a stale fill. Search S1 names the field before
+// it exists and is held after its refresh has read storage; the extension then
+// adds the field and invalidates. The cache drops S1's straddling fill, so S1's
+// recheck reads the extended schema and finds the field. Search S2 on the same
+// field must find it too.
 func TestSearch_OwnNewField_AfterRacingSearch_Found(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
@@ -125,9 +126,8 @@ func TestSearch_OwnNewField_AfterRacingSearch_Found(t *testing.T) {
 	}
 	release()
 
-	var appErr *common.AppError
-	if err := <-s1; !errors.As(err, &appErr) || appErr.Code != common.ErrCodeInvalidFieldPath {
-		t.Fatalf("S1: want INVALID_FIELD_PATH (it read the schema before the extension), got %v", err)
+	if err := <-s1; err != nil {
+		t.Fatalf("S1: its refresh straddled the extension, so the fill is dropped and the recheck reads the field; got %v", err)
 	}
 
 	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})

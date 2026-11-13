@@ -280,7 +280,9 @@ func freshFields(ctx context.Context, store spi.ModelStore, refresher interface 
 		return nil, err
 	}
 	// RefreshAndGet repopulates the cache entry, parsed node included, so read
-	// the parse back rather than re-deriving it from the bytes just cached.
+	// the parse back rather than re-deriving it from the bytes just cached. When
+	// an invalidation landed during the refresh its fill is dropped, and
+	// SchemaNode reads storage again: a schema at least as new.
 	if p, ok := store.(schemaNodeProvider); ok {
 		node, nerr := p.SchemaNode(ctx, ref)
 		if nerr != nil || node == nil {

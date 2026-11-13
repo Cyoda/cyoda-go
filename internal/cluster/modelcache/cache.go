@@ -1,23 +1,32 @@
-// Package modelcache provides a CachingModelStore decorator that
-// memoizes LOCKED model descriptors. Correctness rests on the
-// catalog invariants (commutativity + validation-monotonicity from
-// internal/domain/model/schema) plus the validator-path refresh-on-
-// stale in internal/domain/entity/handler.go; gossip invalidation
-// and the TTL lease are performance/hygiene layers. See
-// docs/superpowers/specs/2026-04-20-model-schema-extensions-design.md §4.5.
+// Package modelcache caches LOCKED model descriptors per node, in front of the
+// plugin's model store. An UNLOCKED descriptor is never cached: its schema can
+// still change.
+//
+// A LOCKED schema only grows (by ExtendSchema), so a stale entry can only miss
+// fields, never claim one. The cache keeps that window short:
+//
+//   - every invalidation — a local model mutation or extension, or a
+//     "model.invalidate" broadcast from a peer — evicts the entry and bumps the
+//     key's generation, and a fill that read storage before the bump is dropped;
+//   - the jittered lease expires an entry whose broadcast was lost.
+//
+// Misses at one generation share one storage read; identical extensions on
+// one node share one storage call. See
+// docs/superpowers/specs/2026-11-12-710-schema-extensions-design.md §4.5, §4.7.
 package modelcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
+	"strconv"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -30,31 +39,28 @@ type realClock struct{}
 
 func (realClock) Now() time.Time { return time.Now() } // realtime: model cache lease
 
-// CachingModelStore wraps an spi.ModelStore. Zero-value not safe — use New.
+// CachingModelStore is one node's model cache state: the entries, their
+// invalidation generations and the shared calls. It reads storage only through
+// the per-request store a CachingStoreFactory hands out. Zero value not safe —
+// use New.
 type CachingModelStore struct {
-	inner       spi.ModelStore
 	broadcaster spi.ClusterBroadcaster
 	clock       Clock
 	lease       time.Duration
 
-	mu         sync.RWMutex
-	entries    map[cacheKey]cacheEntry
-	jitterRand *rand.Rand // guarded by mu
+	mu      sync.RWMutex
+	entries map[cacheKey]cacheEntry
+	// generations counts the invalidations each key has seen. It outlives the
+	// entry — evict leaves it — so a fill that read storage before an
+	// invalidation can always tell. One counter per (tenant, model) ever
+	// invalidated on this node.
+	generations map[cacheKey]uint64
+	jitterRand  *rand.Rand // guarded by mu
 
-	flight singleflight.Group
-
-	// localSubMu guards localSubs: downstream caches
-	// (e.g. the path-validation negative cache) register here to
-	// receive an in-process notification on every invalidation,
-	// regardless of whether a cluster broadcaster is wired up. On
-	// single-node deployments this is the only invalidation channel
-	// available; on multi-node it fires alongside the gossip path.
-	//
-	// Plain Mutex (not RWMutex) — the snapshot taken on the read
-	// path is brief and there's no read-heavy contention pattern
-	// here that benefits from RW semantics.
-	localSubMu sync.Mutex
-	localSubs  []func(tenant string, ref spi.ModelRef)
+	// reads coalesces storage reads (misses and refreshes) per (key,
+	// generation); extends coalesces identical extensions per (key, delta).
+	reads   singleflight.Group
+	extends singleflight.Group
 }
 
 type cacheKey struct {
@@ -105,17 +111,17 @@ func parseSchemaNode(desc *spi.ModelDescriptor) (*schema.ModelNode, error) {
 //
 // lease must be > 0; actual expiry is jittered ±10% to prevent the
 // cross-node herd that a uniform lease would produce.
-func New(inner spi.ModelStore, broadcaster spi.ClusterBroadcaster, clk Clock, lease time.Duration) *CachingModelStore {
+func New(broadcaster spi.ClusterBroadcaster, clk Clock, lease time.Duration) *CachingModelStore {
 	if clk == nil {
 		clk = realClock{}
 	}
 	c := &CachingModelStore{
-		inner:       inner,
 		broadcaster: broadcaster,
 		clock:       clk,
 		lease:       lease,
 		jitterRand:  rand.New(rand.NewPCG(uint64(clk.Now().UnixNano()), 0xC0DA6060)),
 		entries:     make(map[cacheKey]cacheEntry),
+		generations: make(map[cacheKey]uint64),
 	}
 	if broadcaster != nil {
 		broadcaster.Subscribe(topicModelInvalidate, c.handleInvalidation)
@@ -123,151 +129,10 @@ func New(inner spi.ModelStore, broadcaster spi.ClusterBroadcaster, clk Clock, le
 	return c
 }
 
-// EntryExpiresAt is test-only introspection for the jitter-band check.
-// Returns the zero time if no entry is cached for ref in any tenant.
-func (c *CachingModelStore) EntryExpiresAt(ref spi.ModelRef) time.Time {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for k, e := range c.entries {
-		if k.ref == ref {
-			return e.expiresAt
-		}
-	}
-	return time.Time{}
-}
-
-// ---- spi.ModelStore pass-throughs with caching --------------------------
-
-func (c *CachingModelStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
-	if d := c.lookup(key); d != nil {
-		return d, nil
-	}
-	desc, err := c.inner.Get(ctx, ref)
-	if err != nil || desc == nil {
-		return desc, err
-	}
-	if desc.State != spi.ModelLocked {
-		return desc, nil // UNLOCKED bypasses cache
-	}
-	c.store(key, desc)
-	return desc, nil
-}
-
-// RefreshAndGet forces a cache miss, collapses concurrent callers via
-// singleflight, then reads from the inner store and repopulates the
-// cache. Used by the validator refresh-on-stale path.
-func (c *CachingModelStore) RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
-	c.evict(key)
-
-	v, err, _ := c.flight.Do(flightKey(key), func() (any, error) {
-		desc, err := c.inner.Get(ctx, ref)
-		if err != nil {
-			return nil, err
-		}
-		if desc != nil && desc.State == spi.ModelLocked {
-			c.store(key, desc)
-		}
-		return desc, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if v == nil {
-		return nil, nil
-	}
-	return v.(*spi.ModelDescriptor), nil
-}
-
-func (c *CachingModelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error {
-	if err := c.inner.Save(ctx, desc); err != nil {
-		return err
-	}
-	c.invalidate(ctx, desc.Ref)
-	return nil
-}
-
-func (c *CachingModelStore) Lock(ctx context.Context, ref spi.ModelRef) error {
-	if err := c.inner.Lock(ctx, ref); err != nil {
-		return err
-	}
-	c.invalidate(ctx, ref)
-	return nil
-}
-
-func (c *CachingModelStore) Unlock(ctx context.Context, ref spi.ModelRef) error {
-	if err := c.inner.Unlock(ctx, ref); err != nil {
-		return err
-	}
-	c.invalidate(ctx, ref)
-	return nil
-}
-
-func (c *CachingModelStore) SetChangeLevel(ctx context.Context, ref spi.ModelRef, level spi.ChangeLevel) error {
-	if err := c.inner.SetChangeLevel(ctx, ref, level); err != nil {
-		return err
-	}
-	c.invalidate(ctx, ref)
-	return nil
-}
-
-func (c *CachingModelStore) Delete(ctx context.Context, ref spi.ModelRef) error {
-	if err := c.inner.Delete(ctx, ref); err != nil {
-		return err
-	}
-	c.invalidate(ctx, ref)
-	return nil
-}
-
-func (c *CachingModelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
-	if err := c.inner.ExtendSchema(ctx, ref, delta); err != nil {
-		return err
-	}
-	c.invalidate(ctx, ref)
-	return nil
-}
-
-func (c *CachingModelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
-	return c.inner.GetAll(ctx)
-}
-
-func (c *CachingModelStore) IsLocked(ctx context.Context, ref spi.ModelRef) (bool, error) {
-	return c.inner.IsLocked(ctx, ref)
-}
-
-// ---- internal helpers ---------------------------------------------------
-
-func (c *CachingModelStore) lookup(key cacheKey) *spi.ModelDescriptor {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	e, ok := c.entries[key]
-	if !ok {
-		return nil
-	}
-	if c.clock.Now().After(e.expiresAt) {
-		return nil
-	}
-	return e.desc
-}
-
-func (c *CachingModelStore) store(key cacheKey, desc *spi.ModelDescriptor) {
-	// Derived outside the lock: parsing is the expensive part and depends only
-	// on desc, so holding the write lock across it would serialise every reader
-	// behind an unrelated model's parse.
-	node, nodeErr := parseSchemaNode(desc)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries[key] = cacheEntry{
-		desc:      desc,
-		expiresAt: c.clock.Now().Add(c.jitteredLeaseLocked()),
-		node:      node,
-		nodeErr:   nodeErr,
-	}
-}
+// ---- entries and generations ------------------------------------------
 
 // lookupEntry returns the live entry for key, or ok=false when absent or past
-// its lease. Mirrors lookup, which returns only the descriptor.
+// its lease.
 func (c *CachingModelStore) lookupEntry(key cacheKey) (cacheEntry, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -278,30 +143,43 @@ func (c *CachingModelStore) lookupEntry(key cacheKey) (cacheEntry, bool) {
 	return e, true
 }
 
-// SchemaNode returns ref's parsed model schema, derived once per cache entry
-// and reused for that entry's lifetime. Returns (nil, nil) when the descriptor
-// has no schema bound.
-//
-// An UNLOCKED descriptor is never cached — its schema can still change — so its
-// parse is produced fresh and not retained, exactly as its bytes are not.
-//
-// The returned node is SHARED: for a cached entry every reader gets the same
-// tree, and a ModelNode is not safe for concurrent mutation. Treat it as
-// read-only. The type carries exported mutators because the engine builds trees
-// with them, not because a reader may edit one it was handed.
-func (c *CachingModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
-	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
-	if e, ok := c.lookupEntry(key); ok {
-		return e.node, e.nodeErr
+// generation returns key's invalidation generation.
+func (c *CachingModelStore) generation(key cacheKey) uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.generations[key]
+}
+
+// bump advances key's invalidation generation and returns the new value. Every
+// fill that recorded an earlier generation is dropped from then on.
+func (c *CachingModelStore) bump(key cacheKey) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.generations[key]++
+	return c.generations[key]
+}
+
+// storeIfGeneration caches desc under key only if key's generation is still
+// gen, the value recorded before the read that produced desc. Otherwise an
+// invalidation landed during the read, desc may predate it, and nothing is
+// stored. Reports whether desc was stored.
+func (c *CachingModelStore) storeIfGeneration(key cacheKey, gen uint64, desc *spi.ModelDescriptor) bool {
+	// Derived outside the lock: parsing is the expensive part and depends only
+	// on desc, so holding the write lock across it would serialise every reader
+	// behind an unrelated model's parse.
+	node, nodeErr := parseSchemaNode(desc)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generations[key] != gen {
+		return false
 	}
-	desc, err := c.Get(ctx, ref) // populates the entry when LOCKED
-	if err != nil {
-		return nil, err
+	c.entries[key] = cacheEntry{
+		desc:      desc,
+		expiresAt: c.clock.Now().Add(c.jitteredLeaseLocked()),
+		node:      node,
+		nodeErr:   nodeErr,
 	}
-	if e, ok := c.lookupEntry(key); ok {
-		return e.node, e.nodeErr
-	}
-	return parseSchemaNode(desc)
+	return true
 }
 
 func (c *CachingModelStore) evict(key cacheKey) {
@@ -310,15 +188,22 @@ func (c *CachingModelStore) evict(key cacheKey) {
 	delete(c.entries, key)
 }
 
-func (c *CachingModelStore) invalidate(ctx context.Context, ref spi.ModelRef) {
-	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
+// dropLocal bumps key's generation, then evicts its entry. In that order a
+// fill racing the two either fails the generation check or is evicted.
+func (c *CachingModelStore) dropLocal(key cacheKey) {
+	c.bump(key)
 	c.evict(key)
-	c.notifyLocalSubscribers(key.tenant, ref)
-	if c.broadcaster != nil {
-		payload, err := EncodeInvalidation(key.tenant, ref)
-		if err == nil {
-			c.broadcaster.Broadcast(topicModelInvalidate, payload)
-		}
+}
+
+// invalidate drops key on this node and tells the peers to do the same.
+func (c *CachingModelStore) invalidate(key cacheKey) {
+	c.dropLocal(key)
+	if c.broadcaster == nil {
+		return
+	}
+	// EncodeInvalidation marshals three strings; it cannot fail.
+	if payload, err := EncodeInvalidation(key.tenant, key.ref); err == nil {
+		c.broadcaster.Broadcast(topicModelInvalidate, payload)
 	}
 }
 
@@ -327,36 +212,7 @@ func (c *CachingModelStore) handleInvalidation(payload []byte) {
 	if !ok {
 		return
 	}
-	c.evict(cacheKey{tenant: tenant, ref: ref})
-	c.notifyLocalSubscribers(tenant, ref)
-}
-
-// SubscribeLocal registers an in-process invalidation handler. The
-// handler fires for every invalidation seen by this store —
-// originating from a local mutation (Save/Lock/Unlock/SetChangeLevel/
-// Delete/ExtendSchema) AND from gossip events received from peer
-// nodes. Downstream caches keyed off the same (tenant, ref) tuple
-// (e.g. the path-validation negative cache) use this to stay in lock
-// step with the descriptor cache regardless of cluster topology.
-//
-// Pre-fix the path-validation cache subscribed to the
-// gossip broadcaster directly, so single-node deployments (where the
-// broadcaster is nil) never received any invalidation events.
-func (c *CachingModelStore) SubscribeLocal(h func(tenant string, ref spi.ModelRef)) {
-	c.localSubMu.Lock()
-	defer c.localSubMu.Unlock()
-	c.localSubs = append(c.localSubs, h)
-}
-
-func (c *CachingModelStore) notifyLocalSubscribers(tenant string, ref spi.ModelRef) {
-	subs := func() []func(string, spi.ModelRef) {
-		c.localSubMu.Lock()
-		defer c.localSubMu.Unlock()
-		return append([]func(string, spi.ModelRef){}, c.localSubs...)
-	}()
-	for _, h := range subs {
-		h(tenant, ref)
-	}
+	c.dropLocal(cacheKey{tenant: tenant, ref: ref})
 }
 
 // jitteredLeaseLocked returns lease ± 10 %. MUST be called with c.mu
@@ -366,9 +222,105 @@ func (c *CachingModelStore) jitteredLeaseLocked() time.Duration {
 	return time.Duration(float64(c.lease) * factor)
 }
 
-func flightKey(key cacheKey) string {
-	return key.tenant + "|" + key.ref.EntityName + "|" + key.ref.ModelVersion
+// ---- shared calls -------------------------------------------------------
+
+// readThrough reads key from storage through the (key, generation) flight and
+// caches a LOCKED result under the fill guard. It does not consult the cached
+// entry: Get does that first, RefreshAndGet skips it. Neither evicts nor bumps.
+func (c *CachingModelStore) readThrough(ctx context.Context, key cacheKey, inner spi.ModelStore) (*spi.ModelDescriptor, error) {
+	for {
+		gen := c.generation(key)
+		ch := c.reads.DoChan(flightKey(key, gen), func() (any, error) {
+			desc, err := inner.Get(ctx, key.ref)
+			if err != nil {
+				return nil, sharedCallError(ctx, err)
+			}
+			if desc != nil && desc.State == spi.ModelLocked {
+				c.storeIfGeneration(key, gen, desc)
+			}
+			return desc, nil
+		})
+		v, retry, err := awaitShared(ctx, ch)
+		if retry {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		desc, _ := v.(*spi.ModelDescriptor)
+		return desc, nil
+	}
 }
 
-// Compile-time interface check.
-var _ spi.ModelStore = (*CachingModelStore)(nil)
+// extend runs inner.ExtendSchema once for every concurrent caller with the same
+// tenant, model and delta, on the first caller's context. When the inner call
+// returns, whatever it returned, the shared call itself invalidates key: the
+// extension may have committed even when it failed, and the callers may all
+// have left by then.
+func (c *CachingModelStore) extend(ctx context.Context, key cacheKey, delta spi.SchemaDelta, inner spi.ModelStore) error {
+	for {
+		ch := c.extends.DoChan(extendKey(key, delta), func() (any, error) {
+			err := inner.ExtendSchema(ctx, key.ref, delta)
+			c.invalidate(key)
+			return nil, sharedCallError(ctx, err)
+		})
+		_, retry, err := awaitShared(ctx, ch)
+		if !retry {
+			return err
+		}
+	}
+}
+
+// leaderEndedError marks a shared call's failure that came after the context
+// it ran on — its first caller's — had ended. Whatever form the backend gave
+// the error (a context error, a driver or a classified error), the failure may
+// be that caller's cancellation, not an answer for the others.
+type leaderEndedError struct{ err error }
+
+func (e *leaderEndedError) Error() string { return e.err.Error() }
+func (e *leaderEndedError) Unwrap() error { return e.err }
+
+// sharedCallError tags err when ctx, the context the shared call ran on, has
+// ended. A nil err stays nil.
+func sharedCallError(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() == nil {
+		return err
+	}
+	return &leaderEndedError{err: err}
+}
+
+// awaitShared waits for a shared call's result or for the caller's own ctx to
+// end, whichever comes first, so no caller stays blocked on another caller's
+// call. retry reports that the call failed after its first caller's context
+// ended while this caller's is live: the caller starts a new call.
+func awaitShared(ctx context.Context, ch <-chan singleflight.Result) (v any, retry bool, err error) {
+	select {
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	case res := <-ch:
+		var ended *leaderEndedError
+		if errors.As(res.Err, &ended) {
+			if ctx.Err() == nil {
+				return nil, true, nil
+			}
+			return nil, false, ended.err
+		}
+		return res.Val, false, res.Err
+	}
+}
+
+// keyPrefix encodes key unambiguously: each field is length-prefixed, so what
+// follows it (a generation, a delta) can never be read as part of it.
+func keyPrefix(key cacheKey) string {
+	return fmt.Sprintf("%d:%s%d:%s%d:%s", len(key.tenant), key.tenant,
+		len(key.ref.EntityName), key.ref.EntityName,
+		len(key.ref.ModelVersion), key.ref.ModelVersion)
+}
+
+func flightKey(key cacheKey, gen uint64) string {
+	return keyPrefix(key) + strconv.FormatUint(gen, 10)
+}
+
+func extendKey(key cacheKey, delta spi.SchemaDelta) string {
+	return keyPrefix(key) + string(delta)
+}

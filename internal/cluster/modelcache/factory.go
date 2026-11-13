@@ -10,16 +10,16 @@ import (
 )
 
 // CachingStoreFactory wraps an spi.StoreFactory so that ModelStore(ctx)
-// returns a per-request store whose Get / RefreshAndGet calls route
-// through a single shared cache. All other factory methods pass
-// through to the inner factory unchanged.
+// returns a per-request store whose reads and extensions route through one
+// shared cache. All other factory methods pass through to the inner factory
+// unchanged.
 //
 // The cache is gossip-aware: mutations on a peer node evict the local
 // entry via the "model.invalidate" topic. The ±10% jittered TTL is the
 // fallback when gossip drops a message.
 type CachingStoreFactory struct {
 	inner spi.StoreFactory
-	cache *CachingModelStore // state-only — inner ModelStore is unused on this instance
+	cache *CachingModelStore
 }
 
 // NewCachingStoreFactory wraps inner. broadcaster may be nil for
@@ -31,12 +31,7 @@ func NewCachingStoreFactory(
 	clk Clock,
 	lease time.Duration,
 ) *CachingStoreFactory {
-	// The cache instance's "inner" is never called — per-request stores
-	// supply their own inner via requestScopedStore.Get. Pass nil and
-	// rely on the fact that CachingModelStore.lookup / store / evict
-	// never dereference inner.
-	cache := New(nil, broadcaster, clk, lease)
-	return &CachingStoreFactory{inner: inner, cache: cache}
+	return &CachingStoreFactory{inner: inner, cache: New(broadcaster, clk, lease)}
 }
 
 // ModelStore returns a per-request store that reads through the
@@ -105,20 +100,11 @@ func (f *CachingStoreFactory) TransactionCoordinator(ctx context.Context) (spi.T
 	return nil, nil
 }
 
-// SubscribeLocal registers an in-process invalidation handler on the
-// shared CachingModelStore. The handler receives (tenant, ref) for
-// every model invalidation — local mutations and gossip-received
-// events alike. Downstream caches use this to stay in lock step
-// regardless of cluster topology.
-func (f *CachingStoreFactory) SubscribeLocal(h func(tenant string, ref spi.ModelRef)) {
-	f.cache.SubscribeLocal(h)
-}
-
 // requestScopedStore is returned by CachingStoreFactory.ModelStore.
-// It delegates reads through the shared cache and writes directly to
-// the per-request inner store. The tenant is implicit in inner — the
-// inner is already tenant-scoped at construction — and the cache
-// keys off tenant-from-ctx internally.
+// It reads through the shared cache and writes to the per-request inner
+// store, invalidating the shared entry after every write. The tenant is
+// implicit in inner — the inner is already tenant-scoped at construction —
+// and the cache keys off tenant-from-ctx.
 type requestScopedStore struct {
 	cache *CachingModelStore
 	inner spi.ModelStore
@@ -127,73 +113,65 @@ type requestScopedStore struct {
 // Compile-time interface check.
 var _ spi.ModelStore = (*requestScopedStore)(nil)
 
+func keyOf(ctx context.Context, ref spi.ModelRef) cacheKey {
+	return cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
+}
+
+// Get serves a live cached entry, otherwise reads storage through the shared
+// (key, generation) flight.
 func (s *requestScopedStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
-	if d := s.cache.lookup(key); d != nil {
-		return d, nil
+	key := keyOf(ctx, ref)
+	if e, ok := s.cache.lookupEntry(key); ok {
+		return e.desc, nil
 	}
-	desc, err := s.inner.Get(ctx, ref)
-	if err != nil || desc == nil {
-		return desc, err
-	}
-	if desc.State != spi.ModelLocked {
-		return desc, nil
-	}
-	s.cache.store(key, desc)
-	return desc, nil
+	return s.cache.readThrough(ctx, key, s.inner)
 }
 
 // SchemaNode returns ref's parsed model schema, derived once per cache entry
-// and reused for that entry's lifetime. Mirrors Get: read through the shared
-// cache, otherwise fetch from this request's inner store and populate.
+// and reused for that entry's lifetime. Returns (nil, nil) when the descriptor
+// has no schema bound.
 //
-// An UNLOCKED descriptor is not cached, so its parse is produced fresh and not
-// retained — same rule its bytes follow.
+// A descriptor that was not cached — UNLOCKED, or a fill the generation guard
+// dropped — is parsed fresh and not retained, as its bytes are not.
+//
+// The returned node is SHARED: for a cached entry every reader gets the same
+// tree, and a ModelNode is not safe for concurrent mutation. Treat it as
+// read-only.
 func (s *requestScopedStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
-	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
+	key := keyOf(ctx, ref)
 	if e, ok := s.cache.lookupEntry(key); ok {
 		return e.node, e.nodeErr
 	}
-	desc, err := s.Get(ctx, ref) // populates the shared entry when LOCKED
+	desc, err := s.cache.readThrough(ctx, key, s.inner)
 	if err != nil {
 		return nil, err
 	}
-	if e, ok := s.cache.lookupEntry(key); ok {
+	if e, ok := s.cache.lookupEntry(key); ok && e.desc == desc {
 		return e.node, e.nodeErr
 	}
 	return parseSchemaNode(desc)
 }
 
-// RefreshAndGet forces a cache miss, collapses concurrent callers via
-// the cache's singleflight group, and repopulates on success.
+// RefreshAndGet reads storage through the same (key, generation) flight as a
+// miss, skipping the cached entry, and caches the result under the fill guard.
+// It neither evicts nor bumps, so a stream of refreshes does not empty the
+// cache for the readers it serves meanwhile.
 func (s *requestScopedStore) RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	key := cacheKey{tenant: common.TenantFromContext(ctx), ref: ref}
-	s.cache.evict(key)
+	return s.cache.readThrough(ctx, keyOf(ctx, ref), s.inner)
+}
 
-	v, err, _ := s.cache.flight.Do(flightKey(key), func() (any, error) {
-		desc, err := s.inner.Get(ctx, ref)
-		if err != nil {
-			return nil, err
-		}
-		if desc != nil && desc.State == spi.ModelLocked {
-			s.cache.store(key, desc)
-		}
-		return desc, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if v == nil {
-		return nil, nil
-	}
-	return v.(*spi.ModelDescriptor), nil
+// ExtendSchema shares one storage call among concurrent identical extensions
+// on this node, and invalidates the entry after the call whatever its outcome.
+// See CachingModelStore.extend.
+func (s *requestScopedStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
+	return s.cache.extend(ctx, keyOf(ctx, ref), delta, s.inner)
 }
 
 func (s *requestScopedStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error {
 	if err := s.inner.Save(ctx, desc); err != nil {
 		return err
 	}
-	s.cache.invalidate(ctx, desc.Ref)
+	s.cache.invalidate(keyOf(ctx, desc.Ref))
 	return nil
 }
 
@@ -201,7 +179,7 @@ func (s *requestScopedStore) Lock(ctx context.Context, ref spi.ModelRef) error {
 	if err := s.inner.Lock(ctx, ref); err != nil {
 		return err
 	}
-	s.cache.invalidate(ctx, ref)
+	s.cache.invalidate(keyOf(ctx, ref))
 	return nil
 }
 
@@ -209,7 +187,7 @@ func (s *requestScopedStore) Unlock(ctx context.Context, ref spi.ModelRef) error
 	if err := s.inner.Unlock(ctx, ref); err != nil {
 		return err
 	}
-	s.cache.invalidate(ctx, ref)
+	s.cache.invalidate(keyOf(ctx, ref))
 	return nil
 }
 
@@ -217,7 +195,7 @@ func (s *requestScopedStore) SetChangeLevel(ctx context.Context, ref spi.ModelRe
 	if err := s.inner.SetChangeLevel(ctx, ref, level); err != nil {
 		return err
 	}
-	s.cache.invalidate(ctx, ref)
+	s.cache.invalidate(keyOf(ctx, ref))
 	return nil
 }
 
@@ -225,15 +203,7 @@ func (s *requestScopedStore) Delete(ctx context.Context, ref spi.ModelRef) error
 	if err := s.inner.Delete(ctx, ref); err != nil {
 		return err
 	}
-	s.cache.invalidate(ctx, ref)
-	return nil
-}
-
-func (s *requestScopedStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
-	if err := s.inner.ExtendSchema(ctx, ref, delta); err != nil {
-		return err
-	}
-	s.cache.invalidate(ctx, ref)
+	s.cache.invalidate(keyOf(ctx, ref))
 	return nil
 }
 
