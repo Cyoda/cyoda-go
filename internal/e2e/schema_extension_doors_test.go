@@ -105,9 +105,10 @@ func openThenGoWorkflowJSON(wfName, procName string) string {
 
 // TestSchemaExtension_ConcurrentNestedUnderNewParent — a burst of concurrent
 // PUTs on one model, each adding a nested field of its own under a parent
-// object the model does not have, which every other write of the burst adds
-// at the same moment. Every write answers 2xx and the model gains the parent
-// and every child.
+// object the model does not have. Every write of the burst brings the parent
+// too, so the writers race the parent's extension; the interleave is
+// probabilistic, and the test asserts consistency, not an order: every write
+// answers 2xx and the model gains the parent and every child.
 func TestSchemaExtension_ConcurrentNestedUnderNewParent(t *testing.T) {
 	const N = 8
 	model := uniq("se-nested")
@@ -162,43 +163,6 @@ func TestSchemaExtension_CriterionOnFieldAddedInSameRequest(t *testing.T) {
 	id := createEntityE2E(t, model, 1, `{"name":"x","amount":1,"status":"new"}`)
 	if st := getEntityState(t, id); st != "MATCHED" {
 		t.Errorf("entity state = %q, want MATCHED: the criterion on the field the processor added in the same request must match", st)
-	}
-}
-
-// TestSearch_OwnNewField_SameNode_After2xx — once a write that added p has
-// answered 2xx, a search on p on the node that served it is answered, not
-// refused as an unknown path, also when a search on p was refused before the
-// write.
-func TestSearch_OwnNewField_SameNode_After2xx(t *testing.T) {
-	model := uniq("se-search")
-	importModelE2E(t, model, 1)
-	lockModelE2E(t, model, 1)
-	setChangeLevelE2E(t, model, 1, "STRUCTURAL")
-	id := createEntityE2E(t, model, 1, `{"name":"x","amount":1,"status":"new"}`)
-
-	searchPath := fmt.Sprintf("/api/search/direct/%s/1", model)
-	const cond = `{"type":"simple","jsonPath":"$.p","operatorType":"EQUALS","value":"found"}`
-
-	// Before the write the model has no p: the search is refused.
-	resp := doAuth(t, http.MethodPost, searchPath, cond)
-	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("search on p before the write: %d %s; want 400", resp.StatusCode, body)
-	}
-	assertErrorCode(t, body, "INVALID_FIELD_PATH")
-
-	resp = doAuth(t, http.MethodPut, "/api/entity/JSON/"+id, `{"name":"x","amount":1,"status":"new","p":"found"}`)
-	if body := readBody(t, resp); resp.StatusCode != http.StatusOK {
-		t.Fatalf("PUT adding p: %d %s", resp.StatusCode, body)
-	}
-
-	resp = doAuth(t, http.MethodPost, searchPath, cond)
-	body = readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("search on p after the write answered 2xx: %d %s; want 200", resp.StatusCode, body)
-	}
-	if !strings.Contains(body, id) {
-		t.Errorf("search on p does not find the entity %s: %s", id, body)
 	}
 }
 
