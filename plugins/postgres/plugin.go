@@ -28,7 +28,7 @@ func (p *plugin) ConfigVars() []spi.ConfigVar {
 		{Name: "CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", Description: "Statement ceiling for async search scans; 0 disables", Default: "30m"},
 		{Name: "CYODA_POSTGRES_SCHEDULER_CONNS", Description: "Connections in the scheduler's own pool (claims, run bookkeeping, async-search heartbeats); at least 2. The scheduler heartbeat has one more of its own", Default: "10"},
 		{Name: "CYODA_POSTGRES_MODEL_CONNS", Description: "Connections in the model store's own pool (model reads, schema extensions, model administration); extensions use at most half; at least 2", Default: "8"},
-		{Name: "CYODA_SCHEMA_SAVEPOINT_INTERVAL", Description: "Rows per savepoint during schema extension", Default: "64"},
+		{Name: "CYODA_SCHEMA_SAVEPOINT_INTERVAL", Description: "A model's schema-extension deltas per savepoint; bounds how many deltas a read of the model folds", Default: "64"},
 	}
 }
 

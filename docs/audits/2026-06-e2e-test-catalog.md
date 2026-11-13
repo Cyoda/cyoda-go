@@ -944,7 +944,7 @@ Internal E2E tests use an in-process `localproc.LocalProcessingService` to regis
 **Notes:** (parity)
 
 #### RunSchemaExtensionLocalCacheInvalidationOnCommit (e2e/parity/schema_cache_invalidation.go:17)
-**Aim:** Local cache is invalidated after ExtendSchema commits (B-I8).
+**Aim:** Local cache is invalidated after every ExtendSchema call, so the next read on the node serves the extended schema (B-I8).
 **Asserts:** schema1 != schema2 (cache invalidated)
 **Notes:** (parity)
 
@@ -960,10 +960,6 @@ Internal E2E tests use an in-process `localproc.LocalProcessingService` to regis
 #### RunSchemaExtensionPropertyBudget (e2e/parity/schema_extension_property_budget.go:20)
 **Aim:** Property test completes within per-backend CI wall-clock budget (≤40s).
 **Notes:** (parity); skipped under -short
-
-#### RunSchemaExtensionSavepointOnLockFoldEquivalence (e2e/parity/schema_save_on_lock.go:25)
-**Aim:** Savepoint-on-lock does not change observable fold (B-I2/B-I3).
-**Notes:** (parity)
 
 ### Schema symmetry: import↔export round-trip
 

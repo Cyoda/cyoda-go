@@ -162,8 +162,9 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 	if delta == nil {
 		return desc, nil
 	}
-	// Append to the extension log via the plugin, inside the ambient entity
-	// transaction where the backend joins it.
+	// The extension commits on its own, never in the entity transaction on
+	// ctx: once ExtendSchema returns nil it is in the model, whatever then
+	// happens to this write.
 	if err := modelStore.ExtendSchema(ctx, desc.Ref, delta); err != nil {
 		return nil, fmt.Errorf("%w: failed to extend schema: %w", ErrInternalSchema, err)
 	}

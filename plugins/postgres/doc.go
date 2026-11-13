@@ -42,7 +42,7 @@
 //
 // Not plugin-namespaced, but read here and advertised via ConfigVars():
 //
-//	CYODA_SCHEMA_SAVEPOINT_INTERVAL   default 64  rows per savepoint when folding schema extensions
+//	CYODA_SCHEMA_SAVEPOINT_INTERVAL   default 64  a model's deltas per savepoint; bounds the deltas a read folds
 //
 // # Migrations and context cancellation
 //
@@ -63,14 +63,18 @@
 // the handle in the registry. Stores hold a ctxQuerier that re-resolves
 // the underlying pgx.Tx on every call from the passed-in context — so
 // the active tx, discovered via spi.GetTransaction(ctx), is always used
-// when one is present, and the pool is used otherwise.
+// when one is present, and the pool is used otherwise. The model store is
+// the exception: it never joins a transaction on ctx (Model pool, below).
 //
 // # Model pool
 //
 // Model reads, schema extensions and model administration run on a pool of
 // their own (CYODA_POSTGRES_MODEL_CONNS) with lock_timeout 0, so entity
-// transactions cannot starve them. Extensions hold at most half its
-// connections. See model_pool.go.
+// transactions cannot starve them, and never join a transaction on ctx: a
+// read returns the latest committed model in one statement, and each
+// extension commits in a short READ COMMITTED transaction of its own under
+// the model row's FOR NO KEY UPDATE lock. Extensions hold at most half the
+// pool's connections. See model_pool.go and modelStore.ExtendSchema.
 //
 // # Scheduler pool
 //

@@ -169,7 +169,10 @@ func classifyBeginErr(err error) *common.AppError {
 //   - *ingest.IncompatibleTypeError  → 4xx INCOMPATIBLE_TYPE with structured Props
 //     (fieldPath, expectedType, actualType) — Cloud's
 //     FoundIncompatibleTypeWithEntityModelException equivalent
-//   - ingest.ErrInternalSchema       → 5xx with logged ticket (codec/diff/store failure)
+//   - ingest.ErrInternalSchema       → common.Internal: 5xx with logged ticket
+//     (codec/diff/store failure), except the store answers it routes — 503
+//     STORAGE_UNAVAILABLE, 409 MODEL_NOT_LOCKED for an extension of a model
+//     that is not locked
 //   - anything else           → 4xx VALIDATION_FAILED (change-level violation,
 //     other validation failure, malformed walk input)
 //

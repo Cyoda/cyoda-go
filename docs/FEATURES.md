@@ -30,6 +30,7 @@ For **product context** — value proposition, target use cases, scale envelope,
   - `TYPE` — leaf types can widen
   - `ARRAY_ELEMENTS` — array element types can widen
   - `ARRAY_LENGTH` — no schema change at all (the floor; an array's length is not part of the model)
+  - an extension commits on its own, before the write's entity changes, never conflicts with another writer's, and stays if the write fails ([`docs/CONSISTENCY.md` §3a](CONSISTENCY.md#3a-model--data-contract))
 - Validation against locked schema
 
 ### Workflow Engine

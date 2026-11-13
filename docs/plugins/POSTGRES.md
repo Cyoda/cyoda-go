@@ -188,6 +188,47 @@ behind can stamp below a consistency time already returned — the same
 exposure as losing commits on an asynchronous failover. Each
 `cyoda_consistency_time` call commits its floor update durably.
 
+## Model store and the model pool
+
+Models live in `models` (one row per model: state, change level, unique keys
+and the base schema in `doc`) and `model_schema_extensions`, an append-only
+log of schema deltas and savepoints per model. The model store never joins
+the caller's transaction, and runs on a pool of its own, sized by
+`CYODA_POSTGRES_MODEL_CONNS` (default `8`, floor `2`), so entity transactions
+cannot starve model reads, extensions or model administration. The pool takes
+the main pool's statement and idle-in-transaction ceilings and sets
+`lock_timeout` to `0`.
+
+**Reads.** `Get` reads the doc, the latest savepoint and the deltas after it
+in one statement, so one snapshot: a read racing `Unlock` sees it whole or
+not at all. It returns the latest committed model whatever transaction the
+caller holds. Inside a transaction its connection acquire is bounded by
+`CYODA_POSTGRES_ACQUIRE_TIMEOUT`, as every second connection is.
+
+**Extensions.** `ExtendSchema` takes an extension slot (at most half the
+pool's connections, at least one; the wait lasts until the caller's context
+ends), then a connection under the acquire timeout, and runs one short
+`READ COMMITTED` transaction: set the tenant, `SELECT … FOR NO KEY UPDATE`
+the model's `models` row, refuse with `spi.ErrModelNotLocked` unless the model
+is `LOCKED`, fold the log in a statement of its own, compare the delta's
+result with the current schema byte for byte and write nothing when they are
+equal, insert the delta, and insert a savepoint of the folded schema once
+`CYODA_SCHEMA_SAVEPOINT_INTERVAL` of this model's deltas follow its latest
+savepoint. The row lock writes no row version; it serialises the extenders of
+one model and conflicts with the `UPDATE` of `Lock`, `Unlock`,
+`SetChangeLevel` and `Save` and with `Delete`. It is held only for this
+transaction, never for an entity transaction. Under it every statement sees
+every earlier extension's commit, so `seq` order is commit order and a
+savepoint holds every delta with a lower `seq`. The transaction takes one row
+lock at `READ COMMITTED`, so it cannot fail with `40001` or `40P01`:
+contention is a wait. A nil `ApplyFunc` is refused.
+
+**Administration.** `Lock` and `SetChangeLevel` are one statement each;
+`Lock` writes no savepoint. `Unlock` updates the state first (taking the row
+lock every extension takes), folds the log into `doc` and clears the log, in
+one transaction. `Save` and `Delete` clear the log in the same statement and
+log a `WARN` with the count when they find rows there.
+
 ## Scheduled tasks and the scheduler pool
 
 Scheduled tasks live in `scheduled_tasks`, keyed by `(tenant_id, id)`. Each
@@ -501,6 +542,8 @@ are rendered in the binary's `--help`.
 | `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` | `5m` | Idle connection reap threshold (Go duration syntax). |
 | `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run embedded SQL migrations on startup. When `false`, the binary refuses to start if the database schema is older than the code. |
 | `CYODA_POSTGRES_SCHEDULER_CONNS` | `10` | Size of the scheduler pool (see "Scheduled tasks and the scheduler pool"). At least `2`; an invalid value fails startup. The scheduler heartbeat has one more connection of its own. |
+| `CYODA_POSTGRES_MODEL_CONNS` | `8` | Size of the model pool (see "Model store and the model pool"): model reads, schema extensions and model administration. Extensions hold at most half of it. At least `2`; an invalid value fails startup. |
+| `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | A model's deltas per savepoint of its extension log; bounds how many deltas a read folds. Minimum `1`; a value below it falls back to the default. Shared with the sqlite plugin — not plugin-namespaced. |
 | `CYODA_POSTGRES_STATEMENT_TIMEOUT` | `5m` | Maximum run time for a single SQL statement. Server-side, carried in the connection startup packet. |
 | `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` | `5m` | Maximum time a connection may sit idle inside an open transaction. Server-side, carried in the connection startup packet. Must clear the longest legitimate idle gap — a compute-node callout bounded by `responseTimeoutMs` (default `30s`). |
 | `CYODA_POSTGRES_ACQUIRE_TIMEOUT` | `10s` | Deadline on the wait for a free pooled connection, after which the request fails with `503 STORAGE_UNAVAILABLE`. Applied by the pool, not the server — `pgxpool.Config` has no acquire-timeout field. |

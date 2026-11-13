@@ -10,6 +10,7 @@ see_also:
   - errors.MODEL_ALREADY_LOCKED
   - errors.MODEL_ALREADY_UNLOCKED
   - errors.MODEL_HAS_ENTITIES
+  - errors.MODEL_NOT_LOCKED
   - errors.MODEL_ADMIN_IN_JOINED_TRANSACTION
   - errors.INVALID_CHANGE_LEVEL
   - errors.VALIDATION_FAILED
@@ -95,7 +96,7 @@ Import or update a model schema from sample data. Body size limit: 10 MiB.
 - `entityName` (path): string — model name
 - `modelVersion` (path): int32 — model version number
 
-If the model does not exist, it is created with state `UNLOCKED`. If it exists and is `UNLOCKED`, the incoming schema is merged (additive). If it exists and is `LOCKED`, returns `409 CONFLICT`.
+If the model does not exist, it is created with state `UNLOCKED`. If it exists and is `UNLOCKED`, the incoming schema is merged (additive). If it exists and is `LOCKED`, returns `409 MODEL_ALREADY_LOCKED`.
 
 Response: `200 OK`, `application/json`, UUID string — the model ID.
 
@@ -130,6 +131,8 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success.
 
 Set or update the change level on a model. Meaningful for locked models; unlocked models always allow all changes.
 
+Set the level when you define the model, before you lock it. A change on a locked model takes effect on each node as that node's model cache picks it up: through the cache invalidation broadcast, normally within milliseconds, or when `CYODA_MODEL_CACHE_LEASE` ends if the broadcast is lost. Until then a node keeps admitting or refusing extensions by the old level, and an extension computed under the old level can commit just after the change.
+
 - `changeLevel` (path): `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, or `STRUCTURAL`
 
 Change levels are hierarchical (most restrictive to most permissive):
@@ -143,13 +146,13 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 **PUT /api/model/{entityName}/{modelVersion}/lock**
 
-Lock a model. The model must be `UNLOCKED`. Returns `409 CONFLICT` if already locked.
+Lock a model. The model must be `UNLOCKED`. Returns `409 MODEL_ALREADY_LOCKED` if already locked.
 
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 **PUT /api/model/{entityName}/{modelVersion}/unlock**
 
-Unlock a model. The model must be `LOCKED` and have zero associated entities. Returns `409 CONFLICT` if entities exist or model is not locked.
+Unlock a model. The model must be `LOCKED` and have zero associated entities. Returns `409 MODEL_HAS_ENTITIES` if entities exist, and `409 MODEL_ALREADY_UNLOCKED` if the model is not locked. The unlocked model keeps every field that entity writes added while it was locked.
 
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
@@ -338,11 +341,29 @@ Transitions:
 - `UNLOCKED` → `LOCKED` via `PUT /model/{name}/{version}/lock`
 - `LOCKED` → `UNLOCKED` via `PUT /model/{name}/{version}/unlock` (only when entity count is zero)
 
-Model administration — import, lock, unlock, delete — is meant to run from one place, such as a deploy step, not concurrently on the same model. Two such calls that overlap on one model have no defined order: an import that overlaps a lock can save the model back as `UNLOCKED`. Register and lock a model once, from one caller, rather than from every replica of an application at start-up.
+Model administration — import, lock, unlock, delete, change level, unique keys — is meant to run from one place, such as a deploy step, not concurrently on the same model. Two such calls that overlap on one model have no defined order: an import that overlaps a lock can save the model back as `UNLOCKED`. Register and lock a model once, from one caller, rather than from every replica of an application at start-up.
 
-The `changeLevel` field controls schema evolution on locked models. When set, entity ingestion that introduces new structure triggers an additive schema extension (delta computed via `schema.Diff`, appended via `ModelStore.ExtendSchema`, committed with the entity transaction).
+## SCHEMA EXTENSION
 
-Entity ingestion here includes data returned by a workflow processor, not just data sent by a client. A processor that writes a field the model does not declare needs `changeLevel` set exactly as a client would.
+The `changeLevel` field controls schema evolution on locked models. When it is set and an entity write brings structure the model does not have and the level permits, the write extends the model: it computes an additive change and commits it to the model before the write's own entity changes commit. A write whose data fits the schema extends nothing and does no extra work.
+
+Entity ingestion here includes data returned by a workflow processor, not just data sent by a client. A processor that writes a field the model does not declare needs `changeLevel` set exactly as a client would, and its extension behaves exactly as described here.
+
+**An extension commits on its own.** It is committed in a short transaction of its own, never in the transaction of the write that brought it. Two writes that extend the same model never conflict over it: neither is answered `409 CONFLICT` because of the other's extension; at most the second waits briefly for the first. An extension the schema already holds writes nothing.
+
+**When it is visible.** When a write that extends returns `2xx`, the node that served it has the new schema. That is the node that ran the write: a write carrying a transaction token runs on the transaction's owner. Another node has the new schema when the model cache invalidation broadcast arrives (normally within milliseconds), or, if the broadcast is lost, when `CYODA_MODEL_CACHE_LEASE` ends. Other clients may see the new field earlier, before the write returns.
+
+**The model must stay locked.** An extension changes only a `LOCKED` model. When the model is unlocked after a write read it and before its extension commits, the write is refused with `409 MODEL_NOT_LOCKED`. Unlock needs zero committed entities, so this happens only when a model is unlocked while a write to it is in progress, for example during the compute-node callout of a transition on an entity that is not committed yet. Retrying reads the model again.
+
+What follows from this:
+
+- A new field can be visible to other clients — in the model export, in search path validation, in criteria — before the write that brought it commits. A query on that field finds nothing from that write until it commits.
+- If the write fails after its extension — a workflow or processor error, a unique-key violation, a conflict, the client cancelling, a crash — the model keeps the field. Removing it takes unlocking the model (which needs zero entities), deleting it and importing it again: an import into an existing model merges.
+- An extension made by a compute-node callback that joined a transaction stays even if that transaction rolls back, or if the callback's work is undone: an `ASYNC_NEW_TX` processor that fails discards its callbacks' entity writes, not their extensions.
+- Writes that bring different types for one field leave the model admitting both.
+- A failed request may still have extended the model. Retrying it is safe: an extension the schema already holds writes nothing.
+- On another node, until the broadcast arrives, the older schema is in use. A search or criterion that names a path the node does not know reads the model again once and normally finds the field. A query that does not refuse can silently miss the new field or a widened type — `code = 42` after `code` was widened from string to string-or-integer finds no integer match there — and a write, PATCH or validation there can be refused as if the field did not exist, or extend again, which writes nothing.
+- On PostgreSQL a write that extends waits for one of the model pool's extension slots (`CYODA_POSTGRES_MODEL_CONNS`, `cyoda help config database`). A client-set `transactionTimeoutMillis` keeps running while it waits, and on the writes that hold an entity transaction — an update, a collection update, a transition whose processor returns data — so does `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`, because that transaction's connection is idle meanwhile.
 
 ## ERRORS
 
@@ -350,6 +371,7 @@ Entity ingestion here includes data returned by a workflow processor, not just d
 - `errors.MODEL_ALREADY_LOCKED` — `409` — re-import, relock, or delete attempted on a model already in `LOCKED` state
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — unlock attempted on a model already in `UNLOCKED` state
 - `errors.MODEL_HAS_ENTITIES` — `409` — unlock or delete blocked because entities of the model exist (`entityCount` in `properties`)
+- `errors.MODEL_NOT_LOCKED` — `409` — an entity write names a model that is not `LOCKED`, or a write's schema extension found the model unlocked after the write read it (see SCHEMA EXTENSION)
 - `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — a model-changing operation carries a transaction token; model and workflow administration never runs inside a transaction
 - `errors.INVALID_CHANGE_LEVEL` — `400` — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL` (`entityName`, `entityVersion`, `suppliedValue`, `validValues` in `properties`)
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed (static analysis); sample data that is neither a document nor a collection of documents; a field name that is not addressable
@@ -430,6 +452,7 @@ curl -s -X DELETE \
 - errors.MODEL_ALREADY_LOCKED
 - errors.MODEL_ALREADY_UNLOCKED
 - errors.MODEL_HAS_ENTITIES
+- errors.MODEL_NOT_LOCKED
 - errors.INVALID_CHANGE_LEVEL
 - errors.VALIDATION_FAILED
 - errors.UNIQUE_VIOLATION

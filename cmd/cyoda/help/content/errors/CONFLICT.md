@@ -27,6 +27,8 @@ When a write commits, the server checks that nothing it wrote was changed by ano
 
 Both are normal outcomes under concurrent load.
 
+A schema extension never causes this answer. Two writes that extend the same model both succeed: each extension commits on its own and never conflicts with another (`cyoda help models`, SCHEMA EXTENSION).
+
 A race can also be lost before the commit, while the request is still running. The answer is still 409 — never a `500`, a `400 WORKFLOW_FAILED` or a `412 ENTITY_MODIFIED`:
 
 - **A processor's callback write.** A processor's joined callback writes an entity — the request's own entity or another one — or a scheduled task, and loses the race. The request answers 409, with or without `If-Match`. When the processor then fails, for any reason, the lost race is the answer, not the processor's failure. This holds for `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX` and `COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch`, on every storage backend. Under `ASYNC_NEW_TX` the race stays lost when its savepoint is undone: the request answers 409 and the request's transaction does not commit.

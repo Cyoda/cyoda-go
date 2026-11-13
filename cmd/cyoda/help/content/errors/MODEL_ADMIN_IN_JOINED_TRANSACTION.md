@@ -37,6 +37,8 @@ The refused operations are the ones that change a model or its workflows:
 
 The refusal comes first: before the token is verified, before any transaction lock is taken, before the request body is read and before anything is written. A forged or expired token on one of these operations is answered with this code, not with `401` or `410`. In a cluster the node that receives the request refuses it, before it would route the request to the transaction's owning node, so the answer is the same on every node and a token naming another node is never forwarded. The transaction the token names is untouched.
 
+An entity write in a joined transaction is not administration: it may still extend the model's schema where the model's `changeLevel` permits. That extension commits on its own and stays even if the transaction rolls back (`cyoda help models`, SCHEMA EXTENSION).
+
 The read-only model and workflow operations — list, export, validate, workflow export, and over gRPC `EntityModelExportRequest` and `EntityModelGetAllRequest` — are not administration and are not refused.
 
 Not retryable: the same request meets the same refusal. Make the request without the token, as an independent request of its own, and let the processor handle its outcome. Over gRPC the code is the message prefix of the `CLIENT_ERROR` envelope.

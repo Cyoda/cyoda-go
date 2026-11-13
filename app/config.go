@@ -43,7 +43,8 @@ type Config struct {
 	SearchSnapshotTTL   time.Duration
 	SearchReapInterval  time.Duration
 	// ModelCacheLease is the baseline TTL for cached LOCKED model
-	// descriptors. Actual expiry is jittered ±10% to prevent cross-
+	// descriptors: the bound on a stale entry when a model.invalidate
+	// broadcast is lost. Actual expiry is jittered ±10% to prevent cross-
 	// node herding. Defaults to 5m; tune via CYODA_MODEL_CACHE_LEASE.
 	ModelCacheLease time.Duration
 	OTelEnabled     bool

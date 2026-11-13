@@ -88,13 +88,10 @@ func (e *Engine) applyProcessorData(ctx context.Context, entity *spi.Entity, des
 // descriptor at all — requiring one would impose a new precondition the rule
 // does not ask for.
 //
-// At most once, because the model cache is not transaction-aware: a schema
-// extension invalidates it before the surrounding transaction commits, so a
-// re-read between processors could repopulate it from the pre-extension schema
-// and reject the next processor's legitimate field. The memo carries one
-// descriptor across the pipeline and adopts the descriptor each successful
-// extension returns, so every later processor checks against the schema the
-// earlier ones extended — and an already-extended field is not extended again.
+// At most once, because one read serves the whole pipeline: the memo carries
+// one descriptor across it and adopts the descriptor each successful extension
+// returns, so every later processor checks against the schema the earlier ones
+// extended, and a field an earlier processor added is not extended again.
 type modelDescMemo struct {
 	desc   *spi.ModelDescriptor
 	err    error

@@ -56,6 +56,14 @@ info:
     allowed.
 
 
+    A write that extends a model commits the extension in a transaction of
+    its own before its entity changes commit. Writes that extend the same
+    model never conflict; the extension is visible when the write returns
+    (on other nodes once the model cache invalidation broadcast arrives) and
+    stays if the write fails. An extension of a model that is not locked is
+    refused with 409 MODEL_NOT_LOCKED.
+
+
     ### Search
 
     Provides endpoints for searching and retrieving entities using both
@@ -291,6 +299,14 @@ tags:
 
       When a change level is set, all less impactful changes are automatically
       allowed.
+
+
+      A write that extends a model commits the extension in a transaction of
+      its own before its entity changes commit. Writes that extend the same
+      model never conflict; the extension is visible when the write returns
+      (on other nodes once the model cache invalidation broadcast arrives) and
+      stays if the write fails. An extension of a model that is not locked is
+      refused with 409 MODEL_NOT_LOCKED.
 
       \    "
   - name: Search
@@ -3050,7 +3066,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). MODEL_NOT_LOCKED (not retryable): the model was unlocked after the request read it and before the schema extension the request makes committed. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -3273,7 +3289,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination. MODEL_NOT_LOCKED (not retryable): the model is not LOCKED, or it was unlocked after the request read it and before the schema extension the request makes committed. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -3460,7 +3476,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). MODEL_NOT_LOCKED (not retryable): the model was unlocked after the request read it and before the schema extension the request makes committed. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -3802,7 +3818,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). MODEL_NOT_LOCKED (not retryable): the model was unlocked after the request read it and before the schema extension the request makes committed. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -4197,7 +4213,7 @@ paths:
                 detail: cannot find model entityName=nobel-prize, version=1
                 instance: /api/entity/JSON/nobel-prize/1
         "409":
-          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination. MODEL_NOT_LOCKED (not retryable): the model is not LOCKED, or it was unlocked after the request read it and before the schema extension the request makes committed. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
           content:
             application/problem+json:
               schema:
@@ -5375,6 +5391,12 @@ paths:
 
         Note: Setting a change level is only meaningful for locked models. An
         unlocked model always allows all changes.
+
+
+        Set the level before the model is locked. A change on a locked model
+        takes effect on each node as its model cache picks it up (the cache
+        invalidation broadcast, or the cache lease if the broadcast is lost);
+        until then a node admits or refuses extensions by the old level.
 
         \        "
       operationId: setEntityModelChangeLevel
