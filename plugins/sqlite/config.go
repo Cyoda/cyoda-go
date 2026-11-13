@@ -18,7 +18,6 @@ type config struct {
 	CacheSizeKiB            int
 	ReaderPoolSize          int // default GOMAXPROCS clamped to [4,8]; read from CYODA_SQLITE_READER_POOL_SIZE; min 1
 	SchemaSavepointInterval int // default 64; read from CYODA_SCHEMA_SAVEPOINT_INTERVAL; min 1
-	SchemaExtendMaxRetries  int // default 8; read from CYODA_SCHEMA_EXTEND_MAX_RETRIES; min 1
 }
 
 // parseConfig reads CYODA_SQLITE_* env vars via the injected getenv.
@@ -30,7 +29,6 @@ func parseConfig(getenv func(string) string) (config, error) {
 		CacheSizeKiB:            envIntFn(getenv, "CYODA_SQLITE_CACHE_SIZE", 64000),
 		ReaderPoolSize:          envIntMin1Fn(getenv, "CYODA_SQLITE_READER_POOL_SIZE", defaultReaderPoolSize()),
 		SchemaSavepointInterval: envIntMin1Fn(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", 64),
-		SchemaExtendMaxRetries:  envIntMin1Fn(getenv, "CYODA_SCHEMA_EXTEND_MAX_RETRIES", 8),
 	}
 	if cfg.Path == "" {
 		return cfg, fmt.Errorf("CYODA_SQLITE_PATH resolved to empty string")

@@ -40,6 +40,9 @@ func TestSQLite_Save_ReplacesExtendedSchema(t *testing.T) {
 	}
 	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
 	saveLifecycleModel(t, ms, ref, `{"base":1}`)
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(lifecycleDelta)); err != nil {
 		t.Fatalf("ExtendSchema: %v", err)
 	}
@@ -109,6 +112,9 @@ func TestSQLite_Delete_ClearsExtensionLog(t *testing.T) {
 	}
 	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
 	saveLifecycleModel(t, ms, ref, `{"base":1}`)
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(lifecycleDelta)); err != nil {
 		t.Fatalf("ExtendSchema: %v", err)
 	}

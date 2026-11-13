@@ -374,7 +374,7 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelStore{db: f.db, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
+	return &modelStore{db: f.db, readDB: f.readDB, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
 }
 
 func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, error) {
@@ -477,12 +477,11 @@ func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) error {
 // given path. Intended for test use only.
 func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) (*StoreFactory, error) {
 	cfg := config{
-		Path:                   dbPath,
-		AutoMigrate:            true,
-		BusyTimeout:            5 * time.Second,
-		CacheSizeKiB:           64000,
-		ReaderPoolSize:         defaultReaderPoolSize(),
-		SchemaExtendMaxRetries: 8,
+		Path:           dbPath,
+		AutoMigrate:    true,
+		BusyTimeout:    5 * time.Second,
+		CacheSizeKiB:   64000,
+		ReaderPoolSize: defaultReaderPoolSize(),
 	}
 	f, err := newStoreFactory(ctx, cfg, opts...)
 	if err != nil {

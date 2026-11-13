@@ -21,7 +21,6 @@ func (p *plugin) ConfigVars() []spi.ConfigVar {
 		{Name: "CYODA_SQLITE_CACHE_SIZE", Description: "Page cache in KiB, per connection", Default: "64000"},
 		{Name: "CYODA_SQLITE_READER_POOL_SIZE", Description: "Max concurrent reader connections; each holds its own page cache", Default: "GOMAXPROCS clamped to 4..8"},
 		{Name: "CYODA_SCHEMA_SAVEPOINT_INTERVAL", Description: "Rows per savepoint during schema extension", Default: "64"},
-		{Name: "CYODA_SCHEMA_EXTEND_MAX_RETRIES", Description: "Max retries on concurrent schema extension", Default: "8"},
 	}
 }
 
