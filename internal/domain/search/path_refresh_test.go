@@ -203,3 +203,54 @@ func TestRefusal_NamesOnlyPathsTheRefreshedSchemaLacks(t *testing.T) {
 		}
 	})
 }
+
+// countingGetModelStore counts the storage reads behind the model cache.
+type countingGetModelStore struct {
+	heldReadModelStore
+	gets int
+}
+
+func (s *countingGetModelStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.gets++
+	}()
+	return s.heldReadModelStore.Get(ctx, ref)
+}
+
+func (s *countingGetModelStore) reads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gets
+}
+
+// TestRefresh_ReadsStorageOnce pins that the bounded refresh reads storage
+// once, also when the cache does not keep what the refresh read (an UNLOCKED
+// model is never cached): the refreshed schema is the one the refresh read,
+// not a second read.
+func TestRefresh_ReadsStorageOnce(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	desc := buildSearchDescriptor(t, ref, "a", "x")
+	desc.State = spi.ModelUnlocked
+	inner := &countingGetModelStore{heldReadModelStore: heldReadModelStore{current: desc}}
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+	caching := modelcache.NewCachingStoreFactory(&modelStoreFactory{StoreFactory: base, modelStore: inner}, nil, nil, time.Hour)
+	ctx := tenantCtx("tenant-1")
+	ms, err := caching.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+
+	fresh, err := search.ValidateKnownPaths(ctx, ms, ref, []string{"$.x"}, map[string]schema.FieldDescriptor{})
+	if err != nil {
+		t.Fatalf("ValidateKnownPaths: %v", err)
+	}
+	if _, ok := fresh["$.x"]; !ok {
+		t.Fatalf("refreshed fields lack $.x: %v", fresh)
+	}
+	if n := inner.reads(); n != 1 {
+		t.Errorf("the refresh read storage %d times, want 1", n)
+	}
+}

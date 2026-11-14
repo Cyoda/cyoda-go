@@ -179,7 +179,9 @@ func isSortPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 //
 // The returned map may be owned by the model-descriptor cache and shared with
 // every other reader holding the same lease. It is read-only — do not mutate it.
-func LoadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
+func LoadFieldsMap(
+	ctx context.Context, store spi.ModelStore, ref spi.ModelRef,
+) (map[string]schema.FieldDescriptor, error) {
 	return loadFieldsMap(ctx, store, ref)
 }
 
@@ -192,7 +194,9 @@ func LoadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // what decides whether a condition's paths exist, so proceeding without it
 // answers with a filter whose comparison leaves annihilate while its string
 // leaves keep matching (see spi.ConditionToFilter).
-func loadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
+func loadFieldsMap(
+	ctx context.Context, store spi.ModelStore, ref spi.ModelRef,
+) (map[string]schema.FieldDescriptor, error) {
 	// Prefer the cached derived parse when the store offers one. Rebuilding it
 	// per call is 80-99% of a criterion evaluation and scales with schema size;
 	// FieldsMap() off an already-parsed node is effectively free. Stores that
@@ -220,6 +224,12 @@ func loadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // again. Same optional-interface shape as the RefreshAndGet probe below.
 type schemaNodeProvider interface {
 	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
+}
+
+// schemaNodeRefresher is the same capability for a refresh: it hands back the
+// parse of what the refresh read.
+type schemaNodeRefresher interface {
+	RefreshSchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
 }
 
 // refreshOnUnknownPaths is the one bounded refresh every field-path check runs
@@ -270,25 +280,24 @@ func refreshOnUnknownPaths(
 	return fresh, check(fresh), nil
 }
 
-// freshFields refreshes the model through refresher and returns its parsed
-// fields map, nil when the descriptor carries no schema.
+// freshFields refreshes the model and returns its parsed fields map, nil when
+// the descriptor carries no schema. A store that offers RefreshSchemaNode
+// hands back the parse of what its refresh read, reading storage a second
+// time only when an invalidation landed during the first read; any other
+// store's refreshed descriptor is parsed here.
 func freshFields(ctx context.Context, store spi.ModelStore, refresher interface {
 	RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error)
 }, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
+	if p, ok := store.(schemaNodeRefresher); ok {
+		node, err := p.RefreshSchemaNode(ctx, ref)
+		if err != nil || node == nil {
+			return nil, err
+		}
+		return node.FieldsMap(), nil
+	}
 	desc, err := refresher.RefreshAndGet(ctx, ref)
 	if err != nil {
 		return nil, err
-	}
-	// RefreshAndGet repopulates the cache entry, parsed node included, so read
-	// the parse back rather than re-deriving it from the bytes just cached. When
-	// an invalidation landed during the refresh its fill is dropped, and
-	// SchemaNode reads storage again: a schema at least as new.
-	if p, ok := store.(schemaNodeProvider); ok {
-		node, nerr := p.SchemaNode(ctx, ref)
-		if nerr != nil || node == nil {
-			return nil, nerr
-		}
-		return node.FieldsMap(), nil
 	}
 	return fieldsFromDescriptor(desc)
 }
@@ -357,9 +366,10 @@ func ValidateKnownPaths(
 		return fields, nil
 	}
 
-	fresh, still, err := refreshOnUnknownPaths(ctx, modelStore, ref, unknown, func(f map[string]schema.FieldDescriptor) []string {
-		return findUnknownPaths(unknown, f)
-	})
+	fresh, still, err := refreshOnUnknownPaths(ctx, modelStore, ref, unknown,
+		func(f map[string]schema.FieldDescriptor) []string {
+			return findUnknownPaths(unknown, f)
+		})
 	if err != nil {
 		return nil, err
 	}
@@ -373,9 +383,9 @@ func ValidateKnownPaths(
 }
 
 // ErrPathRefreshInfra marks a failed bounded schema refresh inside
-// [refreshOnUnknownPaths], which every field-path check runs: RefreshAndGet itself errored (for any reason other
-// than [spi.ErrNotFound], which means the model was legitimately deleted
-// between the two reads). A caller must classify this as a server-side
+// [refreshOnUnknownPaths], which every field-path check runs: the refresh
+// itself errored (for any reason other than [spi.ErrNotFound], which means
+// the model was legitimately deleted between the two reads). A caller must classify this as a server-side
 // infrastructure failure (5xx), not fold it into the client-facing 400
 // INVALID_FIELD_PATH the genuine-unknown-path case returns — the whole point
 // of the bounded refresh is to tell "genuinely undeclared" apart from "cache

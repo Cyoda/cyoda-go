@@ -146,10 +146,7 @@ func (s *requestScopedStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (
 	if err != nil {
 		return nil, err
 	}
-	if e, ok := s.cache.lookupEntry(key); ok && e.desc == desc {
-		return e.node, e.nodeErr
-	}
-	return parseSchemaNode(desc)
+	return s.nodeOf(key, desc)
 }
 
 // RefreshAndGet reads storage through the same (key, generation) flight as a
@@ -158,6 +155,35 @@ func (s *requestScopedStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (
 // cache for the readers it serves meanwhile.
 func (s *requestScopedStore) RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
 	return s.cache.readThrough(ctx, keyOf(ctx, ref), s.inner)
+}
+
+// RefreshSchemaNode is RefreshAndGet returning the parsed schema of what it
+// read, as SchemaNode returns it. A descriptor the cache did not keep because
+// it is UNLOCKED is parsed, not read again. Only when an invalidation landed
+// during the read, so that what it read may predate the change, does it read
+// once more, through SchemaNode: the schema it returns is then at least as new
+// as that invalidation.
+func (s *requestScopedStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	key := keyOf(ctx, ref)
+	gen := s.cache.generation(key)
+	desc, err := s.cache.readThrough(ctx, key, s.inner)
+	if err != nil {
+		return nil, err
+	}
+	if s.cache.generation(key) != gen {
+		return s.SchemaNode(ctx, ref)
+	}
+	return s.nodeOf(key, desc)
+}
+
+// nodeOf returns the parse of desc, a descriptor just read for key: the cached
+// entry's node when the cache holds that same descriptor, else a fresh parse
+// that is not retained.
+func (s *requestScopedStore) nodeOf(key cacheKey, desc *spi.ModelDescriptor) (*schema.ModelNode, error) {
+	if e, ok := s.cache.lookupEntry(key); ok && e.desc == desc {
+		return e.node, e.nodeErr
+	}
+	return parseSchemaNode(desc)
 }
 
 // ExtendSchema shares one storage call among concurrent identical extensions
