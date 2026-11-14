@@ -23,8 +23,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   paths while the other backends kept it. An extension the schema already
   holds writes nothing. A write whose data fills a composite unique key only
   in part, or puts a non-scalar value in a key's field, is refused with
-  `422 INVALID_UNIQUE_KEY` before its schema check on every door, so it
-  extends nothing; before, create, collection create and update checked the
+  `422 INVALID_UNIQUE_KEY` before it extends the model. A collection create
+  checks every item's key before any item's schema; a collection update
+  checks each item's key before that item's schema, so an extension an
+  earlier item made stays if a later item is refused, as for any failed
+  write. Before, create, collection create and update checked the
   key after extending, and a create that gave a keyed field an object or
   array was answered `422 INVALID_UNIQUE_KEY_DEFINITION`. An extension that
   finds its model not locked (unlocked while a write to it, or the

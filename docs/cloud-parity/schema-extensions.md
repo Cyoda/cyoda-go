@@ -50,9 +50,12 @@ workflow processor returns — over HTTP and gRPC.
    field in the model. Removing it takes unlock (zero entities), delete and
    a fresh import. A write whose own data fills a composite unique key only
    in part, or puts a non-scalar value in a key's field, is refused with
-   `422 INVALID_UNIQUE_KEY` before its schema check on every door, so it
-   extends nothing; a partial key in data a processor returns is found only
-   when the entity is saved, after the extension.
+   `422 INVALID_UNIQUE_KEY` before it extends the model. A collection
+   create checks every item's key before any item's schema check. A
+   collection update checks each item's key before that item's schema
+   check, so if a later item is refused, an extension an earlier item made
+   stays, as for any failed write. A partial key in data a processor
+   returns is found only when the entity is saved, after the extension.
 3. An extension made by a joined compute-node callback stays if the owner's
    transaction rolls back, or if the callback's scope is discarded (a failed
    `ASYNC_NEW_TX` processor discards its callbacks' entity writes, not their
@@ -109,7 +112,9 @@ extension of a model that is not locked.
     prefix `MODEL_NOT_LOCKED:`, not retryable).
   - `unique_keys_write_variants_test.go` — `TestUniqueKeys_PartialKeyDoesNotExtendModel`
     (a partial key with a new field: `422 INVALID_UNIQUE_KEY` and no
-    extension, on every client write door).
+    extension, on every client write door, and a collection create whose
+    extending item comes first); on gRPC
+    `TestRPC_EntityWrite_PartialKeyDoesNotExtendModel` (`internal/grpc`).
   - `workflow_proc_output_test.go` — `TestWorkflowProcOutput_ExtensionKeptWhenTransitionFails`.
 - Cross-backend parity (memory, sqlite, postgres): `e2e/parity/schema_extension_contract.go`
   — `SchemaExtension_KeptAfterFailedWrite`, `SchemaExtension_CriterionSameRequest`,
