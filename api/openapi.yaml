@@ -5161,7 +5161,7 @@ paths:
         "422":
           description: |
             Unprocessable entity. Possible codes:
-            - `INVALID_UNIQUE_KEY_DEFINITION` — re-import invalidates a previously registered unique key definition (defensive guard against descriptor corruption or future merge-semantics changes).
+            - `INVALID_UNIQUE_KEY_DEFINITION` — the merge of a re-import into an UNLOCKED model would leave a declared unique key over a path that is not a known scalar leaf, for example sample data that puts an object or array at a keyed field. The model is not changed.
           content:
             application/problem+json:
               schema:

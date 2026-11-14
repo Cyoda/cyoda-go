@@ -110,7 +110,7 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 - `errors.INVALID_GROUP_BY_PATH` — `400` — not retryable — grouped-stats `groupBy` entry is neither the reserved `state` token nor a JSONPath denoting a single scalar
 - `errors.INVALID_LIMIT` — `400` — not retryable — grouped-stats `limit` is non-positive or greater than `CYODA_STATS_GROUP_MAX`
 - `errors.INVALID_UNIQUE_KEY` — `422` — not retryable — a complete composite unique key cannot be computed: a key field is null or of an unsupported type
-- `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — not retryable — a model's unique key definition is structurally invalid
+- `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — not retryable — a model's unique key definition is structurally invalid (model administration: unique-key declaration or sample-data import)
 - `errors.JOINED_RESPONSE_TOO_LARGE` — `413` — not retryable — the answer to a request made under a transaction token is larger than `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`; nothing is sent, page the read
 - `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist, is owned by another bootstrap key (retired after `CYODA_JWT_SIGNING_KEY` was replaced), or is the bootstrap key after it was deleted.
 - `errors.M2M_CLIENT_CAP_REACHED` — `400` — not retryable — `POST /clients`: the tenant already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients

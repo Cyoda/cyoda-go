@@ -96,7 +96,7 @@ Import or update a model schema from sample data. Body size limit: 10 MiB.
 - `entityName` (path): string — model name
 - `modelVersion` (path): int32 — model version number
 
-If the model does not exist, it is created with state `UNLOCKED`. If it exists and is `UNLOCKED`, the incoming schema is merged (additive). If it exists and is `LOCKED`, returns `409 MODEL_ALREADY_LOCKED`.
+If the model does not exist, it is created with state `UNLOCKED`. If it exists and is `UNLOCKED`, the incoming schema is merged (additive). If it exists and is `LOCKED`, returns `409 MODEL_ALREADY_LOCKED`. A merge that would leave a declared unique key over a path that is not a scalar leaf — sample data that puts an object or array at a keyed field — returns `422 INVALID_UNIQUE_KEY_DEFINITION` and changes nothing.
 
 Response: `200 OK`, `application/json`, UUID string — the model ID.
 
@@ -380,7 +380,7 @@ What follows from this:
 - `errors.UNIQUE_VIOLATION` — `409` — entity write rejected because it would duplicate a composite unique key value-set held by another live entity
 - `errors.INVALID_UNIQUE_KEY` — `422` — entity write rejected because a key is partially filled (all-or-nothing rule), the numeric value exceeded the allowed precision bound, or a key field path resolves to a non-scalar value
 - `errors.COMPOSITE_KEY_UNSUPPORTED` — `422` — composite unique key declared on a backend that does not support the feature
-- `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — key declaration rejected: non-scalar or unknown field path, duplicate key `id`, or empty `fields` array
+- `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — model administration only: a key declaration with a non-scalar or unknown field path, a duplicate key `id` or an empty `fields` array, or a re-import that would make a keyed field non-scalar. An entity write is never answered with it: a write that puts a non-scalar value in a keyed field is refused with `INVALID_UNIQUE_KEY`
 
 ## EXAMPLES
 
