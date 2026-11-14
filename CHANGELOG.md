@@ -29,7 +29,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   earlier item made stays if a later item is refused, as for any failed
   write. Before, create, collection create and update checked the
   key after extending, and a create that gave a keyed field an object or
-  array was answered `422 INVALID_UNIQUE_KEY_DEFINITION`. An extension that
+  array was answered `422 INVALID_UNIQUE_KEY_DEFINITION`. PATCH checks the
+  key before its strict validation, so a PATCH with both a partial key and an
+  undeclared field answers `422 INVALID_UNIQUE_KEY`, not `400
+  VALIDATION_FAILED`. Every door's `422 INVALID_UNIQUE_KEY` now carries the
+  message the store uses, "one or more unique key fields are null or
+  invalid" (prefixed with the item's index in a collection). An extension that
   finds its model not locked (unlocked while a write to it, or the
   transaction the write joined, is in progress) is refused with
   `409 MODEL_NOT_LOCKED` on every backend; before, PostgreSQL appended it to the unlocked model's log. A
