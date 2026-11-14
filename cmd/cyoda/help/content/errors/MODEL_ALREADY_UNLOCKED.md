@@ -21,11 +21,11 @@ HTTP: `409` `Conflict`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Returned when `POST /model/{name}/{version}/unlock` is issued against a model whose current state is `UNLOCKED`. Distinct from `MODEL_NOT_LOCKED`, which is reserved for the entity-write-without-lock path on the entity service: this code is the symmetric counterpart of `MODEL_ALREADY_LOCKED` for the admin lifecycle.
+Returned when `PUT /model/{name}/{version}/unlock` is issued against a model whose current state is `UNLOCKED`. Distinct from `MODEL_NOT_LOCKED`, which is reserved for the entity-write-without-lock path on the entity service: this code is the symmetric counterpart of `MODEL_ALREADY_LOCKED` for the admin lifecycle.
 
 The problem-detail body carries `entityName`, `entityVersion`, `expectedState` (always `LOCKED`), and `actualState` (always `UNLOCKED`) so callers can branch on the precondition without scraping the message string.
 
-Not retryable. Lock the model first via `POST /model/{name}/{version}/lock` if a subsequent unlock is required.
+Not retryable. Lock the model first via `PUT /model/{name}/{version}/lock` if a subsequent unlock is required.
 
 ## SEE ALSO
 

@@ -91,9 +91,8 @@ type cacheEntry struct {
 	nodeErr error
 }
 
-// parseSchemaNode derives the parsed schema for desc. The (nil, nil) result for
-// an absent or unbound schema, and the error wording, match what the search
-// package's fieldsFromDescriptor produced when it did this per call.
+// parseSchemaNode derives the parsed schema for desc: (nil, nil) for an absent
+// or unbound schema, otherwise the parsed tree or the parse error.
 func parseSchemaNode(desc *spi.ModelDescriptor) (*schema.ModelNode, error) {
 	if desc == nil || len(desc.Schema) == 0 {
 		return nil, nil

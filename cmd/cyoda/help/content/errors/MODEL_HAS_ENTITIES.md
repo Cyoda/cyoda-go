@@ -21,7 +21,7 @@ HTTP: `409` `Conflict`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Both `POST /model/{name}/{version}/unlock` and `DELETE /model/{name}/{version}` require zero entities of the target model. The cardinality check guards against silent loss of data and against schema drift on a model whose lifecycle is presumed frozen.
+Both `PUT /model/{name}/{version}/unlock` and `DELETE /model/{name}/{version}` require zero entities of the target model. The cardinality check guards against silent loss of data and against schema drift on a model whose lifecycle is presumed frozen.
 
 The `entityCount` property in the problem-detail body reports how many entities currently exist for the model on the responding tenant.
 
