@@ -1,0 +1,321 @@
+//go:build unix
+
+package childproc
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// sleeper is a throwaway long-lived child: sleep 300 in its own process group,
+// as the fixtures start cyoda-go. Its one Wait runs on a goroutine; done is
+// closed when it returns.
+type sleeper struct {
+	cmd     *exec.Cmd
+	done    chan struct{}
+	waitErr error // written once, before done is closed
+}
+
+func newSleepCmd() *exec.Cmd {
+	cmd := exec.Command("sleep", "300")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
+
+// startSleeper starts sleep 300 through r (recorded) or, with r nil, directly
+// (unrecorded). The test's cleanup kills whatever is still running.
+func startSleeper(t *testing.T, r *Registry) (*sleeper, func()) {
+	t.Helper()
+	s := &sleeper{cmd: newSleepCmd(), done: make(chan struct{})}
+	release := func() {}
+	if r != nil {
+		rel, err := r.Start(s.cmd)
+		if err != nil {
+			t.Fatalf("start sleep: %v", err)
+		}
+		release = rel
+	} else if err := s.cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	go func() {
+		s.waitErr = s.cmd.Wait()
+		close(s.done)
+	}()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
+		<-s.done
+	})
+	return s, release
+}
+
+func (s *sleeper) running() bool {
+	select {
+	case <-s.done:
+		return false
+	default:
+		return true
+	}
+}
+
+// awaitSignalled waits for the sleeper to exit and returns the signal that
+// ended it, failing the test if it is still running after within.
+func (s *sleeper) awaitSignalled(t *testing.T, within time.Duration) syscall.Signal {
+	t.Helper()
+	select {
+	case <-s.done:
+	case <-time.After(within):
+		t.Fatalf("child %d still running %s after the reap", s.cmd.Process.Pid, within)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(s.waitErr, &exitErr) {
+		t.Fatalf("child exited without an exit error: %v", s.waitErr)
+	}
+	ws, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !ws.Signaled() {
+		t.Fatalf("child was not ended by a signal: %v", s.waitErr)
+	}
+	return ws.Signal()
+}
+
+// recordFiles lists the process records in dir.
+func recordFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	m, err := filepath.Glob(filepath.Join(dir, "*"+recordSuffix))
+	if err != nil {
+		t.Fatalf("glob records: %v", err)
+	}
+	return m
+}
+
+// abandon makes r's owner look dead to every other reader of the directory,
+// as the death of its test binary would: the kernel drops the owner lock when
+// its file closes.
+func abandon(t *testing.T, r *Registry) {
+	t.Helper()
+	if r.owner == nil {
+		t.Fatal("registry has no owner file")
+	}
+	if err := r.owner.Close(); err != nil {
+		t.Fatalf("close owner file: %v", err)
+	}
+}
+
+// writeRecord writes a record file into dir as a registry would, without any
+// process holding its lock.
+func writeRecord(t *testing.T, dir string, rec record) string {
+	t.Helper()
+	path := filepath.Join(dir, "manual"+recordSuffix)
+	if err := os.WriteFile(path, rec.encode(), 0o600); err != nil {
+		t.Fatalf("write record: %v", err)
+	}
+	return path
+}
+
+// An orphan — its owner is gone, the process it records still holds the
+// record's lock — has its process group killed and its record removed.
+func TestReap_OrphanOfDeadOwnerIsKilled(t *testing.T) {
+	dir := t.TempDir()
+	owner := New(dir, t.Logf)
+	child, _ := startSleeper(t, owner)
+	abandon(t, owner)
+	if n := len(recordFiles(t, dir)); n != 1 {
+		t.Fatalf("records before the reap = %d, want 1", n)
+	}
+
+	New(dir, t.Logf).reapOrphans()
+
+	if sig := child.awaitSignalled(t, 10*time.Second); sig != syscall.SIGTERM && sig != syscall.SIGKILL {
+		t.Fatalf("orphan ended by %v, want SIGTERM or SIGKILL", sig)
+	}
+	if recs := recordFiles(t, dir); len(recs) != 0 {
+		t.Fatalf("records after the reap = %v, want none", recs)
+	}
+}
+
+// The first Start of a registry reaps before it starts its own process.
+func TestStart_ReapsOrphansFirst(t *testing.T) {
+	dir := t.TempDir()
+	owner := New(dir, t.Logf)
+	orphan, _ := startSleeper(t, owner)
+	abandon(t, owner)
+
+	next := New(dir, t.Logf)
+	fresh, _ := startSleeper(t, next)
+
+	orphan.awaitSignalled(t, 10*time.Second)
+	if !fresh.running() {
+		t.Fatal("the new registry's own child is not running")
+	}
+	if n := len(recordFiles(t, dir)); n != 1 {
+		t.Fatalf("records after the reap = %d, want 1 (the new child's)", n)
+	}
+}
+
+// A record whose PID is alive but is not the recorded process — it does not
+// hold the record's lock, as a reused PID would not — is never signalled; the
+// record is removed.
+func TestReap_LivePIDThatIsNotTheRecordedProcessIsNotSignalled(t *testing.T) {
+	dir := t.TempDir()
+	unrelated, _ := startSleeper(t, nil)
+	writeRecord(t, dir, record{Owner: "owner-gone" + ownerSuffix, PID: unrelated.cmd.Process.Pid, Path: unrelated.cmd.Path})
+
+	New(dir, t.Logf).reapOrphans()
+
+	time.Sleep(200 * time.Millisecond)
+	if !unrelated.running() {
+		t.Fatalf("unrelated process was signalled: %v", unrelated.waitErr)
+	}
+	if recs := recordFiles(t, dir); len(recs) != 0 {
+		t.Fatalf("records after the reap = %v, want none", recs)
+	}
+}
+
+// A record whose process has exited is removed.
+func TestReap_DeadProcessRecordIsRemoved(t *testing.T) {
+	dir := t.TempDir()
+	done := exec.Command("true")
+	if err := done.Run(); err != nil {
+		t.Fatalf("run true: %v", err)
+	}
+	writeRecord(t, dir, record{Owner: "owner-gone" + ownerSuffix, PID: done.Process.Pid, Path: done.Path})
+
+	New(dir, t.Logf).reapOrphans()
+
+	if recs := recordFiles(t, dir); len(recs) != 0 {
+		t.Fatalf("records after the reap = %v, want none", recs)
+	}
+}
+
+// A record whose owner is alive belongs to a running test binary: its process
+// is not signalled and its record stays.
+func TestReap_LiveOwnersChildIsUntouched(t *testing.T) {
+	dir := t.TempDir()
+	owner := New(dir, t.Logf)
+	child, _ := startSleeper(t, owner)
+
+	New(dir, t.Logf).reapOrphans()
+
+	time.Sleep(200 * time.Millisecond)
+	if !child.running() {
+		t.Fatalf("live owner's child was signalled: %v", child.waitErr)
+	}
+	if n := len(recordFiles(t, dir)); n != 1 {
+		t.Fatalf("records after the reap = %d, want 1", n)
+	}
+}
+
+// A record naming no usable process group (a PID of 0 or 1 would signal every
+// process the user owns) is never signalled, even when its lock is held.
+func TestReap_InvalidPIDIsNeverSignalled(t *testing.T) {
+	dir := t.TempDir()
+	owner := New(dir, t.Logf)
+	child, _ := startSleeper(t, owner)
+	recs := recordFiles(t, dir)
+	if len(recs) != 1 {
+		t.Fatalf("records = %d, want 1", len(recs))
+	}
+	raw, err := os.ReadFile(recs[0])
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	rec, err := decodeRecord(raw)
+	if err != nil {
+		t.Fatalf("decode record: %v", err)
+	}
+	abandon(t, owner)
+	for _, pid := range []int{0, 1, -1} {
+		rec.PID = pid
+		f, err := os.OpenFile(recs[0], os.O_WRONLY|os.O_TRUNC, 0)
+		if err != nil {
+			t.Fatalf("open record: %v", err)
+		}
+		if _, err := f.Write(rec.encode()); err != nil {
+			t.Fatalf("rewrite record: %v", err)
+		}
+		f.Close()
+
+		New(dir, t.Logf).reapOrphans()
+
+		time.Sleep(100 * time.Millisecond)
+		if !child.running() {
+			t.Fatalf("pid %d: child was signalled: %v", pid, child.waitErr)
+		}
+	}
+}
+
+// A clean shutdown — the process has been reaped and release called — leaves
+// no record behind.
+func TestRelease_RemovesTheRecord(t *testing.T) {
+	dir := t.TempDir()
+	r := New(dir, t.Logf)
+	child, release := startSleeper(t, r)
+	if n := len(recordFiles(t, dir)); n != 1 {
+		t.Fatalf("records while running = %d, want 1", n)
+	}
+	_ = syscall.Kill(-child.cmd.Process.Pid, syscall.SIGKILL)
+	<-child.done
+	release()
+	release() // a second call is harmless
+
+	if recs := recordFiles(t, dir); len(recs) != 0 {
+		t.Fatalf("records after release = %v, want none", recs)
+	}
+}
+
+// A registry whose directory cannot be used still starts the process; it only
+// cannot record it.
+func TestStart_UnusableDirectoryStillStarts(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	r := New(filepath.Join(file, "procs"), func(format string, args ...any) {
+		logged = append(logged, format)
+	})
+	child, release := startSleeper(t, r)
+	if !child.running() {
+		t.Fatal("child not running")
+	}
+	release()
+	if len(logged) == 0 {
+		t.Fatal("the unusable directory was not logged")
+	}
+}
+
+// An orphan that ignores SIGTERM is sent SIGKILL once the grace period ends.
+func TestReap_OrphanIgnoringSIGTERMIsKilled(t *testing.T) {
+	dir := t.TempDir()
+	owner := New(dir, t.Logf)
+	// An ignored signal stays ignored across exec, so sleep ignores SIGTERM.
+	cmd := exec.Command("sh", "-c", `trap "" TERM; exec sleep 300`)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	s := &sleeper{cmd: cmd, done: make(chan struct{})}
+	if _, err := owner.Start(cmd); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	go func() {
+		s.waitErr = cmd.Wait()
+		close(s.done)
+	}()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-s.done
+	})
+	time.Sleep(200 * time.Millisecond) // let sh install the trap and exec sleep
+	abandon(t, owner)
+
+	New(dir, t.Logf).reapOrphans()
+
+	if sig := s.awaitSignalled(t, 2*time.Second); sig != syscall.SIGKILL {
+		t.Fatalf("orphan ended by %v, want SIGKILL", sig)
+	}
+	if recs := recordFiles(t, dir); len(recs) != 0 {
+		t.Fatalf("records after the reap = %v, want none", recs)
+	}
+}
