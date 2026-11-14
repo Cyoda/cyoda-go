@@ -17,16 +17,16 @@ import (
 // the model's row lock), so they take a slot first and the slots are capped at
 // half the pool: reads always have connections left over.
 //
-// Every connection acquire on this pool is bounded by the acquire timeout
-// (CYODA_POSTGRES_ACQUIRE_TIMEOUT), inside a transaction or not: an
-// extension's after it has its slot (acquireExtension), a transaction's
-// (modelStore.inModelTx) and a single statement's (modelStore's querier sets
-// unjoinedQuerier.alwaysBound). A saturated model pool then answers a
-// retryable storage-unavailable error, the same through every door, rather
-// than a wait bounded only by the request: up to half its connections can be
-// held by extensions waiting on a model's row lock, and its other callers are
-// requests, with no background traffic that an acquire timeout would fail
-// spuriously.
+// Its connection acquires follow the rule the main pool follows
+// (CYODA_POSTGRES_ACQUIRE_TIMEOUT, unjoined_querier.go): opening a
+// transaction, and taking a second connection while the caller's transaction
+// holds one, are bounded by the acquire timeout and answer a retryable
+// storage-unavailable error when it expires; a statement issued outside a
+// transaction is not bounded, so ordinary contention does not fail it. Here
+// that means an extension's transaction (acquireExtension, after its slot) and
+// Unlock's (modelStore.inModelTx) are bounded, a model statement from inside
+// an entity transaction is bounded (unjoinedQuerier), and a model read or
+// administration statement outside a transaction waits for a connection.
 //
 // The pool's lock_timeout is 0 (wait indefinitely): a model write that must
 // queue behind another on the same model's row lock is bounded by the caller's
@@ -126,8 +126,8 @@ func (f *StoreFactory) closeModelPool() {
 }
 
 // acquireExtension takes an extension slot, waiting until ctx ends, then a
-// connection bounded by the acquire timeout. The release frees the connection
-// and then the slot. On error nothing is held.
+// connection. The release frees the connection and then the slot. On error
+// nothing is held.
 func (m *modelPool) acquireExtension(ctx context.Context) (*pgxpool.Conn, func(), error) {
 	select {
 	case m.extSlots <- struct{}{}:

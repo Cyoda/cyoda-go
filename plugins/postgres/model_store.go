@@ -29,7 +29,7 @@ type modelStore struct {
 func newModelStore(models *modelPool, tenantID spi.TenantID, applyFunc ApplyFunc, cfg config) *modelStore {
 	return &modelStore{
 		models:    models,
-		q:         unjoinedQuerier{pool: models.pool, acquireTimeout: models.acquireTimeout, what: "model", alwaysBound: true},
+		q:         unjoinedQuerier{pool: models.pool, acquireTimeout: models.acquireTimeout, what: "model"},
 		tenantID:  tenantID,
 		applyFunc: applyFunc,
 		cfg:       cfg,

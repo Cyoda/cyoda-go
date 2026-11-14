@@ -1429,9 +1429,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   administration — runs on a pool of its own, apart from the main pool, so
   entity transactions cannot starve it. Extensions hold at most half its
   connections, so model reads always have the rest; a smaller or malformed
-  value fails startup. Every wait for one of its connections is bounded by
-  `CYODA_POSTGRES_ACQUIRE_TIMEOUT` and answers `503 STORAGE_UNAVAILABLE`
-  when it expires. Each node opens up to this many more PostgreSQL
+  value fails startup. Each node opens up to this many more PostgreSQL
   connections. The pool reports through `cyoda.storage.pool.connections`
   under `pool="model"`. See `cyoda help config database`.
 
