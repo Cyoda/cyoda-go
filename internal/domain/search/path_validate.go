@@ -233,9 +233,10 @@ type schemaNodeRefresher interface {
 }
 
 // refreshOnUnknownPaths is the one bounded refresh every field-path check runs
-// when a path is absent from the schema it first read. It calls RefreshAndGet
-// once (the store's own refresh path, which reads storage) and reports which of
-// the paths check still finds unknown against the refreshed map.
+// when a path is absent from the schema it first read. It refreshes the model
+// once through freshFields (RefreshSchemaNode where the store offers it, else
+// RefreshAndGet; both read storage) and reports which of the paths check still
+// finds unknown against the refreshed map.
 //
 // It returns the refreshed map and the still-unknown paths. A caller that
 // refuses does so against the refreshed schema, so a refusal never names a path
@@ -333,8 +334,8 @@ func ConditionFieldPaths(cond predicate.Condition) []string {
 // ValidateKnownPaths holds every path in paths to the fields the model
 // declares, returning the fields map they validated against.
 //
-// A path absent from fields triggers exactly ONE RefreshAndGet before the
-// request is refused, and the recheck decides. That refresh is the correctness
+// A path absent from fields triggers exactly ONE refresh (freshFields) before
+// the request is refused, and the recheck decides. That refresh is the correctness
 // half, not an optimisation: on a cluster, node A can extend a model with a new
 // field while node B's cached descriptor still predates the schema-change
 // event, and without it node B answers 400 for a field the model genuinely has

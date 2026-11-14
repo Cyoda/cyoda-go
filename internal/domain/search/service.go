@@ -893,9 +893,9 @@ func structuralConditionErrCode(cErr error) string {
 // No whole-model read exists anywhere in the engine.
 //
 // Pre-execution path validation: every condition path is checked against
-// the cached model schema's FieldsMap. When a path is unknown, the schema
-// cache is refreshed exactly once via RefreshAndGet so a search referencing
-// a peer's freshly-extended path succeeds after one authoritative read.
+// the cached model schema's FieldsMap. When a path is unknown, the model is
+// refreshed from storage exactly once so a search referencing a peer's
+// freshly-extended path succeeds after one authoritative read.
 // Truly-unknown paths surface as 400 INVALID_FIELD_PATH. Unregistered
 // models surface as 404 MODEL_NOT_FOUND.
 func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
@@ -1850,16 +1850,15 @@ func AlreadyTerminalError(jobID, currentStatus string) *common.AppError {
 
 // validateConditionPaths runs the pre-execution field-path validation
 // step for Search. The model's schema is read first; if any path referenced by
-// the condition is absent, refreshOnUnknownPaths issues exactly one
-// RefreshAndGet (when the store implements it) and the recheck decides the
-// outcome. A stale-schema search referencing a freshly-extended path succeeds
+// the condition is absent, refreshOnUnknownPaths issues exactly one refresh
+// (when the store implements one) and the recheck decides the outcome. A stale-schema search referencing a freshly-extended path succeeds
 // after one bounded refresh, and a truly-unknown path surfaces as 4xx without a
 // refresh loop. No refusal is remembered: the next request reads again.
 //
 // Returns nil when validation passes or when no data-field paths are
 // addressed (lifecycle-only conditions). A genuinely unknown path surfaces
 // as a 4xx common.AppError listing the missing paths; a failed bounded
-// refresh (RefreshAndGet errored for a reason other than the model being
+// refresh (the refresh errored for a reason other than the model being
 // deleted) instead returns a plain error wrapping ErrPathRefreshInfra — the
 // caller must classify that as a 5xx, not fold it into the same 4xx (see
 // ErrPathRefreshInfra's doc).
