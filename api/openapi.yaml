@@ -13261,7 +13261,8 @@ components:
         another compute member or has ended while the transaction is still
         open, so the caller no longer owns the work it is calling back about —
         also when that happened while the request was in progress, whose writes
-        are then discarded. Neither is retryable with the same token.
+        are then discarded, except a schema extension it made, which stays.
+        Neither is retryable with the same token.
       content:
         application/problem+json:
           schema:
@@ -13273,10 +13274,10 @@ components:
         it (carrying its `X-Tx-Token`) failed a write. A request carrying the
         token is refused before it runs; one already running whose part of the
         transaction was marked meanwhile, by a failed write of a request nested
-        under it, is answered this code when it ends, and keeps nothing. The
-        operation that owns the transaction is refused when it would commit,
-        or write, and the message names the code the failed request got. Not
-        retryable.
+        under it, is answered this code when it ends, and keeps nothing except
+        a schema extension it made, which stays. The operation that owns the
+        transaction is refused when it would commit, or write, and the message
+        names the code the failed request got. Not retryable.
       content:
         application/problem+json:
           schema:
@@ -13288,8 +13289,9 @@ components:
         request body exceeds the 10 MiB a joined request may buffer;
         JOINED_RESPONSE_TOO_LARGE: the answer exceeds what a joined request may
         hold while it holds the transaction, so page the read. On an entity
-        write that answer is a failure of the request: its writes are discarded
-        and the transaction becomes rollback-only.
+        write that answer is a failure of the request: its writes are
+        discarded, except a schema extension it made, which stays, and the
+        transaction becomes rollback-only.
       content:
         application/problem+json:
           schema:
