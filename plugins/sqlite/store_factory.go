@@ -140,9 +140,13 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	}
 
 	// readDB is a second, dedicated *sql.DB against the same file, used
-	// exclusively for reads (GetPage, GetVersionMetadata,
-	// GetVersionByTransaction, non-tx Iterate). It never opens a
-	// transaction, so _txlock never applies to it.
+	// exclusively for reads: the entity store's committed reads (pages,
+	// counts, version history, non-tx iteration and the committed half of an
+	// in-transaction cursor), grouped stats and the scheduled-task query.
+	// Most are single statements. Two need one snapshot across several
+	// statements and open a deferred read transaction here: the model
+	// store's Get (the model doc with its extension log) and the async
+	// search store's GetResultIDs.
 	//
 	// Why a separate pool at all: a long-lived, undrained Iterate cursor
 	// checks out its connection for the life of the iterator. Sharing db's
@@ -162,9 +166,10 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	//
 	// _txlock=deferred, not the writer DSN's immediate: a transaction opened
 	// here must never take the write lock. GetResultIDs asks for a read-only
-	// transaction, which the driver already begins DEFERRED, but a future
-	// caller passing nil TxOptions would inherit immediate from a shared DSN
-	// and start contending with the writer from a pool sized for readers.
+	// transaction, which the driver already begins DEFERRED; the model
+	// store's Get passes nil TxOptions and gets DEFERRED from this DSN, where
+	// a shared DSN would give it immediate and set it contending with the
+	// writer from a pool sized for readers.
 	// query_only(1) in readerPragmaParams makes the same guarantee at the
 	// statement level.
 	readerDSN := fmt.Sprintf("file:%s?_txlock=deferred", cfg.Path) + readerPragmaParams(cfg)
