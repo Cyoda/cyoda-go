@@ -897,7 +897,7 @@ Internal E2E tests use an in-process `localproc.LocalProcessingService` to regis
 
 ### Schema extension and concurrent state transitions
 
-#### TestSchemaExtension_ConcurrentEveryDoor_No409 (internal/e2e/model_schema_extensions_test.go)
+#### TestSchemaExtension_ConcurrentEveryDoor_No409 (internal/e2e/model_schema_extensions_test.go:20)
 **Aim:** Concurrent extending writes on every door (create, update, collection create and update, processor output) under STRUCTURAL never answer 409 CONFLICT.
 **Asserts:** Every write 2xx; folded schema contains every field
 **Notes:** Each request sent once, behind a start barrier
