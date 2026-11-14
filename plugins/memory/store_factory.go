@@ -31,8 +31,9 @@ func WithBusinessClock(c Clock) Option {
 	return func(f *StoreFactory) { f.bizClock = c }
 }
 
-// ApplyFunc replays an opaque SchemaDelta onto a base schema.
-type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
+// ApplyFunc replays opaque SchemaDeltas, in order, onto a base schema in one
+// call. An empty list re-encodes base.
+type ApplyFunc func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)
 
 // WithApplyFunc installs the replay function used by ExtendSchema.
 func WithApplyFunc(fn ApplyFunc) Option {
@@ -47,7 +48,7 @@ func WithApplyFunc(fn ApplyFunc) Option {
 // The parameter is the unnamed function type (not memory.ApplyFunc)
 // so that an interface type-assertion in app/app.go can satisfy the
 // setter uniformly across plugins.
-func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
 	if f.applyFunc != nil {
 		panic("memory: SetApplyFunc called twice")
 	}

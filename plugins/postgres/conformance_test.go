@@ -25,7 +25,7 @@ func (f *noCloseFactory) Close() error { return nil }
 
 // SetApplyFunc forwards to the wrapped factory, so the conformance suite
 // can install its apply function through the wrapper.
-func (f *noCloseFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+func (f *noCloseFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
 	f.StoreFactory.(*postgres.StoreFactory).SetApplyFunc(fn)
 }
 

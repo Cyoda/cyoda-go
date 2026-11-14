@@ -385,8 +385,8 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 // top of it via the injected ApplyFunc.
 //
 // The write runs in its own transaction and is not part of the caller's
-// ambient transaction. A delta that changes nothing — applyFunc(current,
-// delta) byte-equals applyFunc(current, nil) — writes nothing. SQLITE_BUSY
+// ambient transaction. A delta that changes nothing — applying it to the
+// folded schema gives the folded schema's bytes — writes nothing. SQLITE_BUSY
 // is retried until ctx ends; there is no retry budget.
 //
 // A missing ApplyFunc fails fast so wiring mistakes surface at extend-time.
@@ -444,22 +444,20 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 	}
 	base := doc.Schema
 
-	current, err := s.foldLockedInTx(ctx, tx, ref, base)
+	// The fold, in the apply function's encoding even with no delta to
+	// apply: one apply call for the whole log after the savepoint.
+	current, err := foldLockedOn(ctx, tx, s.tenantID, s.applyFunc, ref, base, true)
 	if err != nil {
 		return classifyError(fmt.Errorf("pre-persist fold for %s: %w", ref, err))
 	}
 	// A malformed delta is rejected before it reaches the log.
-	applied, err := s.applyFunc(current, delta)
+	applied, err := s.applyFunc(current, []spi.SchemaDelta{delta})
 	if err != nil {
 		return fmt.Errorf("applyFunc rejected delta for %s: %w", ref, err)
 	}
-	// No-op check: a delta whose application equals the canonical form of
-	// the current fold changes nothing, so nothing is written.
-	canonical, err := s.applyFunc(current, nil)
-	if err != nil {
-		return fmt.Errorf("applyFunc canonicalising %s: %w", ref, err)
-	}
-	if bytes.Equal(applied, canonical) {
+	// No-op check: both sides are outputs of the same encoding, so a delta
+	// that changes nothing gives the fold's own bytes and writes nothing.
+	if bytes.Equal(applied, current) {
 		return nil
 	}
 
@@ -489,15 +487,13 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 			return classifyError(err)
 		}
 		if nextSeq-lastSP >= int64(s.cfg.SchemaSavepointInterval) {
-			folded, err := s.foldLockedInTx(ctx, tx, ref, base)
-			if err != nil {
-				return classifyError(fmt.Errorf("savepoint fold for %s (seq=%d): %w", ref, nextSeq, err))
-			}
+			// applied is the fold of every delta up to and including this
+			// one: the savepoint stores it.
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO model_schema_extensions
 				    (tenant_id, model_name, model_version, seq, kind, payload)
 				 VALUES (?, ?, ?, ?, 'savepoint', ?)`,
-				string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq+1, folded); err != nil {
+				string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq+1, applied); err != nil {
 				return classifyError(fmt.Errorf("append savepoint for %s (seq=%d): %w", ref, nextSeq+1, err))
 			}
 		}

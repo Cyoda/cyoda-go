@@ -97,7 +97,7 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 // Get returns the latest committed model with its extension log folded
 // into the schema, read in one statement.
 func (s *modelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.ModelDescriptor, error) {
-	m, err := foldModel(ctx, s.q, s.tenantID, modelRef, s.applyFunc)
+	m, err := foldModel(ctx, s.q, s.tenantID, modelRef, s.applyFunc, false)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +181,7 @@ func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 		if err := updateStateField(ctx, q, s.tenantID, modelRef, spi.ModelUnlocked, "unlock"); err != nil {
 			return err
 		}
-		m, err := foldModel(ctx, q, s.tenantID, modelRef, s.applyFunc)
+		m, err := foldModel(ctx, q, s.tenantID, modelRef, s.applyFunc, false)
 		if err != nil {
 			return fmt.Errorf("Unlock: %w", err)
 		}
@@ -307,8 +307,8 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 // waited for a lock re-checks only the locked row, so a fold merged into it
 // would use the snapshot from before the wait.
 //
-// A delta the schema already holds writes nothing: applying it gives the same
-// bytes as re-encoding the current schema. Otherwise the delta row is
+// A delta the schema already holds writes nothing: applying it to the folded
+// schema gives the folded schema's own bytes. Otherwise the delta row is
 // inserted, and a savepoint holding the folded schema follows it once
 // SchemaSavepointInterval of the model's deltas follow its latest savepoint.
 //
@@ -373,17 +373,17 @@ func (s *modelStore) extend(ctx context.Context, q Querier, ref spi.ModelRef, de
 		return fmt.Errorf("model %s is not locked: %w", ref, spi.ErrModelNotLocked)
 	}
 
-	m, err := foldModel(ctx, q, s.tenantID, ref, s.applyFunc)
+	// Two apply calls under the lock, however long the log: the fold (in the
+	// apply function's encoding even with no delta to apply) and the fold
+	// plus this delta.
+	m, err := foldModel(ctx, q, s.tenantID, ref, s.applyFunc, true)
 	if err != nil {
 		return err
 	}
-	applied, err := s.applyFunc(m.desc.Schema, delta)
+	current := m.desc.Schema
+	applied, err := s.applyFunc(current, []spi.SchemaDelta{delta})
 	if err != nil {
 		return fmt.Errorf("applyFunc rejected delta for %s: %w", ref, err)
-	}
-	current, err := s.applyFunc(m.desc.Schema, nil)
-	if err != nil {
-		return fmt.Errorf("applyFunc re-encoding the schema of %s: %w", ref, err)
 	}
 	if bytes.Equal(applied, current) {
 		return nil // the schema already holds the delta

@@ -57,7 +57,7 @@ func newSaturatedFactory(t *testing.T, acquire time.Duration) (*postgres.StoreFa
 func newSaturatedModelPoolFactory(t *testing.T, acquire time.Duration) (*postgres.StoreFactory, context.Context) {
 	t.Helper()
 	f := postgres.NewStoreFactoryWithAcquireTimeoutForTest(newTestPool(t), acquire)
-	f.SetApplyFunc(func(base []byte, _ spi.SchemaDelta) ([]byte, error) { return base, nil })
+	f.SetApplyFunc(func(base []byte, _ []spi.SchemaDelta) ([]byte, error) { return base, nil })
 	t.Cleanup(func() { postgres.CloseModelPoolForTest(f) })
 
 	models := postgres.ModelPoolForTest(t, f)

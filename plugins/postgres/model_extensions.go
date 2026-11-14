@@ -40,10 +40,14 @@ const foldModelSQL = `
 	ORDER BY part, seq`
 
 // foldModel reads ref with foldModelSQL on q and folds the log: from the
-// latest savepoint if there is one, else from the doc's schema, applying each
-// later delta in seq order. A model without deltas to apply folds without an
-// apply function. A missing model is spi.ErrNotFound.
-func foldModel(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.ModelRef, apply ApplyFunc) (*foldedModel, error) {
+// latest savepoint if there is one, else from the doc's schema, applying
+// every later delta, in seq order, in one call of apply. A model without
+// deltas to apply folds without an apply function, and its schema is the
+// start verbatim — unless canonical is set, when the start goes through apply
+// with an empty list, so the result is always in the apply function's
+// encoding (an extension compares it byte for byte with the result of
+// applying the new delta). A missing model is spi.ErrNotFound.
+func foldModel(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.ModelRef, apply ApplyFunc, canonical bool) (*foldedModel, error) {
 	rows, err := q.Query(ctx, foldModelSQL, string(tenantID), ref.EntityName, ref.ModelVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read model %s: %w", ref, err)
@@ -51,7 +55,8 @@ func foldModel(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.Mo
 	defer rows.Close()
 
 	var m foldedModel
-	var current []byte
+	var start []byte
+	var deltas []spi.SchemaDelta
 	for rows.Next() {
 		var (
 			part    int
@@ -70,17 +75,11 @@ func foldModel(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.Mo
 			if m.desc, err = unmarshalModelDoc(payload); err != nil {
 				return nil, err
 			}
-			current = m.desc.Schema
+			start = m.desc.Schema
 		case 1:
-			current = payload
+			start = payload
 		default:
-			m.pending++
-			if apply == nil {
-				return nil, fmt.Errorf("model %s has pending schema deltas but ApplyFunc is not wired on the factory", ref)
-			}
-			if current, err = apply(current, spi.SchemaDelta(payload)); err != nil {
-				return nil, fmt.Errorf("fold extension log for %s: apply delta seq %d: %w", ref, seq, err)
-			}
+			deltas = append(deltas, spi.SchemaDelta(payload))
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -89,6 +88,16 @@ func foldModel(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.Mo
 	if m.desc == nil {
 		return nil, fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
 	}
-	m.desc.Schema = current
+	m.pending = len(deltas)
+	if len(deltas) == 0 && !canonical {
+		m.desc.Schema = start
+		return &m, nil
+	}
+	if apply == nil {
+		return nil, fmt.Errorf("model %s has pending schema deltas but ApplyFunc is not wired on the factory", ref)
+	}
+	if m.desc.Schema, err = apply(start, deltas); err != nil {
+		return nil, fmt.Errorf("fold extension log for %s: apply %d deltas: %w", ref, len(deltas), err)
+	}
 	return &m, nil
 }

@@ -14,14 +14,19 @@ import (
 )
 
 func recordingApplyFunc() sqlite.ApplyFunc {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	return func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 		// Return valid JSON that carries both base and delta so tests can
-		// assert Apply was invoked. Store {"base": <base>, "delta": <delta>}.
-		// This isn't semantically meaningful; it's just observable.
-		if len(base) == 0 {
-			return []byte(`{"base":null,"delta":` + string(delta) + `}`), nil
+		// assert Apply was invoked. Store {"base": <base>, "delta": <delta>},
+		// nested once per delta. This isn't semantically meaningful; it's
+		// just observable.
+		for _, delta := range deltas {
+			if len(base) == 0 {
+				base = []byte(`{"base":null,"delta":` + string(delta) + `}`)
+				continue
+			}
+			base = []byte(`{"base":` + string(base) + `,"delta":` + string(delta) + `}`)
 		}
-		return []byte(`{"base":` + string(base) + `,"delta":` + string(delta) + `}`), nil
+		return base, nil
 	}
 }
 

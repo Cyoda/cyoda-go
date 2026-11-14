@@ -32,7 +32,7 @@ func withSavepointInterval(n int) Option {
 //
 // Copied verbatim from plugins/postgres/model_extensions_internal_test.go
 // so the sqlite fold tests remain self-contained.
-func setUnionApplyFunc(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+func setUnionApplyFunc(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 	m := map[string]struct{}{}
 	if len(base) > 0 {
 		var existing []string
@@ -43,7 +43,10 @@ func setUnionApplyFunc(base []byte, delta spi.SchemaDelta) ([]byte, error) {
 			m[tok] = struct{}{}
 		}
 	}
-	if len(delta) > 0 { // a nil delta re-canonicalises base (the no-op check's probe)
+	for _, delta := range deltas {
+		if len(delta) == 0 {
+			continue
+		}
 		var tok string
 		if err := json.Unmarshal([]byte(delta), &tok); err != nil {
 			return nil, fmt.Errorf("setUnionApplyFunc: decode delta %q: %w", delta, err)
@@ -163,7 +166,7 @@ func (fx *sqliteFixture) SaveModel(t *testing.T, ref spi.ModelRef, base []byte) 
 // It nests each delta under `$$applied` so observers can detect whether
 // apply was invoked. Mirrors plugins/postgres's fixture helper.
 func fixtureApplyFunc() ApplyFunc {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	return func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 		var m map[string]json.RawMessage
 		if len(base) == 0 {
 			m = map[string]json.RawMessage{}
@@ -176,7 +179,9 @@ func fixtureApplyFunc() ApplyFunc {
 				return nil, err
 			}
 		}
-		applied = append(applied, json.RawMessage(delta))
+		for _, delta := range deltas {
+			applied = append(applied, json.RawMessage(delta))
+		}
 		encoded, err := json.Marshal(applied)
 		if err != nil {
 			return nil, err
@@ -224,9 +229,9 @@ func TestSQLite_foldLocked_MultipleDeltas_AppliesInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("foldLocked: %v", err)
 	}
-	expected, _ := setUnionApplyFunc([]byte{}, spi.SchemaDelta(`"d01"`))
-	expected, _ = setUnionApplyFunc(expected, spi.SchemaDelta(`"d02"`))
-	expected, _ = setUnionApplyFunc(expected, spi.SchemaDelta(`"d03"`))
+	expected, _ := setUnionApplyFunc([]byte{}, []spi.SchemaDelta{spi.SchemaDelta(`"d01"`)})
+	expected, _ = setUnionApplyFunc(expected, []spi.SchemaDelta{spi.SchemaDelta(`"d02"`)})
+	expected, _ = setUnionApplyFunc(expected, []spi.SchemaDelta{spi.SchemaDelta(`"d03"`)})
 	if !bytes.Equal(got, expected) {
 		t.Errorf("foldLocked = %q, want %q", got, expected)
 	}
@@ -354,31 +359,24 @@ func TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr(t *testing.T) {
 }
 
 // TestSQLite_ExtendSchema_RejectionLeavesNoPersistedTrace — B-I6 for sqlite.
-// At the savepoint-interval boundary, ExtendSchema is forced to fold the log
-// and write a savepoint row. If that fold fails (applyFunc rejects the
-// delta — e.g. a simulated ChangeLevel violation), the entire operation
-// must roll back: neither the delta row that triggered the fold nor the
-// would-be savepoint row may persist.
-//
-// Without an ambient caller-supplied tx, atomicity requires ExtendSchema
-// to self-wrap — otherwise the initial delta INSERT auto-commits before
-// the fold is attempted.
+// At the savepoint-interval boundary, where the extension would also write a
+// savepoint, a delta that applyFunc rejects (e.g. a simulated ChangeLevel
+// violation) leaves neither a delta row nor a savepoint row.
 //
 // Construction uses newSQLiteFixtureWithInterval(t, 10) directly so that
-// the 10th ExtendSchema call triggers the savepoint fold path. This
-// sidesteps the need for a mid-test reopen — the state reached after 9
-// warmup deltas at interval=10 is identical whether or not the interval
-// was changed at construction.
+// the 10th ExtendSchema call reaches the boundary.
 func TestSQLite_ExtendSchema_RejectionLeavesNoPersistedTrace(t *testing.T) {
 	fx := newSQLiteFixtureWithInterval(t, 10)
 	// The fixture already installed fixtureApplyFunc on the factory;
 	// SetApplyFunc would panic on re-entry. Override the store-level
 	// applyFunc directly — the same pattern Tasks 15-19 use.
-	fx.store.applyFunc = func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		if bytes.Contains([]byte(delta), []byte("RESTRICT")) {
-			return nil, fmt.Errorf("simulated ChangeLevel violation")
+	fx.store.applyFunc = func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
+		for _, delta := range deltas {
+			if bytes.Contains([]byte(delta), []byte("RESTRICT")) {
+				return nil, fmt.Errorf("simulated ChangeLevel violation")
+			}
 		}
-		return setUnionApplyFunc(base, delta)
+		return setUnionApplyFunc(base, deltas)
 	}
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte{})
@@ -387,7 +385,7 @@ func TestSQLite_ExtendSchema_RejectionLeavesNoPersistedTrace(t *testing.T) {
 	}
 
 	// Warm the log to one row below the interval boundary (9 deltas at
-	// interval=10). The 10th ExtendSchema will drive the savepoint fold.
+	// interval=10). The 10th ExtendSchema reaches the boundary.
 	for i := 0; i < 9; i++ {
 		if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%d"`, i))); err != nil {
 			t.Fatalf("warmup ExtendSchema #%d: %v", i, err)
@@ -408,8 +406,7 @@ func TestSQLite_ExtendSchema_RejectionLeavesNoPersistedTrace(t *testing.T) {
 		t.Fatalf("pre savepoint count: %v", err)
 	}
 
-	// Attempt the 10th delta — the RESTRICT delta triggers the savepoint
-	// path where applyFunc is called and rejects.
+	// Attempt the 10th delta — applyFunc rejects the RESTRICT delta.
 	err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"RESTRICT-d9"`))
 	if err == nil {
 		t.Fatal("ExtendSchema with rejecting applyFunc on savepoint path must fail")
@@ -495,17 +492,18 @@ func TestSQLite_ExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical(t *testin
 
 // TestSQLite_ExtendSchema_RejectsDeltaThatApplyRefuses — persist-time
 // Apply check. A delta that applyFunc rejects must not reach
-// model_schema_extensions. Exercises the FIRST-delta code path (no
-// savepoint fold involved): rejection must come from the apply-check,
-// not from the savepoint-fold boundary. This closes the asymmetry with
-// the memory plugin, which runs applyFunc inline on every ExtendSchema.
+// model_schema_extensions. Exercises the FIRST-delta code path, away from
+// the savepoint boundary. This matches the memory plugin, which runs
+// applyFunc inline on every ExtendSchema.
 func TestSQLite_ExtendSchema_RejectsDeltaThatApplyRefuses(t *testing.T) {
 	fx := newSQLiteFixture(t)
-	fx.store.applyFunc = func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		if bytes.Contains([]byte(delta), []byte("POISON")) {
-			return nil, fmt.Errorf("applyFunc rejected delta: poison")
+	fx.store.applyFunc = func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
+		for _, delta := range deltas {
+			if bytes.Contains([]byte(delta), []byte("POISON")) {
+				return nil, fmt.Errorf("applyFunc rejected delta: poison")
+			}
 		}
-		return setUnionApplyFunc(base, delta)
+		return setUnionApplyFunc(base, deltas)
 	}
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte{})

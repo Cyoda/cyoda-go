@@ -36,11 +36,11 @@ func WithBusinessClock(c Clock) Option {
 	return func(f *StoreFactory) { f.bizClock = c }
 }
 
-// ApplyFunc replays an opaque SchemaDelta onto a base schema and
-// returns the new schema bytes. Production wiring uses schema.Apply
-// from internal/domain/model/schema; the SPI keeps deltas opaque so
-// the catalog stays out of the plugin.
-type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
+// ApplyFunc replays opaque SchemaDeltas, in order, onto a base schema in
+// one call and returns the new schema bytes; an empty list re-encodes base.
+// Production wiring uses schema.ApplyMany from internal/domain/model/schema;
+// the SPI keeps deltas opaque so the catalog stays out of the plugin.
+type ApplyFunc func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)
 
 // WithApplyFunc installs the replay function used by ExtendSchema.
 // Must be called when the caller intends to use ExtendSchema; until
@@ -57,7 +57,7 @@ func WithApplyFunc(fn ApplyFunc) Option {
 // The parameter is the unnamed function type (not sqlite.ApplyFunc)
 // so that an interface type-assertion in app/app.go can satisfy the
 // setter uniformly across plugins.
-func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
 	if f.applyFunc != nil {
 		panic("sqlite: SetApplyFunc called twice")
 	}

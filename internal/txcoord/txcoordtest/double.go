@@ -59,9 +59,9 @@ type factory struct {
 // SetApplyFunc forwards the schema-replay function to the inner factory, which
 // ExtendSchema needs; the double offers it only where the inner factory does.
 // It panics, as the inner does, if called twice.
-func (f *factory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+func (f *factory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
 	if s, ok := f.StoreFactory.(interface {
-		SetApplyFunc(func(base []byte, delta spi.SchemaDelta) ([]byte, error))
+		SetApplyFunc(func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))
 	}); ok {
 		s.SetApplyFunc(fn)
 	}

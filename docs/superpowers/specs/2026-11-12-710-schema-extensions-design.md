@@ -184,19 +184,25 @@ model `Save` retries); its doc stops naming schema extension.
    without serialising entity transactions. The ambient-transaction path and
    the `UPDATE models SET doc = doc` claim are deleted.
 3. **A delta the schema already holds writes nothing** (postgres and sqlite,
-   which keep a log; memory applies in place and needs no check). Under the
-   lock, the backend compares `applyFunc(current, delta)` with `applyFunc(current, nil)`
-   byte for byte (an empty delta gives a clean re-encoding of the same schema,
-   `internal/domain/model/schema/apply.go` ~:29-31). Equal: no row, success.
-   Otherwise it stores the caller's delta. The plugins need nothing beyond the
+   which keep a log; memory applies in place and needs no check). The apply
+   function takes a list of deltas (`schema.ApplyMany`: one decode of the
+   base, every delta applied in order to that tree, one encode; an empty list
+   gives a clean re-encoding of the base). Under the lock the backend folds
+   the deltas after the latest savepoint in one call, through the apply
+   function even when there are none, so the fold `current` is in the apply
+   function's encoding, and compares `applyFunc(current, [delta])` with
+   `current` byte for byte. Equal: no row, success. Otherwise it stores the
+   caller's delta, and a savepoint due now stores `applyFunc(current,
+   [delta])`. An extension makes two apply calls however long the log is,
+   and a read that folds makes one. The plugins need nothing beyond the
    `applyFunc` they already receive (`SetApplyFunc`, `app/app.go` ~:231);
    postgres refuses to extend without one, as sqlite and memory already do
    (today postgres tolerates a nil one, `model_store.go` ~:516-521). The
    comparison is canonical: the wire form sorts children (a JSON map) and keeps
    kinds and type sets in a fixed order (`model_schema.go` ~:218-225,
-   ~:387-391; `merge.go` ~:28-35), and both sides go through the same
-   unmarshal, clone and marshal; at worst it writes a needless row. N writers
-   adding the same field write one row.
+   ~:387-391; `merge.go` ~:28-35), and both sides are outputs of the same
+   marshal (re-encoding an output gives the same bytes); at worst it writes a
+   needless row. N writers adding the same field write one row.
 4. **postgres: a dedicated pool for the model store.** Model reads,
    extensions and model administration (`Lock`, `Unlock`, `SetChangeLevel`,
    `Save`, `Delete`) use a small pool of their own, as the scheduler has one

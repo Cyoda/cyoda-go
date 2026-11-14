@@ -11,13 +11,13 @@ import (
 
 // foldLockedInTx returns the fully-folded schema for ref, read through tx:
 // it starts from the most-recent savepoint payload (if any), else from
-// baseSchema (models.doc.schema), and applies every later delta row in seq
-// order via the injected ApplyFunc. With no extensions it returns
-// baseSchema verbatim; ApplyFunc is required only when a delta must be
-// applied. Mirrors postgres's fold; dialect differences are placeholders
+// baseSchema (models.doc.schema), and applies every later delta row, in seq
+// order, in one call of the injected ApplyFunc. With no extensions it
+// returns that start verbatim; ApplyFunc is required only when a delta must
+// be applied. Mirrors postgres's fold; dialect differences are placeholders
 // and the explicit seq column.
 func (s *modelStore) foldLockedInTx(ctx context.Context, tx *sql.Tx, ref spi.ModelRef, baseSchema []byte) ([]byte, error) {
-	return foldLockedOn(ctx, tx, s.tenantID, s.applyFunc, ref, baseSchema)
+	return foldLockedOn(ctx, tx, s.tenantID, s.applyFunc, ref, baseSchema, false)
 }
 
 // lastSavepointSeqInTx returns the seq of the most-recent savepoint row of
@@ -44,7 +44,11 @@ func lastSavepointSeqOn(ctx context.Context, q *sql.Tx, tenantID spi.TenantID, r
 	}
 }
 
-func foldLockedOn(ctx context.Context, q *sql.Tx, tenantID spi.TenantID, applyFunc ApplyFunc, ref spi.ModelRef, baseSchema []byte) ([]byte, error) {
+// foldLockedOn is the fold of foldLockedInTx. With canonical set the start
+// goes through applyFunc even when no delta follows it, so the result is
+// always in the apply function's encoding: an extension compares it byte for
+// byte with the result of applying the new delta.
+func foldLockedOn(ctx context.Context, q *sql.Tx, tenantID spi.TenantID, applyFunc ApplyFunc, ref spi.ModelRef, baseSchema []byte, canonical bool) ([]byte, error) {
 	var savepointSeq int64
 	var savepointPayload []byte
 	err := q.QueryRowContext(ctx, `
@@ -75,25 +79,26 @@ func foldLockedOn(ctx context.Context, q *sql.Tx, tenantID spi.TenantID, applyFu
 	}
 	defer rows.Close()
 
-	first := true
+	var deltas []spi.SchemaDelta
 	for rows.Next() {
 		var deltaBytes []byte
 		if err := rows.Scan(&deltaBytes); err != nil {
 			return nil, fmt.Errorf("scan delta: %w", err)
 		}
-		if first {
-			if applyFunc == nil {
-				return nil, fmt.Errorf("model has pending schema deltas but ApplyFunc is not wired on the factory — see cmd/cyoda/main.go")
-			}
-			first = false
-		}
-		current, err = applyFunc(current, spi.SchemaDelta(deltaBytes))
-		if err != nil {
-			return nil, fmt.Errorf("apply delta: %w", err)
-		}
+		deltas = append(deltas, spi.SchemaDelta(deltaBytes))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("delta iteration: %w", err)
+	}
+	if len(deltas) == 0 && !canonical {
+		return current, nil
+	}
+	if applyFunc == nil {
+		return nil, fmt.Errorf("model has pending schema deltas but ApplyFunc is not wired on the factory — see cmd/cyoda/main.go")
+	}
+	current, err = applyFunc(current, deltas)
+	if err != nil {
+		return nil, fmt.Errorf("apply %d deltas after seq %d: %w", len(deltas), savepointSeq, err)
 	}
 	return current, nil
 }

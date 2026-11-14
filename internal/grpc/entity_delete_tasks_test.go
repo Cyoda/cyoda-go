@@ -11,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
@@ -33,7 +34,7 @@ func newTaskDeleteEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context, *
 // wrap, for a test that injects a store fault.
 func newTaskDeleteEnvWith(t *testing.T, wrap func(spi.StoreFactory) spi.StoreFactory) (*CloudEventsServiceImpl, context.Context, *memory.StoreFactory, *taskconflict.Plan) {
 	t.Helper()
-	real := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
+	real := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	t.Cleanup(func() { real.Close() })
 	real.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := real.GetTransactionManager()

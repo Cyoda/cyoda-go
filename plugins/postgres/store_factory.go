@@ -44,10 +44,12 @@ type StoreFactory struct {
 	clock spi.Clock
 }
 
-// ApplyFunc replays an opaque SchemaDelta onto a base schema
-// represented in the plugin's canonical bytes. Callers (cmd/cyoda/main.go)
-// pass schema.Apply wrapped in a codec round-trip.
-type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
+// ApplyFunc replays opaque SchemaDeltas, in order, onto a base schema in
+// one call and returns the new schema bytes; an empty list re-encodes base.
+// The composition root (app/app.go) passes schema.ApplyMany, which decodes
+// and encodes the schema once per call, so the fold makes one call for the
+// whole log after the savepoint.
+type ApplyFunc func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)
 
 // NewStoreFactory creates a new PostgreSQL-backed StoreFactory. The
 // factory is configured with defaults equivalent to parseConfig on an
@@ -110,7 +112,7 @@ func defaultStoreConfig() config {
 // setter uniformly across plugins whose named ApplyFunc types differ.
 // Values of postgres.ApplyFunc are assignable to this parameter because
 // the underlying signatures are identical.
-func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
 	if f.applyFunc != nil {
 		panic("postgres: SetApplyFunc called twice")
 	}

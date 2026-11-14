@@ -309,18 +309,8 @@ func TestUpdateEntityCollection_NonObjectRoot_ValidationFailed(t *testing.T) {
 // so a later refusal could not take it back.
 func TestUpdateEntityCollection_PartialKeyRefused_ModelUnchanged(t *testing.T) {
 	h, ctx := newOrderTestHandler(t)
-	// The schema-apply function production wires (app.makeSchemaApply).
-	h.factory.(*memory.StoreFactory).SetApplyFunc(func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		node, err := schema.Unmarshal(base)
-		if err != nil {
-			return nil, err
-		}
-		extended, err := schema.Apply(node, delta)
-		if err != nil {
-			return nil, err
-		}
-		return schema.Marshal(extended)
-	})
+	// The schema-apply function production wires (app/app.go).
+	h.factory.(*memory.StoreFactory).SetApplyFunc(schema.ApplyMany)
 	res, err := h.CreateEntity(ctx, CreateEntityInput{
 		EntityName:   "Order",
 		ModelVersion: "1",

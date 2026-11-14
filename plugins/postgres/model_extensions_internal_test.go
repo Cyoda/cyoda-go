@@ -29,7 +29,7 @@ import (
 // interleaving/permutation of deltas yields the same fold, so any
 // divergence observed by the tests is attributable to the persistence
 // layer.
-func setUnionApplyFunc(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+func setUnionApplyFunc(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 	m := map[string]struct{}{}
 	if len(base) > 0 {
 		var existing []string
@@ -40,7 +40,10 @@ func setUnionApplyFunc(base []byte, delta spi.SchemaDelta) ([]byte, error) {
 			m[tok] = struct{}{}
 		}
 	}
-	if len(delta) > 0 {
+	for _, delta := range deltas {
+		if len(delta) == 0 {
+			continue
+		}
 		var tok string
 		if err := json.Unmarshal([]byte(delta), &tok); err != nil {
 			return nil, fmt.Errorf("setUnionApplyFunc: decode delta %q: %w", delta, err)
@@ -247,7 +250,7 @@ func (f *pgFixture) saveModel(t *testing.T, ref spi.ModelRef, base []byte, state
 // external test file; duplicated here because it's needed for the
 // internal-package fixture too.
 func fixtureApplyFunc() ApplyFunc {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	return func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 		var m map[string]json.RawMessage
 		if len(base) == 0 {
 			m = map[string]json.RawMessage{}
@@ -260,7 +263,9 @@ func fixtureApplyFunc() ApplyFunc {
 				return nil, err
 			}
 		}
-		applied = append(applied, json.RawMessage(delta))
+		for _, delta := range deltas {
+			applied = append(applied, json.RawMessage(delta))
+		}
 		encoded, err := json.Marshal(applied)
 		if err != nil {
 			return nil, err
@@ -381,7 +386,7 @@ func TestExtendSchema_CommutativeAppend_ConvergesUnderConcurrency(t *testing.T) 
 
 	expected := []byte{}
 	for _, d := range deltas {
-		expected, _ = setUnionApplyFunc(expected, spi.SchemaDelta(d))
+		expected, _ = setUnionApplyFunc(expected, []spi.SchemaDelta{spi.SchemaDelta(d)})
 	}
 	expectedSorted := sortNewlineTokens(expected)
 
@@ -473,11 +478,13 @@ func TestExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical(t *testing.T) {
 // savepoint row.
 func TestExtendSchema_RejectionLeavesNoSavepointOrOp(t *testing.T) {
 	fx := newPGFixture(t)
-	fx.store.applyFunc = func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		if bytes.Contains([]byte(delta), []byte("RESTRICT")) {
-			return nil, fmt.Errorf("simulated ChangeLevel violation")
+	fx.store.applyFunc = func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
+		for _, delta := range deltas {
+			if bytes.Contains([]byte(delta), []byte("RESTRICT")) {
+				return nil, fmt.Errorf("simulated ChangeLevel violation")
+			}
 		}
-		return setUnionApplyFunc(base, delta)
+		return setUnionApplyFunc(base, deltas)
 	}
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte{})
@@ -495,7 +502,7 @@ func TestExtendSchema_RejectionLeavesNoSavepointOrOp(t *testing.T) {
 		t.Fatalf("pre savepoint count: %v", err)
 	}
 
-	// Attempt the 64th delta — the RESTRICT delta triggers the savepoint path where applyFunc is called.
+	// Attempt the 64th delta — applyFunc rejects the RESTRICT delta at the boundary.
 	err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"RESTRICT-d63"`))
 	if err == nil {
 		t.Fatal("ExtendSchema with rejecting applyFunc on savepoint path must fail")
@@ -519,18 +526,19 @@ func TestExtendSchema_RejectionLeavesNoSavepointOrOp(t *testing.T) {
 
 // TestExtendSchema_RejectsDeltaThatApplyRefuses — persist-time Apply check.
 // A delta that applyFunc rejects must not reach model_schema_extensions.
-// Exercises the FIRST-delta code path (no savepoint fold involved): the
-// rejection must come from the apply-check, not from the savepoint-fold
-// check. Matches memory's apply-inline behavior so all three plugins give
+// Exercises the FIRST-delta code path, away from the savepoint boundary.
+// Matches memory's apply-inline behavior so all three plugins give
 // the same timing/contract: reject at ExtendSchema, not at later fold-on-Get.
 func TestExtendSchema_RejectsDeltaThatApplyRefuses(t *testing.T) {
 	fx := newPGFixture(t)
 	// ApplyFunc that rejects any delta containing the sentinel.
-	fx.store.applyFunc = func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		if bytes.Contains([]byte(delta), []byte("POISON")) {
-			return nil, fmt.Errorf("applyFunc rejected delta: poison")
+	fx.store.applyFunc = func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
+		for _, delta := range deltas {
+			if bytes.Contains([]byte(delta), []byte("POISON")) {
+				return nil, fmt.Errorf("applyFunc rejected delta: poison")
+			}
 		}
-		return setUnionApplyFunc(base, delta)
+		return setUnionApplyFunc(base, deltas)
 	}
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte{})
@@ -766,16 +774,19 @@ func TestGet_IgnoresCallerTransaction(t *testing.T) {
 // {"parent":[...],"name":n,"children":[...]} adds n under the object at
 // parent, as an object with the given leaf children when children is set,
 // else as a leaf. A parent that does not exist is refused, as the real
-// apply refuses an add_property under a missing parent. An empty delta
-// re-encodes the base.
-func nestedApplyFunc(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+// apply refuses an add_property under a missing parent. The deltas apply in
+// order; an empty list re-encodes the base.
+func nestedApplyFunc(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 	root := map[string]any{}
 	if len(base) > 0 {
 		if err := json.Unmarshal(base, &root); err != nil {
 			return nil, fmt.Errorf("nestedApplyFunc: decode base %q: %w", base, err)
 		}
 	}
-	if len(delta) > 0 {
+	for _, delta := range deltas {
+		if len(delta) == 0 {
+			continue
+		}
 		var d struct {
 			Parent   []string `json:"parent"`
 			Name     string   `json:"name"`

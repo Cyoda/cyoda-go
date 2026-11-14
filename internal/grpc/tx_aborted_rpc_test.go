@@ -12,6 +12,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
@@ -47,7 +48,7 @@ func TestRPC_EntityPatch_SaveInAbortedTxIsConflict(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 	// The entity door rewired onto a store behind the arming wrapper; the
 	// model door keeps the harness's own store, so both see one model.
-	inner := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
+	inner := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	inner.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := inner.GetTransactionManager()
 	factory := &txAbortedSaveFactory{StoreFactory: inner}
@@ -100,7 +101,7 @@ func TestRPC_EntityPatch_SaveInAbortedTxIsConflict(t *testing.T) {
 // gRPC door answers the retryable CONFLICT, not the processor's failure.
 func TestRPC_EntityCreate_ProcessorFailedAfterLostRaceIsConflict(t *testing.T) {
 	svc, ctx := newTestEnv(t)
-	inner := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
+	inner := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	inner.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := inner.GetTransactionManager()
 	lp := localproc.New()

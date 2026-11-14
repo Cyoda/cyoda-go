@@ -34,7 +34,7 @@ func countExtensionRows(t *testing.T, pool *pgxpool.Pool, tenantID string, ref s
 // delta bytes under a dedicated "$$applied" array on the base object —
 // deep-merging is outside the scope of these plugin tests.
 func jsonRecordingApplyFunc() postgres.ApplyFunc {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	return func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 		var m map[string]json.RawMessage
 		if len(base) == 0 {
 			m = map[string]json.RawMessage{}
@@ -48,7 +48,9 @@ func jsonRecordingApplyFunc() postgres.ApplyFunc {
 				return nil, err
 			}
 		}
-		applied = append(applied, json.RawMessage(delta))
+		for _, delta := range deltas {
+			applied = append(applied, json.RawMessage(delta))
+		}
 		encoded, err := json.Marshal(applied)
 		if err != nil {
 			return nil, err

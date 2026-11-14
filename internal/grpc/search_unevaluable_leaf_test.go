@@ -36,7 +36,7 @@ import (
 // newTestEnv/importAndLockModel do for everything else.
 func newTestEnvWithFactory(t *testing.T) (*CloudEventsServiceImpl, context.Context, *memory.StoreFactory) {
 	t.Helper()
-	factory := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
+	factory := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := factory.GetTransactionManager()
 

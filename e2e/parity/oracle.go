@@ -94,7 +94,7 @@ func expectedSimpleViewFromSequence(n int, currentState string) ([]byte, error) 
 //  1. schema.Extend           (ingest.ValidateOrExtend, on the raw document —
 //     the entity-write ingress never pre-walks it into a model)
 //  2. schema.Diff             (ingest.ValidateOrExtend)
-//  3. schema.Apply            (plugin's injected ApplyFunc on ExtendSchema)
+//  3. schema.Apply            (plugin's injected ApplyFunc, schema.ApplyMany, on ExtendSchema)
 //
 // The extension is accepted only when ALL three steps succeed. Any
 // earlier step failing → the schema is kept unchanged and the next
@@ -163,10 +163,11 @@ func expectedSimpleViewFromExtensions(extensions []any, currentState string) ([]
 			accepted = append(accepted, i)
 			continue
 		}
-		// Backend parity: the plugin's ExtendSchema replay function (see
-		// app.makeSchemaApply) runs schema.Marshal(schema.Apply(
-		// schema.Unmarshal(baseBytes), delta)), so the stored schema is
-		// round-tripped through the codec after every accepted extension.
+		// Backend parity: the plugin's ExtendSchema replay function
+		// (schema.ApplyMany, wired in app/app.go) decodes the stored
+		// schema, applies the delta and encodes it again, so the stored
+		// schema is round-tripped through the codec after every accepted
+		// extension.
 		// That round-trip normalizes representations (e.g. array
 		// multiset cardinality rewrites to the canonical codec form),
 		// which the oracle must mirror to byte-match. An Apply error

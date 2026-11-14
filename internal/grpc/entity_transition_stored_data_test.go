@@ -11,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
@@ -58,7 +59,7 @@ func (s *firstReadStore) Get(ctx context.Context, id string) (*spi.Entity, error
 // returns so a test can arm it and read the stored entity.
 func newTransitionTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context, *firstReadFactory) {
 	t.Helper()
-	base := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
+	base := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	base.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := base.GetTransactionManager()
 	factory := &firstReadFactory{StoreFactory: base}

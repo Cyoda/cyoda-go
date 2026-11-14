@@ -224,11 +224,11 @@ func New(cfg Config) *App {
 		os.Exit(1)
 	}
 
-	// Wire the schema.Apply replay function into the plugin factory so
-	// ExtendSchema can fold deltas on read. Postgres uses this to fold
-	// the extension log; SQLite/Memory use it to apply in-place.
+	// Wire the schema replay function into the plugin factory. Postgres and
+	// SQLite fold the extension log with it, on read and under an
+	// extension's lock; memory applies each extension in place.
 	if setter, ok := factory.(applyFuncSetter); ok {
-		setter.SetApplyFunc(makeSchemaApply())
+		setter.SetApplyFunc(schema.ApplyMany)
 	}
 
 	// Wrap the factory in the caching decorator. ModelStore(ctx) now
@@ -1161,25 +1161,13 @@ func validateClusterConfig(c cluster.Config) {
 // this exact signature would be skipped silently and every fold-on-read
 // of pending deltas would fail — applyfunc_wiring_test.go pins the
 // in-tree factories to this same declaration at compile time.
+//
+// The function replays a list of deltas in one call (schema.ApplyMany), so
+// the plugins decode and encode the schema once per fold, not once per
+// delta. The plugin packages do not depend on internal/domain/model/schema;
+// the composition root injects it.
 type applyFuncSetter interface {
-	SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error))
-}
-
-// makeSchemaApply returns the schema-apply replay function the plugin
-// factories use to fold extension-log deltas on read. Defined here so
-// the plugin packages don't depend on internal/domain/model/schema.
-func makeSchemaApply() func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		node, err := schema.Unmarshal(base)
-		if err != nil {
-			return nil, fmt.Errorf("apply: unmarshal base: %w", err)
-		}
-		extended, err := schema.Apply(node, delta)
-		if err != nil {
-			return nil, err
-		}
-		return schema.Marshal(extended)
-	}
+	SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))
 }
 
 // mustNewGossip parses the gossip address, creates the memberlist-backed

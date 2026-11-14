@@ -8,9 +8,9 @@ import (
 )
 
 // Apply replays the opaque SchemaDelta bytes onto base, returning a
-// new *ModelNode. The same function is used by plugins (via factory
-// injection) to fold the extension log on Get, and by tests to verify
-// commutativity and validation-monotonicity.
+// new *ModelNode. Tests use it to verify commutativity and
+// validation-monotonicity; the plugins fold the extension log with
+// [ApplyMany].
 //
 // Apply does not mutate base — a fresh tree is produced via the
 // codec's Marshal/Unmarshal round-trip.
@@ -25,22 +25,51 @@ func Apply(base *ModelNode, delta spi.SchemaDelta) (*ModelNode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("schema.Apply: clone base: %w", err)
 	}
-
-	if len(delta) == 0 {
-		return root, nil
-	}
-
-	ops, err := UnmarshalDelta(delta)
-	if err != nil {
-		return nil, fmt.Errorf("schema.Apply: decode delta: %w", err)
-	}
-
-	for i, op := range ops {
-		if err := applyOp(root, op); err != nil {
-			return nil, fmt.Errorf("schema.Apply: op %d (%s %q): %w", i, op.Kind, op.Path, err)
-		}
+	if err := applyInPlace(root, delta); err != nil {
+		return nil, fmt.Errorf("schema.Apply: %w", err)
 	}
 	return root, nil
+}
+
+// ApplyMany is the apply function the composition root wires into the
+// storage plugins: it decodes the persisted schema base once, replays every
+// delta in order onto that one tree, and encodes it once. The result is the
+// bytes that replaying the deltas one [Apply] call each, with a decode and an
+// encode around every call, gives; an empty list gives the canonical encoding
+// of base. A delta that cannot apply fails the whole call.
+//
+// The tree is decoded here and owned by this call, so the deltas apply to it
+// in place, without the copy [Apply] makes. Neither base nor the deltas are
+// written to.
+func ApplyMany(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
+	root, err := Unmarshal(base)
+	if err != nil {
+		return nil, fmt.Errorf("schema.ApplyMany: unmarshal base: %w", err)
+	}
+	for i, delta := range deltas {
+		if err := applyInPlace(root, delta); err != nil {
+			return nil, fmt.Errorf("schema.ApplyMany: delta %d: %w", i, err)
+		}
+	}
+	return Marshal(root)
+}
+
+// applyInPlace replays delta's ops onto root, mutating it. An empty delta
+// changes nothing.
+func applyInPlace(root *ModelNode, delta spi.SchemaDelta) error {
+	if len(delta) == 0 {
+		return nil
+	}
+	ops, err := UnmarshalDelta(delta)
+	if err != nil {
+		return fmt.Errorf("decode delta: %w", err)
+	}
+	for i, op := range ops {
+		if err := applyOp(root, op); err != nil {
+			return fmt.Errorf("op %d (%s %q): %w", i, op.Kind, op.Path, err)
+		}
+	}
+	return nil
 }
 
 func applyOp(root *ModelNode, op SchemaOp) error {

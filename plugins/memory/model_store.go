@@ -126,7 +126,7 @@ func (s *ModelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	if entry.State != spi.ModelLocked {
 		return fmt.Errorf("model %s is not locked: %w", ref, spi.ErrModelNotLocked)
 	}
-	newSchema, err := s.factory.applyFunc(entry.Schema, delta)
+	newSchema, err := s.factory.applyFunc(entry.Schema, []spi.SchemaDelta{delta})
 	if err != nil {
 		return fmt.Errorf("apply delta for %s: %w", ref, err)
 	}

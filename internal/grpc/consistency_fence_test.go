@@ -18,6 +18,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
@@ -41,7 +42,7 @@ var fenceBase = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 func newFenceEnv(t *testing.T) *fenceEnv {
 	t.Helper()
 	clock := memory.NewTestClockAt(fenceBase)
-	factory := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply), memory.WithClock(clock))
+	factory := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany), memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := factory.GetTransactionManager()

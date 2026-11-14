@@ -17,20 +17,10 @@ import (
 )
 
 // extendingMemoryFactory is a memory factory whose ExtendSchema really applies
-// deltas (the production ApplyFunc).
+// deltas (the production ApplyFunc, schema.ApplyMany).
 func extendingMemoryFactory(t *testing.T) *memory.StoreFactory {
 	t.Helper()
-	f := memory.NewStoreFactory(memory.WithApplyFunc(func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		node, err := schema.Unmarshal(base)
-		if err != nil {
-			return nil, err
-		}
-		ext, err := schema.Apply(node, delta)
-		if err != nil {
-			return nil, err
-		}
-		return schema.Marshal(ext)
-	}))
+	f := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	t.Cleanup(func() { f.Close() })
 	return f
 }
