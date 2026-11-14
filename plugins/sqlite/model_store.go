@@ -381,8 +381,9 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 
 // ExtendSchema appends a 'delta' row to model_schema_extensions, on a LOCKED
 // model only (spi.ErrModelNotLocked otherwise, spi.ErrNotFound when absent).
-// The schema stored in models.doc is an immutable base; Get folds the log on
-// top of it via the injected ApplyFunc.
+// While the model is LOCKED the schema stored in models.doc does not change;
+// Get folds the log on top of it via the injected ApplyFunc. Unlock and Save
+// rewrite it (Unlock with the folded schema) and clear the log.
 //
 // The write runs in its own transaction and is not part of the caller's
 // ambient transaction. A delta that changes nothing — applying it to the

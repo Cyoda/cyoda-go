@@ -19,8 +19,8 @@ import (
 // ApplyFunc even when no delta follows it, so the result is always in the
 // apply function's encoding: an extension compares it byte for byte with the
 // result of applying the new delta, and counts its deltas from the savepoint
-// seq. Mirrors postgres's fold; dialect differences are placeholders and the
-// explicit seq column.
+// seq. It reads the latest savepoint, then the deltas after it, in two
+// statements of the caller's transaction; the caller supplies the base schema.
 func (s *modelStore) foldLocked(ctx context.Context, q *sql.Tx, ref spi.ModelRef, baseSchema []byte, canonical bool) ([]byte, int64, error) {
 	var savepointSeq int64
 	var savepointPayload []byte
