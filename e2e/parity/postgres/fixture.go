@@ -128,7 +128,6 @@ func setup() (*postgresFixture, func(), error) {
 	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("cyoda_parity_test"),
 		tcpostgres.WithUsername("testuser"),
-		tcpostgres.WithPassword("testpass"),
 	}, testpg.HardenedOptions()...)
 	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {

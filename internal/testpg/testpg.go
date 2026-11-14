@@ -8,10 +8,14 @@
 // whole suite. The container previously ran with Docker defaults (64MB
 // /dev/shm, 128MB shared_buffers, parallel query enabled) and discarded its
 // logs, so a crash left no evidence.
+//
+// It also gives every container a password of its own, so that no client of
+// another fixture can log in to it (HardenedOptions).
 package testpg
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
@@ -34,10 +38,20 @@ import (
 //
 // (fsync=off is already set by the testcontainers postgres module.)
 //
+// It also sets a random password, new on every call, which callers read back
+// from the container's ConnectionString. A container's host port comes from
+// the host's ephemeral range and a later container can get it again, and a
+// cyoda-go node whose test binary died runs on (each node is in a process
+// group of its own) and keeps dialling the address of its old database. With
+// one password for every fixture, that node logs in to whichever fixture's
+// database now holds the port and acts in it: its scheduler claims that
+// fixture's tasks. With a password of its own, the database refuses it.
+//
 // BasicWaitStrategies is included so callers pass exactly this slice instead of
 // remembering to add it separately.
 func HardenedOptions() []testcontainers.ContainerCustomizer {
 	return []testcontainers.ContainerCustomizer{
+		tcpostgres.WithPassword(rand.Text()),
 		tcpostgres.BasicWaitStrategies(),
 		testcontainers.WithHostConfigModifier(func(hc *container.HostConfig) {
 			hc.ShmSize = 256 * 1024 * 1024

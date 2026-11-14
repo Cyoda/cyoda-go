@@ -77,7 +77,6 @@ func TestMain(m *testing.M) {
 	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("minicyoda_test"),
 		tcpostgres.WithUsername("testuser"),
-		tcpostgres.WithPassword("testpass"),
 	}, testpg.HardenedOptions()...)
 	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {

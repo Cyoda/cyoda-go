@@ -249,7 +249,6 @@ func MustSetupMultiNodeWithOpts(t *testing.T, n int, extraEnv []string, launch f
 	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("cyoda_parity_multinode"),
 		tcpostgres.WithUsername("testuser"),
-		tcpostgres.WithPassword("testpass"),
 	}, testpg.HardenedOptions()...)
 	// Up to six pnodes, each with a main pool (25), a scheduler pool (10) and
 	// a heartbeat connection (1), plus the test's own reader: above the
