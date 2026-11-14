@@ -69,7 +69,7 @@ Env vars required to move from defaults to a production-shaped deployment.
 - `CYODA_POSTGRES_MAX_CONNS` = `25` (default)
 - `CYODA_POSTGRES_MIN_CONNS` = `5` (default)
 - `CYODA_POSTGRES_SCHEDULER_CONNS` = `10` (default) — the scheduler's own pool, plus one heartbeat connection
-- `CYODA_POSTGRES_MODEL_CONNS` = `8` (default) — the model store's own pool; PostgreSQL's `max_connections` must hold all three pools of every node
+- `CYODA_POSTGRES_MODEL_CONNS` = `8` (default) — the model store's own pool; PostgreSQL's `max_connections` must hold every node's main, scheduler, heartbeat and model connections (44 per node with the defaults)
 - `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` = `5m` (default)
 - `CYODA_POSTGRES_AUTO_MIGRATE` = `true` (default)
 

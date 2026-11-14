@@ -129,7 +129,7 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success.
 
 **POST /api/model/{entityName}/{modelVersion}/changeLevel/{changeLevel}**
 
-Set or update the change level on a model. Meaningful for locked models; unlocked models always allow all changes.
+Set or update the change level on a model. The level governs a locked model; an unlocked model always allows all changes.
 
 Set the level when you define the model, before you lock it. A change on a locked model takes effect on each node as that node's model cache picks it up: through the cache invalidation broadcast, normally within milliseconds, or when `CYODA_MODEL_CACHE_LEASE` ends if the broadcast is lost. Until then a node keeps admitting or refusing extensions by the old level, and an extension computed under the old level can commit just after the change.
 
@@ -396,20 +396,20 @@ curl -s -X POST \
 
 Response: `"1d1e1b10-1155-11f0-bcd5-ae468cd3ed16"`
 
+**Set change level (allow structural evolution once the model is locked):**
+
+```
+curl -s -X POST \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/model/nobel-prize/1/changeLevel/STRUCTURAL"
+```
+
 **Lock the model:**
 
 ```
 curl -s -X PUT \
   -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1/lock"
-```
-
-**Set change level (allow structural evolution on locked model):**
-
-```
-curl -s -X POST \
-  -H @- <<<"Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/api/model/nobel-prize/1/changeLevel/STRUCTURAL"
 ```
 
 **List all models:**

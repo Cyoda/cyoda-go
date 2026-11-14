@@ -5389,8 +5389,8 @@ paths:
         4. STRUCTURAL: Allows fundamental model changes — new fields, and giving a path a kind it does not yet declare
 
 
-        Note: Setting a change level is only meaningful for locked models. An
-        unlocked model always allows all changes.
+        Note: The level governs a locked model. An unlocked model always
+        allows all changes.
 
 
         Set the level before the model is locked. A change on a locked model
