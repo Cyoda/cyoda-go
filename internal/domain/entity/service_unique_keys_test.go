@@ -166,8 +166,8 @@ func TestCreateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
+	engine := wfengine.NewEngine(cachedFactory(spy), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	h := New(cachedFactory(spy), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, spy)
 	registerProductModel(t, ctx, spy)
@@ -214,8 +214,8 @@ func TestUpdateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
+	engine := wfengine.NewEngine(cachedFactory(spy), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	h := New(cachedFactory(spy), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, spy)
 	registerProductModel(t, ctx, spy)
@@ -309,18 +309,6 @@ func TestUpdateEntityCollection_NonObjectRoot_ValidationFailed(t *testing.T) {
 // so a later refusal could not take it back.
 func TestUpdateEntityCollection_PartialKeyRefused_ModelUnchanged(t *testing.T) {
 	h, ctx := newOrderTestHandler(t)
-	// The schema-apply function production wires (app.makeSchemaApply).
-	h.factory.(*memory.StoreFactory).SetApplyFunc(func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		node, err := schema.Unmarshal(base)
-		if err != nil {
-			return nil, err
-		}
-		extended, err := schema.Apply(node, delta)
-		if err != nil {
-			return nil, err
-		}
-		return schema.Marshal(extended)
-	})
 	res, err := h.CreateEntity(ctx, CreateEntityInput{
 		EntityName:   "Order",
 		ModelVersion: "1",
@@ -366,15 +354,16 @@ func TestUpdateEntityCollection_PartialKeyRefused_ModelUnchanged(t *testing.T) {
 // 2-field composite unique key [{ID:"uk1", Fields:["$.email","$.accountId"]}].
 func newOrderTestHandler(t *testing.T) (*Handler, context.Context) {
 	t.Helper()
-	factory := memory.NewStoreFactory()
+	// The schema-apply function production wires (app/app.go).
+	factory := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	ctx := orderTestCtx()
 
 	txMgr, err := factory.TransactionManager(ctx)
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
+	engine := wfengine.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	h := New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, factory)
 	return h, ctx
@@ -393,8 +382,8 @@ func newOrderTestHandlerWithSpy(t *testing.T) (*Handler, context.Context, *ctxRe
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
+	engine := wfengine.NewEngine(cachedFactory(spy), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	h := New(cachedFactory(spy), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, spy)
 	return h, ctx, rec

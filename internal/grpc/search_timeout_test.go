@@ -163,7 +163,7 @@ func TestEntitySearch_DirectSearch_TimeoutExpires_SearchTimeoutNoElements(t *tes
 	blocking := &searchTimeoutEntityStore{}
 	factory := &searchTimeoutStoreFactory{StoreFactory: base, entityStore: blocking}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
 
 	millis := 1
 	ce := makeCE(EntitySearchRequest, map[string]any{

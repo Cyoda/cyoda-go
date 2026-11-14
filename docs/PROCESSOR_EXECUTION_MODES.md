@@ -113,6 +113,8 @@ found); the processor's request carries the current payload. See
 A callback ack is **provisional** — it is not durable until the owning
 transaction commits. If the processor fails or the engine rolls back `T`,
 all callback writes are rolled back atomically with the rest of the cascade.
+A schema extension a callback write made is the exception throughout this
+section: it commits on its own and stays ([CONSISTENCY.md §3a](CONSISTENCY.md#3a-model--data-contract)).
 
 Each callback is **all-or-nothing**: it runs in a scope of its own, and either
 all its writes become part of `T` or none do. A `2xx` is sent only for a
@@ -175,8 +177,9 @@ non-fatal. The engine code is `executeAsyncNewTx` at
 2. It dispatches the processor. **The processor's returned entity mutations
    are intentionally discarded** — see the explicit `_, dispatchErr := …` in
    `executeAsyncNewTx` and the comment above it.
-3. On failure: `RollbackToSavepoint(T, S)` undoes any writes the processor
-   made via gRPC callbacks; a warning is logged at WARN level; **the pipeline
+3. On failure: `RollbackToSavepoint(T, S)` undoes any entity writes the
+   processor made via gRPC callbacks (a schema extension one of them made
+   has committed on its own and stays); a warning is logged at WARN level; **the pipeline
    continues** to the next processor. A savepoint that cannot be created,
    undone or released is not a processor failure: it fails the operation with
    a ticketed `5xx` and nothing commits. A callback write that had already
@@ -184,7 +187,7 @@ non-fatal. The engine code is `executeAsyncNewTx` at
    operation fails with a retryable `409 CONFLICT` and nothing commits. A
    callback write under the processor that fails with an answer that is not
    retryable makes the processor fail the same way: its savepoint is undone
-   with everything its callbacks wrote, and the pipeline continues. A replaced
+   with everything its callbacks wrote to entities, and the pipeline continues. A replaced
    compute member is shut out before the savepoint is undone, so none of its
    writes lands after it.
 4. On success: `ReleaseSavepoint(T, S)` discards the savepoint marker.
@@ -211,7 +214,7 @@ The engine sends a tx-token to the compute node (same mechanism as `SYNC` —
 see §2 Transaction-bound callbacks). Callbacks that echo the token join `T`
 directly (via `txMgr.Join`). The engine independently scopes the entire
 dispatch in a savepoint `S`: if the processor fails, `RollbackToSavepoint(T, S)`
-undoes all callback writes and the pipeline continues, unless one of them had
+undoes all callback entity writes and the pipeline continues, unless one of them had
 already lost a race, which fails the operation with a retryable `409 CONFLICT`; if the processor
 succeeds, `ReleaseSavepoint(T, S)` retains those writes inside `T` (subject
 to `T`'s eventual commit). A callback write to the entity the processor runs
@@ -227,6 +230,11 @@ callout's callbacks write in `T`.
 - **The savepoint protects writes the processor makes via callbacks, not the
   processor's returned mutations.** If you need the result, do not use
   `ASYNC_NEW_TX`.
+- **The savepoint does not undo a schema extension.** A callback write that
+  brings a field its model's `changeLevel` permits extends the model in a
+  transaction of its own, before the callback returns; the field stays in the
+  model when the savepoint is undone, as it does when any write that extended
+  fails (`cyoda help models`, SCHEMA EXTENSION).
 - A misconfigured `ASYNC_NEW_TX` processor that fails silently every time is
   invisible to the cascade — it only surfaces in logs at `WARN`. Monitor
   `level=warn pkg=workflow processor=<name>` patterns.

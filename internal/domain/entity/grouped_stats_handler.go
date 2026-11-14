@@ -30,7 +30,7 @@ const maxGroupedStatsBodySize = 10 * 1024 * 1024
 //
 // modelStore is returned alongside so the handler can hold the condition,
 // groupBy and aggregate paths to the model the way /search/direct and
-// conditional delete do — including their bounded single RefreshAndGet, which
+// conditional delete do — including their bounded single schema refresh, which
 // is what stops a stale cached schema from falsely rejecting a field a peer
 // node has already extended the model with (.claude/rules/multi-node-primary.md).
 //

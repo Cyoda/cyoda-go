@@ -80,7 +80,7 @@ func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 
 // The transaction CompareAndSave opens for itself must set app.current_tenant,
 // as every other transaction this plugin opens does (TransactionManager.Begin,
-// ExtendSchema's self-wrap, the async-search scan). The owner role bypasses the
+// the model store's transactions, the async-search scan). The owner role bypasses the
 // RLS policies, so the ordinary fixtures cannot see a missing GUC at all — this
 // test runs the compare-and-save through a dedicated non-superuser role — a
 // probe of the setting, not a supported deployment (row-level security is

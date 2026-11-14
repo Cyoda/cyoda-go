@@ -190,48 +190,65 @@ Model descriptors are second-class state: they describe the shape of the
 first-class data. Because concurrent entity writes coexist with
 occasional schema extensions (when a model has a non-empty
 `ChangeLevel`), the boundary between the two is part of the
-transactional contract itself. The spec living in
-`docs/superpowers/specs/2026-04-20-model-schema-extensions-design.md`
-introduced this as five invariants; the current form below amends
-invariant 1 (the original promised absolute non-interference, which the
-savepoint fold cannot honour — see invariant 1's closing sentence):
+transactional contract itself. An extending write computes an additive
+delta and calls `ModelStore.ExtendSchema` before its own entity changes
+commit. Five invariants hold on every backend:
 
-1. **Non-interference for non-extending writes.** An entity write
-   whose data already fits the folded schema (a nil delta — the
-   steady state) touches no model row and cannot conflict with any
-   concurrent writer over schema state. Writes that genuinely
-   extend the same model are the exception: they serialise per
-   `(tenant, model)` via a write-claim on the `models` row, so a
-   concurrent extender under `REPEATABLE READ` fails with a
-   retryable conflict (first committer wins, as for entity rows).
-   The serialisation is required by the limit of invariant 3:
-   delta appends commute, but the periodic savepoint fold does
-   not — a fold running in a snapshot that cannot yet see a
-   concurrent lower-seq delta would exclude that delta from every
-   future fold, silently and permanently.
-2. **Commit-bound visibility.** A schema extension is visible to
-   subsequent readers only after the enclosing entity transaction
-   commits. Rolled-back entity transactions leave no trace of their
-   extension on the observable schema.
-3. **Commutativity.** Well-formed deltas fold order-independently.
-   Two extensions to the same model produced by concurrent writers
-   produce the same folded schema regardless of the interleaving.
+1. **No interference.** An entity write whose data already fits the
+   folded schema (a nil delta — the steady state) touches no model row
+   and does no extra storage work. A write that extends commits its
+   extension in a short transaction of its own, never in the entity
+   transaction, and never conflicts with another write over schema
+   state: contention between extenders of one model, or with entity
+   transactions, is a wait (until the request's context ends), never
+   `spi.ErrConflict` or a `409 CONFLICT`. On postgres the extenders of
+   one model serialise on a `SELECT … FOR NO KEY UPDATE` of the
+   model's `models` row, held only for that short `READ COMMITTED`
+   transaction; the per-model savepoint fold runs under that lock, so
+   it always sees every lower-`seq` delta.
+2. **Visible on return, kept on failure.** When `ExtendSchema` returns
+   nil the delta is committed: every later `ModelStore.Get` on any node
+   returns a schema that includes it, and it may be visible to others
+   before the call returns. It stays whatever then happens to the
+   entity transaction — a rolled-back, failed or cancelled write leaves
+   its extension in the schema. `ModelStore.Get` reads the latest
+   committed model and ignores any transaction on its context, so a
+   transaction can read a schema newer than its snapshot; that is safe
+   because a `LOCKED` model's schema only grows (invariant 4). What a
+   client sees of this — a field visible before the write commits,
+   kept after it fails, and on another node only after the model cache
+   invalidation broadcast — is set out in `cyoda help models` (SCHEMA
+   EXTENSION).
+3. **Commutativity, idempotence, loss-freedom.** Applying a set of
+   well-formed deltas gives the same schema in any order, so the order
+   of the extension log does not decide the folded schema
+   (`internal/domain/model/schema/commutativity_property_test.go`,
+   `fold_order_test.go`). Which deltas a set of writes produces can
+   depend on the order of the writes: for structural extension (new
+   fields, new kinds, the nullable marker) concurrent writers converge
+   on the same schema, but for numeric- and temporal-leaf widening the
+   property is that every reachable schema is monotone and admits
+   every value written (`docs/cloud-parity/numeric-type-admission.md`).
+   A delta the schema already holds is a successful no-op that writes
+   nothing, so retrying an extension whose outcome is unknown is safe.
+   Every delta whose call returned nil is in the folded schema.
 4. **Validation-monotonicity.** Every op in the catalog strictly
    broadens the accepted-value set. Documents that validate against
    the base always validate against the extended schema. An op that
    tightens the accepted set (e.g., adding a required field) is
    explicitly excluded from the catalog.
-5. **State-machine disjointness.** `Save(desc)` requires the model
-   UNLOCKED; `ExtendSchema(ref, delta)` requires the model LOCKED
-   with a non-empty `ChangeLevel`. The two paths are disjoint by
-   the state machine — they cannot run concurrently against the
-   same model.
+5. **State-machine disjointness.** `Save(desc)` replaces an UNLOCKED
+   model's schema wholesale; `ExtendSchema(ref, delta)` extends only a
+   LOCKED model and returns `spi.ErrModelNotLocked` otherwise, checked
+   under the backend's model lock (`409 MODEL_NOT_LOCKED` to the
+   client). Whether the write may extend at all is the caller's
+   decision, by the model's `ChangeLevel`; a model without one is
+   validated strictly and never extended.
 
 ### Operator Contract for Unlock
 
-`Unlock` is the caller-facing transition from LOCKED to UNLOCKED. The
-contract requires writers to **drain before** `Unlock` is invoked —
-no `ExtendSchema` may be in flight at the moment `Unlock` runs.
+`Unlock` is the caller-facing transition from LOCKED to UNLOCKED, and
+it requires the model to have no committed entities.
 
 The extensions committed while the model was LOCKED are part of its
 schema. `Unlock` keeps them: the Postgres and SQLite plugins fold the
@@ -239,6 +256,18 @@ extension log into the stored schema and clear the log in one
 transaction, so a `Get` returns the same schema before and after
 `Unlock`; the memory plugin applies each extension in place and has no
 log to fold.
+
+`Unlock` and `ExtendSchema` exclude each other on every backend. On
+Postgres, `Unlock`'s state update takes the `models` row lock that
+every extension takes, so the fold sees every extension committed
+before it, and an extension that reaches the model after it finds the
+model UNLOCKED and is refused with `spi.ErrModelNotLocked`. SQLite runs
+both in write transactions, which it serialises; memory runs both
+under its model mutex. A write still in progress when its model is
+unlocked — possible only while its own entity is uncommitted, for
+example during a compute-node callout — therefore answers
+`409 MODEL_NOT_LOCKED` if it then extends, and never writes to an
+UNLOCKED model's log.
 
 `Save` replaces the schema wholesale and `Delete` removes the model, and
 each clears the ref's extension log in the same transaction: a `Get`
@@ -248,12 +277,21 @@ state machine the log is already empty at that point, so the Postgres
 and SQLite plugins log a `WARN` with the count when either finds rows
 there — a writer bypassed the state machine.
 
-Operator misuse — issuing `Unlock` while writers are still in flight
-— is undefined behavior at the SPI level. On Postgres, `Unlock` takes
-the same write-claim on the `models` row as `ExtendSchema`: a delta
-committed before `Unlock` is folded, and a writer that runs after it
-appends its delta to the log of an UNLOCKED model, where the next `Save`
-or `Delete` clears it with the `WARN`.
+Model administration — import, lock, unlock, delete, change level,
+unique keys — runs from one place, not concurrently on one model. Two
+administration calls that overlap on one model have no defined order:
+an import or unique-key change reads the model and then saves it whole,
+so a lock or an extension landing between the read and the save can be
+overwritten.
+
+Unlock is not atomic with its entity check either: it counts the
+model's committed entities, then unlocks. An entity write still in
+progress — its transaction not yet committed, or a create that read the
+model as LOCKED just before — is not counted and can commit after the
+unlock, leaving an UNLOCKED model with entities. A write whose
+extension runs after the unlock is refused at that extension (above);
+one that extended while the model was still locked, or does not extend
+at all, is not. Writes to a model stop before it is unlocked.
 
 ## 3c. In-transaction `Search` is a predicate read
 

@@ -2,99 +2,106 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// lastSavepointSeq returns the seq of the most-recent savepoint row
-// for ref, or 0 if no savepoint rows exist. Used by ExtendSchema to
-// drive the savepoint trigger without a separate round-trip at
-// extension time.
-func (s *modelStore) lastSavepointSeq(ctx context.Context, ref spi.ModelRef) (int64, error) {
-	var seq int64
-	err := s.q.QueryRow(ctx, `
-		SELECT seq FROM model_schema_extensions
-		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND kind = 'savepoint'
-		ORDER BY seq DESC LIMIT 1`,
-		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&seq)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return 0, nil
-	case err != nil:
-		return 0, fmt.Errorf("lastSavepointSeq: %w", err)
-	default:
-		return seq, nil
-	}
+// foldedModel is a model as one statement read it: the stored doc, the
+// descriptor with the extension log folded into its schema, and the number
+// of deltas the next savepoint would fold.
+type foldedModel struct {
+	// doc is models.doc as stored.
+	doc []byte
+	// desc is the descriptor from doc, its Schema replaced by the fold.
+	desc *spi.ModelDescriptor
+	// pending counts the deltas after the latest savepoint.
+	pending int
 }
 
-// foldLocked returns the fully-folded schema for ref. It starts from
-// the most recent savepoint row (if any), else from the caller-supplied
-// baseSchema (models.doc.schema), and applies every subsequent delta
-// row in seq order via the injected ApplyFunc.
-//
-// When no extensions exist yet, returns baseSchema verbatim. ApplyFunc
-// is only required when at least one delta must be applied — this lets
-// models with zero deltas read cleanly on factories where the apply
-// function has not been wired yet.
-//
-// Note: the "Locked" suffix reflects the plan's terminology (fold under
-// the caller's tx/read-view), not a mutex — there is no in-memory
-// synchronization in this method.
-func (s *modelStore) foldLocked(ctx context.Context, ref spi.ModelRef, baseSchema []byte) ([]byte, error) {
-	var savepointSeq int64
-	var savepointPayload []byte
-	err := s.q.QueryRow(ctx, `
+// foldModelSQL reads, in one statement and so in one snapshot, the model's
+// doc (part 0), its latest savepoint (part 1) and the deltas after that
+// savepoint (part 2), in that order. Separate statements could combine a doc
+// from before an Unlock with the log that Unlock cleared.
+const foldModelSQL = `
+	WITH sp AS (
 		SELECT seq, payload FROM model_schema_extensions
 		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND kind = 'savepoint'
-		ORDER BY seq DESC LIMIT 1`,
-		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&savepointSeq, &savepointPayload)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		savepointSeq = 0
-		savepointPayload = nil
-	case err != nil:
-		return nil, fmt.Errorf("savepoint lookup: %w", err)
-	}
+		ORDER BY seq DESC LIMIT 1
+	)
+	SELECT 0 AS part, 0::bigint AS seq, doc AS payload FROM models
+	WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
+	UNION ALL
+	SELECT 1, seq, payload FROM sp
+	UNION ALL
+	SELECT 2, e.seq, e.payload FROM model_schema_extensions e
+	WHERE e.tenant_id = $1 AND e.model_name = $2 AND e.model_version = $3 AND e.kind = 'delta'
+	  AND e.seq > COALESCE((SELECT seq FROM sp), 0)
+	ORDER BY part, seq`
 
-	current := savepointPayload
-	if current == nil {
-		current = baseSchema
-	}
-
-	rows, err := s.q.Query(ctx, `
-		SELECT payload FROM model_schema_extensions
-		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
-		  AND kind = 'delta' AND seq > $4
-		ORDER BY seq ASC`,
-		string(s.tenantID), ref.EntityName, ref.ModelVersion, savepointSeq)
+// foldModel reads ref with foldModelSQL on q and folds the log: from the
+// latest savepoint if there is one, else from the doc's schema, applying
+// every later delta, in seq order, in one call of apply. With no delta to
+// apply the schema is the start verbatim and needs no apply function —
+// unless canonical is set, when the start goes through apply with an empty
+// list, so the result is always in the apply function's encoding (an
+// extension compares it byte for byte with the result of applying the new
+// delta). Otherwise a nil apply is refused. A missing model is
+// spi.ErrNotFound.
+func foldModel(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.ModelRef, apply ApplyFunc, canonical bool) (*foldedModel, error) {
+	rows, err := q.Query(ctx, foldModelSQL, string(tenantID), ref.EntityName, ref.ModelVersion)
 	if err != nil {
-		return nil, fmt.Errorf("delta scan: %w", err)
+		return nil, fmt.Errorf("failed to read model %s: %w", ref, err)
 	}
 	defer rows.Close()
 
-	first := true
+	var m foldedModel
+	var start []byte
+	var startSeq int64 // the savepoint's seq, 0 when the fold starts from the doc
+	var deltas []spi.SchemaDelta
 	for rows.Next() {
-		var deltaBytes []byte
-		if err := rows.Scan(&deltaBytes); err != nil {
-			return nil, fmt.Errorf("scan delta: %w", err)
+		var (
+			part    int
+			seq     int64
+			payload []byte
+		)
+		if err := rows.Scan(&part, &seq, &payload); err != nil {
+			return nil, fmt.Errorf("failed to read model %s: %w", ref, err)
 		}
-		if first {
-			if s.applyFunc == nil {
-				return nil, fmt.Errorf("model has pending schema deltas but ApplyFunc is not wired on the factory — see cmd/cyoda/main.go")
+		if part != 0 && m.desc == nil {
+			break // the doc sorts first: log rows without one belong to no model
+		}
+		switch part {
+		case 0:
+			m.doc = payload
+			if m.desc, err = unmarshalModelDoc(payload); err != nil {
+				return nil, err
 			}
-			first = false
-		}
-		current, err = s.applyFunc(current, spi.SchemaDelta(deltaBytes))
-		if err != nil {
-			return nil, fmt.Errorf("apply delta: %w", err)
+			start = m.desc.Schema
+		case 1:
+			start, startSeq = payload, seq
+		default:
+			deltas = append(deltas, spi.SchemaDelta(payload))
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("delta iteration: %w", err)
+		return nil, fmt.Errorf("failed to read model %s: %w", ref, err)
 	}
-	return current, nil
+	if m.desc == nil {
+		return nil, fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
+	}
+	m.pending = len(deltas)
+	// A read with no delta to apply needs no apply function; anything else
+	// does.
+	if len(deltas) == 0 && !canonical {
+		m.desc.Schema = start
+		return &m, nil
+	}
+	if apply == nil {
+		return nil, fmt.Errorf("cannot fold the schema of %s: ApplyFunc is not wired on the factory", ref)
+	}
+	if m.desc.Schema, err = apply(start, deltas); err != nil {
+		return nil, fmt.Errorf("fold extension log for %s: apply %d deltas after seq %d: %w", ref, len(deltas), startSeq, err)
+	}
+	return &m, nil
 }

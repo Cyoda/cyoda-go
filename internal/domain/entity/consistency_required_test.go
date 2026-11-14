@@ -25,7 +25,7 @@ func mustPanic(t *testing.T, name string, f func()) {
 
 func TestNew_NilConsistencyPanics(t *testing.T) {
 	mustPanic(t, "entity.New", func() {
-		entity.New(nil, nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), nil, platformclock.Real())
+		entity.New(cachedFactory(nil), nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), nil, platformclock.Real())
 	})
 }
 

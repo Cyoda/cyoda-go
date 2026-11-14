@@ -74,9 +74,9 @@ func assertRoundTrip(t *testing.T, old, extended *schema.ModelNode, label string
 	if err != nil {
 		t.Fatalf("%s: Diff failed: %v", label, err)
 	}
-	applied, err := schema.Apply(old, delta)
+	applied, err := applyDelta(old, delta)
 	if err != nil {
-		t.Fatalf("%s: Apply failed: %v", label, err)
+		t.Fatalf("%s: apply failed: %v", label, err)
 	}
 	appliedBytes, _ := schema.Marshal(applied)
 	extendedBytes, _ := schema.Marshal(extended)

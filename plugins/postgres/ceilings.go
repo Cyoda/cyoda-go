@@ -127,7 +127,7 @@ func (e *acquireTimeoutError) StorageUnavailable() bool { return true }
 //
 // It is package-level, and every acquire in this plugin goes through it, because
 // the sites that open a transaction on the pool — TransactionManager.Begin,
-// ExtendSchema's self-wrap, the async-search scan's own-ceiling transaction and
+// the model store's transactions, the async-search scan's own-ceiling transaction and
 // a non-transactional compare-and-save's row-lock transaction — contend for the
 // same connections and must therefore say the same thing about running out of
 // them. When only Begin classified, a saturated pool answered a

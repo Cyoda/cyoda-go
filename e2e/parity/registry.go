@@ -2,9 +2,10 @@ package parity
 
 import "testing"
 
-// allTests holds 265 scenarios in this package: the entries of its literal
+// allTests holds 267 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
-// (callback_txjoin_conflict.go, ifmatch_callback_self_write.go).
+// (callback_txjoin_conflict.go, ifmatch_callback_self_write.go,
+// schema_extension_contract.go).
 // TestParityScenarioCount (registry_count_test.go) checks the number: change
 // it there and here in the change that adds or removes a scenario. The
 // scenarios cover model and workflow import and export, entity CRUD and
@@ -290,7 +291,6 @@ var allTests = []NamedTest{
 	{"SchemaExtensionCrossBackendByteIdentity", RunSchemaExtensionCrossBackendByteIdentity},
 	{"SchemaExtensionAtomicRejection", RunSchemaExtensionAtomicRejection},
 	{"SchemaExtensionConcurrentConvergence", RunSchemaExtensionConcurrentConvergence},
-	{"SchemaExtensionSavepointOnLockFoldEquivalence", RunSchemaExtensionSavepointOnLockFoldEquivalence},
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 	{"SchemaNumericFoldCarveout", RunSchemaNumericFoldCarveout},

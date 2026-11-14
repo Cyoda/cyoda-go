@@ -331,7 +331,7 @@ func TestScenarioDynamicLoopLimit(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	// Use a small maxStateVisits for faster test.
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithMaxStateVisits(3))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithMaxStateVisits(3))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "dynamic-loop", ModelVersion: "1.0"}
@@ -474,7 +474,7 @@ func TestScenarioStaticLoopDetectionViaImport(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr2 := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr2, platformclock.Real())
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr2, platformclock.Real())
 	handler := New(factory, engine, 60*time.Second)
 
 	ctx := ctxWithTenant(testTenant)
@@ -632,7 +632,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr2 := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr2, platformclock.Real())
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr2, platformclock.Real())
 	handler := New(factory, engine, 60*time.Second)
 
 	ctx := ctxWithTenant(testTenant)

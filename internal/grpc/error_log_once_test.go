@@ -78,8 +78,7 @@ func TestGRPCFailure_LoggedOnceAtItsClassLevel(t *testing.T) {
 		factory := memory.NewStoreFactory()
 		defer factory.Close()
 		store, _ := factory.AsyncSearchStore(context.Background())
-		svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(
-			factory, common.NewDefaultUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())}
+		svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())}
 		logs := captureLogs(t)
 
 		resp, err := svc.EntitySearch(grpcTenantCtx(), makeCE(SnapshotGetStatusRequest, map[string]any{
@@ -130,8 +129,7 @@ func TestGRPCFailure_LoggedOnceAtItsClassLevel(t *testing.T) {
 		factory := memory.NewStoreFactory()
 		defer factory.Close()
 		store, _ := factory.AsyncSearchStore(context.Background())
-		svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(
-			factory, common.NewDefaultUUIDGenerator(), unreadableJobs{store}, newTestConsistency(t, factory), platformclock.Real())}
+		svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), unreadableJobs{store}, newTestConsistency(t, factory), platformclock.Real())}
 		logs := captureLogs(t)
 
 		resp, err := svc.EntitySearch(grpcTenantCtx(), makeCE(SnapshotGetStatusRequest, map[string]any{

@@ -166,7 +166,7 @@ func newRunEnvWith(t *testing.T, ext contract.ExternalProcessingService,
 	if ext != nil {
 		opts = append(opts, WithExternalProcessing(ext), WithCoordination(txcoord.New(engineTx)))
 	}
-	engine := NewEngine(factory, uuids, engineTx, funcClock(clock), opts...)
+	engine := NewEngine(cachedFactory(factory), uuids, engineTx, funcClock(clock), opts...)
 	ctx := ctxWithTenant(testTenant)
 	return &runEnv{engine: engine, factory: factory, sts: taskStore(t, factory, ctx), txMgr: txMgr, ctx: ctx, advance: advance}
 }

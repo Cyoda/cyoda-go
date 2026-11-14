@@ -18,7 +18,7 @@ import (
 // that a plugin owns the table for, but they are cyoda-go's vocabulary,
 // not the plugin's. A plugin keeps a SchemaDelta opaque — it is []byte
 // on the SPI — and never parses an op kind, so adding one needs no
-// coordination with any plugin. Apply already fails closed on a kind it
+// coordination with any plugin. ApplyMany already fails closed on a kind it
 // does not know, which is what makes a log written by a newer version
 // refuse to be half-applied by an older one.
 type SchemaOpKind string
@@ -42,14 +42,14 @@ const (
 	// additional primitive data types. Payload shape matches
 	// KindBroadenType. The op's Path targets the ARRAY node; the
 	// widening applies to its .Element().Types(). An ARRAY whose
-	// Element() is nil at the time of Apply gains a fresh LEAF element
+	// Element() is nil at the time of ApplyMany gains a fresh LEAF element
 	// with the payload types. ChangeLevel: ARRAY_ELEMENTS.
 	KindAddArrayItemType SchemaOpKind = "add_array_item_type"
 
 	// KindAddKindBranch records a path being observed as a kind it did
 	// not declare before. The op's Path targets the node; the Payload
 	// carries a node holding EXACTLY that one branch, in the same
-	// encoding as schema.Marshal, and Apply merges it into the target's
+	// encoding as schema.Marshal, and ApplyMany merges it into the target's
 	// branch set. The kind is not stored a second time beside the
 	// payload — the payload names it, and a derived value stored twice
 	// is what made a node's kind label disagree with its contents in
@@ -70,7 +70,7 @@ const (
 // root node. Empty string targets the root. Segments are either:
 //   - a literal child name (for object descent), or
 //   - the token "[]" (for array-element descent — valid only when
-//     the current node is an ARRAY; Apply follows Element()).
+//     the current node is an ARRAY; ApplyMany follows Element()).
 //
 // No JSON-Schema keywords (no "/properties", "/type"): paths are
 // domain-tree field names only. Examples:

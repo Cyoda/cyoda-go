@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,24 +10,30 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// modelStore implements spi.ModelStore backed by PostgreSQL.
+// modelStore implements spi.ModelStore backed by PostgreSQL. Every method
+// runs on the model pool (model_pool.go) and never joins a transaction on
+// ctx: a read returns the latest committed model, and a write commits on its
+// own.
 type modelStore struct {
-	q         Querier
-	pool      *pgxpool.Pool // used by ExtendSchema to self-wrap a pgx.Tx when no ambient tx is in ctx
+	models    *modelPool
+	q         Querier // single statements on the model pool; never joins a transaction on ctx
 	tenantID  spi.TenantID
-	applyFunc ApplyFunc // optional; required when the extension log is non-empty
-	cfg       config    // plugin config — read SchemaSavepointInterval and AcquireTimeout from here
+	applyFunc ApplyFunc // folds the extension log; ExtendSchema refuses to run without it
+	cfg       config    // plugin config — read SchemaSavepointInterval from here
 }
 
-// acquireContext returns the acquire-only deadline context for ExtendSchema's
-// self-wrap. See newAcquireContext for why it must never reach the tx handle.
-func (s *modelStore) acquireContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return newAcquireContext(ctx, s.cfg.AcquireTimeout)
+func newModelStore(models *modelPool, tenantID spi.TenantID, applyFunc ApplyFunc, cfg config) *modelStore {
+	return &modelStore{
+		models:    models,
+		q:         unjoinedQuerier{pool: models.pool, acquireTimeout: models.acquireTimeout, what: "model"},
+		tenantID:  tenantID,
+		applyFunc: applyFunc,
+		cfg:       cfg,
+	}
 }
 
 // modelDoc is the JSON representation stored in the doc JSONB column.
@@ -87,28 +94,14 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 	return nil
 }
 
+// Get returns the latest committed model with its extension log folded
+// into the schema, read in one statement.
 func (s *modelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.ModelDescriptor, error) {
-	var raw []byte
-	err := s.q.QueryRow(ctx,
-		`SELECT doc FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
-		}
-		return nil, fmt.Errorf("failed to get model %s: %w", modelRef, err)
-	}
-	desc, err := unmarshalModelDoc(raw)
+	m, err := foldModel(ctx, s.q, s.tenantID, modelRef, s.applyFunc, false)
 	if err != nil {
 		return nil, err
 	}
-
-	folded, err := s.foldLocked(ctx, modelRef, desc.Schema)
-	if err != nil {
-		return nil, fmt.Errorf("fold extension log for %s: %w", modelRef, err)
-	}
-	desc.Schema = folded
-	return desc, nil
+	return m.desc, nil
 }
 
 func (s *modelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
@@ -167,79 +160,11 @@ func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	return nil
 }
 
-// Lock transitions the model to the LOCKED state and, atomically in the
-// same context (= same ambient entity transaction), writes a savepoint
-// row holding the pre-lock folded schema. Post-lock Gets start from the
-// savepoint rather than replaying the full log, keeping fold cost
-// bounded independent of the pre-lock extension count.
-//
-// Lock is idempotent: if the model is already locked, it is a no-op
-// (no duplicate savepoint is written). If the base schema is absent
-// (nil/empty), no savepoint is written either — there is nothing to
-// replay from and a null JSONB payload would violate the column's
-// NOT NULL constraint.
-//
-// Save-on-lock is deliberately asymmetric with Unlock (no save-on-unlock):
-// Unlock folds the extension log into the stored schema and clears it,
-// so a savepoint at that moment would be removed in the same transaction.
+// Lock transitions the model to the LOCKED state. It is the state update
+// alone: no extension reaches an UNLOCKED model, and Unlock, Save and a new
+// model leave the extension log empty, so there is nothing to fold.
 func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
-	// Check pre-state so we can skip the savepoint write on the
-	// idempotent re-lock path (already-locked model).
-	wasUnlocked, err := s.isCurrentlyUnlocked(ctx, modelRef)
-	if err != nil {
-		return err
-	}
-
-	// Compute the fold BEFORE flipping state so the savepoint captures
-	// the schema as-of pre-lock. ExtendSchema is the only writer to
-	// model_schema_extensions and it is disjoint from the LOCKED phase
-	// by the state machine, so there is no concurrent writer to race.
-	var folded []byte
-	if wasUnlocked {
-		base, err := s.baseSchema(ctx, modelRef)
-		if err != nil {
-			return fmt.Errorf("lock fold base for %s: %w", modelRef, err)
-		}
-		folded, err = s.foldLocked(ctx, modelRef, base)
-		if err != nil {
-			return fmt.Errorf("lock fold for %s: %w", modelRef, err)
-		}
-	}
-
-	txID := ""
-	if tx := spi.GetTransaction(ctx); tx != nil {
-		txID = tx.ID
-	}
-
-	if err := s.updateStateField(ctx, modelRef, spi.ModelLocked, "lock"); err != nil {
-		return err
-	}
-
-	// Only write the savepoint on the first Lock (unlocked → locked)
-	// and only when we have a non-empty folded payload to persist.
-	if !wasUnlocked || len(folded) == 0 {
-		return nil
-	}
-
-	if _, err := s.q.Exec(ctx,
-		`INSERT INTO model_schema_extensions
-		    (tenant_id, model_name, model_version, kind, payload, tx_id)
-		 VALUES ($1, $2, $3, 'savepoint', $4, $5)`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, folded, txID); err != nil {
-		return fmt.Errorf("lock savepoint for %s: %w", modelRef, err)
-	}
-	return nil
-}
-
-// isCurrentlyUnlocked reports whether the model exists and is currently
-// in the UNLOCKED state. Used by Lock to gate the save-on-lock path
-// behind the unlocked→locked transition edge.
-func (s *modelStore) isCurrentlyUnlocked(ctx context.Context, modelRef spi.ModelRef) (bool, error) {
-	locked, err := s.IsLocked(ctx, modelRef)
-	if err != nil {
-		return false, err
-	}
-	return !locked, nil
+	return updateStateField(ctx, s.q, s.tenantID, modelRef, spi.ModelLocked, "lock")
 }
 
 // Unlock transitions the model to the UNLOCKED state and folds its
@@ -248,30 +173,17 @@ func (s *modelStore) isCurrentlyUnlocked(ctx context.Context, modelRef spi.Model
 // extensions entity writes made while the model was LOCKED are part of
 // the model's schema; Unlock compacts them, it does not discard them.
 //
-// The state flip runs first because it is also the write-claim on the
-// models row that serialises Unlock with ExtendSchema (see
-// extendSchemaBody): the fold then sees every delta committed before it.
+// The state update runs first: it takes the model row's lock, which every
+// extension takes too, so the fold sees every extension committed before it
+// and no extension commits after it.
 func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
-	return s.inWriteTx(ctx, fmt.Sprintf("Unlock(%s)", modelRef), func(q Querier) error {
-		shadow := *s
-		shadow.q = q
-		if err := shadow.updateStateField(ctx, modelRef, spi.ModelUnlocked, "unlock"); err != nil {
+	return s.inModelTx(ctx, fmt.Sprintf("Unlock(%s)", modelRef), func(q Querier) error {
+		if err := updateStateField(ctx, q, s.tenantID, modelRef, spi.ModelUnlocked, "unlock"); err != nil {
 			return err
 		}
-
-		var raw []byte
-		if err := q.QueryRow(ctx,
-			`SELECT doc FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw); err != nil {
-			return fmt.Errorf("Unlock: read model %s: %w", modelRef, err)
-		}
-		var doc modelDoc
-		if err := json.Unmarshal(raw, &doc); err != nil {
-			return fmt.Errorf("Unlock: unmarshal model %s: %w", modelRef, err)
-		}
-		folded, err := shadow.foldLocked(ctx, modelRef, doc.Schema)
+		m, err := foldModel(ctx, q, s.tenantID, modelRef, s.applyFunc, false)
 		if err != nil {
-			return fmt.Errorf("Unlock: fold extension log for %s: %w", modelRef, err)
+			return fmt.Errorf("Unlock: %w", err)
 		}
 
 		tag, err := q.Exec(ctx, `
@@ -285,7 +197,11 @@ func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 			return nil // nothing was folded; the stored schema is current
 		}
 
-		doc.Schema = folded
+		var doc modelDoc
+		if err := json.Unmarshal(m.doc, &doc); err != nil {
+			return fmt.Errorf("Unlock: unmarshal model %s: %w", modelRef, err)
+		}
+		doc.Schema = m.desc.Schema
 		updated, err := json.Marshal(doc)
 		if err != nil {
 			return fmt.Errorf("Unlock: marshal model %s: %w", modelRef, err)
@@ -335,12 +251,12 @@ func (s *modelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, 
 }
 
 // updateStateField updates the state field in the doc JSONB column for Lock/Unlock.
-func (s *modelStore) updateStateField(ctx context.Context, modelRef spi.ModelRef, state spi.ModelState, op string) error {
-	tag, err := s.q.Exec(ctx,
+func updateStateField(ctx context.Context, q Querier, tenantID spi.TenantID, modelRef spi.ModelRef, state spi.ModelState, op string) error {
+	tag, err := q.Exec(ctx,
 		`UPDATE models
 		 SET doc = jsonb_set(doc, '{state}', to_jsonb($4::text))
 		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, string(state))
+		string(tenantID), modelRef.EntityName, modelRef.ModelVersion, string(state))
 	if err != nil {
 		return fmt.Errorf("failed to %s model %s: %w", op, modelRef, err)
 	}
@@ -375,215 +291,156 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 	}, nil
 }
 
-// ExtendSchema appends a delta row to model_schema_extensions. When
-// the count of deltas since the most recent savepoint reaches the
-// configured interval (cfg.SchemaSavepointInterval, default 64),
-// a savepoint row holding the fully-folded schema is inserted in
-// the same transaction so future Gets can start from there rather
-// than replaying the entire log.
+// ExtendSchema commits delta to the model's extension log in a short
+// READ COMMITTED transaction of its own on the model pool. It never joins a
+// transaction on ctx: when it returns nil the delta is committed, whatever
+// happens to the caller's transaction.
 //
-// Writers serialise per (tenant, model) by claiming a write on the
-// models row before anything else — see extendSchemaBody. Delta appends
-// alone would commute, but the savepoint fold does not: folding inside
-// a snapshot that cannot yet see a concurrent writer's lower-seq delta
-// would exclude that delta from every future fold. A concurrent writer
-// in an ambient REPEATABLE READ transaction therefore fails with
-// spi.ErrConflict (first committer wins, as for entity writes) and
-// retries on a fresh snapshot; self-wrapped writers serialise by
-// blocking on the row lock instead. No retry wrapper here.
+// The transaction takes the model row's lock (SELECT ... FOR NO KEY UPDATE).
+// The lock writes no row version; it serialises the extenders of one model and
+// conflicts with the UPDATE of Lock, Unlock, SetChangeLevel and Save and with
+// Delete. Under the lock the model must be LOCKED (else
+// spi.ErrModelNotLocked), and every later statement sees every earlier
+// extension's commit, so seq order is commit order and a savepoint folded
+// under the lock holds every delta with a lower seq. The fold is a statement
+// of its own after the lock statement: under READ COMMITTED a statement that
+// waited for a lock re-checks only the locked row, so a fold merged into it
+// would use the snapshot from before the wait.
 //
-// A blocked writer waits as long as the claim holder's transaction
-// lives, bounded by the caller's context and the statement_timeout
-// ceiling — not by AcquireTimeout, which covers only the pool acquire.
+// A delta the schema already holds writes nothing: applying it to the folded
+// schema gives the folded schema's own bytes. Otherwise the delta row is
+// inserted, and a savepoint holding the folded schema follows it once
+// SchemaSavepointInterval of the model's deltas follow its latest savepoint.
 //
-// Empty or nil deltas are a no-op.
+// The transaction takes one row lock and runs at READ COMMITTED, so it cannot
+// fail with a serialization failure or a deadlock: contention with other
+// extenders is a wait, bounded by ctx and the statement ceiling. The wait for
+// an extension slot lasts until ctx ends.
+//
+// An empty or nil delta is a no-op. A nil apply function is refused.
 func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
 	if len(delta) == 0 {
 		return nil
 	}
-
-	// Atomicity (B-I6): the delta INSERT and the triggered savepoint
-	// fold/INSERT must be all-or-nothing. If the fold fails (applyFunc
-	// rejects — e.g. simulated ChangeLevel violation), neither row
-	// may persist. When the caller supplies an ambient transaction via
-	// spi.GetTransaction(ctx), rely on the caller's boundary. Otherwise
-	// self-wrap in a pgx.Tx so the boundary exists.
-	return s.inWriteTx(ctx, fmt.Sprintf("ExtendSchema(%s)", ref), func(q Querier) error {
-		return s.extendSchemaBody(ctx, q, ref, delta)
-	})
-}
-
-// inWriteTx runs body on one transaction: the caller's ambient one when
-// ctx carries it, otherwise one inWriteTx opens and commits itself. op
-// names the operation in the self-wrap's error messages.
-func (s *modelStore) inWriteTx(ctx context.Context, op string, body func(q Querier) error) error {
-	if spi.GetTransaction(ctx) != nil {
-		return body(s.q)
+	if s.applyFunc == nil {
+		return fmt.Errorf("cannot extend model %s: ApplyFunc is not wired on the factory", ref)
 	}
 
-	// Same scoping rule as TransactionManager.Begin: the deadline bounds the
-	// acquire, and is cancelled the instant Begin returns so the transaction
-	// handle — which outlives this call — cannot inherit it.
-	acquireCtx, cancelAcquire := s.acquireContext(ctx)
-	// READ COMMITTED is explicit, not inherited from the server default:
-	// the write-claim on the models row (extendSchemaBody, Unlock) relies on
-	// every post-claim statement seeing what the previous claim holder
-	// committed, which per-statement snapshots provide and a REPEATABLE READ
-	// snapshot taken before the claim would not.
-	tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	cancelAcquire() // Begin has returned; the handle must not inherit the deadline
+	conn, release, err := s.models.acquireExtension(ctx)
 	if err != nil {
-		// Same classification as every other acquire in this plugin: a saturated
-		// pool is transient contention, so it carries the storage-unavailable
-		// marker and becomes a retryable 503, while a caller who gave up first
-		// does not. ValidateOrExtend's ErrInternalSchema tag chains with a double
-		// %w, so the marker survives it and the schema classifier honours it.
-		return classifyAcquireErr(ctx, acquireCtx,
-			fmt.Sprintf("failed to begin self-wrap tx for %s", op), err)
+		return fmt.Errorf("failed to extend model %s: %w", ref, err)
 	}
-	// Rollback is idempotent in pgx: no-op once Commit has landed.
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer release()
 
-	// Set the RLS tenant, as every other transaction this plugin opens does
-	// (TransactionManager.Begin, the async-search scan). The owner role
-	// bypasses the policies (row-level security is not supported), and keeping
-	// the setting on every transaction keeps the plugin's transactions alike.
-	if _, err := tx.Exec(ctx,
-		"SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
-		return fmt.Errorf("failed to set tenant for %s: %w", op, err)
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return classifyError(fmt.Errorf("failed to begin the extension of %s: %w", ref, err))
 	}
+	// Rollback is idempotent in pgx: no-op once Commit has landed. It runs on
+	// an uncancelled context, so the connection goes back to the pool idle
+	// even when ctx has ended.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	// classifiedQuerier keeps the self-wrap statements on the same error
-	// classification the ambient path gets from ctxQuerier — the write-claim's
-	// conflict sentinel and the ceilings' storage-unavailable marker both
-	// depend on it.
-	if err := body(classifiedQuerier{inner: tx}); err != nil {
+	if err := s.extend(ctx, classifiedQuerier{inner: tx}, ref, delta); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return classifyError(fmt.Errorf("failed to commit self-wrap tx for %s: %w", op, err))
+		return classifyError(fmt.Errorf("failed to commit the extension of %s: %w", ref, err))
 	}
 	return nil
 }
 
-// extendSchemaBody is the transactional body of ExtendSchema, parameterised
-// on an explicit Querier (pgx.Tx when self-wrapping, or s.q when deferring
-// to a caller-supplied ambient tx). It inserts the delta row and, if the
-// savepoint interval has been crossed, folds + inserts a savepoint row —
-// all using the same q so both writes succeed or fail together.
-func (s *modelStore) extendSchemaBody(ctx context.Context, q Querier, ref spi.ModelRef, delta spi.SchemaDelta) error {
-	txID := ""
-	if tx := spi.GetTransaction(ctx); tx != nil {
-		txID = tx.ID
+// extend is ExtendSchema's transaction body on q.
+func (s *modelStore) extend(ctx context.Context, q Querier, ref spi.ModelRef, delta spi.SchemaDelta) error {
+	if err := setTenant(ctx, q, s.tenantID); err != nil {
+		return fmt.Errorf("failed to set tenant for the extension of %s: %w", ref, err)
 	}
 
-	// Use a shadow modelStore bound to q so the helpers (lastSavepointSeq,
-	// baseSchema, foldLocked) see the same transactional view as the
-	// delta INSERT below. Copying by value is cheap and keeps the helpers
-	// unchanged.
-	shadow := *s
-	shadow.q = q
-
-	// Serialise writers per (tenant, model): claim a write on the models
-	// row before any other statement in this body. The claim must be a
-	// real UPDATE — not SELECT ... FOR UPDATE, not an advisory lock —
-	// because under an ambient REPEATABLE READ transaction a blocking-only
-	// lock releases the loser onto its stale snapshot, whose savepoint
-	// fold would exclude the winner's committed delta forever (fold-on-read
-	// replays only deltas newer than the savepoint). The UPDATE makes the
-	// loser fail with 40001 instead (spi.ErrConflict via the classifying
-	// querier), and the caller retries on a fresh snapshot. On the
-	// self-wrap READ COMMITTED path the same claim serialises writers by
-	// blocking, and post-claim statements see the previous holder's commit.
-	tag, err := q.Exec(ctx,
-		`UPDATE models SET doc = doc
-		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), ref.EntityName, ref.ModelVersion)
-	if err != nil {
-		return fmt.Errorf("serialize schema writers for %s: %w", ref, err)
-	}
-	if tag.RowsAffected() == 0 {
+	var state string
+	err := q.QueryRow(ctx,
+		`SELECT doc->>'state' FROM models
+		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
+		 FOR NO KEY UPDATE`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
 	}
-
-	// Pre-persist Apply check: reject deltas that applyFunc refuses before
-	// they reach the extension log. Mirrors the memory plugin's
-	// apply-inline behavior (plugins/memory/model_store.go:ExtendSchema)
-	// so all three plugins share the same contract: malformed deltas fail
-	// fast at ExtendSchema-time rather than lying dormant in the log until
-	// a later fold-on-Get surfaces the error.
-	//
-	// Only run the check when applyFunc is wired. An unwired applyFunc is
-	// valid on factories with zero-delta models; the log-empty case is
-	// indistinguishable here from "applyFunc not needed yet", so we skip
-	// the check and let the downstream fold-on-Get detect the wiring gap
-	// (same as today's foldLocked behaviour).
-	if s.applyFunc != nil {
-		base, err := shadow.baseSchema(ctx, ref)
-		if err != nil {
-			return fmt.Errorf("pre-persist base read for %s: %w", ref, err)
-		}
-		current, err := shadow.foldLocked(ctx, ref, base)
-		if err != nil {
-			return fmt.Errorf("pre-persist fold for %s: %w", ref, err)
-		}
-		if _, err := s.applyFunc(current, delta); err != nil {
-			return fmt.Errorf("applyFunc rejected delta for %s: %w", ref, err)
-		}
+	if err != nil {
+		return fmt.Errorf("failed to lock model %s for extension: %w", ref, err)
+	}
+	if state != string(spi.ModelLocked) {
+		return fmt.Errorf("model %s is not locked: %w", ref, spi.ErrModelNotLocked)
 	}
 
-	var newSeq int64
-	err = q.QueryRow(ctx,
-		`INSERT INTO model_schema_extensions
-		    (tenant_id, model_name, model_version, kind, payload, tx_id)
-		 VALUES ($1, $2, $3, 'delta', $4, $5)
-		 RETURNING seq`,
-		string(s.tenantID), ref.EntityName, ref.ModelVersion, []byte(delta), txID).Scan(&newSeq)
+	// Two apply calls under the lock, however long the log: the fold (in the
+	// apply function's encoding even with no delta to apply) and the fold
+	// plus this delta.
+	m, err := foldModel(ctx, q, s.tenantID, ref, s.applyFunc, true)
 	if err != nil {
+		return err
+	}
+	current := m.desc.Schema
+	applied, err := s.applyFunc(current, []spi.SchemaDelta{delta})
+	if err != nil {
+		return fmt.Errorf("applyFunc rejected delta for %s: %w", ref, err)
+	}
+	if bytes.Equal(applied, current) {
+		return nil // the schema already holds the delta
+	}
+
+	if _, err := q.Exec(ctx,
+		`INSERT INTO model_schema_extensions (tenant_id, model_name, model_version, kind, payload)
+		 VALUES ($1, $2, $3, 'delta', $4)`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion, []byte(delta)); err != nil {
 		return fmt.Errorf("failed to append schema delta for %s: %w", ref, err)
 	}
-
-	lastSP, err := shadow.lastSavepointSeq(ctx, ref)
-	if err != nil {
-		return fmt.Errorf("savepoint trigger lookup for %s: %w", ref, err)
+	if m.pending+1 < s.cfg.SchemaSavepointInterval {
+		return nil
 	}
-	if newSeq-lastSP >= int64(s.cfg.SchemaSavepointInterval) {
-		base, err := shadow.baseSchema(ctx, ref)
-		if err != nil {
-			return fmt.Errorf("savepoint base-schema read for %s: %w", ref, err)
-		}
-		folded, err := shadow.foldLocked(ctx, ref, base)
-		if err != nil {
-			return fmt.Errorf("savepoint fold for %s (seq=%d): %w", ref, newSeq, err)
-		}
-		if _, err := q.Exec(ctx,
-			`INSERT INTO model_schema_extensions
-			    (tenant_id, model_name, model_version, kind, payload, tx_id)
-			 VALUES ($1, $2, $3, 'savepoint', $4, $5)`,
-			string(s.tenantID), ref.EntityName, ref.ModelVersion, folded, txID); err != nil {
-			return fmt.Errorf("failed to write savepoint for %s (seq=%d): %w", ref, newSeq, err)
-		}
+	if _, err := q.Exec(ctx,
+		`INSERT INTO model_schema_extensions (tenant_id, model_name, model_version, kind, payload)
+		 VALUES ($1, $2, $3, 'savepoint', $4)`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion, applied); err != nil {
+		return fmt.Errorf("failed to write savepoint for %s: %w", ref, err)
 	}
 	return nil
 }
 
-// baseSchema loads the stable base schema stored in models.doc.schema
-// for the given ref. Used both by Get (pre-fold) and by ExtendSchema's
-// savepoint branch.
-func (s *modelStore) baseSchema(ctx context.Context, ref spi.ModelRef) ([]byte, error) {
-	var raw []byte
-	err := s.q.QueryRow(ctx,
-		`SELECT doc FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&raw)
+// inModelTx runs body in a READ COMMITTED transaction of its own on the model
+// pool, never the caller's. op names the operation in error messages.
+func (s *modelStore) inModelTx(ctx context.Context, op string, body func(q Querier) error) error {
+	// The deadline bounds the acquire and is cancelled the instant Begin
+	// returns, so the transaction handle cannot inherit it.
+	acquireCtx, cancelAcquire := newAcquireContext(ctx, s.models.acquireTimeout)
+	tx, err := s.models.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	cancelAcquire()
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
-		}
-		return nil, fmt.Errorf("base schema lookup for %s: %w", ref, err)
+		return classifyAcquireErr(ctx, acquireCtx, fmt.Sprintf("failed to begin %s", op), err)
 	}
-	desc, err := unmarshalModelDoc(raw)
-	if err != nil {
-		return nil, err
+	// Rollback is idempotent in pgx: no-op once Commit has landed. It runs on
+	// an uncancelled context, so the connection goes back to the pool idle
+	// even when ctx has ended.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	q := classifiedQuerier{inner: tx}
+	if err := setTenant(ctx, q, s.tenantID); err != nil {
+		return fmt.Errorf("failed to set tenant for %s: %w", op, err)
 	}
-	return desc.Schema, nil
+	if err := body(q); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return classifyError(fmt.Errorf("failed to commit %s: %w", op, err))
+	}
+	return nil
+}
+
+// setTenant sets the RLS tenant for the rest of the transaction on q, as
+// every transaction this plugin opens does (TransactionManager.Begin, the
+// async-search scan). The owner role bypasses the policies (row-level
+// security is not supported), and keeping the setting on every transaction
+// keeps the plugin's transactions alike.
+func setTenant(ctx context.Context, q Querier, tenantID spi.TenantID) error {
+	_, err := q.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(tenantID))
+	return err
 }

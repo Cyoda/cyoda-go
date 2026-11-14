@@ -66,7 +66,7 @@ func TestJoinedGetTransitions_HoldsTheGate_AndGivesItUpForTheCallout(t *testing.
 		return true
 	}
 	ext := &lockProbingCriteria{free: free}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext), WithCoordination(coord))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext), WithCoordination(coord))
 
 	modelRef := spi.ModelRef{EntityName: "joined-transitions", ModelVersion: "1.0"}
 	crit, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": "c", "config": map[string]any{"calculationNodesTags": "t"}}})

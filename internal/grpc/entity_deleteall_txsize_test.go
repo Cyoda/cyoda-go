@@ -109,11 +109,11 @@ func newDeleteAllTxSizeEnv(t *testing.T) (svc *CloudEventsServiceImpl, ctx conte
 	spyStore = &deleteAllTxSizeSpyStore{EntityStore: realStore}
 	factory := &deleteAllTxSizeSpyFactory{StoreFactory: realFactory, store: spyStore}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), rtm, platformclock.Real())
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), rtm, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
-	entityHandler := entity.New(factory, rtm, common.NewDefaultUUIDGenerator(), engine, txcoord.New(rtm), newTestConsistency(t, factory), platformclock.Real())
-	modelHandler := model.New(factory, platformclock.Real())
+	searchService := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), rtm, common.NewDefaultUUIDGenerator(), engine, txcoord.New(rtm), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cachedFactory(factory), platformclock.Real())
 
 	svc = &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -393,7 +393,7 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	}
 	ctx := spi.WithUserContext(context.Background(), uc)
 
-	modelHandler := model.New(realFactory, platformclock.Real())
+	modelHandler := model.New(cachedFactory(realFactory), platformclock.Real())
 	dataBytes, err := json.Marshal(map[string]any{"name": "Alice"})
 	if err != nil {
 		t.Fatalf("marshal sample data: %v", err)
@@ -410,10 +410,10 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 
 	// Seed 6 entities through a plain, unwrapped txMgr so the seeding
 	// commits never touch the fail-injecting manager's counter.
-	engineSeed := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), realTxMgr, platformclock.Real())
+	engineSeed := workflow.NewEngine(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), realTxMgr, platformclock.Real())
 	searchStoreSeed, _ := realFactory.AsyncSearchStore(context.Background())
-	searchServiceSeed := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreSeed, newTestConsistency(t, realFactory), platformclock.Real())
-	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txcoord.New(realTxMgr), newTestConsistency(t, realFactory), platformclock.Real())
+	searchServiceSeed := search.NewSearchService(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), searchStoreSeed, newTestConsistency(t, realFactory), platformclock.Real())
+	entityHandlerSeed := entity.New(cachedFactory(realFactory), realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txcoord.New(realTxMgr), newTestConsistency(t, realFactory), platformclock.Real())
 	svcSeed := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         realTxMgr,
@@ -438,10 +438,10 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	// 6 matching entities, batchSize 2 => 3 batches. Commit index 3 (1
 	// resolution tx + batch1 + THIS batch) is forced to fail.
 	failMgr := &failNthCommitTxSizeMgr{TransactionManager: realTxMgr, failOn: map[int]error{3: errors.New("commit boom")}}
-	engineDelete := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), failMgr, platformclock.Real())
+	engineDelete := workflow.NewEngine(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), failMgr, platformclock.Real())
 	searchStoreDelete, _ := realFactory.AsyncSearchStore(context.Background())
-	searchServiceDelete := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreDelete, newTestConsistency(t, realFactory), platformclock.Real())
-	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txcoord.New(failMgr), newTestConsistency(t, realFactory), platformclock.Real())
+	searchServiceDelete := search.NewSearchService(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), searchStoreDelete, newTestConsistency(t, realFactory), platformclock.Real())
+	entityHandlerDelete := entity.New(cachedFactory(realFactory), failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txcoord.New(failMgr), newTestConsistency(t, realFactory), platformclock.Real())
 	svcDelete := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         failMgr,

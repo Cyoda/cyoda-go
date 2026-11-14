@@ -571,6 +571,36 @@ func TestSetUniqueKeys_HappyPath_PersistsKeys(t *testing.T) {
 	}
 }
 
+// TestSetUniqueKeys_DoesNotMutateTheDescriptorItRead pins that SetUniqueKeys
+// saves a copy: the descriptor a model read returns can be shared with other
+// readers of the same model (one coalesced storage read), so writing into it
+// would change what they hold.
+func TestSetUniqueKeys_DoesNotMutateTheDescriptorItRead(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	read := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelUnlocked,
+		Schema: mustBuildSchema(t),
+	}
+	ms := &refreshingModelStore{refreshDescriptor: read}
+	h := model.New(&capableStoreFactory{
+		fakeStoreFactory: fakeStoreFactory{modelStore: ms},
+		supports:         true,
+	}, platformclock.Real())
+
+	if _, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", []spi.UniqueKey{
+		{ID: "uk1", Fields: []string{"$.name"}},
+	}); err != nil {
+		t.Fatalf("SetUniqueKeys: %v", err)
+	}
+	if read.UniqueKeys != nil {
+		t.Errorf("SetUniqueKeys wrote into the descriptor it read: %+v", read.UniqueKeys)
+	}
+	if saved := ms.Saved(); saved == nil || len(saved.UniqueKeys) != 1 {
+		t.Fatalf("expected the saved descriptor to carry the key, got %+v", saved)
+	}
+}
+
 // TestImportModel_PreservesUniqueKeys_WhenReimporting verifies that when
 // an existing model already has UniqueKeys set, a re-import carries those
 // keys forward (analogous to how ChangeLevel is preserved).

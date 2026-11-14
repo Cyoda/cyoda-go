@@ -93,3 +93,27 @@ func TestDouble_CompletionIntoTheRootIsAllOrNothing(t *testing.T) {
 		}
 	}
 }
+
+// factoryWithoutApplyFunc is a store factory that does not offer
+// SetApplyFunc.
+type factoryWithoutApplyFunc struct{ spi.StoreFactory }
+
+// TestDouble_SetApplyFunc_RefusedWhenInnerLacksIt: the double forwards the
+// apply function to its inner factory. Over a factory that cannot take it,
+// the call panics rather than dropping the function: a factory that silently
+// ignores it is the one startup and the conformance suite refuse.
+func TestDouble_SetApplyFunc_RefusedWhenInnerLacksIt(t *testing.T) {
+	f := txcoordtest.NewFactory(factoryWithoutApplyFunc{})
+	setter, ok := f.(interface {
+		SetApplyFunc(func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))
+	})
+	if !ok {
+		t.Fatal("the double does not offer SetApplyFunc")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("SetApplyFunc over an inner factory without it did not panic")
+		}
+	}()
+	setter.SetApplyFunc(func(base []byte, _ []spi.SchemaDelta) ([]byte, error) { return base, nil })
+}

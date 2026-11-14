@@ -46,6 +46,11 @@ type config struct {
 	// claims, run bookkeeping and the async-search heartbeat and claim.
 	// Heartbeat has one more connection of its own on top of it.
 	SchedulerConns int32
+
+	// ModelConns is the size of the model store's own pool (model_pool.go):
+	// model reads, schema extensions and model administration. Extensions use
+	// at most half of it.
+	ModelConns int32
 }
 
 // Ceiling defaults. Named here rather than inline so parseConfig,
@@ -59,6 +64,10 @@ const (
 	defaultMigrateLockTimeout     = 5 * time.Minute
 	defaultSearchStatementTimeout = 30 * time.Minute
 )
+
+// defaultSchemaSavepointInterval is CYODA_SCHEMA_SAVEPOINT_INTERVAL's default,
+// named for the same reason as the ceilings above.
+const defaultSchemaSavepointInterval = 64
 
 // defaultSchedulerConns sizes the scheduler pool for the default
 // CYODA_SCHEDULER_MAX_RUNS (8) plus the claim loop and the async-search
@@ -85,6 +94,28 @@ func envSchedulerConns(getenv func(string) string) (int32, error) {
 	return int32(n), nil
 }
 
+// defaultModelConns sizes the model pool.
+const defaultModelConns int32 = 8
+
+// envModelConns reads CYODA_POSTGRES_MODEL_CONNS. A malformed or too-small
+// value is an error, as for envSchedulerConns. Two is the floor: extensions
+// take at most half the pool, so one connection stays for reads.
+func envModelConns(getenv func(string) string) (int32, error) {
+	const key = "CYODA_POSTGRES_MODEL_CONNS"
+	v := getenv(key)
+	if v == "" {
+		return defaultModelConns, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a valid connection count: %w", key, v, err)
+	}
+	if n < 2 {
+		return 0, fmt.Errorf("%s=%q must be at least 2", key, v)
+	}
+	return int32(n), nil
+}
+
 // parseConfig reads CYODA_POSTGRES_* env vars via the injected getenv.
 // For CYODA_POSTGRES_URL, the _FILE suffix pattern is supported: if
 // CYODA_POSTGRES_URL_FILE is set it takes precedence over CYODA_POSTGRES_URL.
@@ -99,7 +130,7 @@ func parseConfig(getenv func(string) string) (config, error) {
 		MinConns:                envInt32(getenv, "CYODA_POSTGRES_MIN_CONNS", 5),
 		MaxConnIdleTime:         envDuration(getenv, "CYODA_POSTGRES_MAX_CONN_IDLE_TIME", 5*time.Minute),
 		AutoMigrate:             envBool(getenv, "CYODA_POSTGRES_AUTO_MIGRATE", true),
-		SchemaSavepointInterval: envIntMin1(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", 64),
+		SchemaSavepointInterval: envIntMin1(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", defaultSchemaSavepointInterval),
 	}
 	if cfg.URL == "" {
 		return cfg, fmt.Errorf("CYODA_POSTGRES_URL is required")
@@ -123,6 +154,9 @@ func parseConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if cfg.SchedulerConns, err = envSchedulerConns(getenv); err != nil {
+		return config{}, err
+	}
+	if cfg.ModelConns, err = envModelConns(getenv); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
@@ -249,7 +283,7 @@ type DBConfig struct {
 	MinConns                int32
 	MaxConnIdleTime         string
 	AutoMigrate             bool
-	SchemaSavepointInterval int // 0 falls back to the internal default (64)
+	SchemaSavepointInterval int // 0 falls back to defaultSchemaSavepointInterval
 }
 
 func (d DBConfig) toInternal() config {
@@ -259,7 +293,7 @@ func (d DBConfig) toInternal() config {
 	}
 	interval := d.SchemaSavepointInterval
 	if interval < 1 {
-		interval = 64
+		interval = defaultSchemaSavepointInterval
 	}
 	return config{
 		URL: d.URL, MaxConns: d.MaxConns, MinConns: d.MinConns,
@@ -274,6 +308,7 @@ func (d DBConfig) toInternal() config {
 		MigrateLockTimeout:     defaultMigrateLockTimeout,
 		SearchStatementTimeout: defaultSearchStatementTimeout,
 		SchedulerConns:         defaultSchedulerConns,
+		ModelConns:             defaultModelConns,
 	}
 }
 

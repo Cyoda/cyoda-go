@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,14 +14,19 @@ import (
 )
 
 func recordingApplyFunc() sqlite.ApplyFunc {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	return func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 		// Return valid JSON that carries both base and delta so tests can
-		// assert Apply was invoked. Store {"base": <base>, "delta": <delta>}.
-		// This isn't semantically meaningful; it's just observable.
-		if len(base) == 0 {
-			return []byte(`{"base":null,"delta":` + string(delta) + `}`), nil
+		// assert Apply was invoked. Store {"base": <base>, "delta": <delta>},
+		// nested once per delta. This isn't semantically meaningful; it's
+		// just observable.
+		for _, delta := range deltas {
+			if len(base) == 0 {
+				base = []byte(`{"base":null,"delta":` + string(delta) + `}`)
+				continue
+			}
+			base = []byte(`{"base":` + string(base) + `,"delta":` + string(delta) + `}`)
 		}
-		return []byte(`{"base":` + string(base) + `,"delta":` + string(delta) + `}`), nil
+		return base, nil
 	}
 }
 
@@ -168,9 +174,15 @@ func TestSQLite_ExtendSchema_MissingApplyFunc_Errors(t *testing.T) {
 		Ref: ref, State: spi.ModelUnlocked, ChangeLevel: spi.ChangeLevelStructural,
 		Schema: []byte(`{}`), UpdateDate: time.Now().UTC(),
 	})
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 	err = ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`))
 	if err == nil {
 		t.Fatal("expected error when ApplyFunc not wired")
+	}
+	if errors.Is(err, spi.ErrModelNotLocked) {
+		t.Fatalf("model is locked, error must be the wiring error, got %v", err)
 	}
 }
 
@@ -180,8 +192,8 @@ func TestSQLite_ExtendSchema_ModelNotFound(t *testing.T) {
 	ms, _ := f.ModelStore(ctx)
 	ref := spi.ModelRef{EntityName: "Missing", ModelVersion: "1"}
 	err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`))
-	if err == nil {
-		t.Fatal("expected error on missing model")
+	if !errors.Is(err, spi.ErrNotFound) {
+		t.Fatalf("err = %v, want errors.Is(_, spi.ErrNotFound)", err)
 	}
 }
 

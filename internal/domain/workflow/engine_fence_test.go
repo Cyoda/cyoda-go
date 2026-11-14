@@ -200,7 +200,7 @@ func newSupersedeEnv(t *testing.T, succeedAfterRelease bool) *supersedeEnv {
 	ext := &innerCoordinator{coord: coord, entered: make(chan struct{}), released: make(chan struct{}), proceed: make(chan struct{}), succeedAfterRelease: succeedAfterRelease}
 	factory := watchedFactory{StoreFactory: mem, ops: ops}
 	env := &supersedeEnv{base: ctxWithTenant(testTenant), factory: factory, txMgr: txMgr, coord: coord, ext: ext, ops: ops,
-		engine: NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext), WithCoordination(coord))}
+		engine: NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext), WithCoordination(coord))}
 	var err error
 	env.txID, env.txCtx, err = txMgr.Begin(env.base)
 	if err != nil {

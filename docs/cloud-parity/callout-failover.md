@@ -313,7 +313,8 @@ answered, and after later processors of the same transition have run.
 - No database statement is interrupted — not by the fence, and not by the
   member's connection dropping. A callback that was already reading or writing
   when the work moved on runs to its end, and is then discarded and answered
-  `410 CALLOUT_SUPERSEDED`: none of its writes are kept (`callback-scopes.md`).
+  `410 CALLOUT_SUPERSEDED`: none of its writes are kept but a schema extension
+  (`callback-scopes.md`).
 - "Too slow" is not "replaced": a timeout that fails the operation rolls the
   transaction back and opens no round.
 
@@ -377,8 +378,8 @@ the gate is taken, and from each callback being all-or-nothing:
   `EntitySearch`), and the gRPC server-streaming door
   (`EntityManageCollection`, `EntitySearchCollection`) — and is never sent in
   part: a truncated answer would be a wrong one. On an entity write that
-  answer is a failed write: nothing of it is kept, and the transaction becomes
-  rollback-only.
+  answer is a failed write: nothing of it is kept but a schema extension
+  (`callback-scopes.md`), and the transaction becomes rollback-only.
 
 ## 8. What Cloud has to decide
 

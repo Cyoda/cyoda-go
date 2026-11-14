@@ -63,7 +63,7 @@ func conditionPathsOf(cond predicate.Condition) []string {
 }
 
 // validateConditionSequence holds the order stated on ValidateConditionForModel;
-// modelPaths is the surface's path step (search's carries its negative cache).
+// modelPaths is the surface's path step.
 func validateConditionSequence(cond predicate.Condition, modelPaths func() (map[string]schema.FieldDescriptor, error)) (map[string]schema.FieldDescriptor, error) {
 	if cond != nil {
 		if cErr := ValidateCondition(cond); cErr != nil {
@@ -87,7 +87,7 @@ func validateConditionSequence(cond predicate.Condition, modelPaths func() (map[
 
 // validateConditionForModel is the search service's run of the sequence. The
 // model is resolved first (404 MODEL_NOT_FOUND before any condition verdict);
-// its path step uses the service's negative cache.
+// its path step is validateConditionPaths.
 func (s *SearchService) validateConditionForModel(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition) (map[string]schema.FieldDescriptor, error) {
 	modelStore, err := s.factory.ModelStore(ctx)
 	if err != nil {

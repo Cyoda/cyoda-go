@@ -10,8 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -31,8 +33,7 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 	expectStatus(t, resp, http.StatusOK)
 
 	// Now test the service layer directly with a mock that returns infrastructure error
-	handler := entity.New(
-		&failingStoreFactory{err: errors.New("database connection lost")},
+	handler := entity.New(cachedFactory(&failingStoreFactory{err: errors.New("database connection lost")}),
 		nil,
 		common.NewDefaultUUIDGenerator(),
 		nil,
@@ -90,8 +91,7 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 	}
 
 	t.Run("ErrNotFound maps to 404", func(t *testing.T) {
-		h := entity.New(
-			&modelGetErrFactory{getErr: spi.ErrNotFound},
+		h := entity.New(cachedFactory(&modelGetErrFactory{getErr: spi.ErrNotFound}),
 			nil,
 			common.NewDefaultUUIDGenerator(),
 			nil,
@@ -114,8 +114,7 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 
 	t.Run("arbitrary error maps to 5xx", func(t *testing.T) {
 		synthetic := errors.New("synthetic fold failure")
-		h := entity.New(
-			&modelGetErrFactory{getErr: synthetic},
+		h := entity.New(cachedFactory(&modelGetErrFactory{getErr: synthetic}),
 			nil,
 			common.NewDefaultUUIDGenerator(),
 			nil,
@@ -146,8 +145,7 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 // TestGetEntity_NotFoundReturns404 verifies that ErrNotFound from the entity store
 // results in a 404.
 func TestGetEntity_NotFoundReturns404(t *testing.T) {
-	handler := entity.New(
-		&failingStoreFactory{err: spi.ErrNotFound},
+	handler := entity.New(cachedFactory(&failingStoreFactory{err: spi.ErrNotFound}),
 		nil,
 		common.NewDefaultUUIDGenerator(),
 		nil,
@@ -199,7 +197,7 @@ func statsTestCtx(tenantID spi.TenantID) context.Context {
 func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newTestConsistency(t, factory), platformclock.Real())
+	h := entity.New(cachedFactory(factory), nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newTestConsistency(t, factory), platformclock.Real())
 
 	mref := spi.ModelRef{EntityName: "stats-model", ModelVersion: "1"}
 
@@ -278,7 +276,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats-m")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newTestConsistency(t, factory), platformclock.Real())
+	h := entity.New(cachedFactory(factory), nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newTestConsistency(t, factory), platformclock.Real())
 
 	mref := spi.ModelRef{EntityName: "model-m", ModelVersion: "1"}
 
@@ -553,7 +551,7 @@ func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
+	h := entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
 
 	// Register a LOCKED model with zero entities.
 	mref := spi.ModelRef{EntityName: "EmptyModel", ModelVersion: "1"}
@@ -710,7 +708,10 @@ func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Co
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, base), platformclock.Real())
+	// Production hands the handler the model cache's factory, whose request
+	// scoped store is what refreshes a schema.
+	caching := modelcache.NewCachingStoreFactory(base, nil, nil, time.Hour)
+	h = entity.New(cachedFactory(caching), txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, base), platformclock.Real())
 
 	return h, ctx, ref.EntityName, 1
 }

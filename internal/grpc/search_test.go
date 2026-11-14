@@ -849,7 +849,7 @@ func TestDirectSearch_OmittedLimitDefaultsTo1000(t *testing.T) {
 		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) { return nil, nil }}
 	factory := &searcherFactoryG{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
 
 	ce := makeCE(EntitySearchRequest, map[string]any{
 		"id":        "s-capdef-1",
@@ -877,7 +877,7 @@ func TestDirectSearch_ResultLimitSentinel_ClientError(t *testing.T) {
 			return nil, spi.ErrSearchResultLimitExceeded
 		}}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(&searcherFactoryG{StoreFactory: base, entityStore: ses}, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, &searcherFactoryG{StoreFactory: base, entityStore: ses}), platformclock.Real())}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(&searcherFactoryG{StoreFactory: base, entityStore: ses}), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, &searcherFactoryG{StoreFactory: base, entityStore: ses}), platformclock.Real())}
 
 	ce := makeCE(EntitySearchRequest, map[string]any{
 		"id":        "s-caperr-1",
@@ -942,7 +942,7 @@ func directSearch(t *testing.T, opts ...directSearchOpt) *events.EntityResponseJ
 		}}
 	factory := &searcherFactoryG{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
 
 	fields := map[string]any{
 		"id":        "s-capnonpos-1",
@@ -1184,7 +1184,7 @@ func TestDirectSearch_SchemaLoadFails_ServerErrorEnvelope(t *testing.T) {
 
 	factory := &brokenModelFactoryG{StoreFactory: base, ms: &brokenSchemaModelStoreG{ref: ref}}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
 
 	ce := makeCE(EntitySearchRequest, map[string]any{
 		"id":        "s-brokenschema-1",

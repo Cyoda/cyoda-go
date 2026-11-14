@@ -23,6 +23,12 @@ type noCloseFactory struct {
 
 func (f *noCloseFactory) Close() error { return nil }
 
+// SetApplyFunc forwards to the wrapped factory, so the conformance suite
+// can install its apply function through the wrapper.
+func (f *noCloseFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
+	f.StoreFactory.(*postgres.StoreFactory).SetApplyFunc(fn)
+}
+
 // newConformancePool creates a fully-migrated StoreFactory with enough
 // connections for concurrent conformance subtests (e.g.
 // Entity/Concurrent/DifferentEntities spawns 8 goroutines).
@@ -115,8 +121,9 @@ func newConformancePool(t *testing.T) (spi.StoreFactory, *pgxpool.Pool) {
 			// connections will be cleaned up when the process exits.
 		}
 	})
-	// Registered after the main pool's cleanup, so it runs first (LIFO).
+	// Registered after the main pool's cleanup, so they run first (LIFO).
 	t.Cleanup(func() { postgres.CloseSchedulerPoolsForTest(factory) })
+	t.Cleanup(func() { postgres.CloseModelPoolForTest(factory) })
 
 	// Wrap factory so the harness's factory.Close() is a no-op; actual pool
 	// close is handled by the t.Cleanup above.

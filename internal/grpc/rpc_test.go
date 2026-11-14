@@ -3,7 +3,6 @@ package grpc
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -27,22 +26,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// testSchemaApply mirrors app/app.go's makeSchemaApply: it folds an opaque
-// SchemaDelta onto a base schema. The plugin packages deliberately do not
-// depend on internal/domain/model/schema, so the replay function is injected
-// by the composition root — and by this harness.
-func testSchemaApply(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-	node, err := schema.Unmarshal(base)
-	if err != nil {
-		return nil, fmt.Errorf("apply: unmarshal base: %w", err)
-	}
-	extended, err := schema.Apply(node, delta)
-	if err != nil {
-		return nil, err
-	}
-	return schema.Marshal(extended)
-}
-
 // newTestEnv creates a CloudEventsServiceImpl wired to real in-memory stores
 // and a context with a test user/tenant injected.
 func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
@@ -53,7 +36,7 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 	// Without it every extension path fails the harness with "ApplyFunc not
 	// wired", which is a property of the fake rather than of the code
 	// under test.
-	factory := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
+	factory := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := factory.GetTransactionManager()
 
@@ -64,11 +47,11 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 		Roles:    []string{"ADMIN"},
 	}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
-	modelHandler := model.New(factory, platformclock.Real())
+	searchService := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cachedFactory(factory), platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -719,7 +702,7 @@ func TestRPC_ModelSetUniqueKeys_422_Unsupported(t *testing.T) {
 	// concrete SupportsCompositeUniqueKeys method on the real factory is NOT
 	// promoted — the type assertion in SetUniqueKeys returns ok=false.
 	type incapableFactory struct{ spi.StoreFactory }
-	svc.modelHandler = model.New(incapableFactory{memory.NewStoreFactory()}, platformclock.Real())
+	svc.modelHandler = model.New(cachedFactory(incapableFactory{memory.NewStoreFactory()}), platformclock.Real())
 
 	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
 		"id":    "test",

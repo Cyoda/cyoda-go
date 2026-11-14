@@ -74,7 +74,7 @@ func TestSearch_ArrayConditionOnContainerPath_IsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
 
 	cond := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tags", Values: []any{"red"}}
 	_, err = svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
@@ -109,7 +109,7 @@ func TestSearch_SimpleConditionOnContainerPath_NotNull_IsAccepted(t *testing.T) 
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.tags", OperatorType: "NOT_NULL"}
 	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
@@ -135,7 +135,7 @@ func TestSearch_ArrayConditionOnUnknownPath_IsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
 
 	cond := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tag", Values: []any{"red"}}
 	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10}); err == nil {

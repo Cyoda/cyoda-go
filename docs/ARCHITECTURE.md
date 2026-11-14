@@ -303,7 +303,7 @@ if s, ok := factory.(spi.Startable); ok {
 txMgr, _ := factory.TransactionManager(startupCtx)
 ```
 
-`startupCtx` carries `CYODA_STARTUP_TIMEOUT`, so plugin init, migrations and cluster join share one deadline. Between `NewFactory` and `Start` the factory is wrapped in the model-cache decorator (§4.1) and given the schema-replay apply function.
+`startupCtx` carries `CYODA_STARTUP_TIMEOUT`, so plugin init, migrations and cluster join share one deadline. Between `NewFactory` and `Start` the factory is given the schema-replay apply function (`SetApplyFunc`, which takes a list of deltas; a factory without it is refused at startup) and wrapped in the model-cache decorator (§4.1).
 
 No per-store routing. No swap logic for transaction managers. Every store in the binary comes from the same plugin, and the plugin supplies its own `TransactionManager` whose semantics match its storage engine.
 
@@ -332,11 +332,21 @@ it against PostgreSQL 17. Full detail in
 Model storage splits into two tables: `models` carries stable
 metadata (state, ChangeLevel, base schema) and `model_schema_extensions`
 is an append-only log of typed-op deltas produced by
-`ExtendSchema`. Appending rather than updating keeps concurrent entity
-writes with `ChangeLevel != ""` off a single hot row. Plugin-internal
-savepoints every `CYODA_SCHEMA_SAVEPOINT_INTERVAL` rows (default 64)
-bound the fold cost on read; the `sqlite` plugin uses the same split and
-the same knob. See
+`ExtendSchema`. The model store runs on a pool of its own
+(`CYODA_POSTGRES_MODEL_CONNS`, default 8), apart from the main pool, and
+never joins the caller's transaction: a model read sees the latest
+committed model in one statement, and each extension commits in a short
+`READ COMMITTED` transaction that locks the model's `models` row
+(`SELECT … FOR NO KEY UPDATE`, which writes no row version), checks the
+model is LOCKED, folds, skips a delta the schema already holds, and
+appends. That lock serialises the extenders of one model for the length
+of one short transaction, never an entity transaction; extensions hold at
+most half the pool's connections, so model reads always have the rest. A
+savepoint row of the folded schema follows every
+`CYODA_SCHEMA_SAVEPOINT_INTERVAL` deltas of a model (default 64), which
+bounds the fold cost on read; `Lock` writes none. The `sqlite` plugin
+uses the same split and the same knob, in a write transaction of its own
+per extension. See
 [docs/CONSISTENCY.md §3a](CONSISTENCY.md#3a-model--data-contract).
 
 ### 2.4 The `cassandra` plugin (commercial)
@@ -437,17 +447,17 @@ What the latch actually stops, and what it does not:
 
 | Ceiling | Default | Bounds |
 |---|---|---|
-| `CYODA_POSTGRES_STATEMENT_TIMEOUT` | `5m` | Any statement on the main pool |
+| `CYODA_POSTGRES_STATEMENT_TIMEOUT` | `5m` | Any statement on the main pool and the model pool |
 | `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` | `5m` | A connection sitting idle inside an open transaction |
-| `CYODA_POSTGRES_ACQUIRE_TIMEOUT` | `10s` | The wait for a free pooled connection, for an operation that opens a transaction or needs a second connection while its transaction holds one (below) |
+| `CYODA_POSTGRES_ACQUIRE_TIMEOUT` | `10s` | The wait for a free pooled connection, for an operation that opens a transaction or needs a second connection while its transaction holds one (below); a schema extension's connection from the model pool included |
 | `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` | `30m` | Async search scans, which get their own higher ceiling |
 | `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` | `5m` | The lock wait during schema migration |
 
-Four of the five are set on the server side, so PostgreSQL enforces them whether or not the application is still watching. `CYODA_POSTGRES_ACQUIRE_TIMEOUT` is the exception: `pgxpool.Config` has no acquire-timeout field, so that deadline is applied Go-side by the pool. The scheduler's own pool has fixed ceilings that no setting changes: statement 30s, idle in transaction 10s, lock wait 2s, connection acquire 5s (`plugins/postgres/scheduler_pool.go`).
+Four of the five are set on the server side, so PostgreSQL enforces them whether or not the application is still watching. `CYODA_POSTGRES_ACQUIRE_TIMEOUT` is the exception: `pgxpool.Config` has no acquire-timeout field, so that deadline is applied Go-side by the pool. The scheduler's own pool has fixed ceilings that no setting changes: statement 30s, idle in transaction 10s, lock wait 2s, connection acquire 5s (`plugins/postgres/scheduler_pool.go`). The model pool takes the main pool's statement and idle-in-transaction ceilings and sets no lock timeout: an extension that waits for another extension of the same model waits a few round trips, and a five-minute wait is a stuck system, answered as the statement ceiling is (`plugins/postgres/model_pool.go`). A schema extension first waits for an extension slot (half the model pool); that wait lasts until the request's context ends and is not bounded by the acquire timeout.
 
 How an abort surfaces depends on whether retrying could plausibly work:
 
-- **Transient contention → `503 STORAGE_UNAVAILABLE`, retryable.** An operation that cannot get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — one that opens a transaction (every entity write; an async search's scan and result writes, whose job then records `STORAGE_UNAVAILABLE` as its failure reason), or one needing a second connection while the caller's transaction holds one (a point-in-time read, an async-search job record or a key-value statement in a transaction) — and an operation whose transaction PostgreSQL already aborted for exceeding `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. A second attempt may well succeed. At COMMIT only PostgreSQL's own report of the idle abort is retryable: a COMMIT that meets a closed connection has an unknown outcome and answers `500` with a ticket.
+- **Transient contention → `503 STORAGE_UNAVAILABLE`, retryable.** An operation that cannot get a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — one that opens a transaction (every entity write; a schema extension or a model unlock on the model pool; an async search's scan and result writes, whose job then records `STORAGE_UNAVAILABLE` as its failure reason), or one needing a second connection while the caller's transaction holds one (a point-in-time read, a model statement on the model pool, an async-search job record or a key-value statement in a transaction) — and an operation whose transaction PostgreSQL already aborted for exceeding `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. A second attempt may well succeed. At COMMIT only PostgreSQL's own report of the idle abort is retryable: a COMMIT that meets a closed connection has an unknown outcome and answers `500` with a ticket.
 - **Statement ceiling exceeded → `500` with a ticket, not retryable.** A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT`. Re-running work that just exceeded its ceiling will exceed it again, so advertising a retry would be a lie. The exception is the store producing a consistency time: that wait answers a retryable `503 CONSISTENCY_TIME_UNAVAILABLE`.
 - **Async scan ceiling exceeded → recorded on the job, never an HTTP status.** A scan cancelled by `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` fails the job it belongs to: the job goes `FAILED` and its record holds a fixed message, which every status read of the job serves as its `failureReason`. The message names the ceiling and no internal detail, so it carries no ticket.
 
@@ -523,7 +533,7 @@ describes the in-process implementation unless it says otherwise.
 
 **Scopes.** Every joined request runs in a **scope**, and a scope is
 all-or-nothing: either all its writes become part of the scope above it, or
-none do. The scopes of a transaction form a tree:
+none do; a schema extension is not one of them (the stack rule, below). The scopes of a transaction form a tree:
 
 - the **root** is the owner's own work; it takes no savepoint, and its end is
   the transaction's commit or rollback;
@@ -657,6 +667,9 @@ broken cause, classified as usual (a dead PostgreSQL session is the retryable
 
 **The stack rule.** A scope's writes, with those of its descendants, must stay
 contiguous, so that rolling back to its savepoint undoes exactly its own work.
+That work is its entity and task writes: a schema extension one of its writes
+made has already committed on its own and stays when the scope is discarded
+([CONSISTENCY.md §3a](CONSISTENCY.md#3a-model--data-contract)).
 A callback whose write runs a workflow with a callout of its own **pauses**
 for the length of that callout (`txcoord.Pause`, at every dispatch site of the
 engine): it gives the gate up and goes on the transaction's stack of paused
@@ -832,7 +845,8 @@ this.
 **Savepoints under `ASYNC_NEW_TX`.** The processor runs in a processor scope of
 its own, which takes a savepoint of the parent transaction. Its own failure,
 and a mark its callbacks set on its scope, are non-fatal: the scope is
-discarded and the pipeline continues. A scope that cannot be **opened,
+discarded and the pipeline continues. Discarding it undoes its callbacks'
+entity writes, not the schema extensions they made. A scope that cannot be **opened,
 undone or released**, or whose transaction is broken, is not a processor
 failure — it says the transaction is unusable — so it is marked with
 `txcoord.ErrScopeInfra` and **fails the operation** with a ticketed 5xx. Two
@@ -943,10 +957,18 @@ Cyoda-Go supports multi-node deployment where any node can receive any request, 
 **Topics:** In addition to cluster membership, the gossip layer
 carries application-level invalidation topics. The model-cache
 decorator (`internal/cluster/modelcache`) publishes on
-`model.invalidate` whenever a local mutation changes a
-`(tenantID, ref)` binding — every peer evicts the matching cache
-entry. The TTL lease (±10% jitter) is the fallback when gossip
-drops a message. The signing-key copy pings its peers on
+`model.invalidate` after every local model mutation and after every
+schema extension call, whatever its outcome — every peer evicts the
+matching cache entry and bumps its invalidation generation, so a fill
+that read storage before the invalidation is dropped. The extending
+node evicts its own entry the same way before the write returns, so it
+never serves a schema older than an extension it returned; other nodes
+follow the broadcast. The TTL lease (`CYODA_MODEL_CACHE_LEASE`, ±10%
+jitter) is the bound when gossip drops a message. Concurrent misses of
+one model at one generation share one storage read — those inside a
+transaction apart from those outside one, because only a read inside a
+transaction is bounded by the storage acquire timeout — and identical
+concurrent extensions on one node share one storage call. The signing-key copy pings its peers on
 `auth.signingkeys` (§7.2), and storage plugins receive the same
 broadcaster (`spi.WithClusterBroadcaster`).
 
@@ -1474,7 +1496,7 @@ The hand-off was made, so the try is classified `NoAnswer`: the stream breaking,
 
 Meanwhile: Compute may still be executing business logic, unaware the stream is dead. Its callbacks are refused from the moment the fencing number rises or the callout ends (§3.8) — `410 CALLOUT_SUPERSEDED` while tx-123 is open, `404 TRANSACTION_NOT_FOUND` once it has rolled back — and a callback already in progress ends, discarded, before the work is given to anyone else.
 
-SAFE: either another member completes the callout, or Node A rolls back with the earlier member fenced. Compute's work inside cyoda is discarded; what it did outside cyoda is the application's to reconcile.
+SAFE: either another member completes the callout, or Node A rolls back with the earlier member fenced. Compute's work inside cyoda is discarded, except a schema extension, which stays; what it did outside cyoda is the application's to reconcile.
 
 **L5 partitions (Node A <-> PG):**
 
@@ -2085,7 +2107,7 @@ Processors are dispatched via the `ExternalProcessingService` internal contract 
 |------|----------|
 | `SYNC` | Processor executes within the current transaction. Entity data is updated in-place before the next transition. |
 | `ASYNC_SAME_TX` | Executes inline in the caller's transaction, exactly as `SYNC` does. CRUD callbacks are routed back to the transaction owner. The mode name is Cyoda Cloud's; in cyoda-go the processor runs inline. |
-| `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: the processor's own failure rolls back the SAVEPOINT only, the parent pipeline continues, and the failure and the member's `retryable` verdict do not reach the client; the member's warnings reach the client (gRPC `warnings`, HTTP `Cyoda-Warning` headers, §8.4). A callback write under the processor that fails with an answer that is not retryable makes the processor fail the same way: everything its callbacks wrote is discarded, and the pipeline continues (§3.8). The exception is a callback write inside the SAVEPOINT that had already lost a race: the rollback does not undo that, and the operation fails with a retryable `409 CONFLICT` (§3.8). A savepoint that cannot be created, undone or released is **not** a processor failure: the transaction is unusable, so the operation fails with a ticketed 5xx (§3.8). Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work. The mode name is Cyoda Cloud's; in cyoda-go the processor runs sequentially. |
+| `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: the processor's own failure rolls back the SAVEPOINT only, the parent pipeline continues, and the failure and the member's `retryable` verdict do not reach the client; the member's warnings reach the client (gRPC `warnings`, HTTP `Cyoda-Warning` headers, §8.4). A callback write under the processor that fails with an answer that is not retryable makes the processor fail the same way: everything its callbacks wrote to entities is discarded, and the pipeline continues (§3.8). The exception is a callback write inside the SAVEPOINT that had already lost a race: the rollback does not undo that, and the operation fails with a retryable `409 CONFLICT` (§3.8). A savepoint that cannot be created, undone or released is **not** a processor failure: the transaction is unusable, so the operation fails with a ticketed 5xx (§3.8). Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work but schema extensions. The mode name is Cyoda Cloud's; in cyoda-go the processor runs sequentially. |
 | `COMMIT_BEFORE_DISPATCH` | Engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout entity state and commits **before** the processor is dispatched, releasing the storage connection during the external compute window. The companion field `startNewTxOnDispatch: bool` (a sibling on the same processor object) chooses between two shapes. Without it (default `false`) the processor is dispatched with no transaction, and the engine begins `TX_post` on the same node when it returns. With `startNewTxOnDispatch: true` the engine begins `TX_post` before the dispatch and re-reads the entity there; if another transaction changed it since `TX_pre` committed, the processor is not dispatched. The processor's callbacks then join `TX_post` and may write any entity, the anchor included. The engine applies the result in `TX_post` by `CompareAndSave` against the transaction id `TX_pre` committed, or against `TX_post` when a callback wrote the entity there. A processor that answers with no data has the callback's payload adopted; one that answers with data supersedes the write. The engine then runs the remaining processors and the cascade inline and commits. A conflict after the boundary — another transaction changed the entity — answers `412 ENTITY_MODIFIED` naming the entity on every write route; a collection create or update fails whole. The entity stays durable in the pre-callout state; there is no engine-side retry and no compensation. The validator refuses `startNewTxOnDispatch: true` on any other mode. **Audit-trail placement**: `SMEventProcessingPaused` is recorded in `TX_pre` and durably committed at the segment boundary; the `SMEventStateProcessResult` of a processor that succeeds is recorded in `TX_post`, and a processor that fails after its boundary leaves none (§5.5). The mode has no event types of its own. See [docs/CONSISTENCY.md](CONSISTENCY.md) §10 for visibility caveats and idempotency requirements. |
 
 ### 5.5 Audit Trail
@@ -2512,7 +2534,7 @@ credentials from Secrets into the process without exposing them in
 | `CYODA_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 | `CYODA_STARTUP_TIMEOUT` | `30s` | Deadline for binary startup (plugin factory init, migrations, cluster join). Fatal on expiry. |
 | `CYODA_SUPPRESS_BANNER` | `false` | `true` suppresses the ASCII banner at startup and the mock-auth warning banner (useful for structured-logging environments). |
-| `CYODA_MODEL_CACHE_LEASE` | `5m` | Lease of a cached locked model descriptor; each expiry is jittered ±10%. |
+| `CYODA_MODEL_CACHE_LEASE` | `5m` | Lease of a cached locked model descriptor; each expiry is jittered ±10%. The bound on a stale entry when a `model.invalidate` broadcast is lost (§4.1). |
 | `CYODA_CORS_ENABLED` | `true` | Install the CORS middleware; `false` leaves CORS to an upstream ingress. |
 | `CYODA_CORS_ALLOWED_ORIGINS` | (empty) | Empty: loopback origins only (`localhost`, `127.0.0.1`, `[::1]`, any port). `*`: any origin. Otherwise a comma-separated list of exact origins; `*` cannot be combined with origins. See `cyoda help config cors`. |
 
@@ -2557,14 +2579,15 @@ Advertised via `DescribablePlugin.ConfigVars()`; rendered by `cyoda help config 
 | `CYODA_POSTGRES_MAX_CONNS` | `25` | Maximum pool connections |
 | `CYODA_POSTGRES_MIN_CONNS` | `5` | Minimum pool connections |
 | `CYODA_POSTGRES_SCHEDULER_CONNS` | `10` | Scheduler pool: scheduled-task claims, marks, give-backs and recorded attempts, and the async-search heartbeat and claim; at least `2`. The scheduler heartbeat has one more connection of its own (§4.8) |
+| `CYODA_POSTGRES_MODEL_CONNS` | `8` | Model pool: model reads, schema extensions and model administration (§2.3); extensions hold at most half of it; at least `2`, a smaller or malformed value fails startup |
 | `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` | `5m` | Max idle time before connection is closed |
 | `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run embedded SQL migrations at startup |
 | `CYODA_POSTGRES_STATEMENT_TIMEOUT` | `5m` | Maximum run time for a single SQL statement; `0` disables |
 | `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` | `5m` | Maximum time a connection may sit idle inside an open transaction; `0` disables |
-| `CYODA_POSTGRES_ACQUIRE_TIMEOUT` | `10s` | Maximum wait for a free pooled connection before failing with `503 STORAGE_UNAVAILABLE`, for an operation that opens a transaction or needs a second connection while its transaction holds one; a statement outside a transaction is not bounded by it; `0` disables |
+| `CYODA_POSTGRES_ACQUIRE_TIMEOUT` | `10s` | Maximum wait for a free pooled connection before failing with `503 STORAGE_UNAVAILABLE`, for an operation that opens a transaction (a schema extension and a model unlock included) or needs a second connection while its transaction holds one (a model read included); a statement outside a transaction is not bounded by it; `0` disables |
 | `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` | `30m` | Statement ceiling for async search scans; `0` disables |
 | `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` | `5m` | Maximum lock wait during schema migration; `0` disables |
-| `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | Rows between plugin-internal savepoints when folding schema extensions. Shared with the sqlite plugin — not plugin-namespaced. |
+| `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | A model's deltas per savepoint of its extension log; bounds how many deltas a read of the model folds. Shared with the sqlite plugin — not plugin-namespaced. |
 
 See §3.4 for what the ceilings bound and how they surface to callers.
 
@@ -2579,8 +2602,7 @@ Advertised via `DescribablePlugin.ConfigVars()`; rendered by `cyoda help config 
 | `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | SQLite `busy_timeout` pragma. |
 | `CYODA_SQLITE_CACHE_SIZE` | `64000` | SQLite `cache_size` pragma (KiB), **per connection** — one writer plus the reader pool. |
 | `CYODA_SQLITE_READER_POOL_SIZE` | `GOMAXPROCS` clamped to `4`..`8` | Max concurrent reader connections. Minimum 1; a value below it falls back to the default. Peak page-cache use is `(this + 1) × CYODA_SQLITE_CACHE_SIZE`. |
-| `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | Rows between plugin-internal savepoints when folding schema extensions. Shared with the postgres plugin — not plugin-namespaced. |
-| `CYODA_SCHEMA_EXTEND_MAX_RETRIES` | `8` | Attempts a schema extension gets when it meets a write conflict (`SQLITE_BUSY` past `CYODA_SQLITE_BUSY_TIMEOUT`) before it fails. Minimum 1; a value below it falls back to the default. Not plugin-namespaced. |
+| `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | A model's deltas per savepoint of its extension log; bounds how many deltas a read of the model folds. Shared with the postgres plugin — not plugin-namespaced. |
 
 Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` with fallback to `~/.local/share/cyoda/cyoda.db`; on Windows, `%LocalAppData%\cyoda\cyoda.db`.
 
@@ -2759,7 +2781,7 @@ spans and metrics under a plugin-specific namespace. The `memory`
 and `sqlite` plugins emit no plugin-level telemetry. The `postgres`
 plugin registers seven `cyoda.storage.pool.*` instruments, all
 labeled `backend="postgres"`: connections by state and by pool
-(`main`, `scheduler`, `heartbeat`), and, for the main pool, max
+(`main`, `scheduler`, `heartbeat`, `model`), and, for the main pool, max
 connections, acquires, empty acquires, canceled acquires, acquire
 duration and empty-acquire wait. It reads them from
 `pgxpool.Stat()` and registers them unconditionally at `NewFactory` — pool saturation is
@@ -2903,7 +2925,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | Dimension | Scaling Behavior | Limit |
 |-----------|-----------------|-------|
 | **Node count** | No compute capacity of its own: compute capacity is the compute members connected, whichever nodes they connect to. No improvement in write throughput — all writes go through PostgreSQL. | No hard limit is enforced. The upper end of DD-4's range is a judgement, not a derived bound; what does rise with cluster size is the probability that a request lands on a node other than the transaction owner and has to be proxied. |
-| **Write throughput** | Bounded by PostgreSQL `REPEATABLE READ` + application-layer SI+FCW validation (see §3.7). A transaction holds a `pgx.Tx` for its full duration, including external compute phases — except across a `COMMIT_BEFORE_DISPATCH` boundary without `startNewTxOnDispatch`, where no connection is held during the callout. | Single PG instance is the bottleneck. Main pool default is 25 per node (36 connections per node with the scheduler and heartbeat pools); with 10 nodes that's 250 concurrent transactions and 360 PG connections. Long-held transactions reduce effective throughput. |
+| **Write throughput** | Bounded by PostgreSQL `REPEATABLE READ` + application-layer SI+FCW validation (see §3.7). A transaction holds a `pgx.Tx` for its full duration, including external compute phases — except across a `COMMIT_BEFORE_DISPATCH` boundary without `startNewTxOnDispatch`, where no connection is held during the callout. | Single PG instance is the bottleneck. Main pool default is 25 per node (44 connections per node with the scheduler, heartbeat and model pools); with 10 nodes that's 250 concurrent transactions and 440 PG connections. Long-held transactions reduce effective throughput. |
 | **Read throughput** | Scales with node count for non-transactional reads (entity queries, search). Each node can serve reads independently from PG. | Bounded by PG read capacity. Point-in-time queries require version table scans. |
 | **Compute throughput** | Scales with compute member count across the cluster. Each node can host multiple compute members. Cross-node dispatch adds one HTTP hop. | Bounded by compute member availability per tag. If only one node has a member for a given tag, that node is the bottleneck for that tag. |
 
@@ -2917,7 +2939,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 |------------|-------|-------------|
 | **PG statement timeout** | Default 5m (`CYODA_POSTGRES_STATEMENT_TIMEOUT`) | PostgreSQL aborts any single statement that exceeds it. The abort is **not** retryable — re-running the statement would exceed the same ceiling — so it surfaces as a `500` with a ticket, not a `503` (§3.4). Async-search scans run under their own `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` (default 30m) and fail the job instead. |
 | **PG idle-in-transaction timeout** | Default 5m (`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`) | PostgreSQL aborts a transaction whose connection sits idle past it — which is what a transaction waiting on an external callout is doing. It bounds each idle gap inside a transaction, not the transaction's total lifetime; the callout deadline below must fit under it. |
-| **Pool acquire timeout** | Default 10s (`CYODA_POSTGRES_ACQUIRE_TIMEOUT`) | An operation that cannot get a connection within it fails fast with `503 STORAGE_UNAVAILABLE` rather than queueing behind a saturated pool. Applies to an operation that opens a transaction — every entity create, update, patch and delete, and an async search's scan and result writes (whose job records `STORAGE_UNAVAILABLE`) — and to one needing a *second* connection while the caller's transaction holds one: a point-in-time read, an async-search job record or a key-value statement issued inside a transaction. A statement issued outside a transaction is not bounded — an entity read, list, search, statistics or change-history read, an audit read, and a model, workflow, message or key-value read or write — so ordinary pool contention does not fail it; it waits until a connection is returned or the client disconnects. |
+| **Pool acquire timeout** | Default 10s (`CYODA_POSTGRES_ACQUIRE_TIMEOUT`) | An operation that cannot get a connection within it fails fast with `503 STORAGE_UNAVAILABLE` rather than queueing behind a saturated pool. Applies to an operation that opens a transaction — every entity create, update, patch and delete, a schema extension and a model unlock (on the model pool), and an async search's scan and result writes (whose job records `STORAGE_UNAVAILABLE`) — and to one needing a *second* connection while the caller's transaction holds one: a point-in-time read, a model read (on the model pool), an async-search job record or a key-value statement issued inside a transaction. A statement issued outside a transaction is not bounded — an entity read, list, search, statistics or change-history read, an audit read, and any other model, workflow, message or key-value read or write — so ordinary pool contention does not fail it; it waits until a connection is returned or the client disconnects. |
 | **Connection hold time** | Duration of entire flow chain (BEGIN → workflow → compute dispatch → callbacks → COMMIT) | Each in-flight transaction consumes one PG connection for its full lifetime. With 25 connections per node and 10 nodes, the cluster supports ~250 concurrent transactions. |
 | **Proxy timeout** | Default 30s (`CYODA_PROXY_TIMEOUT`) | A request forwarded to the transaction's owner fails with `503 TRANSACTION_NODE_UNAVAILABLE` when the owner's answer does not begin within it: the response headers on HTTP, the response of a unary gRPC call, the first message of a server-streaming gRPC call. Not retryable once the request may have been sent: the owner may have run it. |
 | **Callout deadline** | tries × answer limit + patience + hand-over allowance; 155s at the defaults | Fixed when the callout starts. No try or hand-over begins after it and one in progress is cut off at it, so the *time* a callout can take is bounded even though a lost hand-over answer can make the number of tries exceed the setting (§4.3). |
@@ -2969,7 +2991,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 
 | Parameter | Default | Hard Limit | Notes |
 |-----------|---------|------------|-------|
-| PG connections per node | 36: 25 main + 10 scheduler + 1 heartbeat | Configurable (`CYODA_POSTGRES_MAX_CONNS`, `CYODA_POSTGRES_SCHEDULER_CONNS`; the heartbeat pool is fixed at 1), bounded by PG `max_connections` | Each in-flight transaction holds one main-pool connection. |
+| PG connections per node | 44: 25 main + 10 scheduler + 1 heartbeat + 8 model | Configurable (`CYODA_POSTGRES_MAX_CONNS`, `CYODA_POSTGRES_SCHEDULER_CONNS`, `CYODA_POSTGRES_MODEL_CONNS`; the heartbeat pool is fixed at 1), bounded by PG `max_connections` | Each in-flight transaction holds one main-pool connection; a write that extends a model also holds a model-pool connection for one short transaction. |
 | Gossip metadata size | Depends on `CYODA_NODE_ID`, `CYODA_NODE_ADDR`, `CYODA_GRPC_NODE_ADDR`; measured against the limit at startup | memberlist `MetaMaxSize` = 512 bytes | Identity, a list version and the lifecycle state only; tenants and tags travel by reliable message and are unbounded. A node whose identity does not fit refuses to start. Alert on `cyoda.cluster.tags.lists_outstanding` staying non-zero. |
 | Search snapshot TTL | 1 hour | Configurable | Snapshots older than TTL are reaped. Increase for long-running batch workflows. |
 | Idle gap in a transaction (PostgreSQL) | 5 minutes | Configurable | Enforced by PostgreSQL via `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`; bounds each idle gap, not total lifetime. The callout deadline must fit under it (§4.3). |

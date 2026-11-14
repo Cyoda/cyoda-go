@@ -95,7 +95,7 @@ registered differs, and so does what turns it on:
 - `cyoda.callout.tries` — `Int64Counter` — tries made; labeled by `type` and `outcome` (`ok`, `no_handoff`, `no_answer`, `member_failed`, `terminal`, `abandoned` — the caller went away while the try was in progress). A rising share of `no_answer` or `no_handoff` means compute members that do not answer or do not read. On the tracing decorator above, so `CYODA_OTEL_ENABLED=true`
 - `cyoda.callout.wait.duration` — `Float64Histogram`, unit `s` — how long a callout waited for a compute member to exist; recorded only for callouts that waited, so its count is the number of callouts that waited; labeled by `type`. On the same decorator
 - `cyoda.callout.handovers` — `Int64Counter` — callouts handed over to another node; labeled by `outcome` (`ok`, `no_handoff`, `no_answer`, `member_failed`, `terminal`, `not_connected`). `not_connected` is a node the connection to which could not be opened — no try was used; `no_answer` includes every hand-over whose answer was lost (no reply, a non-2xx status, an answer that does not authenticate). A rising `no_answer` share with healthy compute nodes points at the network between nodes or at node clocks more than 30 s apart. On the peer router, so `CYODA_CLUSTER_ENABLED=true`, regardless of `CYODA_OTEL_ENABLED`
-- `cyoda.callout.superseded` — `Int64Counter` — callbacks refused or overtaken because their compute member was replaced or its callout ended; labeled by `outcome`: `refused_on_entry` (the pass was stale when the callback joined its transaction, or by the time the callback took its turn on the transaction; the callback did not run), `superseded_in_progress` (the callback ran, but its pass had gone stale by the time it finished; its work was discarded and it was answered `410 CALLOUT_SUPERSEDED`). On the join layer at startup, regardless of `CYODA_OTEL_ENABLED`
+- `cyoda.callout.superseded` — `Int64Counter` — callbacks refused or overtaken because their compute member was replaced or its callout ended; labeled by `outcome`: `refused_on_entry` (the pass was stale when the callback joined its transaction, or by the time the callback took its turn on the transaction; the callback did not run), `superseded_in_progress` (the callback ran, but its pass had gone stale by the time it finished; its work in the transaction was discarded and it was answered `410 CALLOUT_SUPERSEDED`). On the join layer at startup, regardless of `CYODA_OTEL_ENABLED`
 
 No `cyoda.callout.*` metric carries a tenant, a callout id, a member id, a node
 id or a pass: every label is drawn from a closed vocabulary.
@@ -105,7 +105,7 @@ whenever the Postgres storage plugin is active — and always on, regardless of
 `CYODA_OTEL_ENABLED`: pool saturation is the dominant outage mode this instrumentation
 guards against, so it does not wait on OTLP push. Every data point carries a `backend`
 attribute (`postgres`). Only `cyoda.storage.pool.connections` covers every pool,
-labeled by `pool`; every other instrument below covers the main pool only:
+labeled by `pool` (`main`, `scheduler`, `heartbeat`, `model`); every other instrument below covers the main pool only:
 
 - `cyoda.storage.pool.connections` — `Int64ObservableGauge` — pool connections by state; labeled by `backend`, `pool` and `state` (`acquired`, `idle`, `constructing`)
 - `cyoda.storage.pool.max_connections` — `Int64ObservableGauge` — configured maximum pool size; labeled by `backend`
@@ -168,7 +168,7 @@ Cyoda-specific span attribute keys defined in `internal/observability/attrs.go`:
 - `outcome` — outcome label of `cyoda.callout.tries`, `cyoda.callout.handovers`, `cyoda.callout.superseded`, `cyoda.scheduler.runs` and `cyoda.scheduler.run.duration`; a closed set for each
 - `cyoda.cluster.member.state` — lifecycle-state label of `cyoda.cluster.member.count` (`starting`, `normal`, `draining`, `unhealthy`)
 - `reason` — claim label of `cyoda.scheduler.claims` (`due` or `owner_lost`)
-- `pool` — PostgreSQL pool label of `cyoda.storage.pool.connections`: `main` (entity transactions and `GET /scheduled-tasks`), `scheduler` (the scheduler's claims and its retry writes (`RecordAttempt`), and the async-search heartbeat and claim; a FAILED outcome commits with its audit event on the main pool) or `heartbeat` (the scheduler heartbeat's own connection)
+- `pool` — PostgreSQL pool label of `cyoda.storage.pool.connections`: `main` (entity transactions and `GET /scheduled-tasks`), `scheduler` (the scheduler's claims and its retry writes (`RecordAttempt`), and the async-search heartbeat and claim; a FAILED outcome commits with its audit event on the main pool), `heartbeat` (the scheduler heartbeat's own connection) or `model` (the model store: model reads, administration and schema extensions)
 - `callout.tries` — number of tries a callout made, on its span
 - `callout.handover` — boolean; `true` when the callout was handed over to another cluster node at least once
 - `callout.waited_ms` — milliseconds the callout waited for a compute member to exist

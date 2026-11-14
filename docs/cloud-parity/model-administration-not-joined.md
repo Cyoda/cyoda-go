@@ -34,9 +34,9 @@ operation of their own and never as a step of a running transition.
   validate, workflow export; `EntityModelExportRequest` and
   `EntityModelGetAllRequest` — and every entity operation, which joins as
   before. An entity write under a model with a change level may extend the
-  model's schema inside the joined transaction: that is the entity
-  operation's side effect, bound to the entity's commit, and it is not
-  refused.
+  model's schema: that is the entity operation's side effect, and it is not
+  refused. The extension commits on its own, not in the joined transaction,
+  and stays if that transaction rolls back (`schema-extensions.md`).
 - **Every node, every mode:** in a cluster the refusal is made by the node
   that receives the request, before it verifies the token or forwards the
   request to the transaction's owner, so it is the same answer on every node

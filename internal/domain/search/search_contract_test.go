@@ -28,7 +28,7 @@ func newContractFixture(t *testing.T) (*search.SearchService, context.Context, s
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	return search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real()), ctx, ref
+	return search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real()), ctx, ref
 }
 
 // limitProbeStore records whether the store's Search was reached at all.
@@ -75,7 +75,7 @@ func TestSearch_NonPositiveLimit_IsContractError(t *testing.T) {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 	probe := &limitProbeStore{}
-	svc := search.NewSearchService(&limitProbeFactory{StoreFactory: base, store: probe},
+	svc := search.NewSearchService(cachedFactory(&limitProbeFactory{StoreFactory: base, store: probe}),
 		common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, &limitProbeFactory{StoreFactory: base, store: probe}), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.val", OperatorType: "EQUALS", Value: 0}

@@ -32,7 +32,7 @@ const (
 	// Extend must still refuse outright, unconditionally, regardless of
 	// change level. Strict validation does not establish fields at all, so
 	// it renders this exactly like ReasonNewField: the ordinary
-	// unknown-field/stale-schema signal, not a 400 naming the grammar.
+	// unknown-field refusal, not one naming the grammar.
 	ReasonInvalidFieldName
 )
 

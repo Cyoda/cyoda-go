@@ -6,16 +6,16 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// roundTrip verifies Apply(old, Diff(old, new)) ≡ new (by Marshal bytes).
+// roundTrip verifies applyDelta(old, Diff(old, new)) ≡ new (by Marshal bytes).
 func roundTrip(t *testing.T, oldN, newN *ModelNode) {
 	t.Helper()
 	delta, err := Diff(oldN, newN)
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
 	}
-	applied, err := Apply(oldN, delta)
+	applied, err := applyDelta(oldN, delta)
 	if err != nil {
-		t.Fatalf("Apply: %v", err)
+		t.Fatalf("apply: %v", err)
 	}
 	want, err := Marshal(newN)
 	if err != nil {
@@ -208,5 +208,55 @@ func cloneByMarshal(t *testing.T, n *ModelNode) *ModelNode {
 	return out
 }
 
-// Guard against unused import.
-var _ spi.SchemaDelta
+// TestDiff_SameFieldsSameBytes: the delta is a function of (old, new) only, so
+// coalescing identical concurrent extensions can compare bytes. Map iteration
+// order must not leak into the op order, at the root or below it: new
+// children under an existing object, and a new branch with children of its
+// own.
+func TestDiff_SameFieldsSameBytes(t *testing.T) {
+	old := NewObjectNode()
+	old.SetChild("a", NewLeafNode(String))
+	obj := NewObjectNode()
+	obj.SetChild("x", NewLeafNode(String))
+	old.SetChild("obj", obj)
+
+	cases := map[string]func() map[string]any{
+		"root": func() map[string]any {
+			return map[string]any{"a": "x", "obj": map[string]any{"x": "x"},
+				"b": "x", "c": "x", "d": "x", "e": "x"}
+		},
+		"under an existing object": func() map[string]any {
+			return map[string]any{"a": "x",
+				"obj": map[string]any{"x": "x", "p": "x", "q": "x", "r": "x", "s": "x"}}
+		},
+		"under a new branch": func() map[string]any {
+			return map[string]any{"a": "x", "obj": map[string]any{"x": "x"},
+				"branch": map[string]any{"m": "x", "n": "x",
+					"o": map[string]any{"deep1": "x", "deep2": "x", "deep3": "x"}}}
+		},
+	}
+	for name, doc := range cases {
+		t.Run(name, func(t *testing.T) {
+			build := func() []byte {
+				n, err := Extend(old, doc(), spi.ChangeLevelStructural)
+				if err != nil {
+					t.Fatalf("Extend new: %v", err)
+				}
+				d, err := Diff(old, n)
+				if err != nil {
+					t.Fatalf("Diff: %v", err)
+				}
+				if d == nil {
+					t.Fatal("Diff returned no delta; the case adds fields")
+				}
+				return d
+			}
+			want := build()
+			for i := 0; i < 50; i++ {
+				if got := build(); string(got) != string(want) {
+					t.Fatalf("iteration %d: delta bytes differ:\nwant: %s\ngot:  %s", i, want, got)
+				}
+			}
+		})
+	}
+}

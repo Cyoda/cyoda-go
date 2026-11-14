@@ -68,7 +68,7 @@ func TestAsyncNewTx_SavepointFailureFailsTheOperation(t *testing.T) {
 				}
 				return e, nil
 			}}
-			engine := NewEngine(factory, uuids, tc.mgr, platformclock.Real(), WithExternalProcessing(ext), WithCoordination(txcoord.New(tc.mgr)))
+			engine := NewEngine(cachedFactory(factory), uuids, tc.mgr, platformclock.Real(), WithExternalProcessing(ext), WithCoordination(txcoord.New(tc.mgr)))
 			base := ctxWithTenant(testTenant)
 			modelRef := spi.ModelRef{EntityName: "sp-fatal", ModelVersion: "1.0"}
 			saveWorkflow(t, factory, base, modelRef, []spi.WorkflowDefinition{{

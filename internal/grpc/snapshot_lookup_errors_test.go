@@ -23,8 +23,7 @@ func TestSnapshotLookupErrors_AreClientErrors(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	store, _ := factory.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(
-		factory, common.NewDefaultUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())}
 	ctx := grpcTenantCtx()
 
 	const unknownID = "aaaaaaaa-0000-0000-0000-00000000dead"

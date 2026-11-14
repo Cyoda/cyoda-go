@@ -87,8 +87,8 @@ func TestValidateOrExtend_NoChangeLevel_ValidatesOnly(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"alice"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
-		t.Fatalf("validateOrExtend: %v", err)
+	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
+		t.Fatalf("ValidateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 0 || ms.saveCalls != 0 {
 		t.Errorf("strict-validate path must not call ExtendSchema or Save; got extend=%d save=%d",
@@ -106,7 +106,7 @@ func TestValidateOrExtend_NoChangeLevel_UnknownField_Fails(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"a","email":"b@c.d"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
+	_, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
 	if err == nil || !strings.Contains(err.Error(), "validation failed") {
 		t.Errorf("expected validation failure, got %v", err)
 	}
@@ -123,8 +123,8 @@ func TestValidateOrExtend_ChangeLevel_NoDelta_NoExtendCall(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"alice"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
-		t.Fatalf("validateOrExtend: %v", err)
+	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
+		t.Fatalf("ValidateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 0 {
 		t.Errorf("expected 0 ExtendSchema calls on no-op diff, got %d", ms.extendCalls)
@@ -144,8 +144,8 @@ func TestValidateOrExtend_ChangeLevel_NewField_CallsExtendSchema(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"alice","email":"a@b.c"}`), &data); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
-		t.Fatalf("validateOrExtend: %v", err)
+	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
+		t.Fatalf("ValidateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 1 {
 		t.Errorf("expected exactly 1 ExtendSchema call, got %d", ms.extendCalls)
@@ -179,7 +179,7 @@ func descriptorWithChangeLevelAndKeys(t *testing.T, node *schema.ModelNode, cl s
 // TestValidateOrExtend_WideningKeyedNullLeaf_Returns422 verifies that when a
 // model has a null-only scalar leaf under a unique key, and an entity write
 // would widen that field to an object (a TYPE-level change permitted by
-// Structural ChangeLevel), validateOrExtend rejects the write with 422
+// Structural ChangeLevel), ValidateOrExtend rejects the write with 422
 // INVALID_UNIQUE_KEY_DEFINITION rather than silently widening the schema.
 func TestValidateOrExtend_WideningKeyedNullLeaf_Returns422(t *testing.T) {
 
@@ -198,7 +198,7 @@ func TestValidateOrExtend_WideningKeyedNullLeaf_Returns422(t *testing.T) {
 	data := map[string]any{
 		"score": map[string]any{"sub": "val"},
 	}
-	err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
+	_, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
 	if err == nil {
 		t.Fatal("expected error for key-field widening, got nil")
 	}
@@ -215,14 +215,15 @@ func TestValidateOrExtend_WideningKeyedNullLeaf_Returns422(t *testing.T) {
 }
 
 // TestValidateOrExtend_WideningKeyedScalarLeaf_Returns422 is the case that
-// matters most, because the schema extension is committed BEFORE the write's
-// own transaction is opened (see CreateEntity: ValidateOrExtend runs, then
-// withUniqueKeys, and only then beginScope). A keyed path that gains a
-// container branch keeps its scalar branch, so it still looks like a scalar
-// leaf — but a claim cannot be computed for an object value, so the write is
-// refused anyway. If the widening were let through, the model would be left
-// permanently declaring a kind that every later write of that kind is refused
-// for, with nothing to roll it back.
+// matters most, because a schema extension commits on its own and stays when
+// the write is refused. A keyed path that gains a container branch keeps its
+// scalar branch, so it still looks like a scalar leaf — but a claim cannot be
+// computed for an object value, so the write is refused anyway. The entity
+// service's write doors refuse such a value before ValidateOrExtend
+// (checkUniqueKeys); data a workflow processor returns reaches ValidateOrExtend
+// unchecked, and this guard is what refuses it there. If the widening were let
+// through, the model would be left permanently declaring a kind that every
+// later write of that kind is refused for, with nothing to roll it back.
 func TestValidateOrExtend_WideningKeyedScalarLeaf_Returns422(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("score", schema.NewLeafNode(schema.String))
@@ -233,7 +234,7 @@ func TestValidateOrExtend_WideningKeyedScalarLeaf_Returns422(t *testing.T) {
 
 	data := map[string]any{"score": map[string]any{"sub": "val"}}
 
-	err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
+	_, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data)
 	if err == nil {
 		t.Fatal("expected error for a keyed field gaining a container branch, got nil")
 	}
@@ -269,8 +270,8 @@ func TestValidateOrExtend_AddNewField_NotTouchingKeyedField_Succeeds(t *testing.
 		"score":    nil,
 		"category": "sports",
 	}
-	if err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
-		t.Fatalf("validateOrExtend unexpected error: %v", err)
+	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
+		t.Fatalf("ValidateOrExtend unexpected error: %v", err)
 	}
 	if ms.extendCalls != 1 {
 		t.Errorf("expected 1 ExtendSchema call for the new field; got %d", ms.extendCalls)

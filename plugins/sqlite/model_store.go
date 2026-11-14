@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -10,10 +11,12 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	sqlite3 "github.com/ncruces/go-sqlite3"
 )
 
 type modelStore struct {
 	db        *sql.DB
+	readDB    *sql.DB // deferred-transaction reader pool; Get's snapshot read
 	tenantID  spi.TenantID
 	applyFunc ApplyFunc
 	cfg       config // plugin config — read SchemaSavepointInterval from here
@@ -96,9 +99,19 @@ func clearExtensionLog(ctx context.Context, tx *sql.Tx, tenantID spi.TenantID, r
 	return n, nil
 }
 
+// Get reads the model doc and folds its extension log inside one deferred
+// read transaction, so both reads see one snapshot: a concurrent Unlock
+// (fold into the doc, clear the log) is seen whole or not at all. The read
+// handle is used, never BeginTx on the _txlock=immediate writer.
 func (s *modelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.ModelDescriptor, error) {
+	tx, err := s.readDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get model %s: %w", modelRef, classifyError(fmt.Errorf("begin read tx: %w", err)))
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var raw []byte
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
 	if err != nil {
@@ -112,7 +125,7 @@ func (s *modelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.Model
 		return nil, err
 	}
 
-	folded, err := s.foldLocked(ctx, modelRef, desc.Schema)
+	folded, _, err := s.foldLocked(ctx, tx, modelRef, desc.Schema, false)
 	if err != nil {
 		return nil, fmt.Errorf("fold extension log for %s: %w", modelRef, err)
 	}
@@ -182,21 +195,9 @@ func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	return nil
 }
 
-// Lock transitions the model to the LOCKED state and, on the UNLOCKED→LOCKED
-// edge, atomically writes a savepoint row capturing the current fold. This
-// materialises the ExtendSchema delta log into a single payload so downstream
-// Get calls do not replay a growing log.
-//
-// Idempotence: calling Lock on an already-locked model is a no-op — no
-// second savepoint is written.
-//
-// De-dup: if no new deltas have landed since the most recent savepoint
-// (or there is no base schema and no deltas at all), the savepoint is
-// skipped — there is nothing new to persist.
-//
-// Asymmetry with Unlock: Unlock does NOT write a savepoint. Unlock folds
-// the extension log into the stored schema and clears it, so a savepoint
-// written there would be removed in the same transaction.
+// Lock transitions the model to the LOCKED state. It is the state update
+// only: it writes no savepoint and touches no extension row. Locking an
+// already-locked model is a no-op.
 func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -221,7 +222,7 @@ func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 		return fmt.Errorf("failed to unmarshal model doc: %w", err)
 	}
 
-	// Idempotence: already-locked is a no-op — no second savepoint.
+	// Idempotence: already-locked is a no-op.
 	if doc.State == spi.ModelLocked {
 		if err := tx.Commit(); err != nil {
 			return classifyError(fmt.Errorf("commit lock (no-op): %w", err))
@@ -239,54 +240,6 @@ func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 		`UPDATE models SET doc = jsonb(?) WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
 		updated, string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion); err != nil {
 		return fmt.Errorf("failed to lock model %s: %w", modelRef, classifyError(err))
-	}
-
-	// Decide whether to write a savepoint. Skip when there's nothing new
-	// to persist beyond the most recent savepoint.
-	lastSP, err := s.lastSavepointSeqInTx(ctx, tx, modelRef)
-	if err != nil {
-		return classifyError(err)
-	}
-	var maxSeq int64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(seq), 0) FROM model_schema_extensions
-		 WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&maxSeq); err != nil {
-		return classifyError(fmt.Errorf("lock: max seq lookup: %w", err))
-	}
-
-	// De-dup: the last savepoint already reflects the current state.
-	// This also covers the "no base, no deltas" case (both are 0).
-	if maxSeq == lastSP {
-		if err := tx.Commit(); err != nil {
-			return classifyError(fmt.Errorf("commit lock: %w", err))
-		}
-		return nil
-	}
-
-	folded, err := s.foldLockedInTx(ctx, tx, modelRef, doc.Schema)
-	if err != nil {
-		return classifyError(fmt.Errorf("lock fold for %s: %w", modelRef, err))
-	}
-	// If the fold yields nothing meaningful (no base and no deltas
-	// resolvable into bytes), skip — there is nothing to persist.
-	if len(folded) == 0 {
-		if err := tx.Commit(); err != nil {
-			return classifyError(fmt.Errorf("commit lock: %w", err))
-		}
-		return nil
-	}
-
-	txID := ""
-	if sptx := spi.GetTransaction(ctx); sptx != nil {
-		txID = sptx.ID
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO model_schema_extensions
-		    (tenant_id, model_name, model_version, seq, kind, payload, tx_id)
-		 VALUES (?, ?, ?, ?, 'savepoint', ?, ?)`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, maxSeq+1, folded, txID); err != nil {
-		return classifyError(fmt.Errorf("lock savepoint for %s: %w", modelRef, err))
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -322,7 +275,7 @@ func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 		return fmt.Errorf("failed to unmarshal model doc: %w", err)
 	}
 
-	folded, err := s.foldLockedInTx(ctx, tx, modelRef, doc.Schema)
+	folded, _, err := s.foldLocked(ctx, tx, modelRef, doc.Schema, false)
 	if err != nil {
 		return classifyError(fmt.Errorf("unlock fold for %s: %w", modelRef, err))
 	}
@@ -426,21 +379,18 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 	}, nil
 }
 
-// ExtendSchema appends a 'delta' row to model_schema_extensions.
-// Apply-in-place has been retired: the schema stored in models.doc is
-// treated as an immutable base, and Get folds the extension log on top
-// of it via foldLocked. This mirrors the postgres plugin's semantics
-// (see plugins/postgres/model_store.go) adapted for sqlite's database/sql
-// API and the single-writer transaction model (BEGIN IMMEDIATE).
+// ExtendSchema appends a 'delta' row to model_schema_extensions, on a LOCKED
+// model only (spi.ErrModelNotLocked otherwise, spi.ErrNotFound when absent).
+// While the model is LOCKED the schema stored in models.doc does not change;
+// Get folds the log on top of it via the injected ApplyFunc. Unlock and Save
+// rewrite it (Unlock with the folded schema) and clear the log.
 //
-// The whole operation runs inside a single internal sql.Tx so the
-// delta append and (in Task 17) the savepoint fold are all-or-nothing.
-// The ambient spi.Transaction, if any, does not wrap this tx — its ID
-// is recorded in the tx_id column purely for diagnostic traceability.
+// The write runs in its own transaction and is not part of the caller's
+// ambient transaction. A delta that changes nothing — applying it to the
+// folded schema gives the folded schema's bytes — writes nothing. SQLITE_BUSY
+// is retried until ctx ends; there is no retry budget.
 //
-// Empty or nil deltas are a no-op. Missing ApplyFunc fails fast so
-// consumers notice wiring mistakes at extend-time rather than later
-// at Get-time (even though foldLocked would also surface the error).
+// A missing ApplyFunc fails fast so wiring mistakes surface at extend-time.
 func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
 	if len(delta) == 0 {
 		return nil
@@ -448,22 +398,13 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	if s.applyFunc == nil {
 		return fmt.Errorf("sqlite: ApplyFunc not wired (call WithApplyFunc when creating StoreFactory)")
 	}
-	// Transparent retry loop (B-I7 / §4.2 / §5.3).
-	//
-	// SQLite's per-connection busy_timeout already absorbs most
-	// contention between concurrent writers; this loop handles the
-	// residual SQLITE_BUSY that surfaces once the timeout is exceeded
-	// (classifyError maps SQLITE_BUSY → spi.ErrConflict).
-	//
-	// Ctx semantics: cancellation observed between attempts returns
-	// ctx.Err() wrapped with the attempt count — not ErrRetryExhausted.
-	// Cancellation observed mid-attempt bubbles up from the driver; it
-	// is not spi.ErrConflict, so the loop exits on the first iteration.
-	// Only conflict-classified errors are retried. Budget exhaustion
-	// without cancellation returns spi.ErrRetryExhausted wrapping the
-	// last conflict.
-	var lastErr error
-	for attempt := 1; attempt <= s.cfg.SchemaExtendMaxRetries; attempt++ {
+	// SQLite's per-connection busy_timeout absorbs most writer contention;
+	// the residual SQLITE_BUSY is retried until ctx ends, after a short
+	// ctx-aware pause so a zero busy_timeout cannot hot-spin. Any other error
+	// returns at once. The last BUSY error is rendered with %v, never %w:
+	// contention is not a client-retryable conflict, so the error returned
+	// when ctx ends must not satisfy errors.Is(_, spi.ErrConflict).
+	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("ExtendSchema cancelled after %d attempts: %w", attempt-1, err)
 		}
@@ -471,16 +412,22 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 		if err == nil {
 			return nil
 		}
-		if !errors.Is(err, spi.ErrConflict) {
-			// Non-retryable (including ctx-cancellation bubbling up
-			// from the driver mid-attempt). Surface immediately.
+		if !errors.Is(err, sqlite3.BUSY) {
+			if cerr := ctx.Err(); cerr != nil {
+				return fmt.Errorf("ExtendSchema cancelled after %d attempts: %w (last: %v)", attempt, cerr, err)
+			}
 			return err
 		}
-		lastErr = err
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("ExtendSchema cancelled after %d attempts: %w (last: %v)", attempt, ctx.Err(), err)
+		case <-time.After(busyRetryPause):
+		}
 	}
-	return fmt.Errorf("%w after %d attempts: %w",
-		spi.ErrRetryExhausted, s.cfg.SchemaExtendMaxRetries, lastErr)
 }
+
+// busyRetryPause is the pause between ExtendSchema attempts after SQLITE_BUSY.
+const busyRetryPause = 5 * time.Millisecond
 
 func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -489,31 +436,33 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Verify the model exists and capture base schema (used by the
-	// savepoint-fold branch below).
-	base, err := s.baseSchemaInTx(ctx, tx, ref)
+	doc, err := s.modelDocInTx(ctx, tx, ref)
 	if err != nil {
 		return err
 	}
+	if doc.State != spi.ModelLocked {
+		return fmt.Errorf("model %s is not locked: %w", ref, spi.ErrModelNotLocked)
+	}
+	base := doc.Schema
 
-	// Pre-persist Apply check: reject deltas that applyFunc refuses
-	// before they reach the extension log. Mirrors the memory plugin's
-	// apply-inline behavior (plugins/memory/model_store.go:ExtendSchema)
-	// so all three plugins share the same contract: malformed deltas fail
-	// fast at ExtendSchema-time rather than lying dormant in the log until
-	// a later fold-on-Get surfaces the error.
-	//
-	// applyFunc nil-guard lives in the public ExtendSchema wrapper (fails
-	// fast), so by this point applyFunc is guaranteed non-nil.
-	current, err := s.foldLockedInTx(ctx, tx, ref, base)
+	// The fold, in the apply function's encoding even with no delta to
+	// apply: one apply call for the whole log after the savepoint, whose seq
+	// it returns.
+	current, lastSP, err := s.foldLocked(ctx, tx, ref, base, true)
 	if err != nil {
 		return classifyError(fmt.Errorf("pre-persist fold for %s: %w", ref, err))
 	}
-	if _, err := s.applyFunc(current, delta); err != nil {
+	// A malformed delta is rejected before it reaches the log.
+	applied, err := s.applyFunc(current, []spi.SchemaDelta{delta})
+	if err != nil {
 		return fmt.Errorf("applyFunc rejected delta for %s: %w", ref, err)
 	}
+	// No-op check: both sides are outputs of the same encoding, so a delta
+	// that changes nothing gives the fold's own bytes and writes nothing.
+	if bytes.Equal(applied, current) {
+		return nil
+	}
 
-	// Determine next seq for this (tenant, model, version).
 	var nextSeq int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(seq), 0) + 1 FROM model_schema_extensions
@@ -522,45 +471,27 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 		return classifyError(fmt.Errorf("next seq lookup: %w", err))
 	}
 
-	txID := ""
-	if sptx := spi.GetTransaction(ctx); sptx != nil {
-		txID = sptx.ID
-	}
-
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO model_schema_extensions
-		    (tenant_id, model_name, model_version, seq, kind, payload, tx_id)
-		 VALUES (?, ?, ?, ?, 'delta', ?, ?)`,
-		string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq, []byte(delta), txID); err != nil {
+		    (tenant_id, model_name, model_version, seq, kind, payload)
+		 VALUES (?, ?, ?, ?, 'delta', ?)`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq, []byte(delta)); err != nil {
 		return classifyError(fmt.Errorf("append delta for %s: %w", ref, err))
 	}
 
-	// Savepoint trigger. Fires when (nextSeq - lastSavepointSeq) crosses
-	// the configured interval. The savepoint row sits at nextSeq+1 so it
-	// clusters immediately after the delta it is folding, avoiding a PK
-	// collision on (tenant, name, version, seq).
-	//
-	// An interval of 0 disables the size-based trigger entirely (only
-	// save-on-lock writes savepoints). Production configs enforce a
-	// minimum of 1 via envIntMin1Fn; the 0 path is exercised by the
-	// default test fixture to isolate save-on-lock behavior.
-	if s.cfg.SchemaSavepointInterval > 0 {
-		lastSP, err := s.lastSavepointSeqInTx(ctx, tx, ref)
-		if err != nil {
-			return classifyError(err)
-		}
-		if nextSeq-lastSP >= int64(s.cfg.SchemaSavepointInterval) {
-			folded, err := s.foldLockedInTx(ctx, tx, ref, base)
-			if err != nil {
-				return classifyError(fmt.Errorf("savepoint fold for %s (seq=%d): %w", ref, nextSeq, err))
-			}
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO model_schema_extensions
-				    (tenant_id, model_name, model_version, seq, kind, payload, tx_id)
-				 VALUES (?, ?, ?, ?, 'savepoint', ?, ?)`,
-				string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq+1, folded, txID); err != nil {
-				return classifyError(fmt.Errorf("append savepoint for %s (seq=%d): %w", ref, nextSeq+1, err))
-			}
+	// A savepoint follows once SchemaSavepointInterval of the model's deltas
+	// follow its latest savepoint (nextSeq - lastSP counts them). The
+	// savepoint row sits at nextSeq+1 so it clusters right after the delta it
+	// folds, with no PK collision.
+	if nextSeq-lastSP >= int64(s.cfg.SchemaSavepointInterval) {
+		// applied is the fold of every delta up to and including this
+		// one: the savepoint stores it.
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO model_schema_extensions
+			    (tenant_id, model_name, model_version, seq, kind, payload)
+			 VALUES (?, ?, ?, ?, 'savepoint', ?)`,
+			string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq+1, applied); err != nil {
+			return classifyError(fmt.Errorf("append savepoint for %s (seq=%d): %w", ref, nextSeq+1, err))
 		}
 	}
 
@@ -570,9 +501,9 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 	return nil
 }
 
-// baseSchemaInTx reads models.doc.schema within the given tx. Returns
+// modelDocInTx reads the model doc within the given tx. Returns
 // spi.ErrNotFound wrapped when the model row is absent.
-func (s *modelStore) baseSchemaInTx(ctx context.Context, tx *sql.Tx, ref spi.ModelRef) ([]byte, error) {
+func (s *modelStore) modelDocInTx(ctx context.Context, tx *sql.Tx, ref spi.ModelRef) (*modelDoc, error) {
 	var raw []byte
 	err := tx.QueryRowContext(ctx,
 		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
@@ -581,11 +512,11 @@ func (s *modelStore) baseSchemaInTx(ctx context.Context, tx *sql.Tx, ref spi.Mod
 		return nil, fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
 	}
 	if err != nil {
-		return nil, classifyError(fmt.Errorf("base schema lookup for %s: %w", ref, err))
+		return nil, classifyError(fmt.Errorf("model doc lookup for %s: %w", ref, err))
 	}
 	var doc modelDoc
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("base schema unmarshal for %s: %w", ref, err)
+		return nil, fmt.Errorf("model doc unmarshal for %s: %w", ref, err)
 	}
-	return doc.Schema, nil
+	return &doc, nil
 }

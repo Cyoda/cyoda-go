@@ -12,7 +12,8 @@ import (
 )
 
 // The callback reports each pool's current state under backend="postgres"
-// and pool="main", "scheduler" or "heartbeat", and unregistering stops it.
+// and pool="main", "scheduler", "heartbeat" or "model", and unregistering
+// stops it.
 //
 // This lives in the postgres_test package (not postgres) so it can share
 // newTestPool (migrate_test.go) — which carries the pgx v5.9.1
@@ -25,6 +26,8 @@ func TestRegisterPoolMetrics_ReportsPoolStat(t *testing.T) {
 	f := postgres.NewStoreFactory(pool)
 	postgres.SchedulerPoolForTest(t, f) // opens the scheduler and heartbeat pools
 	t.Cleanup(func() { postgres.CloseSchedulerPoolsForTest(f) })
+	postgres.ModelPoolForTest(t, f) // opens the model pool
+	t.Cleanup(func() { postgres.CloseModelPoolForTest(f) })
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	unregister, err := postgres.RegisterPoolMetricsForTest(mp.Meter(postgres.MeterNameForTest), f)
@@ -65,13 +68,13 @@ func TestRegisterPoolMetrics_ReportsPoolStat(t *testing.T) {
 				if acquired < 1 {
 					t.Fatalf("acquired connections of the main pool = %d, want >= 1", acquired)
 				}
-				for _, want := range []string{"main", "scheduler", "heartbeat"} {
+				for _, want := range []string{"main", "scheduler", "heartbeat", "model"} {
 					if !pools[want] {
 						t.Errorf("no data point with pool=%s; got pools %v", want, pools)
 					}
 				}
-				if len(pools) != 3 {
-					t.Errorf("pools = %v, want exactly main, scheduler and heartbeat", pools)
+				if len(pools) != 4 {
+					t.Errorf("pools = %v, want exactly main, scheduler, heartbeat and model", pools)
 				}
 			}
 		}

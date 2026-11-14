@@ -73,7 +73,7 @@ func newBareLeafDeleteFixture(t *testing.T) (h *entity.Handler, ctx context.Cont
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, base), platformclock.Real())
+	h = entity.New(cachedFactory(base), txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, base), platformclock.Real())
 
 	return h, ctx, ref.EntityName, 1
 }

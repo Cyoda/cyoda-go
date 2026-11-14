@@ -45,7 +45,7 @@ func TestPostgresStoreFactory_SkeletonReturnsErrors(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
 
-	factory := postgres.NewStoreFactory(pool)
+	factory := newClosingStoreFactory(t, pool)
 	ctx := ctxWithTenant("test-tenant")
 
 	// EntityStore is implemented — expect success

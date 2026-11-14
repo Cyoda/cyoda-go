@@ -224,11 +224,15 @@ func New(cfg Config) *App {
 		os.Exit(1)
 	}
 
-	// Wire the schema.Apply replay function into the plugin factory so
-	// ExtendSchema can fold deltas on read. Postgres uses this to fold
-	// the extension log; SQLite/Memory use it to apply in-place.
-	if setter, ok := factory.(applyFuncSetter); ok {
-		setter.SetApplyFunc(makeSchemaApply())
+	// Wire the schema replay function into the plugin factory. Postgres and
+	// SQLite fold the extension log with it, on read and under an
+	// extension's lock; memory applies each extension in place.
+	if err := wireSchemaApply(factory); err != nil {
+		slog.Error("startup failure",
+			"phase", "wire-schema-apply",
+			"backend", plugin.Name(),
+			"error", err.Error())
+		os.Exit(1)
 	}
 
 	// Wrap the factory in the caching decorator. ModelStore(ctx) now
@@ -440,23 +444,11 @@ func New(cfg Config) *App {
 			"error", err.Error())
 		os.Exit(1)
 	}
-	// Negative cache for pre-execution field-path validation. Wired
-	// to the descriptor cache via SubscribeLocal: every model
-	// invalidation (local mutation OR gossip-received event) drops
-	// the corresponding negative-cache bucket. This works on
-	// single-node and multi-node alike: subscribing to the descriptor
-	// cache rather than to the broadcaster directly is what makes
-	// single-node deployments, where the broadcaster is nil, receive
-	// invalidations at all. Per-(tenant, ref) bucketed otter caches
-	// isolate cross-tenant eviction.
-	pathValidationCache := search.NewPathValidationCache()
-	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
 	// Bounded async-search worker pool, sized from config (validated by
 	// cfg.Validate at the top of New).
 	a.searchPool = search.NewWorkerPool(cfg.SearchAsync.Workers, cfg.SearchAsync.QueueLen)
 	a.searchService = search.
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency, clk).
-		WithPathValidationCache(pathValidationCache).
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
 		WithHealthLatch(a.healthLatch).
 		WithAsyncPool(a.searchPool).
@@ -711,11 +703,11 @@ func New(cfg Config) *App {
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
 	// the EntityStore and a validated ModelRef for the calling tenant.
-	// The resolver returns ok=false when the model is not registered (after
-	// one bounded cache refresh — closing the multi-node stale-cache race);
-	// the handler maps that to 404 MODEL_NOT_FOUND. Genuine store errors
-	// (non-ErrNotFound from Get or RefreshAndGet) surface as Internal(500)
-	// and are propagated to the 500-with-ticket path.
+	// The resolver returns ok=false when the model is not registered (one Get;
+	// the model cache never holds a not-found, so a model registered on a peer
+	// is found); the handler maps that to 404 MODEL_NOT_FOUND. Genuine store
+	// errors (non-ErrNotFound from Get) surface as Internal(500) and are
+	// propagated to the 500-with-ticket path.
 	storeFactory := a.storeFactory
 	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		ctx := r.Context()
@@ -726,7 +718,7 @@ func New(cfg Config) *App {
 		ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 		if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
 			if appErr.Status == http.StatusNotFound {
-				// Not registered after one bounded refresh → handler emits 404 MODEL_NOT_FOUND.
+				// Not registered → handler emits 404 MODEL_NOT_FOUND.
 				return nil, ref, nil, nil, false, nil
 			}
 			// Genuine store error → propagate to 500-with-ticket path.
@@ -1166,32 +1158,31 @@ func validateClusterConfig(c cluster.Config) {
 	}
 }
 
-// applyFuncSetter is the wiring surface Run soft-asserts on each plugin
+// applyFuncSetter is the wiring surface Run requires of every storage
 // factory. It uses the raw function signature (not any plugin-local named
-// ApplyFunc type) so a single type-assertion satisfies all plugins
-// uniformly. The assertion is soft: a factory that stops implementing
-// this exact signature would be skipped silently and every fold-on-read
-// of pending deltas would fail — applyfunc_wiring_test.go pins the
-// in-tree factories to this same declaration at compile time.
+// ApplyFunc type) so a single type-assertion satisfies all plugins uniformly.
+// applyfunc_wiring_test.go pins the in-tree factories to this declaration at
+// compile time.
+//
+// The function replays a list of deltas in one call (schema.ApplyMany), so
+// the plugins decode and encode the schema once per fold, not once per
+// delta. The plugin packages do not depend on internal/domain/model/schema;
+// the composition root injects it.
 type applyFuncSetter interface {
-	SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error))
+	SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))
 }
 
-// makeSchemaApply returns the schema-apply replay function the plugin
-// factories use to fold extension-log deltas on read. Defined here so
-// the plugin packages don't depend on internal/domain/model/schema.
-func makeSchemaApply() func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		node, err := schema.Unmarshal(base)
-		if err != nil {
-			return nil, fmt.Errorf("apply: unmarshal base: %w", err)
-		}
-		extended, err := schema.Apply(node, delta)
-		if err != nil {
-			return nil, err
-		}
-		return schema.Marshal(extended)
+// wireSchemaApply installs the schema replay function on factory. A factory
+// that does not offer applyFuncSetter could not fold a model's extension log,
+// so it is refused: Run exits rather than serve with every extended model
+// unreadable.
+func wireSchemaApply(factory spi.StoreFactory) error {
+	setter, ok := factory.(applyFuncSetter)
+	if !ok {
+		return errors.New("storage factory does not implement SetApplyFunc(func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))")
 	}
+	setter.SetApplyFunc(schema.ApplyMany)
+	return nil
 }
 
 // mustNewGossip parses the gossip address, creates the memberlist-backed

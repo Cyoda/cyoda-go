@@ -134,7 +134,7 @@ func runPropertySeed(t *testing.T, fixture BackendFixture, seed int64) {
 		// Surface oracle state so the failure is diagnosable even when
 		// the backend itself returned an error (e.g. the sqlite-specific
 		// MODEL_NOT_FOUND storm after a 500 SERVER_ERROR during
-		// validateOrExtend — see task 27 reporting).
+		// ValidateOrExtend).
 		extBytes, _ := json.MarshalIndent(extensions, "", "  ")
 		t.Fatalf(
 			"ExportModel failed\n"+

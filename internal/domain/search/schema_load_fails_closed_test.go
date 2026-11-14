@@ -35,9 +35,7 @@ import (
 // fails. That is the split this test needs: the request gets far enough to
 // reach path validation, and path validation is what breaks.
 //
-// It deliberately implements neither RefreshAndGet nor SchemaNode, so
-// loadFieldsMap takes its Get + Unmarshal route and the single-refresh retry
-// is not in play.
+// Its SchemaNode and its refresh both parse that same blob.
 type brokenSchemaModelStore struct {
 	ref    spi.ModelRef
 	schema []byte
@@ -49,6 +47,17 @@ func (s *brokenSchemaModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelD
 		State:  spi.ModelLocked,
 		Schema: s.schema,
 	}, nil
+}
+
+func (s *brokenSchemaModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	return s.RefreshSchemaNode(ctx, ref)
+}
+
+func (s *brokenSchemaModelStore) RefreshSchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error) {
+	if len(s.schema) == 0 {
+		return nil, nil
+	}
+	return schema.Unmarshal(s.schema)
 }
 
 func (s *brokenSchemaModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
@@ -182,6 +191,14 @@ func (s *switchableModelStore) Break() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.broken = true
+}
+
+func (s *switchableModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *switchableModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {

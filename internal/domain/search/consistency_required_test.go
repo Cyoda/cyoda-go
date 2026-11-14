@@ -13,5 +13,5 @@ func TestNewSearchService_NilConsistencyPanics(t *testing.T) {
 			t.Fatal("search.NewSearchService with a nil consistency service did not panic")
 		}
 	}()
-	search.NewSearchService(nil, nil, nil, nil, platformclock.Real())
+	search.NewSearchService(cachedFactory(nil), nil, nil, nil, platformclock.Real())
 }

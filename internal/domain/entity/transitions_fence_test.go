@@ -52,7 +52,7 @@ func TestTransitions_FenceOnPointInTimeAndTransactionID(t *testing.T) {
 		t.Errorf("pointInTime after C: %d %s", status, code)
 	}
 
-	txh := entity.New(f.factory, submitTimeTM{TransactionManager: f.tm, submit: f.c.Add(time.Millisecond)},
+	txh := entity.New(cachedFactory(f.factory), submitTimeTM{TransactionManager: f.tm, submit: f.c.Add(time.Millisecond)},
 		common.NewDefaultUUIDGenerator(), nil, txcoord.New(f.tm), consistency.New(f.tm), platformclock.Real())
 	txID := uuid.New()
 	if status, code := call(txh, genapi.GetEntityTransitionsParams{TransactionId: &txID}); status != http.StatusBadRequest || code != common.ErrCodePointInTimeAfterConsistencyTime {

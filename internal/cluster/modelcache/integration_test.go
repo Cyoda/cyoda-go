@@ -6,7 +6,6 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 )
 
 // fakeBroadcaster delivers published messages to every subscriber
@@ -43,8 +42,8 @@ func TestCache_GossipInvalidation_DropsOnPeer(t *testing.T) {
 	innerB := &stubStore{desc: lockedDescriptor(ref, "")}
 	clk := &manualClock{now: time.Now()}
 
-	nodeA := modelcache.New(innerA, bc, clk, time.Hour)
-	nodeB := modelcache.New(innerB, bc, clk, time.Hour)
+	nodeA := newModelStore(t, innerA, bc, clk, time.Hour)
+	nodeB := newModelStore(t, innerB, bc, clk, time.Hour)
 
 	ctx := withTenantContext(context.Background(), "t1")
 	_, _ = nodeA.Get(ctx, ref)
@@ -71,8 +70,8 @@ func TestCache_GossipInvalidation_ExtendSchemaOnPeer(t *testing.T) {
 	innerB := &stubStore{desc: lockedDescriptor(ref, "")}
 	clk := &manualClock{now: time.Now()}
 
-	nodeA := modelcache.New(innerA, bc, clk, time.Hour)
-	nodeB := modelcache.New(innerB, bc, clk, time.Hour)
+	nodeA := newModelStore(t, innerA, bc, clk, time.Hour)
+	nodeB := newModelStore(t, innerB, bc, clk, time.Hour)
 
 	ctx := withTenantContext(context.Background(), "t1")
 	_, _ = nodeA.Get(ctx, ref)
@@ -93,8 +92,8 @@ func TestCache_GossipInvalidation_TenantScoped(t *testing.T) {
 	innerA := &stubStore{desc: lockedDescriptor(ref, "")}
 	innerB := &stubStore{desc: lockedDescriptor(ref, "")}
 	clk := &manualClock{now: time.Now()}
-	nodeA := modelcache.New(innerA, bc, clk, time.Hour)
-	nodeB := modelcache.New(innerB, bc, clk, time.Hour)
+	nodeA := newModelStore(t, innerA, bc, clk, time.Hour)
+	nodeB := newModelStore(t, innerB, bc, clk, time.Hour)
 
 	ctxA := withTenantContext(context.Background(), "tenant-A")
 	ctxB := withTenantContext(context.Background(), "tenant-B")

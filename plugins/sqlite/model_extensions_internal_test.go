@@ -25,16 +25,6 @@ func withSavepointInterval(n int) Option {
 	return func(f *StoreFactory) { f.cfg.SchemaSavepointInterval = n }
 }
 
-// withExtendMaxRetries is a test-only Option that overrides
-// cfg.SchemaExtendMaxRetries on the factory. Production wiring reads
-// this from CYODA_SCHEMA_EXTEND_MAX_RETRIES via parseConfig; tests use
-// this option to squeeze the retry budget down to a handful of attempts
-// so the exhaustion path surfaces deterministically under forced
-// SQLITE_BUSY contention.
-func withExtendMaxRetries(n int) Option {
-	return func(f *StoreFactory) { f.cfg.SchemaExtendMaxRetries = n }
-}
-
 // setUnionApplyFunc is an associative-commutative-idempotent apply used
 // by Sub-project B tests. The "schema" representation is a JSON array of
 // unique string tokens, an ExtendSchema delta is a JSON-encoded string
@@ -42,7 +32,7 @@ func withExtendMaxRetries(n int) Option {
 //
 // Copied verbatim from plugins/postgres/model_extensions_internal_test.go
 // so the sqlite fold tests remain self-contained.
-func setUnionApplyFunc(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+func setUnionApplyFunc(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 	m := map[string]struct{}{}
 	if len(base) > 0 {
 		var existing []string
@@ -53,11 +43,16 @@ func setUnionApplyFunc(base []byte, delta spi.SchemaDelta) ([]byte, error) {
 			m[tok] = struct{}{}
 		}
 	}
-	var tok string
-	if err := json.Unmarshal([]byte(delta), &tok); err != nil {
-		return nil, fmt.Errorf("setUnionApplyFunc: decode delta %q: %w", delta, err)
+	for _, delta := range deltas {
+		if len(delta) == 0 {
+			continue
+		}
+		var tok string
+		if err := json.Unmarshal([]byte(delta), &tok); err != nil {
+			return nil, fmt.Errorf("setUnionApplyFunc: decode delta %q: %w", delta, err)
+		}
+		m[tok] = struct{}{}
 	}
-	m[tok] = struct{}{}
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -90,7 +85,7 @@ func sortNewlineTokens(b []byte) []byte {
 }
 
 // sqliteFixture is the internal-package fixture for modelStore tests
-// that need access to unexported methods (foldLocked, lastSavepointSeq,
+// that need access to unexported methods (foldLocked, the extension log,
 // etc.) and to the concrete *modelStore value. Mirrors pgFixture in
 // plugins/postgres/model_extensions_internal_test.go.
 //
@@ -104,23 +99,20 @@ type sqliteFixture struct {
 	tenantID spi.TenantID
 }
 
+// newSQLiteFixture constructs a fixture with the default savepoint
+// interval (64).
 func newSQLiteFixture(t *testing.T) *sqliteFixture {
-	return newSQLiteFixtureWithInterval(t, 0)
+	return newSQLiteFixtureWithInterval(t, defaultSchemaSavepointInterval)
 }
 
 // newSQLiteFixtureWithInterval constructs a fixture like newSQLiteFixture
-// but with cfg.SchemaSavepointInterval overridden at factory-construction
-// time — used by B-I3/B-I4 tests that need a small interval to exercise
-// the savepoint trigger deterministically. Passing interval=0 means "use
-// the factory default" (64).
+// but with cfg.SchemaSavepointInterval set at factory-construction time —
+// used by tests that need a small interval to exercise the savepoint
+// trigger deterministically.
 func newSQLiteFixtureWithInterval(t *testing.T, interval int) *sqliteFixture {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	var opts []Option
-	if interval > 0 {
-		opts = append(opts, withSavepointInterval(interval))
-	}
-	f, err := NewStoreFactoryForTest(context.Background(), dbPath, opts...)
+	f, err := NewStoreFactoryForTest(context.Background(), dbPath, withSavepointInterval(interval))
 	if err != nil {
 		t.Fatalf("NewStoreFactoryForTest: %v", err)
 	}
@@ -171,7 +163,7 @@ func (fx *sqliteFixture) SaveModel(t *testing.T, ref spi.ModelRef, base []byte) 
 // It nests each delta under `$$applied` so observers can detect whether
 // apply was invoked. Mirrors plugins/postgres's fixture helper.
 func fixtureApplyFunc() ApplyFunc {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	return func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 		var m map[string]json.RawMessage
 		if len(base) == 0 {
 			m = map[string]json.RawMessage{}
@@ -184,7 +176,9 @@ func fixtureApplyFunc() ApplyFunc {
 				return nil, err
 			}
 		}
-		applied = append(applied, json.RawMessage(delta))
+		for _, delta := range deltas {
+			applied = append(applied, json.RawMessage(delta))
+		}
 		encoded, err := json.Marshal(applied)
 		if err != nil {
 			return nil, err
@@ -202,7 +196,7 @@ func TestSQLite_foldLocked_NoDeltas_ReturnsBase(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte(`{"base":true}`))
 
-	got, err := fx.store.foldLocked(fx.ctx, ref, []byte(`{"base":true}`))
+	got, err := foldViaTx(t, fx, ref, []byte(`{"base":true}`))
 	if err != nil {
 		t.Fatalf("foldLocked: %v", err)
 	}
@@ -221,20 +215,20 @@ func TestSQLite_foldLocked_MultipleDeltas_AppliesInOrder(t *testing.T) {
 	// Insert three delta rows directly (bypassing ExtendSchema to isolate the fold test).
 	for i, d := range []string{`"d01"`, `"d02"`, `"d03"`} {
 		if _, err := fx.store.db.ExecContext(fx.ctx,
-			`INSERT INTO model_schema_extensions (tenant_id, model_name, model_version, seq, kind, payload, tx_id)
-			 VALUES (?, ?, ?, ?, 'delta', ?, '')`,
+			`INSERT INTO model_schema_extensions (tenant_id, model_name, model_version, seq, kind, payload)
+			 VALUES (?, ?, ?, ?, 'delta', ?)`,
 			string(fx.tenantID), ref.EntityName, ref.ModelVersion, i+1, []byte(d)); err != nil {
 			t.Fatalf("insert delta %d: %v", i, err)
 		}
 	}
 
-	got, err := fx.store.foldLocked(fx.ctx, ref, []byte{})
+	got, err := foldViaTx(t, fx, ref, []byte{})
 	if err != nil {
 		t.Fatalf("foldLocked: %v", err)
 	}
-	expected, _ := setUnionApplyFunc([]byte{}, spi.SchemaDelta(`"d01"`))
-	expected, _ = setUnionApplyFunc(expected, spi.SchemaDelta(`"d02"`))
-	expected, _ = setUnionApplyFunc(expected, spi.SchemaDelta(`"d03"`))
+	expected, _ := setUnionApplyFunc([]byte{}, []spi.SchemaDelta{spi.SchemaDelta(`"d01"`)})
+	expected, _ = setUnionApplyFunc(expected, []spi.SchemaDelta{spi.SchemaDelta(`"d02"`)})
+	expected, _ = setUnionApplyFunc(expected, []spi.SchemaDelta{spi.SchemaDelta(`"d03"`)})
 	if !bytes.Equal(got, expected) {
 		t.Errorf("foldLocked = %q, want %q", got, expected)
 	}
@@ -248,6 +242,9 @@ func TestSQLite_ExtendSchema_SavepointAtConfigInterval(t *testing.T) {
 	fx.store.applyFunc = setUnionApplyFunc
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte{})
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 
 	for i := 0; i < 10; i++ {
 		if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%d"`, i))); err != nil {
@@ -255,42 +252,41 @@ func TestSQLite_ExtendSchema_SavepointAtConfigInterval(t *testing.T) {
 		}
 	}
 
-	seq, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	seq, err := savepointSeqViaTx(t, fx, ref)
 	if err != nil {
-		t.Fatalf("lastSavepointSeq: %v", err)
+		t.Fatalf("savepoint seq: %v", err)
 	}
 	if seq == 0 {
 		t.Errorf("savepoint seq after 10 deltas with interval=10 = 0, want nonzero")
 	}
 }
 
-// TestSQLite_ExtendSchema_SaveOnLock — B-I3 for sqlite.
-// Lock on a model with pending (unfolded) deltas MUST write a savepoint.
-func TestSQLite_ExtendSchema_SaveOnLock(t *testing.T) {
+// TestSQLite_TestFactory_DefaultSavepointInterval — the test factory runs
+// with the shipped default interval (64), not savepoints off: the 63rd
+// delta writes no savepoint, the 64th writes one.
+func TestSQLite_TestFactory_DefaultSavepointInterval(t *testing.T) {
 	fx := newSQLiteFixture(t)
 	fx.store.applyFunc = setUnionApplyFunc
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte{})
-	if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"d1"`)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-
-	before, err := fx.store.lastSavepointSeq(fx.ctx, ref)
-	if err != nil {
-		t.Fatalf("lastSavepointSeq pre-lock: %v", err)
-	}
-	if before != 0 {
-		t.Fatalf("pre-lock lastSavepointSeq = %d, want 0", before)
-	}
 	if err := fx.store.Lock(fx.ctx, ref); err != nil {
 		t.Fatalf("Lock: %v", err)
 	}
-	after, err := fx.store.lastSavepointSeq(fx.ctx, ref)
-	if err != nil {
-		t.Fatalf("lastSavepointSeq post-lock: %v", err)
+	extend := func(i int) {
+		t.Helper()
+		if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%02d"`, i))); err != nil {
+			t.Fatalf("ExtendSchema %d: %v", i, err)
+		}
 	}
-	if after == 0 {
-		t.Error("post-lock lastSavepointSeq = 0, want nonzero")
+	for i := 1; i < 64; i++ {
+		extend(i)
+	}
+	if seq, err := savepointSeqViaTx(t, fx, ref); err != nil || seq != 0 {
+		t.Fatalf("savepoint seq after 63 deltas = %d (err %v), want 0", seq, err)
+	}
+	extend(64)
+	if seq, err := savepointSeqViaTx(t, fx, ref); err != nil || seq == 0 {
+		t.Fatalf("savepoint seq after 64 deltas = %d (err %v), want nonzero", seq, err)
 	}
 }
 
@@ -345,220 +341,33 @@ func TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
 	if err := fx.store.Lock(fx.ctx, ref); err != nil {
 		t.Fatalf("Lock: %v", err)
 	}
-	beforeUnlock, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	beforeUnlock, err := savepointSeqViaTx(t, fx, ref)
 	if err != nil {
-		t.Fatalf("lastSavepointSeq pre-unlock: %v", err)
+		t.Fatalf("savepoint seq pre-unlock: %v", err)
 	}
 	if err := fx.store.Unlock(fx.ctx, ref); err != nil {
 		t.Fatalf("Unlock: %v", err)
 	}
-	afterUnlock, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	afterUnlock, err := savepointSeqViaTx(t, fx, ref)
 	if err != nil {
-		t.Fatalf("lastSavepointSeq post-unlock: %v", err)
+		t.Fatalf("savepoint seq post-unlock: %v", err)
 	}
 	if beforeUnlock != afterUnlock {
-		t.Errorf("Unlock mutated lastSavepointSeq: before=%d after=%d", beforeUnlock, afterUnlock)
+		t.Errorf("Unlock changed the savepoint seq: before=%d after=%d", beforeUnlock, afterUnlock)
 	}
-}
-
-// TestSQLite_ExtendSchema_TransparentRetry_ConvergesUnderBusy — B-I7 for
-// sqlite. N goroutines extending concurrently all commit within the retry
-// budget. Depending on SQLite's busy_timeout absorbing contention, the
-// retry wrapper may or may not fire; either way all N deltas must land.
-func TestSQLite_ExtendSchema_TransparentRetry_ConvergesUnderBusy(t *testing.T) {
-	const N = 8
-	fx := newSQLiteFixture(t)
-	// NOTE: fx.factory.SetApplyFunc would panic (fixture already installed
-	// fixtureApplyFunc); override directly on the store instead.
-	fx.store.applyFunc = setUnionApplyFunc
-	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
-	fx.SaveModel(t, ref, []byte(`[]`))
-
-	var wg sync.WaitGroup
-	errs := make([]error, N)
-	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
-		go func() {
-			defer wg.Done()
-			errs[i] = fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%d"`, i)))
-		}()
-	}
-	wg.Wait()
-
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("ExtendSchema #%d failed: %v", i, err)
-		}
-	}
-
-	// All N deltas landed. Scope to this tenant + model for defensive parity
-	// with the rest of the extension-table assertions in this file.
-	var count int
-	if err := fx.store.db.QueryRowContext(fx.ctx,
-		`SELECT COUNT(*) FROM model_schema_extensions
-		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND kind = 'delta'`,
-		string(fx.tenantID), ref.EntityName, ref.ModelVersion,
-	).Scan(&count); err != nil {
-		t.Fatalf("count delta rows: %v", err)
-	}
-	if count != N {
-		t.Errorf("delta row count = %d, want %d", count, N)
-	}
-}
-
-// TestSQLite_ExtendSchema_RetryExhaustion_ReturnsErrRetryExhausted — B-I7.
-// Forces deterministic SQLITE_BUSY contention by holding an uncommitted
-// write transaction on a second *sql.DB handle to the same database file,
-// then invokes ExtendSchema with a tight retry budget and a tight
-// busy_timeout. The retry loop MUST exhaust and return
-// spi.ErrRetryExhausted wrapping the last spi.ErrConflict.
-//
-// This is the counterpart to TransparentRetry_ConvergesUnderBusy: that
-// test proves the happy path (retries converge under the default 5s
-// busy_timeout), this one proves the exhaustion path is actually wired
-// — i.e. that the classifier + retry loop + ErrRetryExhausted wrap all
-// work when contention genuinely overflows the budget.
-//
-// Implementation notes:
-//   - The factory-level flock guards against a second StoreFactory on
-//     the same file, but it does NOT prevent a raw *sql.DB handle from
-//     opening the file. That's what we exploit here: a bare lock-holder
-//     DB with its own connection pool, independent of fx.store.db.
-//   - fx.store.db.SetMaxOpenConns(1) means the ExtendSchema attempt's
-//     BeginTx grabs the sole pool connection and then tries to acquire
-//     the write (RESERVED) lock inside SQLite — which the holder's
-//     uncommitted IMMEDIATE tx is keeping. After busy_timeout, the
-//     driver returns SQLITE_BUSY, which classifyError maps to
-//     spi.ErrConflict, which the retry loop catches.
-//   - busy_timeout=10ms keeps the whole test snappy; three attempts
-//     bound total wait at ~30ms per test run before exhaustion.
-func TestSQLite_ExtendSchema_RetryExhaustion_ReturnsErrRetryExhausted(t *testing.T) {
-	const maxRetries = 3
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-
-	f, err := NewStoreFactoryForTest(
-		context.Background(),
-		dbPath,
-		withExtendMaxRetries(maxRetries),
-	)
-	if err != nil {
-		t.Fatalf("NewStoreFactoryForTest: %v", err)
-	}
-	t.Cleanup(func() { _ = f.Close() })
-	f.SetApplyFunc(fixtureApplyFunc())
-
-	// Shrink busy_timeout on the shared connection so each retry
-	// attempt fails fast under contention. SQLite PRAGMAs are
-	// per-connection; with MaxOpenConns=1 this covers all writes.
-	if _, err := f.db.ExecContext(context.Background(),
-		"PRAGMA busy_timeout = 10"); err != nil {
-		t.Fatalf("override busy_timeout: %v", err)
-	}
-
-	tenantID := spi.TenantID("t1")
-	uc := &spi.UserContext{
-		UserID:   "test-user",
-		UserName: "Test User",
-		Tenant:   spi.Tenant{ID: tenantID, Name: string(tenantID)},
-		Roles:    []string{"USER"},
-	}
-	ctx := spi.WithUserContext(context.Background(), uc)
-
-	ms, err := f.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	store := ms.(*modelStore)
-	store.applyFunc = setUnionApplyFunc
-	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
-
-	// Seed a base model row using the main factory BEFORE opening the
-	// lock-holder — saves us from interleaving writes against the held
-	// write lock during setup.
-	desc := &spi.ModelDescriptor{
-		Ref:         ref,
-		State:       spi.ModelUnlocked,
-		ChangeLevel: spi.ChangeLevelStructural,
-		Schema:      []byte(`[]`),
-		UpdateDate:  time.Now().UTC().Truncate(time.Millisecond),
-	}
-	if err := store.Save(ctx, desc); err != nil {
-		t.Fatalf("Save seed model: %v", err)
-	}
-
-	// Open a SECOND *sql.DB handle to the same file. This handle has
-	// its own connection pool, independent of the factory's pool, so
-	// its write lock is visible to — and blocks — fx.store.db.
-	// Use _txlock=immediate so BeginTx acquires the RESERVED lock
-	// straight away (matching production factory wiring).
-	holderDSN := fmt.Sprintf("file:%s?_txlock=immediate&_busy_timeout=10", dbPath)
-	holderDB, err := sql.Open("sqlite3", holderDSN)
-	if err != nil {
-		t.Fatalf("open holder DB: %v", err)
-	}
-	t.Cleanup(func() { _ = holderDB.Close() })
-
-	// BEGIN IMMEDIATE (via _txlock=immediate default) acquires the
-	// RESERVED write lock. Do NOT commit — the lock is held until
-	// Rollback in cleanup.
-	holderTx, err := holderDB.BeginTx(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("holder BeginTx: %v", err)
-	}
-	defer func() { _ = holderTx.Rollback() }()
-
-	// Sanity: write something inside the holder tx to ensure the
-	// lock is actually RESERVED (BEGIN IMMEDIATE acquires RESERVED
-	// by default, but an explicit write is a belt-and-braces guarantee
-	// across driver implementations).
-	if _, err := holderTx.ExecContext(context.Background(),
-		`INSERT INTO model_schema_extensions
-		    (tenant_id, model_name, model_version, seq, kind, payload, tx_id)
-		 VALUES (?, ?, ?, ?, 'delta', ?, '')`,
-		"holder-tenant", "holder-model", "1", 1, []byte(`"holder"`)); err != nil {
-		t.Fatalf("holder insert: %v", err)
-	}
-
-	// Now invoke ExtendSchema on the main factory. Each attempt's
-	// BeginTx → BEGIN IMMEDIATE must wait for the RESERVED lock,
-	// time out at ~10ms, return SQLITE_BUSY → ErrConflict. After
-	// maxRetries attempts the loop exhausts.
-	//
-	// Use a generous ctx deadline so ctx cancellation doesn't
-	// pre-empt the retry loop before exhaustion.
-	extendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	err = store.ExtendSchema(extendCtx, ref, spi.SchemaDelta(`"d1"`))
-	if err == nil {
-		t.Fatal("ExtendSchema under held write lock: got nil, want ErrRetryExhausted")
-	}
-	if !errors.Is(err, spi.ErrRetryExhausted) {
-		t.Errorf("ExtendSchema error = %v, want errors.Is(_, ErrRetryExhausted)", err)
-	}
-	// Multi-%w wrap preserves the last conflict in the chain, so
-	// ErrConflict must also be observable. This guards against a
-	// regression where someone "cleans up" the wrap and loses the
-	// retryable-class signal.
-	if !errors.Is(err, spi.ErrConflict) {
-		t.Errorf("ExtendSchema error = %v, want errors.Is(_, ErrConflict)", err)
-	}
-
-	// Cleanup: rollback the holder so the extensions table has no
-	// stale rows. (t.Cleanup on holderDB.Close also covers this.)
-	_ = holderTx.Rollback()
 }
 
 // TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr — §4.2.
 // Cancelling ctx before ExtendSchema must return context.Canceled
-// (wrapped) — not ErrRetryExhausted — since the retry loop checks
-// ctx.Err() at the top of each attempt.
+// (wrapped) since the retry loop checks ctx.Err() at the top of each attempt.
 func TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr(t *testing.T) {
 	fx := newSQLiteFixture(t)
 	fx.store.applyFunc = setUnionApplyFunc
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte(`[]`))
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(fx.ctx)
 	cancel()
@@ -576,37 +385,33 @@ func TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr(t *testing.T) {
 }
 
 // TestSQLite_ExtendSchema_RejectionLeavesNoPersistedTrace — B-I6 for sqlite.
-// At the savepoint-interval boundary, ExtendSchema is forced to fold the log
-// and write a savepoint row. If that fold fails (applyFunc rejects the
-// delta — e.g. a simulated ChangeLevel violation), the entire operation
-// must roll back: neither the delta row that triggered the fold nor the
-// would-be savepoint row may persist.
-//
-// Without an ambient caller-supplied tx, atomicity requires ExtendSchema
-// to self-wrap — otherwise the initial delta INSERT auto-commits before
-// the fold is attempted.
+// At the savepoint-interval boundary, where the extension would also write a
+// savepoint, a delta that applyFunc rejects (e.g. a simulated ChangeLevel
+// violation) leaves neither a delta row nor a savepoint row.
 //
 // Construction uses newSQLiteFixtureWithInterval(t, 10) directly so that
-// the 10th ExtendSchema call triggers the savepoint fold path. This
-// sidesteps the need for a mid-test reopen — the state reached after 9
-// warmup deltas at interval=10 is identical whether or not the interval
-// was changed at construction.
+// the 10th ExtendSchema call reaches the boundary.
 func TestSQLite_ExtendSchema_RejectionLeavesNoPersistedTrace(t *testing.T) {
 	fx := newSQLiteFixtureWithInterval(t, 10)
 	// The fixture already installed fixtureApplyFunc on the factory;
 	// SetApplyFunc would panic on re-entry. Override the store-level
 	// applyFunc directly — the same pattern Tasks 15-19 use.
-	fx.store.applyFunc = func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		if bytes.Contains([]byte(delta), []byte("RESTRICT")) {
-			return nil, fmt.Errorf("simulated ChangeLevel violation")
+	fx.store.applyFunc = func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
+		for _, delta := range deltas {
+			if bytes.Contains([]byte(delta), []byte("RESTRICT")) {
+				return nil, fmt.Errorf("simulated ChangeLevel violation")
+			}
 		}
-		return setUnionApplyFunc(base, delta)
+		return setUnionApplyFunc(base, deltas)
 	}
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte{})
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 
 	// Warm the log to one row below the interval boundary (9 deltas at
-	// interval=10). The 10th ExtendSchema will drive the savepoint fold.
+	// interval=10). The 10th ExtendSchema reaches the boundary.
 	for i := 0; i < 9; i++ {
 		if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%d"`, i))); err != nil {
 			t.Fatalf("warmup ExtendSchema #%d: %v", i, err)
@@ -627,8 +432,7 @@ func TestSQLite_ExtendSchema_RejectionLeavesNoPersistedTrace(t *testing.T) {
 		t.Fatalf("pre savepoint count: %v", err)
 	}
 
-	// Attempt the 10th delta — the RESTRICT delta triggers the savepoint
-	// path where applyFunc is called and rejects.
+	// Attempt the 10th delta — applyFunc rejects the RESTRICT delta.
 	err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"RESTRICT-d9"`))
 	if err == nil {
 		t.Fatal("ExtendSchema with rejecting applyFunc on savepoint path must fail")
@@ -670,6 +474,9 @@ func TestSQLite_ExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical(t *testin
 	a.store.applyFunc = setUnionApplyFunc
 	refA := spi.ModelRef{EntityName: "A", ModelVersion: "1"}
 	a.SaveModel(t, refA, []byte{})
+	if err := a.store.Lock(a.ctx, refA); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 	for i := 0; i < 30; i++ {
 		if err := a.store.ExtendSchema(a.ctx, refA, spi.SchemaDelta(fmt.Sprintf(`"d%03d"`, i))); err != nil {
 			t.Fatalf("with-savepoints ExtendSchema #%d: %v", i, err)
@@ -684,6 +491,9 @@ func TestSQLite_ExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical(t *testin
 	b.store.applyFunc = setUnionApplyFunc
 	refB := spi.ModelRef{EntityName: "B", ModelVersion: "1"}
 	b.SaveModel(t, refB, []byte{})
+	if err := b.store.Lock(b.ctx, refB); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 	for i := 0; i < 30; i++ {
 		if err := b.store.ExtendSchema(b.ctx, refB, spi.SchemaDelta(fmt.Sprintf(`"d%03d"`, i))); err != nil {
 			t.Fatalf("no-savepoints ExtendSchema #%d: %v", i, err)
@@ -708,20 +518,24 @@ func TestSQLite_ExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical(t *testin
 
 // TestSQLite_ExtendSchema_RejectsDeltaThatApplyRefuses — persist-time
 // Apply check. A delta that applyFunc rejects must not reach
-// model_schema_extensions. Exercises the FIRST-delta code path (no
-// savepoint fold involved): rejection must come from the apply-check,
-// not from the savepoint-fold boundary. This closes the asymmetry with
-// the memory plugin, which runs applyFunc inline on every ExtendSchema.
+// model_schema_extensions. Exercises the FIRST-delta code path, away from
+// the savepoint boundary. This matches the memory plugin, which runs
+// applyFunc inline on every ExtendSchema.
 func TestSQLite_ExtendSchema_RejectsDeltaThatApplyRefuses(t *testing.T) {
 	fx := newSQLiteFixture(t)
-	fx.store.applyFunc = func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		if bytes.Contains([]byte(delta), []byte("POISON")) {
-			return nil, fmt.Errorf("applyFunc rejected delta: poison")
+	fx.store.applyFunc = func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
+		for _, delta := range deltas {
+			if bytes.Contains([]byte(delta), []byte("POISON")) {
+				return nil, fmt.Errorf("applyFunc rejected delta: poison")
+			}
 		}
-		return setUnionApplyFunc(base, delta)
+		return setUnionApplyFunc(base, deltas)
 	}
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte{})
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 
 	var preCount int
 	if err := fx.store.db.QueryRowContext(fx.ctx,
@@ -769,6 +583,9 @@ func TestSQLite_ExtendSchema_ConcurrentSavepointCrossing_NoLostDelta(t *testing.
 	fx.store.applyFunc = setUnionApplyFunc
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	fx.SaveModel(t, ref, []byte{})
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(n)
@@ -794,4 +611,212 @@ func TestSQLite_ExtendSchema_ConcurrentSavepointCrossing_NoLostDelta(t *testing.
 			t.Errorf("committed delta %q lost from fold; folded schema = %s", token, got.Schema)
 		}
 	}
+}
+
+// lockedUnionFixture returns a fixture whose model ref is saved with base
+// `[]`, set-union apply, and LOCKED (ExtendSchema refuses an unlocked model).
+func lockedUnionFixture(t *testing.T) (*sqliteFixture, spi.ModelRef) {
+	t.Helper()
+	fx := newSQLiteFixture(t)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte(`[]`))
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	return fx, ref
+}
+
+func countExtensionRows(t *testing.T, fx *sqliteFixture, ref spi.ModelRef, kind string) int {
+	t.Helper()
+	q := `SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ?`
+	args := []any{string(fx.tenantID), ref.EntityName, ref.ModelVersion}
+	if kind != "" {
+		q += ` AND kind = ?`
+		args = append(args, kind)
+	}
+	var n int
+	if err := fx.store.db.QueryRowContext(fx.ctx, q, args...).Scan(&n); err != nil {
+		t.Fatalf("count extension rows: %v", err)
+	}
+	return n
+}
+
+// An extension that changes nothing writes no row (design 4.3).
+func TestSQLite_ExtendSchema_NoOpWritesNoRow(t *testing.T) {
+	fx, ref := lockedUnionFixture(t)
+	for i := 0; i < 2; i++ {
+		if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"d1"`)); err != nil {
+			t.Fatalf("ExtendSchema #%d: %v", i, err)
+		}
+	}
+	if n := countExtensionRows(t, fx, ref, "delta"); n != 1 {
+		t.Errorf("delta rows after extending the same delta twice = %d, want 1", n)
+	}
+}
+
+// SQLITE_BUSY is retried until the context ends: no retry budget (design 4.13).
+func TestSQLite_ExtendSchema_BusyRetriedUntilContextEnds(t *testing.T) {
+	fx, ref := lockedUnionFixture(t)
+	if _, err := fx.factory.db.ExecContext(context.Background(), "PRAGMA busy_timeout = 10"); err != nil {
+		t.Fatalf("override busy_timeout: %v", err)
+	}
+	dbPath := fx.factory.cfg.Path
+
+	hold := func() (*sql.Tx, func()) {
+		holderDB, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_txlock=immediate&_pragma=busy_timeout(10)", dbPath))
+		if err != nil {
+			t.Fatalf("open holder DB: %v", err)
+		}
+		tx, err := holderDB.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("holder BeginTx: %v", err)
+		}
+		return tx, func() { _ = tx.Rollback(); _ = holderDB.Close() }
+	}
+
+	// Lock held for far longer than the old 8-attempt budget (~80ms at a
+	// 10ms busy_timeout); released after 600ms: ExtendSchema must succeed.
+	_, release := hold()
+	go func() { time.Sleep(600 * time.Millisecond); release() }()
+	ctx, cancel := context.WithTimeout(fx.ctx, 20*time.Second)
+	defer cancel()
+	if err := fx.store.ExtendSchema(ctx, ref, spi.SchemaDelta(`"d1"`)); err != nil {
+		t.Fatalf("ExtendSchema across a transient lock: %v", err)
+	}
+
+	// Lock held past the context deadline: the context error, never a budget error.
+	_, release2 := hold()
+	defer release2()
+	ctx2, cancel2 := context.WithTimeout(fx.ctx, 300*time.Millisecond)
+	defer cancel2()
+	err := fx.store.ExtendSchema(ctx2, ref, spi.SchemaDelta(`"d2"`))
+	if err == nil {
+		t.Fatal("ExtendSchema under a held lock with an expiring ctx: got nil")
+	}
+	if errors.Is(err, spi.ErrRetryExhausted) {
+		t.Errorf("got ErrRetryExhausted, want a context error: %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want errors.Is(_, context.DeadlineExceeded)", err)
+	}
+	// Contention is not a client-retryable conflict (design 3.4).
+	if errors.Is(err, spi.ErrConflict) {
+		t.Errorf("err = %v, must not satisfy errors.Is(_, spi.ErrConflict)", err)
+	}
+}
+
+// Lock is the state update only; it writes no savepoint (design 4.14).
+func TestSQLite_Lock_WritesNoExtensionRow(t *testing.T) {
+	fx := newSQLiteFixture(t)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte(`["base"]`))
+	// A pending delta on an UNLOCKED model (written around the state machine)
+	// is what made Lock write a savepoint.
+	if _, err := fx.store.db.ExecContext(fx.ctx,
+		`INSERT INTO model_schema_extensions (tenant_id, model_name, model_version, seq, kind, payload)
+		 VALUES (?, ?, ?, 1, 'delta', ?)`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion, []byte(`"d1"`)); err != nil {
+		t.Fatalf("seed delta: %v", err)
+	}
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	if n := countExtensionRows(t, fx, ref, "savepoint"); n != 0 {
+		t.Errorf("savepoint rows after Lock = %d, want 0", n)
+	}
+	if n := countExtensionRows(t, fx, ref, ""); n != 1 {
+		t.Errorf("extension rows after Lock = %d, want the 1 seeded delta", n)
+	}
+}
+
+// Get reads the doc and folds the log in one read transaction: against
+// extend/Unlock/Lock cycles it never returns the base doc with the log
+// already cleared (design 4.8). Tokens are added in order d0,d1,...; a
+// goroutine's successive Gets must never lose a token it already saw.
+func TestSQLite_Get_OneReadTransaction_NoTornReadWithUnlock(t *testing.T) {
+	fx, ref := lockedUnionFixture(t)
+	const cycles, readers = 60, 6
+
+	stop := make(chan struct{})
+	var stopOnce sync.Once
+	stopReaders := func() { stopOnce.Do(func() { close(stop) }) }
+	defer stopReaders()
+	var wg sync.WaitGroup
+	errc := make(chan error, readers+1)
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			seen := 0
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				d, err := fx.store.Get(fx.ctx, ref)
+				if err != nil {
+					errc <- fmt.Errorf("Get: %w", err)
+					return
+				}
+				var toks []string
+				if err := json.Unmarshal(d.Schema, &toks); err != nil {
+					errc <- fmt.Errorf("decode %q: %w", d.Schema, err)
+					return
+				}
+				if len(toks) < seen {
+					errc <- fmt.Errorf("torn read: saw %d tokens, then %d (%q)", seen, len(toks), d.Schema)
+					return
+				}
+				seen = len(toks)
+			}
+		}()
+	}
+	for i := 0; i < cycles; i++ {
+		if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%03d"`, i))); err != nil {
+			t.Fatalf("ExtendSchema %d: %v", i, err)
+		}
+		if err := fx.store.Unlock(fx.ctx, ref); err != nil {
+			t.Fatalf("Unlock %d: %v", i, err)
+		}
+		if err := fx.store.Lock(fx.ctx, ref); err != nil {
+			t.Fatalf("Lock %d: %v", i, err)
+		}
+	}
+	stopReaders()
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		t.Error(err)
+	}
+}
+
+// foldViaTx folds ref's log over base inside a read transaction, as Get does.
+func foldViaTx(t *testing.T, fx *sqliteFixture, ref spi.ModelRef, base []byte) ([]byte, error) {
+	t.Helper()
+	tx, err := fx.store.readDB.BeginTx(fx.ctx, nil)
+	if err != nil {
+		t.Fatalf("begin read tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	folded, _, err := fx.store.foldLocked(fx.ctx, tx, ref, base, false)
+	return folded, err
+}
+
+func savepointSeqViaTx(t *testing.T, fx *sqliteFixture, ref spi.ModelRef) (int64, error) {
+	t.Helper()
+	tx, err := fx.store.readDB.BeginTx(fx.ctx, nil)
+	if err != nil {
+		t.Fatalf("begin read tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var seq int64
+	err = tx.QueryRowContext(fx.ctx, `
+		SELECT COALESCE(MAX(seq), 0) FROM model_schema_extensions
+		WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND kind = 'savepoint'`,
+		string(fx.store.tenantID), ref.EntityName, ref.ModelVersion).Scan(&seq)
+	return seq, err
 }

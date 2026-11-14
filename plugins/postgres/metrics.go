@@ -16,14 +16,15 @@ const meterName = "github.com/cyoda-platform/cyoda-go/plugins/postgres"
 // instruments. Pool saturation is the dominant outage mode of this design;
 // empty_acquire_wait (time callers spent waiting because the pool was
 // empty) is the signal to alarm on. The connections gauge reports each pool
-// under pool="main", "scheduler" or "heartbeat", so a saturated scheduler
-// pool is told apart from a saturated main pool; the other instruments are
-// the main pool's. sched may be nil, and a scheduler pool that is not open
-// is not reported. One factory per process is assumed: two factories would
+// under pool="main", "scheduler", "heartbeat" or "model", so a saturated
+// scheduler or model pool is told apart from a saturated main pool; the other
+// instruments are the main pool's. sched and models may be nil, and a pool
+// that is not open is not reported (models returns nil for it; it never opens
+// one). One factory per process is assumed: two factories would
 // both observe backend="postgres" and the last observation per cycle would
 // win. The returned func unregisters the callback and must run before the
 // pools are closed.
-func registerPoolMetrics(meter metric.Meter, pool *pgxpool.Pool, sched *schedulerPools) (func(), error) {
+func registerPoolMetrics(meter metric.Meter, pool *pgxpool.Pool, sched *schedulerPools, models func() *pgxpool.Pool) (func(), error) {
 	connections, err := meter.Int64ObservableGauge("cyoda.storage.pool.connections",
 		metric.WithDescription("Pool connections by state"))
 	if err != nil {
@@ -79,6 +80,11 @@ func registerPoolMetrics(meter metric.Meter, pool *pgxpool.Pool, sched *schedule
 			}
 			if heartbeat != nil {
 				observeConnections(o, "heartbeat", heartbeat.Stat())
+			}
+		}
+		if models != nil {
+			if m := models(); m != nil {
+				observeConnections(o, "model", m.Stat())
 			}
 		}
 		o.ObserveInt64(maxConns, int64(st.MaxConns()), plain)

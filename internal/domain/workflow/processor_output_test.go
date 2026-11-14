@@ -39,7 +39,7 @@ func procOutputEngine(
 			return &spi.Entity{Data: []byte(procData)}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "procout-" + mode, ModelVersion: "1.0"}
@@ -215,7 +215,7 @@ func TestProcessorOutput_DescriptorResolvedOnceAcrossThePipeline(t *testing.T) {
 			return &spi.Entity{Data: []byte(fmt.Sprintf(`{"x":%d}`, calls))}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "procout-memo", ModelVersion: "1.0"}

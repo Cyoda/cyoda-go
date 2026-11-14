@@ -22,7 +22,8 @@ write is refused:
   were sent. Their effects, and the audit events the refused workflow recorded
   (its start, the processing pause, and a failed result for the refused
   processor), are discarded with the refused write: a callback is
-  all-or-nothing (`callback-scopes.md`).
+  all-or-nothing (`callback-scopes.md`). A schema extension any of them made
+  stays (`schema-extensions.md`).
 - **Answer:** `409`, error code `COMMIT_IN_JOINED_TRANSACTION`, not retryable.
   The detail names the workflow and the processor. Over gRPC the code is the
   message prefix of the `CLIENT_ERROR` envelope.

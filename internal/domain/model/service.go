@@ -112,22 +112,24 @@ func parseVersion(v string) int32 {
 	return int32(n)
 }
 
-// getModelFresh returns the model descriptor, bypassing any per-request
-// cache layer when the store supports RefreshAndGet. In multi-node
-// cluster deployments this eliminates a stale-cache race window
-// between a peer's mutation and its gossip-borne invalidation.
-// Admin-path gating reads (ImportModel, LockModel, UnlockModel,
-// DeleteModel, SetChangeLevel) use this; routine display/listing
-// reads (ExportModel, ListModels, ValidateModel) keep the cache for
-// throughput — eventual consistency is acceptable for those paths.
+// getModelFresh reads the model from storage, bypassing the cached entry
+// (it may share a storage read already running on this node). The store must be
+// the model cache's request-scoped store, which offers RefreshAndGet; any other
+// store is a wiring defect and the read fails rather than answering from the
+// cache-less path. The admin operations that
+// gate on the model's state (ImportModel, LockModel, UnlockModel, DeleteModel,
+// SetChangeLevel) use it, so the decision is made on what storage read returns
+// and not on what this node cached; routine display and
+// listing reads (ExportModel, ListModels, ValidateModel) use the cache.
 func getModelFresh(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
 	type refresher interface {
 		RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error)
 	}
-	if r, ok := store.(refresher); ok {
-		return r.RefreshAndGet(ctx, ref)
+	r, ok := store.(refresher)
+	if !ok {
+		return nil, fmt.Errorf("model store %T cannot read the model fresh from storage", store)
 	}
-	return store.Get(ctx, ref)
+	return r.RefreshAndGet(ctx, ref)
 }
 
 // ImportModel imports a model from sample data, merging with any existing schema.
@@ -665,8 +667,11 @@ func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion st
 		return nil, common.Internal("failed to validate unique key definitions", valErr)
 	}
 
-	desc.UniqueKeys = keys
-	if err := store.Save(ctx, desc); err != nil {
+	// The read descriptor can be shared with other readers of this model (one
+	// coalesced storage read), so the change goes into a copy.
+	updated := *desc
+	updated.UniqueKeys = keys
+	if err := store.Save(ctx, &updated); err != nil {
 		return nil, common.Internal("failed to save model", err)
 	}
 

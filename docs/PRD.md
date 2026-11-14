@@ -203,6 +203,8 @@ UNLOCKED ──lock──► LOCKED ──unlock──► UNLOCKED
 | `ARRAY_ELEMENTS` | Array element type widening |
 | `ARRAY_LENGTH` | Nothing — the floor of the ladder; an array's length is not part of the model |
 
+An extending write commits its extension in a short transaction of its own before its entity changes commit. Two writes that extend the same model never conflict; the extension is visible on the serving node when the write returns, on other nodes when the model cache invalidation broadcast arrives, and stays if the write fails. See [`docs/CONSISTENCY.md` §3a](CONSISTENCY.md#3a-model--data-contract) and `cyoda help models`.
+
 **Export Formats:** `JSON_SCHEMA` (standard JSON Schema) and `SIMPLE_VIEW` (lossless internal representation).
 
 ### Temporal Integrity

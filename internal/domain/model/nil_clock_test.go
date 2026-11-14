@@ -12,5 +12,5 @@ func TestNew_NilClockPanics(t *testing.T) {
 			t.Fatal("model.New with a nil clock did not panic")
 		}
 	}()
-	model.New(nil, nil)
+	model.New(cachedFactory(nil), nil)
 }

@@ -16,7 +16,7 @@ import (
 //	...custom_permissions: ARRAY vs LEAF" after commit 2b43009.
 //
 // NULL against a non-LEAF target is an existing nullable-marker pattern — the
-// same pattern Diff/Apply support on broaden_type. Extend must accept it.
+// same pattern Diff/ApplyMany support on broaden_type. Extend must accept it.
 func TestExtend_IncomingLeafNull_AgainstExistingArray_IsNullableMarker(t *testing.T) {
 	existing := NewObjectNode()
 	existing.SetChild("custom_permissions", NewArrayNode(NewLeafNode(String)))

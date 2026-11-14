@@ -41,7 +41,6 @@ func TestConfigVars_DefaultsMatchParseConfig(t *testing.T) {
 		"CYODA_SQLITE_BUSY_TIMEOUT":       cfg.BusyTimeout.String(),
 		"CYODA_SQLITE_CACHE_SIZE":         strconv.Itoa(cfg.CacheSizeKiB),
 		"CYODA_SCHEMA_SAVEPOINT_INTERVAL": strconv.Itoa(cfg.SchemaSavepointInterval),
-		"CYODA_SCHEMA_EXTEND_MAX_RETRIES": strconv.Itoa(cfg.SchemaExtendMaxRetries),
 	}
 
 	for _, v := range (&plugin{}).ConfigVars() {

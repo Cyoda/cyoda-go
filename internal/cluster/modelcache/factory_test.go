@@ -16,7 +16,7 @@ import (
 // it easy to assert "N calls to factory.ModelStore(ctx) produced only
 // M inner.Get calls" across independent adapters.
 type stubFactory struct {
-	store *stubStore
+	store spi.ModelStore
 }
 
 func (f *stubFactory) ModelStore(_ context.Context) (spi.ModelStore, error) {

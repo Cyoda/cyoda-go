@@ -9,6 +9,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
@@ -72,7 +73,7 @@ func TestRPC_PostSegmentConflict_IsEntityModified(t *testing.T) {
 	for _, door := range doors {
 		t.Run(door.name, func(t *testing.T) {
 			svc, ctx := newTestEnv(t)
-			inner := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
+			inner := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 			inner.NewTransactionManager(common.NewDefaultUUIDGenerator())
 			txMgr := inner.GetTransactionManager()
 
@@ -108,10 +109,10 @@ func TestRPC_PostSegmentConflict_IsEntityModified(t *testing.T) {
 				}
 				return e, nil
 			})
-			engine := workflow.NewEngine(inner, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(lp), workflow.WithCoordination(txcoord.New(txMgr)))
+			engine := workflow.NewEngine(cachedFactory(inner), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(lp), workflow.WithCoordination(txcoord.New(txMgr)))
 			svc.txMgr = txMgr
-			svc.entityHandler = entity.New(inner, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, inner), platformclock.Real())
-			svc.modelHandler = model.New(inner, platformclock.Real())
+			svc.entityHandler = entity.New(cachedFactory(inner), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, inner), platformclock.Real())
+			svc.modelHandler = model.New(cachedFactory(inner), platformclock.Real())
 
 			const modelName = "postseg"
 			importAndLockModel(t, svc, ctx, modelName, "1", map[string]any{"name": "A", "amount": 1})

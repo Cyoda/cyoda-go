@@ -81,11 +81,11 @@ func newTestEnvWithOwner(t *testing.T, answerLimitDefault, answerLimitMax time.D
 	coord := txcoord.New(txMgr)
 	extProc := NewOwnerForTest(dispatcher, registry, coord, owner)
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(extProc), workflow.WithCoordination(coord))
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(extProc), workflow.WithCoordination(coord))
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, coord, newTestConsistency(t, factory), platformclock.Real())
-	modelHandler := model.New(factory, platformclock.Real())
+	searchService := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, coord, newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cachedFactory(factory), platformclock.Real())
 	workflowHandler := workflow.New(factory, engine, 60*time.Second)
 
 	svc := &CloudEventsServiceImpl{

@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/cyoda-platform/cyoda-go/internal/testpg"
 )
 
 // TestRunMigrate_ReadsEnvFiles pins that migrate reads the env files the
@@ -183,13 +186,11 @@ func startTestPostgres(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
 
-	pgContainer, err := tcpostgres.Run(ctx,
-		"postgres:17-alpine",
+	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("cyoda_migrate_test"),
 		tcpostgres.WithUsername("testuser"),
-		tcpostgres.WithPassword("testpass"),
-		tcpostgres.BasicWaitStrategies(),
-	)
+	}, testpg.HardenedOptions()...)
+	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {
 		t.Fatalf("start postgres container: %v", err)
 	}

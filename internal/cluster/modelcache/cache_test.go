@@ -2,6 +2,7 @@ package modelcache_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,28 +20,39 @@ type stubStore struct {
 	err  error
 	// delay introduces latency on Get to help test singleflight.
 	delay time.Duration
+	// adminErr is what Save, Delete, Lock, Unlock and SetChangeLevel return.
+	adminErr error
 }
 
 func (s *stubStore) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
-	s.mu.Lock()
-	s.gets++
-	s.mu.Unlock()
+	desc, err := func() (*spi.ModelDescriptor, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.gets++
+		return s.desc, s.err
+	}()
 	if s.delay > 0 {
 		time.Sleep(s.delay)
 	}
-	return s.desc, s.err
+	return desc, err
 }
-func (s *stubStore) Save(context.Context, *spi.ModelDescriptor) error     { return nil }
+func (s *stubStore) Save(context.Context, *spi.ModelDescriptor) error     { return s.adminErr }
 func (s *stubStore) GetAll(context.Context) ([]spi.ModelRef, error)       { return nil, nil }
-func (s *stubStore) Delete(context.Context, spi.ModelRef) error           { return nil }
-func (s *stubStore) Lock(context.Context, spi.ModelRef) error             { return nil }
-func (s *stubStore) Unlock(context.Context, spi.ModelRef) error           { return nil }
+func (s *stubStore) Delete(context.Context, spi.ModelRef) error           { return s.adminErr }
+func (s *stubStore) Lock(context.Context, spi.ModelRef) error             { return s.adminErr }
+func (s *stubStore) Unlock(context.Context, spi.ModelRef) error           { return s.adminErr }
 func (s *stubStore) IsLocked(context.Context, spi.ModelRef) (bool, error) { return false, nil }
 func (s *stubStore) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLevel) error {
-	return nil
+	return s.adminErr
 }
 func (s *stubStore) ExtendSchema(context.Context, spi.ModelRef, spi.SchemaDelta) error {
 	return nil
+}
+
+func (s *stubStore) setDesc(d *spi.ModelDescriptor) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.desc = d
 }
 
 func (s *stubStore) getCount() int {
@@ -65,6 +77,19 @@ func (c *manualClock) advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
+// newModelStore builds the per-request model store a CachingStoreFactory hands
+// out over inner — the production read and write path through the shared
+// cache.
+func newModelStore(t *testing.T, inner spi.ModelStore, bc spi.ClusterBroadcaster, clk modelcache.Clock, lease time.Duration) spi.ModelStore {
+	t.Helper()
+	f := modelcache.NewCachingStoreFactory(&stubFactory{store: inner}, bc, clk, lease)
+	ms, err := f.ModelStore(context.Background())
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	return ms
+}
+
 func lockedDescriptor(ref spi.ModelRef, level spi.ChangeLevel) *spi.ModelDescriptor {
 	return &spi.ModelDescriptor{
 		Ref:         ref,
@@ -78,7 +103,7 @@ func TestCache_AdmitsAnyLockedDescriptor(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	inner := &stubStore{desc: lockedDescriptor(ref, spi.ChangeLevelStructural)}
 	clk := &manualClock{now: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)}
-	c := modelcache.New(inner, nil, clk, time.Hour)
+	c := newModelStore(t, inner, nil, clk, time.Hour)
 
 	_, _ = c.Get(context.Background(), ref)
 	_, _ = c.Get(context.Background(), ref)
@@ -92,7 +117,7 @@ func TestCache_DoesNotAdmitUnlocked(t *testing.T) {
 	desc := &spi.ModelDescriptor{Ref: ref, State: spi.ModelUnlocked, Schema: []byte(`{}`)}
 	inner := &stubStore{desc: desc}
 	clk := &manualClock{now: time.Now()}
-	c := modelcache.New(inner, nil, clk, time.Hour)
+	c := newModelStore(t, inner, nil, clk, time.Hour)
 
 	_, _ = c.Get(context.Background(), ref)
 	_, _ = c.Get(context.Background(), ref)
@@ -105,7 +130,7 @@ func TestCache_TTLExpiryForcesReload(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	inner := &stubStore{desc: lockedDescriptor(ref, "")}
 	clk := &manualClock{now: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)}
-	c := modelcache.New(inner, nil, clk, time.Hour)
+	c := newModelStore(t, inner, nil, clk, time.Hour)
 
 	_, _ = c.Get(context.Background(), ref)
 	clk.advance(2 * time.Hour) // well past jittered band
@@ -115,28 +140,11 @@ func TestCache_TTLExpiryForcesReload(t *testing.T) {
 	}
 }
 
-func TestCache_JitterKeepsEntriesWithinBand(t *testing.T) {
-	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
-	inner := &stubStore{desc: lockedDescriptor(ref, "")}
-	clk := &manualClock{now: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)}
-	const lease = time.Hour
-	c := modelcache.New(inner, nil, clk, lease)
-
-	_, _ = c.Get(context.Background(), ref)
-	exp := c.EntryExpiresAt(ref)
-	leaseF := float64(lease)
-	minExp := clk.Now().Add(time.Duration(leaseF * 0.9))
-	maxExp := clk.Now().Add(time.Duration(leaseF * 1.1))
-	if exp.Before(minExp) || exp.After(maxExp) {
-		t.Errorf("expiry %v outside ±10%% jitter band [%v, %v]", exp, minExp, maxExp)
-	}
-}
-
 func TestCache_InvalidateOnSave(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	inner := &stubStore{desc: lockedDescriptor(ref, "")}
 	clk := &manualClock{now: time.Now()}
-	c := modelcache.New(inner, nil, clk, time.Hour)
+	c := newModelStore(t, inner, nil, clk, time.Hour)
 	_, _ = c.Get(context.Background(), ref)
 	_ = c.Save(context.Background(), inner.desc)
 	_, _ = c.Get(context.Background(), ref)
@@ -145,11 +153,42 @@ func TestCache_InvalidateOnSave(t *testing.T) {
 	}
 }
 
+// A failed administration call may still have committed (a postgres COMMIT
+// with an unknown outcome), so the cache drops the entry whatever the outcome,
+// as an extension does.
+func TestCache_AdminInvalidatesOnError(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	ops := map[string]func(c spi.ModelStore, d *spi.ModelDescriptor) error{
+		"Save":   func(c spi.ModelStore, d *spi.ModelDescriptor) error { return c.Save(context.Background(), d) },
+		"Delete": func(c spi.ModelStore, _ *spi.ModelDescriptor) error { return c.Delete(context.Background(), ref) },
+		"Lock":   func(c spi.ModelStore, _ *spi.ModelDescriptor) error { return c.Lock(context.Background(), ref) },
+		"Unlock": func(c spi.ModelStore, _ *spi.ModelDescriptor) error { return c.Unlock(context.Background(), ref) },
+		"SetChangeLevel": func(c spi.ModelStore, _ *spi.ModelDescriptor) error {
+			return c.SetChangeLevel(context.Background(), ref, spi.ChangeLevelStructural)
+		},
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			inner := &stubStore{desc: lockedDescriptor(ref, ""), adminErr: errors.New("commit outcome unknown")}
+			clk := &manualClock{now: time.Now()}
+			c := newModelStore(t, inner, nil, clk, time.Hour)
+			_, _ = c.Get(context.Background(), ref)
+			if err := op(c, inner.desc); err == nil {
+				t.Fatalf("%s: want the inner error, got nil", name)
+			}
+			_, _ = c.Get(context.Background(), ref)
+			if inner.getCount() != 2 {
+				t.Errorf("%s failed and kept the cached entry: inner.gets=%d, want 2", name, inner.getCount())
+			}
+		})
+	}
+}
+
 func TestCache_InvalidateOnExtendSchema(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	inner := &stubStore{desc: lockedDescriptor(ref, "")}
 	clk := &manualClock{now: time.Now()}
-	c := modelcache.New(inner, nil, clk, time.Hour)
+	c := newModelStore(t, inner, nil, clk, time.Hour)
 
 	_, _ = c.Get(context.Background(), ref)
 	_ = c.ExtendSchema(context.Background(), ref, spi.SchemaDelta(`[]`))
@@ -178,7 +217,7 @@ func TestCachingModelStore_ExtendSchema_ReturnsPostExtensionSchema(t *testing.T)
 	}
 	inner := &stubStore{desc: v1}
 	clk := &manualClock{now: time.Now()}
-	c := modelcache.New(inner, nil, clk, time.Hour)
+	c := newModelStore(t, inner, nil, clk, time.Hour)
 
 	// Warm the cache with v1.
 	desc1, err := c.Get(context.Background(), ref)
@@ -190,9 +229,7 @@ func TestCachingModelStore_ExtendSchema_ReturnsPostExtensionSchema(t *testing.T)
 	}
 
 	// Simulate the inner store now holding the post-extension schema.
-	inner.mu.Lock()
-	inner.desc = v2
-	inner.mu.Unlock()
+	inner.setDesc(v2)
 
 	// ExtendSchema through the cache — invalidation must fire.
 	if err := c.ExtendSchema(context.Background(), ref, spi.SchemaDelta(`[]`)); err != nil {
@@ -216,7 +253,12 @@ func TestCache_RefreshAndGet_Singleflight(t *testing.T) {
 		delay: 50 * time.Millisecond,
 	}
 	clk := &manualClock{now: time.Now()}
-	c := modelcache.New(inner, nil, clk, time.Hour)
+	c, ok := newModelStore(t, inner, nil, clk, time.Hour).(interface {
+		RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error)
+	})
+	if !ok {
+		t.Fatal("model store has no RefreshAndGet")
+	}
 
 	// 10 concurrent RefreshAndGet calls — should coalesce into 1 inner.Get.
 	var wg sync.WaitGroup

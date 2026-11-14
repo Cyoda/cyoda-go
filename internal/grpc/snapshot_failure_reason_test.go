@@ -22,8 +22,7 @@ func TestRPC_SnapshotGetStatus_FailureReason(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	store, _ := factory.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(
-		factory, common.NewDefaultUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())}
 	ctx := grpcTenantCtx()
 
 	const reason = "search failed unexpectedly"
@@ -84,8 +83,7 @@ func TestRPC_SnapshotCancel_FailedSnapshotKeepsFailureReason(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	store, _ := factory.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(
-		factory, common.NewDefaultUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())}
 	ctx := grpcTenantCtx()
 
 	const reason = "search failed unexpectedly"

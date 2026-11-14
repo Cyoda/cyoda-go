@@ -289,22 +289,22 @@ func assertCommutative(t *testing.T, base *ModelNode, opA, opB SchemaOp) {
 		t.Fatalf("MarshalDelta B: %v", err)
 	}
 
-	ab, err := Apply(base, dA)
+	ab, err := applyDelta(base, dA)
 	if err != nil {
-		t.Fatalf("Apply A: %v", err)
+		t.Fatalf("apply A: %v", err)
 	}
-	ab, err = Apply(ab, dB)
+	ab, err = applyDelta(ab, dB)
 	if err != nil {
-		t.Fatalf("Apply B-after-A: %v", err)
+		t.Fatalf("apply B-after-A: %v", err)
 	}
 
-	ba, err := Apply(base, dB)
+	ba, err := applyDelta(base, dB)
 	if err != nil {
-		t.Fatalf("Apply B: %v", err)
+		t.Fatalf("apply B: %v", err)
 	}
-	ba, err = Apply(ba, dA)
+	ba, err = applyDelta(ba, dA)
 	if err != nil {
-		t.Fatalf("Apply A-after-B: %v", err)
+		t.Fatalf("apply A-after-B: %v", err)
 	}
 
 	abBytes, err := Marshal(ab)
@@ -332,7 +332,7 @@ func marshalLeaf(t *testing.T, dt DataType) []byte {
 var _ spi.SchemaDelta
 
 // TestValidationMonotonicity: for every catalog op kind, every
-// document valid against base must remain valid against Apply(base,
+// document valid against base must remain valid against applyDelta(base,
 // delta). Prevents a tightening op sneaking into the catalog.
 func TestValidationMonotonicity(t *testing.T) {
 	cases := []struct {
@@ -409,13 +409,13 @@ func TestValidationMonotonicity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("MarshalDelta: %v", err)
 			}
-			extended, err := Apply(base, delta)
+			extended, err := applyDelta(base, delta)
 			if err != nil {
-				t.Fatalf("Apply: %v", err)
+				t.Fatalf("apply: %v", err)
 			}
 			for _, doc := range tc.docs {
 				if errs := validateDoc(t, extended, doc); len(errs) != 0 {
-					t.Errorf("monotonicity violated: doc %q was valid against base but not against Apply(base, %s): %v",
+					t.Errorf("monotonicity violated: doc %q was valid against base but not against applyDelta(base, %s): %v",
 						doc, tc.op(t).Kind, errs)
 				}
 			}

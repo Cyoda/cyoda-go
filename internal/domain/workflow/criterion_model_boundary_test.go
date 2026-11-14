@@ -153,12 +153,12 @@ func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) 
 // refreshingModelStore is a minimal ModelStore fake mirroring
 // internal/domain/search/path_validate_test.go's fixture of the same name:
 // Get returns the head of getQueue (simulating a possibly-stale cached
-// descriptor); RefreshAndGet returns the head of refreshQueue and is
+// descriptor); RefreshSchemaNode returns the head of refreshQueue and is
 // counted, so a test can assert the refresh happened exactly once (the
 // bounded refresh path-grammar.md section 6 describes). Once both queues
 // are drained, Get falls back to the LAST descriptor a refresh produced —
 // mirroring a real caching model store, whose Get keeps serving the
-// now-updated cache indefinitely after a RefreshAndGet repopulates it,
+// now-updated cache indefinitely after a RefreshSchemaNode repopulates it,
 // rather than reverting to nothing. evaluateCriterion itself performs only
 // ONE read (search.LoadFieldsMap — the fields map it types against, not a
 // second independent read)
@@ -171,7 +171,7 @@ type refreshingModelStore struct {
 	mu            sync.Mutex
 	getQueue      []*spi.ModelDescriptor
 	refreshQueue  []*spi.ModelDescriptor
-	refreshErr    error // when set, RefreshAndGet returns this instead of consuming refreshQueue
+	refreshErr    error // when set, RefreshSchemaNode returns this instead of consuming refreshQueue
 	lastRefreshed *spi.ModelDescriptor
 	getCount      int
 	refreshCount  int
@@ -195,7 +195,7 @@ func (s *refreshingModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDes
 	return d, nil
 }
 
-func (s *refreshingModelStore) RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
+func (s *refreshingModelStore) refreshDescriptor(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refreshCount++
@@ -209,6 +209,22 @@ func (s *refreshingModelStore) RefreshAndGet(context.Context, spi.ModelRef) (*sp
 	s.refreshQueue = s.refreshQueue[1:]
 	s.lastRefreshed = d
 	return d, nil
+}
+
+func (s *refreshingModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
+}
+
+func (s *refreshingModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.refreshDescriptor(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *refreshingModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
@@ -266,9 +282,9 @@ func buildBoundaryDescriptor(t *testing.T, ref spi.ModelRef, fields map[string]s
 
 // TestEvaluateCriterion_PathAddedByAPeerIsNotRefused proves the bounded
 // refresh half of the rule: a path absent from the CACHED schema but present
-// in the AUTHORITATIVE (post-RefreshAndGet) schema — the shape of a cluster
+// in the AUTHORITATIVE (post-RefreshSchemaNode) schema — the shape of a cluster
 // peer having just extended the model — is not refused. Exactly one
-// RefreshAndGet call must happen, and the criterion must evaluate normally
+// RefreshSchemaNode call must happen, and the criterion must evaluate normally
 // (using the refreshed declared type) rather than being rejected as unknown.
 func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 	baseFactory := memory.NewStoreFactory()
@@ -298,7 +314,7 @@ func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 		t.Fatal("peer_field(10) GREATER_THAN 5 must match under the refreshed declared type")
 	}
 	if rc := ms.RefreshCount(); rc != 1 {
-		t.Errorf("expected exactly 1 bounded RefreshAndGet call, got %d", rc)
+		t.Errorf("expected exactly 1 bounded RefreshSchemaNode call, got %d", rc)
 	}
 	// Regression guard for the single-read shape: evaluateCriterion must
 	// issue exactly ONE Get (via search.LoadFieldsMap) on this path.
@@ -425,7 +441,7 @@ func TestEvaluateCriterion_UncompilablePatternAbortsTheSave(t *testing.T) {
 
 // TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault pins review round
 // 1's Important-1 finding: a failed bounded schema refresh (the store's Get
-// serves a warm cache, but RefreshAndGet itself errors) cannot tell "this
+// serves a warm cache, but RefreshSchemaNode itself errors) cannot tell "this
 // field is genuinely undeclared" from "the cache is merely stale and we
 // couldn't confirm which". Per correctness-over-availability that ambiguity
 // is infrastructure, not a client fault, so it must be classified alongside
@@ -472,7 +488,7 @@ func TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault(t *testing.T) {
 		t.Errorf("expected a plain error wrapping ErrCriterionTypingInfra (classifyWorkflowError classifies it), got a pre-classified *common.AppError: %+v", appErr)
 	}
 	if rc := ms.RefreshCount(); rc != 1 {
-		t.Errorf("expected exactly 1 bounded RefreshAndGet call, got %d", rc)
+		t.Errorf("expected exactly 1 bounded RefreshSchemaNode call, got %d", rc)
 	}
 	// Regression guard for the single-read shape: evaluateCriterion must
 	// issue exactly ONE Get (via search.LoadFieldsMap) on this path.

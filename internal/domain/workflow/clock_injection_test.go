@@ -17,7 +17,7 @@ func TestEngine_AuditTimestampFromClock(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
-	engine := NewEngine(factory, uuids, factory.NewTransactionManager(uuids), clk)
+	engine := NewEngine(cachedFactory(factory), uuids, factory.NewTransactionManager(uuids), clk)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "audit", ModelVersion: "1.0"}
 	wf := spi.WorkflowDefinition{
@@ -56,7 +56,7 @@ func TestArm_ScheduledTimeFromClock(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, clk)
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, clk)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "order", ModelVersion: "1.0"}
 	const delayMs = int64(5000)
@@ -115,5 +115,5 @@ func TestNewEngine_NilClockPanics(t *testing.T) {
 	}()
 	factory := memory.NewStoreFactory()
 	uuids := common.NewDefaultUUIDGenerator()
-	NewEngine(factory, uuids, factory.NewTransactionManager(uuids), nil)
+	NewEngine(cachedFactory(factory), uuids, factory.NewTransactionManager(uuids), nil)
 }

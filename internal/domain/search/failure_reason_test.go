@@ -43,7 +43,7 @@ func TestAsyncStatus_FailureReason(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	store, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real())
 	ctx := tenantCtx("tenant-failure-reason")
 
 	const reason = "INVALID_FIELD_PATH: condition or sort references an invalid field path"
@@ -96,7 +96,7 @@ func TestAsyncStatus_SelfExecutingStoreReasonIsNotServedVerbatim(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	inner, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), selfExecutingStatusStore{inner}, newTestConsistency(t, factory), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), selfExecutingStatusStore{inner}, newTestConsistency(t, factory), platformclock.Real())
 	ctx := tenantCtx("tenant-failure-reason-self")
 
 	const leak = "write pages: gocql: no hosts available in the pool (10.0.0.7:9042)"

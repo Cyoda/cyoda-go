@@ -294,26 +294,11 @@ func TestValidate_UnheldValueKeepsIncompatibleType(t *testing.T) {
 	}
 }
 
-// An unknown field is still the stale-schema signal handlers branch on.
-func TestValidate_UnknownFieldKeepsItsKind(t *testing.T) {
-	model := schema.NewObjectNode()
-	model.SetChild("known", schema.NewLeafNode(schema.String))
-
-	errs := schema.Validate(model, map[string]any{"known": "x", "surprise": "y"})
-	if len(errs) != 1 || errs[0].Kind != schema.ErrKindUnknownElement {
-		t.Fatalf("want one ErrKindUnknownElement, got %v", errs)
-	}
-	if !schema.HasUnknownSchemaElement(errs) {
-		t.Error("HasUnknownSchemaElement must still recognise it")
-	}
-}
-
 // Ruling 21 (final review I1): strict validation does not establish fields
 // (docs/cloud-parity/model-field-name-grammar.md: "Strict validation ...
 // does not establish fields, so the rule does not apply there"), so an
 // unspellable field name must render as the ordinary unknown-field error —
-// the stale-schema refresh-and-retry signal handlers already key on — not
-// as ErrKindGeneric via ErrInvalidFieldName. That sentinel's 400 belongs
+// not as a grammar error via ErrInvalidFieldName. That sentinel's 400 belongs
 // only to the doors that DO establish a field set: Admit's ChangeLevel-
 // driven extension, and importer.Walk.
 func TestValidate_UnspellableFieldNameIsUnknownElement(t *testing.T) {
@@ -323,9 +308,6 @@ func TestValidate_UnspellableFieldNameIsUnknownElement(t *testing.T) {
 	errs := schema.Validate(model, map[string]any{"known": "x", "bad name": num("1")})
 	if len(errs) != 1 {
 		t.Fatalf("want 1 error, got %v", errs)
-	}
-	if errs[0].Kind != schema.ErrKindUnknownElement {
-		t.Errorf("Kind = %v, want ErrKindUnknownElement", errs[0].Kind)
 	}
 	if errs[0].Path != "bad name" {
 		t.Errorf("Path = %q, want %q", errs[0].Path, "bad name")
@@ -348,9 +330,6 @@ func TestValidate_TwoUnspellableFieldNamesBothReported(t *testing.T) {
 	}
 	gotPaths := map[string]bool{}
 	for _, e := range errs {
-		if e.Kind != schema.ErrKindUnknownElement {
-			t.Errorf("Kind = %v, want ErrKindUnknownElement for %q", e.Kind, e.Path)
-		}
 		gotPaths[e.Path] = true
 	}
 	if !gotPaths["bad name"] || !gotPaths["bad name 2"] {
@@ -383,14 +362,14 @@ func TestValidate_UnsupportedGoValueDoesNotLeakType(t *testing.T) {
 	}
 }
 
-// countUnknownElement returns how many errs carry {Kind: ErrKindUnknownElement,
+// countUnknownElement returns how many errs carry {Kind: ErrKindGeneric,
 // Path: path}, so a test can assert "exactly one" without caring how many
 // OTHER errors (a different Kind, or a different Path) the document also
 // produces.
 func countUnknownElement(errs []schema.ValidationError, path string) int {
 	n := 0
 	for _, e := range errs {
-		if e.Kind == schema.ErrKindUnknownElement && e.Path == path {
+		if e.Kind == schema.ErrKindGeneric && e.Path == path {
 			n++
 		}
 	}
@@ -405,7 +384,7 @@ func countUnknownElement(errs []schema.ValidationError, path string) int {
 // ErrInvalidFieldName, which M4's catch-all then rendered as
 // ErrKindGeneric/"unsupported value" with an empty Path: worse than
 // before this fix wave. All three shapes must instead report the nested
-// bad name as the ordinary ErrKindUnknownElement at its own path, AND
+// bad name as the ordinary ErrKindGeneric at its own path, AND
 // keep reporting a sibling unknown field elsewhere in the same document
 // (the abort must be gone here too, not just at the top level ruling 21
 // already covers).
@@ -420,7 +399,7 @@ func TestValidate_UnspellableNameNestedUnderNewField(t *testing.T) {
 		"sibling":  "x",
 	})
 	if got := countUnknownElement(errs, "newfield.bad name"); got != 1 {
-		t.Errorf("want exactly 1 ErrKindUnknownElement at %q, got %d in %v", "newfield.bad name", got, errs)
+		t.Errorf("want exactly 1 ErrKindGeneric at %q, got %d in %v", "newfield.bad name", got, errs)
 	}
 	if got := countUnknownElement(errs, "sibling"); got != 1 {
 		t.Errorf("sibling unknown field must also be reported, got %d in %v", got, errs)
@@ -439,7 +418,7 @@ func TestValidate_UnspellableNameNestedUnderWrongKindContainer(t *testing.T) {
 		"sibling": "y",
 	})
 	if got := countUnknownElement(errs, "x.bad name"); got != 1 {
-		t.Errorf("want exactly 1 ErrKindUnknownElement at %q, got %d in %v", "x.bad name", got, errs)
+		t.Errorf("want exactly 1 ErrKindGeneric at %q, got %d in %v", "x.bad name", got, errs)
 	}
 	if got := countUnknownElement(errs, "sibling"); got != 1 {
 		t.Errorf("sibling unknown field must also be reported, got %d in %v", got, errs)
@@ -458,7 +437,7 @@ func TestValidate_UnspellableNameNestedUnderArrayElementLearning(t *testing.T) {
 		"sibling": "z",
 	})
 	if got := countUnknownElement(errs, "a[0].bad name"); got != 1 {
-		t.Errorf("want exactly 1 ErrKindUnknownElement at %q, got %d in %v", "a[0].bad name", got, errs)
+		t.Errorf("want exactly 1 ErrKindGeneric at %q, got %d in %v", "a[0].bad name", got, errs)
 	}
 	if got := countUnknownElement(errs, "sibling"); got != 1 {
 		t.Errorf("sibling unknown field must also be reported, got %d in %v", got, errs)

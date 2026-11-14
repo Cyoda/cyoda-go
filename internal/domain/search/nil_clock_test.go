@@ -16,5 +16,5 @@ func TestNewSearchService_NilClockPanics(t *testing.T) {
 			t.Fatal("search.NewSearchService with a nil clock did not panic")
 		}
 	}()
-	search.NewSearchService(nil, nil, nil, consistency.New(nilClockTM{}), nil)
+	search.NewSearchService(cachedFactory(nil), nil, nil, consistency.New(nilClockTM{}), nil)
 }

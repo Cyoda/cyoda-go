@@ -84,7 +84,7 @@ func TestExecutor_FailureTerminalWrite_IsNotCancellable(t *testing.T) {
 	store := &failingSaveObserverStore{AsyncSearchStore: realAsync}
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
+	svc := search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 

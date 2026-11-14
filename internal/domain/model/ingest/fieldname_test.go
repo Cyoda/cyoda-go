@@ -35,7 +35,7 @@ func descWithChangeLevel(t *testing.T) *spi.ModelDescriptor {
 // so with a diagnosable operational error, not the generic catch-all, since the
 // caller's only remedy is to rename a key it can see named in the response.
 func TestValidateOrExtend_RejectsUnaddressableFieldName(t *testing.T) {
-	err := ValidateOrExtend(context.Background(), &recordingModelStore{}, descWithChangeLevel(t),
+	_, err := ValidateOrExtend(context.Background(), &recordingModelStore{}, descWithChangeLevel(t),
 		map[string]any{"first name": "x"})
 	if err == nil {
 		t.Fatal("ValidateOrExtend must reject an unaddressable field name")
@@ -90,7 +90,7 @@ func (s *recordingModelStore) ExtendSchema(_ context.Context, _ spi.ModelRef, d 
 // delta actually reaches the store.
 func TestValidateOrExtend_AcceptsAddressableFieldName(t *testing.T) {
 	store := &recordingModelStore{}
-	if err := ValidateOrExtend(context.Background(), store, descWithChangeLevel(t),
+	if _, err := ValidateOrExtend(context.Background(), store, descWithChangeLevel(t),
 		map[string]any{"first_name": "x", "last-name": "y", "_meta9": "z"}); err != nil {
 		t.Fatalf("addressable field names must extend the schema, got %v", err)
 	}
@@ -116,8 +116,46 @@ func TestValidateOrExtend_LegacyFieldWithoutChangeLevel(t *testing.T) {
 		Ref:    spi.ModelRef{EntityName: "legacy", ModelVersion: "1"},
 		Schema: b,
 	}
-	if err := ValidateOrExtend(context.Background(), &recordingModelStore{}, desc,
+	if _, err := ValidateOrExtend(context.Background(), &recordingModelStore{}, desc,
 		map[string]any{"first name": "x"}); err != nil {
 		t.Fatalf("a legacy field must stay writable without a ChangeLevel, got %v", err)
+	}
+}
+
+// TestValidateOrExtend_ReturnsExtendedDescriptor: after a successful
+// ExtendSchema the returned descriptor carries the extended schema, and the
+// input descriptor is left untouched; a nil delta returns desc itself.
+func TestValidateOrExtend_ReturnsExtendedDescriptor(t *testing.T) {
+	store := &recordingModelStore{}
+	desc := descWithChangeLevel(t)
+	before := string(desc.Schema)
+
+	got, err := ValidateOrExtend(context.Background(), store, desc, map[string]any{"first_name": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == desc {
+		t.Fatal("an extension must return a copy, not the input descriptor")
+	}
+	if string(desc.Schema) != before {
+		t.Error("input descriptor was mutated")
+	}
+	node, err := schema.Unmarshal(got.Schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Object() == nil || node.Object().Child("first_name") == nil {
+		t.Errorf("returned schema lacks the added field: %s", got.Schema)
+	}
+	if got.Ref != desc.Ref || got.ChangeLevel != desc.ChangeLevel {
+		t.Error("other descriptor fields must carry over")
+	}
+
+	again, err := ValidateOrExtend(context.Background(), store, got, map[string]any{"first_name": "y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != got {
+		t.Error("a nil delta must return the descriptor unchanged")
 	}
 }

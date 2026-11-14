@@ -48,7 +48,7 @@ func TestCancelAsync_JobThatFinishedFirstIsNotReportedCancelled(t *testing.T) {
 	if err := pool.Submit(func() { <-hold }); err != nil {
 		t.Fatalf("Submit the holder: %v", err)
 	}
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), &finishesBeforeCancel{AsyncSearchStore: inner}, newTestConsistency(t, base), platformclock.Real()).
+	svc := search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), &finishesBeforeCancel{AsyncSearchStore: inner}, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}, search.SearchOptions{Limit: 10})

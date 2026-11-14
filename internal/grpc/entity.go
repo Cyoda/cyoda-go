@@ -378,10 +378,11 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			// Generic cancellation check at the iteration head (spec D9) —
 			// fires on ANY ctx cancellation, not only our own feature
 			// deadline. Routed through the identical whole-envelope error
-			// path a genuine per-item failure below already takes: earlier
-			// items already committed and are durable (unless the request
-			// joined an open transaction, whose owner commits them), this
-			// item and any after it are never attempted.
+			// path a genuine per-item failure below already takes: this item
+			// and any after it are never attempted. Without a transaction
+			// token each earlier item committed on its own and is durable;
+			// a request that joined a transaction keeps none of its entity
+			// writes once it fails, only the schema extensions they made.
 			if ctxErr := opCtx.Err(); ctxErr != nil {
 				loopErr := fmt.Errorf("operation aborted: %w", ctxErr)
 				if appErr := common.ClassifyRequestTimeout(opCtx, loopErr, common.ErrCodeTransactionTimeout); appErr != nil {

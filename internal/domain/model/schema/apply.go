@@ -7,40 +7,44 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Apply replays the opaque SchemaDelta bytes onto base, returning a
-// new *ModelNode. The same function is used by plugins (via factory
-// injection) to fold the extension log on Get, and by tests to verify
-// commutativity and validation-monotonicity.
+// ApplyMany is the apply function the composition root wires into the
+// storage plugins: it decodes the persisted schema base once, replays every
+// delta in order onto that one tree, and encodes it once. The result is the
+// bytes that replaying the deltas one ApplyMany call each gives; an empty
+// list gives the canonical encoding of base. A delta that cannot apply fails
+// the whole call.
 //
-// Apply does not mutate base — a fresh tree is produced via the
-// codec's Marshal/Unmarshal round-trip.
-//
-// base must be non-nil. An empty delta yields a clean clone of base.
-func Apply(base *ModelNode, delta spi.SchemaDelta) (*ModelNode, error) {
-	if base == nil {
-		return nil, fmt.Errorf("schema.Apply: base is nil")
-	}
-
-	root, err := cloneNode(base)
+// The tree is decoded here and owned by this call, so the deltas apply to it
+// in place. Neither base nor the deltas are written to.
+func ApplyMany(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
+	root, err := Unmarshal(base)
 	if err != nil {
-		return nil, fmt.Errorf("schema.Apply: clone base: %w", err)
+		return nil, fmt.Errorf("schema.ApplyMany: unmarshal base: %w", err)
 	}
-
-	if len(delta) == 0 {
-		return root, nil
-	}
-
-	ops, err := UnmarshalDelta(delta)
-	if err != nil {
-		return nil, fmt.Errorf("schema.Apply: decode delta: %w", err)
-	}
-
-	for i, op := range ops {
-		if err := applyOp(root, op); err != nil {
-			return nil, fmt.Errorf("schema.Apply: op %d (%s %q): %w", i, op.Kind, op.Path, err)
+	for i, delta := range deltas {
+		if err := applyInPlace(root, delta); err != nil {
+			return nil, fmt.Errorf("schema.ApplyMany: delta %d: %w", i, err)
 		}
 	}
-	return root, nil
+	return Marshal(root)
+}
+
+// applyInPlace replays delta's ops onto root, mutating it. An empty delta
+// changes nothing.
+func applyInPlace(root *ModelNode, delta spi.SchemaDelta) error {
+	if len(delta) == 0 {
+		return nil
+	}
+	ops, err := UnmarshalDelta(delta)
+	if err != nil {
+		return fmt.Errorf("decode delta: %w", err)
+	}
+	for i, op := range ops {
+		if err := applyOp(root, op); err != nil {
+			return fmt.Errorf("op %d (%s %q): %w", i, op.Kind, op.Path, err)
+		}
+	}
+	return nil
 }
 
 func applyOp(root *ModelNode, op SchemaOp) error {
@@ -184,7 +188,7 @@ func applyAddKindBranch(root *ModelNode, op SchemaOp) error {
 
 // resolvePath walks root along a slash-separated path of child names.
 // The empty path returns root. A missing segment returns a descriptive
-// error rather than a nil node — Apply surfaces the segment name so
+// error rather than a nil node — ApplyMany surfaces the segment name so
 // the error identifies the stale-schema case cleanly.
 func resolvePath(root *ModelNode, path string) (*ModelNode, error) {
 	if path == "" {
@@ -220,18 +224,4 @@ func resolvePath(root *ModelNode, path string) (*ModelNode, error) {
 		cur = next
 	}
 	return cur, nil
-}
-
-// cloneNode produces an independent copy of node via the codec
-// round-trip.
-func cloneNode(node *ModelNode) (*ModelNode, error) {
-	raw, err := Marshal(node)
-	if err != nil {
-		return nil, fmt.Errorf("marshal: %w", err)
-	}
-	out, err := Unmarshal(raw)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal: %w", err)
-	}
-	return out, nil
 }

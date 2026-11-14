@@ -11,9 +11,9 @@ import (
 // RunSchemaExtensionLocalCacheInvalidationOnCommit asserts B-I8:
 // after an extension commits, the immediate next Get on the same
 // node returns the post-extension schema, not stale cached bytes.
-// The CachingModelStore decorator must invalidate on the
-// ExtendSchema path — this test exercises that invalidation end-to-end
-// via the HTTP boundary.
+// The model cache (internal/cluster/modelcache) invalidates the entry
+// after every extension call — this test exercises that invalidation
+// end-to-end via the HTTP boundary.
 func RunSchemaExtensionLocalCacheInvalidationOnCommit(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -37,8 +37,8 @@ func RunSchemaExtensionLocalCacheInvalidationOnCommit(t *testing.T, fixture Back
 		t.Fatalf("warm ExportModel: %v", err)
 	}
 
-	// Extend via entity create. The ExtendSchema path must invalidate
-	// the CachingModelStore entry for this model on commit.
+	// Extend via entity create. The extension call invalidates the
+	// model cache entry for this model.
 	body, _ := json.Marshal(map[string]any{"field_0": "v", "new_field": "appear"})
 	if _, err := c.CreateEntity(t, modelName, modelVersion, string(body)); err != nil {
 		t.Fatalf("CreateEntity: %v", err)

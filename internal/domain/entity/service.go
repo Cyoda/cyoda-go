@@ -173,27 +173,31 @@ type UpdateCollectionResult struct {
 
 // --- Service methods ---
 
-// withUniqueKeys attaches the model's unique-key definitions to ctx and
-// pre-checks the input document before any transaction begins. If all
-// fields of any declared key are present and well-formed the keyed ctx is
-// returned; callers thread it into Begin/Execute/Save so the store can
-// enforce uniqueness later (Phases 5-7).
+// checkUniqueKeys refuses, with 422 INVALID_UNIQUE_KEY, a document that holds
+// some but not all fields of one of the model's composite unique keys. Every
+// write door that can extend the model calls it before ingest.ValidateOrExtend:
+// a schema extension commits on its own, so a write refused after it would
+// leave the model extended.
 //
-// Returns (ctx, 422 INVALID_UNIQUE_KEY) when the document satisfies only
-// some fields of a composite key (partial match). Returns (ctx, 5xx) for
-// malformed JSON or other internal failures. Returns (ctx, nil) unchanged
-// when the model has no unique keys or all keys are fully absent/null.
-func (h *Handler) withUniqueKeys(ctx context.Context, desc *spi.ModelDescriptor, inputDoc []byte) (context.Context, error) {
+// The key check reads the document as a JSON object, so any other root is
+// refused first with the schema check's own answer. item prefixes the 4xx
+// message ("item 3: ") on a collection door and is empty on a single one. A
+// document the key check cannot evaluate is a 5xx. A model without unique keys
+// passes every document.
+func checkUniqueKeys(desc *spi.ModelDescriptor, parsedData any, doc []byte, item string) error {
 	if len(desc.UniqueKeys) == 0 {
-		return ctx, nil
+		return nil
 	}
-	if _, err := spi.ComputeClaims(desc.UniqueKeys, inputDoc); err != nil {
+	if err := ingest.RequireObjectRoot(parsedData); err != nil {
+		return classifyValidateOrExtendErr(err)
+	}
+	if _, err := spi.ComputeClaims(desc.UniqueKeys, doc); err != nil {
 		if errors.Is(err, spi.ErrPartialUniqueKey) {
-			return ctx, common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKey, "composite unique key incomplete")
+			return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKey, item+"one or more unique key fields are null or invalid")
 		}
-		return ctx, common.Internal("failed to evaluate unique keys", err)
+		return common.Internal(item+"failed to evaluate unique keys", err)
 	}
-	return spi.WithUniqueKeys(ctx, desc.UniqueKeys), nil
+	return nil
 }
 
 // CreateEntity creates a single entity with workflow execution and returns
@@ -253,18 +257,19 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		return nil, err
 	}
 
+	// Refuse a partial unique key before the schema check can extend the model.
+	if err := checkUniqueKeys(desc, parsedData, bodyBytes, ""); err != nil {
+		return nil, err
+	}
+
 	// Validate or extend model schema
-	if err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
+	if _, err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
 		return nil, classifyValidateOrExtendErr(err)
 	}
 
-	// Pre-check unique keys and thread them onto ctx. This runs before Begin so
-	// the keyed ctx propagates into Begin → txCtx → Execute → FinalCtx → Save.
-	// Partial keys are rejected here (422) before any transaction is opened.
-	ctx, err = h.withUniqueKeys(ctx, desc, bodyBytes)
-	if err != nil {
-		return nil, err
-	}
+	// Thread the unique keys onto ctx before Begin, so the keyed ctx propagates
+	// into Begin → txCtx → Execute → FinalCtx → Save.
+	ctx = spi.WithUniqueKeys(ctx, desc.UniqueKeys)
 
 	// Begin a fresh transaction, or PARTICIPATE in a joined tx already on ctx
 	// (a routed compute-node callback). A joined callback does not Begin and
@@ -1927,12 +1932,20 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		return nil, common.Internal("failed to access model store", err)
 	}
 
-	// Validate all items before starting the transaction.
+	// Validate all items before starting the transaction, in two passes. A
+	// schema extension commits on its own and stays, so the first pass refuses
+	// every item's partial unique key before the second pass lets any item
+	// extend its model.
 	type parsedItem struct {
 		ref          spi.ModelRef
 		payloadBytes []byte
+		parsedData   any
 		uniqueKeys   []spi.UniqueKey
 	}
+	// The latest descriptor of each model the batch names. The second pass
+	// replaces an entry with the descriptor an extension returns, so a later
+	// item of the same model is checked against the extended schema.
+	descs := make(map[spi.ModelRef]*spi.ModelDescriptor)
 	parsed := make([]parsedItem, 0, len(items))
 	for i, item := range items {
 		ref := spi.ModelRef{
@@ -1940,20 +1953,24 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			ModelVersion: fmt.Sprintf("%d", item.ModelVersion),
 		}
 
-		// Load and validate model. Distinguish genuine not-found (404) from
-		// other infrastructure errors (5xx) so a schema fold/apply failure
-		// does not masquerade as a missing model for a batch item.
-		desc, err := modelStore.Get(ctx, ref)
-		if err != nil {
-			if errors.Is(err, spi.ErrNotFound) {
-				return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-					fmt.Sprintf("item %d: model not found", i))
+		desc, ok := descs[ref]
+		if !ok {
+			// Distinguish genuine not-found (404) from other infrastructure
+			// errors (5xx) so a schema fold/apply failure does not masquerade
+			// as a missing model for a batch item.
+			desc, err = modelStore.Get(ctx, ref)
+			if err != nil {
+				if errors.Is(err, spi.ErrNotFound) {
+					return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+						fmt.Sprintf("item %d: model not found", i))
+				}
+				return nil, common.Internal(fmt.Sprintf("item %d: failed to load model", i), err)
 			}
-			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model", i), err)
-		}
-		if desc.State != spi.ModelLocked {
-			return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked,
-				fmt.Sprintf("item %d: model is not locked", i))
+			if desc.State != spi.ModelLocked {
+				return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked,
+					fmt.Sprintf("item %d: model is not locked", i))
+			}
+			descs[ref] = desc
 		}
 
 		// Parse payload
@@ -1967,25 +1984,21 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			return nil, ingest.PrefixItemErr(err, i)
 		}
 
+		// Refuse a partial unique key before any item's schema check can
+		// extend a model, and before any transaction is opened.
+		if err := checkUniqueKeys(desc, parsedData, payloadBytes, fmt.Sprintf("item %d: ", i)); err != nil {
+			return nil, err
+		}
+
+		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes, parsedData: parsedData, uniqueKeys: desc.UniqueKeys})
+	}
+	for _, it := range parsed {
 		// Validate or extend model schema
-		if err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
+		desc, err := ingest.ValidateOrExtend(ctx, modelStore, descs[it.ref], it.parsedData)
+		if err != nil {
 			return nil, classifyValidateOrExtendErr(err)
 		}
-
-		// Pre-check for partial unique key (pre-tx, fast path). Desc is in hand
-		// here so no extra read is needed. A partial key (some but not all fields
-		// present) is rejected immediately before any transaction is opened.
-		if len(desc.UniqueKeys) > 0 {
-			if _, err := spi.ComputeClaims(desc.UniqueKeys, payloadBytes); err != nil {
-				if errors.Is(err, spi.ErrPartialUniqueKey) {
-					return nil, common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKey,
-						fmt.Sprintf("item %d: composite unique key incomplete", i))
-				}
-				return nil, common.Internal(fmt.Sprintf("item %d: failed to evaluate unique keys", i), err)
-			}
-		}
-
-		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes, uniqueKeys: desc.UniqueKeys})
+		descs[it.ref] = desc
 	}
 
 	// Begin transaction -- all entities in one transaction, all-or-nothing
@@ -2228,6 +2241,12 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		}
 	}
 
+	// Refuse a partial unique key in the (possibly merged) document before the
+	// schema check can extend the model. The open transaction rolls back.
+	if err := checkUniqueKeys(desc, parsedData, bodyBytes, ""); err != nil {
+		return nil, err
+	}
+
 	// Validate the (possibly merged) result. PATCH validates strictly and never
 	// extends the model; PUT may extend per the model's ChangeLevel.
 	if opts.strictValidate {
@@ -2235,18 +2254,13 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			return nil, classifyValidateOrExtendErr(vErr)
 		}
 	} else {
-		if vErr := ingest.ValidateOrExtend(txCtx, modelStore, desc, parsedData); vErr != nil {
+		if _, vErr := ingest.ValidateOrExtend(txCtx, modelStore, desc, parsedData); vErr != nil {
 			return nil, classifyValidateOrExtendErr(vErr)
 		}
 	}
 
-	// Pre-check unique keys on the (possibly merged) document and thread them onto
-	// txCtx so they propagate into Execute and Save. Partial keys are rejected
-	// here (422) inside the already-open transaction so the TX is rolled back.
-	txCtx, err = h.withUniqueKeys(txCtx, desc, bodyBytes)
-	if err != nil {
-		return nil, err
-	}
+	// Thread the unique keys onto txCtx so they propagate into Execute and Save.
+	txCtx = spi.WithUniqueKeys(txCtx, desc.UniqueKeys)
 
 	now := h.clock.Now()
 
@@ -2507,23 +2521,11 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model for entity", i), err)
 		}
 
-		// Pre-check for partial unique key, before the schema check can extend
-		// the model: on a backend whose schema extension does not join the
-		// entity transaction, a refusal after it would leave the model
-		// extended. The data it reads must be a JSON object, refused with the
-		// schema check's own answer. Called while desc is in hand so no extra
-		// model read is needed. Rolls back and fails the whole batch.
-		if len(desc.UniqueKeys) > 0 {
-			if err := ingest.RequireObjectRoot(item.parsedData); err != nil {
-				return nil, classifyValidateOrExtendErr(err)
-			}
-			if _, err := spi.ComputeClaims(desc.UniqueKeys, item.bodyBytes); err != nil {
-				if errors.Is(err, spi.ErrPartialUniqueKey) {
-					return nil, common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKey,
-						fmt.Sprintf("item %d: composite unique key incomplete", i))
-				}
-				return nil, common.Internal(fmt.Sprintf("item %d: failed to evaluate unique keys", i), err)
-			}
+		// Refuse a partial unique key in this item before its own schema
+		// check can extend the model. Rolls back and fails the whole batch;
+		// an extension an earlier item made stays, as for any failed write.
+		if err := checkUniqueKeys(desc, item.parsedData, item.bodyBytes, fmt.Sprintf("item %d: ", i)); err != nil {
+			return nil, err
 		}
 
 		// Stamp this item's unique-key definitions onto the context before
@@ -2531,7 +2533,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		// its keys to the next item; spi.WithUniqueKeys overwrites any prior value.
 		currentCtx = spi.WithUniqueKeys(currentCtx, desc.UniqueKeys)
 
-		if err := ingest.ValidateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
+		if _, err := ingest.ValidateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
 			return nil, classifyValidateOrExtendErr(err)
 		}
 

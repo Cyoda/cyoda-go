@@ -78,7 +78,7 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 
 - `errors.BAD_REQUEST` — `400` — not retryable — request body, query parameter, or header is malformed or structurally invalid
 - `errors.CALLOUT_FAILED` — `503` — retryable — a processor, criterion or function callout was tried on more than one compute member and no try produced an answer; the message lists the tries
-- `errors.CALLOUT_SUPERSEDED` — `410` — not retryable — request carrying a transaction token belongs to a compute node that was replaced, or to a callout that has ended; a request still in progress when that happened is discarded
+- `errors.CALLOUT_SUPERSEDED` — `410` — not retryable — request carrying a transaction token belongs to a compute node that was replaced, or to a callout that has ended; a request still in progress when that happened is discarded (a schema extension it made stays)
 - `errors.CLOCK_BEFORE_RECORDED_TIME` — `409` — not retryable — a request to set the platform clock named a time earlier than the latest time the store has recorded; the clock is unchanged
 - `errors.CLOCK_CONTROL_DISABLED` — `403` — not retryable — a request to change the platform clock reached a node not started with clock control enabled
 - `errors.CLOCK_NOT_CONFIRMED` — `503` — not retryable — a node of the cluster did not confirm a platform clock change; nothing is rolled back
@@ -110,7 +110,7 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 - `errors.INVALID_GROUP_BY_PATH` — `400` — not retryable — grouped-stats `groupBy` entry is neither the reserved `state` token nor a JSONPath denoting a single scalar
 - `errors.INVALID_LIMIT` — `400` — not retryable — grouped-stats `limit` is non-positive or greater than `CYODA_STATS_GROUP_MAX`
 - `errors.INVALID_UNIQUE_KEY` — `422` — not retryable — a complete composite unique key cannot be computed: a key field is null or of an unsupported type
-- `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — not retryable — a model's unique key definition is structurally invalid
+- `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — not retryable — a model's unique key definition is structurally invalid (model administration: unique-key declaration or sample-data import)
 - `errors.JOINED_RESPONSE_TOO_LARGE` — `413` — not retryable — the answer to a request made under a transaction token is larger than `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`; nothing is sent, page the read
 - `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist, is owned by another bootstrap key (retired after `CYODA_JWT_SIGNING_KEY` was replaced), or is the bootstrap key after it was deleted.
 - `errors.M2M_CLIENT_CAP_REACHED` — `400` — not retryable — `POST /clients`: the tenant already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients
@@ -123,7 +123,7 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — not retryable — admin operation requires `LOCKED` state but the model is `UNLOCKED` (unlock-of-already-unlocked-model)
 - `errors.MODEL_HAS_ENTITIES` — `409` — not retryable — unlock or delete blocked because at least one entity of the model exists
 - `errors.MODEL_NOT_FOUND` — `404` — not retryable — referenced entity model does not exist in the tenant's model registry
-- `errors.MODEL_NOT_LOCKED` — `409` — not retryable — model exists but is not in `LOCKED` state; entity writes require a locked model
+- `errors.MODEL_NOT_LOCKED` — `409` — not retryable — model exists but is not in `LOCKED` state; entity writes and schema extensions require a locked model, including a model unlocked while a write that extends it was in progress
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no compute member for the required tag appeared, on any cluster node, within `CYODA_DISPATCH_WAIT_TIMEOUT`; no try was made
 - `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — not retryable — the read's pointInTime is later than the consistency time

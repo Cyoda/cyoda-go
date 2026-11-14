@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 
@@ -14,7 +15,7 @@ type StoreFactory struct {
 	pool              *pgxpool.Pool
 	cfg               config              // plugin config; threaded into stores that read config fields (e.g. modelStore)
 	tm                *TransactionManager // may be nil if transactions not configured
-	applyFunc         ApplyFunc           // set via SetApplyFunc; used by modelStore.Get to fold the schema delta log
+	applyFunc         ApplyFunc           // set via SetApplyFunc; folds the schema extension log and checks each extension
 	unregisterMetrics func()              // stops the pool-stat OTel callback; nil when NewStoreFactory/newStoreFactoryWithConfig built this factory outside Plugin.NewFactory
 	// uuids is the id generator the transaction manager carries, mirrored
 	// here whenever the manager is wired in (setTransactionManager) so that
@@ -24,6 +25,12 @@ type StoreFactory struct {
 	// sched holds the scheduler's own pools (scheduler_pool.go), opened on
 	// first use and closed by Close.
 	sched schedulerPools
+	// models is the model store's own pool (model_pool.go), opened by
+	// Plugin.NewFactory or on first use (modelPool), and closed by Close.
+	// modelsMu guards it and modelsClosed.
+	modelsMu     sync.Mutex
+	models       *modelPool
+	modelsClosed bool
 	// keys caches each tenant's marker key; see tenantKeys. The factory owns
 	// it from construction and never replaces it: its entity stores use it
 	// for their non-transactional writes, and InitTransactionManager hands
@@ -37,10 +44,12 @@ type StoreFactory struct {
 	clock spi.Clock
 }
 
-// ApplyFunc replays an opaque SchemaDelta onto a base schema
-// represented in the plugin's canonical bytes. Callers (cmd/cyoda/main.go)
-// pass schema.Apply wrapped in a codec round-trip.
-type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
+// ApplyFunc replays opaque SchemaDeltas, in order, onto a base schema in
+// one call and returns the new schema bytes; an empty list re-encodes base.
+// The composition root (app/app.go) passes schema.ApplyMany, which decodes
+// and encodes the schema once per call, so the fold makes one call for the
+// whole log after the savepoint.
+type ApplyFunc func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)
 
 // NewStoreFactory creates a new PostgreSQL-backed StoreFactory. The
 // factory is configured with defaults equivalent to parseConfig on an
@@ -79,7 +88,7 @@ func defaultStoreConfig() config {
 	return config{
 		MaxConns:                25,
 		MinConns:                5,
-		SchemaSavepointInterval: 64,
+		SchemaSavepointInterval: defaultSchemaSavepointInterval,
 		// A zero ceiling reads as "disabled" to every consumer of these fields,
 		// so the baseline carries the shipped defaults rather than zero values.
 		StatementTimeout:       defaultStatementTimeout,
@@ -88,11 +97,13 @@ func defaultStoreConfig() config {
 		MigrateLockTimeout:     defaultMigrateLockTimeout,
 		SearchStatementTimeout: defaultSearchStatementTimeout,
 		SchedulerConns:         defaultSchedulerConns,
+		ModelConns:             defaultModelConns,
 	}
 }
 
-// SetApplyFunc installs the replay function used by modelStore.Get
-// to fold the extension log. It may be called at most once —
+// SetApplyFunc installs the apply function the model store folds the
+// extension log with and checks each extension against; ExtendSchema
+// refuses to run without it. It may be called at most once —
 // typically at factory-construction time in app/app.go.
 // Calling it twice is a programmer error (panic).
 //
@@ -101,7 +112,7 @@ func defaultStoreConfig() config {
 // setter uniformly across plugins whose named ApplyFunc types differ.
 // Values of postgres.ApplyFunc are assignable to this parameter because
 // the underlying signatures are identical.
-func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
 	if f.applyFunc != nil {
 		panic("postgres: SetApplyFunc called twice")
 	}
@@ -246,7 +257,11 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelStore{q: f.querier(), pool: f.pool, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
+	models, err := f.modelPool()
+	if err != nil {
+		return nil, err
+	}
+	return newModelStore(models, tid, f.applyFunc, f.cfg), nil
 }
 
 // KeyValueStore never joins the caller's transaction (spi.KeyValueStore
@@ -335,6 +350,7 @@ func (f *StoreFactory) Close() error {
 		f.unregisterMetrics()
 	}
 	f.closeSchedulerPools()
+	f.closeModelPool()
 	f.pool.Close()
 	return nil
 }

@@ -510,6 +510,43 @@ func TestCatalog_WriteSelf_WritesThroughTheCallbackAndReturnsNoData(t *testing.T
 	}
 }
 
+// TestCatalog_UnlockThenTag_UnlocksUnjoinedAndAddsAField: the processor
+// unlocks the model with a call that carries no tx token, then answers with
+// the entity's data plus a field "tag" the model does not hold.
+func TestCatalog_UnlockThenTag_UnlocksUnjoinedAndAddsAField(t *testing.T) {
+	var gotToken, gotMethod, gotPath string
+	status := http.StatusOK
+	door := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken, gotMethod, gotPath = r.Header.Get("X-Tx-Token"), r.Method, r.URL.Path
+		w.WriteHeader(status)
+	}))
+	defer door.Close()
+
+	proc, ok := newCatalog(nil, nil).callbackProcessor("cb-unlock-then-tag")
+	if !ok {
+		t.Fatal("cb-unlock-then-tag callback processor not registered")
+	}
+	cb := newCallbackClient(door.URL, staticToken("bearer"))
+	out, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{"name":"p"}`)},
+		cbConfig{SecondaryModel: "m", SecondaryVersion: 2}, "the-pass", cb)
+	if err != nil {
+		t.Fatalf("processor: %v", err)
+	}
+	if gotToken != "" || gotMethod != http.MethodPut || gotPath != "/api/model/m/2/unlock" {
+		t.Fatalf("callback token=%q %s %s; want an unjoined PUT of m/2 unlock", gotToken, gotMethod, gotPath)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(out.Data, &data); err != nil || data["tag"] != "foo" || data["name"] != "p" {
+		t.Fatalf("output = %s; want the entity's data plus tag foo", out.Data)
+	}
+
+	status = http.StatusConflict
+	if _, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{}`)},
+		cbConfig{SecondaryModel: "m"}, "the-pass", cb); err == nil {
+		t.Fatal("a refused unlock must fail the processor")
+	}
+}
+
 // An absolute schedule is computed from the request's time attribute, which is
 // platform time, not from the test client's own clock.
 func TestCatalog_SchedFnResolve_UsesRequestTime(t *testing.T) {

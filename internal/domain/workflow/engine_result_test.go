@@ -80,7 +80,7 @@ func TestEngineResult_FinalTxID_PostSegmentOnCBDCascade(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-segmented", ModelVersion: "1.0"}

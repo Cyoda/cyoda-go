@@ -24,7 +24,7 @@ func newSecondPassService(t *testing.T, factory *memory.StoreFactory, store spi.
 	t.Helper()
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	return search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+	return search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 }

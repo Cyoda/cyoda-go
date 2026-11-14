@@ -113,7 +113,7 @@ func TestReleaseRegisteredJobs_ExecutorDecidingDuringTheLoop(t *testing.T) {
 			store := &firstReleaseBlocks{AsyncSearchStore: inner, first: make(chan string, 1), hold: make(chan struct{}), released: map[string]error{}}
 			pool := search.NewWorkerPool(2, 4)
 			t.Cleanup(func() { pool.Drain(context.Background()) })
-			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+			svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 				WithAsyncPool(pool).
 				WithHeartbeat(time.Hour)
 
@@ -266,7 +266,7 @@ func TestReleaseRegisteredJobs_FailedRecordingDuringShutdownIsHandedBack(t *test
 	letWrite := sync.OnceFunc(func() { close(store.hold) })
 	t.Cleanup(letWrite) // a failed wait must not leave the worker blocked
 	pool := search.NewWorkerPool(1, 4)
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
+	svc := search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 
@@ -329,7 +329,7 @@ func TestReleaseRegisteredJobs_RecordingAfterTheReleaseFinishesTheJob(t *testing
 	letWrite := sync.OnceFunc(func() { close(store.hold) })
 	t.Cleanup(letWrite) // a failed wait must not leave the worker blocked
 	pool := search.NewWorkerPool(1, 4)
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
+	svc := search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 

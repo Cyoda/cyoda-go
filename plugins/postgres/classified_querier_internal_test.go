@@ -30,19 +30,19 @@ type errRow struct{ err error }
 
 func (r errRow) Scan(...any) error { return r.err }
 
-// TestClassifiedQuerier_ClassifiesStatementErrors — ExtendSchema's
-// self-wrap transaction routes its statements through classifiedQuerier
-// so its errors carry the same classification the ambient path gets from
-// ctxQuerier: a serialization abort must surface as spi.ErrConflict, and
-// an idle-in-transaction reclaim must carry the storage-unavailable
-// marker. A raw pgx.Tx would bypass classification entirely and turn
-// retryable outcomes into opaque 500s.
+// TestClassifiedQuerier_ClassifiesStatementErrors — a private transaction
+// (a schema extension's, a SaveResults chunk's) routes its statements
+// through classifiedQuerier so its errors carry the same classification the
+// ambient path gets from ctxQuerier: a serialization abort must surface as
+// spi.ErrConflict, and an idle-in-transaction reclaim must carry the
+// storage-unavailable marker. A raw pgx.Tx would bypass classification
+// entirely and turn retryable outcomes into opaque 500s.
 func TestClassifiedQuerier_ClassifiesStatementErrors(t *testing.T) {
 	ctx := context.Background()
 	conflict := &pgconn.PgError{Code: pgerrcode.SerializationFailure}
 	q := classifiedQuerier{inner: errQuerier{err: conflict}}
 
-	if _, err := q.Exec(ctx, "UPDATE models SET doc = doc"); !errors.Is(err, spi.ErrConflict) {
+	if _, err := q.Exec(ctx, "UPDATE kv_store SET value = value"); !errors.Is(err, spi.ErrConflict) {
 		t.Errorf("Exec: 40001 classified as %v, want spi.ErrConflict", err)
 	}
 	if _, err := q.Query(ctx, "SELECT 1"); !errors.Is(err, spi.ErrConflict) {

@@ -6,11 +6,77 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A schema extension commits on its own, never conflicts, and stays when
+  the write fails.** A write that extends a model under its `changeLevel`
+  (entity create and update, collection create and update, data a workflow
+  processor returns; HTTP and gRPC) now commits the extension in a short
+  transaction of its own before its entity changes commit, on every backend.
+  Two writes that extend the same model both succeed: on PostgreSQL the
+  second of two transactions that extended one model in an update,
+  collection update or transition was answered `409 CONFLICT` (a transition
+  `500`), and the extending transaction held a lock on the model for its
+  whole length, callouts included. The extension is visible when the write
+  returns, on the node that served it, and may be visible to others earlier;
+  other nodes have it when the model cache invalidation broadcast arrives
+  (`CYODA_MODEL_CACHE_LEASE` bounds a lost broadcast). It stays if the write
+  fails or rolls back — before, PostgreSQL discarded it on its in-transaction
+  paths while the other backends kept it. An extension the schema already
+  holds writes nothing. A write whose data fills a composite unique key only
+  in part, or puts a non-scalar value in a key's field, is refused with
+  `422 INVALID_UNIQUE_KEY` before it extends the model. A collection create
+  checks every item's key before any item's schema; a collection update
+  checks each item's key before that item's schema, so an extension an
+  earlier item made stays if a later item is refused, as for any failed
+  write. Before, create, collection create and update checked the
+  key after extending, and a create that gave a keyed field an object or
+  array was answered `422 INVALID_UNIQUE_KEY_DEFINITION`. PATCH checks the
+  key before its strict validation, so a PATCH with both a partial key and an
+  undeclared field answers `422 INVALID_UNIQUE_KEY`, not `400
+  VALIDATION_FAILED`. Every door's `422 INVALID_UNIQUE_KEY` now carries the
+  message the store uses, "one or more unique key fields are null or
+  invalid" (prefixed with the item's index in a collection). An extension that
+  finds its model not locked (unlocked while a write to it, or the
+  transaction the write joined, is in progress) is refused with
+  `409 MODEL_NOT_LOCKED` on every backend; before, PostgreSQL appended it to the unlocked model's log. A
+  storage failure while extending for processor-returned data answers the
+  retryable `503 STORAGE_UNAVAILABLE`, not `500`. A `changeLevel` change on
+  a locked model takes effect on each node as its model cache picks it up.
+  The SPI's `ModelStore.ExtendSchema` and `ModelStore.Get` contracts change
+  to match (`ExtendSchema` never joins the caller's transaction and returns
+  the new `ErrModelNotLocked`; `Get` ignores the caller's transaction), and
+  an out-of-tree storage plugin must follow them. A storage factory must
+  also offer `SetApplyFunc` taking a list of deltas
+  (`func(base []byte, deltas []SchemaDelta) ([]byte, error)`; the SPI
+  conformance suite installs it the same way); cyoda-go refuses to start on
+  a factory without it. See `cyoda help models`
+  (SCHEMA EXTENSION), `docs/CONSISTENCY.md` §3a and
+  `docs/cloud-parity/schema-extensions.md`.
+
+- **`CYODA_SCHEMA_EXTEND_MAX_RETRIES` is removed.** The SQLite backend
+  retries a busy write lock during a schema extension until the request
+  ends, with no budget, and never answers the contention as an error. The
+  variable is no longer read; remove it from deployments.
+
+- **`CYODA_SCHEMA_SAVEPOINT_INTERVAL` counts one model's extensions.** On
+  PostgreSQL the interval measured a sequence shared by all models, so on a
+  busy system nearly every extension also wrote a savepoint; it now counts
+  the deltas of the model since its latest savepoint, as SQLite already did.
+  Locking a model no longer writes a savepoint.
+
+- **The negative field-path cache is removed.** A search, conditional
+  delete or criterion path check on a path the node's cached schema does
+  not hold reads the model once more and then answers
+  `400 INVALID_FIELD_PATH` if the path is still unknown; no refusal is
+  remembered between requests. Before, a refusal was cached without a
+  lease, and could refuse the initiator's own new field on the node that
+  served its write.
+
 - **Each callback is all-or-nothing, and a failed callback write fails the
   operation.** A compute member's callback — a request carrying a transaction
   token — now runs in a scope of its own: either all its writes become part of
   the transaction, or none do, and a `2xx` is sent only for a callback whose
-  writes were kept. A callback that fails keeps nothing. Before, a failed
+  writes were kept. A callback that fails keeps nothing but a schema
+  extension it made. Before, a failed
   callback's writes stayed in the transaction, and the operation could commit
   them. A callback answered with a retryable error leaves the transaction
   usable, so it can be sent again in it. A callback write answered with an
@@ -19,7 +85,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   TRANSACTION_ROLLBACK_ONLY` whatever the compute member answers (a lost write
   race still answers the retryable `409 CONFLICT`). Under an `ASYNC_NEW_TX`
   processor the mark stops at the processor: it fails, with everything its
-  callbacks wrote, and the operation goes on. A callback read that answers a
+  callbacks wrote to entities, and the operation goes on. A callback read that answers a
   `4xx` keeps what it read and marks nothing. An `ASYNC_NEW_TX` processor's
   rollback no longer undoes the acknowledged write of a callback that was not
   under it. A callback whose write reaches a `COMMIT_BEFORE_DISPATCH` processor
@@ -1377,6 +1443,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **`CYODA_POSTGRES_MODEL_CONNS` (default `8`, at least `2`).** The
+  PostgreSQL model store — model reads, schema extensions and model
+  administration — runs on a pool of its own, apart from the main pool, so
+  entity transactions cannot starve it. Extensions hold at most half its
+  connections, so model reads always have the rest; a smaller or malformed
+  value fails startup. Each node opens up to this many more PostgreSQL
+  connections. The pool reports through `cyoda.storage.pool.connections`
+  under `pool="model"`. See `cyoda help config database`.
+
 - **Location-independent transactions through an optional storage-plugin
   capability.** A storage plugin can supply the coordination of its
   transactions itself, through the SPI's optional
@@ -1387,7 +1462,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   also for a callout handed over to another node, and every node serves a
   callback where it lands, with no proxy hop. The callbacks of one transaction
   may then run at the same time: of two that wrote the same entity from the
-  same version, one keeps nothing and is answered a retryable `409 CONFLICT`. The
+  same version, one keeps nothing but a schema extension it made and is
+  answered a retryable `409 CONFLICT`. The
   scope rules and the answers are otherwise the same. None of the in-tree
   backends (memory, SQLite, PostgreSQL) offers the capability. See `cyoda help
   cluster` (TRANSACTION ROUTING).

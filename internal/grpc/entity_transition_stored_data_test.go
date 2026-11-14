@@ -11,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
@@ -58,19 +59,19 @@ func (s *firstReadStore) Get(ctx context.Context, id string) (*spi.Entity, error
 // returns so a test can arm it and read the stored entity.
 func newTransitionTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context, *firstReadFactory) {
 	t.Helper()
-	base := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
+	base := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	base.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := base.GetTransactionManager()
 	factory := &firstReadFactory{StoreFactory: base}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         txMgr,
-		entityHandler: entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real()),
-		modelHandler:  model.New(factory, platformclock.Real()),
-		searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()),
+		entityHandler: entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real()),
+		modelHandler:  model.New(cachedFactory(factory), platformclock.Real()),
+		searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()),
 	}
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "test-user", UserName: "Test User",

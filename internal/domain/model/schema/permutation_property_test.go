@@ -50,7 +50,7 @@ func TestPermutationInvariance(t *testing.T) {
 			for idx, p := range perms {
 				cur := base
 				for _, j := range p {
-					next, err := schema.Apply(cur, deltas[j])
+					next, err := applyDelta(cur, deltas[j])
 					if err != nil {
 						t.Fatal(err)
 					}

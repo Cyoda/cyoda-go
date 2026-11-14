@@ -29,8 +29,8 @@ func newTxJoinTestHandler(t *testing.T) (*Handler, spi.StoreFactory, spi.Transac
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
+	engine := wfengine.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	h := New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerWidgetModel(t, ctx, factory)
 	return h, factory, txMgr, ctx

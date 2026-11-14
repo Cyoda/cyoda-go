@@ -17,13 +17,13 @@ import (
 
 // refreshingModelStore is a ModelStore fake used to drive the search
 // service's pre-execution path-validation logic. Get returns the head
-// of getQueue; RefreshAndGet returns the head of refreshQueue. Both
+// of getQueue; RefreshSchemaNode returns the head of refreshQueue. Both
 // counters are observable so tests can assert refresh behaviour.
 type refreshingModelStore struct {
 	mu           sync.Mutex
 	getQueue     []*spi.ModelDescriptor
 	refreshQueue []*spi.ModelDescriptor
-	refreshErr   error // when set, RefreshAndGet returns this instead of consuming refreshQueue
+	refreshErr   error // when set, RefreshSchemaNode returns this instead of consuming refreshQueue
 	getCount     int
 	refreshCount int
 }
@@ -44,7 +44,7 @@ func (s *refreshingModelStore) Get(_ context.Context, _ spi.ModelRef) (*spi.Mode
 	return d, nil
 }
 
-func (s *refreshingModelStore) RefreshAndGet(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
+func (s *refreshingModelStore) refreshDescriptor(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refreshCount++
@@ -57,6 +57,22 @@ func (s *refreshingModelStore) RefreshAndGet(_ context.Context, _ spi.ModelRef) 
 	d := s.refreshQueue[0]
 	s.refreshQueue = s.refreshQueue[1:]
 	return d, nil
+}
+
+func (s *refreshingModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
+}
+
+func (s *refreshingModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.refreshDescriptor(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *refreshingModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
@@ -116,7 +132,7 @@ func buildSearchDescriptor(t *testing.T, ref spi.ModelRef, fields ...string) *sp
 
 // TestSearch_StaleSchema_RefreshesOnceAndSucceeds verifies that a search
 // referencing a field absent from the cached schema but present in the
-// authoritative (post-RefreshAndGet) schema triggers exactly one refresh
+// authoritative (post-RefreshSchemaNode) schema triggers exactly one refresh
 // and then succeeds. This is the refresh-once contract.
 func TestSearch_StaleSchema_RefreshesOnceAndSucceeds(t *testing.T) {
 	base := memory.NewStoreFactory()
@@ -135,7 +151,7 @@ func TestSearch_StaleSchema_RefreshesOnceAndSucceeds(t *testing.T) {
 		// Get sequence within one Search under type-directed evaluation:
 		//  1) EnsureModelRegistered            → stale
 		//  2) the path step                    → stale (misses $.z, triggers the
-		//     single RefreshAndGet → fresh, which validates the path)
+		//     single RefreshSchemaNode → fresh, which validates the path)
 		//  3) the type step                    → fresh (must carry $.z, else it
 		//     would 400 on an unknown field path)
 		//  4) the plugin Searcher's FieldsMap  → fresh (so the type-directed
@@ -165,7 +181,7 @@ func TestSearch_StaleSchema_RefreshesOnceAndSucceeds(t *testing.T) {
 		t.Fatalf("expected 1 result (e1), got %d results", len(results))
 	}
 	if got := ms.RefreshCount(); got != 1 {
-		t.Errorf("expected exactly 1 RefreshAndGet call, got %d", got)
+		t.Errorf("expected exactly 1 RefreshSchemaNode call, got %d", got)
 	}
 }
 
@@ -214,7 +230,7 @@ func TestSearch_TrulyMissingPath_FourxxAfterOneRefresh(t *testing.T) {
 		t.Errorf("expected errorCode %q, got %q", common.ErrCodeInvalidFieldPath, appErr.Code)
 	}
 	if got := ms.RefreshCount(); got != 1 {
-		t.Errorf("expected exactly 1 RefreshAndGet call (bounded), got %d", got)
+		t.Errorf("expected exactly 1 RefreshSchemaNode call (bounded), got %d", got)
 	}
 }
 
@@ -270,7 +286,7 @@ func TestSearch_RefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
 		t.Errorf("expected errors.Is(err, search.ErrPathRefreshInfra), got: %v", err)
 	}
 	if got := ms.RefreshCount(); got != 1 {
-		t.Errorf("expected exactly 1 RefreshAndGet call (bounded), got %d", got)
+		t.Errorf("expected exactly 1 RefreshSchemaNode call (bounded), got %d", got)
 	}
 }
 
@@ -278,7 +294,7 @@ func TestSearch_RefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
 // classification for resolveSortKeys' independent bounded-refresh
 // reimplementation (a THIRD "known field path" surface, alongside
 // ValidateKnownPaths and validateConditionPaths): a sort key absent from
-// the cached schema whose confirming RefreshAndGet itself fails must report
+// the cached schema whose confirming RefreshSchemaNode itself fails must report
 // infrastructure, not the client-facing 400 INVALID_FIELD_PATH a genuinely
 // unknown sort field gets. The condition is lifecycle-only, so
 // the path and type steps of ValidateConditionForModel have no data path to refuse

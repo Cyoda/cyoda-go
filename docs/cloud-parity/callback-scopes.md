@@ -11,6 +11,10 @@ transaction of the operation that called the compute node out.
 - **All-or-nothing.** Each callback runs in a scope of its own. Either all its
   writes become part of the transaction, or none do. A `2xx` is sent only for a
   callback whose writes were kept; any error answer means none were.
+- **A schema extension is not a callback write.** It commits on its own and
+  stays whatever happens to the callback, its scope or the transaction
+  (`schema-extensions.md`). Every "kept", "discarded" and "undone" in this
+  file is about the callback's other writes.
 - **Kept is relative to the scope above.** A kept callback is still undone with
   the part of the transaction above it: the transaction's rollback, or a failed
   `ASYNC_NEW_TX` processor the callback ran under.
@@ -28,7 +32,7 @@ transaction of the operation that called the compute node out.
     succeed.
   - Under an `ASYNC_NEW_TX` processor the mark stops at the processor. The
     processor fails (non-fatal, recorded in its `STATE_PROCESS_RESULT`), its
-    scope is discarded with everything its callbacks wrote, and the operation
+    scope is discarded with everything its callbacks wrote to entities, and the operation
     continues.
   - A later callback under the marked part is refused before it runs, reads
     included, with `409 TRANSACTION_ROLLBACK_ONLY` — or `410
@@ -47,9 +51,11 @@ transaction of the operation that called the compute node out.
   TRANSACTION_NOT_FOUND` once it has ended. A callback still in progress is never kept after them:
   a serialising backend waits until it has ended first; a location-independent
   backend does not wait, and refuses its completion (`410
-  CALLOUT_SUPERSEDED`, nothing kept). The outcome is the same either way.
+  CALLOUT_SUPERSEDED`, nothing kept but a schema extension). The outcome is the same either way.
 
 ## Answers that change
+
+A schema extension a callback made stays in every row.
 
 | Answer | Before | After |
 |---|---|---|

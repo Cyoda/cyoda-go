@@ -36,11 +36,11 @@ func WithBusinessClock(c Clock) Option {
 	return func(f *StoreFactory) { f.bizClock = c }
 }
 
-// ApplyFunc replays an opaque SchemaDelta onto a base schema and
-// returns the new schema bytes. Production wiring uses schema.Apply
-// from internal/domain/model/schema; the SPI keeps deltas opaque so
-// the catalog stays out of the plugin.
-type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
+// ApplyFunc replays opaque SchemaDeltas, in order, onto a base schema in
+// one call and returns the new schema bytes; an empty list re-encodes base.
+// Production wiring uses schema.ApplyMany from internal/domain/model/schema;
+// the SPI keeps deltas opaque so the catalog stays out of the plugin.
+type ApplyFunc func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)
 
 // WithApplyFunc installs the replay function used by ExtendSchema.
 // Must be called when the caller intends to use ExtendSchema; until
@@ -57,7 +57,7 @@ func WithApplyFunc(fn ApplyFunc) Option {
 // The parameter is the unnamed function type (not sqlite.ApplyFunc)
 // so that an interface type-assertion in app/app.go can satisfy the
 // setter uniformly across plugins.
-func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
 	if f.applyFunc != nil {
 		panic("sqlite: SetApplyFunc called twice")
 	}
@@ -140,9 +140,13 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	}
 
 	// readDB is a second, dedicated *sql.DB against the same file, used
-	// exclusively for reads (GetPage, GetVersionMetadata,
-	// GetVersionByTransaction, non-tx Iterate). It never opens a
-	// transaction, so _txlock never applies to it.
+	// exclusively for reads: the entity store's committed reads (pages,
+	// counts, version history, non-tx iteration and the committed half of an
+	// in-transaction cursor), grouped stats and the scheduled-task query.
+	// Most are single statements. Two need one snapshot across several
+	// statements and open a deferred read transaction here: the model
+	// store's Get (the model doc with its extension log) and the async
+	// search store's GetResultIDs.
 	//
 	// Why a separate pool at all: a long-lived, undrained Iterate cursor
 	// checks out its connection for the life of the iterator. Sharing db's
@@ -162,9 +166,10 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	//
 	// _txlock=deferred, not the writer DSN's immediate: a transaction opened
 	// here must never take the write lock. GetResultIDs asks for a read-only
-	// transaction, which the driver already begins DEFERRED, but a future
-	// caller passing nil TxOptions would inherit immediate from a shared DSN
-	// and start contending with the writer from a pool sized for readers.
+	// transaction, which the driver already begins DEFERRED; the model
+	// store's Get passes nil TxOptions and gets DEFERRED from this DSN, where
+	// a shared DSN would give it immediate and set it contending with the
+	// writer from a pool sized for readers.
 	// query_only(1) in readerPragmaParams makes the same guarantee at the
 	// statement level.
 	readerDSN := fmt.Sprintf("file:%s?_txlock=deferred", cfg.Path) + readerPragmaParams(cfg)
@@ -374,7 +379,7 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelStore{db: f.db, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
+	return &modelStore{db: f.db, readDB: f.readDB, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
 }
 
 func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, error) {
@@ -477,12 +482,13 @@ func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) error {
 // given path. Intended for test use only.
 func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) (*StoreFactory, error) {
 	cfg := config{
-		Path:                   dbPath,
-		AutoMigrate:            true,
-		BusyTimeout:            5 * time.Second,
-		CacheSizeKiB:           64000,
-		ReaderPoolSize:         defaultReaderPoolSize(),
-		SchemaExtendMaxRetries: 8,
+		Path:           dbPath,
+		AutoMigrate:    true,
+		BusyTimeout:    5 * time.Second,
+		CacheSizeKiB:   64000,
+		ReaderPoolSize: defaultReaderPoolSize(),
+		// The shipped default; a test that needs another interval sets it.
+		SchemaSavepointInterval: defaultSchemaSavepointInterval,
 	}
 	f, err := newStoreFactory(ctx, cfg, opts...)
 	if err != nil {

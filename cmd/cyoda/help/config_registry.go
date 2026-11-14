@@ -42,7 +42,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_SUPPRESS_BANNER", Topic: "server", Type: "bool", Default: "false", Description: "Silence startup and mock-auth banners (CI/tests only)."},
 	{Name: "CYODA_STARTUP_TIMEOUT", Topic: "server", Type: "duration", Default: "30s", Description: "Deadline for plugin init, TM init, and (cluster mode) the gossip seed-join retry loop."},
 	{Name: "CYODA_MAX_STATE_VISITS", Topic: "server", Type: "int", Default: "10", Description: "Max visits per state in workflow cascade."},
-	{Name: "CYODA_MODEL_CACHE_LEASE", Topic: "server", Type: "duration", Default: "5m", Description: "Model cache lease duration; actual expiry is jittered ±10%."},
+	{Name: "CYODA_MODEL_CACHE_LEASE", Topic: "server", Type: "duration", Default: "5m", Description: "How long a node caches a locked model; actual expiry is jittered ±10%. The bound on a stale model when an invalidation broadcast is lost."},
 	{Name: "CYODA_STORAGE_BACKEND", Topic: "server", Type: "string", Default: "memory", Description: "Storage backend selection (memory|sqlite|postgres)."},
 	{Name: "CYODA_PROFILES", Topic: "server", Type: "csv", Default: "", Description: "Comma-separated profile names; for each name, loads ./.env.<name> after the system config, the user config and ./.env. Selects profile files only when set in the process environment, which wins over the same variable in any file."},
 

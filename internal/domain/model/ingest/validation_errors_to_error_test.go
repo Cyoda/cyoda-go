@@ -16,9 +16,8 @@ import (
 // size — tens of megabytes for a body well within the existing 10 MiB request
 // cap. The fix renders only the first maxRenderedValidationErrors entries
 // verbatim and appends a "... and N more" summary for the rest, while the
-// stale-schema signal (HasUnknownSchemaElement) and the incompatible-type
-// selection (FirstIncompatibleType) keep reading the slice directly and are
-// therefore unaffected by how the string is capped.
+// incompatible-type selection (FirstIncompatibleType) keeps reading the
+// slice directly and is therefore unaffected by how the string is capped.
 func TestValidationErrorsToError_CapsRenderedEntries(t *testing.T) {
 	const n = 100
 	errs := make([]schema.ValidationError, n)
@@ -26,7 +25,7 @@ func TestValidationErrorsToError_CapsRenderedEntries(t *testing.T) {
 		errs[i] = schema.ValidationError{
 			Path:    fmt.Sprintf("field%d", i),
 			Message: "unexpected field not present in model",
-			Kind:    schema.ErrKindUnknownElement,
+			Kind:    schema.ErrKindGeneric,
 		}
 	}
 
@@ -65,8 +64,8 @@ func TestValidationErrorsToError_CapsRenderedEntries(t *testing.T) {
 // is rendered and no "and N more" summary is appended.
 func TestValidationErrorsToError_FewerThanCapRendersAllNoSuffix(t *testing.T) {
 	errs := []schema.ValidationError{
-		{Path: "a", Message: "unexpected field not present in model", Kind: schema.ErrKindUnknownElement},
-		{Path: "b", Message: "unexpected field not present in model", Kind: schema.ErrKindUnknownElement},
+		{Path: "a", Message: "unexpected field not present in model", Kind: schema.ErrKindGeneric},
+		{Path: "b", Message: "unexpected field not present in model", Kind: schema.ErrKindGeneric},
 	}
 	msg := ValidationErrorsToError(errs).Error()
 	if !strings.Contains(msg, "a:") || !strings.Contains(msg, "b:") {
@@ -74,24 +73,5 @@ func TestValidationErrorsToError_FewerThanCapRendersAllNoSuffix(t *testing.T) {
 	}
 	if strings.Contains(msg, "more") {
 		t.Errorf("message = %q, must not carry a summary suffix under the cap", msg)
-	}
-}
-
-// TestValidationErrorsToError_StaleSchemaSignalUnaffectedByCap pins that
-// HasUnknownSchemaElement still fires from the ORIGINAL slice regardless of
-// how many entries the rendered string caps at — the handler's
-// refresh-and-retry decision must not regress alongside the message bound.
-func TestValidationErrorsToError_StaleSchemaSignalUnaffectedByCap(t *testing.T) {
-	const n = 100
-	errs := make([]schema.ValidationError, n)
-	for i := range errs {
-		errs[i] = schema.ValidationError{
-			Path:    fmt.Sprintf("field%d", i),
-			Message: "unexpected field not present in model",
-			Kind:    schema.ErrKindUnknownElement,
-		}
-	}
-	if !schema.HasUnknownSchemaElement(errs) {
-		t.Fatal("HasUnknownSchemaElement must still see the stale-schema signal past the render cap")
 	}
 }

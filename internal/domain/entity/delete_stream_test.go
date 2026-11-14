@@ -130,8 +130,8 @@ func newDeleteStreamCtx(t *testing.T, factory spi.StoreFactory, ref spi.ModelRef
 // buildDeleteBatchedHandler (service_delete_batched_test.go).
 func buildDeleteStreamHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager) *Handler {
 	t.Helper()
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
-	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
+	engine := wfengine.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	return New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 }
 
 // seedKind creates n entities of ref's model with {"kind": kind} and returns

@@ -1,96 +1,95 @@
 package e2e_test
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// TestModelSchemaExtensions_ConcurrentUpdatesNoConflict is the regression
-// test for the hot-row serialization bug this effort fixes.
-//
-// Before the fix: with ChangeLevel set on a model, concurrent entity updates
-// whose payloads each imply (at most) an additive schema extension all call
-// validateOrExtend → modelStore.Save(desc), which updates the single models
-// row under REPEATABLE READ. First committer wins; every other commit fails
-// with SQLSTATE 40001 surfaced as a CONFLICT 409.
-//
-// After the fix: validateOrExtend computes a SchemaDelta via schema.Diff
-// and calls modelStore.ExtendSchema, which inserts per-tx rows into
-// model_schema_extensions — no hot-row contention. All concurrent writers
-// commit.
-func TestModelSchemaExtensions_ConcurrentUpdatesNoConflict(t *testing.T) {
-	const modelName = "e2e-schema-ext-concurrent"
-	const version = 1
+// TestSchemaExtension_ConcurrentEveryDoor_No409 fires N concurrent writes on
+// each write door, every write adding a field of its own to one STRUCTURAL
+// model. A schema extension commits in its own short transaction and never
+// conflicts with another, so every write answers 2xx and the model gains every
+// field. The requests are sent once each: doAuthRaw retries a retryable 409,
+// which would hide the conflict this test is about.
+func TestSchemaExtension_ConcurrentEveryDoor_No409(t *testing.T) {
 	const N = 8
-
-	// 1. Bring the model up: import, lock, STRUCTURAL.
-	importModelE2E(t, modelName, version)
-	lockModelE2E(t, modelName, version)
-	setChangeLevelE2E(t, modelName, version, "STRUCTURAL")
-
-	// 2. Fire N concurrent entity creates. Each payload introduces a
-	// distinct new property (field_i) so every write genuinely triggers
-	// an ExtendSchema path. Under the old Save-based path, N-1 of these
-	// would fail with 40001/CONFLICT.
-	ctx := e2eCtx(t)
-	results := make([]httpResult, N)
-	var wg sync.WaitGroup
-	for i := 0; i < N; i++ {
-		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			payload := fmt.Sprintf(
-				`{"name":"Test-%d","amount":%d,"status":"new","field_%d":"val_%d"}`,
-				i, i*10, i, i,
-			)
-			path := fmt.Sprintf("/api/entity/JSON/%s/%d", modelName, version)
-			results[i] = resultOf(doAuthRaw(ctx, http.MethodPost, path, payload))
-		}()
-	}
-	wg.Wait()
-
-	// Classify on the test goroutine — Fatal is only legal here.
-	var conflicts, other, okCount int
-	for i, res := range results {
-		if res.err != nil {
-			t.Fatalf("goroutine %d transport error: %v", i, res.err)
+	const procName = "se-door-proc-adds"
+	// The processor door's processor adds proc_<amount> to the entity.
+	procSvc.RegisterProcessor(procName, func(ctx context.Context, e *spi.Entity, p spi.ProcessorDefinition) (*spi.Entity, error) {
+		var data map[string]any
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return nil, fmt.Errorf("decode entity data: %w", err)
 		}
-		switch res.status {
-		case http.StatusOK:
-			okCount++
-		case http.StatusConflict:
-			conflicts++
-			t.Logf("goroutine %d got 409 CONFLICT: %s", i, res.body)
-		default:
-			other++
-			t.Logf("goroutine %d got %d: %s", i, res.status, res.body)
+		data[fmt.Sprintf("proc_%v", data["amount"])] = "v"
+		out, err := json.Marshal(data)
+		if err != nil {
+			return nil, fmt.Errorf("encode entity data: %w", err)
 		}
-	}
+		return &spi.Entity{Meta: e.Meta, Data: out}, nil
+	})
+	defer procSvc.Reset()
 
-	if conflicts != 0 {
-		t.Errorf("regression: %d of %d concurrent entity updates returned CONFLICT (409). ExtendSchema must eliminate hot-row contention.",
-			conflicts, N)
+	base := func(i int) string { return fmt.Sprintf(`"name":"w%d","amount":%d,"status":"new"`, i, i) }
+	doors := []struct {
+		name string
+		// workflow is imported on the model when set.
+		workflow string
+		// preCreate creates N entities before the concurrent phase.
+		preCreate bool
+		// write is writer i's request on its entity (ids[i] when preCreate).
+		write func(model string, i int, id string) extWrite
+		field func(i int) string
+	}{
+		{name: "Create", write: func(model string, i int, _ string) extWrite {
+			return extWrite{http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), fmt.Sprintf(`{%s,"create_%d":"v"}`, base(i), i)}
+		}, field: func(i int) string { return fmt.Sprintf("$.create_%d", i) }},
+		{name: "Update", preCreate: true, write: func(_ string, i int, id string) extWrite {
+			return extWrite{http.MethodPut, "/api/entity/JSON/" + id, fmt.Sprintf(`{%s,"put_%d":"v"}`, base(i), i)}
+		}, field: func(i int) string { return fmt.Sprintf("$.put_%d", i) }},
+		{name: "CollectionCreate", write: func(model string, i int, _ string) extWrite {
+			return extWrite{http.MethodPost, "/api/entity/JSON", collectionCreateItems(model, fmt.Sprintf(`{%s,"ccreate_%d":"v"}`, base(i), i))}
+		}, field: func(i int) string { return fmt.Sprintf("$.ccreate_%d", i) }},
+		{name: "CollectionUpdate", preCreate: true, write: func(_ string, i int, id string) extWrite {
+			return extWrite{http.MethodPut, "/api/entity/JSON", collectionUpdateBody(id, "", fmt.Sprintf(`{%s,"cupdate_%d":"v"}`, base(i), i))}
+		}, field: func(i int) string { return fmt.Sprintf("$.cupdate_%d", i) }},
+		{name: "ProcessorOutput", workflow: openThenGoWorkflowJSON("se-door-proc-wf", procName), preCreate: true,
+			write: func(_ string, i int, id string) extWrite {
+				return extWrite{http.MethodPut, "/api/entity/JSON/" + id + "/go", fmt.Sprintf(`{%s}`, base(i))}
+			}, field: func(i int) string { return fmt.Sprintf("$.proc_%d", i) }},
 	}
-	if other != 0 {
-		t.Errorf("%d of %d concurrent entity updates returned neither 200 nor 409 (unexpected status).",
-			other, N)
-	}
-	if okCount != N {
-		t.Errorf("expected all %d concurrent creates to succeed, got %d", N, okCount)
-	}
+	for _, door := range doors {
+		t.Run(door.name, func(t *testing.T) {
+			model := uniq("se-door-" + strings.ToLower(door.name))
+			importModelE2E(t, model, 1)
+			lockModelE2E(t, model, 1)
+			setChangeLevelE2E(t, model, 1, "STRUCTURAL")
+			if door.workflow != "" {
+				if status, body := importWorkflowE2E(t, model, 1, door.workflow); status != http.StatusOK {
+					t.Fatalf("workflow import: %d %s", status, body)
+				}
+			}
+			ids := make([]string, N)
+			if door.preCreate {
+				for i := range ids {
+					ids[i] = createEntityE2E(t, model, 1, fmt.Sprintf(`{%s}`, base(i)))
+				}
+			}
+			writes := make([]extWrite, N)
+			fields := make([]string, N)
+			for i := range writes {
+				writes[i] = door.write(model, i, ids[i])
+				fields[i] = door.field(i)
+			}
 
-	// 3. After the storm, the folded schema must reflect every new field.
-	schema := exportModelE2E(t, modelName, version)
-	raw := fmt.Sprintf("%v", schema)
-	for i := 0; i < N; i++ {
-		want := fmt.Sprintf("field_%d", i)
-		if !strings.Contains(raw, want) {
-			t.Errorf("folded schema missing %q after concurrent extensions: %s", want, raw)
-		}
+			requireAllWritesSucceeded(t, fireWritesConcurrently(t, writes))
+			requireFieldsInExport(t, model, fields...)
+		})
 	}
 }
 
@@ -99,12 +98,10 @@ func TestModelSchemaExtensions_ConcurrentUpdatesNoConflict(t *testing.T) {
 // multiple HTTP requests. Each POST appends a delta; the final export
 // must reflect every accumulated field.
 //
-// This is the single-node read-side correctness check. Multi-node
-// self-healing via RefreshAndGet on a stale cache is covered by unit
-// tests (internal/domain/entity handler_validate_refresh_test.go and
-// internal/cluster/modelcache integration_test.go); the end-to-end
-// multi-node variant waits on the deferred factory-level caching
-// wrap (TODO(G1-followup)).
+// This is the single-node read-side correctness check. The multi-node
+// side (an extension on one node reaching another through the model
+// cache's invalidation broadcast) is tested in internal/cluster/modelcache
+// (integration_test.go).
 func TestModelSchemaExtensions_SequentialFoldAcrossRequests(t *testing.T) {
 	const modelName = "e2e-schema-ext-sequential"
 	const version = 1

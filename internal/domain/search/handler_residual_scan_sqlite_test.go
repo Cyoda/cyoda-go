@@ -98,7 +98,7 @@ func TestSearchEntities_ResidualScanIsUnmetered_RealSqlite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	h := search.NewHandler(search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()))
+	h := search.NewHandler(search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()))
 
 	// MATCHES_PATTERN maps to spi.FilterMatchesRegex, which sqlite never pushes
 	// down (see filter_translate.go's mapOperator and the absence of

@@ -263,12 +263,21 @@ func TxAbortedConflict(err error) *AppError {
 // checked first because it is the one condition here whose cause must not reach
 // the response body, and because a storage plugin's own marker is more specific
 // than any sentinel a wrapper below it might also carry.
+//
+// A schema extension refused because the model is not locked
+// (spi.ErrModelNotLocked) is routed to a 409 MODEL_NOT_LOCKED, not retryable:
+// the same write fails again until the model is locked.
 func Internal(message string, err error) *AppError {
 	if appErr := StorageUnavailable(err); appErr != nil {
 		return appErr
 	}
 	if appErr := EpochMismatch(err); appErr != nil {
 		return appErr
+	}
+	// A schema extension reached a model that is not locked. The store's text
+	// stays as Detail; it is logged and never answered.
+	if err != nil && errors.Is(err, spi.ErrModelNotLocked) {
+		return withDetail(Operational(http.StatusConflict, ErrCodeModelNotLocked, "the model is not locked"), err)
 	}
 	// The three sentinel answers below keep the store's text as Detail, which
 	// is logged and never answered. It is not attached as a cause: a cause

@@ -15,11 +15,15 @@ import (
 )
 
 func recordingApplyFunc() memory.ApplyFunc {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		if len(base) == 0 {
-			return []byte(`{"base":null,"delta":` + string(delta) + `}`), nil
+	return func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
+		for _, delta := range deltas {
+			if len(base) == 0 {
+				base = []byte(`{"base":null,"delta":` + string(delta) + `}`)
+				continue
+			}
+			base = []byte(`{"base":` + string(base) + `,"delta":` + string(delta) + `}`)
 		}
-		return []byte(`{"base":` + string(base) + `,"delta":` + string(delta) + `}`), nil
+		return base, nil
 	}
 }
 
@@ -208,7 +212,7 @@ func TestMemory_ExtendSchema_CrossTenantIsolation(t *testing.T) {
 // Memory has no extension log, so "no persisted trace" reduces to
 // "descriptor unmutated."
 func TestMemory_ExtendSchema_RejectionLeavesDescriptorUnmutated(t *testing.T) {
-	rejectingApply := func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	rejectingApply := func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 		return nil, fmt.Errorf("simulated ChangeLevel violation")
 	}
 	f := memory.NewStoreFactory(memory.WithApplyFunc(rejectingApply))
@@ -263,14 +267,16 @@ func TestMemory_ExtendSchema_ConvergenceUnderConcurrency(t *testing.T) {
 
 	// sortedApply represents "schema" as a sorted concatenation of
 	// delta bytes so the result is commutative under set-union.
-	sortedApply := func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	sortedApply := func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 		m := map[string]struct{}{}
 		for _, chunk := range bytes.Split(base, []byte{'\n'}) {
 			if len(chunk) > 0 {
 				m[string(chunk)] = struct{}{}
 			}
 		}
-		m[string(delta)] = struct{}{}
+		for _, delta := range deltas {
+			m[string(delta)] = struct{}{}
+		}
 		keys := make([]string, 0, len(m))
 		for k := range m {
 			keys = append(keys, k)
@@ -286,7 +292,7 @@ func TestMemory_ExtendSchema_ConvergenceUnderConcurrency(t *testing.T) {
 	}
 	expected := []byte{}
 	for _, d := range deltas {
-		v, _ := sortedApply(expected, d)
+		v, _ := sortedApply(expected, []spi.SchemaDelta{d})
 		expected = v
 	}
 

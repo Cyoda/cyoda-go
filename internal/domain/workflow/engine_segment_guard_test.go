@@ -507,7 +507,7 @@ func newSegmentGuardHarness(t *testing.T, backend string, extraOpts ...EngineOpt
 	h.txMgr = &countingTxMgr{TransactionManager: tm}
 	h.factory = &hookedFactory{StoreFactory: inner, h: h}
 	opts := append([]EngineOption{WithExternalProcessing(&segmentGuardProc{h: h}), WithCoordination(txcoord.New(h.txMgr))}, extraOpts...)
-	h.engine = NewEngine(h.factory, common.NewTestUUIDGenerator(), h.txMgr, platformclock.Real(), opts...)
+	h.engine = NewEngine(cachedFactory(h.factory), common.NewTestUUIDGenerator(), h.txMgr, platformclock.Real(), opts...)
 
 	h.wf = spi.WorkflowDefinition{
 		Version: "1.1", Name: "SegmentGuardWF", InitialState: "A", Active: true,

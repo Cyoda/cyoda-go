@@ -24,20 +24,16 @@ const MaxValidationDepth = 256
 var depthExceededMessage = fmt.Sprintf("validation depth exceeded (max %d)", MaxValidationDepth)
 
 // ErrorKind classifies a ValidationError so handlers can branch on
-// specific failure modes without matching error message text.
+// specific failure modes without matching error message text. The kinds a
+// handler branches on are ErrKindIncompatibleType (see FirstIncompatibleType)
+// and, by exclusion, ErrKindGeneric.
 type ErrorKind int
 
 const (
-	// ErrKindGeneric covers validation failures that do not map to a
-	// more specific kind (shape mismatches, malformed schema entries).
+	// ErrKindGeneric covers every validation failure that is not an
+	// incompatible leaf type: unknown fields, shape mismatches and
+	// malformed schema entries.
 	ErrKindGeneric ErrorKind = iota
-
-	// ErrKindUnknownElement fires when a data document carries a field
-	// that the validating schema does not declare. In practice this is
-	// the "stale schema" signal handlers use to decide whether to
-	// refresh from authoritative storage and retry (see
-	// internal/domain/entity/handler.go).
-	ErrKindUnknownElement
 
 	// ErrKindIncompatibleType fires when a leaf value's inferred DataType
 	// is not assignable to any of the schema's declared DataTypes for
@@ -69,19 +65,6 @@ func (e ValidationError) Error() string {
 		return e.Message
 	}
 	return fmt.Sprintf("%s: %s", e.Path, e.Message)
-}
-
-// HasUnknownSchemaElement reports whether any of the validation
-// errors in errs classify as ErrKindUnknownElement — the stale-schema
-// signal. Handlers use this to decide whether to force a cache
-// refresh and re-validate once before surfacing a 4xx to the client.
-func HasUnknownSchemaElement(errs []ValidationError) bool {
-	for _, e := range errs {
-		if e.Kind == ErrKindUnknownElement {
-			return true
-		}
-	}
-	return false
 }
 
 // FirstIncompatibleType returns a pointer to the first ErrKindIncompatibleType
@@ -167,7 +150,7 @@ func depthExceededValidationError(err error) (ValidationError, bool) {
 // that forgets it, or a caller that reaches node/object/array directly with
 // continueOnInvalidName unset while still wanting Validate's rendering): a
 // bad name is not a Go-internals leak the generic "unsupported value"
-// fallback is for, it is exactly the unknown-field/stale-schema signal
+// fallback is for, it is exactly the unknown-field error
 // strict validation renders it as everywhere else — so it gets that
 // rendering here too, not a worse one.
 func invalidFieldNameValidationError(err error) (ValidationError, bool) {
@@ -178,7 +161,7 @@ func invalidFieldNameValidationError(err error) (ValidationError, bool) {
 	return ValidationError{
 		Path:    wirePath(fe.Path),
 		Message: "unexpected field not present in model",
-		Kind:    ErrKindUnknownElement,
+		Kind:    ErrKindGeneric,
 	}, true
 }
 
@@ -234,12 +217,11 @@ func validationErrorFor(c Change) ValidationError {
 		// (docs/cloud-parity/model-field-name-grammar.md), so an
 		// unspellable name here is not the grammar violation Admit/Extend
 		// refuse outright — it renders exactly like any other field the
-		// stored model does not declare: the stale-schema refresh-and-retry
-		// signal.
+		// stored model does not declare.
 		return ValidationError{
 			Path:    wirePath(c.DocPath),
 			Message: "unexpected field not present in model",
-			Kind:    ErrKindUnknownElement,
+			Kind:    ErrKindGeneric,
 		}
 	case ReasonNewKind:
 		return validationErrorForNewKind(c)

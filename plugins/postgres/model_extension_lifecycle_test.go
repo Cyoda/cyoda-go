@@ -20,10 +20,7 @@ func TestUnlock_FoldsExtensionsIntoSchema(t *testing.T) {
 		t.Fatalf("ModelStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-	if err := ms.Lock(ctx, ref); err != nil {
-		t.Fatalf("Lock: %v", err)
-	}
+	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural) // LOCKED
 	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(lifecycleDelta)); err != nil {
 		t.Fatalf("ExtendSchema: %v", err)
 	}

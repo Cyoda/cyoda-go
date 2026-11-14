@@ -19,12 +19,11 @@ import (
 // cheap way to reach that state.
 func TestSMAuditStore_Record_NoGenerator(t *testing.T) {
 	cfg := config{
-		Path:                   filepath.Join(t.TempDir(), "audit-no-gen.db"),
-		AutoMigrate:            true,
-		BusyTimeout:            5 * time.Second,
-		CacheSizeKiB:           64000,
-		ReaderPoolSize:         defaultReaderPoolSize(),
-		SchemaExtendMaxRetries: 8,
+		Path:           filepath.Join(t.TempDir(), "audit-no-gen.db"),
+		AutoMigrate:    true,
+		BusyTimeout:    5 * time.Second,
+		CacheSizeKiB:   64000,
+		ReaderPoolSize: defaultReaderPoolSize(),
 	}
 	f, err := newStoreFactory(context.Background(), cfg)
 	if err != nil {

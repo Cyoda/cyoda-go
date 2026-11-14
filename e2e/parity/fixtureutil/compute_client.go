@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda-platform/cyoda-go/internal/testing/childproc"
 )
 
 // ComputeClientOpts says how to start one compute-test-client.
@@ -35,6 +36,7 @@ type ComputeClientOpts struct {
 // parity.ComputeClient.
 type ComputeClientProc struct {
 	cmd        *exec.Cmd
+	release    func() // removes the orphan record (childproc)
 	controlURL string
 	memberID   string
 	stopOnce   sync.Once
@@ -71,10 +73,11 @@ func StartComputeClient(opts ComputeClientOpts) (*ComputeClientProc, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create compute stdout pipe: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	release, err := childproc.Default().Start(cmd)
+	if err != nil {
 		return nil, fmt.Errorf("failed to start compute-test-client: %w", err)
 	}
-	p := &ComputeClientProc{cmd: cmd}
+	p := &ComputeClientProc{cmd: cmd, release: release}
 
 	// ParseHealthAddr returns at once when stdout closes without the line,
 	// which is what a client that refuses to start looks like.
@@ -155,8 +158,12 @@ func (p *ComputeClientProc) Release(t *testing.T) []parity.ReceivedCallout {
 
 // Stop implements parity.ComputeClient. The process has no monitor goroutine,
 // so KillProcessGroup — which owns the one Wait — is the right teardown, once.
+// The orphan record goes once the process is reaped.
 func (p *ComputeClientProc) Stop() {
-	p.stopOnce.Do(func() { KillProcessGroup(p.cmd) })
+	p.stopOnce.Do(func() {
+		KillProcessGroup(p.cmd)
+		p.release()
+	})
 }
 
 // Cmd returns the client's process handle, for diagnostics.

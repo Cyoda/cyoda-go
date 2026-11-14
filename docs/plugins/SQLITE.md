@@ -60,6 +60,22 @@ Mirrors the PostgreSQL logical schema with SQLite optimisations:
 - INTEGER timestamps (Unix nanoseconds) — 15-25% smaller, 15-30% faster
   point lookups than TEXT timestamps.
 
+**Models.** `models` holds each model's state, change level and base
+schema; `model_schema_extensions` is the append-only log of its schema
+deltas and savepoints, numbered per model. `Get` reads the doc and folds
+the log in one deferred read transaction on the reader pool, so a read
+racing `Unlock` sees it whole or not at all, and it ignores the caller's
+transaction. `ExtendSchema` runs in a write transaction of its own, never
+the caller's: it refuses a model that is not `LOCKED`
+(`spi.ErrModelNotLocked`), writes nothing for a delta the schema already
+holds, appends the delta, and appends a savepoint once
+`CYODA_SCHEMA_SAVEPOINT_INTERVAL` of the model's deltas follow its latest
+savepoint. A `SQLITE_BUSY` the busy timeout did not absorb is retried after a
+short pause until the caller's context ends; there is no retry budget, and
+contention is never reported as a conflict. `Lock` changes the state only
+and writes no savepoint; `Unlock` folds the log into the doc and clears it
+in one transaction.
+
 Migrations via `golang-migrate` with embedded SQL files — same pattern
 as the postgres plugin. Runs automatically on startup when
 `CYODA_SQLITE_AUTO_MIGRATE=true` (the default).
@@ -86,6 +102,7 @@ public-API-facing statement of this rule.
 | `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | Wait time for write lock before returning `SQLITE_BUSY` |
 | `CYODA_SQLITE_CACHE_SIZE` | `64000` (KiB) | Page cache size in KiB, **per connection** (one writer plus the reader pool) |
 | `CYODA_SQLITE_READER_POOL_SIZE` | `GOMAXPROCS` clamped to `4`..`8` | Max concurrent reader connections. Minimum 1; a value below it falls back to the default |
+| `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | A model's deltas per savepoint (counted since its latest savepoint); bounds how many deltas a read folds. Minimum 1; a value below it falls back to the default. Shared with the postgres plugin — not plugin-namespaced |
 
 ## Operational notes and limits
 

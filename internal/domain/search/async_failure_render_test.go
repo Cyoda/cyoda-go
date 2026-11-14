@@ -45,7 +45,7 @@ func runFailingAsync(t *testing.T, iterate func(real spi.EntityStore) func(conte
 	}
 	factory := &iterableFactory{StoreFactory: base, entityStore: &iterableEntityStore{EntityStore: realStore, iterateFn: iterate(realStore)}}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}, search.SearchOptions{Limit: 10})
 	if err != nil {

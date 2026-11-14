@@ -21,7 +21,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
-// ErrInternalSchema tags schema-processing errors inside validateOrExtend
+// ErrInternalSchema tags schema-processing errors inside ValidateOrExtend
 // that represent internal failures (codec decode/encode, Diff computation,
 // plugin-layer ExtendSchema write) rather than client-contract violations.
 // The handler classifier uses errors.Is to route these to 5xx with a
@@ -74,25 +74,29 @@ func RequireObjectRoot(parsedData any) error {
 	return nil
 }
 
-func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.ModelDescriptor, parsedData any) error {
+// ValidateOrExtend validates parsedData against the model and, when the model's
+// change level permits, extends its schema. It returns desc itself when the
+// write needs no extension, and a copy whose Schema is the extended schema
+// after a successful extension.
+func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.ModelDescriptor, parsedData any) (*spi.ModelDescriptor, error) {
 	// Without this, a null root at TYPE made the model's root nullable and
 	// stored an entity with no data, and any root at STRUCTURAL replaced the
 	// document with a value.
 	if err := RequireObjectRoot(parsedData); err != nil {
-		return err
+		return nil, err
 	}
 
 	modelNode, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
-		return fmt.Errorf("%w: failed to unmarshal model schema: %w", ErrInternalSchema, err)
+		return nil, fmt.Errorf("%w: failed to unmarshal model schema: %w", ErrInternalSchema, err)
 	}
 
 	if desc.ChangeLevel == "" {
 		errs := schema.Validate(modelNode, parsedData)
 		if len(errs) > 0 {
-			return enrichWithModelRef(ValidationErrorsToError(errs), desc.Ref)
+			return nil, enrichWithModelRef(ValidationErrorsToError(errs), desc.Ref)
 		}
-		return nil
+		return desc, nil
 	}
 
 	extended, err := schema.Extend(modelNode, parsedData, desc.ChangeLevel)
@@ -102,13 +106,13 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 			// client contract violation with a concrete remedy — rename the
 			// key — so it gets the same 400 VALIDATION_FAILED the explicit
 			// model import answers.
-			return common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
+			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
 		}
 		var levelErr *schema.ChangeLevelError
 		if errors.As(err, &levelErr) {
 			// Only a genuine changeLevelError refusal wears this label — its
 			// remedy (raise the configured changeLevel) is specific to it.
-			return fmt.Errorf("change level violation: %w", err)
+			return nil, fmt.Errorf("change level violation: %w", err)
 		}
 		var unsupportedErr *schema.UnsupportedValueError
 		if errors.As(err, &unsupportedErr) {
@@ -122,29 +126,32 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 			// strictjson.PreserveNumbers), so this is unreachable today; marking it
 			// here is what keeps it unreachable in the response too, should
 			// that ever change (security review L1).
-			return fmt.Errorf("%w: schema admission failed: %w", ErrInternalSchema, err)
+			return nil, fmt.Errorf("%w: schema admission failed: %w", ErrInternalSchema, err)
 		}
 		// Anything else (validation depth exceeded, an internal admit
 		// error) is a different failure with a different remedy; wrapping
 		// it as a "change level violation" would be dishonest about what
 		// went wrong (final review M4).
-		return fmt.Errorf("schema admission failed: %w", err)
+		return nil, fmt.Errorf("schema admission failed: %w", err)
 	}
 
 	// Guard: if any unique key field would become non-scalar in the extended
 	// schema, reject the write now. A write may add a kind to a path — a
-	// unique-key leaf gaining an object or array branch is the reachable case
-	// — and the unique keys were valid when declared, so the extension must
-	// not silently invalidate them. The answer is a 422 naming the key, not a
-	// write that leaves the model unable to enforce it.
+	// unique-key leaf gaining an object or array branch — and the unique keys
+	// were valid when declared, so the extension must not silently invalidate
+	// them. The entity service's write doors refuse a non-scalar value at a
+	// keyed field before they get here; data a workflow processor returns is
+	// not key-checked before its extension, so for it this guard is what keeps
+	// a keyed field scalar. The answer is a 422 naming the key, not a write
+	// that leaves the model unable to enforce it.
 	if len(desc.UniqueKeys) > 0 {
 		if vErr := schema.ValidateUniqueKeys(extended, desc.UniqueKeys); vErr != nil {
 			var de *schema.UniqueKeyDefError
 			if errors.As(vErr, &de) {
-				return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKeyDefinition,
+				return nil, common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKeyDefinition,
 					"schema change would invalidate a composite unique key: "+de.Reason)
 			}
-			return fmt.Errorf("%w: re-validate unique keys: %w", ErrInternalSchema, vErr)
+			return nil, fmt.Errorf("%w: re-validate unique keys: %w", ErrInternalSchema, vErr)
 		}
 	}
 
@@ -153,23 +160,35 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 	// every entity write.
 	delta, err := schema.Diff(modelNode, extended)
 	if err != nil {
-		return fmt.Errorf("%w: failed to compute schema delta: %w", ErrInternalSchema, err)
+		return nil, fmt.Errorf("%w: failed to compute schema delta: %w", ErrInternalSchema, err)
 	}
 	if delta == nil {
-		return nil
+		return desc, nil
 	}
-	// Append to the extension log via the plugin. Participates in the
-	// ambient entity transaction so visibility is commit-bound.
+	// The caller's next read of this model's schema in the same request must
+	// see the extension, so a copy carrying the extended schema is handed
+	// back; the input descriptor is left untouched. The schema is encoded
+	// before the extension commits, so no failure after the commit can
+	// answer an error for a write whose extension is already in the model.
+	extendedRaw, err := schema.Marshal(extended)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to marshal extended schema: %w", ErrInternalSchema, err)
+	}
+	// The extension commits on its own, never in the entity transaction on
+	// ctx: once ExtendSchema returns nil it is in the model, whatever then
+	// happens to this write.
 	if err := modelStore.ExtendSchema(ctx, desc.Ref, delta); err != nil {
-		return fmt.Errorf("%w: failed to extend schema: %w", ErrInternalSchema, err)
+		return nil, fmt.Errorf("%w: failed to extend schema: %w", ErrInternalSchema, err)
 	}
-	return nil
+	out := *desc
+	out.Schema = extendedRaw
+	return &out, nil
 }
 
 // ValidateStrict validates parsedData against the model schema WITHOUT
 // extending it. PATCH uses this: a sparse delta must never widen the tenant's
 // model (a stray/typo'd key is rejected, not absorbed). Mirrors the
-// ChangeLevel=="" branch of validateOrExtend.
+// ChangeLevel=="" branch of ValidateOrExtend.
 func ValidateStrict(desc *spi.ModelDescriptor, parsedData any) error {
 	modelNode, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
@@ -182,20 +201,6 @@ func ValidateStrict(desc *spi.ModelDescriptor, parsedData any) error {
 	return nil
 }
 
-// ValidateDescriptor unmarshals desc.Schema and runs schema.Validate.
-// Returns nil on success, or a []ValidationError on failure (including
-// a descriptive entry if desc itself is malformed or nil).
-func ValidateDescriptor(desc *spi.ModelDescriptor, data any) []schema.ValidationError {
-	if desc == nil {
-		return []schema.ValidationError{{Message: "nil descriptor"}}
-	}
-	node, err := schema.Unmarshal(desc.Schema)
-	if err != nil {
-		return []schema.ValidationError{{Message: fmt.Sprintf("unmarshal schema: %v", err)}}
-	}
-	return schema.Validate(node, data)
-}
-
 // maxRenderedValidationErrors bounds how many ValidationError entries
 // ValidationErrorsToError renders verbatim into the joined message. Validate
 // emits one entry per offending path with no cap of its own — a 10 MiB body
@@ -204,13 +209,12 @@ func ValidateDescriptor(desc *spi.ModelDescriptor, data any) []schema.Validation
 // proportional to the attacker's request size rather than bounded. Entries
 // past the cap are summarized as "... and N more" instead of dropped
 // silently, so the response still says how big the mismatch was. This bounds
-// only the RENDERED STRING: HasUnknownSchemaElement and FirstIncompatibleType
-// (see their own doc comments) read the full errs slice directly and are
-// unaffected by where the string truncates.
+// only the RENDERED STRING: FirstIncompatibleType (see its doc comment) reads the full errs
+// slice directly and is unaffected by where the string truncates.
 const maxRenderedValidationErrors = 32
 
 // ValidationErrorsToError converts a []ValidationError to a single error,
-// preserving the concatenation style used by validateOrExtend.
+// preserving the concatenation style used by ValidateOrExtend.
 //
 // When at least one entry classifies as ErrKindIncompatibleType (the
 // dictionary-aligned "wrong DataType" signal), the function returns a

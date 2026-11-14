@@ -38,7 +38,7 @@ func newIfMatchFixture(t *testing.T, name string, dispatch func(ctx context.Cont
 	}
 	f := &ifMatchFixture{
 		factory: factory, txMgr: txMgr, ctx: ctxWithTenant(testTenant),
-		engine:   NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr))),
+		engine:   NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr))),
 		modelRef: spi.ModelRef{EntityName: name, ModelVersion: "1.0"},
 		id:       name + "-1",
 	}

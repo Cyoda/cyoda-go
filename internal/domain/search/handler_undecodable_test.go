@@ -50,7 +50,7 @@ func TestSearchEntities_UndecodableStoredData_Fails(t *testing.T) {
 		}}
 	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	h := search.NewHandler(search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()))
+	h := search.NewHandler(search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()))
 
 	body := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"}`
 	req := httptest.NewRequest(http.MethodPost, "/search/direct/person/1", strings.NewReader(body)).WithContext(ctx)

@@ -2,11 +2,13 @@ package schema
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Diff returns a SchemaDelta such that Apply(old, Diff(old, new)) ≡ new,
+// Diff returns a SchemaDelta such that ApplyMany(old, [Diff(old, new)]) ≡ new,
 // provided new differs from old only by additive extension within the
 // op catalog (add_property, broaden_type, add_array_item_type).
 //
@@ -138,7 +140,10 @@ func isolateBranch(n *ModelNode, k NodeKind) *ModelNode {
 
 func diffObject(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	newChildren := newN.Object().Children()
-	for name, newChild := range newChildren {
+	// Sorted: the delta bytes are a function of (old, new) only, so identical
+	// concurrent extensions can be coalesced by comparing them.
+	for _, name := range slices.Sorted(maps.Keys(newChildren)) {
+		newChild := newChildren[name]
 		oldChild := oldN.Object().Child(name)
 		if oldChild == nil {
 			raw, err := Marshal(newChild)
@@ -152,7 +157,7 @@ func diffObject(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 			return err
 		}
 	}
-	for name := range oldN.Object().Children() {
+	for _, name := range slices.Sorted(maps.Keys(oldN.Object().Children())) {
 		if _, ok := newChildren[name]; !ok {
 			return fmt.Errorf("property removal at %q is not additive", joinSchemaPath(path, name))
 		}
@@ -175,7 +180,7 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	// type at all; the incoming one is establishing it.
 	if oldElem == nil {
 		// A scalar element uses the dedicated, cheaper op. Anything else is
-		// carried as the array branch itself: Apply materialises the element
+		// carried as the array branch itself: ApplyMany materialises the element
 		// by merging the branch, because resolvePath cannot descend a "[]"
 		// segment into an element that does not exist yet.
 		if newElem.Object() != nil || newElem.Array() != nil {
@@ -204,7 +209,7 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	}
 	// OBJECT- or ARRAY-element: descend into the element using the "[]"
 	// path segment. Subsequent ops (add_property, broaden_type, etc.)
-	// carry paths like "parent/[]/child" that Apply's resolvePath
+	// carry paths like "parent/[]/child" that ApplyMany's resolvePath
 	// follows by traversing the array's Element().
 	return diffNode(joinSchemaPath(path, "[]"), oldElem, newElem, ops)
 }

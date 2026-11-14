@@ -54,7 +54,7 @@ func newListEntitiesFixture(t *testing.T, tenantID spi.TenantID, ref spi.ModelRe
 		}
 	}
 
-	h := entity.New(base, nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newTestConsistency(t, base), platformclock.Real())
+	h := entity.New(cachedFactory(base), nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newTestConsistency(t, base), platformclock.Real())
 	return ctx, h, base
 }
 

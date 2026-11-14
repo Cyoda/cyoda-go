@@ -17,7 +17,7 @@ INVALID_FIELD_PATH — a condition's `jsonPath`, or a sort key, is not valid JSO
 
 ## SYNOPSIS
 
-HTTP: `400` `Bad Request`. Retryable: `no` (unless the model schema is then extended via re-import; the request is then valid against the new locked schema).
+HTTP: `400` `Bad Request`. Retryable: `no` (unless the model is then extended — by an entity write its `changeLevel` permits, or by re-import while it is unlocked; the request is then valid against the extended schema).
 
 ## DESCRIPTION
 
@@ -48,7 +48,7 @@ A path that is a **pure container** — a known structural interior with substru
 
 A path ending in `[*]` addresses the array's **elements**, so the same rule applies to them: an array of scalars (`$.tags[*]`) and an array whose elements were also observed as bare scalars are comparable, while an array of **pure objects** (`$.items[*]`) is a container — write `$.items[*].sku`.
 
-If any referenced path is unknown, the server performs at most one bounded `RefreshAndGet` against the model store to recover from a stale cached schema. If the path is still unknown after the refresh, the request is rejected with HTTP 400 and `errorCode: "INVALID_FIELD_PATH"`. The response detail names every offending path so clients can correct the request without round-tripping to the support team.
+If any referenced path is unknown, the server reads the model from storage once more, bypassing its cached copy: the model may have been extended since this node cached it, for example by a write that another node served and whose cache invalidation broadcast has not arrived yet. If the path is still unknown after that one read, the request is rejected with HTTP 400 and `errorCode: "INVALID_FIELD_PATH"`. A refusal is not remembered: the next request checks again. The response detail names every offending path so clients can correct the request without round-tripping to the support team.
 
 A condition referencing an unrecognized lifecycle/meta filter field (not one of the known `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave`/`previousTransition`, `transactionId`, `id` fields) is rejected the same way, on both `/search` and the grouped-statistics endpoint (`POST /api/entity/stats/{entityName}/{modelVersion}/query`). Grouped statistics does not have data-model schema access, so it enforces this meta-field check but not the schema-backed data-field-path check described above.
 

@@ -18,6 +18,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
@@ -41,7 +42,7 @@ var fenceBase = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 func newFenceEnv(t *testing.T) *fenceEnv {
 	t.Helper()
 	clock := memory.NewTestClockAt(fenceBase)
-	factory := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply), memory.WithClock(clock))
+	factory := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany), memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := factory.GetTransactionManager()
@@ -49,7 +50,7 @@ func newFenceEnv(t *testing.T) *fenceEnv {
 	tm := &consistencyTimeTM{TransactionManager: txMgr}
 	cons := consistency.New(tm)
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
@@ -57,9 +58,9 @@ func newFenceEnv(t *testing.T) *fenceEnv {
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         txMgr,
-		entityHandler: entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), cons, platformclock.Real()),
-		modelHandler:  model.New(factory, platformclock.Real()),
-		searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, cons, platformclock.Real()),
+		entityHandler: entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), cons, platformclock.Real()),
+		modelHandler:  model.New(cachedFactory(factory), platformclock.Real()),
+		searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, cons, platformclock.Real()),
 		cons:          cons,
 	}
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{

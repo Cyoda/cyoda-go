@@ -15,32 +15,37 @@ import (
 // bounding the connection acquire on the one path where an unbounded wait is a
 // deadlock: inside a transaction.
 //
-// Three callers, one hazard. A point-in-time read is committed-only, so it must
-// run off the caller's transaction (committedQuerier, search_base.go). An async
-// search job record must outlive the request that submitted it, so it must not
-// be bound to that request's transaction (poolQuerier, store_factory.go). The
-// key-value store never joins a transaction either (kvStore, store_factory.go).
-// All three requirements are non-negotiable, and all have the same consequence: in a
-// transaction the request holds two connections at once — the transaction's,
-// which it keeps until commit, and this one. That is hold-and-wait, and
-// pgxpool's Query/Exec/QueryRow carry no acquire deadline (deliberately — see
-// resolveRaw), so on a saturated pool the statement does not fail, it BLOCKS,
-// until the caller's own context expires. A point-in-time Iterate is the worst
-// of it: the connection is held for the whole scan, not one statement, so a
-// handful of concurrent in-transaction snapshot iterations can wedge every
-// remaining connection against each other. The job-record statements hold theirs
-// for a single round trip, but they are reachable from every async-search
-// endpoint — submit, status, results, cancel — because the TxJoin middleware
-// wraps the whole API mux and the gRPC tx-route interceptor covers the snapshot
-// RPCs.
+// Its callers each have a statement that must not belong to the caller's
+// transaction. A point-in-time read is committed-only (committedQuerier,
+// search_base.go). An async search job record must outlive the request that
+// submitted it (poolQuerier, store_factory.go). The key-value store, the
+// message store and the scheduled-task query never join a transaction
+// (store_factory.go). These run on the main pool, and there they share one
+// hazard: in a transaction the request holds two connections of one pool at
+// once — the transaction's, which it keeps until commit, and this one. That is
+// hold-and-wait, and pgxpool's Query/Exec/QueryRow carry no acquire deadline
+// (deliberately — see resolveRaw), so on a saturated pool the statement does
+// not fail, it BLOCKS, until the caller's own context expires. A point-in-time
+// Iterate is the worst of it: the connection is held for the whole scan, not
+// one statement, so a handful of concurrent in-transaction snapshot iterations
+// can wedge every remaining connection against each other. The job-record
+// statements hold theirs for a single round trip, but they are reachable from
+// every async-search endpoint — submit, status, results, cancel — because the
+// TxJoin middleware wraps the whole API mux and the gRPC tx-route interceptor
+// covers the snapshot RPCs.
+//
+// The model store (modelStore, model_store.go) is a caller on a pool of its
+// own, the model pool, under the same rule (stated for that pool on
+// modelPool). A model-pool holder never waits on the main pool, so there is
+// no cycle.
 //
 // The bound is on GETTING the connection, never on USING it. pool.Acquire takes
 // its own short-lived deadline context; the statement then runs on the CALLER's
 // context on the acquired connection. A deadline that covered the query would
 // cap a streaming Iterate at the acquire window — cancelling a scan that already
 // holds everything it needs, which is the opposite of the point. This is the
-// same split newAcquireContext draws for the three sites that open a transaction
-// on the pool, and the deadline is the same operator knob they use
+// split newAcquireContext draws at every site of this plugin that acquires
+// under the operator's acquire deadline, and the deadline is the same knob
 // (CYODA_POSTGRES_ACQUIRE_TIMEOUT): one setting for "how long may this plugin
 // wait for a pooled connection", not a second one per call site. Zero disables
 // it, per that knob's documented convention.
@@ -53,8 +58,8 @@ import (
 // a fresh snapshot for a condition that has nothing to do with its data. The
 // same call also keeps a caller who gave up first off the retryable path.
 //
-// Outside a transaction the statement goes straight to the pool, unbounded, as
-// before. It holds no other connection, so it is not hold-and-wait and there is
+// Outside a transaction the statement goes straight to the pool, unbounded. It
+// holds no other connection, so it is not hold-and-wait and there is
 // no deadlock to break; bounding it would convert ordinary contention on a busy
 // server into spurious failures — and the job store's own background traffic
 // (the reaper, the job goroutine's terminal write) is all on that

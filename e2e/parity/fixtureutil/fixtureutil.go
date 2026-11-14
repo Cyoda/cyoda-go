@@ -32,6 +32,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/testing/childproc"
 )
 
 // --- Binary building (sync.Once cached) ---
@@ -587,15 +588,18 @@ func LaunchCyodaNode(cyodaBin string, ks *JWTKeySet, extraEnv []string, readines
 		logs := &SyncBuffer{}
 		cmd.Stdout = io.MultiWriter(os.Stderr, logs)
 		cmd.Stderr = io.MultiWriter(os.Stderr, logs)
-		if e := cmd.Start(); e != nil {
+		release, e := childproc.Default().Start(cmd)
+		if e != nil {
 			return fmt.Errorf("failed to start cyoda-go: %w", e)
 		}
 		// The single owner of this process's Wait(). exitErr is read only
 		// after exitedCh's close is observed, which happens-after the store.
+		// The orphan record goes once the process is reaped.
 		exitedCh := make(chan struct{})
 		var exitErr error
 		go func() {
 			exitErr = cmd.Wait()
+			release()
 			close(exitedCh)
 		}()
 		url := fmt.Sprintf("http://127.0.0.1:%d", hPort)
@@ -972,7 +976,8 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 			attemptLogBufs[i] = logBuf
 			cmd.Stdout = io.MultiWriter(os.Stderr, logBuf)
 			cmd.Stderr = io.MultiWriter(os.Stderr, logBuf)
-			if e := cmd.Start(); e != nil {
+			release, e := childproc.Default().Start(cmd)
+			if e != nil {
 				killNodes(attemptNodes)
 				return fmt.Errorf("failed to start cyoda-go node %d: %w", i, e)
 			}
@@ -980,9 +985,11 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 			attemptNodes[i] = nd
 			// The single owner of this process's cmd.Wait(). Publishes the
 			// result via exitErr + close(exitedCh) so both the health race and
-			// teardown can observe the exit without a second Wait() call.
+			// teardown can observe the exit without a second Wait() call. The
+			// orphan record goes once the process is reaped.
 			go func(nd *clusterNode) {
 				nd.exitErr = nd.cmd.Wait()
+				release()
 				close(nd.exitedCh)
 			}(nd)
 		}

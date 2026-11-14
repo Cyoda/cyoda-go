@@ -57,7 +57,7 @@ func newCallbackEnv(t *testing.T, procs []spi.ProcessorDefinition, dispatch func
 	for _, w := range wrapTx {
 		engineTx = w(engineTx)
 	}
-	engine := NewEngine(factory, uuids, engineTx, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(engineTx)))
+	engine := NewEngine(cachedFactory(factory), uuids, engineTx, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(engineTx)))
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-callback", ModelVersion: "1.0"}
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{

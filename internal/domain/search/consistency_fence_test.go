@@ -51,7 +51,7 @@ func newFenceSearchFixture(t *testing.T, tenant string, cTimeErr error) *fenceSe
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, cons, platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), store, cons, platformclock.Real())
 	return &fenceSearchFixture{base: base, store: store, svc: svc, ctx: ctx, ref: ref, c: c}
 }
 
@@ -107,7 +107,7 @@ func TestSubmitAsync_UnavailableCreatesNoJob(t *testing.T) {
 	if tmErr != nil {
 		t.Fatalf("TransactionManager: %v", tmErr)
 	}
-	svc := search.NewSearchService(f.base, common.NewTestUUIDGenerator(), counting,
+	svc := search.NewSearchService(cachedFactory(f.base), common.NewTestUUIDGenerator(), counting,
 		consistency.New(chosenTM{TransactionManager: realTM, err: spi.ErrConsistencyTimeUnavailable}), platformclock.Real())
 
 	for _, pit := range []*time.Time{nil, f.after()} {
@@ -129,7 +129,7 @@ func TestSubmitAsync_CapPreCheckWinsOverFence(t *testing.T) {
 	}
 	pool := search.NewWorkerPool(4, 64)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(f.base, common.NewTestUUIDGenerator(), blocking,
+	svc := search.NewSearchService(cachedFactory(f.base), common.NewTestUUIDGenerator(), blocking,
 		consistency.New(chosenTM{TransactionManager: realTM, at: f.c}), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithAsyncMaxPerTenant(1).

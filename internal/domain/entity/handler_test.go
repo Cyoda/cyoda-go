@@ -144,7 +144,7 @@ func TestCreateEntity_JSONArrayCreatesBatch(t *testing.T) {
 }
 
 func TestNewHandler(t *testing.T) {
-	h := entity.New(nil, nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newFixedConsistency(), platformclock.Real())
+	h := entity.New(cachedFactory(nil), nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newFixedConsistency(), platformclock.Real())
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}

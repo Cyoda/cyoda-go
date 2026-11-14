@@ -8,7 +8,7 @@ import (
 )
 
 // assertRoundTripsTo checks the delta from old to extended replays to exactly
-// extended — Apply(old, Diff(old, new)) ≡ new, the op catalog's master
+// extended — applyDelta(old, Diff(old, new)) ≡ new, the op catalog's master
 // invariant.
 func assertRoundTripsTo(t *testing.T, old, extended *ModelNode) {
 	t.Helper()
@@ -19,14 +19,14 @@ func assertRoundTripsTo(t *testing.T, old, extended *ModelNode) {
 	if delta == nil {
 		t.Fatal("this is a change; Diff returned a no-op")
 	}
-	applied, err := Apply(old, delta)
+	applied, err := applyDelta(old, delta)
 	if err != nil {
-		t.Fatalf("Apply: %v", err)
+		t.Fatalf("apply: %v", err)
 	}
 	want, _ := Marshal(extended)
 	got, _ := Marshal(applied)
 	if string(want) != string(got) {
-		t.Errorf("Apply(old, Diff(old,new)) != new\n  new     = %s\n  applied = %s", want, got)
+		t.Errorf("applyDelta(old, Diff(old,new)) != new\n  new     = %s\n  applied = %s", want, got)
 	}
 }
 
@@ -157,11 +157,11 @@ func TestApply_AddKindBranchIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	once, err := Apply(old, delta)
+	once, err := applyDelta(old, delta)
 	if err != nil {
 		t.Fatal(err)
 	}
-	twice, err := Apply(once, delta)
+	twice, err := applyDelta(once, delta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestApply_AddKindBranchIsIdempotent(t *testing.T) {
 }
 
 // The op carries exactly one branch; anything else is a delta this version did
-// not write, and Apply fails closed on it.
+// not write, and ApplyMany fails closed on it.
 func TestApply_AddKindBranchRejectsAMultiBranchPayload(t *testing.T) {
 	base := NewObjectNode()
 	base.SetChild("f", NewLeafNode(String))
@@ -186,7 +186,7 @@ func TestApply_AddKindBranchRejectsAMultiBranchPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Apply(base, delta); err == nil {
+	if _, err := applyDelta(base, delta); err == nil {
 		t.Error("add_kind_branch carries exactly one branch; a multi-branch payload must be rejected")
 	}
 }
@@ -205,7 +205,7 @@ func TestApply_AddKindBranchRejectsAMissingPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Apply(base, delta); err == nil {
+	if _, err := applyDelta(base, delta); err == nil {
 		t.Error("add_kind_branch against a missing path must be rejected")
 	}
 }
