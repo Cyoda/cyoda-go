@@ -88,7 +88,7 @@ func defaultStoreConfig() config {
 	return config{
 		MaxConns:                25,
 		MinConns:                5,
-		SchemaSavepointInterval: 64,
+		SchemaSavepointInterval: defaultSchemaSavepointInterval,
 		// A zero ceiling reads as "disabled" to every consumer of these fields,
 		// so the baseline carries the shipped defaults rather than zero values.
 		StatementTimeout:       defaultStatementTimeout,

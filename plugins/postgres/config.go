@@ -65,6 +65,10 @@ const (
 	defaultSearchStatementTimeout = 30 * time.Minute
 )
 
+// defaultSchemaSavepointInterval is CYODA_SCHEMA_SAVEPOINT_INTERVAL's default,
+// named for the same reason as the ceilings above.
+const defaultSchemaSavepointInterval = 64
+
 // defaultSchedulerConns sizes the scheduler pool for the default
 // CYODA_SCHEDULER_MAX_RUNS (8) plus the claim loop and the async-search
 // heartbeat and claim.
@@ -126,7 +130,7 @@ func parseConfig(getenv func(string) string) (config, error) {
 		MinConns:                envInt32(getenv, "CYODA_POSTGRES_MIN_CONNS", 5),
 		MaxConnIdleTime:         envDuration(getenv, "CYODA_POSTGRES_MAX_CONN_IDLE_TIME", 5*time.Minute),
 		AutoMigrate:             envBool(getenv, "CYODA_POSTGRES_AUTO_MIGRATE", true),
-		SchemaSavepointInterval: envIntMin1(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", 64),
+		SchemaSavepointInterval: envIntMin1(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", defaultSchemaSavepointInterval),
 	}
 	if cfg.URL == "" {
 		return cfg, fmt.Errorf("CYODA_POSTGRES_URL is required")
@@ -279,7 +283,7 @@ type DBConfig struct {
 	MinConns                int32
 	MaxConnIdleTime         string
 	AutoMigrate             bool
-	SchemaSavepointInterval int // 0 falls back to the internal default (64)
+	SchemaSavepointInterval int // 0 falls back to defaultSchemaSavepointInterval
 }
 
 func (d DBConfig) toInternal() config {
@@ -289,7 +293,7 @@ func (d DBConfig) toInternal() config {
 	}
 	interval := d.SchemaSavepointInterval
 	if interval < 1 {
-		interval = 64
+		interval = defaultSchemaSavepointInterval
 	}
 	return config{
 		URL: d.URL, MaxConns: d.MaxConns, MinConns: d.MinConns,
