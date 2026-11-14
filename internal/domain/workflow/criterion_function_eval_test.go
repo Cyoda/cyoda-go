@@ -80,7 +80,7 @@ func evalEnv(t *testing.T, answers map[string]criteriaAnswer) (*Engine, *recordi
 	uuids := common.NewTestUUIDGenerator()
 	rec := &recordingCriteria{answers: answers}
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(rec), WithCoordination(txcoord.New(txMgr)))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(rec), WithCoordination(txcoord.New(txMgr)))
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "fn-eval", ModelVersion: "1.0"}
 	registerModelFields(t, ctx, factory, ref, map[string]schema.DataType{"amount": schema.Integer})
@@ -208,7 +208,7 @@ func TestEvaluateCriterion_ModelStoreFailureBeforeAnyCallout(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	rec := &recordingCriteria{answers: map[string]criteriaAnswer{"a": {matches: true}}}
 	txMgr := base.NewTransactionManager(uuids)
-	engine := NewEngine(&errModelStoreFactory{StoreFactory: base, err: errors.New("model store down")}, uuids,
+	engine := NewEngine(cachedFactory(&errModelStoreFactory{StoreFactory: base, err: errors.New("model store down")}), uuids,
 		txMgr, platformclock.Real(), WithExternalProcessing(rec), WithCoordination(txcoord.New(txMgr)))
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", spi.ModelRef{EntityName: "fn-infra", ModelVersion: "1.0"}, map[string]any{"amount": 50})
@@ -227,7 +227,7 @@ func TestEvaluateCriterion_WholeFunctionWithoutPreCheckLoadsNoModel(t *testing.T
 	uuids := common.NewTestUUIDGenerator()
 	rec := &recordingCriteria{answers: map[string]criteriaAnswer{"a": {matches: true}}}
 	txMgr := base.NewTransactionManager(uuids)
-	engine := NewEngine(&errModelStoreFactory{StoreFactory: base, err: errors.New("model store down")}, uuids,
+	engine := NewEngine(cachedFactory(&errModelStoreFactory{StoreFactory: base, err: errors.New("model store down")}), uuids,
 		txMgr, platformclock.Real(), WithExternalProcessing(rec), WithCoordination(txcoord.New(txMgr)))
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", spi.ModelRef{EntityName: "fn-nomodel", ModelVersion: "1.0"}, map[string]any{"amount": 50})

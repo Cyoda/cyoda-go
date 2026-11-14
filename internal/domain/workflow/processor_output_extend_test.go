@@ -97,7 +97,7 @@ func extendEngine(t *testing.T, procData []string) (*Engine, *extendDoubleFactor
 			return &spi.Entity{Data: []byte(d)}, nil
 		},
 	}
-	engine := NewEngine(double, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
+	engine := NewEngine(cachedFactory(double), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "procout-extend", ModelVersion: "1.0"}
@@ -170,7 +170,7 @@ func TestEngine_CriterionOnFieldAddedBySameRequest(t *testing.T) {
 			return &spi.Entity{Data: []byte(`{"x":1,"p":"v"}`)}, nil
 		},
 	}
-	engine := NewEngine(cached, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
+	engine := NewEngine(cachedFactory(cached), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "crit-extend", ModelVersion: "1.0"}
 	registerExtensibleModel(t, ctx, cached, ref)

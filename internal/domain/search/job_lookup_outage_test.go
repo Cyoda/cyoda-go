@@ -85,7 +85,7 @@ func finishedNow() *time.Time {
 
 func stubService(store spi.AsyncSearchStore) *search.SearchService {
 	// factory and uuid generator are untouched on every path exercised here.
-	return search.NewSearchService(nil, nil, store, newFixedConsistency(), platformclock.Real())
+	return search.NewSearchService(cachedFactory(nil), nil, store, newFixedConsistency(), platformclock.Real())
 }
 
 // ---------------------------------------------------------------------------
@@ -339,8 +339,7 @@ func (f *hydrateFactory) EntityStore(context.Context) (spi.EntityStore, error) {
 }
 
 func hydrateService(ids []string, errs map[string]error) *search.SearchService {
-	return search.NewSearchService(
-		&hydrateFactory{store: &hydrateEntityStore{errs: errs}}, nil, &resultIDsStore{ids: ids}, newFixedConsistency(), platformclock.Real())
+	return search.NewSearchService(cachedFactory(&hydrateFactory{store: &hydrateEntityStore{errs: errs}}), nil, &resultIDsStore{ids: ids}, newFixedConsistency(), platformclock.Real())
 }
 
 // A storage outage during hydration used to be logged and skipped, so the caller

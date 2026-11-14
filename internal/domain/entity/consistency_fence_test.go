@@ -69,7 +69,7 @@ func newFenceFixture(t *testing.T, tenant spi.TenantID, withModel bool) *fenceFi
 			t.Fatalf("ModelStore.Save: %v", err)
 		}
 	}
-	h := entity.New(factory, tm, common.NewDefaultUUIDGenerator(), nil, txcoord.New(tm), consistency.New(tm), platformclock.Real())
+	h := entity.New(cachedFactory(factory), tm, common.NewDefaultUUIDGenerator(), nil, txcoord.New(tm), consistency.New(tm), platformclock.Real())
 	return &fenceFixture{ctx: ctx, h: h, factory: factory, tm: tm, ref: ref, c: c}
 }
 

@@ -78,7 +78,7 @@ func TestAsyncSearch_LostClaimEndsWithOneLine(t *testing.T) {
 			})
 			factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 			store, _ := base.AsyncSearchStore(context.Background())
-			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+			svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 				WithAsyncPool(newTinyPool(t)).
 				WithHeartbeat(c.heartbeat)
 
@@ -167,7 +167,7 @@ func TestAsyncSearch_CancelDuringEarlyStepsEndsAsALostClaim(t *testing.T) {
 	if err := pool.Submit(func() { <-hold }); err != nil {
 		t.Fatalf("Submit the holder: %v", err)
 	}
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 
@@ -227,7 +227,7 @@ func TestAsyncSearch_LostClaimNeedsNoJobRead(t *testing.T) {
 	inner, _ := base.AsyncSearchStore(context.Background())
 	store := &unreadableJobStore{AsyncSearchStore: inner}
 	pool := search.NewWorkerPool(1, 4)
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(10 * time.Millisecond)
 
@@ -340,7 +340,7 @@ func TestReleaseRegisteredJobs_LostClaimIsOneLine(t *testing.T) {
 			inner, _ := base.AsyncSearchStore(context.Background())
 			store := &refusedHeartbeatSignal{AsyncSearchStore: inner, refused: make(chan struct{})}
 			pool := search.NewWorkerPool(1, 4)
-			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+			svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 				WithAsyncPool(pool).
 				WithHeartbeat(tc.heartbeat)
 
@@ -416,7 +416,7 @@ func TestAsyncSearch_FaultUnderAnEndedJobIsLoggedOnce(t *testing.T) {
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 	store, _ := base.AsyncSearchStore(context.Background())
 	pool := search.NewWorkerPool(1, 4)
-	svc = search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+	svc = search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 	logs := captureJobLogs(t)

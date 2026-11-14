@@ -15,7 +15,6 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
@@ -40,9 +39,6 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 	factory := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := factory.GetTransactionManager()
-	// Production hands every handler the model cache's factory; its
-	// request-scoped store is what refreshes a schema.
-	cached := modelcache.NewCachingStoreFactory(factory, nil, nil, time.Hour)
 
 	uc := &spi.UserContext{
 		UserID:   "test-user",
@@ -51,11 +47,11 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 		Roles:    []string{"ADMIN"},
 	}
 
-	engine := workflow.NewEngine(cached, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(cached, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
-	entityHandler := entity.New(cached, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
-	modelHandler := model.New(cached, platformclock.Real())
+	searchService := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cachedFactory(factory), platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -706,7 +702,7 @@ func TestRPC_ModelSetUniqueKeys_422_Unsupported(t *testing.T) {
 	// concrete SupportsCompositeUniqueKeys method on the real factory is NOT
 	// promoted — the type assertion in SetUniqueKeys returns ok=false.
 	type incapableFactory struct{ spi.StoreFactory }
-	svc.modelHandler = model.New(incapableFactory{memory.NewStoreFactory()}, platformclock.Real())
+	svc.modelHandler = model.New(cachedFactory(incapableFactory{memory.NewStoreFactory()}), platformclock.Real())
 
 	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
 		"id":    "test",

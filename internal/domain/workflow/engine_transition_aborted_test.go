@@ -36,7 +36,7 @@ func TestManualTransition_StaleEmitsTransitionAborted(t *testing.T) {
 			return entity, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ifmatch-aborted", ModelVersion: "1.0"}

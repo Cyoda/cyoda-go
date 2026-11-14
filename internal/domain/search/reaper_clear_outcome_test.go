@@ -62,7 +62,7 @@ func TestReclaimStaleJobs_RefusedClearSendsNoRelease(t *testing.T) {
 			createStaleReclaimJob(t, clock, base, "tenant-a", "job-refused", ref, cond, time.Now())
 
 			pool := search.NewWorkerPool(1, 4)
-			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+			svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 				WithAsyncPool(pool).
 				WithHeartbeat(time.Hour)
 
@@ -132,7 +132,7 @@ func TestReclaimStaleJobs_CancelledBeforeWorkerRunsEndsAsALostClaim(t *testing.T
 	if err := pool.Submit(func() { <-hold }); err != nil {
 		t.Fatalf("Submit the holder: %v", err)
 	}
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 	if reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
@@ -177,7 +177,7 @@ func TestReclaimStaleJobs_ReleasedBeforeWorkerRunsSendsNoClear(t *testing.T) {
 	if err := pool.Submit(func() { <-hold }); err != nil {
 		t.Fatalf("Submit the holder: %v", err)
 	}
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 
@@ -235,7 +235,7 @@ func TestReclaimStaleJobs_SettledThenReleasedWhileQueuedIsOneLine(t *testing.T) 
 	if err := pool.Submit(func() { <-hold }); err != nil {
 		t.Fatalf("Submit the holder: %v", err)
 	}
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 	if reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {

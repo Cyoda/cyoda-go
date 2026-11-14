@@ -47,14 +47,14 @@ func newTaskDeleteEnvWith(t *testing.T, wrap func(spi.StoreFactory) spi.StoreFac
 		Roles:  []string{"ADMIN"},
 	})
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         txMgr,
-		entityHandler: entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real()),
-		modelHandler:  model.New(factory, platformclock.Real()),
-		searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()),
+		entityHandler: entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real()),
+		modelHandler:  model.New(cachedFactory(factory), platformclock.Real()),
+		searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()),
 	}
 	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
 

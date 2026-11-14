@@ -193,7 +193,7 @@ func TestEvaluateCriterion_FailsClosedOnGenuineModelLoadError(t *testing.T) {
 	txMgr := baseFactory.NewTransactionManager(uuids)
 	wantErr := errors.New("model store down")
 	factory := &errModelStoreFactory{StoreFactory: baseFactory, err: wantErr}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
@@ -227,7 +227,7 @@ func TestEvaluateCriterion_LifecycleCriterionNeedsNoModel(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := baseFactory.NewTransactionManager(uuids)
 	factory := &errModelStoreFactory{StoreFactory: baseFactory, err: errors.New("model store down")}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}

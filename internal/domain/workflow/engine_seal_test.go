@@ -38,7 +38,7 @@ func newSealEnv(t *testing.T) *sealEnv {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	return &sealEnv{e: NewEngine(f, uuids, tm, platformclock.Real()), tm: tm, f: f, ctx: ctx, txID: txID, txCtx: txCtx}
+	return &sealEnv{e: NewEngine(cachedFactory(f), uuids, tm, platformclock.Real()), tm: tm, f: f, ctx: ctx, txID: txID, txCtx: txCtx}
 }
 
 // markRoot makes the transaction rollback-only as a failed joined write does:

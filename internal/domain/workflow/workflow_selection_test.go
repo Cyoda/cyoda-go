@@ -747,7 +747,7 @@ func TestResolveWorkflow_StoreOutageIsSanitizedInfraError(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := base.NewTransactionManager(uuids)
 	storeErr := errors.New("pgx: connection refused to 10.0.0.7:5432")
-	engine := NewEngine(&errWorkflowStoreFactory{StoreFactory: base, err: storeErr}, uuids, txMgr, platformclock.Real())
+	engine := NewEngine(cachedFactory(&errWorkflowStoreFactory{StoreFactory: base, err: storeErr}), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "store-outage", ModelVersion: "1.0"}
@@ -782,7 +782,7 @@ func TestResolveWorkflow_QueryDoorStoreOutageIsSanitized(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := base.NewTransactionManager(uuids)
 	storeErr := errors.New("pgx: connection refused to 10.0.0.7:5432")
-	engine := NewEngine(&errWorkflowStoreFactory{StoreFactory: base, err: storeErr}, uuids, txMgr, platformclock.Real())
+	engine := NewEngine(cachedFactory(&errWorkflowStoreFactory{StoreFactory: base, err: storeErr}), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "store-outage-query", ModelVersion: "1.0"}
@@ -809,7 +809,7 @@ func TestEvaluateCriterion_TypingFailureIsMarkedInfra(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := base.NewTransactionManager(uuids)
 	storeErr := errors.New("pgx: model store unreachable")
-	engine := NewEngine(&errModelStoreFactory{StoreFactory: base, err: storeErr}, uuids, txMgr, platformclock.Real())
+	engine := NewEngine(cachedFactory(&errModelStoreFactory{StoreFactory: base, err: storeErr}), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "typing-infra", ModelVersion: "1.0"}
@@ -867,7 +867,7 @@ func TestFireScheduled_EntityMovedOnRemoveFailureIsSurfaced(t *testing.T) {
 	txMgr := realFactory.NewTransactionManager(uuids)
 	clock, advance := steppableClock(armMs)
 	deleteErr := errors.New("scheduled task store unavailable")
-	engine := NewEngine(&failingDeleteTaskFactory{StoreFactory: realFactory, err: deleteErr},
+	engine := NewEngine(cachedFactory(&failingDeleteTaskFactory{StoreFactory: realFactory, err: deleteErr}),
 		uuids, txMgr, funcClock(clock))
 
 	ctx := ctxWithTenant(testTenant)
@@ -937,7 +937,7 @@ func TestGetAvailableTransitions_StoreOutageIsNot404(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := base.NewTransactionManager(uuids)
 	storeErr := errors.New("pgx: connection refused")
-	engine := NewEngine(&errEntityStoreFactory{StoreFactory: base, err: storeErr}, uuids, txMgr, platformclock.Real())
+	engine := NewEngine(cachedFactory(&errEntityStoreFactory{StoreFactory: base, err: storeErr}), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "outage-404", ModelVersion: "1.0"}

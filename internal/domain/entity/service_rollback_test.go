@@ -818,11 +818,11 @@ func newTrackingHandlerWrapping(t *testing.T, backend string, wrap func(spi.Tran
 
 	proc := &stubExternalProc{}
 	engineCAS := &casHookFactory{StoreFactory: raw}
-	engine := wfengine.NewEngine(engineCAS, common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
+	engine := wfengine.NewEngine(cachedFactory(engineCAS), common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
 		wfengine.WithExternalProcessing(proc), wfengine.WithCoordination(txcoord.New(tracker)))
 
 	armed := &armedFactory{StoreFactory: raw}
-	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txcoord.New(tracker), newTestConsistencyFor(tracker), platformclock.Real())
+	h := New(cachedFactory(armed), tracker, common.NewDefaultUUIDGenerator(), engine, txcoord.New(tracker), newTestConsistencyFor(tracker), platformclock.Real())
 
 	hn := &rollbackHarness{h: h, tracker: tracker, raw: raw, armed: armed, engineCAS: engineCAS, proc: proc, ctx: ctx}
 	hn.registerModel(t, rollbackModel)

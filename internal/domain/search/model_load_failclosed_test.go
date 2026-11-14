@@ -57,7 +57,7 @@ func TestSearch_FailsClosedOnGenuineModelLoadError(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond, err := predicate.ParseCondition([]byte(`{"type":"simple","jsonPath":"$.age","operatorType":"GREATER_THAN","value":5}`))
 	if err != nil {

@@ -20,7 +20,7 @@ func TestNewEngine_ExternalProcessingWithoutCoordinationPanics(t *testing.T) {
 			t.Fatal("NewEngine with external processing and no coordination did not panic")
 		}
 	}()
-	NewEngine(factory, uuids, factory.NewTransactionManager(uuids), platformclock.Real(), WithExternalProcessing(&mockExternalProcessing{}))
+	NewEngine(cachedFactory(factory), uuids, factory.NewTransactionManager(uuids), platformclock.Real(), WithExternalProcessing(&mockExternalProcessing{}))
 }
 
 // An engine that makes no callouts has no callbacks and no processor scopes
@@ -29,7 +29,7 @@ func TestNewEngine_NoExternalProcessingNeedsNoCoordination(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
-	if e := NewEngine(factory, uuids, factory.NewTransactionManager(uuids), platformclock.Real()); e.coord == nil {
+	if e := NewEngine(cachedFactory(factory), uuids, factory.NewTransactionManager(uuids), platformclock.Real()); e.coord == nil {
 		t.Fatal("no coordination")
 	}
 }

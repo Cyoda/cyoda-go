@@ -47,7 +47,7 @@ func lostRaceTx(t *testing.T) (*Engine, spi.TransactionManager, context.Context)
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	txID, txCtx, err := txMgr.Begin(ctx)
@@ -143,7 +143,7 @@ func TestConflictOverDispatchFailure_UnansweredLostRaceKeepsProcessorFailure(t *
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	inner := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, lostRaceErrTxManager{TransactionManager: inner, err: spi.ErrTxNotFound}, platformclock.Real())
+	engine := NewEngine(cachedFactory(factory), uuids, lostRaceErrTxManager{TransactionManager: inner, err: spi.ErrTxNotFound}, platformclock.Real())
 
 	txID, txCtx, err := inner.Begin(ctxWithTenant(testTenant))
 	if err != nil {

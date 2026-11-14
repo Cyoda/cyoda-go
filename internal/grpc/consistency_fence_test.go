@@ -50,7 +50,7 @@ func newFenceEnv(t *testing.T) *fenceEnv {
 	tm := &consistencyTimeTM{TransactionManager: txMgr}
 	cons := consistency.New(tm)
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
@@ -58,9 +58,9 @@ func newFenceEnv(t *testing.T) *fenceEnv {
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         txMgr,
-		entityHandler: entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), cons, platformclock.Real()),
-		modelHandler:  model.New(factory, platformclock.Real()),
-		searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, cons, platformclock.Real()),
+		entityHandler: entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), cons, platformclock.Real()),
+		modelHandler:  model.New(cachedFactory(factory), platformclock.Real()),
+		searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, cons, platformclock.Real()),
 		cons:          cons,
 	}
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{

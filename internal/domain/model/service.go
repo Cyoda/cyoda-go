@@ -113,8 +113,10 @@ func parseVersion(v string) int32 {
 }
 
 // getModelFresh reads the model from storage, bypassing the cached entry
-// (it may share a storage read already running on this node), when the store
-// supports RefreshAndGet, and through Get otherwise. The admin operations that
+// (it may share a storage read already running on this node). The store must be
+// the model cache's request-scoped store, which offers RefreshAndGet; any other
+// store is a wiring defect and the read fails rather than answering from the
+// cache-less path. The admin operations that
 // gate on the model's state (ImportModel, LockModel, UnlockModel, DeleteModel,
 // SetChangeLevel) use it, so the decision is made on what storage read returns
 // and not on what this node cached; routine display and
@@ -123,10 +125,11 @@ func getModelFresh(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 	type refresher interface {
 		RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error)
 	}
-	if r, ok := store.(refresher); ok {
-		return r.RefreshAndGet(ctx, ref)
+	r, ok := store.(refresher)
+	if !ok {
+		return nil, fmt.Errorf("model store %T cannot read the model fresh from storage", store)
 	}
-	return store.Get(ctx, ref)
+	return r.RefreshAndGet(ctx, ref)
 }
 
 // ImportModel imports a model from sample data, merging with any existing schema.

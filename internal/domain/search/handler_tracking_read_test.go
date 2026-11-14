@@ -96,7 +96,7 @@ func newTrackingReadTestHandler(t *testing.T) (func() spi.SearchOptions, *search
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	return func() spi.SearchOptions { return captured }, search.NewHandler(svc)
 }

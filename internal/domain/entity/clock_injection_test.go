@@ -60,8 +60,8 @@ func TestEntityPreCommitDatesFromClock(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	clk := fakeclock.New(at)
-	engine := wfengine.NewEngine(f, common.NewDefaultUUIDGenerator(), txMgr, clk)
-	h := New(f, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), clk)
+	engine := wfengine.NewEngine(cachedFactory(f), common.NewDefaultUUIDGenerator(), txMgr, clk)
+	h := New(cachedFactory(f), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), clk)
 
 	if _, err := h.CreateEntity(ctx, CreateEntityInput{
 		EntityName: "Order", ModelVersion: "1", Format: "JSON",
@@ -88,7 +88,7 @@ func TestNew_NilClockPanics(t *testing.T) {
 			t.Fatal("entity.New with a nil clock did not panic")
 		}
 	}()
-	New(nil, nil, nil, nil, nil, consistency.New(nilClockTM{}), nil)
+	New(cachedFactory(nil), nil, nil, nil, nil, consistency.New(nilClockTM{}), nil)
 }
 
 type nilClockTM struct{ spi.TransactionManager }

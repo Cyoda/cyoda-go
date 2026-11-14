@@ -197,31 +197,28 @@ func LoadFieldsMap(
 func loadFieldsMap(
 	ctx context.Context, store spi.ModelStore, ref spi.ModelRef,
 ) (map[string]schema.FieldDescriptor, error) {
-	// Prefer the cached derived parse when the store offers one. Rebuilding it
-	// per call is 80-99% of a criterion evaluation and scales with schema size;
-	// FieldsMap() off an already-parsed node is effectively free. Stores that
-	// do not implement the interface (tests, plain in-memory stores) keep the
-	// original behaviour.
-	if p, ok := store.(schemaNodeProvider); ok {
-		node, err := p.SchemaNode(ctx, ref)
-		if err != nil {
-			return nil, err
-		}
-		if node == nil {
-			return nil, nil
-		}
-		return node.FieldsMap(), nil
+	// The store hands back the parse it already holds: rebuilding it per call is
+	// 80-99% of a criterion evaluation and scales with schema size, while
+	// FieldsMap() off an already-parsed node is effectively free. Every store
+	// that reaches here is the model cache's request-scoped store; one that is
+	// not is a wiring defect, and the schema is not read some other way.
+	p, ok := store.(schemaNodeProvider)
+	if !ok {
+		return nil, fmt.Errorf("model store %T cannot provide the parsed schema of %s/%s",
+			store, ref.EntityName, ref.ModelVersion)
 	}
-	desc, err := store.Get(ctx, ref)
+	node, err := p.SchemaNode(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
-	return fieldsFromDescriptor(desc)
+	if node == nil {
+		return nil, nil
+	}
+	return node.FieldsMap(), nil
 }
 
-// schemaNodeProvider is the optional capability a caching model store exposes to
-// hand back the schema it has already parsed, instead of the bytes to parse
-// again.
+// schemaNodeProvider is the capability a model store must offer to hand back
+// the schema it has already parsed, instead of the bytes to parse again.
 type schemaNodeProvider interface {
 	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
 }
@@ -282,22 +279,6 @@ func refreshOnUnknownPaths(
 	}
 	fresh = node.FieldsMap()
 	return fresh, check(fresh), nil
-}
-
-// fieldsFromDescriptor unmarshals desc.Schema and returns its FieldsMap.
-// A nil descriptor OR a descriptor with no schema bound (empty Schema bytes)
-// is treated as "no schema to type against" and yields a nil map without error
-// — the (nil,nil) case callers degrade on. A genuine parse error (non-empty but
-// unparseable bytes) still surfaces so callers can fail closed.
-func fieldsFromDescriptor(desc *spi.ModelDescriptor) (map[string]schema.FieldDescriptor, error) {
-	if desc == nil || len(desc.Schema) == 0 {
-		return nil, nil
-	}
-	node, err := schema.Unmarshal(desc.Schema)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal model schema: %w", err)
-	}
-	return node.FieldsMap(), nil
 }
 
 // ConditionFieldPaths returns every data-field JSONPath cond names, normalised

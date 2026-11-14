@@ -40,7 +40,7 @@ func TestImportModel_RejectsUnaddressableFieldName(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			store := &refreshingModelStore{}
-			h := model.New(&fakeStoreFactory{modelStore: store}, platformclock.Real())
+			h := model.New(cachedFactory(&fakeStoreFactory{modelStore: store}), platformclock.Real())
 
 			_, err := h.ImportModel(context.Background(), model.ImportModelInput{
 				EntityName:   "fieldname",
@@ -83,7 +83,7 @@ func TestImportModel_AcceptsAddressableFieldName(t *testing.T) {
 		`"UPPER":1,"0abc":1,"x_1-2A":1,"nested":{"b-c":[{"d_1":1}]},"tags":["a"]}`
 
 	store := &refreshingModelStore{}
-	h := model.New(&fakeStoreFactory{modelStore: store}, platformclock.Real())
+	h := model.New(cachedFactory(&fakeStoreFactory{modelStore: store}), platformclock.Real())
 
 	if _, err := h.ImportModel(context.Background(), model.ImportModelInput{
 		EntityName:   "fieldname",
@@ -116,7 +116,7 @@ func TestImportModel_LegacyModelReimportRejected(t *testing.T) {
 		},
 	}
 	store.refreshDescriptor = store.getDescriptor
-	h := model.New(&fakeStoreFactory{modelStore: store}, platformclock.Real())
+	h := model.New(cachedFactory(&fakeStoreFactory{modelStore: store}), platformclock.Real())
 
 	_, err := h.ImportModel(context.Background(), model.ImportModelInput{
 		EntityName:   "legacy",

@@ -237,7 +237,7 @@ func TestSearch_BareLeafField_RealMemoryPlugin_Bounded_MapsTo400(t *testing.T) {
 	saveBareLeafModel(t, ctx, base, ref, "score")
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.score", OperatorType: "EQUALS", Value: float64(5)}
 	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
@@ -283,7 +283,7 @@ func TestAsyncSearchJob_BareLeafField_RendersInvalidConditionMessage(t *testing.
 	saveBareLeafModel(t, ctx, base, ref, "score")
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.score", OperatorType: "EQUALS", Value: float64(5)}
 	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})

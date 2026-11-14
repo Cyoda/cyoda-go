@@ -689,7 +689,7 @@ func TestFireScheduled_ReArmedAtReRead_Superseded(t *testing.T) {
 		}
 	}
 
-	engine := NewEngine(racingFactory, uuids, txMgr, funcClock(fixedClock(armMs)))
+	engine := NewEngine(cachedFactory(racingFactory), uuids, txMgr, funcClock(fixedClock(armMs)))
 
 	r := fireDue(t, engine, ctx, id)
 	if r.Outcome != OutcomeSuperseded || r.Err != nil {
@@ -861,7 +861,7 @@ func setupEngineForCBDFire(t *testing.T, initialMs int64, mock *mockExternalProc
 	if maxStateVisits > 0 {
 		opts = append(opts, WithMaxStateVisits(maxStateVisits))
 	}
-	engine := NewEngine(factory, uuids, tracker, funcClock(clock), opts...)
+	engine := NewEngine(cachedFactory(factory), uuids, tracker, funcClock(clock), opts...)
 	return engine, factory, tracker, advance
 }
 
@@ -1418,7 +1418,7 @@ func TestFireScheduled_GuardCASRace_SafeFailureWithoutTornWrite(t *testing.T) {
 		seedFireEntity(t, realFactory, ctx, "race-e1", modelRef, "RACED", "racer-tx-1", map[string]any{"racer": true})
 	}
 
-	engine := NewEngine(racingFactory, uuids, txMgr, funcClock(fixedClock(armMs)))
+	engine := NewEngine(cachedFactory(racingFactory), uuids, txMgr, funcClock(fixedClock(armMs)))
 
 	r := fireDue(t, engine, ctx, id)
 	if r.Err == nil {

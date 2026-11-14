@@ -41,7 +41,7 @@ func calloutModeEngine(t *testing.T, mode string, startNewTx *bool, failure erro
 			return nil, failure
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := common.WithDiagnostics(ctxWithTenant(testTenant))
 	modelRef := spi.ModelRef{EntityName: "callout-mode-" + mode, ModelVersion: "1.0"}

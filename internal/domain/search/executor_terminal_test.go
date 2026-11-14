@@ -72,7 +72,7 @@ func newObserverService(t *testing.T, base *memory.StoreFactory, store *terminal
 	t.Helper()
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	return search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
+	return search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 }

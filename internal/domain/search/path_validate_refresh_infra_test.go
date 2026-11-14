@@ -27,6 +27,14 @@ func (s *failingRefreshStore) refreshDescriptor(context.Context, spi.ModelRef) (
 	return nil, s.failErr
 }
 
+func (s *failingRefreshStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
+}
+
 func (s *failingRefreshStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
 	desc, err := s.refreshDescriptor(ctx, ref)
 	if err != nil || desc == nil || len(desc.Schema) == 0 {
@@ -126,5 +134,27 @@ func TestValidateKnownPaths_StoreThatCannotRefreshFailsClosed(t *testing.T) {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
 		t.Fatalf("a wiring defect is not a client error, got %v", appErr)
+	}
+}
+
+// TestLoadFieldsMap_StoreWithoutSchemaNodeFailsClosed pins that a store the
+// model cache did not hand out is a wiring defect: the schema is not read
+// through some other route the store happens to offer, and no map is returned.
+func TestLoadFieldsMap_StoreWithoutSchemaNodeFailsClosed(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	node := schema.NewObjectNode()
+	node.SetChild("a", schema.NewLeafNode(schema.String))
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	store := &failingRefreshStore{warm: &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked, Schema: raw}}
+
+	fields, err := loadFieldsMap(context.Background(), struct{ spi.ModelStore }{store}, ref)
+	if err == nil {
+		t.Fatalf("loadFieldsMap read the schema through Get, got %d field(s); want an error", len(fields))
+	}
+	if fields != nil {
+		t.Errorf("fields = %v, want nil alongside the error", fields)
 	}
 }

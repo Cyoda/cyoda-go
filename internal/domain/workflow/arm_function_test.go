@@ -23,7 +23,7 @@ func setupEngineWithClockAndExtProc(t *testing.T, nowMs int64, extProc contract.
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, funcClock(fixedClock(nowMs)), WithExternalProcessing(extProc), WithCoordination(txcoord.New(txMgr)))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, funcClock(fixedClock(nowMs)), WithExternalProcessing(extProc), WithCoordination(txcoord.New(txMgr)))
 	return engine, factory
 }
 

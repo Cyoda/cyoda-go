@@ -81,7 +81,7 @@ func TestAsyncNewTx_CallbackInProgressAtTheCalloutsEndIsDiscarded(t *testing.T) 
 			return nil, errors.New("the cnode answered: failed")
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext), WithCoordination(coord))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext), WithCoordination(coord))
 
 	saveWorkflow(t, factory, base, modelRef, []spi.WorkflowDefinition{{
 		Version: "1.1", Name: "FenceWaitWF", InitialState: "INITIAL", Active: true,

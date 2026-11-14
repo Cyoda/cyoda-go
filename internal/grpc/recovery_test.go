@@ -368,7 +368,7 @@ func (env *recoveryTestServer) importAndLockModel(t *testing.T, entityName, vers
 	if err != nil {
 		t.Fatalf("marshal sample data: %v", err)
 	}
-	mh := model.New(env.raw, platformclock.Real())
+	mh := model.New(cachedFactory(env.raw), platformclock.Real())
 	if _, err := mh.ImportModel(ctx, model.ImportModelInput{
 		EntityName:   entityName,
 		ModelVersion: version,
@@ -483,16 +483,16 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthLatch *health.Latc
 	tracker := &recoveryTrackingTxMgr{TransactionManager: realTxMgr}
 
 	localProc := localproc.New()
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
+	engine := wfengine.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
 		wfengine.WithExternalProcessing(localProc), wfengine.WithCoordination(txcoord.New(tracker)))
 
 	searchStore, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
-	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txcoord.New(tracker), newTestConsistency(t, factory), platformclock.Real())
-	modelHandler := model.New(factory, platformclock.Real())
+	searchSvc := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), tracker, common.NewDefaultUUIDGenerator(), engine, txcoord.New(tracker), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cachedFactory(factory), platformclock.Real())
 
 	uc := &spi.UserContext{
 		UserID:   "recovery-test-user",

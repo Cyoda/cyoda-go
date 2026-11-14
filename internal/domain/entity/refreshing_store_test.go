@@ -48,6 +48,14 @@ func (s *refreshingStore) refreshDescriptor(_ context.Context, _ spi.ModelRef) (
 	return d, nil
 }
 
+func (s *refreshingStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
+}
+
 func (s *refreshingStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
 	desc, err := s.refreshDescriptor(ctx, ref)
 	if err != nil || desc == nil || len(desc.Schema) == 0 {
@@ -117,6 +125,14 @@ func (s *failingModelStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.Mod
 		return nil, s.getErr
 	}
 	return s.refreshingStore.Get(ctx, ref)
+}
+
+func (s *failingModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *failingModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {

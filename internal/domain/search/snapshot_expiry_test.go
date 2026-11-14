@@ -24,7 +24,7 @@ func (c *clockAt) Now() time.Time { return c.now }
 var expiryCreate = time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 
 func expiryService(store spi.AsyncSearchStore, clk spi.Clock, ttl time.Duration) *search.SearchService {
-	return search.NewSearchService(nil, nil, store, newFixedConsistency(), clk).WithSnapshotTTL(ttl)
+	return search.NewSearchService(cachedFactory(nil), nil, store, newFixedConsistency(), clk).WithSnapshotTTL(ttl)
 }
 
 func finishedJob(id string, finish time.Time) *spi.SearchJob {

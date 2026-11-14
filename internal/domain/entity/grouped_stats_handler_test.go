@@ -345,6 +345,10 @@ func (s *declaredFieldsModelStore) Get(context.Context, spi.ModelRef) (*spi.Mode
 	return &spi.ModelDescriptor{Ref: s.ref, State: spi.ModelLocked, Schema: raw}, nil
 }
 
+func (s *declaredFieldsModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	return s.RefreshSchemaNode(ctx, ref)
+}
+
 func (s *declaredFieldsModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
 	desc, err := s.Get(ctx, ref)
 	if err != nil {
@@ -470,6 +474,14 @@ func (s *refreshFailingModelStore) Get(context.Context, spi.ModelRef) (*spi.Mode
 
 func (s *refreshFailingModelStore) refreshDescriptor(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
 	return nil, errors.New("connection refused")
+}
+
+func (s *refreshFailingModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *refreshFailingModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {

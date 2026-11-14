@@ -30,7 +30,7 @@ func TestSearchEntities_TimeoutMillisZero_Returns400(t *testing.T) {
 	saveMinimalModel(t, ctx, base, ref)
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	h := search.NewHandler(search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real()))
+	h := search.NewHandler(search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real()))
 
 	body := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"}`
 	req := httptest.NewRequest(http.MethodPost, "/search/direct/person/1?timeoutMillis=0", strings.NewReader(body)).WithContext(ctx)
@@ -62,7 +62,7 @@ func TestSearchEntities_TimeoutMillis_JoinedTxRejected400(t *testing.T) {
 	saveMinimalModel(t, tenantCtx("tenant-1"), base, ref)
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	h := search.NewHandler(search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real()))
+	h := search.NewHandler(search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real()))
 
 	ctx := spi.WithTransaction(context.Background(), &spi.TransactionState{ID: "tx-1"})
 	body := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"}`
@@ -116,7 +116,7 @@ func TestSearchEntities_TimeoutExpires_Returns408BeforeAnyBody(t *testing.T) {
 	}
 	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	h := search.NewHandler(search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()))
+	h := search.NewHandler(search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()))
 
 	cond := `{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"CREATED"}`
 	req := httptest.NewRequest(http.MethodPost, "/search/direct/person/1?timeoutMillis=1", strings.NewReader(cond)).WithContext(ctx)

@@ -146,7 +146,7 @@ func ctxWithTenant(tid spi.TenantID) context.Context {
 }
 
 func TestNewHandler(t *testing.T) {
-	h := model.New(nil, platformclock.Real())
+	h := model.New(cachedFactory(nil), platformclock.Real())
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}
@@ -939,7 +939,7 @@ func TestSetUniqueKeys_422_Unsupported(t *testing.T) {
 	// concrete SupportsCompositeUniqueKeys method on the real factory is NOT
 	// promoted — the type assertion in SetUniqueKeys returns ok=false.
 	type incapableFactory struct{ spi.StoreFactory }
-	h := model.New(incapableFactory{memory.NewStoreFactory()}, platformclock.Real())
+	h := model.New(cachedFactory(incapableFactory{memory.NewStoreFactory()}), platformclock.Real())
 
 	body := `{"uniqueKeys": [{"id": "uk1", "fields": ["$.name"]}]}`
 	r := httptest.NewRequest(http.MethodPut, "/model/UKUnsupported/1/unique-keys", strings.NewReader(body))

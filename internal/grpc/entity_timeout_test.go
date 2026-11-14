@@ -352,16 +352,16 @@ func TestRPC_EntityCreate_TransactionTimeoutMs_BlockingStore_408(t *testing.T) {
 	txMgr := realFactory.GetTransactionManager()
 
 	ctx := newTimeoutTestUserCtx()
-	modelHandler := model.New(realFactory, platformclock.Real())
+	modelHandler := model.New(cachedFactory(realFactory), platformclock.Real())
 	importLockPerson(t, modelHandler, ctx)
 
 	blocking := &blockingEntityStore{}
 	factory := &blockingStoreFactory{StoreFactory: realFactory, entityStore: blocking}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
+	searchService := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -429,13 +429,13 @@ func TestRPC_EntityCreate_TransactionTimeoutMs_CommitWins_Success(t *testing.T) 
 	}
 
 	ctx := newTimeoutTestUserCtx()
-	modelHandler := model.New(realFactory, platformclock.Real())
+	modelHandler := model.New(cachedFactory(realFactory), platformclock.Real())
 	importLockPerson(t, modelHandler, ctx)
 
-	engine := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), rtm, platformclock.Real())
+	engine := workflow.NewEngine(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), rtm, platformclock.Real())
 	searchStore, _ := realFactory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, realFactory), platformclock.Real())
-	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txcoord.New(rtm), newTestConsistency(t, realFactory), platformclock.Real())
+	searchService := search.NewSearchService(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, realFactory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(realFactory), rtm, common.NewDefaultUUIDGenerator(), engine, txcoord.New(rtm), newTestConsistency(t, realFactory), platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -490,13 +490,13 @@ func TestRPC_EntityUpdateCollection_TransactionTimeoutMs_LoopHeadStopsSecondItem
 	rtm := &onCommitTxMgr{TransactionManager: realTxMgr}
 
 	ctx := newTimeoutTestUserCtx()
-	modelHandler := model.New(realFactory, platformclock.Real())
+	modelHandler := model.New(cachedFactory(realFactory), platformclock.Real())
 	importLockPerson(t, modelHandler, ctx)
 
-	engine := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), rtm, platformclock.Real())
+	engine := workflow.NewEngine(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), rtm, platformclock.Real())
 	searchStore, _ := realFactory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, realFactory), platformclock.Real())
-	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txcoord.New(rtm), newTestConsistency(t, realFactory), platformclock.Real())
+	searchService := search.NewSearchService(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, realFactory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(realFactory), rtm, common.NewDefaultUUIDGenerator(), engine, txcoord.New(rtm), newTestConsistency(t, realFactory), platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),

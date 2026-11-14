@@ -457,8 +457,8 @@ func TestCallback_SyncObservationFails_RunFails(t *testing.T) {
 			}, nil)
 			claimed := env.claimed(t, "cbso-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
 			stores, gets = 0, 0
-			env.engine.factory = nthFailFactory{StoreFactory: env.engine.factory.(nthFailFactory).StoreFactory,
-				failStoreAt: tc.failStoreAt, failGetAt: tc.failGetAt, stores: &stores, gets: &gets, err: storeErr}
+			env.engine.factory = cachedFactory(nthFailFactory{StoreFactory: env.factory.(nthFailFactory).StoreFactory,
+				failStoreAt: tc.failStoreAt, failGetAt: tc.failGetAt, stores: &stores, gets: &gets, err: storeErr})
 
 			r := runWithin(t, env, claimed)
 			if r.Outcome != OutcomeFailed || !errors.Is(r.Err, storeErr) || !errors.Is(r.Err, ErrProcessorOutputInfra) ||
