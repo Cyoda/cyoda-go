@@ -47,10 +47,16 @@ restate it.
 
 ### Builds on the schema-extension change (#710)
 
-#710 lands first: schema-extension appends stay in the entity transaction and
-take no lock, the savepoint fold runs in a transaction of its own, and no
-ingestion path writes the `models` row. §4.2's postgres model check is
-re-read against #710's final design before this spec's plan is written.
+A schema extension commits in a short `READ COMMITTED` transaction of its
+own, never the entity transaction's. On postgres it runs on the model pool and
+takes the `models` row with `SELECT … FOR NO KEY UPDATE`, which writes no row
+version (`plugins/postgres/model_store.go` `ExtendSchema`/`extend`, ~:321-407).
+Under that lock it refuses a model that is not `LOCKED` with
+`spi.ErrModelNotLocked`, which `common.Internal` answers `409
+MODEL_NOT_LOCKED` (`internal/common/errors.go` ~:279). So no entity
+transaction writes or locks a `models` row. This spec reuses
+`spi.ErrModelNotLocked` for the commit-time check (§4.1) and widens its SPI
+doc comment, which names only `ExtendSchema` today.
 
 ### Non-goals
 
@@ -399,7 +405,7 @@ At commit, a transaction's claims are computed from its final entities:
 
 1. Read, inside the committing transaction, the model of every entity whose
    final write in the transaction is a save (one read per distinct model). A
-   model that does not exist or is not `LOCKED` fails the commit with a new
+   model that does not exist or is not `LOCKED` fails the commit with
    `spi.ErrModelNotLocked` (§4.5). An entity whose final write is a delete
    needs no model read, so a transaction that only deletes commits whatever
    the model's state; entities can always be cleaned up.
@@ -488,19 +494,29 @@ longer passes anything to storage.
   rows, steps 2-4 as `DELETE` and `INSERT` statements, inserting in a
   deterministic order (by model, key id, signature).
 
-  *Why a lifecycle row and not the `models` row.* `ExtendSchema` serialises
-  schema writers with a real `UPDATE models SET doc = doc` on the `models` row
-  (`model_store.go` ~:487-501), inside the entity's transaction on the update
-  door (`service.go` ~:2238) and for processor output
-  (`processor_output.go` ~:68). That claim is deliberate: under `REPEATABLE
-  READ` it makes the losing writer fail with `40001` rather than fold from a
-  stale snapshot. A `FOR SHARE` of the `models` row at commit would therefore
-  conflict with every schema extension of the model: a writer whose snapshot
-  predates a committed extension would fail `40001`, every commit of the model
-  would wait for a transaction that extended the schema and is still in its
-  callouts, and two transactions extending two models and writing entities of
-  both would deadlock. (`FOR KEY SHARE` does not help: the state change is a
-  non-key `UPDATE` too.)
+  *Why a lifecycle row and not the `models` row.* The commit must conflict
+  with a change of the model's state or keys and with nothing else. The
+  `models` row is also written and locked by operations that change neither:
+
+  - `SetChangeLevel` updates the `models` row (`model_store.go` ~:238-251),
+    and the service allows it on a `LOCKED` model with entities
+    (`internal/domain/model/service.go` `SetChangeLevel`, ~:562-602, no state
+    check). Under `REPEATABLE READ` a `FOR SHARE` of a row that another
+    transaction updated and committed after the snapshot fails `40001`, so
+    every writer of the model in flight at a change-level change would get
+    `409 CONFLICT`.
+  - Every schema extension takes `FOR NO KEY UPDATE` on the `models` row
+    (#710), which conflicts with `FOR SHARE`. Every commit of the model would
+    wait for an extension in flight, and every extension for each commit
+    holding the row from step 1 to the end of `COMMIT`. #710 kept extensions
+    off the entity writers' path so that high-volume ingestion keeps its
+    throughput; this would put them back on it. (A lock-only `xmax` does not
+    raise `40001`; the cost is the waits.)
+  - The absent-model probe below inserts a row for a model that may not
+    exist, which the `models` table cannot take.
+
+  (`FOR KEY SHARE` of the `models` row does not help: it does not conflict
+  with the non-key `UPDATE` that changes the state.)
 
   So postgres keeps a separate lifecycle row per model: a new table
   `model_lifecycle (tenant_id, model_name, model_version, generation)`,
@@ -519,12 +535,10 @@ longer passes anything to storage.
   ~:188, can see a state another uncommitted operation is about to change).
 
   **Lock order.** Every model operation writes the `models` row first and bumps
-  the lifecycle row second. An entity transaction that extends the schema
-  holds the `models` row (from `ExtendSchema`) and takes the lifecycle row at
-  commit, in the same order, so the two never wait on each other in a cycle.
-  (Bumping first would deadlock `Unlock` against an extending writer: the
-  `models` write waits for the writer, and the writer's commit waits for the
-  bump.)
+  the lifecycle row second. An extension takes the `models` row only. An
+  entity commit takes lifecycle rows only (in step 1's fixed order) and reads
+  `models` rows without a lock. No transaction waits for a `models` row while
+  it holds a lifecycle row, so there is no cycle.
 
   The commit takes `FOR SHARE` on the lifecycle rows and reads state and keys
   from the `models` rows in its snapshot. The transaction is `REPEATABLE READ`
@@ -687,36 +701,32 @@ model service builds the same props as its early answer (`expectedState`,
 
 Per backend:
 
-- postgres: each operation, in a `READ COMMITTED` transaction
-  (`model_store.go` ~:428-433), writes the `models` row, then bumps the
+- postgres: each operation, in a `READ COMMITTED` transaction on the model
+  pool (`inModelTx`, `model_store.go` ~:411-436), writes the `models` row, then bumps the
   lifecycle row (the order of §4.2), and rolls back on a refusal. The state
   check reads the state the operation's own write replaced, never a later read
   (which would see the new document); the entity count is a later statement,
   which sees every commit before the bump. A missing model stays
   `ErrNotFound`. A commit that took `FOR SHARE` first makes the bump wait until
   it ends; a bump committed first makes the commit fail `40001`.
-  - `Lock` moves into `inWriteTx` (today it is not in a transaction): the
+  - `Lock` (today one `UPDATE` outside a transaction, `model_store.go`
+    ~:166-168, with no fold since #710) moves into `inModelTx`: the
     conditional `UPDATE` first (§4.2); on zero rows, an existence check tells
     "already `LOCKED`" (return, no bump) from "not found" (`ErrNotFound`);
-    then the fold and savepoint as today when it changed the state, then the
-    bump. Folding after the `UPDATE` stores the same schema (the `UPDATE`
-    changes only `{state}`, ~:338-349; the fold reads `doc.schema`,
-    ~:573-590), and it closes a race today's order has: `ExtendSchema` does
-    not check the state, so a delta committed between today's fold and the
-    savepoint insert is lost; with the row held, `ExtendSchema`'s claim waits.
-    The comment claiming no writer can race (~:204-206) is deleted.
-  - `Unlock` already writes the `models` row first (~:254-260); it then bumps
-    and counts.
-  - `Delete` (one statement today, ~:142-167) becomes `DELETE … RETURNING
+    then the bump.
+  - `Unlock` already writes the `models` row first, in `inModelTx`, and then
+    folds the extension log (~:179-217); it then bumps and counts.
+  - `Delete` (one statement today, ~:135-161) becomes `DELETE … RETURNING
     doc` (refuse `ErrModelLocked` if the returned state is `LOCKED`), delete
-    the lifecycle row, count, roll back on a refusal.
-  - `Save` becomes `INSERT … ON CONFLICT … DO UPDATE SET doc = EXCLUDED.doc
-    WHERE models.doc->>'state' <> 'LOCKED' RETURNING 1`: no row returned on a
+    the lifecycle row, count, roll back on a refusal, in `inModelTx`.
+  - `Save` (one statement today, ~:74-86) becomes, in `inModelTx`, `INSERT …
+    ON CONFLICT … DO UPDATE SET doc = EXCLUDED.doc WHERE
+    models.doc->>'state' <> 'LOCKED' RETURNING 1`: no row returned on a
     conflict is `ErrModelLocked` (`READ COMMITTED` re-checks the `WHERE`
     against the latest row version, so a lock committed in between is seen);
     then bump or insert the lifecycle row. The `model_schema_extensions`
-    `DELETE` in the same statement (~:67-78) runs even when the update is
-    refused; the refusal's rollback undoes it.
+    `DELETE` in the same statement runs even when the update is refused; the
+    refusal's rollback undoes it.
 - memory: `Unlock`, `Delete` and `Save` check and change under `entityMu`
   (write), the lock entity commits hold, counting with an internal helper that
   takes no lock (`EntityStore.Count` takes `entityMu.RLock`,
@@ -761,7 +771,7 @@ builder migrates them (§8).
 | A multi-node postgres node whose cached model is out of date after an unlock, key change and relock | enforces the old keys until its cache lease ends; data it admits can break the new key | enforces the stored keys; a commit whose snapshot predates the change gets a retryable `409 CONFLICT` (§4.2) |
 | An entity write and an unlock or delete of its model, at the same time | both can succeed: an entity in an unlocked or deleted model | one wins: the write's commit is refused `409 MODEL_NOT_LOCKED` (postgres: or a retryable `409 CONFLICT`), or the unlock/delete is refused `409 MODEL_HAS_ENTITIES` (§4.5) |
 | A unique-key change or model import and a lock of the same model, at the same time | both can succeed: the import or key change writes `UNLOCKED` and new keys over a locked model that may already have entities | one wins: the key change or import is refused `409 MODEL_ALREADY_LOCKED` (§4.5) |
-| A schema extension and other entity writes of the same model (postgres) | unchanged | unchanged: the commit's model check uses the lifecycle row, which a schema extension does not touch (§4.2) |
+| A schema extension or a change-level change of a model, and entity writes of that model (postgres) | unchanged | unchanged: the commit's model check takes the lifecycle row, which neither touches (§4.2) |
 | A callback's `If-Match` with the payload's `meta.transactionId` on the anchor | update path: `412`; scheduled fire: matches | matches on every path (§2.5) |
 | A scheduled fire that declines or is cancelled after running a function criterion | no entity version | unchanged: no entity version (§2.2) |
 | Reading an entity's available transitions under a transaction token (function criteria run) | no write | unchanged: no write (§2.1) |
@@ -831,15 +841,15 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | Callback `If-Match` with payload `meta.transactionId` on the anchor → matches (update path and scheduled fire) | engine unit | yes | — | — |
 | Scheduled fire breaks a key → task outcome per §4.3 | scheduler/engine unit | yes | — | — |
 | Keys come from the stored model: a transactional and a non-transactional save with no keys anywhere on the call path enforce the model's keys | spitest + per-plugin unit | — | existing `unique_keys` parity (unchanged results) | — |
-| Commit of an entity whose model is no longer `LOCKED`, or does not exist → `ErrModelNotLocked`, nothing committed | spitest + per-plugin unit | yes (postgres, isolated): a test processor unlocks the model without the token during the create's callout (count is 0, the entity is uncommitted; the create's data must fit the model as imported, or the unlock waits on the create's `models` row lock); answer `409 CONFLICT`, its retry `409 MODEL_NOT_LOCKED`; single create and collection create. memory/sqlite give `MODEL_NOT_LOCKED` in their plugin tests. | — | gRPC create: envelope `Error.Code` |
+| Commit of an entity whose model is no longer `LOCKED`, or does not exist → `ErrModelNotLocked`, nothing committed | spitest + per-plugin unit | yes (postgres, isolated): a test processor unlocks the model without the token during the create's callout (count is 0: the entity is uncommitted; the create's pre-callout save has taken the transaction's snapshot before the unlock); answer `409 CONFLICT`, its retry `409 MODEL_NOT_LOCKED`; single create and collection create. memory/sqlite give `MODEL_NOT_LOCKED` in their plugin tests. | — | gRPC create: envelope `Error.Code` |
 | A transaction that only deletes entities of a model that is not `LOCKED` commits | spitest + per-plugin unit | — | — | — |
 | `ModelStore.Unlock` / `Delete` with live entities → `ModelHasEntitiesError` with the count, model unchanged | spitest + per-plugin unit | unlock: existing (`model_errors_test.go` ~:45); delete: new | new scenario (unlock and delete) | new: unlock and delete over gRPC, envelope `Error.Code=MODEL_HAS_ENTITIES` |
 | `ModelStore.Delete` of a `LOCKED` model, `Save` over a `LOCKED` model → `ErrModelLocked`, model unchanged | spitest + per-plugin unit | existing service-level answers (`MODEL_ALREADY_LOCKED`) unchanged | — | — |
 | Interleave: a key change (`Save`) read `UNLOCKED`, then the model is locked → the save is refused | per-plugin unit (deterministic order) | — | — | — |
-| postgres: a schema extension in another transaction does not fail or delay a non-extending writer's commit of the same model | postgres plugin unit | — | — | — |
+| postgres: a schema extension, and a change-level change, of the model — committed during a writer's transaction, or holding the `models` row at its commit — neither fail nor delay the writer's commit | postgres plugin unit | — | — | — |
 | Interleave: a write transaction holds an uncommitted entity of model M; unlock of M, and delete of M → the model change or the commit is refused, never both succeed (each order) | per-plugin unit (two transactions, deterministic order) | — | — | — |
 | postgres interleave, non-transactional save: the save waits on an unlock's uncommitted bump → refused `ErrModelNotLocked` after the unlock commits | postgres plugin unit | — | — | — |
-| postgres: `Unlock` against a writer that extended the schema → no deadlock; the unlock waits, then answers `MODEL_HAS_ENTITIES` or proceeds | postgres plugin unit | — | — | — |
+| postgres: `Unlock` while a writer's commit holds the lifecycle row → the unlock waits, then answers `MODEL_HAS_ENTITIES` (the writer committed) or proceeds (it rolled back) | postgres plugin unit | — | — | — |
 | postgres: a model created and locked after a writer's snapshot → writer's commit `409 CONFLICT`, retry commits; a model that never existed → `ErrModelNotLocked` | postgres plugin unit | — | — | — |
 | postgres interleave: a Lock not yet committed, then an Unlock, then an entity commit of the model → never an entity in an unlocked model | postgres plugin unit | — | — | — |
 | postgres interleave: `SetUniqueKeys` read `UNLOCKED`, Lock commits, then `Save` → `ErrModelLocked`, keys unchanged | postgres plugin unit | — | — | — |
@@ -916,7 +926,7 @@ showing the old outcome) on the unfixed code, or it is dropped.
   change; `Delete` and `Save` refuse a `LOCKED` model (`ErrModelLocked`); all
   three are new in the SPI; `EntityStore` commit/save refuse a model that is not `LOCKED`
   (`ErrModelNotLocked`). spitest cases per §7.
-- `cmd/cyoda/help/content/models.md` ~:341 ("an import that overlaps a lock can
+- `cmd/cyoda/help/content/models.md` ~:346 ("an import that overlaps a lock can
   save the model back as `UNLOCKED`"): an import or unique-key change that
   overlaps a lock is now refused `409 MODEL_ALREADY_LOCKED`. The rest of the
   paragraph stays: model administration runs from one place, and two
@@ -925,6 +935,20 @@ showing the old outcome) on the unfixed code, or it is dropped.
 - `cmd/cyoda/help/content/errors/MODEL_NOT_LOCKED.md` and
   `MODEL_HAS_ENTITIES.md`: the write side is checked at commit;
   unlock/delete check entities atomically.
+- The text #710 added that says unlock is not atomic with its entity check
+  and tells clients to stop writes before unlocking: `models.md` ~:157,
+  `errors/MODEL_HAS_ENTITIES.md` ~:30, `docs/CONSISTENCY.md` ~:287-294,
+  `api/openapi.yaml` ~:5632-5635 (unlock operation). Each now states that
+  unlock and delete refuse a model with entities atomically, and that a
+  write in progress when the unlock lands is refused at its commit
+  (`409 MODEL_NOT_LOCKED`). The sentence in `docs/CONSISTENCY.md` ~:282-285
+  about an import or key change overwriting a lock or an extension goes too
+  (§4.5: `Save` refuses a `LOCKED` model). The builder greps `cmd/cyoda/help`,
+  `docs/` and `api/openapi.yaml` for every other phrasing of either.
+- SPI `ErrModelNotLocked` doc comment (`errors.go`, today "returned by
+  ExtendSchema"): also returned by an entity commit or non-transactional save
+  whose model does not exist or is not `LOCKED`; `common.Internal`'s comment
+  (~:268-270) likewise.
 - SPI: `EntityStore` doc (Save/CompareAndSave/Delete rule §3.1,
   `GetVersionByTransaction` §3.2) and the SPI CHANGELOG. SPI PR into SPI `main`;
   cyoda-go and the three plugins pseudo-pin it (`make repin-plugins`).
