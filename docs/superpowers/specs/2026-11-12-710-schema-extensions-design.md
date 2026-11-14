@@ -552,8 +552,11 @@ tests (`TestExtendSchema_SaveOnLock`, `model_extensions_internal_test.go`
 ~:293) are deleted with the savepoint (§4.14).
 
 Concurrency tests are isolated single-backend tests, never in the shared
-parity suite. Each new test is shown failing on the unfixed code first; one
-that cannot go RED on at least one backend is dropped.
+parity suite. Each new test of changed behaviour is shown failing on the
+unfixed code first; one that cannot go RED on at least one backend is dropped.
+A test of behaviour this design keeps under a changed mechanism (the criterion
+on a just-added field, the multi-node broadcast) is a regression guard and is
+kept.
 
 ## 11. SPI and cross-repo
 

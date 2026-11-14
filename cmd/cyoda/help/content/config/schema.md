@@ -31,7 +31,7 @@ extension in place and keeps no log.
   model. A lower value makes reads of a model that extends often cheaper,
   at the cost of a savepoint row more often.
 
-The prefix `CYODA_SCHEMA_` namespaces the schema-extension variables; they are not plugin-namespaced, and both the `sqlite` and `postgres` plugins read them.
+The prefix `CYODA_SCHEMA_` namespaces the schema-extension variable; it is not plugin-namespaced, and both the `sqlite` and `postgres` plugins read it.
 
 Extensions have no retry budget: an extension that meets another extension of the same
 model waits for it, until the request ends (`cyoda help models`, SCHEMA EXTENSION).
