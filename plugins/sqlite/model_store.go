@@ -125,7 +125,7 @@ func (s *modelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.Model
 		return nil, err
 	}
 
-	folded, err := s.foldLockedInTx(ctx, tx, modelRef, desc.Schema)
+	folded, _, err := s.foldLocked(ctx, tx, modelRef, desc.Schema, false)
 	if err != nil {
 		return nil, fmt.Errorf("fold extension log for %s: %w", modelRef, err)
 	}
@@ -275,7 +275,7 @@ func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 		return fmt.Errorf("failed to unmarshal model doc: %w", err)
 	}
 
-	folded, err := s.foldLockedInTx(ctx, tx, modelRef, doc.Schema)
+	folded, _, err := s.foldLocked(ctx, tx, modelRef, doc.Schema, false)
 	if err != nil {
 		return classifyError(fmt.Errorf("unlock fold for %s: %w", modelRef, err))
 	}
@@ -445,8 +445,9 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 	base := doc.Schema
 
 	// The fold, in the apply function's encoding even with no delta to
-	// apply: one apply call for the whole log after the savepoint.
-	current, err := foldLockedOn(ctx, tx, s.tenantID, s.applyFunc, ref, base, true)
+	// apply: one apply call for the whole log after the savepoint, whose seq
+	// it returns.
+	current, lastSP, err := s.foldLocked(ctx, tx, ref, base, true)
 	if err != nil {
 		return classifyError(fmt.Errorf("pre-persist fold for %s: %w", ref, err))
 	}
@@ -478,13 +479,9 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 	}
 
 	// A savepoint follows once SchemaSavepointInterval of the model's deltas
-	// follow its latest savepoint (nextSeq - lastSavepointSeq counts them).
-	// The savepoint row sits at nextSeq+1 so it clusters right after the
-	// delta it folds, with no PK collision.
-	lastSP, err := s.lastSavepointSeqInTx(ctx, tx, ref)
-	if err != nil {
-		return classifyError(err)
-	}
+	// follow its latest savepoint (nextSeq - lastSP counts them). The
+	// savepoint row sits at nextSeq+1 so it clusters right after the delta it
+	// folds, with no PK collision.
 	if nextSeq-lastSP >= int64(s.cfg.SchemaSavepointInterval) {
 		// applied is the fold of every delta up to and including this
 		// one: the savepoint stores it.

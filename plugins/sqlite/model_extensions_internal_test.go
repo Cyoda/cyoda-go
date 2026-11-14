@@ -85,7 +85,7 @@ func sortNewlineTokens(b []byte) []byte {
 }
 
 // sqliteFixture is the internal-package fixture for modelStore tests
-// that need access to unexported methods (foldLocked, lastSavepointSeq,
+// that need access to unexported methods (foldLocked, the extension log,
 // etc.) and to the concrete *modelStore value. Mirrors pgFixture in
 // plugins/postgres/model_extensions_internal_test.go.
 //
@@ -254,7 +254,7 @@ func TestSQLite_ExtendSchema_SavepointAtConfigInterval(t *testing.T) {
 
 	seq, err := savepointSeqViaTx(t, fx, ref)
 	if err != nil {
-		t.Fatalf("lastSavepointSeq: %v", err)
+		t.Fatalf("savepoint seq: %v", err)
 	}
 	if seq == 0 {
 		t.Errorf("savepoint seq after 10 deltas with interval=10 = 0, want nonzero")
@@ -343,17 +343,17 @@ func TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
 	}
 	beforeUnlock, err := savepointSeqViaTx(t, fx, ref)
 	if err != nil {
-		t.Fatalf("lastSavepointSeq pre-unlock: %v", err)
+		t.Fatalf("savepoint seq pre-unlock: %v", err)
 	}
 	if err := fx.store.Unlock(fx.ctx, ref); err != nil {
 		t.Fatalf("Unlock: %v", err)
 	}
 	afterUnlock, err := savepointSeqViaTx(t, fx, ref)
 	if err != nil {
-		t.Fatalf("lastSavepointSeq post-unlock: %v", err)
+		t.Fatalf("savepoint seq post-unlock: %v", err)
 	}
 	if beforeUnlock != afterUnlock {
-		t.Errorf("Unlock mutated lastSavepointSeq: before=%d after=%d", beforeUnlock, afterUnlock)
+		t.Errorf("Unlock changed the savepoint seq: before=%d after=%d", beforeUnlock, afterUnlock)
 	}
 }
 
@@ -802,7 +802,8 @@ func foldViaTx(t *testing.T, fx *sqliteFixture, ref spi.ModelRef, base []byte) (
 		t.Fatalf("begin read tx: %v", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	return fx.store.foldLockedInTx(fx.ctx, tx, ref, base)
+	folded, _, err := fx.store.foldLocked(fx.ctx, tx, ref, base, false)
+	return folded, err
 }
 
 func savepointSeqViaTx(t *testing.T, fx *sqliteFixture, ref spi.ModelRef) (int64, error) {
@@ -812,5 +813,10 @@ func savepointSeqViaTx(t *testing.T, fx *sqliteFixture, ref spi.ModelRef) (int64
 		t.Fatalf("begin read tx: %v", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	return fx.store.lastSavepointSeqInTx(fx.ctx, tx, ref)
+	var seq int64
+	err = tx.QueryRowContext(fx.ctx, `
+		SELECT COALESCE(MAX(seq), 0) FROM model_schema_extensions
+		WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND kind = 'savepoint'`,
+		string(fx.store.tenantID), ref.EntityName, ref.ModelVersion).Scan(&seq)
+	return seq, err
 }
