@@ -877,4 +877,7 @@ func TestInternal_ModelNotLocked_Is409(t *testing.T) {
 	if appErr.Detail == "" {
 		t.Error("store text must be kept as Detail")
 	}
+	if errors.Is(appErr, spi.ErrModelNotLocked) {
+		t.Error("the answer must not carry spi.ErrModelNotLocked in its unwrap chain")
+	}
 }
