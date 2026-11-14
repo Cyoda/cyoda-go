@@ -217,7 +217,9 @@ model `Save` retries); its doc stops naming schema extension.
    entity rows, so there is no cycle. New variable
    `CYODA_POSTGRES_MODEL_CONNS` (default `8`, at least `2`; a smaller or
    malformed value fails startup). Cache misses (lease expiry, the read after
-   an invalidation) run on this pool, coalesced per node (§4.7).
+   an invalidation) run on this pool, coalesced per node (§4.7). Every
+   connection acquire on this pool, in a transaction or not, is bounded by
+   `CYODA_POSTGRES_ACQUIRE_TIMEOUT` and answers the retryable `503`.
    - **An extension slot before a connection.** At most half the pool
      (`CONNS / 2`, at least `1`) is held by extensions at once, so model reads
      and administration always have the rest. The row-lock holder is always
