@@ -78,8 +78,8 @@ func RunSchemaExtension_KeptAfterFailedWrite(t *testing.T, fixture BackendFixtur
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if status < 400 {
-		t.Fatalf("create answered %d; want it refused by the failing processor: %s", status, body)
+	if code := problemErrorCode(body); status != http.StatusBadRequest || code != "WORKFLOW_FAILED" {
+		t.Fatalf("create answered %d %q; want the failing processor's 400 WORKFLOW_FAILED: %s", status, code, body)
 	}
 
 	requireSimpleView(t, c, model, "LOCKED", map[string]string{"name": "seed"}, map[string]string{"name": "a", "tag": "foo"})
@@ -141,14 +141,20 @@ func RunSchemaExtension_NotLocked(t *testing.T, fixture BackendFixture) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	if code := problemErrorCode(body); status != http.StatusConflict || code != "MODEL_NOT_LOCKED" {
+		t.Fatalf("create answered %d %q; want 409 MODEL_NOT_LOCKED: %s", status, code, body)
+	}
+
+	requireSimpleView(t, c, model, "UNLOCKED", map[string]string{"name": "seed"})
+}
+
+// problemErrorCode returns the errorCode property of a problem-details body,
+// or "" when it has none.
+func problemErrorCode(body []byte) string {
 	var pd struct {
 		Properties map[string]any `json:"properties"`
 	}
 	_ = json.Unmarshal(body, &pd)
 	code, _ := pd.Properties["errorCode"].(string)
-	if status != http.StatusConflict || code != "MODEL_NOT_LOCKED" {
-		t.Fatalf("create answered %d %q; want 409 MODEL_NOT_LOCKED: %s", status, code, body)
-	}
-
-	requireSimpleView(t, c, model, "UNLOCKED", map[string]string{"name": "seed"})
+	return code
 }
