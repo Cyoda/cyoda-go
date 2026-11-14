@@ -1,9 +1,9 @@
 package e2e_test
 
 // schema_extension_not_locked_test.go — a schema extension reaches only a
-// LOCKED model. A model unlocked after a write read it and before the write's
-// extension refuses the extension: 409 MODEL_NOT_LOCKED, and the model keeps
-// its schema.
+// LOCKED model. An extension that finds its model not LOCKED — unlocked while
+// a write to it, or the transaction the write joined, is in progress — is
+// refused: 409 MODEL_NOT_LOCKED, and the model keeps its schema.
 //
 // The compute node orders that: its processor unlocks the model during the
 // callout, with an unjoined request (a joined one is refused as

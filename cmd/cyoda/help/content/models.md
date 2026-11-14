@@ -353,7 +353,7 @@ Entity ingestion here includes data returned by a workflow processor, not just d
 
 **When it is visible.** When a write that extends returns `2xx`, the node that ran the write has the new schema. (On the in-tree backends a write carrying a transaction token is forwarded to the node that owns the transaction and runs there; see `cyoda help cluster`.) Another node has the new schema when the model cache invalidation broadcast arrives (normally within milliseconds), or, if the broadcast is lost, when `CYODA_MODEL_CACHE_LEASE` ends. Other clients may see the new field earlier, before the write returns.
 
-**The model must stay locked.** An extension changes only a `LOCKED` model. When the model is unlocked after a write read it and before its extension commits, the write is refused with `409 MODEL_NOT_LOCKED`. Unlock needs zero committed entities, so this happens only when a model is unlocked while a write to it is in progress, for example during the compute-node callout of a transition on an entity that is not committed yet. The answer is not retryable as is: the write can succeed only once the model is locked again.
+**The model must stay locked.** An extension changes only a `LOCKED` model. An extension that finds the model not `LOCKED` is refused, and the write answers `409 MODEL_NOT_LOCKED`. Unlock needs zero committed entities, so this happens only when a model is unlocked while a write to it, or the transaction the write joined, is in progress, for example during the compute-node callout of a transition on an entity that is not committed yet. An update, collection update or transition gets this answer whether the model was unlocked before it began or while it ran. The answer is not retryable as is: the write can succeed only once the model is locked again.
 
 What follows from this:
 
@@ -372,7 +372,7 @@ What follows from this:
 - `errors.MODEL_ALREADY_LOCKED` — `409` — re-import, relock, or delete attempted on a model already in `LOCKED` state
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — unlock attempted on a model already in `UNLOCKED` state
 - `errors.MODEL_HAS_ENTITIES` — `409` — unlock or delete blocked because entities of the model exist (`entityCount` in `properties`)
-- `errors.MODEL_NOT_LOCKED` — `409` — an entity write names a model that is not `LOCKED`, or a write's schema extension found the model unlocked after the write read it (see SCHEMA EXTENSION)
+- `errors.MODEL_NOT_LOCKED` — `409` — an entity write names a model that is not `LOCKED`, or a write's schema extension found the model not `LOCKED` (see SCHEMA EXTENSION)
 - `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — a model-changing operation carries a transaction token; model and workflow administration never runs inside a transaction
 - `errors.INVALID_CHANGE_LEVEL` — `400` — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL` (`entityName`, `entityVersion`, `suppliedValue`, `validValues` in `properties`)
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed (static analysis); sample data that is neither a document nor a collection of documents; a field name that is not addressable

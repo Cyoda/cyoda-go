@@ -26,9 +26,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `422 INVALID_UNIQUE_KEY` before its schema check on every door, so it
   extends nothing; before, create, collection create and update checked the
   key after extending, and a create that gave a keyed field an object or
-  array was answered `422 INVALID_UNIQUE_KEY_DEFINITION`. An extension that finds its model unlocked (unlocked
-  after the write read it) is refused with `409 MODEL_NOT_LOCKED` on every
-  backend; before, PostgreSQL appended it to the unlocked model's log. A
+  array was answered `422 INVALID_UNIQUE_KEY_DEFINITION`. An extension that
+  finds its model not locked (unlocked while a write to it, or the
+  transaction the write joined, is in progress) is refused with
+  `409 MODEL_NOT_LOCKED` on every backend; before, PostgreSQL appended it to the unlocked model's log. A
   storage failure while extending for processor-returned data answers the
   retryable `503 STORAGE_UNAVAILABLE`, not `500`. A `changeLevel` change on
   a locked model takes effect on each node as its model cache picks it up.
