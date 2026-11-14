@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestValidationError_ErrKindUnknownElement_SetForExtraField(t *testing.T) {
+func TestValidationError_ErrKindGeneric_SetForExtraField(t *testing.T) {
 	model := NewObjectNode()
 	model.SetChild("name", NewLeafNode(String))
 	// Data has an extra field not in the schema.
@@ -16,13 +16,13 @@ func TestValidationError_ErrKindUnknownElement_SetForExtraField(t *testing.T) {
 	}
 	found := false
 	for _, e := range errs {
-		if e.Kind == ErrKindUnknownElement {
+		if e.Kind == ErrKindGeneric {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected ErrKindUnknownElement for extra field, got: %+v", errs)
+		t.Errorf("expected ErrKindGeneric for extra field, got: %+v", errs)
 	}
 }
 
@@ -35,8 +35,8 @@ func TestValidationError_ErrKindGeneric_ForTypeMismatch(t *testing.T) {
 		t.Fatal("expected type-mismatch error")
 	}
 	for _, e := range errs {
-		if e.Kind == ErrKindUnknownElement {
-			t.Errorf("type mismatch should NOT be ErrKindUnknownElement: %+v", e)
+		if e.Kind == ErrKindGeneric {
+			t.Errorf("type mismatch should NOT be ErrKindGeneric: %+v", e)
 		}
 	}
 }
@@ -249,11 +249,11 @@ func TestValidationError_ErrKindIncompatibleType_UnionExpectedTypes(t *testing.T
 }
 
 // TestHasIncompatibleType_Match returns the first incompatible-type error
-// from a slice, or nil when none is present. Mirrors HasUnknownSchemaElement
-// shape so handlers can branch on classification.
+// from a slice, or nil when none is present. Handlers branch on
+// the classification.
 func TestHasIncompatibleType_Match(t *testing.T) {
 	errs := []ValidationError{
-		{Path: "x", Message: "extra", Kind: ErrKindUnknownElement},
+		{Path: "x", Message: "extra", Kind: ErrKindGeneric},
 		{Path: "price", Message: "value of type STRING is not compatible with [INTEGER]", Kind: ErrKindIncompatibleType, ActualType: String, ExpectedTypes: []DataType{Integer}},
 	}
 	got := FirstIncompatibleType(errs)
@@ -267,37 +267,9 @@ func TestHasIncompatibleType_Match(t *testing.T) {
 
 func TestHasIncompatibleType_NoMatch(t *testing.T) {
 	errs := []ValidationError{
-		{Path: "x", Message: "extra", Kind: ErrKindUnknownElement},
+		{Path: "x", Message: "extra", Kind: ErrKindGeneric},
 	}
 	if got := FirstIncompatibleType(errs); got != nil {
 		t.Errorf("expected nil, got %+v", got)
-	}
-}
-
-func TestHasUnknownSchemaElement_Empty(t *testing.T) {
-	if HasUnknownSchemaElement(nil) {
-		t.Error("nil slice must not match")
-	}
-	if HasUnknownSchemaElement([]ValidationError{}) {
-		t.Error("empty slice must not match")
-	}
-}
-
-func TestHasUnknownSchemaElement_WithMatch(t *testing.T) {
-	errs := []ValidationError{
-		{Path: "name", Message: "type", Kind: ErrKindGeneric},
-		{Path: "email", Message: "extra", Kind: ErrKindUnknownElement},
-	}
-	if !HasUnknownSchemaElement(errs) {
-		t.Error("expected true when any error is ErrKindUnknownElement")
-	}
-}
-
-func TestHasUnknownSchemaElement_NoMatch(t *testing.T) {
-	errs := []ValidationError{
-		{Path: "name", Message: "type", Kind: ErrKindGeneric},
-	}
-	if HasUnknownSchemaElement(errs) {
-		t.Error("expected false when no ErrKindUnknownElement")
 	}
 }

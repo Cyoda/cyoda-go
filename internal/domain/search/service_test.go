@@ -41,7 +41,7 @@ func tenantCtx(tenantID string) context.Context {
 // other than the schema — limits, cancellation, sentinel mapping, transport
 // plumbing. It still declares the leaves those tests address, because a model
 // declaring NO fields is a state production cannot reach: every entity write
-// goes through validateOrExtend, which extends the model's schema before the
+// goes through ValidateOrExtend, which extends the model's schema before the
 // data lands. Saving a bare descriptor and then writing entities straight to
 // the entity store fabricated a model with data but no schema, and search
 // answered such a model by skipping field-path validation entirely.

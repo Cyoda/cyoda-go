@@ -21,7 +21,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
-// ErrInternalSchema tags schema-processing errors inside validateOrExtend
+// ErrInternalSchema tags schema-processing errors inside ValidateOrExtend
 // that represent internal failures (codec decode/encode, Diff computation,
 // plugin-layer ExtendSchema write) rather than client-contract violations.
 // The handler classifier uses errors.Is to route these to 5xx with a
@@ -185,7 +185,7 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 // ValidateStrict validates parsedData against the model schema WITHOUT
 // extending it. PATCH uses this: a sparse delta must never widen the tenant's
 // model (a stray/typo'd key is rejected, not absorbed). Mirrors the
-// ChangeLevel=="" branch of validateOrExtend.
+// ChangeLevel=="" branch of ValidateOrExtend.
 func ValidateStrict(desc *spi.ModelDescriptor, parsedData any) error {
 	modelNode, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
@@ -220,13 +220,12 @@ func ValidateDescriptor(desc *spi.ModelDescriptor, data any) []schema.Validation
 // proportional to the attacker's request size rather than bounded. Entries
 // past the cap are summarized as "... and N more" instead of dropped
 // silently, so the response still says how big the mismatch was. This bounds
-// only the RENDERED STRING: HasUnknownSchemaElement and FirstIncompatibleType
-// (see their own doc comments) read the full errs slice directly and are
-// unaffected by where the string truncates.
+// only the RENDERED STRING: FirstIncompatibleType (see its doc comment) reads the full errs
+// slice directly and is unaffected by where the string truncates.
 const maxRenderedValidationErrors = 32
 
 // ValidationErrorsToError converts a []ValidationError to a single error,
-// preserving the concatenation style used by validateOrExtend.
+// preserving the concatenation style used by ValidateOrExtend.
 //
 // When at least one entry classifies as ErrKindIncompatibleType (the
 // dictionary-aligned "wrong DataType" signal), the function returns a

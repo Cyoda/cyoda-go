@@ -88,7 +88,7 @@ func TestValidateOrExtend_NoChangeLevel_ValidatesOnly(t *testing.T) {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
 	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
-		t.Fatalf("validateOrExtend: %v", err)
+		t.Fatalf("ValidateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 0 || ms.saveCalls != 0 {
 		t.Errorf("strict-validate path must not call ExtendSchema or Save; got extend=%d save=%d",
@@ -124,7 +124,7 @@ func TestValidateOrExtend_ChangeLevel_NoDelta_NoExtendCall(t *testing.T) {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
 	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
-		t.Fatalf("validateOrExtend: %v", err)
+		t.Fatalf("ValidateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 0 {
 		t.Errorf("expected 0 ExtendSchema calls on no-op diff, got %d", ms.extendCalls)
@@ -145,7 +145,7 @@ func TestValidateOrExtend_ChangeLevel_NewField_CallsExtendSchema(t *testing.T) {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
 	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
-		t.Fatalf("validateOrExtend: %v", err)
+		t.Fatalf("ValidateOrExtend: %v", err)
 	}
 	if ms.extendCalls != 1 {
 		t.Errorf("expected exactly 1 ExtendSchema call, got %d", ms.extendCalls)
@@ -179,7 +179,7 @@ func descriptorWithChangeLevelAndKeys(t *testing.T, node *schema.ModelNode, cl s
 // TestValidateOrExtend_WideningKeyedNullLeaf_Returns422 verifies that when a
 // model has a null-only scalar leaf under a unique key, and an entity write
 // would widen that field to an object (a TYPE-level change permitted by
-// Structural ChangeLevel), validateOrExtend rejects the write with 422
+// Structural ChangeLevel), ValidateOrExtend rejects the write with 422
 // INVALID_UNIQUE_KEY_DEFINITION rather than silently widening the schema.
 func TestValidateOrExtend_WideningKeyedNullLeaf_Returns422(t *testing.T) {
 
@@ -270,7 +270,7 @@ func TestValidateOrExtend_AddNewField_NotTouchingKeyedField_Succeeds(t *testing.
 		"category": "sports",
 	}
 	if _, err := ingest.ValidateOrExtend(context.Background(), ms, desc, data); err != nil {
-		t.Fatalf("validateOrExtend unexpected error: %v", err)
+		t.Fatalf("ValidateOrExtend unexpected error: %v", err)
 	}
 	if ms.extendCalls != 1 {
 		t.Errorf("expected 1 ExtendSchema call for the new field; got %d", ms.extendCalls)
