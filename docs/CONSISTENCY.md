@@ -284,6 +284,14 @@ an import or unique-key change reads the model and then saves it whole,
 so a lock or an extension landing between the read and the save can be
 overwritten.
 
+Unlock is not atomic with its entity check either: it counts the
+model's committed entities, then unlocks. An entity write still in
+progress — its transaction not yet committed, or a create that read the
+model as LOCKED just before — is not counted and can commit after the
+unlock, leaving an UNLOCKED model with entities. A write that extends
+the model is refused at its extension instead (above); one that does not
+extend is not. Writes to a model stop before it is unlocked.
+
 ## 3c. In-transaction `Search` is a predicate read
 
 An in-transaction `Search` (`EntityStore.Search`, pushed down to the storage

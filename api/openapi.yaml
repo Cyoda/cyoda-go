@@ -5629,6 +5629,12 @@ paths:
         - Model must be in LOCKED state
 
 
+        The entity count and the unlock are not one atomic step: a write
+        still in progress when the unlock runs can commit after it and
+        leave the model UNLOCKED with entities. Stop writes to the model
+        before unlocking it.
+
+
         Path Parameters:
 
         - entityName: The name of the entity model to unlock

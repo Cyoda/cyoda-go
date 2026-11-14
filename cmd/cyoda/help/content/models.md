@@ -154,6 +154,8 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 Unlock a model. The model must be `LOCKED` and have zero associated entities. Returns `409 MODEL_HAS_ENTITIES` if entities exist, and `409 MODEL_ALREADY_UNLOCKED` if the model is not locked. The unlocked model keeps every field that entity writes added while it was locked.
 
+Unlock counts the model's committed entities and then unlocks it; the two are not one atomic step. A write to the model that is still in progress when the unlock runs — an entity in a transaction that has not committed, or a create that found the model `LOCKED` just before — can commit after the unlock and leave the model `UNLOCKED` with entities. Stop writes to the model before you unlock it. A model left in that state refuses delete with `409 MODEL_HAS_ENTITIES`: delete its entities first, or lock it again.
+
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 **PUT /api/model/{entityName}/{modelVersion}/unique-keys**
