@@ -208,16 +208,14 @@ func TestReap_LiveOwnersChildIsUntouched(t *testing.T) {
 	dir := privateDir(t)
 	owner := New(dir, t.Logf)
 	child, _ := startSleeper(t, owner)
+	recs := recordFiles(t, dir)
+	if len(recs) != 1 {
+		t.Fatalf("records = %d, want 1", len(recs))
+	}
 
 	New(dir, t.Logf).reapOrphans()
 
-	time.Sleep(200 * time.Millisecond)
-	if !child.running() {
-		t.Fatalf("live owner's child was signalled: %v", child.waitErr)
-	}
-	if n := len(recordFiles(t, dir)); n != 1 {
-		t.Fatalf("records after the reap = %d, want 1", n)
-	}
+	assertUntouched(t, child, recs[0])
 }
 
 // A record naming no usable process group (a PID of 0 or 1 would signal every
@@ -300,13 +298,22 @@ func TestStart_UnusableDirectoryStillStarts(t *testing.T) {
 }
 
 // startTermIgnorer starts, through r, a child that ignores SIGTERM: an
-// ignored signal stays ignored across exec, so sleep ignores it.
+// ignored signal stays ignored across exec, so sleep ignores it. It returns
+// once the child reports that its trap is installed.
 func startTermIgnorer(t *testing.T, r *Registry) *sleeper {
 	t.Helper()
-	cmd := exec.Command("sh", "-c", `trap "" TERM; exec sleep 300`)
+	ready, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer ready.Close()
+	cmd := exec.Command("sh", "-c", `trap "" TERM; printf x; exec sleep 300`)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Stdout = w
 	s := &sleeper{cmd: cmd, done: make(chan struct{})}
-	if _, err := r.Start(cmd); err != nil {
+	_, err = r.Start(cmd)
+	_ = w.Close()
+	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	go func() {
@@ -317,6 +324,12 @@ func startTermIgnorer(t *testing.T, r *Registry) *sleeper {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		<-s.done
 	})
+	if err := ready.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("set the deadline: %v", err)
+	}
+	if _, err := ready.Read(make([]byte, 1)); err != nil {
+		t.Fatalf("child %d did not report its trap installed: %v", cmd.Process.Pid, err)
+	}
 	return s
 }
 
@@ -327,7 +340,6 @@ func TestReap_OrphansIgnoringSIGTERMAreKilled(t *testing.T) {
 	dir := privateDir(t)
 	owner := New(dir, t.Logf)
 	orphans := []*sleeper{startTermIgnorer(t, owner), startTermIgnorer(t, owner), startTermIgnorer(t, owner)}
-	time.Sleep(200 * time.Millisecond) // let sh install the trap and exec sleep
 	abandon(t, owner)
 
 	began := time.Now()
@@ -381,9 +393,10 @@ func plantOrphan(t *testing.T, dir string) (*sleeper, string) {
 	return child, recs[0]
 }
 
-// assertUntouched fails unless the orphan was neither signalled nor had its
-// record removed. A reap that signals an orphan returns only once its record's
-// lock is free, so a held lock right after the reap shows it was not signalled.
+// assertUntouched fails unless the recorded child was neither signalled nor had
+// its record removed. A reap that signals a child returns only once its
+// record's lock is free, so a held lock right after the reap shows it was not
+// signalled — no wait is needed.
 func assertUntouched(t *testing.T, child *sleeper, record string) {
 	t.Helper()
 	held, err := New(filepath.Dir(record), t.Logf).lockHeld(record)
@@ -391,7 +404,7 @@ func assertUntouched(t *testing.T, child *sleeper, record string) {
 		t.Fatalf("record after the reap: %v", err)
 	}
 	if !held || !child.running() {
-		t.Fatalf("the orphan was signalled: %v", child.waitErr)
+		t.Fatalf("the child was signalled: %v", child.waitErr)
 	}
 }
 
