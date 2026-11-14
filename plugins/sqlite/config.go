@@ -20,6 +20,9 @@ type config struct {
 	SchemaSavepointInterval int // default 64; read from CYODA_SCHEMA_SAVEPOINT_INTERVAL; min 1
 }
 
+// defaultSchemaSavepointInterval is CYODA_SCHEMA_SAVEPOINT_INTERVAL's default.
+const defaultSchemaSavepointInterval = 64
+
 // parseConfig reads CYODA_SQLITE_* env vars via the injected getenv.
 func parseConfig(getenv func(string) string) (config, error) {
 	cfg := config{
@@ -28,7 +31,7 @@ func parseConfig(getenv func(string) string) (config, error) {
 		BusyTimeout:             envDurationFn(getenv, "CYODA_SQLITE_BUSY_TIMEOUT", 5*time.Second),
 		CacheSizeKiB:            envIntFn(getenv, "CYODA_SQLITE_CACHE_SIZE", 64000),
 		ReaderPoolSize:          envIntMin1Fn(getenv, "CYODA_SQLITE_READER_POOL_SIZE", defaultReaderPoolSize()),
-		SchemaSavepointInterval: envIntMin1Fn(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", 64),
+		SchemaSavepointInterval: envIntMin1Fn(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", defaultSchemaSavepointInterval),
 	}
 	if cfg.Path == "" {
 		return cfg, fmt.Errorf("CYODA_SQLITE_PATH resolved to empty string")

@@ -487,6 +487,8 @@ func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) 
 		BusyTimeout:    5 * time.Second,
 		CacheSizeKiB:   64000,
 		ReaderPoolSize: defaultReaderPoolSize(),
+		// The shipped default; a test that needs another interval sets it.
+		SchemaSavepointInterval: defaultSchemaSavepointInterval,
 	}
 	f, err := newStoreFactory(ctx, cfg, opts...)
 	if err != nil {

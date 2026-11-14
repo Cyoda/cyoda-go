@@ -477,25 +477,23 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 		return classifyError(fmt.Errorf("append delta for %s: %w", ref, err))
 	}
 
-	// Savepoint trigger: fires when (nextSeq - lastSavepointSeq) crosses the
-	// configured interval. The savepoint row sits at nextSeq+1 so it clusters
-	// right after the delta it folds, with no PK collision. Interval 0
-	// disables it (the default test fixture).
-	if s.cfg.SchemaSavepointInterval > 0 {
-		lastSP, err := s.lastSavepointSeqInTx(ctx, tx, ref)
-		if err != nil {
-			return classifyError(err)
-		}
-		if nextSeq-lastSP >= int64(s.cfg.SchemaSavepointInterval) {
-			// applied is the fold of every delta up to and including this
-			// one: the savepoint stores it.
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO model_schema_extensions
-				    (tenant_id, model_name, model_version, seq, kind, payload)
-				 VALUES (?, ?, ?, ?, 'savepoint', ?)`,
-				string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq+1, applied); err != nil {
-				return classifyError(fmt.Errorf("append savepoint for %s (seq=%d): %w", ref, nextSeq+1, err))
-			}
+	// A savepoint follows once SchemaSavepointInterval of the model's deltas
+	// follow its latest savepoint (nextSeq - lastSavepointSeq counts them).
+	// The savepoint row sits at nextSeq+1 so it clusters right after the
+	// delta it folds, with no PK collision.
+	lastSP, err := s.lastSavepointSeqInTx(ctx, tx, ref)
+	if err != nil {
+		return classifyError(err)
+	}
+	if nextSeq-lastSP >= int64(s.cfg.SchemaSavepointInterval) {
+		// applied is the fold of every delta up to and including this
+		// one: the savepoint stores it.
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO model_schema_extensions
+			    (tenant_id, model_name, model_version, seq, kind, payload)
+			 VALUES (?, ?, ?, ?, 'savepoint', ?)`,
+			string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq+1, applied); err != nil {
+			return classifyError(fmt.Errorf("append savepoint for %s (seq=%d): %w", ref, nextSeq+1, err))
 		}
 	}
 

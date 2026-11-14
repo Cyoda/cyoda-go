@@ -99,23 +99,20 @@ type sqliteFixture struct {
 	tenantID spi.TenantID
 }
 
+// newSQLiteFixture constructs a fixture with the default savepoint
+// interval (64).
 func newSQLiteFixture(t *testing.T) *sqliteFixture {
-	return newSQLiteFixtureWithInterval(t, 0)
+	return newSQLiteFixtureWithInterval(t, defaultSchemaSavepointInterval)
 }
 
 // newSQLiteFixtureWithInterval constructs a fixture like newSQLiteFixture
-// but with cfg.SchemaSavepointInterval overridden at factory-construction
-// time — used by B-I3/B-I4 tests that need a small interval to exercise
-// the savepoint trigger deterministically. Passing interval=0 means "use
-// the factory default" (64).
+// but with cfg.SchemaSavepointInterval set at factory-construction time —
+// used by tests that need a small interval to exercise the savepoint
+// trigger deterministically.
 func newSQLiteFixtureWithInterval(t *testing.T, interval int) *sqliteFixture {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	var opts []Option
-	if interval > 0 {
-		opts = append(opts, withSavepointInterval(interval))
-	}
-	f, err := NewStoreFactoryForTest(context.Background(), dbPath, opts...)
+	f, err := NewStoreFactoryForTest(context.Background(), dbPath, withSavepointInterval(interval))
 	if err != nil {
 		t.Fatalf("NewStoreFactoryForTest: %v", err)
 	}
@@ -261,6 +258,35 @@ func TestSQLite_ExtendSchema_SavepointAtConfigInterval(t *testing.T) {
 	}
 	if seq == 0 {
 		t.Errorf("savepoint seq after 10 deltas with interval=10 = 0, want nonzero")
+	}
+}
+
+// TestSQLite_TestFactory_DefaultSavepointInterval — the test factory runs
+// with the shipped default interval (64), not savepoints off: the 63rd
+// delta writes no savepoint, the 64th writes one.
+func TestSQLite_TestFactory_DefaultSavepointInterval(t *testing.T) {
+	fx := newSQLiteFixture(t)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte{})
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	extend := func(i int) {
+		t.Helper()
+		if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%02d"`, i))); err != nil {
+			t.Fatalf("ExtendSchema %d: %v", i, err)
+		}
+	}
+	for i := 1; i < 64; i++ {
+		extend(i)
+	}
+	if seq, err := savepointSeqViaTx(t, fx, ref); err != nil || seq != 0 {
+		t.Fatalf("savepoint seq after 63 deltas = %d (err %v), want 0", seq, err)
+	}
+	extend(64)
+	if seq, err := savepointSeqViaTx(t, fx, ref); err != nil || seq == 0 {
+		t.Fatalf("savepoint seq after 64 deltas = %d (err %v), want nonzero", seq, err)
 	}
 }
 
