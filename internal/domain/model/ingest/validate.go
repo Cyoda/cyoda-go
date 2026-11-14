@@ -162,18 +162,20 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 	if delta == nil {
 		return desc, nil
 	}
+	// The caller's next read of this model's schema in the same request must
+	// see the extension, so a copy carrying the extended schema is handed
+	// back; the input descriptor is left untouched. The schema is encoded
+	// before the extension commits, so no failure after the commit can
+	// answer an error for a write whose extension is already in the model.
+	extendedRaw, err := schema.Marshal(extended)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to marshal extended schema: %w", ErrInternalSchema, err)
+	}
 	// The extension commits on its own, never in the entity transaction on
 	// ctx: once ExtendSchema returns nil it is in the model, whatever then
 	// happens to this write.
 	if err := modelStore.ExtendSchema(ctx, desc.Ref, delta); err != nil {
 		return nil, fmt.Errorf("%w: failed to extend schema: %w", ErrInternalSchema, err)
-	}
-	// The caller's next read of this model's schema in the same request must
-	// see the extension, so hand back a copy carrying the extended schema.
-	// The input descriptor is left untouched.
-	extendedRaw, err := schema.Marshal(extended)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to marshal extended schema: %w", ErrInternalSchema, err)
 	}
 	out := *desc
 	out.Schema = extendedRaw
