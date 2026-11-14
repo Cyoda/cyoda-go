@@ -2439,6 +2439,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		ifMatch    string
 		bodyBytes  []byte
 		parsedData any
+		// keyChecked records that the pass before the transaction checked
+		// this item's unique keys.
+		keyChecked bool
 	}
 	parsed := make([]parsedItem, 0, len(items))
 	for i, item := range items {
@@ -2461,6 +2464,50 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			bodyBytes:  []byte(item.Payload),
 			parsedData: data,
 		})
+	}
+
+	// Refuse a partial unique key in any item before any item's schema check
+	// can extend a model: an extension commits on its own and stays. The check
+	// needs only each item's model, and an entity's model is fixed at
+	// creation, so any committed version of the entity names it. The read
+	// strips the transaction from ctx, so it joins no transaction's read set
+	// and does not depend on what earlier items write. An entity the joined
+	// transaction created is not committed, so a request that joined one
+	// reads it there when the committed read does not find it. The loop below
+	// keeps its own reads; only the outcome of the check carries over.
+	committedCtx := spi.WithTransaction(ctx, nil)
+	committedStore, err := h.factory.EntityStore(committedCtx)
+	if err != nil {
+		return nil, common.Internal("failed to access entity store", err)
+	}
+	var joinedStore spi.EntityStore
+	if spi.GetTransaction(ctx) != nil {
+		if joinedStore, err = h.factory.EntityStore(ctx); err != nil {
+			return nil, common.Internal("failed to access entity store", err)
+		}
+	}
+	for i := range parsed {
+		item := &parsed[i]
+		existing, err := committedStore.Get(committedCtx, item.id)
+		if errors.Is(err, spi.ErrNotFound) && joinedStore != nil {
+			existing, err = joinedStore.Get(ctx, item.id)
+		}
+		if errors.Is(err, spi.ErrNotFound) {
+			// The loop answers the 404, or checks the key of an entity
+			// that appears by then.
+			continue
+		}
+		if err != nil {
+			return nil, common.Internal(fmt.Sprintf("item %d: failed to read entity for update", i), err)
+		}
+		desc, err := modelStore.Get(ctx, existing.Meta.ModelRef)
+		if err != nil {
+			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model for entity", i), err)
+		}
+		if err := checkUniqueKeys(desc, item.parsedData, item.bodyBytes, fmt.Sprintf("item %d: ", i)); err != nil {
+			return nil, err
+		}
+		item.keyChecked = true
 	}
 
 	// Begin transaction — all items share one TX in the common
@@ -2521,10 +2568,13 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model for entity", i), err)
 		}
 
-		// Refuse a partial unique key before the schema check can extend the
-		// model. Rolls back and fails the whole batch.
-		if err := checkUniqueKeys(desc, item.parsedData, item.bodyBytes, fmt.Sprintf("item %d: ", i)); err != nil {
-			return nil, err
+		// An item the pass before the transaction did not find is checked
+		// here, before its schema check can extend the model. Rolls back and
+		// fails the whole batch.
+		if !item.keyChecked {
+			if err := checkUniqueKeys(desc, item.parsedData, item.bodyBytes, fmt.Sprintf("item %d: ", i)); err != nil {
+				return nil, err
+			}
 		}
 
 		// Stamp this item's unique-key definitions onto the context before

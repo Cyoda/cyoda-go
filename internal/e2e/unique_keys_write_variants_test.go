@@ -310,7 +310,7 @@ func TestUniqueKeys_TransitionPatchPartialKey(t *testing.T) {
 // AND a field the model does not have answers 422 INVALID_UNIQUE_KEY without
 // extending the model. A schema extension commits on its own, so the key check
 // must refuse the write before the schema check can extend the model. A
-// collection create checks every item's key before any item's schema: an
+// collection checks every item's key before any item's schema: an
 // earlier item that is valid and adds the field must not extend the model when
 // a later item is refused for a partial key.
 func TestUniqueKeys_PartialKeyDoesNotExtendModel(t *testing.T) {
@@ -350,6 +350,14 @@ func TestUniqueKeys_PartialKeyDoesNotExtendModel(t *testing.T) {
 				collectionItem(model, 1, `{"name":"Part","status":"draft"}`),
 			})
 		}},
+		{"updateCollectionExtendingItemFirst", func(t *testing.T, model, payload string) (int, string) {
+			id0 := createEntityE2E(t, model, 1, `{"name":"Kept0","amount":1,"status":"draft"}`)
+			id1 := createEntityE2E(t, model, 1, `{"name":"Kept1","amount":1,"status":"draft"}`)
+			return putUpdateCollection(t, []string{
+				updateCollectionItem(id0, extendingItem, ""),
+				updateCollectionItem(id1, `{"name":"Part","status":"draft"}`, ""),
+			}, "")
+		}},
 	}
 	for _, door := range doors {
 		t.Run(door.name, func(t *testing.T) {
@@ -373,4 +381,90 @@ func TestUniqueKeys_PartialKeyDoesNotExtendModel(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUniqueKeys_PartialKeyDoesNotExtendModel_JoinedCollectionUpdate: a
+// collection update joined to a transaction refuses a partial key on an entity
+// that transaction created and has not committed, before an earlier item can
+// extend the model. A committed read cannot see that entity; the key check
+// finds its model through the joined transaction.
+//
+// The owner's processor creates S of the target model in the owner's
+// transaction, then sends a joined collection update: item 0 is a committed
+// entity C with the whole key and a field the model does not have, item 1 is
+// S with only part of its composite key.
+func TestUniqueKeys_PartialKeyDoesNotExtendModel_JoinedCollectionUpdate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	const field = "joinedPartialKeyNewField"
+	h := newCallbackHarness(t)
+	driver := "uk-joined-cupdate-driver"
+	target, owner := uniq("uk-joined-cupdate-target"), uniq("uk-joined-cupdate-owner")
+
+	type record struct {
+		created callbackResult
+		cErr    error
+		res     callbackResult
+		err     error
+	}
+	done := make(chan record, 1)
+	var cID string // set before the owner's create; read only by the processor it starts
+	h.RegisterProc(driver, func(rc *reqCtx) (map[string]any, error) {
+		var r record
+		r.created, r.cErr = rc.CreateEntity(target, 1, `{"name":"S","amount":2,"status":"draft"}`)
+		if r.cErr == nil && r.created.StatusCode == http.StatusOK {
+			body, _ := json.Marshal([]any{
+				map[string]any{"id": cID, "payload": fmt.Sprintf(`{"name":"C","amount":1,"status":"draft",%q:"v"}`, field)},
+				map[string]any{"id": r.created.EntityID, "payload": `{"name":"S","status":"draft"}`},
+			})
+			r.res, r.err = rc.h.callback(http.MethodPut, "/api/entity/JSON", string(body), rc.token)
+		}
+		done <- r
+		return nil, fmt.Errorf("the joined collection update was answered")
+	})
+
+	// The target: composite key (name, amount), LOCKED, STRUCTURAL.
+	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/1", target), workflowSampleModel, "")
+	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("import model %s: %d %s", target, resp.StatusCode, body)
+	}
+	resp = h.DoAuth(t, http.MethodPut, fmt.Sprintf("/api/model/%s/1/unique-keys", target),
+		`{"uniqueKeys":[{"id":"name-amount-key","fields":["$.name","$.amount"]}]}`, "")
+	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("set unique keys of %s: %d %s", target, resp.StatusCode, body)
+	}
+	resp = h.DoAuth(t, http.MethodPut, fmt.Sprintf("/api/model/%s/1/lock", target), "", "")
+	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("lock model %s: %d %s", target, resp.StatusCode, body)
+	}
+	resp = h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/model/%s/1/workflow/import", target), ukManualTransitionWF(target), "")
+	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("import workflow %s: %d %s", target, resp.StatusCode, body)
+	}
+	resp = h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/model/%s/1/changeLevel/STRUCTURAL", target), "", "")
+	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("set changeLevel of %s: %d %s", target, resp.StatusCode, body)
+	}
+	h.SetupModelWithWorkflow(t, owner, syncProcWorkflow(driver))
+
+	id, status, body := h.CreateEntity(t, target, 1, `{"name":"C","amount":1,"status":"draft"}`)
+	if status != http.StatusOK {
+		t.Fatalf("create C: %d %s", status, body)
+	}
+	cID = id
+
+	h.CreateEntity(t, owner, 1, workflowSampleModel)
+	r := awaitOutcome(t, done)
+	if r.cErr != nil || r.created.StatusCode != http.StatusOK || r.created.EntityID == "" {
+		t.Fatalf("joined create of S: err=%v status=%d body=%s", r.cErr, r.created.StatusCode, r.created.Body)
+	}
+	if r.err != nil {
+		t.Fatalf("joined collection update: %v", r.err)
+	}
+	if r.res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("joined collection update with a partial key on S: expected 422, got %d: %s", r.res.StatusCode, r.res.Body)
+	}
+	assertErrorCode(t, r.res.Body, "INVALID_UNIQUE_KEY")
+	requireSchemaLacks(t, h, target, field)
 }
