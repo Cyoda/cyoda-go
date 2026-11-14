@@ -288,15 +288,14 @@ func TestStart_UnusableDirectoryStillStarts(t *testing.T) {
 	}
 }
 
-// An orphan that ignores SIGTERM is sent SIGKILL once the grace period ends.
-func TestReap_OrphanIgnoringSIGTERMIsKilled(t *testing.T) {
-	dir := t.TempDir()
-	owner := New(dir, t.Logf)
-	// An ignored signal stays ignored across exec, so sleep ignores SIGTERM.
+// startTermIgnorer starts, through r, a child that ignores SIGTERM: an
+// ignored signal stays ignored across exec, so sleep ignores it.
+func startTermIgnorer(t *testing.T, r *Registry) *sleeper {
+	t.Helper()
 	cmd := exec.Command("sh", "-c", `trap "" TERM; exec sleep 300`)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	s := &sleeper{cmd: cmd, done: make(chan struct{})}
-	if _, err := owner.Start(cmd); err != nil {
+	if _, err := r.Start(cmd); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	go func() {
@@ -307,16 +306,33 @@ func TestReap_OrphanIgnoringSIGTERMIsKilled(t *testing.T) {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		<-s.done
 	})
+	return s
+}
+
+// Orphans that ignore SIGTERM are sent SIGKILL once the grace period ends.
+// They share one grace period: a reap takes about one grace period however
+// many orphans it finds.
+func TestReap_OrphansIgnoringSIGTERMAreKilled(t *testing.T) {
+	dir := t.TempDir()
+	owner := New(dir, t.Logf)
+	orphans := []*sleeper{startTermIgnorer(t, owner), startTermIgnorer(t, owner), startTermIgnorer(t, owner)}
 	time.Sleep(200 * time.Millisecond) // let sh install the trap and exec sleep
 	abandon(t, owner)
 
+	began := time.Now()
 	New(dir, t.Logf).reapOrphans()
+	took := time.Since(began)
 
-	if sig := s.awaitSignalled(t, 2*time.Second); sig != syscall.SIGKILL {
-		t.Fatalf("orphan ended by %v, want SIGKILL", sig)
+	for _, s := range orphans {
+		if sig := s.awaitSignalled(t, 2*time.Second); sig != syscall.SIGKILL {
+			t.Fatalf("orphan ended by %v, want SIGKILL", sig)
+		}
 	}
 	if recs := recordFiles(t, dir); len(recs) != 0 {
 		t.Fatalf("records after the reap = %v, want none", recs)
+	}
+	if limit := termGrace + 2*time.Second; took > limit {
+		t.Fatalf("the reap took %s, want under %s: orphans were waited for one after another", took, limit)
 	}
 }
 

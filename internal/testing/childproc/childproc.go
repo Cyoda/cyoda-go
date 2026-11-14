@@ -246,11 +246,15 @@ func (r *Registry) reapOrphans() {
 	}
 	// Records first, owners after: a record's owner is read before the
 	// owner's file can be cleared away.
+	var orphans []orphan
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), recordSuffix) && !strings.HasPrefix(e.Name(), pendingPrefix) {
-			r.reapRecord(filepath.Join(r.dir, e.Name()))
+			if o, ok := r.checkRecord(filepath.Join(r.dir, e.Name())); ok {
+				orphans = append(orphans, o)
+			}
 		}
 	}
+	r.kill(orphans)
 	for _, e := range entries {
 		path := filepath.Join(r.dir, e.Name())
 		switch {
@@ -267,87 +271,130 @@ func (r *Registry) reapOrphans() {
 	}
 }
 
-// reapRecord handles one record: untouched while its owner lives; removed
-// when its process is gone; its process group killed when it is an orphan.
-func (r *Registry) reapRecord(path string) {
+// orphan is a recorded process group whose owner is gone.
+type orphan struct {
+	path string
+	rec  record
+}
+
+// checkRecord sorts one record: untouched while its owner lives; removed when
+// its process is gone; returned when it is an orphan to kill.
+func (r *Registry) checkRecord(path string) (orphan, bool) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return
+		return orphan{}, false
 	}
 	if err != nil {
 		r.logf("childproc: cannot read %s: %v", path, err)
-		return
+		return orphan{}, false
 	}
 	rec, decodeErr := decodeRecord(raw)
 	if decodeErr == nil && r.ownerAlive(rec.Owner) {
-		return
+		return orphan{}, false
 	}
 	held, err := r.lockHeld(path)
 	if err != nil {
 		r.logf("childproc: cannot check %s: %v", path, err)
-		return
+		return orphan{}, false
 	}
 	if !held {
 		// No process holds the record: the one it names has exited, whatever
 		// now runs under its PID.
 		r.remove(path)
-		return
+		return orphan{}, false
 	}
 	if decodeErr != nil {
 		r.logf("childproc: %s is held but unreadable, not signalled: %v", path, decodeErr)
-		return
+		return orphan{}, false
 	}
 	if rec.PID <= 1 {
 		r.logf("childproc: %s is held but names pid %d, not signalled", path, rec.PID)
-		return
+		return orphan{}, false
 	}
-	r.logf("childproc: killing orphan pid %d (%s) left by a test binary that has exited", rec.PID, rec.Path)
+	return orphan{path: path, rec: rec}, true
+}
+
+// kill sends the orphans SIGTERM, then SIGKILL to those still alive after the
+// grace period, and removes the record of each one that is gone. They share
+// each grace period, so a reap takes about one however many orphans there are.
+func (r *Registry) kill(orphans []orphan) {
+	for _, o := range orphans {
+		r.logf("childproc: killing orphan pid %d (%s) left by a test binary that has exited", o.rec.PID, o.rec.Path)
+	}
 	for _, step := range []struct {
 		sig   syscall.Signal
 		grace time.Duration
 	}{{syscall.SIGTERM, termGrace}, {syscall.SIGKILL, killGrace}} {
-		if !r.signalIfHeld(path, rec, step.sig) {
-			r.remove(path)
-			return
+		var signalled []orphan
+		for _, o := range orphans {
+			switch r.signalIfHeld(o, step.sig) {
+			case signalSent:
+				signalled = append(signalled, o)
+			case signalGone:
+				r.remove(o.path)
+			case signalRefused:
+				// Left alone, and its record kept: the reason is logged.
+			}
 		}
-		if r.awaitRelease(path, step.grace) {
-			r.remove(path)
+		orphans = r.awaitRelease(signalled, step.grace)
+		if len(orphans) == 0 {
 			return
 		}
 	}
-	r.logf("childproc: orphan pid %d (%s) survived SIGKILL; its record stays", rec.PID, rec.Path)
+	for _, o := range orphans {
+		r.logf("childproc: orphan pid %d (%s) survived SIGKILL; its record stays", o.rec.PID, o.rec.Path)
+	}
 }
 
-// signalIfHeld sends sig to the record's process group only while the record's
-// lock is still held — its identity check, repeated before every signal. It
-// reports whether the group was still alive.
-func (r *Registry) signalIfHeld(path string, rec record, sig syscall.Signal) bool {
-	held, err := r.lockHeld(path)
-	if err != nil || !held {
-		return false
+type signalOutcome int
+
+const (
+	signalSent    signalOutcome = iota // the group was alive and was signalled
+	signalGone                         // no process holds the record any more
+	signalRefused                      // not signalled: the identity check could not pass
+)
+
+// signalIfHeld sends sig to the orphan's process group only while its record's
+// lock is still held — the identity check, repeated before every signal.
+func (r *Registry) signalIfHeld(o orphan, sig syscall.Signal) signalOutcome {
+	held, err := r.lockHeld(o.path)
+	if err != nil {
+		r.logf("childproc: cannot check %s, pid %d not signalled: %v", o.path, o.rec.PID, err)
+		return signalRefused
+	}
+	if !held {
+		return signalGone
 	}
 	// The child was started as the leader of its own group. A live process
 	// with that PID in another group is not it; with no such process, the
 	// group lives on in a descendant, and its ID cannot have been reused.
-	if pgid, err := syscall.Getpgid(rec.PID); err == nil && pgid != rec.PID {
-		r.logf("childproc: pid %d is not a process group leader, not signalled", rec.PID)
-		return false
+	if pgid, err := syscall.Getpgid(o.rec.PID); err == nil && pgid != o.rec.PID {
+		r.logf("childproc: pid %d is not a process group leader, not signalled", o.rec.PID)
+		return signalRefused
 	}
-	if err := syscall.Kill(-rec.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
-		r.logf("childproc: failed to send %v to process group %d: %v", sig, rec.PID, err)
+	if err := syscall.Kill(-o.rec.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		r.logf("childproc: failed to send %v to process group %d: %v", sig, o.rec.PID, err)
 	}
-	return true
+	return signalSent
 }
 
-// awaitRelease waits up to within for no process to hold the record's lock.
-func (r *Registry) awaitRelease(path string, within time.Duration) bool {
+// awaitRelease waits up to within for the orphans to exit — for no process to
+// hold their records' locks — removes the records of those that did, and
+// returns the rest.
+func (r *Registry) awaitRelease(orphans []orphan, within time.Duration) []orphan {
 	deadline := time.Now().Add(within) // realtime: grace period for a signalled process
 	for {
-		if r.lockFree(path) {
-			return true
+		var alive []orphan
+		for _, o := range orphans {
+			if r.lockFree(o.path) {
+				r.remove(o.path)
+			} else {
+				alive = append(alive, o)
+			}
 		}
-		if time.Now().After(deadline) { // realtime: grace period for a signalled process
-			return false
+		orphans = alive
+		if len(orphans) == 0 || time.Now().After(deadline) { // realtime: grace period for a signalled process
+			return orphans
 		}
 		time.Sleep(pollEvery)
 	}
