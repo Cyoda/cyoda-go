@@ -663,8 +663,11 @@ func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion st
 		return nil, common.Internal("failed to validate unique key definitions", valErr)
 	}
 
-	desc.UniqueKeys = keys
-	if err := store.Save(ctx, desc); err != nil {
+	// The read descriptor can be shared with other readers of this model (one
+	// coalesced storage read), so the change goes into a copy.
+	updated := *desc
+	updated.UniqueKeys = keys
+	if err := store.Save(ctx, &updated); err != nil {
 		return nil, common.Internal("failed to save model", err)
 	}
 
