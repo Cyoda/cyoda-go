@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
 const notLockedCode = "MODEL_NOT_LOCKED"
@@ -124,7 +126,8 @@ func TestSchemaExtension_NotLocked_CreateProcessorOutput(t *testing.T) {
 }
 
 // joinedNotLocked runs one joined write against an uncommitted entity of a
-// model unlocked during the callout, and returns what the write answered.
+// model unlocked during the callout, and returns what the write answered: an
+// HTTP answer or a gRPC envelope, whichever door write uses.
 //
 // An entity being created is not stored until its first transition ends, so
 // a callback cannot write the owner's own entity during a create's callout;
@@ -134,7 +137,7 @@ func TestSchemaExtension_NotLocked_CreateProcessorOutput(t *testing.T) {
 // (unjoined), and makes the joined write on S. The target's workflow takes S
 // to OPEN; S's manual transition "go" runs the processor adder, which returns
 // data with field.
-func joinedNotLocked(t *testing.T, prefix, field string, write func(rc *reqCtx, sID string) (callbackResult, error)) (h *callbackHarness, target string, res callbackResult, err error) {
+func joinedNotLocked[R any](t *testing.T, prefix, field string, write func(rc *reqCtx, sID string) (R, error)) (h *callbackHarness, target string, res R, err error) {
 	t.Helper()
 	h = newCallbackHarness(t)
 	driver, adder := prefix+"-driver", prefix+"-adder"
@@ -147,7 +150,7 @@ func joinedNotLocked(t *testing.T, prefix, field string, write func(rc *reqCtx, 
 		created callbackResult
 		cErr    error
 		unlock  unlockRecord
-		res     callbackResult
+		res     R
 		err     error
 	}
 	done := make(chan record, 1)
@@ -234,15 +237,99 @@ func TestGRPC_ModelNotLocked_Envelope(t *testing.T) {
 	}
 	u := awaitOutcome(t, unlocked)
 	requireUnlocked(t, u.res, u.err)
+	requireNotLockedEnvelope(t, "gRPC create", env, nil)
+	requireSchemaLacks(t, h, model, field)
+}
+
+// requireNotLockedEnvelope fails the test unless a gRPC envelope reports a
+// client error carrying MODEL_NOT_LOCKED, not retryable.
+func requireNotLockedEnvelope(t *testing.T, what string, env txEnvelope, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("%s: transport error: %v", what, err)
+	}
 	if env.Success || env.Error == nil {
 		raw, _ := json.Marshal(env)
-		t.Fatalf("envelope = %s; want success=false with an error", raw)
+		t.Fatalf("%s: envelope = %s; want success=false with an error", what, raw)
 	}
 	if env.Error.Code != "CLIENT_ERROR" || !strings.HasPrefix(env.Error.Message, notLockedCode+":") {
-		t.Fatalf("error = code %q message %q; want CLIENT_ERROR with a message prefixed %s:", env.Error.Code, env.Error.Message, notLockedCode)
+		t.Fatalf("%s: error = code %q message %q; want CLIENT_ERROR with a message prefixed %s:", what, env.Error.Code, env.Error.Message, notLockedCode)
 	}
 	if env.Error.Retryable != nil && *env.Error.Retryable {
-		t.Errorf("error is retryable; MODEL_NOT_LOCKED is not")
+		t.Errorf("%s: error is retryable; MODEL_NOT_LOCKED is not", what)
 	}
+}
+
+// TestGRPC_ModelNotLocked_CreateCollection — the collection create door
+// (EntityManageCollection): the processor unlocks the model, then returns
+// data with a new field.
+func TestGRPC_ModelNotLocked_CreateCollection(t *testing.T) {
+	h := newCallbackHarness(t)
+	const proc = "se-nl-grpc-ccreate"
+	model := uniq("se-nl-grpc-ccreate")
+	const field = "nlGrpcCollectionCreateField"
+	unlocked := make(chan unlockRecord, 1)
+	h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
+		res, err := rc.h.unlockUnjoined(model)
+		unlocked <- unlockRecord{res, err}
+		return map[string]any{"name": "Test Order", "amount": 100, "status": "draft", field: "v"}, nil
+	})
+	notLockedModel(t, h, model, syncProcWorkflow(proc))
+
+	// An empty pass sends the request unjoined.
+	env, err := h.joinedManageCollectionGRPC(internalgrpc.EntityCreateCollectionRequest, map[string]any{
+		"id": "se-nl-grpc-ccreate", "dataFormat": "JSON",
+		"payloads": []any{map[string]any{
+			"model": map[string]any{"name": model, "version": 1},
+			"data":  mustJSONMap(workflowSampleModel),
+		}},
+	}, "")
+	u := awaitOutcome(t, unlocked)
+	requireUnlocked(t, u.res, u.err)
+	requireNotLockedEnvelope(t, "gRPC collection create", env, err)
 	requireSchemaLacks(t, h, model, field)
+}
+
+// TestGRPC_ModelNotLocked_JoinedUpdate — the update door (EntityUpdateRequest
+// without a transition): after the unlock, a joined update of the uncommitted
+// entity brings a new field.
+func TestGRPC_ModelNotLocked_JoinedUpdate(t *testing.T) {
+	const field = "nlGrpcUpdateField"
+	h, target, env, err := joinedNotLocked(t, "se-nl-grpc-update", field, func(rc *reqCtx, sID string) (txEnvelope, error) {
+		return rc.h.joinedManageGRPC(internalgrpc.EntityUpdateRequest, map[string]any{
+			"id": "se-nl-grpc-update", "dataFormat": "JSON",
+			"payload": map[string]any{"entityId": sID, "data": mustJSONMap(withField(field))},
+		}, rc.token)
+	})
+	requireNotLockedEnvelope(t, "gRPC joined update", env, err)
+	requireSchemaLacks(t, h, target, field)
+}
+
+// TestGRPC_ModelNotLocked_JoinedCollectionUpdate — the collection update door
+// (EntityManageCollection): after the unlock, a joined collection update of
+// the uncommitted entity brings a new field.
+func TestGRPC_ModelNotLocked_JoinedCollectionUpdate(t *testing.T) {
+	const field = "nlGrpcCollectionUpdateField"
+	h, target, env, err := joinedNotLocked(t, "se-nl-grpc-cupdate", field, func(rc *reqCtx, sID string) (txEnvelope, error) {
+		return rc.h.joinedManageCollectionGRPC(internalgrpc.EntityUpdateCollectionRequest, map[string]any{
+			"id": "se-nl-grpc-cupdate", "dataFormat": "JSON",
+			"payloads": []any{map[string]any{"entityId": sID, "data": mustJSONMap(withField(field))}},
+		}, rc.token)
+	})
+	requireNotLockedEnvelope(t, "gRPC joined collection update", env, err)
+	requireSchemaLacks(t, h, target, field)
+}
+
+// TestGRPC_ModelNotLocked_JoinedTransition — the transition door
+// (EntityTransitionRequest): after the unlock, a joined manual transition of
+// the uncommitted entity runs a processor that returns data with a new field.
+func TestGRPC_ModelNotLocked_JoinedTransition(t *testing.T) {
+	const field = "nlGrpcTransitionField"
+	h, target, env, err := joinedNotLocked(t, "se-nl-grpc-tr", field, func(rc *reqCtx, sID string) (txEnvelope, error) {
+		return rc.h.joinedManageGRPC(internalgrpc.EntityTransitionRequest, map[string]any{
+			"id": "se-nl-grpc-tr", "entityId": sID, "transition": "go",
+		}, rc.token)
+	})
+	requireNotLockedEnvelope(t, "gRPC joined transition", env, err)
+	requireSchemaLacks(t, h, target, field)
 }
