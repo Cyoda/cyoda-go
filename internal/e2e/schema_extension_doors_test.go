@@ -73,14 +73,24 @@ func collectionItemFailed(body string) bool {
 	return false
 }
 
-// requireFieldsInExport fails the test for each field the model's export does
-// not name.
-func requireFieldsInExport(t *testing.T, model string, fields ...string) {
+// requireFieldsInExport fails the test for each field path (such as
+// "$.parent.child") the model's SIMPLE_VIEW export does not declare. The
+// export lists a path's children under the path itself: a leaf child as
+// ".name", an object or array child as "#.name".
+func requireFieldsInExport(t *testing.T, model string, paths ...string) {
 	t.Helper()
-	raw := fmt.Sprintf("%v", exportModelE2E(t, model, 1))
-	for _, f := range fields {
-		if !strings.Contains(raw, f) {
-			t.Errorf("model %s lacks %q after its write answered 2xx: %s", model, f, raw)
+	export := exportModelE2E(t, model, 1)
+	buckets, _ := export["model"].(map[string]any)
+	for _, p := range paths {
+		i := strings.LastIndex(p, ".")
+		if i <= 0 {
+			t.Fatalf("field path %q names no field under a parent", p)
+		}
+		bucket, _ := buckets[p[:i]].(map[string]any)
+		_, leaf := bucket["."+p[i+1:]]
+		_, branch := bucket["#."+p[i+1:]]
+		if !leaf && !branch {
+			t.Errorf("model %s lacks %s after its write answered 2xx: %v", model, p, export)
 		}
 	}
 }
@@ -117,12 +127,12 @@ func TestSchemaExtension_ConcurrentNestedUnderNewParent(t *testing.T) {
 	setChangeLevelE2E(t, model, 1, "STRUCTURAL")
 
 	writes := make([]extWrite, N)
-	fields := []string{"newParent"}
+	fields := []string{"$.newParent"}
 	for i := range writes {
 		id := createEntityE2E(t, model, 1, fmt.Sprintf(`{"name":"w%d","amount":%d,"status":"new"}`, i, i))
 		writes[i] = extWrite{http.MethodPut, "/api/entity/JSON/" + id,
 			fmt.Sprintf(`{"name":"w%d","amount":%d,"status":"new","newParent":{"child_%d":"v"}}`, i, i, i)}
-		fields = append(fields, fmt.Sprintf("child_%d", i))
+		fields = append(fields, fmt.Sprintf("$.newParent.child_%d", i))
 	}
 
 	requireAllWritesSucceeded(t, fireWritesConcurrently(t, writes))

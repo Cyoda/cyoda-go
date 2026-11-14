@@ -48,20 +48,20 @@ func TestSchemaExtension_ConcurrentEveryDoor_No409(t *testing.T) {
 	}{
 		{name: "Create", write: func(model string, i int, _ string) extWrite {
 			return extWrite{http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), fmt.Sprintf(`{%s,"create_%d":"v"}`, base(i), i)}
-		}, field: func(i int) string { return fmt.Sprintf("create_%d", i) }},
+		}, field: func(i int) string { return fmt.Sprintf("$.create_%d", i) }},
 		{name: "Update", preCreate: true, write: func(_ string, i int, id string) extWrite {
 			return extWrite{http.MethodPut, "/api/entity/JSON/" + id, fmt.Sprintf(`{%s,"put_%d":"v"}`, base(i), i)}
-		}, field: func(i int) string { return fmt.Sprintf("put_%d", i) }},
+		}, field: func(i int) string { return fmt.Sprintf("$.put_%d", i) }},
 		{name: "CollectionCreate", write: func(model string, i int, _ string) extWrite {
 			return extWrite{http.MethodPost, "/api/entity/JSON", collectionCreateItems(model, fmt.Sprintf(`{%s,"ccreate_%d":"v"}`, base(i), i))}
-		}, field: func(i int) string { return fmt.Sprintf("ccreate_%d", i) }},
+		}, field: func(i int) string { return fmt.Sprintf("$.ccreate_%d", i) }},
 		{name: "CollectionUpdate", preCreate: true, write: func(_ string, i int, id string) extWrite {
 			return extWrite{http.MethodPut, "/api/entity/JSON", collectionUpdateBody(id, "", fmt.Sprintf(`{%s,"cupdate_%d":"v"}`, base(i), i))}
-		}, field: func(i int) string { return fmt.Sprintf("cupdate_%d", i) }},
+		}, field: func(i int) string { return fmt.Sprintf("$.cupdate_%d", i) }},
 		{name: "ProcessorOutput", workflow: openThenGoWorkflowJSON("se-door-proc-wf", procName), preCreate: true,
 			write: func(_ string, i int, id string) extWrite {
 				return extWrite{http.MethodPut, "/api/entity/JSON/" + id + "/go", fmt.Sprintf(`{%s}`, base(i))}
-			}, field: func(i int) string { return fmt.Sprintf("proc_%d", i) }},
+			}, field: func(i int) string { return fmt.Sprintf("$.proc_%d", i) }},
 	}
 	for _, door := range doors {
 		t.Run(door.name, func(t *testing.T) {
