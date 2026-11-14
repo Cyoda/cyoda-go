@@ -45,6 +45,15 @@
 // whatever state it is in. Reapers take a directory-wide lock, so one reaper
 // probing a lock is never mistaken by another for a live holder.
 //
+// # Trust: the directory and its files are the user's own
+//
+// The directory may sit in a /tmp shared with other users, where any of them
+// can create it first and plant a record naming one of this user's process
+// group leaders. So the directory is used — to record or to reap — only when
+// it is a real directory, not a symbolic link, owned by this user and closed
+// to group and others; and a file in it is read, signalled for or removed only
+// when it is a regular file of this user's, not a symbolic link.
+//
 // Failures — an unusable directory, a record that cannot be read — never fail
 // the caller: they are logged, the child is started unrecorded, and the reaper
 // moves on. When in doubt the reaper does not signal.
@@ -90,6 +99,9 @@ type Registry struct {
 	dir  string
 	logf func(format string, args ...any)
 
+	dirOnce sync.Once
+	dirOK   bool // the directory is this user's own; see usable
+
 	ownerOnce sync.Once
 	owner     *os.File // locked and kept open for the life of the process; nil when unusable
 	ownerName string
@@ -112,7 +124,7 @@ var (
 func Default() *Registry {
 	defaultOnce.Do(func() {
 		defaultRegistry = New(DefaultDir(), func(format string, args ...any) {
-			slog.Info(fmt.Sprintf(format, args...), "pkg", "childproc")
+			slog.Warn(fmt.Sprintf(format, args...), "pkg", "childproc")
 		})
 	})
 	return defaultRegistry
@@ -120,9 +132,80 @@ func Default() *Registry {
 
 // DefaultDir is the per-user directory every checkout and worktree records its
 // children in. os.TempDir is $TMPDIR — a per-user directory on macOS that go
-// test does not change — or /tmp, which other users share, hence the uid.
+// test does not change — or /tmp, which other users share, hence the uid. The
+// name alone does not make it the user's: see usable.
 func DefaultDir() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("cyoda-test-procs-%d", os.Getuid()))
+}
+
+// expectedUID is the user the directory and its files must belong to.
+var expectedUID = os.Getuid
+
+// usable creates the directory when it is missing, and reports whether it is
+// this user's own (see checkDir). It checks once per registry and logs a
+// failure once.
+func (r *Registry) usable() bool {
+	r.dirOnce.Do(func() {
+		if err := os.MkdirAll(r.dir, 0o700); err != nil {
+			r.logf("childproc: cannot use %s, children are neither recorded nor reaped: %v", r.dir, err)
+			return
+		}
+		if err := checkDir(r.dir); err != nil {
+			r.logf("childproc: not using %s, children are neither recorded nor reaped: %v", r.dir, err)
+			return
+		}
+		r.dirOK = true
+	})
+	return r.dirOK
+}
+
+// checkDir returns an error unless dir is a directory, not a symbolic link,
+// owned by this user, with no permission for group or others.
+func checkDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("failed to inspect the directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("it is a symbolic link")
+	}
+	if !info.IsDir() {
+		return errors.New("it is not a directory")
+	}
+	if err := checkOwner(info); err != nil {
+		return err
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return fmt.Errorf("its mode %#o gives group or others access", perm)
+	}
+	return nil
+}
+
+// checkOwnFile returns an error unless path is a regular file, not a symbolic
+// link, owned by this user.
+func checkOwnFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	if err := checkOwner(info); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
+}
+
+func checkOwner(info os.FileInfo) error {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("its owner cannot be read")
+	}
+	if uid := int(st.Uid); uid != expectedUID() {
+		return fmt.Errorf("it is owned by uid %d, not %d", uid, expectedUID())
+	}
+	return nil
 }
 
 // Start reaps the orphans in the registry's directory (once per registry),
@@ -175,8 +258,7 @@ func (r *Registry) prepareRecord(exe string) (*os.File, string) {
 // ensureOwner creates and locks this process's owner file once.
 func (r *Registry) ensureOwner() bool {
 	r.ownerOnce.Do(func() {
-		if err := os.MkdirAll(r.dir, 0o700); err != nil {
-			r.logf("childproc: cannot use %s, children are not recorded: %v", r.dir, err)
+		if !r.usable() {
 			return
 		}
 		f, final, err := r.createLocked(ownerSuffix, fmt.Appendf(nil, "%d\n", os.Getpid()))
@@ -224,10 +306,10 @@ func (r *Registry) remove(path string) {
 // reapOrphans kills the orphans recorded in the directory and removes the
 // records of processes that are gone. It never fails; problems are logged.
 func (r *Registry) reapOrphans() {
-	lock, err := os.OpenFile(filepath.Join(r.dir, reaperLock), os.O_CREATE|os.O_RDWR, 0o600)
-	if errors.Is(err, os.ErrNotExist) {
-		return // no directory, nothing recorded
+	if !r.usable() {
+		return
 	}
+	lock, err := os.OpenFile(filepath.Join(r.dir, reaperLock), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		r.logf("childproc: cannot reap orphans in %s: %v", r.dir, err)
 		return
@@ -257,6 +339,9 @@ func (r *Registry) reapOrphans() {
 	r.kill(orphans)
 	for _, e := range entries {
 		path := filepath.Join(r.dir, e.Name())
+		if checkOwnFile(path) != nil {
+			continue // not this user's to remove
+		}
 		switch {
 		case strings.HasPrefix(e.Name(), pendingPrefix):
 			info, err := e.Info()
@@ -277,9 +362,18 @@ type orphan struct {
 	rec  record
 }
 
-// checkRecord sorts one record: untouched while its owner lives; removed when
-// its process is gone; returned when it is an orphan to kill.
+// checkRecord sorts one record: untouched while its owner lives or when it is
+// not this user's own file; removed when its process is gone; returned when it
+// is an orphan to kill.
 func (r *Registry) checkRecord(path string) (orphan, bool) {
+	err := checkOwnFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return orphan{}, false
+	}
+	if err != nil {
+		r.logf("childproc: %s is not this user's own record, not signalled: %v", path, err)
+		return orphan{}, false
+	}
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return orphan{}, false
@@ -473,6 +567,9 @@ func (r *Registry) Recorded(pid int) bool {
 		return false
 	}
 	for _, p := range paths {
+		if checkOwnFile(p) != nil {
+			continue
+		}
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			continue
