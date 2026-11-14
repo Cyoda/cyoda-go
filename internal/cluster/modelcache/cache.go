@@ -10,8 +10,9 @@
 //     key's generation, and a fill that read storage before the bump is dropped;
 //   - the jittered lease expires an entry whose broadcast was lost.
 //
-// Misses at one generation share one storage read; identical extensions on
-// one node share one storage call.
+// Misses at one generation share one storage read, kept apart for callers
+// inside and outside a transaction; identical extensions on one node share one
+// storage call.
 package modelcache
 
 import (
@@ -59,7 +60,8 @@ type CachingModelStore struct {
 	jitterRand  *rand.Rand // guarded by mu
 
 	// reads coalesces storage reads (misses and refreshes) per (key,
-	// generation); extends coalesces identical extensions per (key, delta).
+	// generation, whether the caller is in a transaction); extends coalesces
+	// identical extensions per (key, delta).
 	reads   singleflight.Group
 	extends singleflight.Group
 }
@@ -226,10 +228,18 @@ func (c *CachingModelStore) jitteredLeaseLocked() time.Duration {
 // readThrough reads key from storage through the (key, generation) flight and
 // caches a LOCKED result under the fill guard. It does not consult the cached
 // entry: Get does that first, RefreshAndGet skips it. Neither evicts nor bumps.
+//
+// Callers inside and outside a transaction never share a flight. The storage
+// read runs on the first caller's context, and a backend bounds a read from
+// inside a transaction by its acquire timeout but lets one outside a
+// transaction wait until its context ends: a shared read would hand the one
+// caller the other's bound, an acquire timeout to a read that must not get
+// one, or an unbounded wait to a caller that holds a transaction's connection.
 func (c *CachingModelStore) readThrough(ctx context.Context, key cacheKey, inner spi.ModelStore) (*spi.ModelDescriptor, error) {
+	inTx := spi.GetTransaction(ctx) != nil
 	for {
 		gen := c.generation(key)
-		ch := c.reads.DoChan(flightKey(key, gen), recovering(func() (any, error) {
+		ch := c.reads.DoChan(flightKey(key, gen, inTx), recovering(func() (any, error) {
 			desc, err := inner.Get(ctx, key.ref)
 			if err != nil {
 				return nil, sharedCallError(ctx, err)
@@ -345,8 +355,8 @@ func keyPrefix(key cacheKey) string {
 		len(key.ref.ModelVersion), key.ref.ModelVersion)
 }
 
-func flightKey(key cacheKey, gen uint64) string {
-	return keyPrefix(key) + strconv.FormatUint(gen, 10)
+func flightKey(key cacheKey, gen uint64, inTx bool) string {
+	return keyPrefix(key) + strconv.FormatUint(gen, 10) + ":" + strconv.FormatBool(inTx)
 }
 
 func extendKey(key cacheKey, delta spi.SchemaDelta) string {

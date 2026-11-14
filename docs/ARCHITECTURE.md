@@ -965,7 +965,9 @@ node evicts its own entry the same way before the write returns, so it
 never serves a schema older than an extension it returned; other nodes
 follow the broadcast. The TTL lease (`CYODA_MODEL_CACHE_LEASE`, ±10%
 jitter) is the bound when gossip drops a message. Concurrent misses of
-one model at one generation share one storage read, and identical
+one model at one generation share one storage read — those inside a
+transaction apart from those outside one, because only a read inside a
+transaction is bounded by the storage acquire timeout — and identical
 concurrent extensions on one node share one storage call. The signing-key copy pings its peers on
 `auth.signingkeys` (§7.2), and storage plugins receive the same
 broadcaster (`spi.WithClusterBroadcaster`).

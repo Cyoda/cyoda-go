@@ -2,6 +2,7 @@ package modelcache
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -209,5 +210,60 @@ func TestSchemaNode_DroppedFillIsParsedNotRetained(t *testing.T) {
 	}
 	if c.testHasEntry(testKey()) {
 		t.Error("a fill the guard dropped was retained")
+	}
+}
+
+// TestSharedRead_InTransactionLeaderDoesNotAnswerAReadOutsideOne: a model read
+// inside an entity transaction is bounded by the storage acquire timeout, and
+// one outside a transaction waits for a connection until its context ends. A
+// read outside a transaction therefore never shares the read of a caller
+// inside one: the in-transaction caller's acquire timeout is not its answer.
+func TestSharedRead_InTransactionLeaderDoesNotAnswerAReadOutsideOne(t *testing.T) {
+	c := newTestCache(nil)
+	inner := newFakeInner(lockedDesc())
+	release := make(chan struct{})
+	errAcquire := errors.New("model query: could not acquire a database connection")
+	inner.getFn = func(ctx context.Context, _ int) error {
+		if spi.GetTransaction(ctx) == nil {
+			return nil
+		}
+		<-release
+		return errAcquire
+	}
+	s := &requestScopedStore{cache: c, inner: inner}
+
+	txCtx := spi.WithTransaction(tenantCtx(), &spi.TransactionState{ID: "tx-1", TenantID: testTenant})
+	leader := make(chan error, 1)
+	go func() {
+		_, err := s.Get(txCtx, testRef)
+		leader <- err
+	}()
+	waitSignal(t, inner.getEntered, "the in-transaction read to reach storage")
+	waitParked(t, 1)
+
+	type result struct {
+		desc *spi.ModelDescriptor
+		err  error
+	}
+	joiner := make(chan result, 1)
+	go func() {
+		d, err := s.Get(tenantCtx(), testRef)
+		joiner <- result{d, err}
+	}()
+	var r result
+	select {
+	case r = <-joiner:
+	case <-time.After(2 * time.Second):
+		close(release)
+		r = <-joiner
+		<-leader
+		t.Fatalf("the read outside a transaction waited on the in-transaction read and got (%v, %v)", r.desc, r.err)
+	}
+	if r.err != nil || r.desc == nil {
+		t.Errorf("read outside a transaction = (%v, %v), want the descriptor from its own read", r.desc, r.err)
+	}
+	close(release)
+	if err := <-leader; !errors.Is(err, errAcquire) {
+		t.Errorf("in-transaction read error = %v, want its own acquire error", err)
 	}
 }

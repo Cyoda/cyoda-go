@@ -118,7 +118,7 @@ func keyOf(ctx context.Context, ref spi.ModelRef) cacheKey {
 }
 
 // Get serves a live cached entry, otherwise reads storage through the shared
-// (key, generation) flight.
+// read flight (readThrough).
 func (s *requestScopedStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
 	key := keyOf(ctx, ref)
 	if e, ok := s.cache.lookupEntry(key); ok {
@@ -149,9 +149,9 @@ func (s *requestScopedStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (
 	return s.nodeOf(key, desc)
 }
 
-// RefreshAndGet reads storage through the same (key, generation) flight as a
-// miss, skipping the cached entry, and caches the result under the fill guard.
-// It neither evicts nor bumps, so a stream of refreshes does not empty the
+// RefreshAndGet reads storage through the same shared read flight as a miss,
+// skipping the cached entry, and caches the result under the fill guard. It
+// neither evicts nor bumps, so a stream of refreshes does not empty the
 // cache for the readers it serves meanwhile.
 func (s *requestScopedStore) RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
 	return s.cache.readThrough(ctx, keyOf(ctx, ref), s.inner)
