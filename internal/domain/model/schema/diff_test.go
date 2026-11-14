@@ -6,16 +6,16 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// roundTrip verifies Apply(old, Diff(old, new)) ≡ new (by Marshal bytes).
+// roundTrip verifies applyDelta(old, Diff(old, new)) ≡ new (by Marshal bytes).
 func roundTrip(t *testing.T, oldN, newN *ModelNode) {
 	t.Helper()
 	delta, err := Diff(oldN, newN)
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
 	}
-	applied, err := Apply(oldN, delta)
+	applied, err := applyDelta(oldN, delta)
 	if err != nil {
-		t.Fatalf("Apply: %v", err)
+		t.Fatalf("apply: %v", err)
 	}
 	want, err := Marshal(newN)
 	if err != nil {

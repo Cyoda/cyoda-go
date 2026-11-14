@@ -7,40 +7,15 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Apply replays the opaque SchemaDelta bytes onto base, returning a
-// new *ModelNode. Tests use it to verify commutativity and
-// validation-monotonicity; the plugins fold the extension log with
-// [ApplyMany].
-//
-// Apply does not mutate base — a fresh tree is produced via the
-// codec's Marshal/Unmarshal round-trip.
-//
-// base must be non-nil. An empty delta yields a clean clone of base.
-func Apply(base *ModelNode, delta spi.SchemaDelta) (*ModelNode, error) {
-	if base == nil {
-		return nil, fmt.Errorf("schema.Apply: base is nil")
-	}
-
-	root, err := cloneNode(base)
-	if err != nil {
-		return nil, fmt.Errorf("schema.Apply: clone base: %w", err)
-	}
-	if err := applyInPlace(root, delta); err != nil {
-		return nil, fmt.Errorf("schema.Apply: %w", err)
-	}
-	return root, nil
-}
-
 // ApplyMany is the apply function the composition root wires into the
 // storage plugins: it decodes the persisted schema base once, replays every
 // delta in order onto that one tree, and encodes it once. The result is the
-// bytes that replaying the deltas one [Apply] call each, with a decode and an
-// encode around every call, gives; an empty list gives the canonical encoding
-// of base. A delta that cannot apply fails the whole call.
+// bytes that replaying the deltas one ApplyMany call each gives; an empty
+// list gives the canonical encoding of base. A delta that cannot apply fails
+// the whole call.
 //
 // The tree is decoded here and owned by this call, so the deltas apply to it
-// in place, without the copy [Apply] makes. Neither base nor the deltas are
-// written to.
+// in place. Neither base nor the deltas are written to.
 func ApplyMany(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 	root, err := Unmarshal(base)
 	if err != nil {
@@ -213,7 +188,7 @@ func applyAddKindBranch(root *ModelNode, op SchemaOp) error {
 
 // resolvePath walks root along a slash-separated path of child names.
 // The empty path returns root. A missing segment returns a descriptive
-// error rather than a nil node — Apply surfaces the segment name so
+// error rather than a nil node — ApplyMany surfaces the segment name so
 // the error identifies the stale-schema case cleanly.
 func resolvePath(root *ModelNode, path string) (*ModelNode, error) {
 	if path == "" {
@@ -249,18 +224,4 @@ func resolvePath(root *ModelNode, path string) (*ModelNode, error) {
 		cur = next
 	}
 	return cur, nil
-}
-
-// cloneNode produces an independent copy of node via the codec
-// round-trip.
-func cloneNode(node *ModelNode) (*ModelNode, error) {
-	raw, err := Marshal(node)
-	if err != nil {
-		return nil, fmt.Errorf("marshal: %w", err)
-	}
-	out, err := Unmarshal(raw)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal: %w", err)
-	}
-	return out, nil
 }

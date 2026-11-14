@@ -11,7 +11,7 @@ import (
 )
 
 // TestMonotonicityDirect — I3: a document valid against B is also valid
-// against Apply(B, d). Extension never narrows the accepted set.
+// against applyDelta(B, d). Extension never narrows the accepted set.
 func TestMonotonicityDirect(t *testing.T) {
 	cfg := gentree.DefaultConfig()
 	cfg.TargetLevel = spi.ChangeLevelStructural
@@ -66,7 +66,7 @@ func TestMonotonicityDirect(t *testing.T) {
 				t.Skipf("Extend rejected: %v", err)
 			}
 			delta, _ := schema.Diff(base, extended)
-			applied, err := schema.Apply(base, delta)
+			applied, err := applyDelta(base, delta)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,7 +78,7 @@ func TestMonotonicityDirect(t *testing.T) {
 	assertSkipRatio(t, ran, skipped, "TestMonotonicityDirect")
 }
 
-// TestMonotonicityDual — a document rejected by Apply(B, d) is rejected
+// TestMonotonicityDual — a document rejected by applyDelta(B, d) is rejected
 // by B at the same path for the same reason (no new rejection causes).
 func TestMonotonicityDual(t *testing.T) {
 	cfg := gentree.DefaultConfig()
@@ -107,7 +107,7 @@ func TestMonotonicityDual(t *testing.T) {
 				t.Skipf("Extend rejected: %v", err)
 			}
 			delta, _ := schema.Diff(base, extended)
-			applied, err := schema.Apply(base, delta)
+			applied, err := applyDelta(base, delta)
 			if err != nil {
 				t.Fatal(err)
 			}

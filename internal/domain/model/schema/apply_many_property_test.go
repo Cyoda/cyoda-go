@@ -12,27 +12,33 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
 )
 
-// applyOne is one delta replayed the way the plugins replayed the log one
-// delta per call: decode the stored bytes, apply the delta to a copy, encode.
+// applyOne replays one delta onto the stored bytes base in its own ApplyMany
+// call.
 func applyOne(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-	node, err := schema.Unmarshal(base)
-	if err != nil {
-		return nil, err
-	}
-	out, err := schema.Apply(node, delta)
-	if err != nil {
-		return nil, err
-	}
-	return schema.Marshal(out)
+	return schema.ApplyMany(base, []spi.SchemaDelta{delta})
 }
 
-// TestApplyMany_EqualsSequentialApply: replaying a list of deltas in one call
+// applyDelta replays one delta onto base through ApplyMany, the apply function
+// the plugins use: base is encoded, the delta applied, and the result decoded.
+func applyDelta(base *schema.ModelNode, delta spi.SchemaDelta) (*schema.ModelNode, error) {
+	raw, err := schema.Marshal(base)
+	if err != nil {
+		return nil, err
+	}
+	out, err := applyOne(raw, delta)
+	if err != nil {
+		return nil, err
+	}
+	return schema.Unmarshal(out)
+}
+
+// TestApplyMany_EqualsOneCallPerDelta: replaying a list of deltas in one call
 // gives the bytes that replaying them one call each gives, and fails exactly
 // when that does. The deltas mix the two shapes a log holds: one diffed from
 // the schema as folded so far (a writer that saw every earlier extension) and
 // one diffed from the original base (a writer on a stale descriptor), with an
 // empty delta and, in some draws, a delta that cannot apply.
-func TestApplyMany_EqualsSequentialApply(t *testing.T) {
+func TestApplyMany_EqualsOneCallPerDelta(t *testing.T) {
 	cfg := gentree.DefaultConfig()
 	cfg.TargetLevel = spi.ChangeLevelStructural
 	cfg.KindMutationRate = 0.3
@@ -117,7 +123,7 @@ func TestApplyMany_EqualsSequentialApply(t *testing.T) {
 			}
 		})
 	}
-	assertSkipRatio(t, ran, skipped, "TestApplyMany_EqualsSequentialApply")
+	assertSkipRatio(t, ran, skipped, "TestApplyMany_EqualsOneCallPerDelta")
 }
 
 // TestApplyMany_EmptyListIsCanonicalRoundTrip: an empty list re-encodes base

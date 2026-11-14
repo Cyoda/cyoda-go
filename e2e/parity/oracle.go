@@ -94,14 +94,14 @@ func expectedSimpleViewFromSequence(n int, currentState string) ([]byte, error) 
 //  1. schema.Extend           (ingest.ValidateOrExtend, on the raw document —
 //     the entity-write ingress never pre-walks it into a model)
 //  2. schema.Diff             (ingest.ValidateOrExtend)
-//  3. schema.Apply            (plugin's injected ApplyFunc, schema.ApplyMany, on ExtendSchema)
+//  3. schema.ApplyMany        (plugin's injected ApplyFunc, on ExtendSchema)
 //
 // The extension is accepted only when ALL three steps succeed. Any
 // earlier step failing → the schema is kept unchanged and the next
 // extension is attempted, mirroring the HTTP rollback on rejection.
-// The post-Apply node is used as the new current, mirroring the
-// plugin's behaviour: the on-disk schema bytes are what Apply(base,
-// delta) produces, NOT the Extend output. These can differ when Diff
+// The post-apply node is used as the new current, mirroring the
+// plugin's behaviour: the on-disk schema bytes are what ApplyMany(base,
+// [delta]) produces, NOT the Extend output. These can differ when Diff
 // chooses a non-identity delta encoding of the same logical widening.
 //
 // Accepted indices are returned so callers can cross-check with
@@ -170,23 +170,15 @@ func expectedSimpleViewFromExtensions(extensions []any, currentState string) ([]
 		// extension.
 		// That round-trip normalizes representations (e.g. array
 		// multiset cardinality rewrites to the canonical codec form),
-		// which the oracle must mirror to byte-match. An Apply error
+		// which the oracle must mirror to byte-match. An apply error
 		// surfaces as a 500 and leaves the schema unchanged.
 		baseBytes, err := schema.Marshal(current)
 		if err != nil {
 			return nil, accepted, fmt.Errorf("oracle: marshal base before apply %d: %w", i, err)
 		}
-		base, err := schema.Unmarshal(baseBytes)
-		if err != nil {
-			return nil, accepted, fmt.Errorf("oracle: unmarshal base before apply %d: %w", i, err)
-		}
-		applied, err := schema.Apply(base, delta)
+		appliedBytes, err := schema.ApplyMany(baseBytes, []spi.SchemaDelta{delta})
 		if err != nil {
 			continue
-		}
-		appliedBytes, err := schema.Marshal(applied)
-		if err != nil {
-			return nil, accepted, fmt.Errorf("oracle: marshal after apply %d: %w", i, err)
 		}
 		normalized, err := schema.Unmarshal(appliedBytes)
 		if err != nil {

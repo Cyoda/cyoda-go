@@ -10,7 +10,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
 )
 
-// TestIdempotenceApply — I4: Apply(Apply(b, d), d) == Apply(b, d).
+// TestIdempotenceApply — I4: applyDelta(applyDelta(b, d), d) == applyDelta(b, d).
 func TestIdempotenceApply(t *testing.T) {
 	cfg := gentree.DefaultConfig()
 	cfg.TargetLevel = spi.ChangeLevelStructural
@@ -38,11 +38,11 @@ func TestIdempotenceApply(t *testing.T) {
 				t.Skip(err)
 			}
 			delta, _ := schema.Diff(base, extended)
-			once, err := schema.Apply(base, delta)
+			once, err := applyDelta(base, delta)
 			if err != nil {
 				t.Fatal(err)
 			}
-			twice, err := schema.Apply(once, delta)
+			twice, err := applyDelta(once, delta)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -10,7 +10,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
 )
 
-// TestCommutativityPaired — I2: Apply(Apply(b,d1),d2) ≡ Apply(Apply(b,d2),d1)
+// TestCommutativityPaired — I2: applyDelta(applyDelta(b,d1),d2) ≡ applyDelta(applyDelta(b,d2),d1)
 // for deltas produced from a shared base by two independent generator draws.
 func TestCommutativityPaired(t *testing.T) {
 	cfg := gentree.DefaultConfig()
@@ -47,20 +47,20 @@ func TestCommutativityPaired(t *testing.T) {
 			dA, _ := schema.Diff(base, extA)
 			dB, _ := schema.Diff(base, extB)
 
-			// Apply in both orders.
-			ab, err := schema.Apply(base, dA)
+			// Apply the deltas in both orders.
+			ab, err := applyDelta(base, dA)
 			if err != nil {
 				t.Fatal(err)
 			}
-			ab, err = schema.Apply(ab, dB)
+			ab, err = applyDelta(ab, dB)
 			if err != nil {
 				t.Fatal(err)
 			}
-			ba, err := schema.Apply(base, dB)
+			ba, err := applyDelta(base, dB)
 			if err != nil {
 				t.Fatal(err)
 			}
-			ba, err = schema.Apply(ba, dA)
+			ba, err = applyDelta(ba, dA)
 			if err != nil {
 				t.Fatal(err)
 			}

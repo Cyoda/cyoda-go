@@ -1,9 +1,26 @@
 package schema
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
+
+// applyDelta replays one delta onto base through ApplyMany, the apply function
+// the plugins use: base is encoded, the delta applied, and the result decoded.
+func applyDelta(base *ModelNode, delta spi.SchemaDelta) (*ModelNode, error) {
+	raw, err := Marshal(base)
+	if err != nil {
+		return nil, err
+	}
+	out, err := ApplyMany(raw, []spi.SchemaDelta{delta})
+	if err != nil {
+		return nil, err
+	}
+	return Unmarshal(out)
+}
 
 func mustMarshalNode(t *testing.T, n *ModelNode) []byte {
 	t.Helper()
@@ -20,31 +37,23 @@ func mustApply(t *testing.T, base *ModelNode, ops []SchemaOp) *ModelNode {
 	if err != nil {
 		t.Fatalf("MarshalDelta: %v", err)
 	}
-	out, err := Apply(base, delta)
+	out, err := applyDelta(base, delta)
 	if err != nil {
-		t.Fatalf("Apply: %v", err)
+		t.Fatalf("apply: %v", err)
 	}
 	return out
 }
 
-func TestApply_EmptyDelta_ReturnsCloneNotSameRef(t *testing.T) {
+func TestApply_EmptyDelta_KeepsBase(t *testing.T) {
 	base := NewObjectNode()
 	base.SetChild("name", NewLeafNode(String))
 
-	out, err := Apply(base, nil)
+	out, err := applyDelta(base, nil)
 	if err != nil {
-		t.Fatalf("Apply nil: %v", err)
+		t.Fatalf("apply nil: %v", err)
 	}
-	if out == base {
-		t.Error("Apply with empty delta must return a fresh tree, not the same pointer")
-	}
-	if _, ok := out.Object().Children()["name"]; !ok {
-		t.Error("expected child 'name' preserved in clone")
-	}
-	// Mutating clone must not affect base.
-	out.SetChild("extra", NewLeafNode(Integer))
-	if base.Object().Child("extra") != nil {
-		t.Error("mutating clone altered base")
+	if !bytes.Equal(mustMarshalNode(t, out), mustMarshalNode(t, base)) {
+		t.Errorf("an empty delta changed the schema: got %s, want %s", mustMarshalNode(t, out), mustMarshalNode(t, base))
 	}
 }
 
@@ -65,7 +74,7 @@ func TestApply_AddProperty_InsertsIntoObjectRoot(t *testing.T) {
 	}
 	// Base must be untouched.
 	if base.Object().Child("email") != nil {
-		t.Error("Apply mutated input")
+		t.Error("apply mutated input")
 	}
 }
 
@@ -105,7 +114,7 @@ func TestApply_AddProperty_ParentMustBeObject(t *testing.T) {
 	root.SetChild("leafy", NewLeafNode(String))
 
 	op := NewAddProperty("leafy", "x", mustMarshalNode(t, NewLeafNode(Integer)))
-	_, err := Apply(root, mustMarshalDeltaT(t, []SchemaOp{op}))
+	_, err := applyDelta(root, mustMarshalDeltaT(t, []SchemaOp{op}))
 	if err == nil || !strings.Contains(err.Error(), "object") {
 		t.Errorf("expected error about non-object parent, got: %v", err)
 	}
@@ -185,9 +194,9 @@ func TestApply_BroadenType_EstablishesTheScalarBranchOnAContainer(t *testing.T) 
 	if err != nil {
 		t.Fatalf("MarshalDelta: %v", err)
 	}
-	out, err := Apply(root, delta)
+	out, err := applyDelta(root, delta)
 	if err != nil {
-		t.Fatalf("Apply: %v", err)
+		t.Fatalf("apply: %v", err)
 	}
 
 	addr := out.Object().Child("addr")
@@ -214,7 +223,7 @@ func TestApply_BroadenType_RejectsAMissingPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalDelta: %v", err)
 	}
-	if _, err := Apply(root, delta); err == nil {
+	if _, err := applyDelta(root, delta); err == nil {
 		t.Fatal("broaden_type against a missing path must be rejected")
 	}
 }
@@ -245,7 +254,7 @@ func TestApply_AddArrayItemType_MustTargetArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	_, err = Apply(root, mustMarshalDeltaT(t, []SchemaOp{op}))
+	_, err = applyDelta(root, mustMarshalDeltaT(t, []SchemaOp{op}))
 	if err == nil || !strings.Contains(err.Error(), "array") {
 		t.Errorf("expected array-target error, got: %v", err)
 	}
@@ -257,7 +266,7 @@ func TestApply_PathSegmentNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	_, err = Apply(root, mustMarshalDeltaT(t, []SchemaOp{op}))
+	_, err = applyDelta(root, mustMarshalDeltaT(t, []SchemaOp{op}))
 	if err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Errorf("expected missing-segment error, got: %v", err)
 	}
@@ -266,14 +275,14 @@ func TestApply_PathSegmentNotFound(t *testing.T) {
 func TestApply_UnknownOpKind(t *testing.T) {
 	// Construct a forward-incompat kind directly.
 	op := SchemaOp{Kind: SchemaOpKind("widget_reverse"), Path: ""}
-	_, err := Apply(NewObjectNode(), mustMarshalDeltaT(t, []SchemaOp{op}))
+	_, err := applyDelta(NewObjectNode(), mustMarshalDeltaT(t, []SchemaOp{op}))
 	if err == nil || !strings.Contains(err.Error(), "unknown op kind") {
 		t.Errorf("expected unknown-kind error, got: %v", err)
 	}
 }
 
 func TestApply_MalformedDelta(t *testing.T) {
-	_, err := Apply(NewObjectNode(), []byte(`{not-json`))
+	_, err := applyDelta(NewObjectNode(), []byte(`{not-json`))
 	if err == nil {
 		t.Error("expected error on malformed delta")
 	}
@@ -289,7 +298,7 @@ func TestApply_MultipleOps_Replays(t *testing.T) {
 	out := mustApply(t, root, []SchemaOp{op1, op2, op3})
 
 	if out.Object().Child("email") == nil {
-		t.Error("email missing after multi-op Apply")
+		t.Error("email missing after a multi-op apply")
 	}
 	names := typeNames(out.Object().Child("age").DeclaredTypes())
 	// After broadening with NULL and INTEGER (on a STRING leaf), NULL drops

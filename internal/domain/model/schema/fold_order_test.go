@@ -16,7 +16,7 @@ import (
 // this is a statement about APPLICATION, not about which delta a given
 // sequence of writes PRODUCES (§6 accepts order-dependence there: two writers
 // racing to extend the same field can each win a different fold, which is a
-// property of Extend/Diff, not of Apply). The property suites cover
+// property of Extend/Diff, not of ApplyMany). The property suites cover
 // application order-independence over random trees; these two cases are here
 // by name because they are the shapes add_kind_branch introduced, and each
 // was refused in exactly one of the two orders before add_kind_branch existed.
@@ -73,13 +73,13 @@ func TestApply_FoldOrderDoesNotDecideWhetherADeltaApplies(t *testing.T) {
 
 			fold := func(first, second spi.SchemaDelta) *ModelNode {
 				t.Helper()
-				out, err := Apply(c.base(), first)
+				out, err := applyDelta(c.base(), first)
 				if err != nil {
-					t.Fatalf("Apply first: %v", err)
+					t.Fatalf("apply first: %v", err)
 				}
-				out, err = Apply(out, second)
+				out, err = applyDelta(out, second)
 				if err != nil {
-					t.Fatalf("Apply second: %v", err)
+					t.Fatalf("apply second: %v", err)
 				}
 				return out
 			}

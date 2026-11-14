@@ -8,7 +8,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Diff returns a SchemaDelta such that Apply(old, Diff(old, new)) ≡ new,
+// Diff returns a SchemaDelta such that ApplyMany(old, [Diff(old, new)]) ≡ new,
 // provided new differs from old only by additive extension within the
 // op catalog (add_property, broaden_type, add_array_item_type).
 //
@@ -180,7 +180,7 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	// type at all; the incoming one is establishing it.
 	if oldElem == nil {
 		// A scalar element uses the dedicated, cheaper op. Anything else is
-		// carried as the array branch itself: Apply materialises the element
+		// carried as the array branch itself: ApplyMany materialises the element
 		// by merging the branch, because resolvePath cannot descend a "[]"
 		// segment into an element that does not exist yet.
 		if newElem.Object() != nil || newElem.Array() != nil {
@@ -209,7 +209,7 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	}
 	// OBJECT- or ARRAY-element: descend into the element using the "[]"
 	// path segment. Subsequent ops (add_property, broaden_type, etc.)
-	// carry paths like "parent/[]/child" that Apply's resolvePath
+	// carry paths like "parent/[]/child" that ApplyMany's resolvePath
 	// follows by traversing the array's Element().
 	return diffNode(joinSchemaPath(path, "[]"), oldElem, newElem, ops)
 }
