@@ -11,8 +11,7 @@
 //   - the jittered lease expires an entry whose broadcast was lost.
 //
 // Misses at one generation share one storage read; identical extensions on
-// one node share one storage call. See
-// docs/superpowers/specs/2026-11-12-710-schema-extensions-design.md §4.5, §4.7.
+// one node share one storage call.
 package modelcache
 
 import (

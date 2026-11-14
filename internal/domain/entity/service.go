@@ -2508,9 +2508,8 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		}
 
 		// Pre-check for partial unique key, before the schema check can extend
-		// the model: on a backend whose schema extension does not join the
-		// entity transaction, a refusal after it would leave the model
-		// extended. The data it reads must be a JSON object, refused with the
+		// the model: an extension commits on its own, so a refusal after it
+		// would leave the model extended. The data it reads must be a JSON object, refused with the
 		// schema check's own answer. Called while desc is in hand so no extra
 		// model read is needed. Rolls back and fails the whole batch.
 		if len(desc.UniqueKeys) > 0 {

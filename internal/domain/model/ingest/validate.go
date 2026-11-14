@@ -198,20 +198,6 @@ func ValidateStrict(desc *spi.ModelDescriptor, parsedData any) error {
 	return nil
 }
 
-// ValidateDescriptor unmarshals desc.Schema and runs schema.Validate.
-// Returns nil on success, or a []ValidationError on failure (including
-// a descriptive entry if desc itself is malformed or nil).
-func ValidateDescriptor(desc *spi.ModelDescriptor, data any) []schema.ValidationError {
-	if desc == nil {
-		return []schema.ValidationError{{Message: "nil descriptor"}}
-	}
-	node, err := schema.Unmarshal(desc.Schema)
-	if err != nil {
-		return []schema.ValidationError{{Message: fmt.Sprintf("unmarshal schema: %v", err)}}
-	}
-	return schema.Validate(node, data)
-}
-
 // maxRenderedValidationErrors bounds how many ValidationError entries
 // ValidationErrorsToError renders verbatim into the joined message. Validate
 // emits one entry per offending path with no cap of its own — a 10 MiB body
