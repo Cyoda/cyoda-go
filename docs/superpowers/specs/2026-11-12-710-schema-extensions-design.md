@@ -228,6 +228,12 @@ model `Save` retries); its doc stops naming schema extension.
      retryable `503`, as the documented rule for a second connection inside a
      transaction says (`docs/ARCHITECTURE.md` ~:442, ~:450, ~:2564): with the
      slot cap that means a pool saturated by load, not contention.
+   - **The model pool keeps the main pool's acquire scope.** An operation that
+     opens a transaction on it (an extension, `Unlock`) or runs inside the
+     caller's transaction is bounded by `CYODA_POSTGRES_ACQUIRE_TIMEOUT`; a
+     model read or administration statement outside a transaction waits for a
+     connection until its context ends, so ordinary contention never fails a
+     read (`plugins/postgres/model_pool.go`).
    - An extending write holds its main-pool connection while it waits for a
      slot. Each extension is a few round trips, so slots free fast; a burst of
      extensions across many models holds that many main-pool connections for
@@ -442,7 +448,7 @@ successful PUT. Measured with n = 10 against the code before this design:
 (a) does not change (1.91 → 1.95 ms, p = 1.0); the code before this design
 refuses 25 of 32 PUTs in (b) and 4 of 32 in (c) with `409`, this design
 none, and no run of it answers any other error. With the fold in one apply
-call (§4.3), measured with n = 10 against the same design without it, (a)
+call (§4.3), measured with n = 10 against applying each delta in its own call, (a)
 stays at 1.95 ms (p = 0.97) and (b) at K = 1000 costs 5.6 ms per success,
 where the code before this design took 100 ms per success.
 
