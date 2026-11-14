@@ -227,8 +227,12 @@ func New(cfg Config) *App {
 	// Wire the schema replay function into the plugin factory. Postgres and
 	// SQLite fold the extension log with it, on read and under an
 	// extension's lock; memory applies each extension in place.
-	if setter, ok := factory.(applyFuncSetter); ok {
-		setter.SetApplyFunc(schema.ApplyMany)
+	if err := wireSchemaApply(factory); err != nil {
+		slog.Error("startup failure",
+			"phase", "wire-schema-apply",
+			"backend", plugin.Name(),
+			"error", err.Error())
+		os.Exit(1)
 	}
 
 	// Wrap the factory in the caching decorator. ModelStore(ctx) now
@@ -1154,13 +1158,11 @@ func validateClusterConfig(c cluster.Config) {
 	}
 }
 
-// applyFuncSetter is the wiring surface Run soft-asserts on each plugin
+// applyFuncSetter is the wiring surface Run requires of every storage
 // factory. It uses the raw function signature (not any plugin-local named
-// ApplyFunc type) so a single type-assertion satisfies all plugins
-// uniformly. The assertion is soft: a factory that stops implementing
-// this exact signature would be skipped silently and every fold-on-read
-// of pending deltas would fail — applyfunc_wiring_test.go pins the
-// in-tree factories to this same declaration at compile time.
+// ApplyFunc type) so a single type-assertion satisfies all plugins uniformly.
+// applyfunc_wiring_test.go pins the in-tree factories to this declaration at
+// compile time.
 //
 // The function replays a list of deltas in one call (schema.ApplyMany), so
 // the plugins decode and encode the schema once per fold, not once per
@@ -1168,6 +1170,19 @@ func validateClusterConfig(c cluster.Config) {
 // the composition root injects it.
 type applyFuncSetter interface {
 	SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))
+}
+
+// wireSchemaApply installs the schema replay function on factory. A factory
+// that does not offer applyFuncSetter could not fold a model's extension log,
+// so it is refused: Run exits rather than serve with every extended model
+// unreadable.
+func wireSchemaApply(factory spi.StoreFactory) error {
+	setter, ok := factory.(applyFuncSetter)
+	if !ok {
+		return errors.New("storage factory does not implement SetApplyFunc(func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))")
+	}
+	setter.SetApplyFunc(schema.ApplyMany)
+	return nil
 }
 
 // mustNewGossip parses the gossip address, creates the memberlist-backed

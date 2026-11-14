@@ -1,6 +1,8 @@
 package sqlite
 
 import (
+	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -101,4 +103,32 @@ func TestFold_OneApplyCall(t *testing.T) {
 			t.Errorf("schema from the savepoint = %s", desc.Schema)
 		}
 	})
+}
+
+// TestFold_ApplyErrorNamesLogPosition: a fold the apply function refuses names
+// how many deltas it applied and the seq they follow (the savepoint's, 0 for
+// the doc), as postgres's fold does.
+func TestFold_ApplyErrorNamesLogPosition(t *testing.T) {
+	fx := newSQLiteFixtureWithInterval(t, 1000)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "fold-error", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte(`[]`))
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	for _, d := range []string{`"d1"`, `"d2"`} {
+		if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(d)); err != nil {
+			t.Fatalf("ExtendSchema %s: %v", d, err)
+		}
+	}
+	fx.store.applyFunc = func([]byte, []spi.SchemaDelta) ([]byte, error) {
+		return nil, errors.New("refused")
+	}
+	_, err := fx.store.Get(fx.ctx, ref)
+	if err == nil {
+		t.Fatal("Get folded a log its apply function refuses")
+	}
+	if want := "apply 2 deltas after seq 0"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err, want)
+	}
 }

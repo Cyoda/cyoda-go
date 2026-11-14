@@ -303,7 +303,7 @@ if s, ok := factory.(spi.Startable); ok {
 txMgr, _ := factory.TransactionManager(startupCtx)
 ```
 
-`startupCtx` carries `CYODA_STARTUP_TIMEOUT`, so plugin init, migrations and cluster join share one deadline. Between `NewFactory` and `Start` the factory is wrapped in the model-cache decorator (§4.1) and given the schema-replay apply function.
+`startupCtx` carries `CYODA_STARTUP_TIMEOUT`, so plugin init, migrations and cluster join share one deadline. Between `NewFactory` and `Start` the factory is given the schema-replay apply function (`SetApplyFunc`, which takes a list of deltas; a factory without it is refused at startup) and wrapped in the model-cache decorator (§4.1).
 
 No per-store routing. No swap logic for transaction managers. Every store in the binary comes from the same plugin, and the plugin supplies its own `TransactionManager` whose semantics match its storage engine.
 

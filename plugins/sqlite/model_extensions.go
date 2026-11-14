@@ -13,9 +13,9 @@ import (
 // it starts from the most-recent savepoint payload (if any), else from
 // baseSchema (models.doc.schema), and applies every later delta row, in seq
 // order, in one call of the injected ApplyFunc. With no extensions it
-// returns that start verbatim; ApplyFunc is required only when a delta must
-// be applied. Mirrors postgres's fold; dialect differences are placeholders
-// and the explicit seq column.
+// returns that start verbatim and needs no ApplyFunc; otherwise a nil
+// ApplyFunc is refused. Mirrors postgres's fold; dialect differences are
+// placeholders and the explicit seq column.
 func (s *modelStore) foldLockedInTx(ctx context.Context, tx *sql.Tx, ref spi.ModelRef, baseSchema []byte) ([]byte, error) {
 	return foldLockedOn(ctx, tx, s.tenantID, s.applyFunc, ref, baseSchema, false)
 }
@@ -90,11 +90,13 @@ func foldLockedOn(ctx context.Context, q *sql.Tx, tenantID spi.TenantID, applyFu
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("delta iteration: %w", err)
 	}
+	// A read with no delta to apply needs no apply function; anything else
+	// does.
 	if len(deltas) == 0 && !canonical {
 		return current, nil
 	}
 	if applyFunc == nil {
-		return nil, fmt.Errorf("model has pending schema deltas but ApplyFunc is not wired on the factory — see cmd/cyoda/main.go")
+		return nil, fmt.Errorf("cannot fold the schema of %s: ApplyFunc is not wired on the factory", ref)
 	}
 	current, err = applyFunc(current, deltas)
 	if err != nil {

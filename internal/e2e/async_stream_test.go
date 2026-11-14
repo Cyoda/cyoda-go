@@ -281,6 +281,14 @@ type blockingIterateFactory struct {
 	gate *iterateGate
 }
 
+// SetApplyFunc forwards the schema replay function to the wrapped factory:
+// startup refuses a factory that does not take it.
+func (f *blockingIterateFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
+	f.StoreFactory.(interface {
+		SetApplyFunc(func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))
+	}).SetApplyFunc(fn)
+}
+
 func (f *blockingIterateFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
 	real, err := f.StoreFactory.EntityStore(ctx)
 	if err != nil {
