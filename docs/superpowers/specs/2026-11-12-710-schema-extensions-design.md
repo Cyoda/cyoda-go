@@ -287,6 +287,10 @@ model `Save` retries); its doc stops naming schema extension.
      happens even if every caller has given up. So the extending node never
      keeps serving the old schema, and a retry after `409 MODEL_NOT_LOCKED`
      reads the model fresh.
+   - **Model administration** (`Save`, `Lock`, `Unlock`, `SetChangeLevel`,
+     `Delete`) invalidates the same way after the call, whatever its outcome:
+     a failed call may still have committed (a `COMMIT` whose outcome is
+     unknown).
    - `CachingModelStore` stops being a `ModelStore`: it is built in
      production only with a nil inner (`factory.go` ~:38) and its store
      methods serve tests. Its `Get` / `RefreshAndGet` / `SchemaNode` /
@@ -522,11 +526,11 @@ outside `docs/superpowers/`, `cmd/cyoda/help/`, `README.md`) is empty.
 | A write adds a field nested under a parent another write added after this transaction began → `2xx` | postgres plugin | — | new | — | — |
 | Criterion in the same request on the field just added | engine unit | — | new | new | — |
 | Multi-node: an extension on node A is visible on node B after the broadcast | — | — | — | new, multi-node harness (`e2e/parity/postgres/multinode_test.go`) | — |
-| A refresh does not evict and stores under the fill guard; an extension error still evicts, bumps and broadcasts | modelcache unit | — | — | — | — |
+| A refresh does not evict and stores under the fill guard; an extension error still evicts, bumps and broadcasts; a failed model administration call still invalidates | modelcache unit | — | — | — | — |
 | Fill guard drops a fill that straddles an invalidation (local and broadcast, also after eviction); a read starting after an invalidation never joins a flight started before it; one caller's cancellation does not fail the others | modelcache unit | — | — | — | — |
 | Identical concurrent `ExtendSchema` calls on one node → one storage call; every extension call, a no-op included, evicts, bumps and broadcasts; a caller arriving after a shared call was cancelled starts a fresh one | modelcache unit | — | — | — | — |
 | `CYODA_POSTGRES_MODEL_CONNS` below 2 or malformed fails startup | postgres config unit | — | — | — | — |
-| The initiator's search on its new field on the serving node after a search raced the extension → `2xx` (negative cache gone) | search unit | — | new | — | — |
+| The initiator's search on its new field on the serving node after a search raced the extension → `2xx` (negative cache gone) | search unit | — | waived: no HTTP sequence reproduces the race, so an e2e cannot fail on the code before this design | — | — |
 | postgres: a savepoint under the lock keeps every lower-`seq` delta; the interval counts the model's deltas; a one-statement read during `Unlock` misses nothing | postgres plugin | — | — | — | — |
 | postgres: at most `CONNS / 2` extension connections; model reads proceed during an extension burst; no deadlock with the main pool | postgres plugin | — | — | — | — |
 | sqlite: a read racing `Unlock` misses nothing (one read transaction) | sqlite plugin | — | — | — | — |

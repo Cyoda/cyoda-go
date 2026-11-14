@@ -30,7 +30,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   The SPI's `ModelStore.ExtendSchema` and `ModelStore.Get` contracts change
   to match (`ExtendSchema` never joins the caller's transaction and returns
   the new `ErrModelNotLocked`; `Get` ignores the caller's transaction), and
-  an out-of-tree storage plugin must follow them. See `cyoda help models`
+  an out-of-tree storage plugin must follow them. A storage factory must
+  also offer `SetApplyFunc` taking a list of deltas
+  (`func(base []byte, deltas []SchemaDelta) ([]byte, error)`; the SPI
+  conformance suite installs it the same way); cyoda-go refuses to start on
+  a factory without it. See `cyoda help models`
   (SCHEMA EXTENSION), `docs/CONSISTENCY.md` §3a and
   `docs/cloud-parity/schema-extensions.md`.
 

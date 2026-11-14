@@ -703,11 +703,11 @@ func New(cfg Config) *App {
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
 	// the EntityStore and a validated ModelRef for the calling tenant.
-	// The resolver returns ok=false when the model is not registered (after
-	// one bounded cache refresh — closing the multi-node stale-cache race);
-	// the handler maps that to 404 MODEL_NOT_FOUND. Genuine store errors
-	// (non-ErrNotFound from Get or RefreshAndGet) surface as Internal(500)
-	// and are propagated to the 500-with-ticket path.
+	// The resolver returns ok=false when the model is not registered (one Get;
+	// the model cache never holds a not-found, so a model registered on a peer
+	// is found); the handler maps that to 404 MODEL_NOT_FOUND. Genuine store
+	// errors (non-ErrNotFound from Get) surface as Internal(500) and are
+	// propagated to the 500-with-ticket path.
 	storeFactory := a.storeFactory
 	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		ctx := r.Context()
@@ -718,7 +718,7 @@ func New(cfg Config) *App {
 		ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 		if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
 			if appErr.Status == http.StatusNotFound {
-				// Not registered after one bounded refresh → handler emits 404 MODEL_NOT_FOUND.
+				// Not registered → handler emits 404 MODEL_NOT_FOUND.
 				return nil, ref, nil, nil, false, nil
 			}
 			// Genuine store error → propagate to 500-with-ticket path.
