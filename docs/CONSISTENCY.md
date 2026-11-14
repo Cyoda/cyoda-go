@@ -288,9 +288,10 @@ Unlock is not atomic with its entity check either: it counts the
 model's committed entities, then unlocks. An entity write still in
 progress — its transaction not yet committed, or a create that read the
 model as LOCKED just before — is not counted and can commit after the
-unlock, leaving an UNLOCKED model with entities. A write that extends
-the model is refused at its extension instead (above); one that does not
-extend is not. Writes to a model stop before it is unlocked.
+unlock, leaving an UNLOCKED model with entities. A write whose
+extension runs after the unlock is refused at that extension (above);
+one that extended while the model was still locked, or does not extend
+at all, is not. Writes to a model stop before it is unlocked.
 
 ## 3c. In-transaction `Search` is a predicate read
 
