@@ -35,10 +35,8 @@ import (
 // covers the snapshot RPCs.
 //
 // The model store (modelStore, model_store.go) is a caller on a pool of its
-// own, the model pool. A model-pool holder never waits on the main pool, so
-// there is no cycle; the bound still turns a saturated model pool into a
-// retryable answer instead of an unbounded wait while the request holds its
-// transaction's connection.
+// own, the model pool, and sets alwaysBound: every acquire on the model pool
+// is bounded, by the rule model_pool.go states.
 //
 // The bound is on GETTING the connection, never on USING it. pool.Acquire takes
 // its own short-lived deadline context; the statement then runs on the CALLER's
@@ -59,7 +57,8 @@ import (
 // a fresh snapshot for a condition that has nothing to do with its data. The
 // same call also keeps a caller who gave up first off the retryable path.
 //
-// Outside a transaction the statement goes straight to the pool, unbounded. It
+// Outside a transaction the statement goes straight to the pool, unbounded
+// (unless alwaysBound is set). It
 // holds no other connection, so it is not hold-and-wait and there is
 // no deadlock to break; bounding it would convert ordinary contention on a busy
 // server into spurious failures — and the job store's own background traffic
@@ -81,6 +80,15 @@ type unjoinedQuerier struct {
 	// operator log says which door ran out of connections. classifyAcquireErr
 	// renders it as "<what> query: could not acquire a database connection …".
 	what string
+
+	// alwaysBound bounds the acquire outside a transaction too.
+	alwaysBound bool
+}
+
+// unbounded reports whether the statement takes the pool's own, unbounded
+// acquire: outside a transaction, unless alwaysBound is set.
+func (c unjoinedQuerier) unbounded(ctx context.Context) bool {
+	return !c.alwaysBound && spi.GetTransaction(ctx) == nil
 }
 
 // pooled is the unbounded path — the pool's own acquire, classified.
@@ -102,7 +110,7 @@ func (c unjoinedQuerier) acquire(ctx context.Context, verb string) (*pgxpool.Con
 }
 
 func (c unjoinedQuerier) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	if spi.GetTransaction(ctx) == nil {
+	if c.unbounded(ctx) {
 		return c.pooled().Exec(ctx, sql, args...)
 	}
 	conn, err := c.acquire(ctx, "exec")
@@ -115,7 +123,7 @@ func (c unjoinedQuerier) Exec(ctx context.Context, sql string, args ...any) (pgc
 }
 
 func (c unjoinedQuerier) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	if spi.GetTransaction(ctx) == nil {
+	if c.unbounded(ctx) {
 		return c.pooled().Query(ctx, sql, args...)
 	}
 	conn, err := c.acquire(ctx, "query")
@@ -133,7 +141,7 @@ func (c unjoinedQuerier) Query(ctx context.Context, sql string, args ...any) (pg
 }
 
 func (c unjoinedQuerier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	if spi.GetTransaction(ctx) == nil {
+	if c.unbounded(ctx) {
 		return c.pooled().QueryRow(ctx, sql, args...)
 	}
 	conn, err := c.acquire(ctx, "row read")

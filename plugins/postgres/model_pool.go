@@ -17,6 +17,17 @@ import (
 // the model's row lock), so they take a slot first and the slots are capped at
 // half the pool: reads always have connections left over.
 //
+// Every connection acquire on this pool is bounded by the acquire timeout
+// (CYODA_POSTGRES_ACQUIRE_TIMEOUT), inside a transaction or not: an
+// extension's after it has its slot (acquireExtension), a transaction's
+// (modelStore.inModelTx) and a single statement's (modelStore's querier sets
+// unjoinedQuerier.alwaysBound). A saturated model pool then answers a
+// retryable storage-unavailable error, the same through every door, rather
+// than a wait bounded only by the request: up to half its connections can be
+// held by extensions waiting on a model's row lock, and its other callers are
+// requests, with no background traffic that an acquire timeout would fail
+// spuriously.
+//
 // The pool's lock_timeout is 0 (wait indefinitely): a model write that must
 // queue behind another on the same model's row lock is bounded by the caller's
 // context and the statement and idle-in-transaction ceilings inherited from the

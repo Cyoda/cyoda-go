@@ -126,6 +126,33 @@ func TestExtendSchema_CallerDeadlineOnSaturatedPool_IsNotStorageUnavailable(t *t
 	}
 }
 
+// A model read outside any transaction on a saturated model pool is bounded
+// like every other acquire on that pool: it answers storage-unavailable after
+// the acquire timeout instead of waiting until the caller's context ends.
+func TestModelGet_PoolSaturated_ReportsStorageUnavailable(t *testing.T) {
+	f, ctx := newSaturatedModelPoolFactory(t, 200*time.Millisecond)
+	ms, err := f.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	callerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err = ms.Get(callerCtx, spi.ModelRef{EntityName: "Widget", ModelVersion: "1"})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Get succeeded with every model pool connection held")
+	}
+	if !storageUnavailable(err) {
+		t.Fatalf("acquire failure not marked storage-unavailable after %v: %v", elapsed, err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("waited %v; the acquire should be bounded by the acquire timeout", elapsed)
+	}
+}
+
 // --- the async-search scan's own-ceiling transaction -------------------------
 
 // asyncScanSearch runs a search on a context marked as an async-search scan,

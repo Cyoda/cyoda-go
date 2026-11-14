@@ -29,7 +29,7 @@ type modelStore struct {
 func newModelStore(models *modelPool, tenantID spi.TenantID, applyFunc ApplyFunc, cfg config) *modelStore {
 	return &modelStore{
 		models:    models,
-		q:         unjoinedQuerier{pool: models.pool, acquireTimeout: models.acquireTimeout, what: "model"},
+		q:         unjoinedQuerier{pool: models.pool, acquireTimeout: models.acquireTimeout, what: "model", alwaysBound: true},
 		tenantID:  tenantID,
 		applyFunc: applyFunc,
 		cfg:       cfg,
@@ -315,8 +315,7 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 // The transaction takes one row lock and runs at READ COMMITTED, so it cannot
 // fail with a serialization failure or a deadlock: contention with other
 // extenders is a wait, bounded by ctx and the statement ceiling. The wait for
-// an extension slot lasts until ctx ends; the connection acquire is bounded
-// by the acquire timeout.
+// an extension slot lasts until ctx ends.
 //
 // An empty or nil delta is a no-op. A nil apply function is refused.
 func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
@@ -408,8 +407,7 @@ func (s *modelStore) extend(ctx context.Context, q Querier, ref spi.ModelRef, de
 }
 
 // inModelTx runs body in a READ COMMITTED transaction of its own on the model
-// pool, never the caller's. The acquire is bounded by the acquire timeout. op
-// names the operation in error messages.
+// pool, never the caller's. op names the operation in error messages.
 func (s *modelStore) inModelTx(ctx context.Context, op string, body func(q Querier) error) error {
 	// The deadline bounds the acquire and is cancelled the instant Begin
 	// returns, so the transaction handle cannot inherit it.
