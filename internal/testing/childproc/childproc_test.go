@@ -319,3 +319,23 @@ func TestReap_OrphanIgnoringSIGTERMIsKilled(t *testing.T) {
 		t.Fatalf("records after the reap = %v, want none", recs)
 	}
 }
+
+// Recorded names the processes that have a record, until it is released.
+func TestRecorded(t *testing.T) {
+	dir := t.TempDir()
+	r := New(dir, t.Logf)
+	child, release := startSleeper(t, r)
+	pid := child.cmd.Process.Pid
+	if !r.Recorded(pid) {
+		t.Fatalf("pid %d not recorded while running", pid)
+	}
+	if r.Recorded(pid + 1) {
+		t.Fatalf("pid %d recorded, never started", pid+1)
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	<-child.done
+	release()
+	if r.Recorded(pid) {
+		t.Fatalf("pid %d still recorded after release", pid)
+	}
+}

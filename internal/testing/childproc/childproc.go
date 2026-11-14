@@ -417,3 +417,22 @@ func decodeRecord(raw []byte) (record, error) {
 	}
 	return rec, nil
 }
+
+// Recorded reports whether the directory holds a record of pid, for a harness
+// that checks it records what it starts.
+func (r *Registry) Recorded(pid int) bool {
+	paths, err := filepath.Glob(filepath.Join(r.dir, "*"+recordSuffix))
+	if err != nil {
+		return false
+	}
+	for _, p := range paths {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if rec, err := decodeRecord(raw); err == nil && rec.PID == pid {
+			return true
+		}
+	}
+	return false
+}

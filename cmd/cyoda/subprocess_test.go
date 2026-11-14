@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/testing/childproc"
 )
 
 // childOutput collects the child's combined stdout and stderr. exec writes to
@@ -94,11 +96,15 @@ func startCyodaWithArgs(t *testing.T, args []string, env ...string) *cyodaChild 
 	c.cmd.Stdout = c.out
 	c.cmd.Stderr = c.out
 
-	if err := c.cmd.Start(); err != nil {
+	// Recorded, so a test binary that dies before its cleanup does not leave
+	// the child running: the next one to start a child kills it.
+	release, err := childproc.Default().Start(c.cmd)
+	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	go func() {
 		c.waitErr = c.cmd.Wait()
+		release()
 		close(c.exited)
 	}()
 	t.Cleanup(func() {
@@ -154,6 +160,26 @@ func (c *cyodaChild) wait(t *testing.T, timeout time.Duration) int {
 		_ = c.cmd.Process.Signal(syscall.SIGKILL)
 		t.Fatalf("child did not exit within %v", timeout)
 		return -1
+	}
+}
+
+// TestStartCyoda_RecordsTheChild: the child is recorded for the orphan reaper
+// while it runs, so a test binary that dies before its cleanup does not leave
+// it running for good, and the record goes once the child is reaped.
+func TestStartCyoda_RecordsTheChild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess startup test in -short mode")
+	}
+	c := startCyoda(t)
+	pid := c.cmd.Process.Pid
+	procs := childproc.Default()
+	if !procs.Recorded(pid) {
+		t.Fatalf("child pid %d is not recorded", pid)
+	}
+	_ = c.cmd.Process.Signal(syscall.SIGKILL)
+	<-c.exited
+	if procs.Recorded(pid) {
+		t.Fatalf("child pid %d is still recorded after it was reaped", pid)
 	}
 }
 

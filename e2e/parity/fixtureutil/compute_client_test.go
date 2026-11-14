@@ -3,6 +3,7 @@ package fixtureutil_test
 import (
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/testing/childproc"
 )
 
 // TestProvisionComputeClient_IsAStoredClientOfTheTenant: the credentials
@@ -108,12 +110,29 @@ func TestStartComputeClient_JoinsRecordsAndStops(t *testing.T) {
 	}
 
 	proc := cc.(*fixtureutil.ComputeClientProc)
+	// Every process the fixture starts is recorded for the orphan reaper
+	// while it runs, and the record goes with a clean stop.
+	procs := childproc.Default()
+	for name, cmd := range map[string]*exec.Cmd{"node": result.CyodaCmd, "fixture client": result.ComputeCmd, "extra client": proc.Cmd()} {
+		if !procs.Recorded(cmd.Process.Pid) {
+			t.Errorf("the %s (pid %d) is not recorded", name, cmd.Process.Pid)
+		}
+	}
 	cc.Stop()
 	cc.Stop() // idempotent
 	hc := &http.Client{Timeout: 2 * time.Second}
 	if resp, err := hc.Get(proc.ControlURL() + "/healthz"); err == nil {
 		resp.Body.Close()
 		t.Error("the client's control endpoint still answers after Stop")
+	}
+	if procs.Recorded(proc.Cmd().Process.Pid) {
+		t.Error("the extra client is still recorded after Stop")
+	}
+	cleanup()
+	for name, cmd := range map[string]*exec.Cmd{"node": result.CyodaCmd, "fixture client": result.ComputeCmd} {
+		if procs.Recorded(cmd.Process.Pid) {
+			t.Errorf("the %s (pid %d) is still recorded after the fixture's cleanup", name, cmd.Process.Pid)
+		}
 	}
 }
 

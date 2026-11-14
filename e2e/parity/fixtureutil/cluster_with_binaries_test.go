@@ -2,10 +2,12 @@ package fixtureutil_test
 
 import (
 	"net/http"
+	"os/exec"
 	"testing"
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda-platform/cyoda-go/internal/testing/childproc"
 )
 
 // TestLaunchCyodaClusterAndComputeWithBinaries.
@@ -59,8 +61,28 @@ func TestLaunchCyodaClusterAndComputeWithBinaries(t *testing.T) {
 		t.Errorf("CyodaCmds: got %d, want %d", len(result.CyodaCmds), n)
 	}
 	if result.ComputeCmd == nil {
-		t.Errorf("ComputeCmd is nil")
+		t.Fatalf("ComputeCmd is nil")
 	}
+
+	// Every process the fixture starts is recorded for the orphan reaper
+	// while it runs.
+	procs := childproc.Default()
+	started := append([]*exec.Cmd{result.ComputeCmd}, result.CyodaCmds...)
+	for _, cmd := range started {
+		if !procs.Recorded(cmd.Process.Pid) {
+			t.Errorf("%s (pid %d) is not recorded", cmd.Path, cmd.Process.Pid)
+		}
+	}
+	defer func() {
+		// ...and the records go with the fixture's cleanup. The cleanup
+		// runs again from t.Cleanup; it is idempotent.
+		cleanup()
+		for _, cmd := range started {
+			if procs.Recorded(cmd.Process.Pid) {
+				t.Errorf("%s (pid %d) is still recorded after the cleanup", cmd.Path, cmd.Process.Pid)
+			}
+		}
+	}()
 
 	// Each node should be reachable on /api/health. Compute-client and
 	// node-0 readiness are already verified internally before the launcher
