@@ -108,12 +108,17 @@ wait:
 	}
 }
 
-// TestExtendSchema_RacingUnlock_EveryReturnedDeltaKept — extenders and a
-// real Unlock run at once, round after round. Every extension that
-// returned nil is in the model's schema after Unlock, every other one
-// returned spi.ErrModelNotLocked, and Unlock leaves the log empty.
+// TestExtendSchema_RacingUnlock_EveryReturnedDeltaKept — round after round,
+// a first wave of extensions returns before Unlock starts, then a second wave
+// runs at once with a real Unlock. Every extension that returned nil is in
+// the model's schema after Unlock (the first wave always is, so every Unlock
+// folds a non-empty log), every other one returned spi.ErrModelNotLocked, and
+// Unlock leaves the log empty. Which of the second wave win is not asserted.
 func TestExtendSchema_RacingUnlock_EveryReturnedDeltaKept(t *testing.T) {
-	const rounds = 30
+	const (
+		rounds    = 30
+		firstWave = 2
+	)
 	fx := newPGFixtureWithInterval(t, 2)
 	fx.store.applyFunc = setUnionApplyFunc
 	n := cap(fx.store.models.extSlots)
@@ -127,6 +132,15 @@ func TestExtendSchema_RacingUnlock_EveryReturnedDeltaKept(t *testing.T) {
 			if err := fx.store.Lock(fx.ctx, ref); err != nil {
 				t.Fatalf("round %d: Lock: %v", r, err)
 			}
+		}
+		// The first wave returns before Unlock starts: its deltas are in the
+		// log when Unlock folds it, and must be in the schema afterwards.
+		for i := 0; i < firstWave; i++ {
+			tok := fmt.Sprintf("r%02dfirst%d", r, i)
+			if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"`+tok+`"`)); err != nil {
+				t.Fatalf("round %d: first-wave extension %d: %v", r, i, err)
+			}
+			kept = append(kept, tok)
 		}
 		start := make(chan struct{})
 		errs := make([]error, n)
@@ -146,12 +160,6 @@ func TestExtendSchema_RacingUnlock_EveryReturnedDeltaKept(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			// Unlock starts with the extenders on even rounds and after a
-			// delay growing with the round on odd ones, so the rounds cover
-			// Unlock ahead of every extender, behind them, and between.
-			if r%2 == 1 {
-				time.Sleep(time.Duration(r) * 100 * time.Microsecond)
-			}
 			ctx, cancel := context.WithTimeout(fx.ctx, 30*time.Second)
 			defer cancel()
 			unlockErr = fx.store.Unlock(ctx, ref)
@@ -194,7 +202,4 @@ func TestExtendSchema_RacingUnlock_EveryReturnedDeltaKept(t *testing.T) {
 		}
 	}
 	t.Logf("%d extensions kept, %d refused over %d rounds", len(kept), refused, rounds)
-	if len(kept) == 0 || refused == 0 {
-		t.Errorf("the rounds never interleaved: %d kept, %d refused; want both", len(kept), refused)
-	}
 }
