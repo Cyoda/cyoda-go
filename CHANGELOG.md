@@ -24,10 +24,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   holds writes nothing. A write whose data fills a composite unique key only
   in part, or puts a non-scalar value in a key's field, is refused with
   `422 INVALID_UNIQUE_KEY` before its schema check on every door, so it
-  extends nothing. A collection checks every item's key before any item's
-  schema, so a collection update with a partial key in any item answers
-  `422` before another item's `404 ENTITY_NOT_FOUND` or `412 ENTITY_MODIFIED`;
-  before, create, collection create and update checked the
+  extends nothing; before, create, collection create and update checked the
   key after extending, and a create that gave a keyed field an object or
   array was answered `422 INVALID_UNIQUE_KEY_DEFINITION`. An extension that
   finds its model not locked (unlocked while a write to it, or the
