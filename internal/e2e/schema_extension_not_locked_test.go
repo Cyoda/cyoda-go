@@ -125,6 +125,30 @@ func TestSchemaExtension_NotLocked_CreateProcessorOutput(t *testing.T) {
 	requireSchemaLacks(t, h, model, field)
 }
 
+// TestSchemaExtension_NotLocked_CreateCollection — the collection create door
+// (POST /api/entity/{format}): the processor unlocks the model, then returns
+// data with a new field.
+func TestSchemaExtension_NotLocked_CreateCollection(t *testing.T) {
+	h := newCallbackHarness(t)
+	const proc = "se-nl-ccreate"
+	model := uniq("se-nl-ccreate")
+	const field = "nlCollectionCreateField"
+	unlocked := make(chan unlockRecord, 1)
+	h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
+		res, err := rc.h.unlockUnjoined(model)
+		unlocked <- unlockRecord{res, err}
+		return map[string]any{"name": "Test Order", "amount": 100, "status": "draft", field: "v"}, nil
+	})
+	notLockedModel(t, h, model, syncProcWorkflow(proc))
+
+	// An empty token sends the request unjoined.
+	res, err := h.callback(http.MethodPost, "/api/entity/JSON", collectionCreateItems(model, workflowSampleModel), "")
+	u := awaitOutcome(t, unlocked)
+	requireUnlocked(t, u.res, u.err)
+	requireNotLocked409(t, "collection create", res, err)
+	requireSchemaLacks(t, h, model, field)
+}
+
 // joinedNotLocked runs one joined write against an uncommitted entity of a
 // model unlocked during the callout, and returns what the write answered: an
 // HTTP answer or a gRPC envelope, whichever door write uses.

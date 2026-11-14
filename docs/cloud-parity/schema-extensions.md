@@ -100,9 +100,14 @@ extension of a model that is not locked.
     `TestSchemaExtension_CriterionOnFieldAddedInSameRequest`,
     `TestGRPC_ConcurrentExtension_SuccessEnvelope`.
   - `schema_extension_not_locked_test.go` — `TestSchemaExtension_NotLocked_CreateProcessorOutput`,
-    `_JoinedUpdate`, `_JoinedCollectionUpdate`, `_JoinedManualTransition`
-    (`409 MODEL_NOT_LOCKED`), and `TestGRPC_ModelNotLocked_Envelope`
-    (`CLIENT_ERROR`, message prefix `MODEL_NOT_LOCKED:`, not retryable).
+    `_CreateCollection`, `_JoinedUpdate`, `_JoinedCollectionUpdate`,
+    `_JoinedManualTransition` (`409 MODEL_NOT_LOCKED`), and on gRPC
+    `TestGRPC_ModelNotLocked_Envelope`, `_CreateCollection`, `_JoinedUpdate`,
+    `_JoinedCollectionUpdate`, `_JoinedTransition` (`CLIENT_ERROR`, message
+    prefix `MODEL_NOT_LOCKED:`, not retryable).
+  - `unique_keys_write_variants_test.go` — `TestUniqueKeys_PartialKeyDoesNotExtendModel`
+    (a partial key with a new field: `422 INVALID_UNIQUE_KEY` and no
+    extension, on every client write door).
   - `workflow_proc_output_test.go` — `TestWorkflowProcOutput_ExtensionKeptWhenTransitionFails`.
 - Cross-backend parity (memory, sqlite, postgres): `e2e/parity/schema_extension_contract.go`
   — `SchemaExtension_KeptAfterFailedWrite`, `SchemaExtension_CriterionSameRequest`,
