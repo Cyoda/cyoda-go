@@ -184,7 +184,9 @@ model `Save` retries); its doc stops naming schema extension.
    without serialising entity transactions. The ambient-transaction path and
    the `UPDATE models SET doc = doc` claim are deleted.
 3. **A delta the schema already holds writes nothing** (postgres and sqlite,
-   which keep a log; memory applies in place and needs no check). The apply
+   which keep a log). memory has no no-op check: it applies the delta in
+   place, and applying a delta the schema already holds leaves the schema
+   unchanged. The apply
    function takes a list of deltas (`schema.ApplyMany`: one decode of the
    base, every delta applied in order to that tree, one encode; an empty list
    gives a clean re-encoding of the base). Under the lock the backend folds
@@ -307,8 +309,10 @@ model `Save` retries); its doc stops naming schema extension.
    The existing one-shot refresh on an unknown path (search and criterion
    path checks) stays and is consolidated: its copies (`ValidateKnownPaths`,
    `validateConditionPaths` `service.go` ~:1883-1993, the sort-key path
-   ~:2097-2180, `refreshFieldsMap` `path_validate.go` ~:234-266,
-   and `getModelFresh` `model/service.go` ~:122-131) become one helper.
+   ~:2097-2180, `refreshFieldsMap` `path_validate.go` ~:234-266) become one
+   helper. `getModelFresh` (`model/service.go` ~:122-131) is not one of them:
+   it is the model administration's read of storage now, not a refresh on an
+   unknown path, and stays separate.
    `EnsureModelRegistered`'s refresh (`internal/common/model_registration.go`
    ~:30-52, whose comment ~:16-19 claims a negative cache that does not exist)
    is deleted: it refreshes on not-found, and a not-found `Get` always reads
@@ -334,11 +338,11 @@ model `Save` retries); its doc stops naming schema extension.
     nearly every extension also folds and writes a savepoint: extra work on
     every extension.
 13. **memory and sqlite.** memory keeps applying in place under `modelMu` and
-    adds the `LOCKED` and no-op checks; its `Lock`, `Unlock`,
+    adds the `LOCKED` check (no no-op check, §4.3); its `Lock`, `Unlock`,
     `SetChangeLevel` and `IsLocked` return `spi.ErrNotFound` for a missing
     model, as the other backends do (today a bare "not found",
     `plugins/memory/model_store.go` ~:71, ~:82, ~:93, ~:103). sqlite keeps its own write
-    transaction, adds the same checks, and retries `SQLITE_BUSY` until `ctx` ends
+    transaction, adds the `LOCKED` and no-op checks, and retries `SQLITE_BUSY` until `ctx` ends
     instead of within a budget: `SchemaExtendMaxRetries` and
     `CYODA_SCHEMA_EXTEND_MAX_RETRIES` are deleted. Both already read the model
     ignoring the entity transaction.
@@ -414,7 +418,7 @@ Round trip = one request-response with the database.
 | Case | Today (postgres) | After |
 |---|---|---|
 | Data fits the schema (steady state) | cached read, CPU diff, nil delta; no database work | the same; nothing new on the write or commit path |
-| A write that extends | create: own transaction (~8 round trips); PUT / collection update / processor output: lock on the model row held for the whole entity transaction, callouts included; other extenders wait or get `409` | one short transaction on the model pool (~3 round trips with batching, one disk flush), the per-model lock held only for it; the entity transaction is longer by that, only for this write |
+| A write that extends | create: own transaction (~8 round trips); PUT / collection update / processor output: lock on the model row held for the whole entity transaction, callouts included; other extenders wait or get `409` | one short transaction on the model pool: six round trips, unbatched (`BEGIN`, `set_config`, the lock, the fold, the insert, `COMMIT`; five for a no-op, seven when a savepoint is due), one disk flush; the per-model lock held only for it; the entity transaction is longer by that, only for this write |
 | Burst of N writes adding the same field | in-transaction: 1 winner, N−1 `409`s; self-wrapped: N queued behind a whole-transaction lock; N log rows | one call per node (§4.5), plus a no-op call for each write whose delta was computed before the first call ended; 1 row; one broadcast per call, and each node reads the model once per broadcast it receives (§4.7) |
 | Many writers extending many models | serialised per model for whole transactions | parallel, up to half of `CYODA_POSTGRES_MODEL_CONNS` per node; no lock across models. A burst of different deltas on one hot model can fill every slot with writers waiting for that model's row, delaying other models' extensions on the node until it drains |
 | A cache miss (lease expiry, after an invalidation) | read through the request's transaction or the main pool, not coalesced | one coalesced read per model per node, on the model pool |
@@ -430,10 +434,17 @@ paths a model does not have costs one storage read per refusal (the refresh,
 bounds. A burst of extensions across many models holds one main-pool
 connection per write waiting for an extension slot (§4.4).
 
-Measurement: the builder adds a benchmark of concurrent PUTs on one model on
-postgres, (a) all fitting the schema, (b) each adding a different field, (c)
-all adding the same field, run before and after; the PR reports the numbers.
-(a) must not get slower.
+Measurement: `BenchmarkConcurrentPUT_OneModel` (`internal/e2e`) sends 32
+concurrent PUTs per round to one postgres model, (a) all fitting the schema,
+(b) each adding a different field, (c) all adding the same field, (b) and (c)
+on fresh models of K + 3 fields (K = 0, 100, 1000), and reports the time per
+successful PUT. Measured with n = 10 against the code before this design:
+(a) does not change (1.91 → 1.95 ms, p = 1.0); the code before this design
+refuses 25 of 32 PUTs in (b) and 4 of 32 in (c) with `409`, this design
+none, and no run of it answers any other error. With the fold in one apply
+call (§4.3), measured with n = 10 against the same design without it, (a)
+stays at 1.95 ms (p = 0.97) and (b) at K = 1000 costs 5.6 ms per success,
+where the code before this design took 100 ms per success.
 
 ## 7. Behaviour visible to clients
 
