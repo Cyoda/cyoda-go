@@ -61,7 +61,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   operation.** A compute member's callback — a request carrying a transaction
   token — now runs in a scope of its own: either all its writes become part of
   the transaction, or none do, and a `2xx` is sent only for a callback whose
-  writes were kept. A callback that fails keeps nothing. Before, a failed
+  writes were kept. A callback that fails keeps nothing but a schema
+  extension it made. Before, a failed
   callback's writes stayed in the transaction, and the operation could commit
   them. A callback answered with a retryable error leaves the transaction
   usable, so it can be sent again in it. A callback write answered with an
@@ -70,7 +71,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   TRANSACTION_ROLLBACK_ONLY` whatever the compute member answers (a lost write
   race still answers the retryable `409 CONFLICT`). Under an `ASYNC_NEW_TX`
   processor the mark stops at the processor: it fails, with everything its
-  callbacks wrote, and the operation goes on. A callback read that answers a
+  callbacks wrote to entities, and the operation goes on. A callback read that answers a
   `4xx` keeps what it read and marks nothing. An `ASYNC_NEW_TX` processor's
   rollback no longer undoes the acknowledged write of a callback that was not
   under it. A callback whose write reaches a `COMMIT_BEFORE_DISPATCH` processor
@@ -1447,7 +1448,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   also for a callout handed over to another node, and every node serves a
   callback where it lands, with no proxy hop. The callbacks of one transaction
   may then run at the same time: of two that wrote the same entity from the
-  same version, one keeps nothing and is answered a retryable `409 CONFLICT`. The
+  same version, one keeps nothing but a schema extension it made and is
+  answered a retryable `409 CONFLICT`. The
   scope rules and the answers are otherwise the same. None of the in-tree
   backends (memory, SQLite, PostgreSQL) offers the capability. See `cyoda help
   cluster` (TRANSACTION ROUTING).

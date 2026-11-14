@@ -78,7 +78,7 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 
 - `errors.BAD_REQUEST` — `400` — not retryable — request body, query parameter, or header is malformed or structurally invalid
 - `errors.CALLOUT_FAILED` — `503` — retryable — a processor, criterion or function callout was tried on more than one compute member and no try produced an answer; the message lists the tries
-- `errors.CALLOUT_SUPERSEDED` — `410` — not retryable — request carrying a transaction token belongs to a compute node that was replaced, or to a callout that has ended; a request still in progress when that happened is discarded
+- `errors.CALLOUT_SUPERSEDED` — `410` — not retryable — request carrying a transaction token belongs to a compute node that was replaced, or to a callout that has ended; a request still in progress when that happened is discarded (a schema extension it made stays)
 - `errors.CLOCK_BEFORE_RECORDED_TIME` — `409` — not retryable — a request to set the platform clock named a time earlier than the latest time the store has recorded; the clock is unchanged
 - `errors.CLOCK_CONTROL_DISABLED` — `403` — not retryable — a request to change the platform clock reached a node not started with clock control enabled
 - `errors.CLOCK_NOT_CONFIRMED` — `503` — not retryable — a node of the cluster did not confirm a platform clock change; nothing is rolled back

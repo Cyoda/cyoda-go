@@ -313,7 +313,8 @@ answered, and after later processors of the same transition have run.
 - No database statement is interrupted — not by the fence, and not by the
   member's connection dropping. A callback that was already reading or writing
   when the work moved on runs to its end, and is then discarded and answered
-  `410 CALLOUT_SUPERSEDED`: none of its writes are kept (`callback-scopes.md`).
+  `410 CALLOUT_SUPERSEDED`: none of its writes are kept but a schema extension
+  (`callback-scopes.md`).
 - "Too slow" is not "replaced": a timeout that fails the operation rolls the
   transaction back and opens no round.
 

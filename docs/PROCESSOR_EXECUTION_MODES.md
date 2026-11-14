@@ -113,6 +113,8 @@ found); the processor's request carries the current payload. See
 A callback ack is **provisional** — it is not durable until the owning
 transaction commits. If the processor fails or the engine rolls back `T`,
 all callback writes are rolled back atomically with the rest of the cascade.
+A schema extension a callback write made is the exception throughout this
+section: it commits on its own and stays ([CONSISTENCY.md §3a](CONSISTENCY.md#3a-model--data-contract)).
 
 Each callback is **all-or-nothing**: it runs in a scope of its own, and either
 all its writes become part of `T` or none do. A `2xx` is sent only for a
@@ -185,7 +187,7 @@ non-fatal. The engine code is `executeAsyncNewTx` at
    operation fails with a retryable `409 CONFLICT` and nothing commits. A
    callback write under the processor that fails with an answer that is not
    retryable makes the processor fail the same way: its savepoint is undone
-   with everything its callbacks wrote, and the pipeline continues. A replaced
+   with everything its callbacks wrote to entities, and the pipeline continues. A replaced
    compute member is shut out before the savepoint is undone, so none of its
    writes lands after it.
 4. On success: `ReleaseSavepoint(T, S)` discards the savepoint marker.
