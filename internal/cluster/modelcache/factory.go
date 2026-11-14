@@ -193,44 +193,32 @@ func (s *requestScopedStore) ExtendSchema(ctx context.Context, ref spi.ModelRef,
 	return s.cache.extend(ctx, keyOf(ctx, ref), delta, s.inner)
 }
 
+// Model administration drops the cached entry whatever the outcome: a failed
+// call may still have committed (a COMMIT whose outcome is unknown), and a
+// needless re-read costs one storage read.
 func (s *requestScopedStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error {
-	if err := s.inner.Save(ctx, desc); err != nil {
-		return err
-	}
-	s.cache.invalidate(keyOf(ctx, desc.Ref))
-	return nil
+	defer s.cache.invalidate(keyOf(ctx, desc.Ref))
+	return s.inner.Save(ctx, desc)
 }
 
 func (s *requestScopedStore) Lock(ctx context.Context, ref spi.ModelRef) error {
-	if err := s.inner.Lock(ctx, ref); err != nil {
-		return err
-	}
-	s.cache.invalidate(keyOf(ctx, ref))
-	return nil
+	defer s.cache.invalidate(keyOf(ctx, ref))
+	return s.inner.Lock(ctx, ref)
 }
 
 func (s *requestScopedStore) Unlock(ctx context.Context, ref spi.ModelRef) error {
-	if err := s.inner.Unlock(ctx, ref); err != nil {
-		return err
-	}
-	s.cache.invalidate(keyOf(ctx, ref))
-	return nil
+	defer s.cache.invalidate(keyOf(ctx, ref))
+	return s.inner.Unlock(ctx, ref)
 }
 
 func (s *requestScopedStore) SetChangeLevel(ctx context.Context, ref spi.ModelRef, level spi.ChangeLevel) error {
-	if err := s.inner.SetChangeLevel(ctx, ref, level); err != nil {
-		return err
-	}
-	s.cache.invalidate(keyOf(ctx, ref))
-	return nil
+	defer s.cache.invalidate(keyOf(ctx, ref))
+	return s.inner.SetChangeLevel(ctx, ref, level)
 }
 
 func (s *requestScopedStore) Delete(ctx context.Context, ref spi.ModelRef) error {
-	if err := s.inner.Delete(ctx, ref); err != nil {
-		return err
-	}
-	s.cache.invalidate(keyOf(ctx, ref))
-	return nil
+	defer s.cache.invalidate(keyOf(ctx, ref))
+	return s.inner.Delete(ctx, ref)
 }
 
 func (s *requestScopedStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {

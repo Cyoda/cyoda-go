@@ -2,6 +2,7 @@ package modelcache_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,6 +20,8 @@ type stubStore struct {
 	err  error
 	// delay introduces latency on Get to help test singleflight.
 	delay time.Duration
+	// adminErr is what Save, Delete, Lock, Unlock and SetChangeLevel return.
+	adminErr error
 }
 
 func (s *stubStore) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
@@ -33,14 +36,14 @@ func (s *stubStore) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor
 	}
 	return desc, err
 }
-func (s *stubStore) Save(context.Context, *spi.ModelDescriptor) error     { return nil }
+func (s *stubStore) Save(context.Context, *spi.ModelDescriptor) error     { return s.adminErr }
 func (s *stubStore) GetAll(context.Context) ([]spi.ModelRef, error)       { return nil, nil }
-func (s *stubStore) Delete(context.Context, spi.ModelRef) error           { return nil }
-func (s *stubStore) Lock(context.Context, spi.ModelRef) error             { return nil }
-func (s *stubStore) Unlock(context.Context, spi.ModelRef) error           { return nil }
+func (s *stubStore) Delete(context.Context, spi.ModelRef) error           { return s.adminErr }
+func (s *stubStore) Lock(context.Context, spi.ModelRef) error             { return s.adminErr }
+func (s *stubStore) Unlock(context.Context, spi.ModelRef) error           { return s.adminErr }
 func (s *stubStore) IsLocked(context.Context, spi.ModelRef) (bool, error) { return false, nil }
 func (s *stubStore) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLevel) error {
-	return nil
+	return s.adminErr
 }
 func (s *stubStore) ExtendSchema(context.Context, spi.ModelRef, spi.SchemaDelta) error {
 	return nil
@@ -147,6 +150,37 @@ func TestCache_InvalidateOnSave(t *testing.T) {
 	_, _ = c.Get(context.Background(), ref)
 	if inner.getCount() != 2 {
 		t.Errorf("Save did not invalidate cache: inner.gets=%d", inner.getCount())
+	}
+}
+
+// A failed administration call may still have committed (a postgres COMMIT
+// with an unknown outcome), so the cache drops the entry whatever the outcome,
+// as an extension does.
+func TestCache_AdminInvalidatesOnError(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	ops := map[string]func(c spi.ModelStore, d *spi.ModelDescriptor) error{
+		"Save":   func(c spi.ModelStore, d *spi.ModelDescriptor) error { return c.Save(context.Background(), d) },
+		"Delete": func(c spi.ModelStore, _ *spi.ModelDescriptor) error { return c.Delete(context.Background(), ref) },
+		"Lock":   func(c spi.ModelStore, _ *spi.ModelDescriptor) error { return c.Lock(context.Background(), ref) },
+		"Unlock": func(c spi.ModelStore, _ *spi.ModelDescriptor) error { return c.Unlock(context.Background(), ref) },
+		"SetChangeLevel": func(c spi.ModelStore, _ *spi.ModelDescriptor) error {
+			return c.SetChangeLevel(context.Background(), ref, spi.ChangeLevelStructural)
+		},
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			inner := &stubStore{desc: lockedDescriptor(ref, ""), adminErr: errors.New("commit outcome unknown")}
+			clk := &manualClock{now: time.Now()}
+			c := newModelStore(t, inner, nil, clk, time.Hour)
+			_, _ = c.Get(context.Background(), ref)
+			if err := op(c, inner.desc); err == nil {
+				t.Fatalf("%s: want the inner error, got nil", name)
+			}
+			_, _ = c.Get(context.Background(), ref)
+			if inner.getCount() != 2 {
+				t.Errorf("%s failed and kept the cached entry: inner.gets=%d, want 2", name, inner.getCount())
+			}
+		})
 	}
 }
 
