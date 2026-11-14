@@ -18,22 +18,38 @@ import (
 // spelling the schema ever records, because it describes the shape, not the
 // data.
 func subscriptSchemaFields() map[string]schema.FieldDescriptor {
+	return subscriptSchemaNode().FieldsMap()
+}
+
+func subscriptSchemaNode() *schema.ModelNode {
 	root := schema.NewObjectNode()
 	root.SetChild("arr", schema.NewArrayNode(schema.NewLeafNode(schema.Integer)))
 	item := schema.NewObjectNode()
 	item.SetChild("name", schema.NewLeafNode(schema.String))
 	root.SetChild("items", schema.NewArrayNode(item))
-	return root.FieldsMap()
+	return root
+}
+
+// subscriptRefreshStore refreshes to the same schema the caller already read,
+// so a miss is confirmed rather than resolved. Only RefreshSchemaNode is
+// called on it.
+type subscriptRefreshStore struct {
+	spi.ModelStore
+	node *schema.ModelNode
+}
+
+func (s subscriptRefreshStore) RefreshSchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error) {
+	return s.node, nil
 }
 
 // unknownPaths runs the field-path check every condition surface runs —
 // ConditionFieldPaths, then ValidateKnownPaths — on cond against fields. The
-// store has no refresh capability, so the first answer is final. It returns
+// refresh finds the same schema, so a miss stands. It returns
 // nil when every path is known, and otherwise the paths the
 // INVALID_FIELD_PATH refusal names.
 func unknownPaths(t *testing.T, cond predicate.Condition, fields map[string]schema.FieldDescriptor) []string {
 	t.Helper()
-	_, err := search.ValidateKnownPaths(context.Background(), nil,
+	_, err := search.ValidateKnownPaths(context.Background(), subscriptRefreshStore{node: subscriptSchemaNode()},
 		spi.ModelRef{EntityName: "m", ModelVersion: "1"}, search.ConditionFieldPaths(cond), fields)
 	if err == nil {
 		return nil

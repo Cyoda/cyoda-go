@@ -221,31 +221,34 @@ func loadFieldsMap(
 
 // schemaNodeProvider is the optional capability a caching model store exposes to
 // hand back the schema it has already parsed, instead of the bytes to parse
-// again. Same optional-interface shape as the RefreshAndGet probe below.
+// again.
 type schemaNodeProvider interface {
 	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
 }
 
-// schemaNodeRefresher is the same capability for a refresh: it hands back the
-// parse of what the refresh read.
+// schemaNodeRefresher is the capability a model store must offer for a refresh:
+// it re-reads storage and hands back the parse of what it read. The request
+// scoped store the model cache hands out implements it; every store that
+// reaches a field-path check is one of those.
 type schemaNodeRefresher interface {
 	RefreshSchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
 }
 
 // refreshOnUnknownPaths is the one bounded refresh every field-path check runs
 // when a path is absent from the schema it first read. It refreshes the model
-// once through freshFields (RefreshSchemaNode where the store offers it, else
-// RefreshAndGet; both read storage) and reports which of the paths check still
-// finds unknown against the refreshed map.
+// once through the store's RefreshSchemaNode (which reads storage) and reports
+// which of the paths check still finds unknown against the refreshed map.
 //
 // It returns the refreshed map and the still-unknown paths. A caller that
 // refuses does so against the refreshed schema, so a refusal never names a path
 // the model has: when still is empty every path resolved and fresh is the map
 // to use. The map is nil, with no error, when the miss stands on the schema the
-// caller already read: the store has no refresh capability, the model is gone,
-// or the refreshed descriptor carries no schema. A refresh that fails for any
-// other reason is returned wrapping [ErrPathRefreshInfra]: it cannot tell a
-// genuinely undeclared path from a stale read, so it is not the client's fault.
+// caller already read: the model is gone, or the refreshed descriptor carries
+// no schema. A refresh that fails for any other reason is returned wrapping
+// [ErrPathRefreshInfra]: it cannot tell a genuinely undeclared path from a
+// stale read, so it is not the client's fault. A store that cannot refresh at
+// all is a wiring defect and fails the same way: the check cannot be made
+// correctly, so it is not made.
 //
 // The refresh is the correctness half of a refusal, not an optimisation: the
 // schema a node first read may predate an extension that has since landed, and
@@ -262,45 +265,23 @@ func refreshOnUnknownPaths(
 	if len(paths) == 0 {
 		return nil, nil, nil
 	}
-	refresher, ok := store.(interface {
-		RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error)
-	})
+	refresher, ok := store.(schemaNodeRefresher)
 	if !ok {
-		return nil, nil, nil
+		return nil, nil, fmt.Errorf("%w: model store %T cannot refresh the schema of %s/%s",
+			ErrPathRefreshInfra, store, ref.EntityName, ref.ModelVersion)
 	}
-	fresh, err = freshFields(ctx, store, refresher, ref)
+	node, err := refresher.RefreshSchemaNode(ctx, ref)
 	switch {
 	case errors.Is(err, spi.ErrNotFound):
 		return nil, nil, nil
 	case err != nil:
 		return nil, nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
 			ErrPathRefreshInfra, ref.EntityName, ref.ModelVersion, err)
-	case fresh == nil:
+	case node == nil:
 		return nil, nil, nil
 	}
+	fresh = node.FieldsMap()
 	return fresh, check(fresh), nil
-}
-
-// freshFields refreshes the model and returns its parsed fields map, nil when
-// the descriptor carries no schema. A store that offers RefreshSchemaNode
-// hands back the parse of what its refresh read, reading storage a second
-// time only when an invalidation landed during the first read; any other
-// store's refreshed descriptor is parsed here.
-func freshFields(ctx context.Context, store spi.ModelStore, refresher interface {
-	RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error)
-}, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
-	if p, ok := store.(schemaNodeRefresher); ok {
-		node, err := p.RefreshSchemaNode(ctx, ref)
-		if err != nil || node == nil {
-			return nil, err
-		}
-		return node.FieldsMap(), nil
-	}
-	desc, err := refresher.RefreshAndGet(ctx, ref)
-	if err != nil {
-		return nil, err
-	}
-	return fieldsFromDescriptor(desc)
 }
 
 // fieldsFromDescriptor unmarshals desc.Schema and returns its FieldsMap.
@@ -334,7 +315,7 @@ func ConditionFieldPaths(cond predicate.Condition) []string {
 // ValidateKnownPaths holds every path in paths to the fields the model
 // declares, returning the fields map they validated against.
 //
-// A path absent from fields triggers exactly ONE refresh (freshFields) before
+// A path absent from fields triggers exactly ONE refresh (RefreshSchemaNode) before
 // the request is refused, and the recheck decides. That refresh is the correctness
 // half, not an optimisation: on a cluster, node A can extend a model with a new
 // field while node B's cached descriptor still predates the schema-change

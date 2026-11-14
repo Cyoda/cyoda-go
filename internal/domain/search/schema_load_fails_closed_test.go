@@ -35,9 +35,8 @@ import (
 // fails. That is the split this test needs: the request gets far enough to
 // reach path validation, and path validation is what breaks.
 //
-// It deliberately implements neither RefreshAndGet nor SchemaNode, so
-// loadFieldsMap takes its Get + Unmarshal route and the single-refresh retry
-// is not in play.
+// It deliberately implements no SchemaNode, so loadFieldsMap takes its
+// Get + Unmarshal route. Its refresh finds the same schema blob.
 type brokenSchemaModelStore struct {
 	ref    spi.ModelRef
 	schema []byte
@@ -49,6 +48,13 @@ func (s *brokenSchemaModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelD
 		State:  spi.ModelLocked,
 		Schema: s.schema,
 	}, nil
+}
+
+func (s *brokenSchemaModelStore) RefreshSchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error) {
+	if len(s.schema) == 0 {
+		return nil, nil
+	}
+	return schema.Unmarshal(s.schema)
 }
 
 func (s *brokenSchemaModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }

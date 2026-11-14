@@ -13,6 +13,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
@@ -33,6 +34,9 @@ func newTestEnvWithLocalCriteria(t *testing.T) (*CloudEventsServiceImpl, *workfl
 	factory := memory.NewStoreFactory()
 	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := factory.GetTransactionManager()
+	// Production hands every handler the model cache's factory; its
+	// request-scoped store is what refreshes a schema.
+	cached := modelcache.NewCachingStoreFactory(factory, nil, nil, time.Hour)
 
 	uc := &spi.UserContext{
 		UserID:   "test-user",
@@ -42,12 +46,12 @@ func newTestEnvWithLocalCriteria(t *testing.T) (*CloudEventsServiceImpl, *workfl
 	}
 
 	lp := localproc.New()
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(lp), workflow.WithCoordination(txcoord.New(txMgr)))
+	engine := workflow.NewEngine(cached, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(lp), workflow.WithCoordination(txcoord.New(txMgr)))
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
-	modelHandler := model.New(factory, platformclock.Real())
-	workflowHandler := workflow.New(factory, engine, 60*time.Second)
+	searchService := search.NewSearchService(cached, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cached, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cached, platformclock.Real())
+	workflowHandler := workflow.New(cached, engine, 60*time.Second)
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),

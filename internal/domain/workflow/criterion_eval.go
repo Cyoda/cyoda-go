@@ -249,9 +249,9 @@ func (e *Engine) prepareLocalUnits(ctx context.Context, entity *spi.Entity, unit
 			// satisfy.
 			fields, pathErr = search.ValidateKnownPaths(ctx, modelStore, entity.Meta.ModelRef, paths, fields)
 			if errors.Is(pathErr, search.ErrPathRefreshInfra) {
-				// The bounded refresh itself failed — RefreshAndGet errored
+				// The bounded refresh itself failed — RefreshSchemaNode errored
 				// for a reason other than the model being legitimately
-				// deleted. That failure cannot tell "this field is
+				// deleted, or the store cannot refresh at all. That failure cannot tell "this field is
 				// genuinely undeclared" from "the cache is merely stale",
 				// so per correctness-over-availability it is infrastructure,
 				// not the caller's fault. Fold it into loadErr (wrapped with

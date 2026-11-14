@@ -16,7 +16,7 @@ import (
 )
 
 // countingModelStore serves one fixed descriptor and counts Get and
-// RefreshAndGet calls, so a test can assert the store-call shape of a request.
+// RefreshSchemaNode calls, so a test can assert the store-call shape of a request.
 type countingModelStore struct {
 	mu           sync.Mutex
 	descriptor   *spi.ModelDescriptor
@@ -31,11 +31,19 @@ func (s *countingModelStore) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelD
 	return s.descriptor, nil
 }
 
-func (s *countingModelStore) RefreshAndGet(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
+func (s *countingModelStore) refreshDescriptor(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
 	s.refreshCount.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.descriptor, nil
+}
+
+func (s *countingModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.refreshDescriptor(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *countingModelStore) Save(context.Context, *spi.ModelDescriptor) error     { return nil }
@@ -55,7 +63,7 @@ var _ spi.ModelStore = (*countingModelStore)(nil)
 
 // TestResolveSortKeys_UnknownField_OneRefreshPerRequest pins that a DATA sort
 // key absent from the cached and the authoritative schema is refused each time
-// and costs exactly one bounded RefreshAndGet per request: a refusal is not
+// and costs exactly one bounded RefreshSchemaNode per request: a refusal is not
 // remembered between requests.
 func TestResolveSortKeys_UnknownField_OneRefreshPerRequest(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -84,13 +92,13 @@ func TestResolveSortKeys_UnknownField_OneRefreshPerRequest(t *testing.T) {
 	// One bounded refresh per request, and no more: a refusal is not
 	// remembered, so each repeat reads again and pays exactly one refresh.
 	if got := ms.refreshCount.Load(); got != reqCount {
-		t.Errorf("inner RefreshAndGet count: want %d (one per request), got %d", reqCount, got)
+		t.Errorf("inner RefreshSchemaNode count: want %d (one per request), got %d", reqCount, got)
 	}
 }
 
 // TestResolveSortKeys_RefreshesOnceBeforeRefusing verifies that a sort key
 // naming a field absent from the cached schema but present in the
-// authoritative (post-RefreshAndGet) schema triggers exactly one bounded
+// authoritative (post-RefreshSchemaNode) schema triggers exactly one bounded
 // refresh and then resolves — the same refresh-once contract
 // TestSearch_StaleSchema_RefreshesOnceAndSucceeds (path_validate_test.go)
 // pins for condition paths. Before this fix, resolveSortKeys read the
@@ -169,7 +177,7 @@ func TestResolveSortKeys_TrulyMissingField_FourxxAfterOneRefresh(t *testing.T) {
 		t.Errorf("expected errorCode %q, got %q", common.ErrCodeInvalidFieldPath, appErr.Code)
 	}
 	if got := ms.RefreshCount(); got != 1 {
-		t.Errorf("expected exactly 1 RefreshAndGet call (bounded), got %d", got)
+		t.Errorf("expected exactly 1 RefreshSchemaNode call (bounded), got %d", got)
 	}
 }
 
@@ -243,7 +251,7 @@ func TestResolveSortKeys_ContainerPath_OneRefreshPerRequest(t *testing.T) {
 	// One bounded refresh per request, and no more: a refusal is not
 	// remembered, so each repeat reads again and pays exactly one refresh.
 	if got := ms.refreshCount.Load(); got != reqCount {
-		t.Errorf("inner RefreshAndGet count: want %d (one per request), got %d", reqCount, got)
+		t.Errorf("inner RefreshSchemaNode count: want %d (one per request), got %d", reqCount, got)
 	}
 }
 
@@ -284,6 +292,6 @@ func TestResolveSortKeys_ArrayPath_OneRefreshPerRequest(t *testing.T) {
 	// One bounded refresh per request, and no more: a refusal is not
 	// remembered, so each repeat reads again and pays exactly one refresh.
 	if got := ms.refreshCount.Load(); got != reqCount {
-		t.Errorf("inner RefreshAndGet count: want %d (one per request), got %d", reqCount, got)
+		t.Errorf("inner RefreshSchemaNode count: want %d (one per request), got %d", reqCount, got)
 	}
 }

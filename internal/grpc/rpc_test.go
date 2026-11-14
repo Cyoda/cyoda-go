@@ -15,6 +15,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
@@ -39,6 +40,9 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 	factory := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := factory.GetTransactionManager()
+	// Production hands every handler the model cache's factory; its
+	// request-scoped store is what refreshes a schema.
+	cached := modelcache.NewCachingStoreFactory(factory, nil, nil, time.Hour)
 
 	uc := &spi.UserContext{
 		UserID:   "test-user",
@@ -47,11 +51,11 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 		Roles:    []string{"ADMIN"},
 	}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	engine := workflow.NewEngine(cached, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
-	modelHandler := model.New(factory, platformclock.Real())
+	searchService := search.NewSearchService(cached, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cached, txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cached, platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),

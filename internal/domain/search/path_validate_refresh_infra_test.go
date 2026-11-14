@@ -11,7 +11,7 @@ import (
 )
 
 // failingRefreshStore is a minimal spi.ModelStore fake whose Get always
-// serves a warm (but stale) cached descriptor and whose RefreshAndGet always
+// serves a warm (but stale) cached descriptor and whose RefreshSchemaNode always
 // fails with a caller-supplied error — modelling a genuine model-store
 // outage discovered while trying to confirm a possibly-stale path miss.
 type failingRefreshStore struct {
@@ -23,8 +23,16 @@ func (s *failingRefreshStore) Get(context.Context, spi.ModelRef) (*spi.ModelDesc
 	return s.warm, nil
 }
 
-func (s *failingRefreshStore) RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
+func (s *failingRefreshStore) refreshDescriptor(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
 	return nil, s.failErr
+}
+
+func (s *failingRefreshStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.refreshDescriptor(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *failingRefreshStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
@@ -83,5 +91,40 @@ func TestValidateKnownPaths_FailedRefreshIsInfraNotClientFault(t *testing.T) {
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
 		t.Errorf("expected a plain error (callers classify it themselves), got a pre-classified *common.AppError: %+v", appErr)
+	}
+}
+
+// legacyRefreshOnlyStore refreshes through RefreshAndGet alone: it has no
+// RefreshSchemaNode, so it is not a store the model cache hands out.
+type legacyRefreshOnlyStore struct {
+	spi.ModelStore
+	fresh *spi.ModelDescriptor
+}
+
+func (s legacyRefreshOnlyStore) RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
+	return s.fresh, nil
+}
+
+// TestValidateKnownPaths_StoreThatCannotRefreshFailsClosed pins that a store
+// without RefreshSchemaNode is a wiring defect, answered as infrastructure: the
+// miss is neither refused as the client's fault nor resolved through some other
+// read the store happens to offer.
+func TestValidateKnownPaths_StoreThatCannotRefreshFailsClosed(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	node := schema.NewObjectNode()
+	node.SetChild("peer_field", schema.NewLeafNode(schema.String))
+	raw, err := schema.Marshal(node)
+	if err != nil {
+		t.Fatalf("schema.Marshal: %v", err)
+	}
+	store := legacyRefreshOnlyStore{fresh: &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked, Schema: raw}}
+
+	_, err = ValidateKnownPaths(context.Background(), store, ref, []string{"$.peer_field"}, map[string]schema.FieldDescriptor{})
+	if !errors.Is(err, ErrPathRefreshInfra) {
+		t.Fatalf("err = %v, want one wrapping ErrPathRefreshInfra", err)
+	}
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		t.Fatalf("a wiring defect is not a client error, got %v", appErr)
 	}
 }

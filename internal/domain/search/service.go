@@ -1851,8 +1851,8 @@ func AlreadyTerminalError(jobID, currentStatus string) *common.AppError {
 // validateConditionPaths runs the pre-execution field-path validation
 // step for Search. The model's schema is read first; if any path referenced by
 // the condition is absent, refreshOnUnknownPaths issues exactly one refresh
-// (when the store implements one) and the recheck decides the outcome. A stale-schema search referencing a freshly-extended path succeeds
-// after one bounded refresh, and a truly-unknown path surfaces as 4xx without a
+// and the recheck decides the outcome. A stale-schema search referencing a
+// freshly-extended path succeeds after one bounded refresh, and a truly-unknown path surfaces as 4xx without a
 // refresh loop. No refusal is remembered: the next request reads again.
 //
 // Returns nil when validation passes or when no data-field paths are

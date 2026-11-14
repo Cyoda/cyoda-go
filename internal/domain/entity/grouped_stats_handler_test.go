@@ -322,8 +322,8 @@ var _ entity.StoreResolver = func(_ *http.Request, _, _ string) (spi.EntityStore
 // numbers came back looking like a real answer.
 
 // declaredFieldsModelStore serves a descriptor declaring the given String
-// leaves. It implements no RefreshAndGet: the cached miss is authoritative,
-// which is the same shape validateConditionPaths treats as final.
+// leaves. Its refresh finds the same schema, so a miss on the cached read is
+// confirmed by the refresh and the path is refused.
 type declaredFieldsModelStore struct {
 	ref    spi.ModelRef
 	fields []string
@@ -343,6 +343,14 @@ func (s *declaredFieldsModelStore) Get(context.Context, spi.ModelRef) (*spi.Mode
 		return nil, err
 	}
 	return &spi.ModelDescriptor{Ref: s.ref, State: spi.ModelLocked, Schema: raw}, nil
+}
+
+func (s *declaredFieldsModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *declaredFieldsModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
@@ -444,7 +452,7 @@ func TestGroupedStatsHandler_ConditionTypeMismatch_Rejected(t *testing.T) {
 
 // refreshFailingModelStore serves a warm-but-stale cached descriptor (Get
 // always succeeds, declaring only "name") and always FAILS its
-// RefreshAndGet — modelling a genuine model-store outage discovered while
+// RefreshSchemaNode — modelling a genuine model-store outage discovered while
 // confirming a possibly-stale field-path miss.
 type refreshFailingModelStore struct {
 	ref spi.ModelRef
@@ -460,8 +468,16 @@ func (s *refreshFailingModelStore) Get(context.Context, spi.ModelRef) (*spi.Mode
 	return &spi.ModelDescriptor{Ref: s.ref, State: spi.ModelLocked, Schema: raw}, nil
 }
 
-func (s *refreshFailingModelStore) RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
+func (s *refreshFailingModelStore) refreshDescriptor(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
 	return nil, errors.New("connection refused")
+}
+
+func (s *refreshFailingModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.refreshDescriptor(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *refreshFailingModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
@@ -484,7 +500,7 @@ var _ spi.ModelStore = (*refreshFailingModelStore)(nil)
 // TestGroupedStatsHandler_SchemaRefreshFailure_Returns5xxNot400 pins the
 // review-round finding that grouped stats shares the same 400→5xx flip as
 // /search/direct and conditional DELETE: a condition naming a field absent
-// from the cached schema, whose confirming RefreshAndGet call itself FAILS,
+// from the cached schema, whose confirming RefreshSchemaNode call itself FAILS,
 // must be reported as infrastructure — not folded into the same 400
 // INVALID_FIELD_PATH TestGroupedStatsHandler_UnknownConditionPath_Rejected
 // pins for a genuinely-unknown path.

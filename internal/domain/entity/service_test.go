@@ -10,8 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -710,7 +712,10 @@ func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Co
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, base), platformclock.Real())
+	// Production hands the handler the model cache's factory, whose request
+	// scoped store is what refreshes a schema.
+	caching := modelcache.NewCachingStoreFactory(base, nil, nil, time.Hour)
+	h = entity.New(caching, txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, base), platformclock.Real())
 
 	return h, ctx, ref.EntityName, 1
 }

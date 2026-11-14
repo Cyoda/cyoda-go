@@ -9,9 +9,9 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
-// refreshingStore is a ModelStore fake that implements RefreshAndGet
+// refreshingStore is a ModelStore fake that implements RefreshSchemaNode
 // with a queue: each Get returns the head of getQueue; each
-// RefreshAndGet returns the head of refreshQueue.
+// RefreshSchemaNode parses the head of refreshQueue.
 type refreshingStore struct {
 	mu           sync.Mutex
 	getQueue     []*spi.ModelDescriptor
@@ -36,7 +36,7 @@ func (s *refreshingStore) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelDesc
 	return d, nil
 }
 
-func (s *refreshingStore) RefreshAndGet(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
+func (s *refreshingStore) refreshDescriptor(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refreshCount++
@@ -46,6 +46,14 @@ func (s *refreshingStore) RefreshAndGet(_ context.Context, _ spi.ModelRef) (*spi
 	d := s.refreshQueue[0]
 	s.refreshQueue = s.refreshQueue[1:]
 	return d, nil
+}
+
+func (s *refreshingStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.refreshDescriptor(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 // Satisfy the rest of spi.ModelStore with no-ops.
@@ -111,9 +119,9 @@ func (s *failingModelStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.Mod
 	return s.refreshingStore.Get(ctx, ref)
 }
 
-func (s *failingModelStore) RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
+func (s *failingModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
 	if s.refreshErr != nil {
 		return nil, s.refreshErr
 	}
-	return s.refreshingStore.RefreshAndGet(ctx, ref)
+	return s.refreshingStore.RefreshSchemaNode(ctx, ref)
 }
