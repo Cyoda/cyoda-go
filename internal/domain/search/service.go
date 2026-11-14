@@ -1896,28 +1896,10 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 	// A nil fields map is NOT "nothing to validate against" — it is a model
 	// declaring no fields, against which every data path the condition names
 	// is unknown. findUnknownPaths reports exactly that, and the bounded
-	// refresh below still gets its chance to discover a schema this node has
-	// not yet seen.
-	missing := findUnknownPaths(paths, fields)
-	if len(missing) == 0 {
-		return fields, nil
-	}
-
-	fresh, still, err := refreshOnUnknownPaths(ctx, modelStore, modelRef, missing, func(f map[string]schema.FieldDescriptor) []string {
-		return findUnknownPaths(missing, f)
-	})
-	if err != nil {
-		return nil, err
-	}
-	switch {
-	case fresh == nil:
-		return nil, invalidPathError(missing)
-	case len(still) > 0:
-		return nil, invalidPathError(still)
-	}
-	// The refresh is authoritative — hand back the schema the paths
-	// actually validated against, not the stale one.
-	return fresh, nil
+	// refresh still gets its chance to discover a schema this node has not
+	// yet seen. On a refresh the returned map is the refreshed one — the
+	// schema the paths actually validated against, not the stale one.
+	return ValidateKnownPaths(ctx, modelStore, modelRef, paths, fields)
 }
 
 // resolveSortKeys turns the request OrderKeys into typed OrderSpecs, validating

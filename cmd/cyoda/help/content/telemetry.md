@@ -168,7 +168,7 @@ Cyoda-specific span attribute keys defined in `internal/observability/attrs.go`:
 - `outcome` — outcome label of `cyoda.callout.tries`, `cyoda.callout.handovers`, `cyoda.callout.superseded`, `cyoda.scheduler.runs` and `cyoda.scheduler.run.duration`; a closed set for each
 - `cyoda.cluster.member.state` — lifecycle-state label of `cyoda.cluster.member.count` (`starting`, `normal`, `draining`, `unhealthy`)
 - `reason` — claim label of `cyoda.scheduler.claims` (`due` or `owner_lost`)
-- `pool` — PostgreSQL pool label of `cyoda.storage.pool.connections`: `main` (entity transactions and `GET /scheduled-tasks`), `scheduler` (the scheduler's claims and its retry writes (`RecordAttempt`), and the async-search heartbeat and claim; a FAILED outcome commits with its audit event on the main pool) or `heartbeat` (the scheduler heartbeat's own connection)
+- `pool` — PostgreSQL pool label of `cyoda.storage.pool.connections`: `main` (entity transactions and `GET /scheduled-tasks`), `scheduler` (the scheduler's claims and its retry writes (`RecordAttempt`), and the async-search heartbeat and claim; a FAILED outcome commits with its audit event on the main pool), `heartbeat` (the scheduler heartbeat's own connection) or `model` (the model store: model reads, administration and schema extensions)
 - `callout.tries` — number of tries a callout made, on its span
 - `callout.handover` — boolean; `true` when the callout was handed over to another cluster node at least once
 - `callout.waited_ms` — milliseconds the callout waited for a compute member to exist
