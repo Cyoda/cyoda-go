@@ -1932,12 +1932,20 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		return nil, common.Internal("failed to access model store", err)
 	}
 
-	// Validate all items before starting the transaction.
+	// Validate all items before starting the transaction, in two passes. A
+	// schema extension commits on its own and stays, so the first pass refuses
+	// every item's partial unique key before the second pass lets any item
+	// extend its model.
 	type parsedItem struct {
 		ref          spi.ModelRef
 		payloadBytes []byte
+		parsedData   any
 		uniqueKeys   []spi.UniqueKey
 	}
+	// The latest descriptor of each model the batch names. The second pass
+	// replaces an entry with the descriptor an extension returns, so a later
+	// item of the same model is checked against the extended schema.
+	descs := make(map[spi.ModelRef]*spi.ModelDescriptor)
 	parsed := make([]parsedItem, 0, len(items))
 	for i, item := range items {
 		ref := spi.ModelRef{
@@ -1945,20 +1953,24 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			ModelVersion: fmt.Sprintf("%d", item.ModelVersion),
 		}
 
-		// Load and validate model. Distinguish genuine not-found (404) from
-		// other infrastructure errors (5xx) so a schema fold/apply failure
-		// does not masquerade as a missing model for a batch item.
-		desc, err := modelStore.Get(ctx, ref)
-		if err != nil {
-			if errors.Is(err, spi.ErrNotFound) {
-				return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-					fmt.Sprintf("item %d: model not found", i))
+		desc, ok := descs[ref]
+		if !ok {
+			// Distinguish genuine not-found (404) from other infrastructure
+			// errors (5xx) so a schema fold/apply failure does not masquerade
+			// as a missing model for a batch item.
+			desc, err = modelStore.Get(ctx, ref)
+			if err != nil {
+				if errors.Is(err, spi.ErrNotFound) {
+					return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+						fmt.Sprintf("item %d: model not found", i))
+				}
+				return nil, common.Internal(fmt.Sprintf("item %d: failed to load model", i), err)
 			}
-			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model", i), err)
-		}
-		if desc.State != spi.ModelLocked {
-			return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked,
-				fmt.Sprintf("item %d: model is not locked", i))
+			if desc.State != spi.ModelLocked {
+				return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked,
+					fmt.Sprintf("item %d: model is not locked", i))
+			}
+			descs[ref] = desc
 		}
 
 		// Parse payload
@@ -1972,18 +1984,21 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			return nil, ingest.PrefixItemErr(err, i)
 		}
 
-		// Refuse a partial unique key before the schema check can extend the
-		// model, and before any transaction is opened.
+		// Refuse a partial unique key before any item's schema check can
+		// extend a model, and before any transaction is opened.
 		if err := checkUniqueKeys(desc, parsedData, payloadBytes, fmt.Sprintf("item %d: ", i)); err != nil {
 			return nil, err
 		}
 
+		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes, parsedData: parsedData, uniqueKeys: desc.UniqueKeys})
+	}
+	for _, it := range parsed {
 		// Validate or extend model schema
-		if _, err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
+		desc, err := ingest.ValidateOrExtend(ctx, modelStore, descs[it.ref], it.parsedData)
+		if err != nil {
 			return nil, classifyValidateOrExtendErr(err)
 		}
-
-		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes, uniqueKeys: desc.UniqueKeys})
+		descs[it.ref] = desc
 	}
 
 	// Begin transaction -- all entities in one transaction, all-or-nothing

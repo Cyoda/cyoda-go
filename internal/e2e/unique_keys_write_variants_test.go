@@ -309,12 +309,18 @@ func TestUniqueKeys_TransitionPatchPartialKey(t *testing.T) {
 // extends a model, that a write whose data holds only part of a composite key
 // AND a field the model does not have answers 422 INVALID_UNIQUE_KEY without
 // extending the model. A schema extension commits on its own, so the key check
-// must refuse the write before the schema check can extend the model.
+// must refuse the write before the schema check can extend the model. A
+// collection create checks every item's key before any item's schema: an
+// earlier item that is valid and adds the field must not extend the model when
+// a later item is refused for a partial key.
 func TestUniqueKeys_PartialKeyDoesNotExtendModel(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 	const keysJSON = `{"uniqueKeys":[{"id":"name-amount-key","fields":["$.name","$.amount"]}]}`
+	const field = "partialKeyNewField"
+	// A valid item with the whole key that adds field to the model.
+	extendingItem := fmt.Sprintf(`{"name":"Whole","amount":2,"status":"draft",%q:"v"}`, field)
 
 	doors := []struct {
 		name  string
@@ -338,6 +344,12 @@ func TestUniqueKeys_PartialKeyDoesNotExtendModel(t *testing.T) {
 			id := createEntityE2E(t, model, 1, `{"name":"Kept","amount":1,"status":"draft"}`)
 			return putUpdateCollection(t, []string{updateCollectionItem(id, payload, "")}, "")
 		}},
+		{"createCollectionExtendingItemFirst", func(t *testing.T, model, payload string) (int, string) {
+			return collectionCreate(t, []string{
+				collectionItem(model, 1, extendingItem),
+				collectionItem(model, 1, `{"name":"Part","status":"draft"}`),
+			})
+		}},
 	}
 	for _, door := range doors {
 		t.Run(door.name, func(t *testing.T) {
@@ -345,7 +357,6 @@ func TestUniqueKeys_PartialKeyDoesNotExtendModel(t *testing.T) {
 			setupUKModelWithWorkflow(t, model, keysJSON, ukManualTransitionWF(model))
 			setChangeLevelE2E(t, model, 1, "STRUCTURAL")
 
-			const field = "partialKeyNewField"
 			// "amount" is missing → partial composite key; field is new to the model.
 			status, body := door.write(t, model, fmt.Sprintf(`{"name":"Part","status":"draft",%q:"v"}`, field))
 			if status != http.StatusUnprocessableEntity {
