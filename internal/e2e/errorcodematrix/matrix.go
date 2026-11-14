@@ -100,15 +100,14 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		// TestEntityCreate_UnaddressableFieldName_400: a write that would extend
 		// the model with a field name the wire jsonPath grammar cannot address.
 		{Status: 400, Code: "VALIDATION_FAILED"},
-		{Status: 400, Code: "WORKFLOW_FAILED"},    // workflow processor rejected the entity
-		{Status: 403, Code: "FORBIDDEN"},          // TestRouteGuard_DataRouteRequiresM2M: the caller lacks ROLE_M2M
-		{Status: 404, Code: "MODEL_NOT_FOUND"},    // model not registered
-		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_CreateDuplicate et al.
-		{Status: 412, Code: "ENTITY_MODIFIED"},    // TestCreate_CBDPostSegmentConflict_Is412
-		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_PartialKeyCreate, TestUniqueKeys_OverBoundNumeric
-		// TestModelKindBranch_KeyedPathCannotGainAContainer: a STRUCTURAL write
-		// that would give a keyed path a container branch.
-		{Status: 422, Code: "INVALID_UNIQUE_KEY_DEFINITION"},
+		{Status: 400, Code: "WORKFLOW_FAILED"},  // workflow processor rejected the entity
+		{Status: 403, Code: "FORBIDDEN"},        // TestRouteGuard_DataRouteRequiresM2M: the caller lacks ROLE_M2M
+		{Status: 404, Code: "MODEL_NOT_FOUND"},  // model not registered
+		{Status: 409, Code: "UNIQUE_VIOLATION"}, // TestUniqueKeys_CreateDuplicate et al.
+		{Status: 412, Code: "ENTITY_MODIFIED"},  // TestCreate_CBDPostSegmentConflict_Is412
+		// TestUniqueKeys_PartialKeyCreate, TestUniqueKeys_OverBoundNumeric,
+		// TestModelKindBranch_KeyedPathCannotGainAContainer
+		{Status: 422, Code: "INVALID_UNIQUE_KEY"},
 		{Status: 404, Code: "TRANSACTION_NOT_FOUND"},            // TestCalloutFence_LateCallback: the X-Tx-Token names a transaction that is no longer open
 		{Status: 408, Code: "TRANSACTION_TIMEOUT"},              // TestTransactionControl_WriteOps_TransactionTimeout408/Create
 		{Status: 409, Code: "COMMIT_IN_JOINED_TRANSACTION"},     // TestCallback_CommitBeforeDispatchInJoinedTransaction_Refused

@@ -215,14 +215,15 @@ func TestValidateOrExtend_WideningKeyedNullLeaf_Returns422(t *testing.T) {
 }
 
 // TestValidateOrExtend_WideningKeyedScalarLeaf_Returns422 is the case that
-// matters most, because the schema extension is committed BEFORE the write's
-// own transaction is opened (see CreateEntity: ValidateOrExtend runs, then
-// withUniqueKeys, and only then beginScope). A keyed path that gains a
-// container branch keeps its scalar branch, so it still looks like a scalar
-// leaf — but a claim cannot be computed for an object value, so the write is
-// refused anyway. If the widening were let through, the model would be left
-// permanently declaring a kind that every later write of that kind is refused
-// for, with nothing to roll it back.
+// matters most, because a schema extension commits on its own and stays when
+// the write is refused. A keyed path that gains a container branch keeps its
+// scalar branch, so it still looks like a scalar leaf — but a claim cannot be
+// computed for an object value, so the write is refused anyway. The entity
+// service's write doors refuse such a value before ValidateOrExtend
+// (checkUniqueKeys); data a workflow processor returns reaches ValidateOrExtend
+// unchecked, and this guard is what refuses it there. If the widening were let
+// through, the model would be left permanently declaring a kind that every
+// later write of that kind is refused for, with nothing to roll it back.
 func TestValidateOrExtend_WideningKeyedScalarLeaf_Returns422(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("score", schema.NewLeafNode(schema.String))

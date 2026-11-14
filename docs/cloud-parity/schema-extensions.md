@@ -46,7 +46,11 @@ workflow processor returns — over HTTP and gRPC.
 2. A write that fails after its extension — a workflow or processor error,
    a unique-key violation, a conflict, a client cancel, a crash — leaves the
    field in the model. Removing it takes unlock (zero entities), delete and
-   a fresh import.
+   a fresh import. A write whose own data fills a composite unique key only
+   in part, or puts a non-scalar value in a key's field, is refused with
+   `422 INVALID_UNIQUE_KEY` before its schema check on every door, so it
+   extends nothing; a partial key in data a processor returns is found only
+   when the entity is saved, after the extension.
 3. An extension made by a joined compute-node callback stays if the owner's
    transaction rolls back, or if the callback's scope is discarded (a failed
    `ASYNC_NEW_TX` processor discards its callbacks' entity writes, not their

@@ -5,7 +5,7 @@ package e2e_test
 // workflow processor has mutated the key field.
 //
 // The composite-unique-key feature enforces keys store-side, computing claims
-// from the LIVE entity.Data. The pre-engine check (Handler.withUniqueKeys)
+// from the LIVE entity.Data. The pre-engine check (checkUniqueKeys)
 // runs ComputeClaims on the INPUT only — a fast partial-key reject. The real
 // uniqueness/over-bound enforcement happens when the cascade's final Save
 // computes claims from the processor-mutated data, and the resulting

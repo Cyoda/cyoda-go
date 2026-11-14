@@ -21,7 +21,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`CYODA_MODEL_CACHE_LEASE` bounds a lost broadcast). It stays if the write
   fails or rolls back — before, PostgreSQL discarded it on its in-transaction
   paths while the other backends kept it. An extension the schema already
-  holds writes nothing. An extension that finds its model unlocked (unlocked
+  holds writes nothing. A write whose data fills a composite unique key only
+  in part, or puts a non-scalar value in a key's field, is refused with
+  `422 INVALID_UNIQUE_KEY` before its schema check on every door, so it
+  extends nothing; before, create, collection create and update checked the
+  key after extending, and a create that gave a keyed field an object or
+  array was answered `422 INVALID_UNIQUE_KEY_DEFINITION`. An extension that finds its model unlocked (unlocked
   after the write read it) is refused with `409 MODEL_NOT_LOCKED` on every
   backend; before, PostgreSQL appended it to the unlocked model's log. A
   storage failure while extending for processor-returned data answers the

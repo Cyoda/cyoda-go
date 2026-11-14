@@ -137,10 +137,13 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 
 	// Guard: if any unique key field would become non-scalar in the extended
 	// schema, reject the write now. A write may add a kind to a path — a
-	// unique-key leaf gaining an object or array branch is the reachable case
-	// — and the unique keys were valid when declared, so the extension must
-	// not silently invalidate them. The answer is a 422 naming the key, not a
-	// write that leaves the model unable to enforce it.
+	// unique-key leaf gaining an object or array branch — and the unique keys
+	// were valid when declared, so the extension must not silently invalidate
+	// them. The entity service's write doors refuse a non-scalar value at a
+	// keyed field before they get here; data a workflow processor returns is
+	// not key-checked before its extension, so for it this guard is what keeps
+	// a keyed field scalar. The answer is a 422 naming the key, not a write
+	// that leaves the model unable to enforce it.
 	if len(desc.UniqueKeys) > 0 {
 		if vErr := schema.ValidateUniqueKeys(extended, desc.UniqueKeys); vErr != nil {
 			var de *schema.UniqueKeyDefError

@@ -29,8 +29,10 @@ package e2e_test
 // a follow-on — see the matrix comment).
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -299,4 +301,65 @@ func TestUniqueKeys_TransitionPatchPartialKey(t *testing.T) {
 		t.Fatalf("transition patch partial key: expected 422, got %d: %s", resp.StatusCode, body)
 	}
 	assertErrorCode(t, body, "INVALID_UNIQUE_KEY")
+}
+
+// --- partial key refused before the schema extension ---
+
+// TestUniqueKeys_PartialKeyDoesNotExtendModel verifies, on every door that
+// extends a model, that a write whose data holds only part of a composite key
+// AND a field the model does not have answers 422 INVALID_UNIQUE_KEY without
+// extending the model. A schema extension commits on its own, so the key check
+// must refuse the write before the schema check can extend the model.
+func TestUniqueKeys_PartialKeyDoesNotExtendModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	const keysJSON = `{"uniqueKeys":[{"id":"name-amount-key","fields":["$.name","$.amount"]}]}`
+
+	doors := []struct {
+		name  string
+		write func(t *testing.T, model, payload string) (int, string)
+	}{
+		{"create", func(t *testing.T, model, payload string) (int, string) {
+			return createEntityRaw(t, model, 1, payload)
+		}},
+		{"createCollection", func(t *testing.T, model, payload string) (int, string) {
+			return collectionCreate(t, []string{collectionItem(model, 1, payload)})
+		}},
+		{"updateSingleWithLoopback", func(t *testing.T, model, payload string) (int, string) {
+			id := createEntityE2E(t, model, 1, `{"name":"Kept","amount":1,"status":"draft"}`)
+			return updateEntityRaw(t, id, payload)
+		}},
+		{"updateSingle", func(t *testing.T, model, payload string) (int, string) {
+			id := createEntityE2E(t, model, 1, `{"name":"Kept","amount":1,"status":"draft"}`)
+			return updateEntityRawTr(t, id, "modify", payload)
+		}},
+		{"updateCollection", func(t *testing.T, model, payload string) (int, string) {
+			id := createEntityE2E(t, model, 1, `{"name":"Kept","amount":1,"status":"draft"}`)
+			return putUpdateCollection(t, []string{updateCollectionItem(id, payload, "")}, "")
+		}},
+	}
+	for _, door := range doors {
+		t.Run(door.name, func(t *testing.T) {
+			model := "e2e-uk-partial-noext-" + strings.ToLower(door.name)
+			setupUKModelWithWorkflow(t, model, keysJSON, ukManualTransitionWF(model))
+			setChangeLevelE2E(t, model, 1, "STRUCTURAL")
+
+			const field = "partialKeyNewField"
+			// "amount" is missing → partial composite key; field is new to the model.
+			status, body := door.write(t, model, fmt.Sprintf(`{"name":"Part","status":"draft",%q:"v"}`, field))
+			if status != http.StatusUnprocessableEntity {
+				t.Fatalf("partial key with a new field: expected 422, got %d: %s", status, body)
+			}
+			assertErrorCode(t, body, "INVALID_UNIQUE_KEY")
+
+			export, err := json.Marshal(exportModelE2E(t, model, 1))
+			if err != nil {
+				t.Fatalf("marshal export: %v", err)
+			}
+			if strings.Contains(string(export), field) {
+				t.Errorf("model %s gained %q from a write refused for a partial key: %s", model, field, export)
+			}
+		})
+	}
 }

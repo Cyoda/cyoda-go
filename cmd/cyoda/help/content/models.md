@@ -359,6 +359,7 @@ What follows from this:
 
 - A new field can be visible to other clients — in the model export, in search path validation, in criteria — before the write that brought it commits. A query on that field finds nothing from that write until it commits.
 - If the write fails after its extension — a workflow or processor error, a unique-key violation, a conflict, the client cancelling, a crash — the model keeps the field. Removing it takes unlocking the model (which needs zero entities), deleting it and importing it again: an import into an existing model merges.
+- A write whose own data fills a composite unique key only in part, or puts a value that is not a scalar in a key's field, is refused with `422 INVALID_UNIQUE_KEY` before its schema is checked, so it extends nothing. A partial key in data a workflow processor returns is found only when the entity is saved, after the extension.
 - An extension made by a compute-node callback that joined a transaction stays even if that transaction rolls back, or if the callback's work is undone: an `ASYNC_NEW_TX` processor that fails discards its callbacks' entity writes, not their extensions.
 - Writes that bring different types for one field leave the model admitting both.
 - A failed request may still have extended the model. Retrying it is safe: an extension the schema already holds writes nothing.

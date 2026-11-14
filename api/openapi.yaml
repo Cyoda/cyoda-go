@@ -3082,7 +3082,7 @@ paths:
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range or non-scalar value."
           content:
             application/problem+json:
               schema:
@@ -3305,7 +3305,7 @@ paths:
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range or non-scalar value."
           content:
             application/problem+json:
               schema:
@@ -3492,7 +3492,7 @@ paths:
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range or non-scalar value."
           content:
             application/problem+json:
               schema:
@@ -3630,7 +3630,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range or non-scalar value."
           content:
             application/problem+json:
               schema:
@@ -3834,7 +3834,7 @@ paths:
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range or non-scalar value."
           content:
             application/problem+json:
               schema:
@@ -3982,7 +3982,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range or non-scalar value."
           content:
             application/problem+json:
               schema:
@@ -4229,7 +4229,7 @@ paths:
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value; INVALID_UNIQUE_KEY_DEFINITION: the write would give a keyed field (a path a unique key names) a container branch."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range or non-scalar value."
           content:
             application/problem+json:
               schema:
