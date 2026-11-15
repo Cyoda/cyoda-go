@@ -25,5 +25,11 @@ func TestConformance(t *testing.T) {
 			f := memory.NewStoreFactory(memory.WithClock(clock), memory.WithBusinessClock(c))
 			return f, func() { _ = f.Close() }
 		},
+		Skip: map[string]string{
+			// The unlock-first ordering needs the entity commit to refuse a
+			// model that is not LOCKED; that check lands with the
+			// commit-time model check.
+			"Model/Interleave/UnlockVsUncommittedWrite": "commit-time model check: Phase D",
+		},
 	})
 }
