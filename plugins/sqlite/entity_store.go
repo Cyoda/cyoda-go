@@ -307,12 +307,8 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		cp := copyEntity(entity)
 		cp.Meta.TenantID = s.tenantID
 		cp.Meta.TransactionID = tx.ID
-		// Stage the value this overwrites (see stageSuperseded's godoc)
-		// BEFORE overwriting tx.Buffer, so a same-tx double-save of the same
-		// entity still produces an earliest-wins-eligible version row at
-		// commit (GetVersionByTransaction's contract). tx.Buffer[id] is nil
-		// on this entity's first Save in the tx — stageSuperseded no-ops.
-		s.tm.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
+		// The buffer holds the entity's one pending version; this write
+		// replaces it.
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
 		// If the entity was previously marked for deletion in this tx, unmark
@@ -529,7 +525,6 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			cp := copyEntity(entity)
 			cp.Meta.TenantID = s.tenantID
 			cp.Meta.TransactionID = tx.ID
-			s.tm.stageSuperseded(tx.ID, entity.Meta.ID, buffered)
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
 			// Capture unique keys at buffer time, as Save does — see the
@@ -547,12 +542,10 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			return 0, spi.ErrConflict
 		}
 
-		// Write to buffer. Stage the value this overwrites first — see the
-		// matching comment in Save.
+		// Write to buffer, replacing any pending version.
 		cp := copyEntity(entity)
 		cp.Meta.TenantID = s.tenantID
 		cp.Meta.TransactionID = tx.ID
-		s.tm.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
 		// Capture unique keys at buffer time, as Save does — see the comment
@@ -1401,8 +1394,8 @@ const getVersionByTransactionQuery = `SELECT ev.entity_id, ev.model_name, ev.mod
 		 ORDER BY ev.version ASC
 		 LIMIT 1`
 
-// GetVersionByTransaction returns the earliest (lowest-Version) version of
-// entityID written by transaction txID. DELETED tombstones never match — see
+// GetVersionByTransaction returns the version of entityID that transaction
+// txID wrote (a transaction records at most one version per entity). DELETED tombstones never match — see
 // spi.EntityStore.GetVersionByTransaction's doc comment — and an empty txID
 // never matches, even a stored-empty one from a non-transactional write, so
 // it is rejected pre-query rather than reaching SQL at all.
