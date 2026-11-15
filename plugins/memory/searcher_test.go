@@ -81,6 +81,7 @@ func TestMemorySearch_NonTx_ParityWithIterateMatch(t *testing.T) {
 // TestMemorySearch_NonTx_Order checks ordering on the non-tx path.
 func TestMemorySearch_NonTx_Order(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -141,6 +142,7 @@ func TestMemorySearch_InTx_CreatedInTxMatchPresent(t *testing.T) {
 // must be absent from an in-tx Search.
 func TestMemorySearch_InTx_DeletedInTxAbsent(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	txMgr := factory.NewTransactionManager(newTestUUIDGenerator())
 	ctx := ctxWithTenant("tenant-A")
@@ -210,6 +212,7 @@ func TestMemorySearch_InTx_BufferedNoLongerMatchesAbsent(t *testing.T) {
 // committed data only; the tx's own uncommitted buffer must not appear.
 func TestMemorySearch_InTx_PIT_CommittedOnly(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	txMgr := factory.NewTransactionManager(newTestUUIDGenerator())
 	ctx := ctxWithTenant("tenant-A")
@@ -254,6 +257,7 @@ func TestMemorySearch_InTx_PIT_CommittedOnly(t *testing.T) {
 // only returned committed ids into tx.ReadSet; TrackingRead=false records none.
 func TestMemorySearch_TrackingRead_RecordsReturnedOnly(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	txMgr := factory.NewTransactionManager(newTestUUIDGenerator())
 	ctx := ctxWithTenant("tenant-A")
@@ -304,6 +308,7 @@ func TestMemorySearch_TrackingRead_RecordsReturnedOnly(t *testing.T) {
 // disagreeing views. After the fix all three agree: last-write-wins → present.
 func TestMemorySearch_InTx_DeleteThenSave_AllViewsAgree(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	txMgr := factory.NewTransactionManager(newTestUUIDGenerator())
 	ctx := ctxWithTenant("tenant-A")
@@ -417,6 +422,7 @@ func TestMemorySearch_InTx_BufferedSupersedesCommitted(t *testing.T) {
 // read-set (there is no transaction).
 func TestMemorySearch_NonTx_PIT_CommittedAsAt(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -471,6 +477,7 @@ func TestMemorySearch_NonTx_PIT_CommittedAsAt(t *testing.T) {
 // (it is already in the write-set).
 func TestMemorySearch_TrackingRead_BufferedNotInReadSet(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	txMgr := factory.NewTransactionManager(newTestUUIDGenerator())
 	ctx := ctxWithTenant("tenant-A")
@@ -506,6 +513,7 @@ func TestMemorySearch_TrackingRead_BufferedNotInReadSet(t *testing.T) {
 // prefix.
 func TestMemorySearch_OverLimitFails(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -528,6 +536,7 @@ func TestMemorySearch_OverLimitFails(t *testing.T) {
 // succeeds and returns the whole set.
 func TestMemorySearch_AtLimitSucceeds(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -612,6 +621,7 @@ func TestMemorySearch_RejectsUnevaluableFilter(t *testing.T) {
 // own buffered writes together must fit within Limit.
 func TestMemorySearch_TxOverlayOverLimitFails(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	txMgr := factory.NewTransactionManager(newTestUUIDGenerator())
 	ctx := ctxWithTenant("tenant-A")
@@ -703,6 +713,7 @@ func TestSearch_PreExpiredCtxAborts(t *testing.T) {
 // transaction.
 func TestSearch_PreExpiredCtxAborts_InTx(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	txMgr := factory.NewTransactionManager(newTestUUIDGenerator())
 	ctx := ctxWithTenant("tenant-A")

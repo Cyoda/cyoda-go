@@ -47,6 +47,7 @@ func TestConsistencyTime_RequiresTenant(t *testing.T) {
 func TestConsistencyTime_ReservesTheFloor(t *testing.T) {
 	clock := memory.NewTestClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	f := memory.NewStoreFactory(memory.WithClock(clock))
+	lockModels(t, f, ctxWithTenant("t1"), spi.ModelRef{EntityName: "m", ModelVersion: "1"})
 	ctx := ctTenantCtx("t1")
 	tm, err := f.TransactionManager(ctx)
 	require.NoError(t, err)
@@ -68,6 +69,7 @@ func TestConsistencyTime_ReservesTheFloor(t *testing.T) {
 // holds exactly when t has none.
 func TestWallClockValuesCarryNoMonotonicReading(t *testing.T) {
 	f := memory.NewStoreFactory()
+	lockModels(t, f, ctxWithTenant("t1"), spi.ModelRef{EntityName: "m", ModelVersion: "1"})
 	ctx := ctTenantCtx("t1")
 	tm, err := f.TransactionManager(ctx)
 	require.NoError(t, err)
@@ -135,6 +137,7 @@ func TestConsistencyTime_FloorSurvivesWallClockStepBack(t *testing.T) {
 func TestConsistencyTime_ReadAtCSeesCommitParkedInItsStamp(t *testing.T) {
 	gc := newGatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	f := memory.NewStoreFactory(memory.WithClock(gc))
+	lockModels(t, f, ctxWithTenant("t1"), spi.ModelRef{EntityName: "m", ModelVersion: "1"})
 	ctx := ctTenantCtx("t1")
 	tm, err := f.TransactionManager(ctx)
 	require.NoError(t, err)

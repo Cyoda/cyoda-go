@@ -48,6 +48,7 @@ func TestCompareAndSave_TxBufferWriteVsCommit_NoRace(t *testing.T) {
 				t.Fatalf("EntityStore failed: %v", err)
 			}
 			modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+			lockModels(t, factory, ctx, modelRef)
 
 			// Pre-seed an entity with a known TransactionID so the
 			// CompareAndSave call has a committed predecessor to match
@@ -135,6 +136,7 @@ func TestSave_TxBufferWriteVsRollback_NoRace(t *testing.T) {
 				t.Fatalf("EntityStore failed: %v", err)
 			}
 			modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+			lockModels(t, factory, ctx, modelRef)
 
 			txID, txCtx, err := txMgr.Begin(ctx)
 			if err != nil {

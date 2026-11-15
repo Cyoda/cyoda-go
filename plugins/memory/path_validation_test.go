@@ -23,6 +23,7 @@ func filterPathStore(t *testing.T, tenant, model string) (spi.EntityStore, spi.M
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: model, ModelVersion: "1"}
+	lockModels(t, f, ctx, ref)
 	if _, err := store.Save(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e1", ModelRef: ref, State: "NEW"},
 		Data: []byte(`{"v":1,"a":{"b":2},"a-b":3,"a_b":4}`),
@@ -282,6 +283,7 @@ func TestOrderSpecValidation_RejectsUnknownMetaPath(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-orderpath", ModelVersion: "1"}
+	lockModels(t, f, ctx, ref)
 	if _, err := store.Save(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e1", ModelRef: ref, State: "NEW"},
 		Data: []byte(`{"v":1}`),
@@ -323,6 +325,7 @@ func TestOrderSpecValidation_AcceptsCanonicalMetaPaths(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-orderpath-ok", ModelVersion: "1"}
+	lockModels(t, f, ctx, ref)
 	if _, err := store.Save(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e1", ModelRef: ref, State: "NEW"},
 		Data: []byte(`{"v":1}`),

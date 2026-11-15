@@ -97,19 +97,12 @@ type savepointSnapshot struct {
 type TransactionManager struct {
 	factory      *StoreFactory
 	uuids        spi.UUIDGenerator
-	mu           sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints, txUniqueKeys
+	mu           sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints
 	active       map[string]*spi.TransactionState
 	committedLog []committedTx
 	committing   map[string]bool                // tracks txIDs currently being committed
 	submitTimes  map[string]submitTimeEntry     // txID -> submit time + owning tenant, survives log pruning. Evicted after submitTimeTTL.
 	savepoints   map[string][]savepointSnapshot // txID -> snapshots in creation order, as SQL nests them
-
-	// txUniqueKeys holds per-entity unique keys captured at Save (buffer) time.
-	// Captured when an entity is buffered so that Commit can enforce the correct
-	// keys per entity even in a mixed-model batch where each Save may carry a
-	// different key set in its context. Protected by mu. Cleaned up after commit
-	// or rollback (no leak).
-	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
 
 	// commitSeq is a monotonic counter, incremented exactly once per
 	// successful Commit under mu, used as the ordering key of the FCW
@@ -199,7 +192,6 @@ func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *Transacti
 		committing:          make(map[string]bool),
 		submitTimes:         make(map[string]submitTimeEntry),
 		savepoints:          make(map[string][]savepointSnapshot),
-		txUniqueKeys:        make(map[string]map[string][]spi.UniqueKey),
 		txSnapshotSeq:       make(map[string]int64),
 		deletedBufferModels: make(map[string]map[string]spi.ModelRef),
 		scheduledTaskOps:    make(map[string][]scheduledTaskOp),
@@ -241,18 +233,6 @@ func (f *StoreFactory) seedLastSubmitTime() time.Time {
 		}
 	}
 	return latest
-}
-
-// recordUniqueKeys stores the unique keys for entityID under txID so that
-// Commit can look them up per entity during the flush. Last-write-wins,
-// matching the semantics of tx.Buffer. Protected by mu.
-func (m *TransactionManager) recordUniqueKeys(txID, entityID string, keys []spi.UniqueKey) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.txUniqueKeys[txID] == nil {
-		m.txUniqueKeys[txID] = make(map[string][]spi.UniqueKey)
-	}
-	m.txUniqueKeys[txID][entityID] = keys
 }
 
 // deletedBufferModel returns the model reference stageDeletedBufferModel
@@ -547,7 +527,6 @@ func (m *TransactionManager) forgetLocked(txID string) {
 	delete(m.active, txID)
 	delete(m.committing, txID)
 	delete(m.savepoints, txID)
-	delete(m.txUniqueKeys, txID)
 	delete(m.txSnapshotSeq, txID)
 	delete(m.deletedBufferModels, txID)
 	delete(m.scheduledTaskOps, txID)
@@ -765,9 +744,12 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 
 // Commit validates the transaction against the committed log for SI+FCW conflicts,
 // flushes the write buffer and deletes to the entity store, and records the
-// commit in the log.
+// commit in the log. The claims of the unique keys are computed here, from
+// the transaction's final entities and the keys of their stored models; a
+// save inside the transaction does none of that work.
 //
-// A commit that aborts — on a conflict or a unique-key violation — applies
+// A commit that aborts — on a conflict, on a model that does not exist or is
+// not LOCKED, or on a unique-key violation — applies
 // nothing and leaves the transaction rolled back as well as closed, so a
 // later call with its ctx answers spi.ErrTxRolledBack, never
 // spi.ErrTxAlreadyCommitted. Its state is discarded as Rollback discards it,
@@ -804,7 +786,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 	}()
 
 	// 2–6. Acquire the factory write lock for atomic flush.
-	// All abort paths (FCW conflict, claim violation) and the success path are
+	// All abort paths (FCW conflict, model not LOCKED, claim violation) and the success path are
 	// enclosed in a result-returning IIFE so that entityMu is always released
 	// via defer — no bare Unlock() calls (go-mutex-discipline.md).
 	tid := tx.TenantID
@@ -813,10 +795,9 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		defer m.factory.entityMu.Unlock()
 
 		// 3. Conflict detection: check committed log for overlapping write sets.
-		// Also snapshot per-entity unique keys and staged scheduled-task ops
-		// captured at Save/Upsert/Delete time so that step 3.5 and step 4.5
-		// can read them without re-acquiring m.mu.
-		var capturedKeys map[string][]spi.UniqueKey
+		// Also snapshot the staged scheduled-task ops, deleted-buffer models
+		// and audit events captured at Save/Upsert/Delete time so that the
+		// later steps can read them without re-acquiring m.mu.
 		var capturedScheduledTaskOps []scheduledTaskOp
 		var capturedDeletedBufferModels map[string]spi.ModelRef
 		var capturedAudit []stagedAuditEvent
@@ -859,7 +840,6 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				m.factory.discardAuditTxIndex(tid, txID)
 				return spi.ErrConflict
 			}
-			capturedKeys = m.txUniqueKeys[txID]                       // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
 			capturedScheduledTaskOps = m.scheduledTaskOps[txID]       // safe: tx.OpMu.Lock() prevents new stageTaskWrite
 			capturedDeletedBufferModels = m.deletedBufferModels[txID] // safe: tx.OpMu.Lock() prevents new stageDeletedBufferModel
 			capturedAudit = m.auditOps[txID]                          // safe: tx.OpMu.Lock() prevents new stageAuditEvent
@@ -875,14 +855,21 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// a refused commit flushes no entity version and logs nothing.
 		m.factory.taskClaimIndex.checkOneRunning(m.factory.scheduledTasks, capturedScheduledTaskOps)
 
-		// 3.5. Validate composite unique-key claims inside the entityMu critical section.
+		// 3.5. Read the models and check the unique-key claims, inside the
+		// entityMu critical section, from the transaction's final entities.
 		//
-		// Deterministic order: sort buffered entity IDs so that any intra-batch
-		// collision is detected stably (independent of map iteration order).
+		// Every entity whose final write is a save needs its model LOCKED;
+		// the models are read once each, in (name, version) order, and their
+		// keys are the ones enforced. An entity whose final write is a delete
+		// needs no model. The claims are computed from the buffered bytes.
+		// Every entity the transaction wrote or deleted gives up its committed
+		// claims, so a committed claim held by one of them does not conflict;
+		// pending catches a value two final entities claim. Buffered entity
+		// IDs are sorted so that the answer does not depend on map order.
 		//
-		// abortClaim cleans up m.mu-protected state and returns err.
+		// abort cleans up m.mu-protected state and returns err.
 		// entityMu is released by the enclosing IIFE's defer — no bare Unlock.
-		abortClaim := func(err error) error {
+		abort := func(err error) error {
 			func() {
 				m.mu.Lock()
 				defer m.mu.Unlock()
@@ -894,28 +881,34 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 
 		ids := make([]string, 0, len(tx.Buffer))
-		for id := range tx.Buffer {
+		refs := make([]spi.ModelRef, 0, len(tx.Buffer))
+		for id, entity := range tx.Buffer {
 			ids = append(ids, id)
+			refs = append(refs, entity.Meta.ModelRef)
 		}
 		sort.Strings(ids)
 
-		// ISSUE-3: build release set from tx.Deletes so that a same-tx
-		// delete+reclaim of the same key value is not falsely rejected.
-		toRelease := make(map[string]bool, len(tx.Deletes))
+		modelKeys, err := m.factory.lockedModelKeys(tid, refs)
+		if err != nil {
+			return abort(fmt.Errorf("Commit: %w", err))
+		}
+
+		toRelease := make(map[string]bool, len(tx.Buffer)+len(tx.Deletes))
+		for id := range tx.Buffer {
+			toRelease[id] = true
+		}
 		for id := range tx.Deletes {
 			toRelease[id] = true
 		}
 
-		// ISSUE-4: compute claims once during validation; reuse during apply.
+		// Computed once here and inserted by the apply step below.
 		computedClaims := make(map[string][]spi.UniqueClaim, len(ids))
 		pending := make(map[claimKey]string) // claimKey → entityID within this batch
 		for _, entityID := range ids {
 			entity := tx.Buffer[entityID]
-			keys := capturedKeys[entityID] // nil if entity was buffered without unique keys
-
-			claims, err := spi.ComputeClaims(keys, entity.Data)
+			claims, err := spi.ComputeClaims(modelKeys[entity.Meta.ModelRef], entity.Data)
 			if err != nil {
-				return abortClaim(err)
+				return abort(err)
 			}
 			computedClaims[entityID] = claims
 
@@ -927,14 +920,14 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 					keyID:     c.KeyID,
 					signature: c.Signature,
 				}
-				// Intra-batch collision: two buffered entities share a claim.
+				// Two final entities of this transaction claim one value.
 				if pendingHolder, exists := pending[k]; exists && pendingHolder != entityID {
-					return abortClaim(spi.ErrUniqueViolation)
+					return abort(spi.ErrUniqueViolation)
 				}
-				// Collision with a committed claim held by a different entity that
-				// is NOT being released in the same tx (ISSUE-3 same-tx delete+reclaim).
-				if holder, exists := m.factory.uniqueClaims[k]; exists && holder != entityID && !toRelease[holder] {
-					return abortClaim(spi.ErrUniqueViolation)
+				// A committed claim held by an entity this transaction
+				// neither wrote nor deleted.
+				if holder, exists := m.factory.uniqueClaims[k]; exists && !toRelease[holder] {
+					return abort(spi.ErrUniqueViolation)
 				}
 				pending[k] = entityID
 			}
@@ -962,11 +955,11 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		m.appendStagedAuditEvents(tid, txID, capturedAudit, submitTime)
 		m.factory.stampAuditEventsForTx(tid, txID, submitTime)
 
-		// Pre-release: free claims for all deleted entities BEFORE inserting any
-		// new buffer claims. This ensures a same-tx delete+reclaim of the same
-		// key value (ISSUE-3) does not clobber the freshly-inserted buffer claim.
-		// Buffer and Deletes are mutually exclusive (Delete removes from Buffer).
-		for entityID := range tx.Deletes {
+		// Release the claims of every entity in the release set first, and
+		// only then insert the new ones (in the flush below). Releasing and
+		// inserting one entity at a time loses a claim on a swap: A x→y then
+		// B y→x inserts y→A, and releasing B afterwards deletes y.
+		for entityID := range toRelease {
 			m.factory.releaseClaims(string(tid), entityID)
 		}
 
@@ -1047,18 +1040,13 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			})
 			m.factory.recordTxIndex(tid, entityID, txID, nextVersion)
 
-			// Apply unique-key claims: release any prior claims for this entity
-			// (handles the update-moves-key case), then insert the new claim set.
-			// ISSUE-4: reuse computedClaims computed in step 3.5 — no recompute.
-			// ISSUE-2: pass tenantID to releaseClaims for correct tenant isolation.
-			newClaims := computedClaims[entityID]
-			m.factory.releaseClaims(string(tid), entityID)
+			// Insert the claims step 3.5 computed; every entity of the
+			// release set gave up its old claims above.
 			m.factory.insertClaims(entityID, string(tid),
-				entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, newClaims)
+				entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, computedClaims[entityID])
 		}
 
-		// 5. Apply deletes (tombstones). Claims were already released in the
-		// pre-release pass above — do not call releaseClaims again here.
+		// 5. Apply deletes (tombstones). Their claims were released above.
 		//
 		// Attribution: prefer tx.DeleteAttribution[entityID], captured at
 		// stage time (the STAGER's context, under the same OpMu section

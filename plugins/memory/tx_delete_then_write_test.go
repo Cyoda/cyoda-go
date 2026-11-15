@@ -9,6 +9,7 @@ import (
 
 func TestTx_DeleteThenCompareAndSave_Conflicts(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-dtw"), spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-dtw"))
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)
@@ -47,6 +48,7 @@ func TestTx_DeleteThenCompareAndSave_Conflicts(t *testing.T) {
 
 func TestTx_DeleteThenSave_CommitsPresent(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-dtw"), spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-dtw"))
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
 	store, _ := f.EntityStore(ctx)
@@ -90,6 +92,7 @@ func TestTx_DeleteThenSave_CommitsPresent(t *testing.T) {
 // which unstages the delete (TestTx_DeleteThenSave_CommitsPresent).
 func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-dtw"), spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-dtw"))
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
 	store, _ := f.EntityStore(ctx)
@@ -122,6 +125,7 @@ func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 // committed version is stale and conflicts — as postgres answers.
 func TestTx_SaveThenCompareAndSave_Conflicts(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-dtw"), spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-dtw"))
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)
@@ -168,6 +172,7 @@ func TestTx_SaveThenCompareAndSave_Conflicts(t *testing.T) {
 // transaction it joined.
 func TestTx_SaveThenCompareAndSave_WithOwnTxID_Succeeds(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-dtw"), spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-dtw"))
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)

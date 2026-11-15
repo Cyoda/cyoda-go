@@ -20,6 +20,7 @@ import (
 // foreign-label arms are the two ways that regression would show.
 func TestSMAuditStamp_StampsTheTransactionsEventsAndNothingElse(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-audit-stamp"), spi.ModelRef{EntityName: "audit-stamp", ModelVersion: "1"})
 	defer factory.Close()
 	tm := factory.NewTransactionManager(newTestUUIDGenerator())
 	ctx := ctxWithTenant("tenant-audit-stamp")

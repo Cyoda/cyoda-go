@@ -27,6 +27,7 @@ func txIndexCtx(tenant string) context.Context {
 // by caller discipline.
 func TestRecordTxIndex_FirstWriteWins(t *testing.T) {
 	f := memory.NewStoreFactory()
+	lockModels(t, f, ctxWithTenant("tenant-txidx"), spi.ModelRef{EntityName: "m-txidx", ModelVersion: "1"})
 	t.Cleanup(func() { _ = f.Close() })
 
 	ctx := txIndexCtx("tenant-txidx")
@@ -67,6 +68,7 @@ func TestRecordTxIndex_FirstWriteWins(t *testing.T) {
 // give.
 func TestGetVersionByTransaction_SurvivesDelete(t *testing.T) {
 	f := memory.NewStoreFactory()
+	lockModels(t, f, ctxWithTenant("tenant-txidx-del"), spi.ModelRef{EntityName: "m-txidx-del", ModelVersion: "1"})
 	t.Cleanup(func() { _ = f.Close() })
 
 	ctx := txIndexCtx("tenant-txidx-del")

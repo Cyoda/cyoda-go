@@ -64,6 +64,7 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 				t.Fatalf("EntityStore: %v", err)
 			}
 			ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+			lockModels(t, factory, ctx, ref)
 			if tc.seed {
 				seedLiteral(t, store, ctx, ref, seedTxID)
 			}
@@ -95,6 +96,7 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 				t.Fatalf("EntityStore: %v", err)
 			}
 			ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+			lockModels(t, factory, ctx, ref)
 			if tc.seed {
 				seedLiteral(t, store, ctx, ref, seedTxID)
 			}
@@ -139,6 +141,7 @@ func TestCompareAndSave_EmptyExpectedAfterSameTxDelete_Rejected(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	seedLiteral(t, store, ctx, ref, "tx-seed")
 
 	txID, txCtx, err := tm.Begin(ctx)
@@ -180,6 +183,7 @@ func TestCompareAndSave_EmptyExpectedOnDeadTransaction_ReportsArgumentError(t *t
 				t.Fatalf("EntityStore: %v", err)
 			}
 			ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+			lockModels(t, factory, ctx, ref)
 			seedLiteral(t, store, ctx, ref, "tx-seed")
 
 			txID, txCtx, err := tm.Begin(ctx)

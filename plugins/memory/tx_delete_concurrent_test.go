@@ -15,6 +15,7 @@ import (
 // answered "not found" at once.
 func TestTxDelete_ConcurrentlyDeletedEntityIsAConflict(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	txMgr := factory.NewTransactionManager(newTestUUIDGenerator())
 	ctx := ctxWithTenant("tenant-A")

@@ -12,15 +12,22 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// setupUCFactory creates a fresh StoreFactory and a base context for "uc-tenant".
+// ucModel is the model the tests save into; setupUCFactory stores it LOCKED
+// with ucEmailKeys as its unique keys.
+var ucModel = spi.ModelRef{EntityName: "UCModel", ModelVersion: "1"}
+
+// setupUCFactory creates a fresh StoreFactory and a base context for
+// "uc-tenant", with ucModel stored LOCKED and keyed on $.email.
 func setupUCFactory(t *testing.T) (*memory.StoreFactory, spi.EntityStore) {
 	t.Helper()
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { _ = factory.Close() })
 	baseCtx := ctxWithTenant("uc-tenant")
+	spitest.EnsureLockedModel(t, factory, baseCtx, ucModel, ucEmailKeys()...)
 	store, err := factory.EntityStore(baseCtx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -49,12 +56,11 @@ func ucEmailKeys() []spi.UniqueKey {
 func TestUniqueClaims_DuplicateSignature(t *testing.T) {
 	_, store := setupUCFactory(t)
 	baseCtx := ctxWithTenant("uc-tenant")
-	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
 
-	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("e1", "a@x.com")); err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
-	_, err := store.Save(ctx, ucEntity("e2", "a@x.com"))
+	_, err := store.Save(baseCtx, ucEntity("e2", "a@x.com"))
 	if !errors.Is(err, spi.ErrUniqueViolation) {
 		t.Fatalf("duplicate key: expected ErrUniqueViolation, got %v", err)
 	}
@@ -65,15 +71,14 @@ func TestUniqueClaims_DuplicateSignature(t *testing.T) {
 func TestUniqueClaims_SoftDeleteFreesValue(t *testing.T) {
 	_, store := setupUCFactory(t)
 	baseCtx := ctxWithTenant("uc-tenant")
-	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
 
-	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("e1", "a@x.com")); err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
-	if err := store.Delete(ctx, "e1"); err != nil {
+	if err := store.Delete(baseCtx, "e1"); err != nil {
 		t.Fatalf("Delete e1: %v", err)
 	}
-	if _, err := store.Save(ctx, ucEntity("e2", "a@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("e2", "a@x.com")); err != nil {
 		t.Fatalf("Save e2 after delete: %v", err)
 	}
 }
@@ -83,20 +88,19 @@ func TestUniqueClaims_SoftDeleteFreesValue(t *testing.T) {
 func TestUniqueClaims_DeleteAllFreesValues(t *testing.T) {
 	_, store := setupUCFactory(t)
 	baseCtx := ctxWithTenant("uc-tenant")
-	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
 	modelRef := spi.ModelRef{EntityName: "UCModel", ModelVersion: "1"}
 
-	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("e1", "a@x.com")); err != nil {
 		t.Fatalf("Save e1: %v", err)
 	}
-	if _, err := store.Save(ctx, ucEntity("e2", "b@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("e2", "b@x.com")); err != nil {
 		t.Fatalf("Save e2: %v", err)
 	}
-	if err := store.DeleteAll(ctx, modelRef); err != nil {
+	if err := store.DeleteAll(baseCtx, modelRef); err != nil {
 		t.Fatalf("DeleteAll: %v", err)
 	}
 	// Re-saving with the same values must succeed once claims are freed.
-	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("e1", "a@x.com")); err != nil {
 		t.Fatalf("re-Save after DeleteAll: %v", err)
 	}
 }
@@ -106,32 +110,28 @@ func TestUniqueClaims_DeleteAllFreesValues(t *testing.T) {
 func TestUniqueClaims_UpdateMovesKey(t *testing.T) {
 	_, store := setupUCFactory(t)
 	baseCtx := ctxWithTenant("uc-tenant")
-	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
 
-	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("e1", "a@x.com")); err != nil {
 		t.Fatalf("first Save e1: %v", err)
 	}
 	// Update e1 to a new value — old claim (a@x.com) must be released.
-	if _, err := store.Save(ctx, ucEntity("e1", "b@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("e1", "b@x.com")); err != nil {
 		t.Fatalf("update Save e1: %v", err)
 	}
 	// e2 may now claim the previously-held a@x.com.
-	if _, err := store.Save(ctx, ucEntity("e2", "a@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("e2", "a@x.com")); err != nil {
 		t.Fatalf("Save e2 with freed old value: %v", err)
 	}
 	// e3 must NOT steal b@x.com (still held by e1).
-	_, err := store.Save(ctx, ucEntity("e3", "b@x.com"))
+	_, err := store.Save(baseCtx, ucEntity("e3", "b@x.com"))
 	if !errors.Is(err, spi.ErrUniqueViolation) {
 		t.Fatalf("Save e3 with e1's active value: expected ErrUniqueViolation, got %v", err)
 	}
 }
 
-// TestUniqueClaims_MixedModelBatch is the critical capture-at-Save test.
-//
-// Two entities from different models are buffered in a single transaction, each
-// Save carrying DIFFERENT key contexts. The test verifies each entity is enforced
-// with ITS OWN keys — not the other entity's — demonstrating keys are captured at
-// buffer time, not read from the flush context.
+// TestUniqueClaims_MixedModelBatch buffers two entities of different models,
+// each keyed on a different field, in one transaction. The commit enforces
+// each entity with its own model's keys, not the other's.
 func TestUniqueClaims_MixedModelBatch(t *testing.T) {
 	factory, store := setupUCFactory(t)
 	baseCtx := ctxWithTenant("uc-tenant")
@@ -140,8 +140,10 @@ func TestUniqueClaims_MixedModelBatch(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 
-	keyA := []spi.UniqueKey{{ID: "key-a", Fields: []string{"$.emailA"}}}
-	keyB := []spi.UniqueKey{{ID: "key-b", Fields: []string{"$.emailB"}}}
+	keyA := spi.UniqueKey{ID: "key-a", Fields: []string{"$.emailA"}}
+	keyB := spi.UniqueKey{ID: "key-b", Fields: []string{"$.emailB"}}
+	spitest.EnsureLockedModel(t, factory, baseCtx, spi.ModelRef{EntityName: "M1", ModelVersion: "1"}, keyA)
+	spitest.EnsureLockedModel(t, factory, baseCtx, spi.ModelRef{EntityName: "M2", ModelVersion: "1"}, keyB)
 
 	txID, txCtx, err := tm.Begin(baseCtx)
 	if err != nil {
@@ -152,16 +154,16 @@ func TestUniqueClaims_MixedModelBatch(t *testing.T) {
 		Meta: spi.EntityMeta{ID: "a1", ModelRef: spi.ModelRef{EntityName: "M1", ModelVersion: "1"}},
 		Data: []byte(`{"emailA":"a@m1.com"}`),
 	}
-	if _, err := store.Save(spi.WithUniqueKeys(txCtx, keyA), entA); err != nil {
+	if _, err := store.Save(txCtx, entA); err != nil {
 		t.Fatalf("Save A: %v", err)
 	}
 
-	// B's data has no $.emailA — if A's keys bled into B's context, B would have no claim.
+	// B's data has no $.emailA — enforced with M1's keys, B would have no claim.
 	entB := &spi.Entity{
 		Meta: spi.EntityMeta{ID: "b1", ModelRef: spi.ModelRef{EntityName: "M2", ModelVersion: "1"}},
 		Data: []byte(`{"emailB":"b@m2.com"}`),
 	}
-	if _, err := store.Save(spi.WithUniqueKeys(txCtx, keyB), entB); err != nil {
+	if _, err := store.Save(txCtx, entB); err != nil {
 		t.Fatalf("Save B: %v", err)
 	}
 
@@ -174,18 +176,18 @@ func TestUniqueClaims_MixedModelBatch(t *testing.T) {
 		Meta: spi.EntityMeta{ID: "a2", ModelRef: spi.ModelRef{EntityName: "M1", ModelVersion: "1"}},
 		Data: []byte(`{"emailA":"a@m1.com"}`),
 	}
-	_, err = store.Save(spi.WithUniqueKeys(baseCtx, keyA), dupA)
+	_, err = store.Save(baseCtx, dupA)
 	if !errors.Is(err, spi.ErrUniqueViolation) {
 		t.Fatalf("A's key not enforced: expected ErrUniqueViolation, got %v", err)
 	}
 
-	// B's claim must be enforced. If the bug existed (B got A's context), B would
-	// have no claim row and this duplicate save would succeed instead of failing.
+	// B's claim must be enforced. Had B been enforced with M1's keys, it would
+	// have no claim and this duplicate save would succeed instead of failing.
 	dupB := &spi.Entity{
 		Meta: spi.EntityMeta{ID: "b2", ModelRef: spi.ModelRef{EntityName: "M2", ModelVersion: "1"}},
 		Data: []byte(`{"emailB":"b@m2.com"}`),
 	}
-	_, err = store.Save(spi.WithUniqueKeys(baseCtx, keyB), dupB)
+	_, err = store.Save(baseCtx, dupB)
 	if !errors.Is(err, spi.ErrUniqueViolation) {
 		t.Fatalf("B's key not enforced: expected ErrUniqueViolation, got %v", err)
 	}
@@ -196,7 +198,6 @@ func TestUniqueClaims_MixedModelBatch(t *testing.T) {
 func TestUniqueClaims_NonScalarKeyPath(t *testing.T) {
 	_, store := setupUCFactory(t)
 	baseCtx := ctxWithTenant("uc-tenant")
-	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
 
 	ent := &spi.Entity{
 		Meta: spi.EntityMeta{
@@ -205,25 +206,28 @@ func TestUniqueClaims_NonScalarKeyPath(t *testing.T) {
 		},
 		Data: []byte(`{"email":{"nested":"object"}}`),
 	}
-	_, err := store.Save(ctx, ent)
+	_, err := store.Save(baseCtx, ent)
 	if !errors.Is(err, spi.ErrPartialUniqueKey) {
 		t.Fatalf("non-scalar key path: expected ErrPartialUniqueKey, got %v", err)
 	}
 }
 
-// TestUniqueClaims_NoContextKeys verifies that when no unique keys are present
-// in the context, Save succeeds and no claim entry is maintained.
-func TestUniqueClaims_NoContextKeys(t *testing.T) {
-	_, store := setupUCFactory(t)
+// TestUniqueClaims_KeylessModel verifies that a model with no unique keys
+// claims nothing: two entities with the same value both save.
+func TestUniqueClaims_KeylessModel(t *testing.T) {
+	factory, store := setupUCFactory(t)
 	baseCtx := ctxWithTenant("uc-tenant")
-	// Intentionally no spi.WithUniqueKeys — baseline context only.
+	keyless := spi.ModelRef{EntityName: "UCKeyless", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, baseCtx, keyless)
 
-	if _, err := store.Save(baseCtx, ucEntity("e1", "a@x.com")); err != nil {
-		t.Fatalf("Save without unique keys: %v", err)
+	e1, e2 := ucEntity("e1", "a@x.com"), ucEntity("e2", "a@x.com")
+	e1.Meta.ModelRef, e2.Meta.ModelRef = keyless, keyless
+	if _, err := store.Save(baseCtx, e1); err != nil {
+		t.Fatalf("Save into a keyless model: %v", err)
 	}
 	// A second distinct entity with the same value must also succeed (no claim was made).
-	if _, err := store.Save(baseCtx, ucEntity("e2", "a@x.com")); err != nil {
-		t.Fatalf("second Save without unique keys: %v", err)
+	if _, err := store.Save(baseCtx, e2); err != nil {
+		t.Fatalf("second Save into a keyless model: %v", err)
 	}
 }
 
@@ -241,12 +245,10 @@ func TestUniqueClaims_IntraBatchDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	keyCtx := spi.WithUniqueKeys(txCtx, ucEmailKeys())
-
-	if _, err := store.Save(keyCtx, ucEntity("e1", "a@x.com")); err != nil {
+	if _, err := store.Save(txCtx, ucEntity("e1", "a@x.com")); err != nil {
 		t.Fatalf("Save e1: %v", err)
 	}
-	if _, err := store.Save(keyCtx, ucEntity("e2", "a@x.com")); err != nil {
+	if _, err := store.Save(txCtx, ucEntity("e2", "a@x.com")); err != nil {
 		t.Fatalf("Save e2 (buffer): %v", err)
 	}
 
@@ -256,72 +258,15 @@ func TestUniqueClaims_IntraBatchDuplicate(t *testing.T) {
 	}
 }
 
-// TestUniqueClaims_SameTransactionDeleteAndReclaim verifies that a tx which
-// soft-deletes entity A (currently holding value V) and creates entity B with
-// that same value V in the same Commit succeeds — the delete releases A's claim
-// before B's claim is validated (ISSUE-3 same-tx delete+reclaim).
-func TestUniqueClaims_SameTransactionDeleteAndReclaim(t *testing.T) {
-	factory, store := setupUCFactory(t)
-	baseCtx := ctxWithTenant("uc-tenant")
-	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
-
-	// Pre-condition: entity A holds "shared@x.com" (non-tx save).
-	if _, err := store.Save(ctx, ucEntity("a", "shared@x.com")); err != nil {
-		t.Fatalf("pre-save A: %v", err)
-	}
-
-	tm, err := factory.TransactionManager(baseCtx)
-	if err != nil {
-		t.Fatalf("TransactionManager: %v", err)
-	}
-
-	txID, txCtx, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-
-	// In the same transaction: delete A and create B with A's former value.
-	if err := store.Delete(txCtx, "a"); err != nil {
-		t.Fatalf("tx Delete a: %v", err)
-	}
-	if _, err := store.Save(spi.WithUniqueKeys(txCtx, ucEmailKeys()), ucEntity("b", "shared@x.com")); err != nil {
-		t.Fatalf("tx Save b: %v", err)
-	}
-
-	// Commit must succeed — A's claim is released by the delete, not held when B is validated.
-	if err := tm.Commit(txCtx, txID); err != nil {
-		t.Fatalf("Commit: expected success, got %v", err)
-	}
-
-	// Post-conditions: A is gone, B holds the value.
-	if exists, err := store.Exists(baseCtx, "a"); err != nil || exists {
-		t.Errorf("a should not exist after tx delete: exists=%v err=%v", exists, err)
-	}
-	b, err := store.Get(baseCtx, "b")
-	if err != nil {
-		t.Fatalf("Get b: %v", err)
-	}
-	if string(b.Data) != `{"email":"shared@x.com"}` {
-		t.Errorf("b.Data = %s, want {\"email\":\"shared@x.com\"}", b.Data)
-	}
-
-	// B's claim must be enforced: a third entity cannot steal the value.
-	_, err = store.Save(ctx, ucEntity("c", "shared@x.com"))
-	if !errors.Is(err, spi.ErrUniqueViolation) {
-		t.Errorf("c with b's value: expected ErrUniqueViolation, got %v", err)
-	}
-}
-
 // TestUniqueClaims_TxDeleteReleasesClaimForNextTx verifies that a standalone
 // tx-mode Delete releases unique-key claims so a subsequent non-tx Save with the
-// same value succeeds (exercises the Deletes-loop releaseClaims in Commit step 5).
+// same value succeeds (the commit releases the claims of every entity it deletes).
 func TestUniqueClaims_TxDeleteReleasesClaimForNextTx(t *testing.T) {
 	factory, store := setupUCFactory(t)
 	baseCtx := ctxWithTenant("uc-tenant")
-	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
 
 	// Non-tx save: A holds "v@x.com".
-	if _, err := store.Save(ctx, ucEntity("a", "v@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("a", "v@x.com")); err != nil {
 		t.Fatalf("non-tx Save a: %v", err)
 	}
 
@@ -343,7 +288,7 @@ func TestUniqueClaims_TxDeleteReleasesClaimForNextTx(t *testing.T) {
 	}
 
 	// After commit, A's claim must be released so B can claim the same value.
-	if _, err := store.Save(ctx, ucEntity("b", "v@x.com")); err != nil {
+	if _, err := store.Save(baseCtx, ucEntity("b", "v@x.com")); err != nil {
 		t.Fatalf("non-tx Save b with freed value: %v", err)
 	}
 }
@@ -371,7 +316,6 @@ func TestUniqueClaims_ConcurrentWinnerLoser(t *testing.T) {
 				errs[idx] = fmt.Errorf("Begin: %w", err)
 				return
 			}
-			saveCtx := spi.WithUniqueKeys(txCtx, ucEmailKeys())
 			ent := &spi.Entity{
 				Meta: spi.EntityMeta{
 					ID:       fmt.Sprintf("entity-%d", idx),
@@ -379,7 +323,7 @@ func TestUniqueClaims_ConcurrentWinnerLoser(t *testing.T) {
 				},
 				Data: []byte(`{"email":"shared@x.com"}`),
 			}
-			if _, err := store.Save(saveCtx, ent); err != nil {
+			if _, err := store.Save(txCtx, ent); err != nil {
 				errs[idx] = fmt.Errorf("Save: %w", err)
 				return
 			}
@@ -404,50 +348,73 @@ func TestUniqueClaims_ConcurrentWinnerLoser(t *testing.T) {
 	}
 }
 
-// TestUniqueClaims_SameTxReclaimBeforeDelete_AcceptedAtCommit documents the
-// save-first (claim-before-free) ordering: creating B with value V BEFORE
-// deleting A (which holds V), in one tx. memory (like sqlite) validates the NET
-// claim state at commit and cannot distinguish save-first from delete-first —
-// both commit successfully. Postgres enforces inline and REJECTS this ordering
-// (see plugins/postgres). The divergence on this discouraged "claim-before-free"
-// wiring is documented (models.md / errors/UNIQUE_VIOLATION.md / OpenAPI).
-func TestUniqueClaims_SameTxReclaimBeforeDelete_AcceptedAtCommit(t *testing.T) {
-	factory, store := setupUCFactory(t)
-	baseCtx := ctxWithTenant("uc-tenant")
-	ctx := spi.WithUniqueKeys(baseCtx, ucEmailKeys())
+// TestUniqueClaims_SameTxReclaim_BothOrdersCommit deletes entity A, which
+// holds value V, and creates entity B with V in one transaction, in either
+// order. The commit judges the transaction's final entities, in which B alone
+// holds V, so both orders commit and B's claim is enforced afterwards.
+func TestUniqueClaims_SameTxReclaim_BothOrdersCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		deleteFirst bool
+	}{
+		{"DeleteThenSave", true},
+		{"SaveThenDelete", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			factory, store := setupUCFactory(t)
+			baseCtx := ctxWithTenant("uc-tenant")
 
-	if _, err := store.Save(ctx, ucEntity("a", "shared@x.com")); err != nil {
-		t.Fatalf("pre-save A: %v", err)
-	}
-	tm, err := factory.TransactionManager(baseCtx)
-	if err != nil {
-		t.Fatalf("TransactionManager: %v", err)
-	}
-	txID, txCtx, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	// SAVE-FIRST: claim V on B before freeing it on A. Buffered → no error here.
-	if _, err := store.Save(spi.WithUniqueKeys(txCtx, ucEmailKeys()), ucEntity("b", "shared@x.com")); err != nil {
-		t.Fatalf("buffered Save-before-Delete must not error at Save time: %v", err)
-	}
-	if err := store.Delete(txCtx, "a"); err != nil {
-		t.Fatalf("tx Delete a: %v", err)
-	}
-	// Commit succeeds: net state at commit is "A gone, B holds V" — order-blind.
-	if err := tm.Commit(txCtx, txID); err != nil {
-		t.Fatalf("buffered same-tx reclaim-before-delete: expected commit success, got %v", err)
-	}
-	if _, err := store.Save(ctx, ucEntity("c", "shared@x.com")); !errors.Is(err, spi.ErrUniqueViolation) {
-		t.Errorf("c with b's value: expected ErrUniqueViolation, got %v", err)
+			if _, err := store.Save(baseCtx, ucEntity("a", "shared@x.com")); err != nil {
+				t.Fatalf("pre-save A: %v", err)
+			}
+			tm, err := factory.TransactionManager(baseCtx)
+			if err != nil {
+				t.Fatalf("TransactionManager: %v", err)
+			}
+			txID, txCtx, err := tm.Begin(baseCtx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			deleteA := func() {
+				if err := store.Delete(txCtx, "a"); err != nil {
+					t.Fatalf("tx Delete a: %v", err)
+				}
+			}
+			if tc.deleteFirst {
+				deleteA()
+			}
+			if _, err := store.Save(txCtx, ucEntity("b", "shared@x.com")); err != nil {
+				t.Fatalf("tx Save b: %v", err)
+			}
+			if !tc.deleteFirst {
+				deleteA()
+			}
+			if err := tm.Commit(txCtx, txID); err != nil {
+				t.Fatalf("Commit: expected success, got %v", err)
+			}
+
+			if exists, err := store.Exists(baseCtx, "a"); err != nil || exists {
+				t.Errorf("a should not exist after tx delete: exists=%v err=%v", exists, err)
+			}
+			b, err := store.Get(baseCtx, "b")
+			if err != nil {
+				t.Fatalf("Get b: %v", err)
+			}
+			if string(b.Data) != `{"email":"shared@x.com"}` {
+				t.Errorf("b.Data = %s, want {\"email\":\"shared@x.com\"}", b.Data)
+			}
+			// B's claim must be enforced: a third entity cannot take the value.
+			if _, err := store.Save(baseCtx, ucEntity("c", "shared@x.com")); !errors.Is(err, spi.ErrUniqueViolation) {
+				t.Errorf("c with b's value: expected ErrUniqueViolation, got %v", err)
+			}
+		})
 	}
 }
 
-// A CompareAndSave inside a transaction writes to the same buffer Save does
-// and must record the declared unique keys with it. Keys are captured at
-// buffer time — the flush has one context and cannot recover them — so a
-// compare-and-save that skipped the capture would commit its entity with no
-// claim row, and the value it should hold would stay free for anyone else.
+// A CompareAndSave inside a transaction writes to the same buffer Save does,
+// so its entity is one of the transaction's final entities and the commit
+// computes its claims like any other. A commit that missed it would leave the
+// value it should hold free for anyone else.
 func TestUniqueClaims_CompareAndSaveInTxRecordsClaims(t *testing.T) {
 	factory, store := setupUCFactory(t)
 	baseCtx := ctxWithTenant("uc-tenant")
@@ -456,9 +423,9 @@ func TestUniqueClaims_CompareAndSaveInTxRecordsClaims(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 
-	// CompareAndSave never creates, so the entity is seeded first — with no
-	// unique keys declared, so it holds no claim yet and the claim asserted
-	// below can only have come from the compare-and-save.
+	// CompareAndSave never creates, so the entity is seeded first, with a
+	// different value: the claim on a@x.com asserted below can only have come
+	// from the compare-and-save.
 	const seedTxID = "tx-seed"
 	seed := ucEntity("e1", "seed@x.com")
 	seed.Meta.TransactionID = seedTxID
@@ -471,7 +438,7 @@ func TestUniqueClaims_CompareAndSaveInTxRecordsClaims(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	if _, err := store.CompareAndSave(
-		spi.WithUniqueKeys(txCtx, ucEmailKeys()), ucEntity("e1", "a@x.com"), seedTxID); err != nil {
+		txCtx, ucEntity("e1", "a@x.com"), seedTxID); err != nil {
 		t.Fatalf("CompareAndSave: %v", err)
 	}
 	if err := tm.Commit(txCtx, txID); err != nil {
@@ -484,7 +451,7 @@ func TestUniqueClaims_CompareAndSaveInTxRecordsClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin (second): %v", err)
 	}
-	if _, err := store.Save(spi.WithUniqueKeys(txCtx2, ucEmailKeys()), ucEntity("e2", "a@x.com")); err != nil {
+	if _, err := store.Save(txCtx2, ucEntity("e2", "a@x.com")); err != nil {
 		t.Fatalf("buffered Save: %v", err)
 	}
 	if err := tm.Commit(txCtx2, txID2); !errors.Is(err, spi.ErrUniqueViolation) {

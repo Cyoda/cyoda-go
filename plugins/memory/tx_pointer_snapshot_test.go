@@ -24,6 +24,7 @@ import (
 // different model.
 func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-ptr"), spi.ModelRef{EntityName: "m-ptr", ModelVersion: "1"}, spi.ModelRef{EntityName: "m-ptr", ModelVersion: "2"})
 	ctx := tenantCtx(spi.TenantID("tenant-ptr"))
 	refA := spi.ModelRef{EntityName: "m-ptr", ModelVersion: "1"}
 	refB := spi.ModelRef{EntityName: "m-ptr", ModelVersion: "2"}
@@ -80,6 +81,7 @@ func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 // tenant first.
 func TestTx_GetPage_CancelledContextAbortsPointerSnapshot(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-ptr-cancel"), spi.ModelRef{EntityName: "m-ptr-cancel", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-ptr-cancel"))
 	ref := spi.ModelRef{EntityName: "m-ptr-cancel", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)

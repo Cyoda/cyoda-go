@@ -1,10 +1,12 @@
 package memory
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -308,10 +310,38 @@ func (f *StoreFactory) Close() error {
 	return errors.Join(closeErr, os.RemoveAll(f.blobDir))
 }
 
+// lockedModelKeys reads, from the tenant's stored models, the unique keys of
+// every model in refs, in (name, version) order. A model that does not exist
+// or is not LOCKED refuses the whole read with spi.ErrModelNotLocked: an
+// entity is saved only into a LOCKED model, and the keys enforced are the
+// ones the model holds now, never ones a caller passes. The caller holds
+// entityMu for writing, which every operation that changes a model's state
+// or keys (Save, Delete, Unlock) also takes, so the answer holds until the
+// caller releases it. modelMu is taken inside entityMu, the order every
+// model operation uses.
+func (f *StoreFactory) lockedModelKeys(tid spi.TenantID, refs []spi.ModelRef) (map[spi.ModelRef][]spi.UniqueKey, error) {
+	sorted := slices.Clone(refs)
+	slices.SortFunc(sorted, func(a, b spi.ModelRef) int {
+		return cmp.Or(cmp.Compare(a.EntityName, b.EntityName), cmp.Compare(a.ModelVersion, b.ModelVersion))
+	})
+	sorted = slices.Compact(sorted)
+	f.modelMu.RLock()
+	defer f.modelMu.RUnlock()
+	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(sorted))
+	for _, ref := range sorted {
+		desc, ok := f.modelData[tid][ref]
+		if !ok || desc.State != spi.ModelLocked {
+			return nil, fmt.Errorf("model %s: %w", ref, spi.ErrModelNotLocked)
+		}
+		keys[ref] = desc.UniqueKeys
+	}
+	return keys, nil
+}
+
 // releaseClaims removes all unique-key claims held by (tenantID, entityID) from
 // the claim maps. Caller must hold entityMu (write lock).
 // tenantID qualifies the lookup so that two tenants with the same entity ID
-// do not cross-contaminate each other's claim entries (ISSUE-2 tenant isolation).
+// do not cross-contaminate each other's claim entries.
 func (f *StoreFactory) releaseClaims(tenantID, entityID string) {
 	etk := entityTenantKey{tenant: tenantID, id: entityID}
 	for _, k := range f.claimsByEntity[etk] {

@@ -15,6 +15,7 @@ import (
 // merged view of a transaction that no longer exists.
 func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-closed"), spi.ModelRef{EntityName: "m-closed", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-closed"))
 	ref := spi.ModelRef{EntityName: "m-closed", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)

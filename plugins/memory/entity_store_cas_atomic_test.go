@@ -23,6 +23,7 @@ import (
 // way, and the assertion is what keeps that true.
 func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-cas"), spi.ModelRef{EntityName: "m-cas", ModelVersion: "1"})
 	defer factory.Close()
 	ctx := ctxWithTenant("tenant-cas")
 	ref := spi.ModelRef{EntityName: "m-cas", ModelVersion: "1"}

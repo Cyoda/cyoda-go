@@ -17,6 +17,7 @@ import (
 // .claude/rules/correctness-over-availability.md).
 func TestTx_ClosedTransaction_RefusesEveryWrite(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-closed-write"), spi.ModelRef{EntityName: "m-closed-write", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-closed-write"))
 	ref := spi.ModelRef{EntityName: "m-closed-write", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)

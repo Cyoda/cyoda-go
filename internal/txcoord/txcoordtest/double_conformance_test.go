@@ -24,11 +24,5 @@ func TestDouble_Conformance(t *testing.T) {
 		Factory:      factory,
 		AdvanceClock: clock.Advance,
 		Now:          clock.Now,
-		Skip: map[string]string{
-			// The unlock-first ordering needs the entity commit to refuse a
-			// model that is not LOCKED; that check lands with the
-			// commit-time model check.
-			"Model/Interleave/UnlockVsUncommittedWrite": "commit-time model check: Phase D",
-		},
 	})
 }

@@ -278,10 +278,8 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		// txmanager.Commit assumes and that Search / Iterate / commit all rely
 		// on to agree. Mirrors plugins/sqlite/entity_store.go Save.
 		unstageDelete(tx, entity.Meta.ID)
-		// Capture unique keys at buffer time (last-write-wins, matching tx.Buffer
-		// semantics). Commit sees ONE ctx but a mixed-model batch may buffer
-		// entities with different key contexts, so keys must be stored per-entity.
-		s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
+		// No claim and no model work here: the commit computes the claims
+		// from the transaction's final entities and their stored models.
 		return 0, nil // actual version assigned at commit
 	}
 
@@ -348,7 +346,6 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			cp.Meta.TransactionID = tx.ID
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
-			s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 			return 0, nil
 		}
 		// Check CAS against main store (committed data), not buffer.
@@ -372,8 +369,6 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		if conflict {
 			return 0, spi.ErrConflict
 		}
-		// Capture unique keys at buffer time (outside the IIFE; entityMu released).
-		s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 		return 0, nil
 	}
 
@@ -407,18 +402,21 @@ func currentTxIDLocked(versions []entityVersion) string {
 	return latest.entity.Meta.TransactionID
 }
 
-// saveUnlocked performs the save logic without acquiring the lock. The caller
-// must hold s.factory.entityMu (write lock). ctx is used to read unique keys
-// for composite unique-key claim enforcement.
+// saveUnlocked performs a write outside a transaction without acquiring the
+// lock. The caller must hold s.factory.entityMu (write lock). The write is its
+// own transaction: it reads the entity's stored model, refusing one that does
+// not exist or is not LOCKED, and enforces that model's unique keys, all in
+// the caller's critical section, so the check and the write are atomic with
+// every commit, every other save and every model change.
 func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int64, error) {
 	tid := s.tenant
 	eid := entity.Meta.ID
 
-	// Compute and validate unique-key claims before writing entity data.
-	// All steps run inside the caller's entityMu.Lock() so the check-and-insert
-	// is atomic with respect to other concurrent non-tx saves.
-	keys := spi.UniqueKeysFromContext(ctx)
-	newClaims, err := spi.ComputeClaims(keys, entity.Data)
+	modelKeys, err := s.factory.lockedModelKeys(tid, []spi.ModelRef{entity.Meta.ModelRef})
+	if err != nil {
+		return 0, fmt.Errorf("Save: %w", err)
+	}
+	newClaims, err := spi.ComputeClaims(modelKeys[entity.Meta.ModelRef], entity.Data)
 	if err != nil {
 		return 0, err // ErrPartialUniqueKey family
 	}

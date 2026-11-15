@@ -10,8 +10,9 @@ import (
 )
 
 func TestJoinActiveTransaction(t *testing.T) {
-	_, tm := newTxManager(t)
+	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -36,6 +37,7 @@ func TestJoinActiveTransaction(t *testing.T) {
 		Meta: spi.EntityMeta{
 			ID:         "e-join",
 			TenantID:   "tenant-A",
+			ModelRef:   txTestModel,
 			ChangeType: "CREATED",
 		},
 		Data: []byte(`{"joined":true}`),
@@ -145,6 +147,7 @@ func TestJoinTenantMismatch(t *testing.T) {
 func TestJoinConcurrentOperationAndCommit(t *testing.T) {
 	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	txID, _, err := tm.Begin(ctx)
 	if err != nil {
@@ -178,6 +181,7 @@ func TestJoinConcurrentOperationAndCommit(t *testing.T) {
 				Meta: spi.EntityMeta{
 					ID:         "e-concurrent",
 					TenantID:   "tenant-A",
+					ModelRef:   txTestModel,
 					ChangeType: "CREATED",
 				},
 				Data: []byte(`{"concurrent":true}`),
