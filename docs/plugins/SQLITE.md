@@ -73,21 +73,19 @@ holds, appends the delta, and appends a savepoint once
 savepoint. A `SQLITE_BUSY` the busy timeout did not absorb is retried after a
 short pause until the caller's context ends; there is no retry budget, and
 contention is never reported as a conflict. `Lock` changes the state only
-and writes no savepoint. `Unlock` counts the model's live entities in its
-write transaction and refuses a model that has any
-(`*spi.ModelHasEntitiesError`); otherwise it folds the log into the doc and
-clears it, in the same transaction. `Save` and `Delete` refuse a `LOCKED`
-model (`spi.ErrModelLocked`), checked in their own write transaction; the log
-of a model that is not `LOCKED` is empty, so neither clears one.
-`SetChangeLevel` is one in-place update of the change level.
+and writes no savepoint; `Unlock` folds the log into the doc and clears it
+in one transaction. `Save` and `Delete` act only on a model that is not
+`LOCKED`, whose log is empty, so neither clears one. `SetChangeLevel` is one
+in-place update of the change level. The store checks no model state and
+counts no entities: the API keeps the model rules (`cyoda help models`,
+LIFECYCLE).
 
-**Commit-time model and key check.** A save inside a transaction does no
-unique-key work. In the commit flush, `commitClaims` reads the stored model of
-every entity whose final write is a save with the flush's own SQL transaction
-(never through the model store, whose single writer connection the flush
-already holds), refuses a model that is missing or not `LOCKED`
-(`spi.ErrModelNotLocked`), releases the claims of every written or deleted
-entity, then inserts the final entities' claims computed from their buffered
+**Commit-time key check.** A save inside a transaction does no unique-key
+work. In the commit flush, `commitClaims` reads the unique keys of the stored
+model of every entity whose final write is a save with the flush's own SQL
+transaction (never through the model store, whose single writer connection
+the flush already holds; no state check), releases the claims of every
+written or deleted entity, then inserts the final entities' claims computed from their buffered
 bytes (`spi.ErrPartialUniqueKey`, `spi.ErrUniqueViolation` on the unique
 index). A save outside a transaction runs the same function in its own write
 transaction.

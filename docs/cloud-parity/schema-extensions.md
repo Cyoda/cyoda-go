@@ -28,13 +28,11 @@ workflow processor returns — over HTTP and gRPC.
 - **Loss-free.** Every extension whose call returned is in the model's
   schema.
 - **Locked models only.** An extension of a model that is not `LOCKED` is
-  refused, answered `409 MODEL_NOT_LOCKED` (an existing code). A write's
-  extension meets it when the model is unlocked while the write, or the
+  refused, answered `409 MODEL_NOT_LOCKED` (an existing code). A write
+  reaches it only when the model is unlocked while the write, or the
   transaction it joined, is in progress, e.g. during a compute-node callout
   on an uncommitted entity; an update, collection update or transition does
-  not check the model's state before it extends. (The commit of such a
-  write is refused with the same code too: the store checks the model of
-  every entity a transaction saves when it commits.)
+  not check the model's state before it extends.
 - **Storage failure is retryable.** A storage outage during an extension,
   including one for data a workflow processor returns, answers the retryable
   `503 STORAGE_UNAVAILABLE`.

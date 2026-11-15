@@ -188,9 +188,9 @@ So a schema extension is in use on the node that served the write when the write
 
 ## COMPOSITE UNIQUE KEYS
 
-Composite unique keys are part of the model descriptor, but they are not enforced from a node's model cache. When a transaction commits, the store reads the model of every entity it saves from its own stored model, and checks the keys that model holds at that moment. A node whose cached model is out of date after an unlock, key change and relock therefore still enforces the stored keys. On PostgreSQL a transaction that began before such a model change is refused at commit with a retryable `409 CONFLICT`, and its retry is checked against the new keys. The early check of a request body for a partly filled key (`422 INVALID_UNIQUE_KEY`) uses the node's cached model.
+Composite unique keys are part of the model descriptor, but they are not enforced from a node's model cache. When a transaction commits, the store reads the model of every entity it saves from its own stored model, and checks the keys that model holds at that moment. A node whose cached model is out of date after an unlock, key change and relock therefore still enforces the stored keys. The early check of a request body for a partly filled key (`422 INVALID_UNIQUE_KEY`) uses the node's cached model.
 
-Changing a key needs the model unlocked, which needs zero live entities: delete the model's entities, unlock, change the key definitions, then relock.
+Changing a key needs the model unlocked, which needs zero live entities: delete the model's entities, unlock, change the key definitions, then relock. Stop writes to the model while you do (`cyoda help models`, LIFECYCLE).
 
 ## SEE ALSO
 

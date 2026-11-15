@@ -6,7 +6,6 @@ see_also:
   - errors
   - errors.MODEL_ALREADY_LOCKED
   - errors.MODEL_ALREADY_UNLOCKED
-  - errors.MODEL_NOT_LOCKED
   - errors.CONFLICT
 ---
 
@@ -28,12 +27,11 @@ The `entityCount` property in the problem-detail body reports how many entities 
 
 Not retryable in the protocol sense. The caller must remove the offending entities (e.g. via condition-delete on the entity surface) and re-issue the lifecycle request.
 
-The check and the unlock are one atomic step: an entity commit and an unlock of its model exclude each other. The check counts committed entities. A write still in progress when the unlock runs does not stop it; that write's commit is refused instead, with `409 MODEL_NOT_LOCKED` (see `errors.MODEL_NOT_LOCKED`).
+The check counts committed entities, and it is not one step with the unlock: a write still in progress when the unlock runs is not seen, and nothing refuses it later. Stop writes to a model before you unlock it (see `cyoda help models`, LIFECYCLE).
 
 ## SEE ALSO
 
 - errors
 - errors.MODEL_ALREADY_LOCKED
 - errors.MODEL_ALREADY_UNLOCKED
-- errors.MODEL_NOT_LOCKED
 - errors.CONFLICT

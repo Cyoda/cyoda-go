@@ -143,9 +143,8 @@ intended and must not regress to an entry-time-only timer.
 A run fails **safely** when nothing unsafe may have reached a compute member:
 a criterion or function error, no compute member for the tag, a conflict with a
 concurrent write, a storage error, a commit refused because the run's final
-entities break a composite unique key or save into a model that is no longer
-`LOCKED`, an `idempotent` processor's failure, or an unsafe processor that
-provably never reached a member (`callout-failover.md` §1: no hand-off). The
+entities break a composite unique key, an `idempotent` processor's failure,
+or an unsafe processor that provably never reached a member (`callout-failover.md` §1: no hand-off). The
 task goes back to `WAITING`, `attempts` goes up by one,
 and its last error is recorded. The next attempt is after
 
@@ -274,9 +273,8 @@ fixed texts — a cancelled run, a conflict with a concurrent write, and a task
 row held by another open transaction — or `internal error [ticket: <uuid>]`. A
 conflict records the conflict text on every backend, and a busy task row the
 busy-row text; both are retried. A commit refused on a duplicate or partial
-unique key, or on a model no longer `LOCKED`, records the coded text a client
-write gets for it (`UNIQUE_VIOLATION: …`, `INVALID_UNIQUE_KEY: …`,
-`MODEL_NOT_LOCKED: …`), with no ticket.
+unique key records the coded text a client write gets for it
+(`UNIQUE_VIOLATION: …` or `INVALID_UNIQUE_KEY: …`), with no ticket.
 
 | Status | Code | When |
 |---|---|---|

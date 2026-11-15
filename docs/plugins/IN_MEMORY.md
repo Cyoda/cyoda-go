@@ -76,9 +76,8 @@ type TransactionState struct {
 5. Check the staged scheduled-task ops: they must not leave two
    RUNNING tasks on one entity (checkOneRunning; a breach is a
    defect and panics, before anything is written)
-6. Read the stored model of every buffered entity (lockedModelKeys,
-   one read per model, by name then version):
-     model missing or not LOCKED -> ABORT -> ErrModelNotLocked
+6. Read the unique keys of the stored model of every buffered entity
+   (modelKeys; no state check, a missing model has no keys).
    Compute each buffered entity's claims from its buffered bytes with
    that model's keys:
      partial key -> ABORT -> ErrPartialUniqueKey
@@ -107,14 +106,9 @@ makes the flush atomic. Each acquisition still follows the one order below.
 
 Every claim is released before any is inserted, so a swap of key values
 between two entities of one transaction is judged only on its final state. A
-save outside a transaction runs the same model read and claim check under
-`entityMu`.
-
-**Model changes under `entityMu`.** `ModelStore.Unlock`, `Delete` and `Save`
-take `entityMu` (write) before the model mutex, so each checks and changes
-atomically with entity commits: `Unlock` counts the model's live entities and
-refuses a model that has any (`*spi.ModelHasEntitiesError`); `Delete` and
-`Save` refuse a `LOCKED` model (`spi.ErrModelLocked`).
+save outside a transaction runs the same keys read and claim check under
+`entityMu`. The store checks no model state: the API keeps the model rules
+(`cyoda help models`, LIFECYCLE).
 
 This is first-committer-wins: the transaction that reaches step 4
 first wins; any concurrent transaction whose read-set or write-set

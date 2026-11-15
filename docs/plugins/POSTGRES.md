@@ -93,18 +93,15 @@ Full transaction-lifecycle implementation
   by a re-create in one transaction is one version, as on memory and sqlite
   (`docs/CONSISTENCY.md` §6). The written row holds the entity's row lock
   until the transaction ends.
-- **Commit-time model and key check:** a save inside a transaction does no
+- **Commit-time key check:** a save inside a transaction does no
   unique-key work; the transaction records each entity it wrote with the
   bytes of its last write. At commit, after read-set validation and before
-  the commit stamp, it takes `FOR SHARE` on the `model_lifecycle` row of the
-  model of every entity whose final write is a save, refuses a model that
-  does not exist or is not `LOCKED` (`spi.ErrModelNotLocked`), releases the
-  claims of every entity it wrote, and inserts the claims of its final
-  entities, computed with the keys of the stored model, in a fixed order.
-  A lifecycle row bumped after the snapshot fails with `40001` (a retryable
-  `spi.ErrConflict`); a duplicate fails on `unique_claims_uq`
-  (`spi.ErrUniqueViolation`). A write outside a transaction runs the same
-  steps in its own statements.
+  the commit stamp, it reads in one statement the unique keys of the stored
+  model of every entity whose final write is a save (no lock, no state
+  check), releases the claims of every entity it wrote, and inserts the
+  claims of its final entities, computed with those keys, in a fixed order.
+  A duplicate fails on `unique_claims_uq` (`spi.ErrUniqueViolation`). A
+  write outside a transaction runs the same steps in its own statements.
 
 The real serialization guarantee is the combination of PostgreSQL's
 `REPEATABLE READ` snapshot + tuple locks + the TM's first-committer
@@ -240,22 +237,13 @@ savepoint holds every delta with a lower `seq`. The transaction takes one row
 lock at `READ COMMITTED`, so it cannot fail with `40001` or `40P01`:
 contention is a wait. A nil `ApplyFunc` is refused.
 
-**Administration.** `model_lifecycle` holds one row per model, with a
-`generation` that every change of the model's state or unique keys bumps in
-the same transaction: `Lock` when it changes the state, `Unlock`, `Delete`
-(which removes the row) and `Save` (import and unique-key changes). A schema
-extension, `SetChangeLevel` and a `Lock` of a model already `LOCKED` do not
-touch it, so they never conflict with or delay an entity commit. Every model
-operation writes the `models` row first and the lifecycle row second; an
-entity commit takes lifecycle rows only, so there is no lock cycle.
-`SetChangeLevel` is one statement. `Lock` runs a conditional `UPDATE` and
-decides the bump from its row count; it writes no savepoint. `Unlock`
-updates the state first (taking the row lock every extension takes), folds
-the log into `doc` and clears it, bumps the lifecycle row, and then counts
-the model's live entities, refusing a model that has any
-(`*spi.ModelHasEntitiesError`) and rolling the whole unlock back. `Save`
-replaces only a model that is not `LOCKED`, and `Delete` refuses a `LOCKED`
-model (`spi.ErrModelLocked`); neither has an extension log to clear.
+**Administration.** `Lock`, `Save`, `Delete` and `SetChangeLevel` are one
+statement each; `Lock` writes no savepoint. `Unlock` updates the state first
+(taking the row lock every extension takes), folds the log into `doc` and
+clears the log, in one transaction. `Save` and `Delete` act only on a model
+that is not `LOCKED`, whose extension log is empty, so they have no log to
+clear. The store checks no model state and counts no entities: the API
+keeps the model rules (`cyoda help models`, LIFECYCLE).
 
 ## Scheduled tasks and the scheduler pool
 

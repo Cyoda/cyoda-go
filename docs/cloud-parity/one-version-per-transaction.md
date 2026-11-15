@@ -1,4 +1,4 @@
-# One version per entity per transaction; commit-time checks; callback reads
+# One version per entity per transaction; commit-time unique keys; callback reads
 
 cyoda-go is the authoritative implementation. This file is the contract Cyoda
 Cloud follows.
@@ -45,8 +45,9 @@ write.
 
 ## Unique keys are checked at commit
 
-At commit the store reads each saved entity's model (its own stored copy, never
-keys a caller passes), releases the claims of every entity the transaction
+At commit the store reads the unique keys of each saved entity's model (its own
+stored copy, never keys a caller passes; the model's state is not checked),
+releases the claims of every entity the transaction
 wrote, computes the claims of the final entities and inserts them. Swaps,
 chains of moves and free-after-claim commit. A value claimed twice, or held by
 an entity outside the transaction, is `409 UNIQUE_VIOLATION`; a partial
@@ -57,30 +58,28 @@ stays `422` at the callback. On PostgreSQL a deadlock (`40P01`) between two
 crossing commits is a retryable `409 CONFLICT`. A scheduled fire that breaks a
 key fails at commit like any run; the entity is unchanged.
 
-## A model cannot change while entities are written to it
+## The model rules are the API's
 
-Checked inside the store operation that makes the change:
-
-| Operation | Refused when | Answer |
-|---|---|---|
-| Entity commit or auto-commit save | the model is missing or not `LOCKED` | `409 MODEL_NOT_LOCKED` (PostgreSQL: a retryable `409 CONFLICT` first when the model changed after the transaction's snapshot) |
-| Unlock | the model has live entities | `409 MODEL_HAS_ENTITIES`, atomically with the unlock |
-| Model import, unique-key change, delete | the stored model is `LOCKED` | `409 MODEL_ALREADY_LOCKED` |
-
-`DELETE /model/...` no longer answers `MODEL_HAS_ENTITIES`: a model with
-entities is `LOCKED`. A transaction that only deletes entities commits whatever
-the model's state. PostgreSQL keeps a `model_lifecycle` table for this
-(migration 000019).
+Entities exist only in a `LOCKED` model; a model is unlocked only when it has
+no entities; a `LOCKED` model is never deleted, re-imported or given new
+unique keys. The services check these when a request starts: an entity create
+answers `409 MODEL_NOT_LOCKED`, unlock counts the entities and answers `409
+MODEL_HAS_ENTITIES`, and import, unique-key change and delete answer `409
+MODEL_ALREADY_LOCKED`. Storage adds no check of its own. The rules hold when
+model administration runs from one place and not while writes to the model are
+in flight. `DELETE /model/...` no longer answers `MODEL_HAS_ENTITIES`: a model
+with entities is `LOCKED`.
 
 ## Scheduled fire
 
 A fire seals its transaction after its schedule functions run, so their
-callbacks are admitted (before, `410`). A fire refused at commit on keys or the
-model records the doors' text (for example `UNIQUE_VIOLATION: ...`) in the
+callbacks are admitted (before, `410`). A fire refused at commit on a unique key
+records the doors' text (for example `UNIQUE_VIOLATION: ...`) in the
 task's `lastError`; it is logged at warn level only and mints no ticket.
 
 ## What Cloud changes
 
 Everything above, on every storage path: one version per entity per
-transaction, commit-time key and model checks reading the stored model, the
-atomic model operations, and the no-self-write rule for compute nodes.
+transaction, commit-time unique-key checks reading the stored model's keys,
+delete no longer answering `MODEL_HAS_ENTITIES`, and the no-self-write rule
+for compute nodes.

@@ -248,9 +248,8 @@ commit. Five invariants hold on every backend:
 ### Operator Contract for Unlock
 
 `Unlock` is the caller-facing transition from LOCKED to UNLOCKED, and
-it requires the model to have no committed entities. The store checks
-that as one step with the change (`*spi.ModelHasEntitiesError`,
-`409 MODEL_HAS_ENTITIES`).
+it requires the model to have no committed entities. The model service
+counts them before it unlocks (`409 MODEL_HAS_ENTITIES`).
 
 The extensions committed while the model was LOCKED are part of its
 schema. `Unlock` keeps them: the Postgres and SQLite plugins fold the
@@ -271,49 +270,42 @@ example during a compute-node callout — therefore answers
 `409 MODEL_NOT_LOCKED` if it then extends, and never writes to an
 UNLOCKED model's log.
 
-`Save` replaces the schema wholesale and `Delete` removes the model.
-Both refuse a model that is LOCKED (`spi.ErrModelLocked`,
-`409 MODEL_ALREADY_LOCKED`), checked as one step with the change. The
-extension log of a model that is not LOCKED is empty — an extension is
-written only to a LOCKED model, and `Unlock` folds and clears the log —
-so neither has a log to clear: a `Get` after `Save` returns the saved
-schema alone.
+`Save` replaces the schema wholesale and `Delete` removes the model. Both
+act only on a model that is not LOCKED: the model service refuses a
+LOCKED one (`409 MODEL_ALREADY_LOCKED`). The extension log of a model
+that is not LOCKED is empty — an extension is written only to a LOCKED
+model, and `Unlock` folds and clears the log — so neither has a log to
+clear: a `Get` after `Save` returns the saved schema alone.
 
-**A model never changes under its entities.** Entities exist only in a
-LOCKED model; a model's state and unique keys change only while it is
-UNLOCKED; a model is unlocked or deleted only when it has no entities.
-Each rule is checked inside the store operation that makes the change,
-atomically with it:
-
-| Store operation | Refuses | Client answer |
-|---|---|---|
-| Entity commit, or a save outside a transaction | an entity saved into a model that does not exist or is not LOCKED | `409 MODEL_NOT_LOCKED` |
-| `ModelStore.Unlock` | a model with live entities | `409 MODEL_HAS_ENTITIES` |
-| `ModelStore.Delete` | a LOCKED model | `409 MODEL_ALREADY_LOCKED` |
-| `ModelStore.Save` of an existing model | a LOCKED model | `409 MODEL_ALREADY_LOCKED` |
-
-So an entity commit and an unlock or delete of its model never both
-succeed, and an import or unique-key change never overwrites a lock.
-`Delete` counts no entities: an UNLOCKED model never has a live one.
-An entity a transaction has not committed yet does not stop an unlock;
-that transaction's commit is then refused. A transaction whose final
-write of an entity is a delete reads no model, so a transaction that
-creates an entity and deletes it again commits its tombstone whatever
-the model's state. On Postgres the commit takes `FOR SHARE` on a
-per-model lifecycle row that every change of a model's state or keys
-bumps (a schema extension and a change-level change do not touch it),
-so a model change committed after the transaction's snapshot fails the
-commit with a retryable `409 CONFLICT`, and one still in progress makes
-the commit wait for it; memory and SQLite check under the lock their
-commits already hold.
+**The model rules are the API's.** Entities exist only in a LOCKED model;
+a model is unlocked only when it has no entities; a model's unique keys
+(and the rest of its descriptor except the change level and the schema
+extensions) change only while it is UNLOCKED; a LOCKED model is never
+deleted or re-imported. The API keeps these rules with the checks its
+services make before they act: an entity create refuses a model that is
+not LOCKED (`409 MODEL_NOT_LOCKED`); unlock counts the model's entities
+and refuses `409 MODEL_HAS_ENTITIES`; delete, import and the unique-key
+change refuse a LOCKED model (`409 MODEL_ALREADY_LOCKED`). Because an
+UNLOCKED model has no entities, delete counts none and never answers
+`MODEL_HAS_ENTITIES`. Storage adds no check of its own: a commit reads
+the unique keys of its entities' stored models without checking their
+state.
 
 Model administration — import, lock, unlock, delete, change level,
-unique keys — runs from one place, not concurrently on one model. Two
-administration calls that overlap on one model have no defined order:
-an import or unique-key change reads the model and then saves it whole,
-so a change-level change landing between the read and the save is
-overwritten, and of two imports or key changes on an unlocked model the
-later save wins.
+unique keys — runs from one place, not concurrently on one model, and
+not while writes to the model are in flight. Two administration calls
+that overlap on one model have no defined order: an import or
+unique-key change reads the model and then saves it whole, so a lock or
+an extension landing between the read and the save can be overwritten.
+
+Unlock is not atomic with its entity check either: it counts the
+model's committed entities, then unlocks. An entity write still in
+progress — its transaction not yet committed, or a create that read the
+model as LOCKED just before — is not counted and can commit after the
+unlock, leaving an UNLOCKED model with entities. A write whose
+extension runs after the unlock is refused at that extension (above);
+one that extended while the model was still locked, or does not extend
+at all, is not. Writes to a model stop before it is unlocked.
 
 ## 3c. In-transaction `Search` is a predicate read
 

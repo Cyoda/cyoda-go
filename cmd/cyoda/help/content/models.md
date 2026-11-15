@@ -123,9 +123,9 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 **DELETE /api/model/{entityName}/{modelVersion}**
 
-Delete a model. Blocked if the model is `LOCKED`. A model with entities is always `LOCKED` (unlock refuses a model with entities, and an entity is committed only into a `LOCKED` model), so delete never answers `MODEL_HAS_ENTITIES`.
+Delete a model. Blocked if the model is `LOCKED`. A model with entities is always `LOCKED` (unlock refuses a model with entities, and entities are written only into a `LOCKED` model), so delete never answers `MODEL_HAS_ENTITIES`.
 
-Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success. `409 MODEL_ALREADY_LOCKED` if the model is locked; the check is part of the delete itself, so a lock that lands first refuses it.
+Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success. `409 MODEL_ALREADY_LOCKED` if the model is locked.
 
 **POST /api/model/{entityName}/{modelVersion}/changeLevel/{changeLevel}**
 
@@ -154,7 +154,7 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 Unlock a model. The model must be `LOCKED` and have zero associated entities. Returns `409 MODEL_HAS_ENTITIES` if entities exist, and `409 MODEL_ALREADY_UNLOCKED` if the model is not locked. The unlocked model keeps every field that entity writes added while it was locked.
 
-Unlock checks the model's entities and unlocks it in one atomic step, so a model never ends up `UNLOCKED` with entities. An entity commit and an unlock of its model exclude each other: one of them is refused. An entity in a transaction that has not committed yet does not stop the unlock; that transaction's commit is then refused with `409 MODEL_NOT_LOCKED` (on PostgreSQL, a transaction that began before the unlock is first answered with a retryable `409 CONFLICT`, and its retry with `409 MODEL_NOT_LOCKED`). See `cyoda help errors MODEL_NOT_LOCKED`.
+Unlock counts the model's committed entities and then unlocks it; the two are not one step, and no later check stops a write the unlock did not see. Stop writes to the model before you unlock it: a write still in progress when the unlock runs — an entity in a transaction that has not committed, or a create that found the model `LOCKED` just before — would otherwise commit after the unlock and leave the model `UNLOCKED` with entities. See LIFECYCLE.
 
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
@@ -343,7 +343,13 @@ Transitions:
 - `UNLOCKED` → `LOCKED` via `PUT /model/{name}/{version}/lock`
 - `LOCKED` → `UNLOCKED` via `PUT /model/{name}/{version}/unlock` (only when entity count is zero)
 
-Model administration — import, lock, unlock, delete, change level, unique keys — is meant to run from one place, such as a deploy step, not concurrently on the same model. An import or unique-key change that overlaps a lock is refused with `409 MODEL_ALREADY_LOCKED`: the state check is part of the save. Two imports or key changes that overlap on an unlocked model have no defined order; the later save wins. Register and lock a model once, from one caller, rather than from every replica of an application at start-up.
+The API keeps these rules:
+
+- Entities exist only in a `LOCKED` model: a create refuses a model that is not `LOCKED` with `409 MODEL_NOT_LOCKED`, and the next rule keeps the model of an existing entity `LOCKED`.
+- A model is unlocked only when it has no entities: unlock counts them and refuses `409 MODEL_HAS_ENTITIES`.
+- A `LOCKED` model is never deleted or re-imported, and its unique keys do not change: delete, import and the unique-key change refuse it with `409 MODEL_ALREADY_LOCKED`. While `LOCKED`, a model changes only through its change level and schema extensions.
+
+Storage adds no check of its own. The rules hold when model administration — import, lock, unlock, delete, change level, unique keys — runs from one place, such as a deploy step, not concurrently on the same model, and not while writes to the model are in flight. Two such calls that overlap on one model have no defined order: an import that overlaps a lock can save the model back as `UNLOCKED`. Register and lock a model once, from one caller, rather than from every replica of an application at start-up, and stop writes to a model before you unlock it.
 
 ## SCHEMA EXTENSION
 
@@ -374,7 +380,7 @@ What follows from this:
 - `errors.MODEL_ALREADY_LOCKED` — `409` — re-import, relock, or delete attempted on a model already in `LOCKED` state
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — unlock attempted on a model already in `UNLOCKED` state
 - `errors.MODEL_HAS_ENTITIES` — `409` — unlock refused because entities of the model exist (`entityCount` in `properties`)
-- `errors.MODEL_NOT_LOCKED` — `409` — an entity write names a model that is not `LOCKED`, a transaction's commit found the model of an entity it saves not `LOCKED` or gone, or a write's schema extension found the model not `LOCKED` (see SCHEMA EXTENSION)
+- `errors.MODEL_NOT_LOCKED` — `409` — an entity write names a model that is not `LOCKED`, or a write's schema extension found the model not `LOCKED` (see SCHEMA EXTENSION)
 - `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — a model-changing operation carries a transaction token; model and workflow administration never runs inside a transaction
 - `errors.INVALID_CHANGE_LEVEL` — `400` — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL` (`entityName`, `entityVersion`, `suppliedValue`, `validValues` in `properties`)
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed (static analysis); sample data that is neither a document nor a collection of documents; a field name that is not addressable

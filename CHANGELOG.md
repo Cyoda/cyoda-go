@@ -43,27 +43,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`40P01`) answer a retryable `409 CONFLICT`. A scheduled fire follows the
   final entity's keys (memory dropped them, the others kept stale claims) and
   a fire that breaks a key fails at commit.
-- **Model administration is atomic with entity commits.** An entity commit
-  into a model that does not exist or is not `LOCKED` is refused `409
-  MODEL_NOT_LOCKED` on every door (PostgreSQL: a retryable `409 CONFLICT` first
-  when the model changed after the transaction's snapshot); a transaction that
-  only deletes commits whatever the model's state. Unlock refuses a model with
-  live entities atomically (`409 MODEL_HAS_ENTITIES`), so a write in progress
-  when the unlock lands is refused at its commit. A model import or unique-key
-  change over a `LOCKED` model, which could save it back as `UNLOCKED` with
-  new keys, is refused `409 MODEL_ALREADY_LOCKED`. `DELETE /model/...` no
-  longer answers `MODEL_HAS_ENTITIES`: a model with entities is `LOCKED`, so
-  delete answers `MODEL_ALREADY_LOCKED`. PostgreSQL gains a `model_lifecycle`
-  table (migration 000019).
+- **`DELETE /model/...` no longer answers `MODEL_HAS_ENTITIES`.** A model with
+  entities is `LOCKED` (unlock refuses a model with entities), so delete
+  answers `MODEL_ALREADY_LOCKED`. The model rules are the API's checks, and
+  hold when model administration runs from one place, not while writes to the
+  model are in flight (`cyoda help models`, LIFECYCLE).
 - **A scheduled fire seals after its schedule functions.** Their callbacks are
   admitted; before, every one was refused `410`. A fire refused at commit on
-  keys or the model records the doors' text (for example `UNIQUE_VIOLATION:
+  a unique key records the doors' text (for example `UNIQUE_VIOLATION:
   ...`) in the task's `lastError`, logged at warn level.
-- **SPI.** New sentinels `ErrModelLocked`, `ErrModelHasEntities` and
-  `*ModelHasEntitiesError`; `ErrModelNotLocked` is also returned by an entity
-  commit or save; `WithUniqueKeys` and `UniqueKeysFromContext` are removed.
-  New conformance cases: `OneVersionPerTx/*`, `Unique/*`, the model refusal
-  and interleave cases, `Save/ModelReference*`, `Save/NonTx*`,
+- **SPI.** `WithUniqueKeys` and `UniqueKeysFromContext` are removed.
+  New conformance cases: `OneVersionPerTx/*`, `Unique/*`, `Save/ModelReference*`, `Save/NonTx*`,
   `Save/PendingReadCarriesStoreMetadata` and `Save/InTxIgnoresCallerChangeType`;
   `Save/UpdateDoesNotRestampCreationDate` is tightened. A storage plugin that
   does not meet them fails its conformance run.

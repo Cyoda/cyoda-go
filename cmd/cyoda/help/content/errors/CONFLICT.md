@@ -20,13 +20,12 @@ HTTP: `409` `Conflict`. Retryable: `yes`, except on a request that joined a tran
 
 ## DESCRIPTION
 
-When a write commits, the server checks that nothing it wrote was changed by another transaction that committed after it began. Three kinds of change are checked:
+When a write commits, the server checks that nothing it wrote was changed by another transaction that committed after it began. Two kinds of change are checked:
 
 - **The entity.** Another client or a workflow changed the entity first.
 - **A scheduled task of the entity.** The scheduler changed one of the entity's scheduled tasks first. The scheduler changes a task when it claims it, stamps a segment of its run, records an attempt, marks it failed, or gives it back. A write that arms or cancels the entity's scheduled transitions writes those tasks, and so can race the scheduler.
-- **The model (PostgreSQL).** The model of an entity the write saves was locked, unlocked, deleted or given new unique keys after the write's transaction began. The retry is checked against the model as it now is, and answers `409 MODEL_NOT_LOCKED` if the model is no longer `LOCKED`.
 
-All three are normal outcomes under concurrent load.
+Both are normal outcomes under concurrent load.
 
 On PostgreSQL two transactions that commit at the same time, each claiming a unique-key value that the other frees in the same commit, can meet PostgreSQL's deadlock detection, and one of them is answered 409. Commits that claim the same values without freeing each other's do not deadlock: claims are inserted in a fixed order, so the later commit waits for the earlier one. The retry is checked against the committed claims, and gets `409 UNIQUE_VIOLATION` if the value is still held.
 
