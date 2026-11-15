@@ -14,10 +14,10 @@ import (
 // write if it has one, else the committed row's. It must be non-empty. The
 // empty string is not a value any live entity's transaction ID can be trusted
 // to differ from — a write taken outside a transaction stores it — so
-// accepting it as "expect no entity" made a guard whose job is to fail
-// closed fail open instead, and silently overwrite an entity that was there. It is now rejected as a caller
-// error, and CompareAndSave neither creates an entity nor resurrects a
-// deleted one: Save does that.
+// accepting it as "expect no entity" made a guard whose job is to fail closed
+// fail open instead, and silently overwrite an entity that was there. It is
+// now rejected as a caller error, and CompareAndSave neither creates an entity
+// nor resurrects a deleted one: Save does that.
 type casOutcome int
 
 const (
