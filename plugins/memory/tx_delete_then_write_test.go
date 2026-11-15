@@ -19,9 +19,7 @@ func TestTx_DeleteThenCompareAndSave_Conflicts(t *testing.T) {
 	// A real seed transaction ID, so the compare-and-save below names a
 	// version the delete superseded rather than the empty ID, which is
 	// rejected outright and would test nothing about the delete.
-	if _, err := store.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-cas", TenantID: "tenant-dtw", ModelRef: ref, TransactionID: "tx-seed"}, Data: []byte(`{"n":1}`)}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	saveCommitted(t, tm, store, ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-cas", TenantID: "tenant-dtw", ModelRef: ref}, Data: []byte(`{"n":1}`)})
 	committed, err := store.Get(ctx, "e-cas")
 	if err != nil {
 		t.Fatalf("seed Get: %v", err)
@@ -96,9 +94,7 @@ func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 	ctx := tenantCtx(spi.TenantID("tenant-dtw"))
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
 	store, _ := f.EntityStore(ctx)
-	if _, err := store.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-cas-recreate", TenantID: "tenant-dtw", ModelRef: ref, TransactionID: "tx-seed"}, Data: []byte(`{"n":1}`)}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	saveCommitted(t, tm, store, ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-cas-recreate", TenantID: "tenant-dtw", ModelRef: ref}, Data: []byte(`{"n":1}`)})
 	committed, _ := store.Get(ctx, "e-cas-recreate")
 
 	txID, txCtx, _ := tm.Begin(ctx)
@@ -132,9 +128,7 @@ func TestTx_SaveThenCompareAndSave_Conflicts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	if _, err := store.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-scas", TenantID: "tenant-dtw", ModelRef: ref, TransactionID: "tx-seed"}, Data: []byte(`{"n":1}`)}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	saveCommitted(t, tm, store, ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-scas", TenantID: "tenant-dtw", ModelRef: ref}, Data: []byte(`{"n":1}`)})
 	committed, err := store.Get(ctx, "e-scas")
 	if err != nil {
 		t.Fatalf("seed Get: %v", err)
@@ -179,9 +173,7 @@ func TestTx_SaveThenCompareAndSave_WithOwnTxID_Succeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	if _, err := store.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-scas-own", TenantID: "tenant-dtw", ModelRef: ref, TransactionID: "tx-seed"}, Data: []byte(`{"n":1}`)}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	saveCommitted(t, tm, store, ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e-scas-own", TenantID: "tenant-dtw", ModelRef: ref}, Data: []byte(`{"n":1}`)})
 	committed, err := store.Get(ctx, "e-scas-own")
 	if err != nil {
 		t.Fatalf("seed Get: %v", err)

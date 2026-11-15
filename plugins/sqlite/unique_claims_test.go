@@ -373,12 +373,7 @@ func TestUniqueClaims_CompareAndSaveInTxRecordsClaims(t *testing.T) {
 	fx := setupUC(t, emailKeys()...)
 
 	// CompareAndSave never creates, so the entity is seeded first.
-	const seedTxID = "tx-seed"
-	seed := ucEntity("e1", "seed@x.com")
-	seed.Meta.TransactionID = seedTxID
-	if _, err := fx.store.Save(fx.ctx, seed); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	seedTxID := saveCommitted(t, fx.tm, fx.store, fx.ctx, ucEntity("e1", "seed@x.com"))
 
 	txID, txCtx, err := fx.tm.Begin(fx.ctx)
 	if err != nil {

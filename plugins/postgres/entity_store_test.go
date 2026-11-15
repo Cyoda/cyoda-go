@@ -118,8 +118,8 @@ func TestEntityStore_SaveAndGet(t *testing.T) {
 	if got.Meta.ChangeUser != "user-1" {
 		t.Errorf("ChangeUser = %q, want %q", got.Meta.ChangeUser, "user-1")
 	}
-	if got.Meta.TransactionID != "tx-100" {
-		t.Errorf("TransactionID = %q, want %q", got.Meta.TransactionID, "tx-100")
+	if got.Meta.TransactionID != "" {
+		t.Errorf("TransactionID = %q, want empty: a write outside a transaction records none, whatever the caller supplied", got.Meta.TransactionID)
 	}
 	if got.Meta.TransitionForLatestSave != "create" {
 		t.Errorf("TransitionForLatestSave = %q, want %q", got.Meta.TransitionForLatestSave, "create")
@@ -173,18 +173,16 @@ func TestEntityStore_SaveIncrementsVersion(t *testing.T) {
 }
 
 func TestEntityStore_CompareAndSave_Match(t *testing.T) {
-	factory := setupEntityTest(t)
+	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("entity-tenant")
 	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	ent := makeEntity("ent-cas-1")
-	ent.Meta.TransactionID = "tx-original"
-	store.Save(ctx, ent)
+	originalTxID := saveCommitted(t, tm, store, ctx, ent)
 
 	ent.Meta.State = "UPDATED_STATE"
-	ent.Meta.TransactionID = "tx-new"
-	v, err := store.CompareAndSave(ctx, ent, "tx-original")
+	v, err := store.CompareAndSave(ctx, ent, originalTxID)
 	if err != nil {
 		t.Fatalf("CompareAndSave with matching txID: %v", err)
 	}
@@ -194,15 +192,14 @@ func TestEntityStore_CompareAndSave_Match(t *testing.T) {
 }
 
 func TestEntityStore_CompareAndSave_Mismatch(t *testing.T) {
-	factory := setupEntityTest(t)
+	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	ent := makeEntity("ent-cas-2")
-	ent.Meta.TransactionID = "tx-original"
-	store.Save(ctx, ent)
+	saveCommitted(t, tm, store, ctx, ent)
 
-	ent.Meta.TransactionID = "tx-new"
 	_, err := store.CompareAndSave(ctx, ent, "tx-WRONG")
 	if err == nil {
 		t.Fatal("expected ErrConflict for mismatched txID")

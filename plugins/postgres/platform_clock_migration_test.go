@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -33,7 +34,7 @@ func columnDefault(t *testing.T, pool *pgxpool.Pool, table, column string) (exis
 	var d *string
 	err := pool.QueryRow(context.Background(), `SELECT column_default FROM information_schema.columns
 		WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2`, table, column).Scan(&d)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return false, ""
 	}
 	if err != nil {

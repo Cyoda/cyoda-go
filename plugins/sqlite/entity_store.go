@@ -331,18 +331,16 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 	return s.saveDirectly(ctx, entity)
 }
 
-// deriveChangeType computes the persisted change type from row existence,
-// used by both the non-tx (saveDirectly) and tx-commit write paths so they
-// agree with each other and with the memory/postgres backends. A new entity is
-// always "CREATED" (an incoming value is ignored). For an existing entity a
-// stale "CREATED" (or empty) becomes "UPDATED", while an explicit override set
-// by a caller (e.g. the workflow engine) is preserved.
-func deriveChangeType(caller string, isNew bool) string {
+// deriveChangeType returns the change type of a saved version, used by both
+// the non-tx (saveDirectly) and tx-commit write paths: CREATED for the
+// entity's first version, UPDATED otherwise. It is derived from row existence,
+// never taken from the caller — the change type is the store's, like the rest
+// of the entity's metadata. The entities row outlives a delete, so a re-create
+// after a committed delete is UPDATED, as on memory and postgres. A delete
+// records DELETED on its own path.
+func deriveChangeType(isNew bool) string {
 	if isNew {
 		return "CREATED"
-	}
-	if caller != "" && caller != "CREATED" {
-		return caller
 	}
 	return "UPDATED"
 }
@@ -425,7 +423,12 @@ func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity
 
 	cp.Meta.Version = nextVersion
 	cp.Meta.LastModifiedDate = now
-	cp.Meta.ChangeType = deriveChangeType(cp.Meta.ChangeType, isNew)
+	cp.Meta.ChangeType = deriveChangeType(isNew)
+	// A write outside a transaction is its own transaction and records no
+	// transaction id (see spi.EntityStore.CompareAndSave) — in the meta
+	// document as in the entity_versions column — whatever the caller left on
+	// the entity.
+	cp.Meta.TransactionID = ""
 	if isNew {
 		cp.Meta.CreationDate = now
 	} else {
@@ -480,12 +483,11 @@ func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity
 // CompareAndSave writes entity only if its stored transaction ID is still
 // expectedTxID. expectedTxID must not be empty: it is compared literally, and
 // the empty string is the transaction ID a missing or deleted entity reports
-// — but also the one a write taken outside a transaction stores verbatim when
-// the caller supplied none, so an empty expected ID cannot tell "no entity"
-// from "an entity written outside a transaction" and would overwrite the
-// latter. It is rejected as a caller error, before any read or write.
-// CompareAndSave therefore never creates an entity and never resurrects a
-// deleted one; Save does that.
+// — but also the one a write taken outside a transaction stores, so an empty
+// expected ID cannot tell "no entity" from "an entity written outside a
+// transaction" and would overwrite the latter. It is rejected as a caller
+// error, before any read or write. CompareAndSave therefore never creates an
+// entity and never resurrects a deleted one; Save does that.
 func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	if expectedTxID == "" {
 		return 0, fmt.Errorf("CompareAndSave: expectedTxID must not be empty")
@@ -581,9 +583,9 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // written, or deleted. A deleted entity is no entity, exactly as Get reports
 // it, so its tombstone does not offer up the superseded version's ID for a
 // caller to match against. "" is also what an entity written outside a
-// transaction with no supplied ID stores; the two are indistinguishable
-// here, which is why CompareAndSave rejects an empty expectedTxID rather
-// than letting it match either.
+// transaction stores; the two are indistinguishable here, which is why
+// CompareAndSave rejects an empty expectedTxID rather than letting it match
+// either.
 func (s *entityStore) committedTxID(ctx context.Context, entityID string) (string, error) {
 	var txID sql.NullString
 	err := s.db.QueryRowContext(ctx,

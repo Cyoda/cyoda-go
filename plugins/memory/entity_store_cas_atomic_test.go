@@ -32,16 +32,14 @@ func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 
-	const seedTxID = "tx-seed"
-	if _, err := store.Save(ctx, &spi.Entity{
+	tm := factory.NewTransactionManager(newTestUUIDGenerator())
+	seedTxID := saveCommitted(t, tm, store, ctx, &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-cas", TenantID: "tenant-cas", ModelRef: ref,
-			State: "open", TransactionID: seedTxID,
+			State: "open",
 		},
 		Data: []byte(`{"n":0}`),
-	}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	})
 
 	const racers = 8
 	var wg sync.WaitGroup
@@ -52,14 +50,12 @@ func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			// Every racer stamps the SAME new transaction ID, distinct from
-			// the seed: a racer that echoed the seed back would leave the
-			// stored value unchanged and every later check would still match,
-			// which tests the store's locking rather than the caller's.
+			// The winner's write is its own transaction and stores the empty
+			// transaction ID, which no later check against the seed's matches.
 			_, results[i] = store.CompareAndSave(ctx, &spi.Entity{
 				Meta: spi.EntityMeta{
 					ID: "e-cas", TenantID: "tenant-cas", ModelRef: ref,
-					State: "open", TransactionID: "tx-writer",
+					State: "open",
 				},
 				Data: []byte(`{"n":1}`),
 			}, seedTxID)

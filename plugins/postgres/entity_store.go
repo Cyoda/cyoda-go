@@ -191,27 +191,25 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	// the committing transaction owns this field, so a caller-supplied value
 	// is not authoritative — honouring one would let a row claim it was
 	// committed by a transaction that did not commit it, and would make the
-	// in-transaction compare-and-save precondition depend on what the caller
-	// happened to stamp rather than on the transaction's own view.
+	// compare-and-save precondition depend on what the caller happened to
+	// stamp rather than on the store's own record. Outside a transaction the
+	// write is its own transaction and records no id: empty, the value
+	// CompareAndSave rests on a non-transactional write storing.
 	//
 	// The stamp lands on saveOn's own copy (made above), as every other field
 	// this function sets does: nothing is written back to the caller's
 	// *spi.Entity. The stamped values reach a caller through a subsequent
 	// read, and the version through this function's return.
 	//
-	// ambientTxID is the same value, kept separately because it is what the
-	// entity_versions.transaction_id COLUMN gets, and the column must carry
-	// ONLY a transaction that actually commits these rows: the commit phase
-	// finds its own rows by it (TransactionManager.stampCommitInstant), so a
-	// caller-supplied id reaching the column would let one transaction's
-	// commit restamp rows it never wrote. Outside a transaction it stays
-	// empty — the value CompareAndSave rests on a non-transactional write
-	// storing — even when the caller supplied an id that the DOCUMENT keeps.
+	// The same value goes into the entity_versions.transaction_id COLUMN,
+	// which must carry ONLY a transaction that actually commits these rows:
+	// the commit phase finds its own rows by it
+	// (TransactionManager.stampCommitInstant).
 	ambientTxID := ""
 	if tx := spi.GetTransaction(ctx); tx != nil {
 		ambientTxID = tx.ID
-		entity.Meta.TransactionID = tx.ID
 	}
+	entity.Meta.TransactionID = ambientTxID
 
 	// dbNow is a PROVISIONAL stamp only. Every temporal column it feeds is
 	// corrected to the transaction's real instant immediately before that
@@ -408,16 +406,15 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 }
 
 // setSaveChangeType sets the change type of a save's version: CREATED for the
-// entity's first version, otherwise UPDATED unless the caller supplied
-// another change type.
+// entity's first version, UPDATED otherwise. A change type the caller left on
+// the entity is ignored: it is the store's, like the rest of the entity's
+// metadata. A delete records DELETED on its own path.
 func setSaveChangeType(entity *spi.Entity, first bool) {
 	if first {
 		entity.Meta.ChangeType = "CREATED"
 		return
 	}
-	if entity.Meta.ChangeType == "" || entity.Meta.ChangeType == "CREATED" {
-		entity.Meta.ChangeType = "UPDATED"
-	}
+	entity.Meta.ChangeType = "UPDATED"
 }
 
 // pendingVersionRow is the version a caller's transaction has already written
@@ -624,12 +621,11 @@ func (s *entityStore) stampOwnCommitInstant(ctx context.Context, tid, entityID s
 // CompareAndSave writes entity only if its stored transaction ID is still
 // expectedTxID. expectedTxID must not be empty: it is compared literally, and
 // the empty string is the transaction ID a missing or deleted entity reports
-// — but also the one a write taken outside a transaction stores verbatim when
-// the caller supplied none, so an empty expected ID cannot tell "no entity"
-// from "an entity written outside a transaction" and would overwrite the
-// latter. It is rejected as a caller error, before any read or write.
-// CompareAndSave therefore never creates an entity and never resurrects a
-// deleted one; Save does that.
+// — but also the one a write taken outside a transaction stores, so an empty
+// expected ID cannot tell "no entity" from "an entity written outside a
+// transaction" and would overwrite the latter. It is rejected as a caller
+// error, before any read or write. CompareAndSave therefore never creates an
+// entity and never resurrects a deleted one; Save does that.
 func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	if expectedTxID == "" {
 		return 0, fmt.Errorf("CompareAndSave: expectedTxID must not be empty")
@@ -1002,8 +998,7 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// its TransactionID is stale unless overwritten here). Empty for a
 	// non-transactional delete, matching Save's non-tx convention and
 	// memory's tombstone semantics — GetVersionByTransaction's empty-txID
-	// pre-query rejection means an empty stamp here can never accidentally
-	// match a caller-supplied txID.
+	// pre-query rejection means an empty stamp here never matches.
 	//
 	// ambientTxID carries the same value into the entity_versions
 	// transaction_id COLUMN, which the commit phase finds its own rows by —
@@ -1352,11 +1347,8 @@ func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, li
 //
 // $1 tenant, $2 entity id, $3 transaction id.
 const getVersionByTransactionQuery = `SELECT doc, version, valid_time, transaction_time, creation_date FROM entity_versions
-	 WHERE tenant_id = $1 AND entity_id = $2
-	   AND doc->'_meta'->>'transaction_id' = $3
-	   AND (doc->'_meta'->>'deleted')::boolean IS NOT TRUE
-	 ORDER BY version ASC
-	 LIMIT 1`
+	 WHERE tenant_id = $1 AND transaction_id = $3 AND entity_id = $2
+	   AND (doc->'_meta'->>'deleted')::boolean IS NOT TRUE`
 
 // GetVersionByTransaction returns the version of entityID that transaction
 // txID wrote — a transaction writes at most one version of an entity — once
@@ -1374,11 +1366,16 @@ const getVersionByTransactionQuery = `SELECT doc, version, valid_time, transacti
 // post-query check below, restated in SQL rather than a second,
 // possibly-diverging convention.
 //
-// tenant_id/entity_id scope the scan to entity_versions' own PRIMARY KEY
-// partition (tenant_id, entity_id, version) rather than a full table scan
-// — asserted by entity_page_plan_test.go via EXPLAIN over
-// getVersionByTransactionQuery itself. Deliberately not tracked in readSet:
-// historical reads target immutable versions, matching GetAsAt.
+// The lookup is on the transaction_id column, the one the commit phase finds
+// a transaction's rows by: every version row carries the same id there as in
+// its document — the transaction that wrote it, or the empty id of a write
+// outside a transaction — so the column answers exactly as the document
+// would, through idx_ev_transaction (tenant_id, transaction_id, entity_id,
+// version) rather than a scan of the entity's history — asserted by
+// entity_page_plan_test.go via EXPLAIN over getVersionByTransactionQuery
+// itself. A transaction writes one version of an entity, so at most one row
+// matches. Deliberately not tracked in readSet: historical reads target
+// immutable versions, matching GetAsAt.
 func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txID string) (*spi.EntityVersion, error) {
 	if txID == "" {
 		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)

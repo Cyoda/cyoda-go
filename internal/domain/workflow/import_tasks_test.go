@@ -388,14 +388,7 @@ func TestImport_LeftoverAfter409_CancelledByTheFireDoorWithAuditEvent(t *testing
 	entity := makeEntity("e-1", spi.ModelRef{EntityName: "sched-import", ModelVersion: "1"}, map[string]any{"k": 1})
 	entity.Meta.State = "OPEN"
 	entity.Meta.TenantID = importTenant
-	entity.Meta.TransactionID = "seed-tx-1"
-	es, err := e.real.EntityStore(e.ctx)
-	if err != nil {
-		t.Fatalf("EntityStore: %v", err)
-	}
-	if _, err := es.Save(e.ctx, entity); err != nil {
-		t.Fatalf("Save entity: %v", err)
-	}
+	saveCommittedEntity(t, e.real, e.ctx, entity)
 	e.arm(t, "sched-import", "e-1", "Remind")
 	e.plan.Refuse(taskconflict.DeleteForModel, 100)
 	requireRetryableConflict(t, e.importWorkflows(t, dropRemindImport))

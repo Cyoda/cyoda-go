@@ -587,16 +587,15 @@ func TestCompareAndSaveMatchingTxID(t *testing.T) {
 	entity := &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-cas-1", TenantID: "tenant-A", ModelRef: modelRef,
-			State: "NEW", TransactionID: "tx-001",
+			State: "NEW",
 		},
 		Data: []byte(`{"v": 1}`),
 	}
-	store.Save(ctx, entity)
+	seedTxID := saveCommitted(t, factory.NewTransactionManager(newTestUUIDGenerator()), store, ctx, entity)
 
 	// CompareAndSave with matching txID should succeed.
 	entity.Data = []byte(`{"v": 2}`)
-	entity.Meta.TransactionID = "tx-002"
-	ver, err := store.CompareAndSave(ctx, entity, "tx-001")
+	ver, err := store.CompareAndSave(ctx, entity, seedTxID)
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
@@ -959,15 +958,15 @@ func TestTransactionCompareAndSave(t *testing.T) {
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	// Pre-create entity with txID
+	// Pre-create entity in a transaction of its own.
 	entity := &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-tx-cas", TenantID: "tenant-A", ModelRef: modelRef,
-			State: "NEW", TransactionID: "tx-original",
+			State: "NEW",
 		},
 		Data: []byte(`{"v": 1}`),
 	}
-	store.Save(ctx, entity)
+	originalTxID := saveCommitted(t, txMgr, store, ctx, entity)
 
 	// Begin tx, CompareAndSave with matching txID
 	_, txCtx, err := txMgr.Begin(ctx)
@@ -976,8 +975,7 @@ func TestTransactionCompareAndSave(t *testing.T) {
 	}
 
 	entity.Data = []byte(`{"v": 2}`)
-	entity.Meta.TransactionID = "tx-new"
-	_, err = store.CompareAndSave(txCtx, entity, "tx-original")
+	_, err = store.CompareAndSave(txCtx, entity, originalTxID)
 	if err != nil {
 		t.Fatalf("CAS in tx failed: %v", err)
 	}

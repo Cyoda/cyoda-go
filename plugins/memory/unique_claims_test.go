@@ -426,12 +426,7 @@ func TestUniqueClaims_CompareAndSaveInTxRecordsClaims(t *testing.T) {
 	// CompareAndSave never creates, so the entity is seeded first, with a
 	// different value: the claim on a@x.com asserted below can only have come
 	// from the compare-and-save.
-	const seedTxID = "tx-seed"
-	seed := ucEntity("e1", "seed@x.com")
-	seed.Meta.TransactionID = seedTxID
-	if _, err := store.Save(baseCtx, seed); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	seedTxID := saveCommitted(t, tm, store, baseCtx, ucEntity("e1", "seed@x.com"))
 
 	txID, txCtx, err := tm.Begin(baseCtx)
 	if err != nil {

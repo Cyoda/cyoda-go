@@ -108,30 +108,19 @@ func copyEntity(e *spi.Entity) *spi.Entity {
 	return cp
 }
 
-// deriveChangeType computes the ChangeType to record for a save the same way
-// plugins/sqlite and plugins/postgres do: DERIVED from whether the entity ID
-// already has a prior version in the store (row-existence), never trusted
-// verbatim from the caller. hasPriorVersion mirrors sqlite/postgres's isNew
-// check exactly — it is true whenever entityID has ANY prior version, live
-// or soft-deleted (a fresh save's tombstone-recreate case is "UPDATED", not
-// "CREATED" — an already-existing entities row, same as sqlite/postgres,
-// which never delete the row, only flag it deleted).
-//
-// A caller-supplied ChangeType is trusted only when hasPriorVersion is true
-// and the value is neither "" nor "CREATED" — e.g. an explicit "DELETED"
-// stamped by the delete path. This is the one case where the caller, not
-// row-existence, is authoritative. Any other case (including a save that
-// fetched a stale "CREATED" from an entity read earlier, e.g. a
-// scheduled-transition fire re-saving an already-existing entity) is
-// overridden — that staleness is exactly the bug this derivation fixes.
-func deriveChangeType(callerChangeType string, hasPriorVersion bool) string {
+// deriveChangeType returns the change type of a saved version: CREATED for the
+// entity's first version, UPDATED otherwise. It is derived from the store's
+// own history, never taken from the caller — the change type is the store's,
+// like the rest of the entity's metadata, and the engine builds an entity with
+// a value read before its transaction began. hasPriorVersion is true whenever
+// the entity has any earlier version, live or a tombstone, so a re-create after
+// a committed delete is UPDATED, as on sqlite and postgres. A delete records
+// DELETED on its own path.
+func deriveChangeType(hasPriorVersion bool) string {
 	if !hasPriorVersion {
 		return "CREATED"
 	}
-	if callerChangeType == "" || callerChangeType == "CREATED" {
-		return "UPDATED"
-	}
-	return callerChangeType
+	return "UPDATED"
 }
 
 // getSnapshotVersion walks the version history for entityID and returns the
@@ -292,12 +281,11 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 // CompareAndSave writes entity only if its stored transaction ID is still
 // expectedTxID. expectedTxID must not be empty: it is compared literally, and
 // the empty string is the transaction ID a missing or deleted entity reports
-// — but also the one a write taken outside a transaction stores verbatim when
-// the caller supplied none, so an empty expected ID cannot tell "no entity"
-// from "an entity written outside a transaction" and would overwrite the
-// latter. It is rejected as a caller error, before any read or write.
-// CompareAndSave therefore never creates an entity and never resurrects a
-// deleted one; Save does that.
+// — but also the one a write taken outside a transaction stores, so an empty
+// expected ID cannot tell "no entity" from "an entity written outside a
+// transaction" and would overwrite the latter. It is rejected as a caller
+// error, before any read or write. CompareAndSave therefore never creates an
+// entity and never resurrects a deleted one; Save does that.
 func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	if expectedTxID == "" {
 		return 0, fmt.Errorf("CompareAndSave: expectedTxID must not be empty")
@@ -387,9 +375,9 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // against: the latest committed version's, or "" when there is no entity —
 // never written, or deleted. A deleted entity is no entity, exactly as Get
 // reports it, so its tombstone does not expose the superseded version's ID.
-// "" is also what an entity written outside a transaction with no supplied ID
-// stores; the two are indistinguishable here, which is why CompareAndSave
-// rejects an empty expectedTxID rather than letting it match either.
+// "" is also what an entity written outside a transaction stores; the two
+// are indistinguishable here, which is why CompareAndSave rejects an empty
+// expectedTxID rather than letting it match either.
 // The caller must hold factory.entityMu (read or write).
 func currentTxIDLocked(versions []entityVersion) string {
 	if len(versions) == 0 {
@@ -445,7 +433,7 @@ func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 	// a new transaction's SnapshotTime to it, so a raw-clock stamp could land
 	// at or below a snapshot already open.
 	now := s.factory.txManager.nextSubmitTime()
-	changeType := deriveChangeType(entity.Meta.ChangeType, len(versions) > 0)
+	changeType := deriveChangeType(len(versions) > 0)
 
 	// versions[0] is not guaranteed to carry a live entity — see
 	// firstNonTombstone's doc comment (a same-tx create+delete commits a
@@ -465,6 +453,9 @@ func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 		creationDate = e.Meta.CreationDate
 	}
 
+	// No TransactionID: a write outside a transaction is its own transaction
+	// and records none (see spi.EntityStore.CompareAndSave), whatever the
+	// caller left on the entity.
 	saved := &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID:                      eid,
@@ -474,7 +465,6 @@ func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 			Version:                 nextVersion,
 			CreationDate:            creationDate,
 			LastModifiedDate:        now,
-			TransactionID:           entity.Meta.TransactionID,
 			ChangeType:              changeType,
 			ChangeUser:              entity.Meta.ChangeUser,
 			ChangeUserKind:          entity.Meta.ChangeUserKind,
@@ -489,14 +479,13 @@ func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 	s.factory.entityData[tid][eid] = append(versions, entityVersion{
 		entity:         saved,
 		version:        nextVersion,
-		transactionID:  entity.Meta.TransactionID,
+		transactionID:  "",
 		submitTime:     now,
 		changeType:     changeType,
 		user:           entity.Meta.ChangeUser,
 		changeUserKind: entity.Meta.ChangeUserKind,
 		executor:       entity.Meta.ChangeExecutor,
 	})
-	s.factory.recordTxIndex(tid, eid, entity.Meta.TransactionID, nextVersion)
 
 	// Apply unique-key claims: release old (handles update-moves-key) then insert new.
 	s.factory.releaseClaims(string(tid), eid)

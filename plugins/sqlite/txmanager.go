@@ -985,14 +985,13 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 		// entity's last write, which is the only row this commit records.
 		nextVersion := baseVersion + 1
 
-		// DERIVE ChangeType from row-existence, like the non-tx save path
-		// (see deriveChangeType) — never trust it verbatim from the staged
-		// entity, which may carry a stale value fetched before this
-		// transaction began.
+		// The change type is derived from row existence, as on the non-tx
+		// save path (see deriveChangeType), never taken from the staged
+		// entity.
 		entity.Meta.Version = nextVersion
 		entity.Meta.LastModifiedDate = submitTime
 		entity.Meta.TransactionID = tx.ID
-		entity.Meta.ChangeType = deriveChangeType(entity.Meta.ChangeType, isNew)
+		entity.Meta.ChangeType = deriveChangeType(isNew)
 		entity.Meta.TenantID = tx.TenantID
 		if isNew {
 			entity.Meta.CreationDate = submitTime

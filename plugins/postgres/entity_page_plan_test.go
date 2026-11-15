@@ -114,14 +114,14 @@ func TestGetPage_NonTx_UsesModelEntityIDIndex(t *testing.T) {
 	}
 }
 
-// TestGetVersionByTransaction_StaysWithinEntityVersionsPK is query-shape
-// evidence that GetVersionByTransaction's lookup scopes to the target
-// entity's own version range via entity_versions' PRIMARY KEY (tenant_id,
-// entity_id, version), rather than scanning the whole table.
+// TestGetVersionByTransaction_UsesTransactionIndex is query-shape evidence
+// that GetVersionByTransaction's lookup is a point lookup through
+// idx_ev_transaction (tenant_id, transaction_id, entity_id, version), rather
+// than a scan of the entity's history or of the whole table.
 //
 // Like the test above, it EXPLAINs the production constant
 // (postgres.GetVersionByTransactionQueryForTest) rather than a re-typed copy.
-func TestGetVersionByTransaction_StaysWithinEntityVersionsPK(t *testing.T) {
+func TestGetVersionByTransaction_UsesTransactionIndex(t *testing.T) {
 	factory := setupEntityTest(t)
 	tenant := spi.TenantID("plan-tenant-gvbt")
 	mref := spi.ModelRef{EntityName: "PlanOrder", ModelVersion: "1"}
@@ -148,8 +148,8 @@ func TestGetVersionByTransaction_StaysWithinEntityVersionsPK(t *testing.T) {
 	plan := explainPlan(t, ctx, conn, postgres.GetVersionByTransactionQueryForTest,
 		string(tenant), idForPlanTest(0), "tx-does-not-matter")
 
-	if !strings.Contains(plan, "entity_versions_pkey") {
-		t.Errorf("GetVersionByTransaction query must use entity_versions' PRIMARY KEY index, got plan:\n%s", plan)
+	if !strings.Contains(plan, "idx_ev_transaction") {
+		t.Errorf("GetVersionByTransaction query must use idx_ev_transaction, got plan:\n%s", plan)
 	}
 	if strings.Contains(plan, "Seq Scan on entity_versions") {
 		t.Errorf("GetVersionByTransaction query must not full-scan entity_versions, got plan:\n%s", plan)

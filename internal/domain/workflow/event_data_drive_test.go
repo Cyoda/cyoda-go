@@ -170,7 +170,7 @@ func recordEngineEvents(t *testing.T) (spi.StoreFactory, context.Context, []stri
 	unstampedRef := spi.ModelRef{EntityName: "run-" + unstampedID, ModelVersion: "1.0"}
 	saveWorkflow(t, env.factory, ctx, unstampedRef, []spi.WorkflowDefinition{oneHopWF("CLOSED", nil, nil)})
 	lockTestModel(t, env.factory, ctx, unstampedRef)
-	seedFireEntity(t, env.factory, ctx, unstampedID, unstampedRef, "OPEN", "", map[string]any{})
+	seedFireEntity(t, env.factory, ctx, unstampedID, unstampedRef, "OPEN", false, map[string]any{})
 	unstamped := armTask(t, env.factory, ctx, spi.ScheduledTask{
 		ID: taskID(testTenant, unstampedID, "OPEN", "AutoClose"), TenantID: testTenant,
 		Type: spi.ScheduledTaskFireTransition, ScheduledTime: env.nowMs(), EntityID: unstampedID,

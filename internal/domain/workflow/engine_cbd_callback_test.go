@@ -80,7 +80,7 @@ func newCallbackEnv(t *testing.T, procs []spi.ProcessorDefinition, dispatch func
 // engine's entity, the engine's result and error.
 func (env *cbdCallbackEnv) transition(t *testing.T, id string) (string, *spi.Entity, *EngineResult, error) {
 	t.Helper()
-	seedFireEntity(t, env.factory, env.ctx, id, env.model, "S_pre", "seed-tx", map[string]any{"x": 0})
+	seedFireEntity(t, env.factory, env.ctx, id, env.model, "S_pre", true, map[string]any{"x": 0})
 	txID, txCtx, err := env.txMgr.Begin(env.ctx)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)

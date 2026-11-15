@@ -38,7 +38,7 @@ func TestHeartbeat_UnconditionalScheduledCycleFiresRepeatedly(t *testing.T) {
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 	lockTestModel(t, factory, ctx, modelRef)
-	seedFireEntity(t, factory, ctx, "hb-e1", modelRef, "S1", "seed-tx-1", map[string]any{})
+	seedFireEntity(t, factory, ctx, "hb-e1", modelRef, "S1", true, map[string]any{})
 
 	// The entity starts armed in S1 — seedFireEntity bypasses the engine's
 	// own arm-on-entry, so the initial hop's task is armed by hand exactly

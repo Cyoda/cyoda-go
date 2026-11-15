@@ -992,13 +992,10 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			// row the commit records.
 			nextVersion := baseVersion + 1
 
-			// DERIVE ChangeType from row-existence, like the non-tx save
-			// path (see deriveChangeType) — never trust it verbatim from
-			// the staged entity, which may carry a stale value fetched
-			// before this transaction began (e.g. a scheduled-transition
-			// fire re-saving an already-existing entity read with its
-			// original "CREATED" Meta still attached).
-			changeType := deriveChangeType(entity.Meta.ChangeType, hasPrior)
+			// The change type is derived from the entity's history, as on
+			// the non-tx save path (see deriveChangeType), never taken from
+			// the staged entity.
+			changeType := deriveChangeType(hasPrior)
 
 			saved := copyEntity(entity)
 			saved.Meta.Version = nextVersion
