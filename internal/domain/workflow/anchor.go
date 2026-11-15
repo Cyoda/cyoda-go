@@ -42,8 +42,8 @@ func (v anchorView) writtenBy(txID string) bool { return v.found && v.txID == tx
 var ErrAnchorSaveInfra = errors.New("saving the entity before a callout failed")
 
 // saveAnchorBeforeCallout makes the transaction hold the in-memory anchor
-// (spec §2.2) and sets entity.Meta.TransactionID to the stored anchor's id
-// (spec §2.5). No-op unless txID != "" and a transaction is in ctx: with an id
+// as it is before the callout and sets entity.Meta.TransactionID to the stored
+// anchor's id. No-op unless txID != "" and a transaction is in ctx: with an id
 // and no transaction a save would be a write of its own, and a dispatch with no
 // id sends no token.
 //

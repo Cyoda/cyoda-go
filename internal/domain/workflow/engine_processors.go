@@ -521,7 +521,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		// logged text stays one line.
 		return nil, "", true, fmt.Errorf("%w: %w", ErrPostSegmentConflict, saveErr)
 	}
-	// The anchor is stored as TX_post wrote it (spec §2.5).
+	// The anchor is stored as TX_post wrote it.
 	entity.Meta.TransactionID = newTxID
 
 	segHandedOff = true
@@ -627,7 +627,7 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 		return err
 	}
 	// The anchor is stored as txID committed it: the id TX_post reads, and
-	// the one a dispatch without a transaction finds (spec §2.5).
+	// the one a dispatch without a transaction finds.
 	entity.Meta.TransactionID = txID
 	if partial {
 		g.partialCommitted.Store(true)

@@ -1054,8 +1054,8 @@ type EntityAuditEventsResponseDto struct {
 // EntityChangeMeta One entry in an entity's change history. `user` is the attributed
 // actor and is always present. `attributedKind` and `executedBy` are
 // present only when attribution was recorded for the change; absent on
-// legacy rows. Typed-but-open: known fields are enumerated, the object
-// is not sealed.
+// legacy rows. A DELETE entry carries no `transactionId`. Typed-but-open:
+// known fields are enumerated, the object is not sealed.
 type EntityChangeMeta struct {
 	// AttributedKind Kind of the attributed `user` above (e.g. "user", "service", "system"). Absent on legacy rows.
 	AttributedKind *string                    `json:"attributedKind,omitempty"`

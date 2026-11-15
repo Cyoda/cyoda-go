@@ -164,8 +164,8 @@ func (f *critFunction) eval(e *Engine, cc *criterionContext, entity *spi.Entity,
 // dispatchCriterionFunction makes one criterion callout with the function
 // condition's own JSON.
 func (e *Engine) dispatchCriterionFunction(cc *criterionContext, entity *spi.Entity, raw json.RawMessage) (bool, string, error) {
-	// The transaction holds the anchor as it is before the callout (spec
-	// §2.2), in the chain's scope, before Pause releases the gate. A read
+	// The transaction holds the anchor as it is before the callout,
+	// in the chain's scope, before Pause releases the gate. A read
 	// passes no transaction id and saves nothing.
 	if err := e.saveAnchorBeforeCallout(cc.ctx, entity, cc.txID); err != nil {
 		return false, "", err
