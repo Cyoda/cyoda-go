@@ -2763,7 +2763,8 @@ func engineConflictIsTransactionConflict(err error) bool {
 		errors.Is(err, wfengine.ErrProcessorOutputInfra) ||
 		errors.Is(err, txcoord.ErrScopeInfra) ||
 		errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) ||
-		errors.Is(err, wfengine.ErrCriterionTypingInfra)
+		errors.Is(err, wfengine.ErrCriterionTypingInfra) ||
+		errors.Is(err, wfengine.ErrAnchorSaveInfra)
 }
 
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
@@ -2787,6 +2788,9 @@ func engineConflictIsTransactionConflict(err error) bool {
 //     so internal pgx text never leaks to clients via 4xx WORKFLOW_FAILED.
 //   - ErrCriterionTypingInfra (the model store a criterion needs for
 //     type-directed comparison is unavailable) → sanitized 5xx, same reason.
+//   - ErrAnchorSaveInfra (the read or save that makes the transaction hold
+//     the entity before a callout carrying the transaction token failed) →
+//     sanitized 5xx, same reason; a conflict there is a retryable 409.
 //   - ErrScheduledTaskInfra (the scheduled-task store the settle-time
 //     arm/cancel pass writes through failed) → sanitized 5xx, same reason.
 //     Every save of an entity on a scheduled workflow re-arms, so this store
@@ -2846,6 +2850,9 @@ func classifyWorkflowError(err error) *common.AppError {
 	}
 	if errors.Is(err, wfengine.ErrCriterionTypingInfra) {
 		return common.Internal("criterion typing failed", err)
+	}
+	if errors.Is(err, wfengine.ErrAnchorSaveInfra) {
+		return common.Internal("saving the entity before a callout failed", err)
 	}
 	if errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) {
 		return common.Internal("workflow segment boundary failed", err)

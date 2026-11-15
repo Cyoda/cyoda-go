@@ -559,6 +559,7 @@ func TestEngineConflictIsTransactionConflict(t *testing.T) {
 		txcoord.ErrScopeInfra,
 		wfengine.ErrCommitBeforeDispatchInfra,
 		wfengine.ErrCriterionTypingInfra,
+		wfengine.ErrAnchorSaveInfra,
 	}
 	for _, sentinel := range marked {
 		err := fmt.Errorf("processor p failed: %w", errors.Join(sentinel, spi.ErrConflict))
