@@ -58,6 +58,17 @@ transaction writes or locks a `models` row. This spec reuses
 `spi.ErrModelNotLocked` for the commit-time check (§4.1) and widens its SPI
 doc comment, which names only `ExtendSchema` today.
 
+### A callout never writes the entity it runs for
+
+A processor, a function criterion and a schedule function never write or
+delete the entity the workflow runs for (the anchor), with or without the
+transaction token. A processor changes its anchor only through the data it
+returns. Writing other entities through the token stays supported. This is
+the contract of workflow processing; the engine does not detect or guard
+against a breach (a guard would add work to every callout to enforce a rule
+implementers obey). Everything in this spec assumes it, and the engine keeps
+no machinery whose only purpose is to adopt or survive such a write.
+
 ### Non-goals
 
 - The cassandra plugin (out of tree). An issue is filed in
@@ -118,20 +129,10 @@ Not covered, because they need no save:
 Before each dispatch of §2.1 the engine reads the anchor inside the transaction
 (`readAnchor`) and compares it with its in-memory anchor: the `Data` bytes and
 `Meta.State`. If either differs it saves the in-memory anchor; otherwise it
-saves nothing. If the read finds no anchor, it saves only on a create that has
-not yet stored the anchor. On any other path "not found" means a callback
-deleted the anchor in this transaction; the engine saves nothing, so the
-callout and its callbacks see the delete, and the outcome of that delete is
-left to the code that already handles it (a scheduled fire's "deleted in this
-transaction" outcome, `fire_scheduled.go` ~:333-341; a client door's final
-save).
+saves nothing. If the read finds no anchor, the anchor is a create's that is
+not stored yet, and the engine saves it.
 
-- The comparison is against a fresh read, never against a record the engine
-  keeps of what it last saved. Such a record goes stale whenever a callback
-  writes the anchor during a dispatch the engine does not read back after (a
-  processor that returned data, an `ASYNC_NEW_TX` processor, a function
-  criterion, a schedule function, a callback that runs a nested transition on
-  the anchor).
+- The comparison is against a fresh read of the stored anchor.
 - A false "differs" only costs a redundant save, which one version per
   transaction (§3) makes invisible in history. postgres returns re-encoded
   bytes (JSONB, `_meta` merged into `doc`) for the transaction's own pending
@@ -183,22 +184,12 @@ save).
   WORKFLOW_FAILED` carrying driver text. Unique-key errors cannot arise from
   this save (§4).
 
-### 2.4 Detecting a callback's write
+### 2.4 No callback write of the anchor is adopted
 
-`adoptCallbackWrite` (`anchor.go`) keeps a callback's write to the anchor when a
-`SYNC`/`ASYNC_SAME_TX` processor returned no data. The only other adopter,
-`COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch: true`
-(`engine_processors.go` ~:526), adopts against an empty "before" view, because
-TX_post has written nothing before its dispatch; it gets no pre-dispatch save
-(§2.1) and is unchanged. No other dispatch adopts a callback's write, before or
-after this work. Both
-sides of the comparison stay **store reads**: the "before" read
-(`readAnchor`, `engine_processors.go` ~:241) now runs after the pre-dispatch
-save, and the "after" read after the dispatch, as today. Comparing a store read
-with the engine's own bytes is not allowed: postgres (JSONB, `_meta` merged
-into `doc`) and sqlite (`jsonb(?)`) return different bytes from the ones saved.
-The rule (`adoptCallbackWrite`) is unchanged. A write that leaves the payload byte-identical cannot be told from no
-write, as today.
+A callback never writes the anchor (§1), so the engine adopts none:
+`adoptCallbackWrite`, the reads around a dispatch that served it, and the
+`COMMIT_BEFORE_DISPATCH` TX_post adoption are deleted. A processor's changes
+reach the anchor only through its returned data.
 
 ### 2.5 What a callback sees
 
@@ -210,20 +201,10 @@ write, as today.
   read of the anchor under the token returns at dispatch.** After the §2.2 step
   the engine sets `entity.Meta.TransactionID` to the transaction id of the
   stored anchor: the transaction's own id after a save (the id the store stamps; equal to the dispatch's id on every write path), the id the read
-  returned otherwise. When the read finds no anchor (a callback deleted it in
-  this transaction, §2.2), nothing is saved and `entity.Meta.TransactionID` is
-  left as it is: a callback read under the token gets `404`, so there is no
-  stored id for a callback to match. The same assignment follows every other engine write of
+  returned otherwise. The same assignment follows every other engine write of
   the anchor: the `COMMIT_BEFORE_DISPATCH` TX_pre flush
   (`flushAndCommitSegment`, `engine_processors.go` ~:594) and the post-dispatch
-  apply `CompareAndSave` (~:533). Nothing assigns it today: the payload takes
-  `entity.Meta.TransactionID` (`internal/grpc/dispatch.go` ~:134), stores copy
-  the entity and write nothing back, and the update path sets it to the
-  current transaction id up front (`service.go` ~:2266) while the stored anchor
-  still carries the previous commit's id, so a callback's `If-Match` with the
-  payload's id fails `412` today; a scheduled fire sends the committed id
-  (`fire_scheduled.go` ~:273). After this work a callback `If-Match` with the
-  payload's id matches on every path, `COMMIT_BEFORE_DISPATCH` with
+  apply `CompareAndSave` (~:533), with `COMMIT_BEFORE_DISPATCH` and
   `startNewTxOnDispatch: true` included (the payload carries the id TX_post
   reads). The builder audits every engine reader of `entity.Meta.TransactionID`
   for a dependency on the old value.
@@ -246,17 +227,13 @@ because §2.1's save before a schedule function serves no one while it stands.
 The fire's end becomes, in order:
 
 1. the cascade (unchanged);
-2. the anchor read and the "deleted in this transaction" outcome (~:333-341),
-   unchanged and still before any schedule function;
+2. the anchor read (~:333), still before any schedule function;
 3. `removeOwnLife`, then `reconcileScheduledTasks` (its schedule functions save
    the anchor first, §2.1, and their callbacks are admitted);
 4. `Seal`;
 5. a second anchor read, which decides `writtenHere`. A fire whose target state
    arms a function schedule has now written the anchor in this transaction, so
-   the final `CompareAndSave` names this transaction's id. If this read finds no
-   anchor, a schedule function's callback deleted the entity the fire has just
-   re-armed: the run fails and rolls back (fail closed), a failed run as in
-   §4.3;
+   the final `CompareAndSave` names this transaction's id;
 6. the final `CompareAndSave` and the commit (unchanged).
 
 
@@ -799,13 +776,11 @@ builder migrates them (§8).
 | An entity write and an unlock or delete of its model, at the same time | both can succeed: an entity in an unlocked or deleted model | one wins: the write's commit is refused `409 MODEL_NOT_LOCKED` (postgres: or a retryable `409 CONFLICT`), or the unlock is refused `409 MODEL_HAS_ENTITIES` (§4.5); a delete needs an unlocked model, which has no entities |
 | A unique-key change or model import and a lock of the same model, at the same time | both can succeed: the import or key change writes `UNLOCKED` and new keys over a locked model that may already have entities | one wins: the key change or import is refused `409 MODEL_ALREADY_LOCKED` (§4.5) |
 | A schema extension or a change-level change of a model, and entity writes of that model (postgres) | unchanged | unchanged: the commit's model check takes the lifecycle row, which neither touches (§4.2) |
-| A callback's `If-Match` with the payload's `meta.transactionId` on the anchor | update path: `412`; scheduled fire: matches | matches on every path (§2.5) |
 | A scheduled fire that declines or is cancelled after running a function criterion | no entity version | unchanged: no entity version (§2.2) |
 | Reading an entity's available transitions under a transaction token (function criteria run) | no write | unchanged: no write (§2.1) |
-| A processor writes its own anchor **without** the token (a standalone transaction) | the cascade fails `409` (memory/sqlite at commit; postgres at its final save) | memory/sqlite: unchanged. postgres: the stray write waits on the anchor's row lock, which the cascade holds from its first pre-callout save; the callout times out (its callout failure, e.g. `503 DISPATCH_TIMEOUT`), the cascade rolls back, then the stray write commits. Fails closed on all backends. Documented as: a processor writes the entity it runs for only with the token. |
 | Two workflows whose callbacks each write the other's anchor during their callouts (postgres) | each cascade fails `409` at its final save | each callback write waits on the row lock the other cascade's pre-callout save holds; PostgreSQL's deadlock detection (`40P01`) fails one with a retryable `409 CONFLICT`, and the other then proceeds. Fails closed. |
 | Another client writes the anchor during a callout (postgres) | client commits; cascade fails `409` | client waits until the cascade ends; one side wins, the other gets `409`. A wait longer than the statement timeout (`CYODA_POSTGRES_STATEMENT_TIMEOUT`, default 5 min) cancels the client's statement. Consistent outcome, not a precise interleave. |
-| Another transaction that read the anchor commits during a callout (postgres) | commits | waits at commit (read-set validation takes `FOR SHARE`, `plugins/postgres/commit_validator.go` ~:44) until the cascade ends, then validates as today. A processor's own tokenless transaction that read its anchor therefore waits on its own callout, which times out, as for the stray write above. Documented with the stray write. |
+| Another transaction that read the anchor commits during a callout (postgres) | commits | waits at commit (read-set validation takes `FOR SHARE`, `plugins/postgres/commit_validator.go` ~:44) until the cascade ends, then validates as today. A processor's own tokenless transaction that read its anchor therefore waits on its own callout until the callout times out. Documented in `cyoda help workflows`. |
 
 No new error codes. No new status codes on any endpoint.
 
@@ -842,10 +817,8 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | Workflow-selection criterion on create reads anchor → found, empty state | engine unit | yes | — | — |
 | ASYNC_NEW_TX processor reads anchor → current; failure keeps the pre-dispatch save | engine unit | yes | — | — |
 | Schedule function reads anchor → current, on a client door and in a scheduled fire (the fire is `410` today, §2.6) | engine unit | yes | — | — |
-| Scheduled fire: a schedule function's callback deletes the anchor → run fails, nothing committed (§2.6) | engine unit | — | — | — |
 | Callback search under token finds anchor by its current data | — | yes | yes | yes |
 | Callback count and page under token count/list the anchor by its current data | — | yes | yes | yes |
-| Callback write adopted when processor returns no data (rule §2.4) | engine unit (`engine_cbd_callback_test`, `fire_callback_test` updated) | existing | — | — |
 | One version per transaction: each §3.1 row | spitest + per-plugin unit | — | yes (history via `/changes`) | — |
 | Savepoint rollback restores pending version | spitest | — | — | — |
 | `?transactionId` → final entity after commit | — | yes | yes | n/a (no gRPC by-tx read) |
@@ -854,7 +827,6 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | Joined callback body with a partial key → 422 at the callback, owner marked | — | existing (#704) | — | existing |
 | Joined callback's processor returns data with a partial key → callback 2xx, owner commit 422 | — | yes | — | — |
 | postgres: another client writes the anchor during a callout → waits; one winner, loser `409` | — | yes (isolated, not parity) | — | — |
-| postgres: a processor's tokenless write of its own anchor → callout times out, cascade rolls back, stray write then commits | — | yes (isolated, not parity) | — | — |
 | postgres: another transaction that read the anchor commits during a callout → waits, then validates | — | yes (isolated, not parity) | — | — |
 | Unique key: intermediate duplicate then fixed → commits | plugin unit | yes | yes | — |
 | Unique key: final duplicate → 409 at commit; partial → 422 | plugin unit | existing (`unique_keys_*`) | existing | existing |
@@ -865,10 +837,8 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | Unique key: two entities swap values; chain of moves; same value twice in one tx (refused) | plugin unit | yes | yes | — |
 | Joined callback writes a duplicate key → callback 2xx, owner commit 409 | — | yes | — | yes (joined write over gRPC `tx-token`) |
 | Two commits claim each other's values → postgres `409 CONFLICT` (40P01) | — | waived: the deadlock needs a precise interleave of two commits; the classification of 40P01 is covered by the existing postgres classifier tests | — | — |
-| `COMMIT_BEFORE_DISPATCH` (`startNewTxOnDispatch: true`) callback reads anchor and writes it with `If-Match` = payload id → matches | engine unit | yes | — | — |
 | Scheduled fire declines / is cancelled after a function criterion → no entity version, client `If-Match` still valid | engine unit | yes | — | — |
 | Available-transitions read under a token runs a function criterion → no write | engine unit | yes | — | — |
-| Callback `If-Match` with payload `meta.transactionId` on the anchor → matches (update path and scheduled fire) | engine unit | yes | — | — |
 | Scheduled fire breaks a key → task outcome per §4.3 | scheduler/engine unit | yes | — | — |
 | Keys come from the stored model: a transactional and a non-transactional save with no keys anywhere on the call path enforce the model's keys | spitest + per-plugin unit | — | existing `unique_keys` parity (unchanged results) | — |
 | Commit of an entity whose model is no longer `LOCKED`, or does not exist → `ErrModelNotLocked`, nothing committed | spitest + per-plugin unit | yes (postgres, isolated): a test processor unlocks the model without the token during the create's callout (count is 0: the entity is uncommitted; the transaction's snapshot was taken at `Begin`, `transaction_manager.go` ~:181, before the unlock); answer `409 CONFLICT`, its retry `409 MODEL_NOT_LOCKED`; single create and collection create; and an update whose `SYNC` processor's joined callback creates an entity of a second model that the test processor then unlocks (answer `409`, nothing committed, the second model `UNLOCKED` with zero entities). Collection update and transition: waived, every door answers through the same `classifyCommitErr` (`service.go` ~:772), and the mapping is a `common.Internal` unit test. memory/sqlite give `MODEL_NOT_LOCKED` in their plugin tests. | yes: single create with the unlocking processor; every backend answers `409`, and on postgres its retry until not `CONFLICT` answers `MODEL_NOT_LOCKED` (the code memory and sqlite give at once); no entity stored | gRPC single create and collection create: envelope `Error.Code` |
@@ -929,8 +899,14 @@ showing the old outcome) on the unfixed code, or it is dropped.
   entity returns" (callback reads see the current anchor; on create, the anchor
   is found; during workflow selection it has no state yet) and the sentence "A
   processor that writes the entity bases the write on the payload in its
-  request, not on a callback read". State that a processor writes its own
-  anchor only with the transaction token.
+  request, not on a callback read". Rewrite "A processor changes the entity it
+  runs for in one way only" as the rule of §1: a processor, a function
+  criterion and a schedule function never write or delete the entity they run
+  for, with or without the token; a processor changes it only through its
+  returned data. Drop the "write it yourself and return no mutations" option,
+  the startNewTxOnDispatch sentence "the cascade-anchor included", and the
+  scheduled-run sentence about a callback that writes the entity being fired.
+  `docs/CONSISTENCY.md` rule 9 and `docs/PROCESSOR_EXECUTION_MODES.md` likewise.
 - `api/openapi.yaml` `components.parameters.TxToken`: replace the "saved only
   when its chain of transitions has run" sentences; `transactionId` query
   parameter: committed only, the transaction's single version. Then
