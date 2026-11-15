@@ -564,6 +564,8 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		// logged text stays one line.
 		return nil, "", true, fmt.Errorf("%w: %w", ErrPostSegmentConflict, saveErr)
 	}
+	// The anchor is stored as TX_post wrote it (spec §2.5).
+	entity.Meta.TransactionID = newTxID
 
 	segHandedOff = true
 	return newCtx, newTxID, true, nil
@@ -571,7 +573,8 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 
 // flushAndCommitSegment is the shared primitive for the COMMIT_BEFORE_DISPATCH
 // segment boundary's "flush + commit TX_pre" half. It saves the in-memory
-// entity in txID and commits txID. It returns nil exactly when txID committed.
+// entity in txID, commits txID and stamps the entity with txID, the id the
+// stored anchor carries. It returns nil exactly when txID committed.
 // The caller begins TX_post afterward: before the dispatch with
 // startNewTxOnDispatch (beginNextSegment), after it without.
 //
@@ -666,6 +669,9 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	}); err != nil {
 		return err
 	}
+	// The anchor is stored as txID committed it: the id TX_post reads, and
+	// the one a dispatch without a transaction finds (spec §2.5).
+	entity.Meta.TransactionID = txID
 	if partial {
 		g.partialCommitted.Store(true)
 	}

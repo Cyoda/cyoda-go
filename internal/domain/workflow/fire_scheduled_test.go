@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -1558,5 +1559,147 @@ func TestFireScheduled_UnstampedEntity_Cancelled(t *testing.T) {
 	}
 	if n := tracker.openCount(); n != 0 {
 		t.Errorf("open transactions = %d, want 0", n)
+	}
+}
+
+// A scheduled fire whose function criterion declines writes no version: the
+// attribution stamp is metadata only, so the save before the criterion
+// callout finds nothing to save. A client's If-Match with the id the entity
+// carried before the fire still holds.
+func TestFireScheduled_DeclineAfterCriterion_NoVersion_IfMatchStillValid(t *testing.T) {
+	calls := 0
+	probe := &calloutProbe{criterion: func(context.Context, *spi.Entity, string, string, string) (bool, string, error) {
+		calls++
+		return false, "not yet", nil
+	}}
+	env := newRunEnv(t, probe)
+	wf := oneHopWF("DONE", nil, nil)
+	open := wf.States["OPEN"]
+	open.Transitions[0].Criterion = fnCriterion("ready")
+	wf.States["OPEN"] = open
+	claimed := env.claimed(t, "decl-fn-1", wf)
+
+	es, err := env.factory.EntityStore(env.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	before, err := es.Get(env.ctx, "decl-fn-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	versionsBefore := len(chronologicalVersionMetas(t, es, env.ctx, "decl-fn-1"))
+
+	r, _ := env.run(claimed)
+	if r.Outcome != OutcomeDeclined {
+		t.Fatalf("report = %+v, want declined", r)
+	}
+	if calls != 1 {
+		t.Fatalf("criterion callouts = %d, want 1", calls)
+	}
+	if n := len(chronologicalVersionMetas(t, es, env.ctx, "decl-fn-1")); n != versionsBefore {
+		t.Errorf("versions = %d, want %d: a declined fire writes none", n, versionsBefore)
+	}
+	after, err := es.Get(env.ctx, "decl-fn-1")
+	if err != nil {
+		t.Fatalf("Get after the fire: %v", err)
+	}
+	if after.Meta.TransactionID != before.Meta.TransactionID {
+		t.Errorf("transactionId = %q, want the one before the fire, %q", after.Meta.TransactionID, before.Meta.TransactionID)
+	}
+
+	txID, txCtx, err := env.txMgr.Begin(env.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	txES, err := env.factory.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	after.Data = []byte(`{"x":1}`)
+	if _, err := txES.CompareAndSave(txCtx, after, before.Meta.TransactionID); err != nil {
+		_ = env.txMgr.Rollback(env.ctx, txID)
+		t.Fatalf("If-Match with the id before the fire: %v", err)
+	}
+	if err := env.txMgr.Commit(env.ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+}
+
+// The fire's precondition and attribution are taken from the entity as first
+// read, before any callout. Workflow selection makes two function-criterion
+// callouts; the first one's callback writes the anchor in the fire's
+// transaction, so the save before the second callout stamps the anchor with
+// that transaction's id. The stored entity carried no transaction id, so the
+// fire is still refused, and the second callout already sees the arming
+// principal's attribution.
+func TestFireScheduled_PreconditionTakenBeforeCallouts(t *testing.T) {
+	var env *runEnv
+	calls := 0
+	var second *spi.Entity
+	probe := &calloutProbe{criterion: func(ctx context.Context, entity *spi.Entity, target, _, _ string) (bool, string, error) {
+		if target != "WORKFLOW" {
+			return true, "", nil
+		}
+		calls++
+		switch calls {
+		case 1:
+			if err := writeAnchor(ctx, env.factory, entity); err != nil {
+				return false, "", err
+			}
+		case 2:
+			read, err := readUnderToken(ctx, env.factory, entity.Meta.ID)
+			if err != nil {
+				return false, "", err
+			}
+			second = read
+		}
+		return true, "", nil
+	}}
+	env = newRunEnv(t, probe)
+	wf := oneHopWF("DONE", nil, nil)
+	wf.Name = "PreconditionWF"
+	wf.Criterion = json.RawMessage(`{"type":"group","operator":"AND","conditions":[` +
+		string(fnCriterion("first")) + `,` + string(fnCriterion("second")) + `]}`)
+	model := spi.ModelRef{EntityName: "precondition-order", ModelVersion: "1.0"}
+	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, env.factory, env.ctx, model)
+	// Stored without a transaction id: written outside a transaction.
+	seedFireEntity(t, env.factory, env.ctx, "pre-e1", model, "OPEN", false, map[string]any{})
+	armed := spi.Principal{ID: "arm-user", Kind: spi.PrincipalUser}
+	now := env.nowMs()
+	armTask(t, env.factory, env.ctx, spi.ScheduledTask{
+		ID: taskID(testTenant, "pre-e1", "OPEN", "AutoClose"), TenantID: testTenant,
+		Type: spi.ScheduledTaskFireTransition, ScheduledTime: now, EntityID: "pre-e1",
+		ModelName: model.EntityName, ModelVersion: 1, Transition: "AutoClose", SourceState: "OPEN",
+		ArmedAt: now, ArmedBy: armed,
+	})
+	claimed := env.claimOne(t, testOwner, false)
+
+	r, _ := env.run(claimed)
+	if calls != 2 {
+		t.Fatalf("selection callouts = %d, want 2", calls)
+	}
+	if r.Outcome != OutcomeCancelled || r.Err != nil {
+		t.Fatalf("report = %+v, want a clean cancel: the stored entity carried no transaction id", r)
+	}
+	if got := env.state(t, "pre-e1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN", got)
+	}
+	if n := countAuditEvents(t, env.factory, env.ctx, "pre-e1", spi.SMEventScheduledTransitionFired); n != 0 {
+		t.Errorf("fired audit events = %d, want 0", n)
+	}
+	cancelled := onlyEvent(t, allEvents(t, env.factory, env.ctx, "pre-e1"), spi.SMEventScheduledTransitionCancelled)
+	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN", "workflowName": "PreconditionWF"}; !reflect.DeepEqual(cancelled.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL data = %v, want %v", cancelled.Data, want)
+	}
+	if second == nil {
+		t.Fatal("the second callout read nothing")
+	}
+	if second.Meta.ChangeUser != armed.ID || second.Meta.ChangeUserKind != armed.Kind {
+		t.Errorf("second callout: anchor attributed to %q (%v), want the arming principal %q (%v)",
+			second.Meta.ChangeUser, second.Meta.ChangeUserKind, armed.ID, armed.Kind)
+	}
+	if second.Meta.ChangeExecutor != common.SystemPrincipal() {
+		t.Errorf("second callout: executor = %+v, want %+v", second.Meta.ChangeExecutor, common.SystemPrincipal())
 	}
 }

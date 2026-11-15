@@ -1000,3 +1000,136 @@ func TestPreCalloutSave_ScheduledFire_TargetArmsFunctionSchedule_Fires(t *testin
 		t.Errorf("entity state = %q, want DONE", got)
 	}
 }
+
+func cbdSameCtxProc(name string) spi.ProcessorDefinition {
+	return spi.ProcessorDefinition{Type: ProcessorTypeExternalized, Name: name, ExecutionMode: ExecutionModeCommitBeforeDispatch}
+}
+
+// On the update path every processor's payload carries the transactionId a
+// callback read of the anchor returns at that dispatch: under the token when
+// the dispatch carries one, the committed anchor when it does not. A segment
+// boundary writes the anchor, so the next dispatch's id is the one that write
+// stored.
+func TestPayloadTxID_MatchesCallbackRead_UpdatePath(t *testing.T) {
+	cases := []struct {
+		name  string
+		procs []spi.ProcessorDefinition
+	}{
+		{"sync", []spi.ProcessorDefinition{syncProc("p1")}},
+		{"after a segment boundary", []spi.ProcessorDefinition{cbdSameCtxProc("c1"), cbdNewTxProc("c2"), syncProc("p3")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var env *cbdCallbackEnv
+			seen := map[string]*calloutSight{}
+			env = newCallbackEnv(t, tc.procs,
+				func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+					s := lookUnderToken(ctx, env.factory, entity)
+					seen[proc.Name] = &s
+					return nil, nil
+				})
+			_, _, entity, result, err := manualWithData(t, env, "ptx-"+tc.name, []byte(`{"x":5,"by":"request"}`))
+			if err != nil {
+				t.Fatalf("ManualTransition: %v", err)
+			}
+			for _, p := range tc.procs {
+				s := seen[p.Name]
+				if s == nil {
+					t.Fatalf("%s: no dispatch", p.Name)
+				}
+				if s.readErr != nil {
+					t.Fatalf("%s: callback read: %v", p.Name, s.readErr)
+				}
+				if s.payloadTx != s.read.Meta.TransactionID {
+					t.Errorf("%s: payload transactionId = %q, want the callback read's %q", p.Name, s.payloadTx, s.read.Meta.TransactionID)
+				}
+			}
+			stored, err := readUnderToken(result.FinalCtx, env.factory, entity.Meta.ID)
+			if err != nil {
+				t.Fatalf("read after the run: %v", err)
+			}
+			if entity.Meta.TransactionID != stored.Meta.TransactionID {
+				t.Errorf("after the run: entity transactionId = %q, want the stored anchor's %q", entity.Meta.TransactionID, stored.Meta.TransactionID)
+			}
+		})
+	}
+}
+
+// A COMMIT_BEFORE_DISPATCH processor with startNewTxOnDispatch: the payload
+// carries the id TX_post reads, which is the id of the version TX_pre
+// committed. On a scheduled fire the entity arrives with the committed id
+// of an earlier transaction; the TX_pre flush writes the anchor in the fire's
+// own transaction. A callback's If-Match with the payload's id holds. After
+// the post-dispatch apply, the engine's entity carries TX_post's id.
+func TestPayloadTxID_MatchesCallbackRead_CommitBeforeDispatch(t *testing.T) {
+	t.Run("scheduled fire", func(t *testing.T) {
+		var env *runEnv
+		var seen *calloutSight
+		var ifMatchErr error
+		probe := &calloutProbe{processor: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+			s := lookUnderToken(ctx, env.factory, entity)
+			seen = &s
+			if s.readErr != nil {
+				return nil, nil
+			}
+			es, err := env.factory.EntityStore(ctx)
+			if err != nil {
+				return nil, err
+			}
+			_, ifMatchErr = es.CompareAndSave(ctx, s.read, entity.Meta.TransactionID)
+			return nil, nil
+		}}
+		env = newRunEnv(t, probe)
+		claimed := env.claimed(t, "ptx-cbd-fire", oneHopWF("DONE", []spi.ProcessorDefinition{cbdNewTxProc("c1")}, nil))
+		r, _ := env.run(claimed)
+		if seen == nil {
+			t.Fatal("no dispatch")
+		}
+		if seen.readErr != nil {
+			t.Fatalf("callback read: %v", seen.readErr)
+		}
+		if seen.payloadTx != seen.read.Meta.TransactionID {
+			t.Errorf("payload transactionId = %q, want the id TX_post reads, %q", seen.payloadTx, seen.read.Meta.TransactionID)
+		}
+		if ifMatchErr != nil {
+			t.Errorf("callback If-Match with the payload's transactionId: %v", ifMatchErr)
+		}
+		if r.Outcome != OutcomeFired {
+			t.Fatalf("report = %+v, want fired", r)
+		}
+		if got := env.state(t, "ptx-cbd-fire"); got != "DONE" {
+			t.Errorf("entity state = %q, want DONE", got)
+		}
+	})
+
+	t.Run("two segments", func(t *testing.T) {
+		var env *cbdCallbackEnv
+		seen := map[string]*calloutSight{}
+		env = newCallbackEnv(t, []spi.ProcessorDefinition{cbdNewTxProc("c1"), cbdNewTxProc("c2")},
+			func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+				s := lookUnderToken(ctx, env.factory, entity)
+				seen[proc.Name] = &s
+				return &spi.Entity{Data: []byte(`{"x":42,"by":"engine"}`)}, nil
+			})
+		_, entity, result, err := env.transition(t, "ptx-cbd-two")
+		if err != nil {
+			t.Fatalf("ManualTransition: %v", err)
+		}
+		t.Cleanup(func() { _ = env.txMgr.Rollback(env.ctx, result.FinalTxID) })
+		for _, name := range []string{"c1", "c2"} {
+			s := seen[name]
+			if s == nil {
+				t.Fatalf("%s: no dispatch", name)
+			}
+			if s.readErr != nil {
+				t.Fatalf("%s: callback read: %v", name, s.readErr)
+			}
+			if s.payloadTx != s.read.Meta.TransactionID {
+				t.Errorf("%s: payload transactionId = %q, want the id TX_post reads, %q", name, s.payloadTx, s.read.Meta.TransactionID)
+			}
+		}
+		if entity.Meta.TransactionID != result.FinalTxID {
+			t.Errorf("after the apply: entity transactionId = %q, want TX_post's %q", entity.Meta.TransactionID, result.FinalTxID)
+		}
+	})
+}

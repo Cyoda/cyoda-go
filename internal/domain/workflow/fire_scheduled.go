@@ -233,6 +233,19 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		return OutcomeCancelled, commit(txID)
 	}
 
+	// expectedTxID is the entity's last committed transaction id as read in
+	// this transaction: the precondition of the final persist. It is taken
+	// before any callout, because the save before a callout stamps the
+	// entity with the id of the anchor the transaction then holds.
+	expectedTxID := entity.Meta.TransactionID
+	// Anchor stamp, before any callout can save the entity: attributed to
+	// the arming principal, executed by the system. Both arm sites set
+	// ArmedBy from spi.AttributionFor on the arming write's context.
+	armed := cur.ArmedBy
+	entity.Meta.ChangeUser = armed.ID
+	entity.Meta.ChangeUserKind = armed.Kind
+	entity.Meta.ChangeExecutor = common.SystemPrincipal()
+
 	// Selection is criterion-based, as on the client doors: a fire runs the
 	// definition the entity is bound to now. A resolution failure is a safe
 	// failure; it never falls through to another definition.
@@ -261,17 +274,6 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		return OutcomeCancelled, commit(txID)
 	}
 
-	// Anchor stamp, before any processor can flush the entity: attributed to
-	// the arming principal, executed by the system. Both arm sites set
-	// ArmedBy from spi.AttributionFor on the arming write's context.
-	armed := cur.ArmedBy
-	entity.Meta.ChangeUser = armed.ID
-	entity.Meta.ChangeUserKind = armed.Kind
-	entity.Meta.ChangeExecutor = common.SystemPrincipal()
-
-	// expectedTxID is the entity's last committed transaction id as read in
-	// this transaction: the precondition of the final persist.
-	expectedTxID := entity.Meta.TransactionID
 	if expectedTxID == "" {
 		// No precondition to fire under. Refused before any processor runs,
 		// because a COMMIT_BEFORE_DISPATCH segment would already have
