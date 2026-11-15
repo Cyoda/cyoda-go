@@ -119,26 +119,25 @@ func TestCommitFlushesBufferToStore(t *testing.T) {
 func TestCommitFlushesDeletes(t *testing.T) {
 	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	// Pre-populate an entity directly in the store.
 	store, _ := factory.EntityStore(ctx)
-	store.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID:         "e-del",
-			TenantID:   "tenant-A",
-			ChangeType: "CREATED",
-		},
+	if _, err := store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e-del", TenantID: "tenant-A", ModelRef: txTestModel},
 		Data: []byte(`{}`),
-	})
+	}); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
 
 	// Begin transaction and stage a delete.
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
 		t.Fatalf("Begin failed: %v", err)
 	}
-	tx := spi.GetTransaction(txCtx)
-	tx.Deletes["e-del"] = true
-	tx.WriteSet["e-del"] = true
+	if err := store.Delete(txCtx, "e-del"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
 
 	if err := tm.Commit(ctx, txID); err != nil {
 		t.Fatalf("Commit with delete failed: %v", err)

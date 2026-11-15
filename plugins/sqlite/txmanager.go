@@ -487,10 +487,10 @@ func insertDeletedBufferedTombstone(ctx context.Context, sqlTx *sql.Tx, tid, txI
 	entityMeta := buffered.Meta
 	entityMeta.Version = 1
 	entityMeta.ChangeType = "DELETED"
+	// The commit instant, as the created_at and updated_at columns below:
+	// the buffered create carried provisional dates.
 	entityMeta.LastModifiedDate = microToTime(submitMicro)
-	if entityMeta.CreationDate.IsZero() {
-		entityMeta.CreationDate = entityMeta.LastModifiedDate
-	}
+	entityMeta.CreationDate = entityMeta.LastModifiedDate
 	metaJSON, err := marshalEntityMeta(&entityMeta)
 	if err != nil {
 		return fmt.Errorf("marshal meta for deleted-buffered entity %s: %w", entityID, err)

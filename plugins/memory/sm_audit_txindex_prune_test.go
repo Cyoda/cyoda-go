@@ -33,7 +33,7 @@ func auditOpsLen(tm *TransactionManager) int {
 // entry is dead the moment that stamp has run. Left in place it accumulates
 // one reference per audited event for the life of the process, with nothing
 // that can ever read it again — every sibling map staged per transaction
-// (deletedBufferModels, scheduledTaskOps) is deleted on this
+// (deletedBufferEntities, scheduledTaskOps) is deleted on this
 // same path.
 //
 // The events themselves must survive the prune: it drops the index, not the

@@ -85,9 +85,11 @@ type savepointSnapshot struct {
 	// stageAuditEvent).
 	auditOpsLen int
 
-	// deletedBufferModels is a copy of TransactionManager.deletedBufferModels[txID]
+	// deletedBufferEntities is a copy of TransactionManager.deletedBufferEntities[txID]
 	// at the moment this savepoint was taken; RollbackToSavepoint restores it.
-	deletedBufferModels map[string]spi.ModelRef
+	// The staged entities are never mutated after staging, so the map is
+	// cloned shallowly.
+	deletedBufferEntities map[string]*spi.Entity
 }
 
 // TransactionManager implements spi.TransactionManager using Snapshot Isolation
@@ -130,9 +132,11 @@ type TransactionManager struct {
 	// at or above — see nextSubmitTime. Read and written under mu only.
 	lastSubmitTime time.Time
 
-	// deletedBufferModels records, per (txID, entityID), the model
-	// reference of a buffered create/update Delete evicted from tx.Buffer
-	// within the same open transaction. Delete removes id from tx.Buffer
+	// deletedBufferEntities records, per (txID, entityID), the pending
+	// version of a buffered create/update Delete evicted from tx.Buffer
+	// within the same open transaction: its model, and the version number,
+	// change type and creation date a later same-tx Save keeps (see
+	// EntityStore.checkModelImmutable). Delete removes id from tx.Buffer
 	// unconditionally (Buffer and Deletes are kept mutually exclusive), so
 	// when that id was never committed before this transaction, nothing
 	// else records what model it was buffered under — the tombstone
@@ -148,7 +152,7 @@ type TransactionManager struct {
 	// savepoint must not outlive RollbackToSavepoint — a create and delete
 	// that rollback undoes leave no model behind to refuse a later Save
 	// under another one.
-	deletedBufferModels map[string]map[string]spi.ModelRef // txID -> entityID -> evicted model
+	deletedBufferEntities map[string]map[string]*spi.Entity // txID -> entityID -> evicted pending version
 
 	// scheduledTaskOps holds the task-row ops staged while the transaction
 	// is open, as post-images (see scheduledTaskOp). Applied by Commit
@@ -185,19 +189,19 @@ func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *Transacti
 	floor := f.seedLastSubmitTime()
 	f.uuids = uuids
 	tm := &TransactionManager{
-		factory:             f,
-		uuids:               uuids,
-		active:              make(map[string]*spi.TransactionState),
-		committedLog:        nil,
-		committing:          make(map[string]bool),
-		submitTimes:         make(map[string]submitTimeEntry),
-		savepoints:          make(map[string][]savepointSnapshot),
-		txSnapshotSeq:       make(map[string]int64),
-		deletedBufferModels: make(map[string]map[string]spi.ModelRef),
-		scheduledTaskOps:    make(map[string][]scheduledTaskOp),
-		auditOps:            make(map[string][]stagedAuditEvent),
-		lostDiscardedWrite:  make(map[string]bool),
-		lastSubmitTime:      floor,
+		factory:               f,
+		uuids:                 uuids,
+		active:                make(map[string]*spi.TransactionState),
+		committedLog:          nil,
+		committing:            make(map[string]bool),
+		submitTimes:           make(map[string]submitTimeEntry),
+		savepoints:            make(map[string][]savepointSnapshot),
+		txSnapshotSeq:         make(map[string]int64),
+		deletedBufferEntities: make(map[string]map[string]*spi.Entity),
+		scheduledTaskOps:      make(map[string][]scheduledTaskOp),
+		auditOps:              make(map[string][]stagedAuditEvent),
+		lostDiscardedWrite:    make(map[string]bool),
+		lastSubmitTime:        floor,
 	}
 	f.txManager = tm
 	return tm
@@ -235,25 +239,26 @@ func (f *StoreFactory) seedLastSubmitTime() time.Time {
 	return latest
 }
 
-// deletedBufferModel returns the model reference stageDeletedBufferModel
+// deletedBufferEntity returns the pending version stageDeletedBufferEntity
 // recorded for entityID in txID, if any. Protected by mu.
-func (m *TransactionManager) deletedBufferModel(txID, entityID string) (spi.ModelRef, bool) {
+func (m *TransactionManager) deletedBufferEntity(txID, entityID string) (*spi.Entity, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	ref, ok := m.deletedBufferModels[txID][entityID]
-	return ref, ok
+	e, ok := m.deletedBufferEntities[txID][entityID]
+	return e, ok
 }
 
-// stageDeletedBufferModel records the model reference of a buffered
+// stageDeletedBufferEntity records the pending version of a buffered
 // create/update that Delete is about to evict from tx.Buffer — see
-// deletedBufferModels's field doc for why this is needed.
-func (m *TransactionManager) stageDeletedBufferModel(txID, entityID string, ref spi.ModelRef) {
+// deletedBufferEntities's field doc for why this is needed. The entity is
+// never mutated after staging.
+func (m *TransactionManager) stageDeletedBufferEntity(txID, entityID string, e *spi.Entity) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.deletedBufferModels[txID] == nil {
-		m.deletedBufferModels[txID] = make(map[string]spi.ModelRef)
+	if m.deletedBufferEntities[txID] == nil {
+		m.deletedBufferEntities[txID] = make(map[string]*spi.Entity)
 	}
-	m.deletedBufferModels[txID][entityID] = ref
+	m.deletedBufferEntities[txID][entityID] = e
 }
 
 // stageAuditEvent appends ev to txID's staged audit events. Protected by mu.
@@ -528,7 +533,7 @@ func (m *TransactionManager) forgetLocked(txID string) {
 	delete(m.committing, txID)
 	delete(m.savepoints, txID)
 	delete(m.txSnapshotSeq, txID)
-	delete(m.deletedBufferModels, txID)
+	delete(m.deletedBufferEntities, txID)
 	delete(m.scheduledTaskOps, txID)
 	delete(m.auditOps, txID)
 	delete(m.lostDiscardedWrite, txID)
@@ -799,7 +804,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// and audit events captured at Save/Upsert/Delete time so that the
 		// later steps can read them without re-acquiring m.mu.
 		var capturedScheduledTaskOps []scheduledTaskOp
-		var capturedDeletedBufferModels map[string]spi.ModelRef
+		var capturedDeletedBufferEntities map[string]*spi.Entity
 		var capturedAudit []stagedAuditEvent
 		if err := func() error {
 			m.mu.Lock()
@@ -840,9 +845,9 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				m.factory.discardAuditTxIndex(tid, txID)
 				return spi.ErrConflict
 			}
-			capturedScheduledTaskOps = m.scheduledTaskOps[txID]       // safe: tx.OpMu.Lock() prevents new stageTaskWrite
-			capturedDeletedBufferModels = m.deletedBufferModels[txID] // safe: tx.OpMu.Lock() prevents new stageDeletedBufferModel
-			capturedAudit = m.auditOps[txID]                          // safe: tx.OpMu.Lock() prevents new stageAuditEvent
+			capturedScheduledTaskOps = m.scheduledTaskOps[txID]           // safe: tx.OpMu.Lock() prevents new stageTaskWrite
+			capturedDeletedBufferEntities = m.deletedBufferEntities[txID] // safe: tx.OpMu.Lock() prevents new stageDeletedBufferEntity
+			capturedAudit = m.auditOps[txID]                              // safe: tx.OpMu.Lock() prevents new stageAuditEvent
 			return nil
 		}(); err != nil {
 			return err
@@ -971,21 +976,12 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			versions := m.factory.entityData[tid][entityID]
 			baseVersion := lastVersion(versions)
 			hasPrior := len(versions) > 0
-			// firstNonTombstone, NOT versions[0]: a create and a delete
-			// committed in the same transaction flush a single tombstone
-			// row whose entity is nil (see the tombstone append below, and
-			// firstNonTombstone's doc comment), so an entity whose history
-			// begins with one carries no creation date at versions[0] to
-			// bring forward. Reading it there leaves this zero and the
-			// stamp below then moves the creation date forward on every
-			// later update. entity_store.go's non-transactional path uses
-			// firstNonTombstone for exactly this reason and the two paths
-			// must agree. Pinned by spitest's
+			// The entity's creation date when it has committed history —
+			// including one that begins with the tombstone of a create and
+			// a delete committed in one transaction (see creationDateOf) —
+			// as on the non-transactional path. Pinned by spitest's
 			// Save/UpdateDoesNotRestampCreationDate.
-			var creationDate time.Time
-			if e, ok := firstNonTombstone(versions); ok {
-				creationDate = e.Meta.CreationDate
-			}
+			creationDate, _ := creationDateOf(versions)
 
 			// One version per entity per transaction: tx.Buffer holds the
 			// transaction's last write of this entity, and that is the one
@@ -1069,13 +1065,13 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			// has no prior committed version at all: a same-transaction
 			// create-then-delete, whose buffered create Delete evicted from
 			// tx.Buffer without ever separately flushing it (see
-			// deletedBufferModels's field doc) — this tombstone is then the
+			// deletedBufferEntities's field doc) — this tombstone is then the
 			// ONLY committed version, and the sole place left to recover
 			// the model from. When a prior version exists, modelRefOfLocked
 			// already finds the model there, so this field stays zero.
 			var tombstoneModel spi.ModelRef
 			if len(versions) == 0 {
-				tombstoneModel = capturedDeletedBufferModels[entityID]
+				tombstoneModel = capturedDeletedBufferEntities[entityID].Meta.ModelRef
 			}
 			m.factory.entityData[tid][entityID] = append(versions, entityVersion{
 				entity:         nil,
@@ -1325,15 +1321,15 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.savepoints[txID] = append(m.savepoints[txID], savepointSnapshot{
-		id:                  spID,
-		buffer:              bufCopy,
-		readSet:             readCopy,
-		writeSet:            writeCopy,
-		deletes:             delCopy,
-		deleteAttribution:   delAttrCopy,
-		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
-		auditOpsLen:         len(m.auditOps[txID]),
-		deletedBufferModels: maps.Clone(m.deletedBufferModels[txID]),
+		id:                    spID,
+		buffer:                bufCopy,
+		readSet:               readCopy,
+		writeSet:              writeCopy,
+		deletes:               delCopy,
+		deleteAttribution:     delAttrCopy,
+		scheduledTaskOpsLen:   len(m.scheduledTaskOps[txID]),
+		auditOpsLen:           len(m.auditOps[txID]),
+		deletedBufferEntities: maps.Clone(m.deletedBufferEntities[txID]),
 	})
 	return spID, nil
 }
@@ -1440,10 +1436,10 @@ func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 
 	// Restore the staged deleted-buffer models to the savepoint's: they are
 	// savepoint-scoped like tx.Buffer.
-	if snap.deletedBufferModels == nil {
-		delete(m.deletedBufferModels, txID)
+	if snap.deletedBufferEntities == nil {
+		delete(m.deletedBufferEntities, txID)
 	} else {
-		m.deletedBufferModels[txID] = maps.Clone(snap.deletedBufferModels)
+		m.deletedBufferEntities[txID] = maps.Clone(snap.deletedBufferEntities)
 	}
 
 	// A rollback destroys the savepoints taken after this one and keeps it.
