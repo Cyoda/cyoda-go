@@ -262,12 +262,19 @@ func modelMismatchErr(id string) error {
 
 // checkModelImmutableInTx enforces that a same-transaction Save/CompareAndSave
 // does not change entity's model reference: against the transaction's own
-// earlier buffered write for this id when one exists, and against committed
-// state otherwise. Mirrors plugins/memory's checkModelImmutable.
+// earlier buffered write for this id when one exists, then against the
+// buffered entity this transaction deleted (a create-then-delete leaves no
+// committed row to check), and against committed state otherwise. Mirrors plugins/memory's checkModelImmutable.
 func (s *entityStore) checkModelImmutableInTx(ctx context.Context, tx *spi.TransactionState, entity *spi.Entity) error {
 	id := entity.Meta.ID
 	if buffered, ok := tx.Buffer[id]; ok {
 		if buffered.Meta.ModelRef != entity.Meta.ModelRef {
+			return modelMismatchErr(id)
+		}
+		return nil
+	}
+	if deleted, ok := s.tm.deletedBufferedEntityFor(tx.ID, id); ok {
+		if deleted.Meta.ModelRef != entity.Meta.ModelRef {
 			return modelMismatchErr(id)
 		}
 		return nil
@@ -1391,13 +1398,12 @@ const getVersionByTransactionQuery = `SELECT ev.entity_id, ev.model_name, ev.mod
 		 FROM entity_versions ev
 		 WHERE ev.tenant_id = ? AND ev.entity_id = ? AND ev.transaction_id = ?
 		   AND ev.change_type != 'DELETED'
-		 ORDER BY ev.version ASC
 		 LIMIT 1`
 
 // GetVersionByTransaction returns the version of entityID that transaction
-// txID wrote (a transaction records at most one version per entity). DELETED tombstones never match — see
-// spi.EntityStore.GetVersionByTransaction's doc comment — and an empty txID
-// never matches, even a stored-empty one from a non-transactional write, so
+// txID wrote (a transaction records at most one version per entity). DELETED
+// tombstones never match — see spi.EntityStore.GetVersionByTransaction's doc
+// comment — and an empty txID never matches, even a stored-empty one from a non-transactional write, so
 // it is rejected pre-query rather than reaching SQL at all.
 //
 // Reads on the dedicated reader connection (readDB), not the writer db, for

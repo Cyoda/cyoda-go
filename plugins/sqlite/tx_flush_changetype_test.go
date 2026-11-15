@@ -139,7 +139,7 @@ func TestFlushToSQLite_ChangeTypeSameTxDoubleSave(t *testing.T) {
 	}
 	got, err := store.Get(ctx, "e-same-tx-double-save")
 	if err != nil {
-		t.Fatalf("GetVersionAt: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
 	if string(got.Data) != `{"v":2}` {
 		t.Fatalf("data = %s, want the last save {\"v\":2}", got.Data)

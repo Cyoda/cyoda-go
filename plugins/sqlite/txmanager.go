@@ -170,10 +170,11 @@ type transactionManager struct {
 	// spi.ErrEntityModelMismatch exists to close). flushToSQLite uses this
 	// to write the create+tombstone as one committed row when the SELECT
 	// comes back empty. Protected by mu.
-	// Not savepoint-scoped: a RollbackToSavepoint that
-	// restores id to tx.Buffer also removes it from tx.Deletes, so a stale
-	// entry here is simply never read again. Cleaned up after commit or
-	// rollback (no leak).
+	// Not savepoint-scoped: every entry for an id carries that id's one
+	// model, because the in-tx model check (checkModelImmutableInTx) refuses
+	// a write of the id under any other model, so an entry a savepoint
+	// rollback leaves behind can never name a different model. Cleaned up
+	// after commit or rollback (no leak).
 	deletedBufferedEntities map[string]map[string]*spi.Entity // txID -> entityID -> evicted entity
 
 	// lostDiscardedWrite marks a transaction that a RollbackToSavepoint made
