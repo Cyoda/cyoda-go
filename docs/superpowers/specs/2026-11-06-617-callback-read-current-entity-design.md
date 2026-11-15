@@ -209,7 +209,7 @@ write, as today.
 - **The payload's `meta.transactionId` equals the `transactionId` a callback
   read of the anchor under the token returns at dispatch.** After the §2.2 step
   the engine sets `entity.Meta.TransactionID` to the transaction id of the
-  stored anchor: the dispatch's transaction id after a save, the id the read
+  stored anchor: the transaction's own id after a save (the id the store stamps; equal to the dispatch's id on every write path), the id the read
   returned otherwise. When the read finds no anchor (a callback deleted it in
   this transaction, §2.2), nothing is saved and `entity.Meta.TransactionID` is
   left as it is: a callback read under the token gets `404`, so there is no
