@@ -80,43 +80,57 @@ func (r *cascadeRun) newAnchorPending() bool {
 
 // saveAnchorBeforeCallout makes the transaction hold the in-memory anchor
 // (spec §2.2) and sets entity.Meta.TransactionID to the stored anchor's id
-// (spec §2.5). No-op unless txID != "" and a transaction is in ctx: with an id
-// and no transaction a save would be a write of its own, and a dispatch with
-// no id sends no token.
+// (spec §2.5). It returns the store's view of the anchor after the step: the
+// "before" view adoptCallbackWrite compares the dispatch's outcome against
+// (spec §2.4). No-op, returning the zero view, unless txID != "" and a
+// transaction is in ctx: with an id and no transaction a save would be a
+// write of its own, and a dispatch with no id sends no token.
 //
 // It reads the anchor in the transaction and saves the in-memory anchor only
 // when its Data bytes or Meta.State differ from the read; meta-only changes
-// do not count. An anchor the transaction does not hold is saved only when
-// creating is set, which the caller sets for a create whose anchor the run
-// has not stored yet; otherwise a callback deleted it in this transaction,
-// nothing is saved and Meta.TransactionID is left as it is.
+// do not count. After a save it reads the anchor again, as postgres and
+// sqlite return re-encoded bytes, and stamps the entity with the
+// transaction's id, the one the store stamps; otherwise the first read is the
+// view, and the entity takes its id. An anchor the transaction does not hold
+// is saved only on a create whose anchor the run has not stored yet
+// (run.newAnchorPending). Otherwise a callback deleted it in this
+// transaction: nothing is saved, Meta.TransactionID is left as it is and the
+// view is "not found". Whenever the transaction holds the anchor after the
+// step, run.anchorStored is set.
 //
 // It never acquires the txcoord gate. The caller runs it in the chain's
 // scope, before beforeDispatch and before txcoord.Pause: a failure has
 // dispatched nothing. Every failure is marked ErrAnchorSaveInfra.
-func (e *Engine) saveAnchorBeforeCallout(ctx context.Context, entity *spi.Entity, txID string, creating bool) error {
-	if txID == "" || spi.GetTransaction(ctx) == nil {
-		return nil
+func (e *Engine) saveAnchorBeforeCallout(ctx context.Context, entity *spi.Entity, txID string, run *cascadeRun) (anchorView, error) {
+	tx := spi.GetTransaction(ctx)
+	if txID == "" || tx == nil {
+		return anchorView{}, nil
 	}
 	es, err := e.factory.EntityStore(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get entity store before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
+		return anchorView{}, fmt.Errorf("failed to get entity store before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
 	}
 	cur, err := readAnchor(ctx, es, entity.Meta.ID)
 	switch {
 	case err != nil:
-		return fmt.Errorf("failed to read entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
+		return anchorView{}, fmt.Errorf("failed to read entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
 	case !cur.found:
-		if !creating {
-			return nil
+		if !run.newAnchorPending() {
+			return cur, nil
 		}
 	case bytes.Equal(cur.data, entity.Data) && cur.state == entity.Meta.State:
+		run.anchorStored = true
 		entity.Meta.TransactionID = cur.txID
-		return nil
+		return cur, nil
 	}
 	if _, err := es.Save(ctx, entity); err != nil {
-		return fmt.Errorf("failed to save entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
+		return anchorView{}, fmt.Errorf("failed to save entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
 	}
-	entity.Meta.TransactionID = txID
-	return nil
+	run.anchorStored = true
+	entity.Meta.TransactionID = tx.ID
+	saved, err := readAnchor(ctx, es, entity.Meta.ID)
+	if err != nil {
+		return anchorView{}, fmt.Errorf("failed to re-read entity after saving it before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
+	}
+	return saved, nil
 }

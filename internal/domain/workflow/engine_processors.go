@@ -232,26 +232,21 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, r
 	if e.extProc == nil {
 		return nil
 	}
-	// The anchor as the transaction sees it before the dispatch, read after
-	// the transaction was made to hold the engine's anchor (spec §2.4).
-	// Without a transaction no callback can join one, and there is nothing to
-	// save or observe.
+	// The anchor as the transaction sees it before the dispatch: the store's
+	// view after the transaction was made to hold the engine's anchor (spec
+	// §2.4). Without a transaction, or with no transaction id to send, no
+	// callback can join one, and there is nothing to save or observe.
 	tx := spi.GetTransaction(ctx)
+	observe := tx != nil && txID != ""
 	var es spi.EntityStore
 	var before anchorView
-	if tx != nil {
-		if err := e.saveAnchorBeforeCallout(ctx, entity, txID, run.newAnchorPending()); err != nil {
+	if observe {
+		var err error
+		if before, err = e.saveAnchorBeforeCallout(ctx, entity, txID, run); err != nil {
 			return err
 		}
-		if txID != "" {
-			run.anchorStored = true
-		}
-		var err error
 		if es, err = e.factory.EntityStore(ctx); err != nil {
 			return fmt.Errorf("failed to get entity store before processor dispatch: %w", errors.Join(ErrProcessorOutputInfra, err))
-		}
-		if before, err = readAnchor(ctx, es, entity.Meta.ID); err != nil {
-			return fmt.Errorf("failed to read entity before processor dispatch: %w", errors.Join(ErrProcessorOutputInfra, err))
 		}
 	}
 	dispatched, err := beforeDispatch(ctx, proc)
@@ -281,7 +276,7 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, r
 	if modifiedEntity != nil && modifiedEntity.Data != nil {
 		return e.applyProcessorData(ctx, entity, desc, modifiedEntity.Data)
 	}
-	if tx != nil {
+	if observe {
 		after, err := readAnchor(ctx, es, entity.Meta.ID)
 		if err != nil {
 			return fmt.Errorf("failed to re-read entity after processor dispatch: %w", errors.Join(ErrProcessorOutputInfra, err))

@@ -435,9 +435,11 @@ func (s nthFailEntityStore) Get(ctx context.Context, id string) (*spi.Entity, er
 // run fails as an infrastructure failure.
 func TestCallback_SyncObservationFails_RunFails(t *testing.T) {
 	// In a one-hop run with one SYNC processor, the first EntityStore call and
-	// the first Get are the fire's own read; the second of each is the store
-	// and the read before the save; the third of each, the store and the read
-	// before the dispatch; the fourth Get is the read after it.
+	// the first Get are the fire's own read. The second of each is the store
+	// and the read before the save; that read is also the view before the
+	// dispatch, as the fired entity is unchanged and nothing is saved. The
+	// third EntityStore call is the store for the read after the dispatch,
+	// which is the third Get.
 	cases := []struct {
 		name                   string
 		failStoreAt, failGetAt int
@@ -448,8 +450,7 @@ func TestCallback_SyncObservationFails_RunFails(t *testing.T) {
 		{"store before save", 2, 0, 0, ErrAnchorSaveInfra, "before a callout"},
 		{"read before save", 0, 2, 0, ErrAnchorSaveInfra, "before a callout"},
 		{"store before dispatch", 3, 0, 0, ErrProcessorOutputInfra, "before processor dispatch"},
-		{"read before dispatch", 0, 3, 0, ErrProcessorOutputInfra, "before processor dispatch"},
-		{"read after dispatch", 0, 4, 1, ErrProcessorOutputInfra, "after processor dispatch"},
+		{"read after dispatch", 0, 3, 1, ErrProcessorOutputInfra, "after processor dispatch"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

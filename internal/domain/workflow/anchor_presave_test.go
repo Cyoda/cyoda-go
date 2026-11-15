@@ -235,8 +235,12 @@ func TestPreCalloutSave_NoTxID_NoSave(t *testing.T) {
 	entity.Meta.State = "S_pre"
 	entity.Meta.TransactionID = "caller-id"
 
-	if err := env.engine.saveAnchorBeforeCallout(txCtx, entity, "", false); err != nil {
+	run := &cascadeRun{}
+	if _, err := env.engine.saveAnchorBeforeCallout(txCtx, entity, "", run); err != nil {
 		t.Fatalf("saveAnchorBeforeCallout: %v", err)
+	}
+	if run.anchorStored {
+		t.Error("anchorStored set by a step that did nothing")
 	}
 	got, err := readUnderToken(txCtx, env.factory, "pct-1")
 	if err != nil {
@@ -259,7 +263,7 @@ func TestPreCalloutSave_NoTxInCtx_NoSave(t *testing.T) {
 	changed := makeEntity("pcx-1", env.model, map[string]any{"x": 9})
 	changed.Meta.State = "S_pre"
 	changed.Meta.TransactionID = "caller-id"
-	if err := env.engine.saveAnchorBeforeCallout(env.ctx, changed, "minted-id", false); err != nil {
+	if _, err := env.engine.saveAnchorBeforeCallout(env.ctx, changed, "minted-id", &cascadeRun{}); err != nil {
 		t.Fatalf("saveAnchorBeforeCallout: %v", err)
 	}
 	got, found := env.committed(t, "pcx-1")
@@ -271,7 +275,7 @@ func TestPreCalloutSave_NoTxInCtx_NoSave(t *testing.T) {
 	}
 
 	created := makeEntity("pcx-2", env.model, map[string]any{"x": 1})
-	if err := env.engine.saveAnchorBeforeCallout(env.ctx, created, "minted-id", true); err != nil {
+	if _, err := env.engine.saveAnchorBeforeCallout(env.ctx, created, "minted-id", &cascadeRun{creating: true}); err != nil {
 		t.Fatalf("saveAnchorBeforeCallout: %v", err)
 	}
 	if got, found := env.committed(t, "pcx-2"); found {
@@ -423,25 +427,139 @@ func TestPreCalloutSave_FailureIsInfra_NotMarkedUnsafe(t *testing.T) {
 	})
 }
 
-// The save itself fails on a client update: the operation fails as an
-// infrastructure failure and the processor is not dispatched.
+// The save, or the re-read after it, fails on a client update: the operation
+// fails as an infrastructure failure and the processor is not dispatched.
 func TestPreCalloutSave_SaveFails_IsInfra(t *testing.T) {
-	dispatched := 0
-	env := newCallbackEnv(t, []spi.ProcessorDefinition{syncProc("p1")},
-		func(context.Context, *spi.Entity, spi.ProcessorDefinition, string) (*spi.Entity, error) {
-			dispatched++
-			return nil, nil
-		})
-	armed := true
 	storeErr := errors.New("store unavailable")
-	env.engine.factory = cachedFactory(failingSaveFactory{StoreFactory: env.factory, armed: &armed, err: storeErr})
-
-	_, _, _, _, err := manualWithData(t, env, "pcsf-1", []byte(`{"x":5}`))
-	if !errors.Is(err, storeErr) || !errors.Is(err, ErrAnchorSaveInfra) {
-		t.Fatalf("err = %v, want the store error marked ErrAnchorSaveInfra", err)
+	cases := []struct {
+		name string
+		wrap func(f spi.StoreFactory) spi.StoreFactory
+	}{
+		{"save fails", func(f spi.StoreFactory) spi.StoreFactory {
+			armed := true
+			return failingSaveFactory{StoreFactory: f, armed: &armed, err: storeErr}
+		}},
+		// The engine's first Get is the read before the save; the second is
+		// the re-read after it.
+		{"re-read after the save fails", func(f spi.StoreFactory) spi.StoreFactory {
+			stores, gets := 0, 0
+			return nthFailFactory{StoreFactory: f, failGetAt: 2, stores: &stores, gets: &gets, err: storeErr}
+		}},
 	}
-	if dispatched != 0 {
-		t.Errorf("p1 dispatched %d times, want 0", dispatched)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dispatched := 0
+			env := newCallbackEnv(t, []spi.ProcessorDefinition{syncProc("p1")},
+				func(context.Context, *spi.Entity, spi.ProcessorDefinition, string) (*spi.Entity, error) {
+					dispatched++
+					return nil, nil
+				})
+			env.engine.factory = cachedFactory(tc.wrap(env.factory))
+
+			_, _, _, _, err := manualWithData(t, env, "pcsf-1", []byte(`{"x":5}`))
+			if !errors.Is(err, storeErr) || !errors.Is(err, ErrAnchorSaveInfra) {
+				t.Fatalf("err = %v, want the store error marked ErrAnchorSaveInfra", err)
+			}
+			if dispatched != 0 {
+				t.Errorf("p1 dispatched %d times, want 0", dispatched)
+			}
+		})
+	}
+}
+
+// The step returns the store's view of the anchor after it, marks the run as
+// having stored the anchor, and stamps the entity with the id the store
+// stamped: the transaction's, whatever id the dispatch carries.
+func TestPreCalloutSave_ReturnsStoredView(t *testing.T) {
+	env := newCallbackEnv(t, nil, nil)
+	seeded := seedFireEntity(t, env.factory, env.ctx, "pcv-1", env.model, "S_pre", true, map[string]any{"x": 0})
+	txID, txCtx, err := env.txMgr.Begin(env.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = env.txMgr.Rollback(env.ctx, txID) }()
+
+	t.Run("unchanged: the first read", func(t *testing.T) {
+		entity, err := readUnderToken(txCtx, env.factory, "pcv-1")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		run := &cascadeRun{}
+		view, err := env.engine.saveAnchorBeforeCallout(txCtx, entity, "minted-id", run)
+		if err != nil {
+			t.Fatalf("saveAnchorBeforeCallout: %v", err)
+		}
+		if !view.found || view.txID != seeded.Meta.TransactionID || !run.anchorStored {
+			t.Errorf("view = %+v, anchorStored = %v; want the committed version and true", view, run.anchorStored)
+		}
+		if entity.Meta.TransactionID != seeded.Meta.TransactionID {
+			t.Errorf("entity transactionId = %q, want the committed %q", entity.Meta.TransactionID, seeded.Meta.TransactionID)
+		}
+	})
+	t.Run("changed: the re-read after the save", func(t *testing.T) {
+		entity, err := readUnderToken(txCtx, env.factory, "pcv-1")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		entity.Data = []byte(`{"x":9}`)
+		run := &cascadeRun{}
+		view, err := env.engine.saveAnchorBeforeCallout(txCtx, entity, "minted-id", run)
+		if err != nil {
+			t.Fatalf("saveAnchorBeforeCallout: %v", err)
+		}
+		if !view.found || view.txID != txID || !run.anchorStored {
+			t.Errorf("view = %+v, anchorStored = %v; want the saved version of %q and true", view, run.anchorStored, txID)
+		}
+		assertData(t, view.data, map[string]any{"x": float64(9)})
+		if entity.Meta.TransactionID != txID {
+			t.Errorf("entity transactionId = %q, want the transaction's %q", entity.Meta.TransactionID, txID)
+		}
+	})
+	t.Run("not found on an update: nothing", func(t *testing.T) {
+		entity := makeEntity("pcv-absent", env.model, map[string]any{"x": 1})
+		entity.Meta.TransactionID = "caller-id"
+		run := &cascadeRun{}
+		view, err := env.engine.saveAnchorBeforeCallout(txCtx, entity, "minted-id", run)
+		if err != nil {
+			t.Fatalf("saveAnchorBeforeCallout: %v", err)
+		}
+		if view.found || run.anchorStored || entity.Meta.TransactionID != "caller-id" {
+			t.Errorf("view = %+v, anchorStored = %v, transactionId = %q; want nothing found, false, unchanged",
+				view, run.anchorStored, entity.Meta.TransactionID)
+		}
+	})
+}
+
+// A segment boundary commits the anchor, so the run counts it as stored from
+// there on, whatever runs after it.
+func TestCascadeRun_SegmentBoundaryMarksAnchorStored(t *testing.T) {
+	env := newCreateEnv(t, []spi.ProcessorDefinition{
+		{Type: ProcessorTypeExternalized, Name: "cbd", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+	}, func(context.Context, *spi.Entity, spi.ProcessorDefinition, string) (*spi.Entity, error) {
+		return nil, nil
+	})
+	txID, txCtx, err := env.txMgr.Begin(env.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	t.Cleanup(func() { _ = env.txMgr.Rollback(env.ctx, txID) })
+	auditStore, err := env.factory.StateMachineAuditStore(txCtx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
+	}
+	entity := makeEntity("pcsb-1", env.model, map[string]any{"x": 1})
+	entity.Meta.State = "S_new"
+	entity.Meta.TransactionID = txID
+	run := &cascadeRun{creating: true}
+	_, newTxID, err := env.engine.executeProcessors(txCtx, []spi.ProcessorDefinition{
+		{Type: ProcessorTypeExternalized, Name: "cbd", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+	}, entity, run, auditStore, "PresaveCreateWF", "AUTO", txID)
+	if err != nil {
+		t.Fatalf("executeProcessors: %v", err)
+	}
+	t.Cleanup(func() { _ = env.txMgr.Rollback(env.ctx, newTxID) })
+	if !run.anchorStored {
+		t.Error("anchorStored = false after the segment boundary committed the anchor")
 	}
 }
 
@@ -474,5 +592,56 @@ func TestPreCalloutSave_Create_DeletedAfterSegmentBoundary_NotResurrected(t *tes
 	}
 	if !errors.Is(readErr, spi.ErrNotFound) {
 		t.Errorf("read: err = %v, want not found: the delete must stand", readErr)
+	}
+}
+
+// A change of state alone is a change: after T1 moved the anchor to S_mid
+// with no change to its data, the callback of T2's processor sees S_mid,
+// stamped with the run's transaction.
+func TestPreCalloutSave_StateOnlyChange_Saves(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+	var seen *spi.Entity
+	mock := &mockExternalProcessing{dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+		if proc.Name != "p1" {
+			return nil, nil
+		}
+		var err error
+		seen, err = readUnderToken(ctx, factory, entity.Meta.ID)
+		return nil, err
+	}}
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
+	ctx := ctxWithTenant(testTenant)
+	model := spi.ModelRef{EntityName: "presave-state", ModelVersion: "1.0"}
+	registerModelFields(t, ctx, factory, model, map[string]schema.DataType{"x": schema.Integer})
+	saveWorkflow(t, factory, ctx, model, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "PresaveStateWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre":  {Transitions: []spi.TransitionDefinition{{Name: "T1", Next: "S_mid", Manual: true, Processors: []spi.ProcessorDefinition{syncProc("p0")}}}},
+			"S_mid":  {Transitions: []spi.TransitionDefinition{{Name: "T2", Next: "S_done", Processors: []spi.ProcessorDefinition{syncProc("p1")}}}},
+			"S_done": {},
+		},
+	}})
+	seedFireEntity(t, factory, ctx, "pcst-1", model, "S_pre", true, map[string]any{"x": 0})
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	t.Cleanup(func() { _ = txMgr.Rollback(ctx, txID) })
+	entity, err := readUnderToken(txCtx, factory, "pcst-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	entity.Meta.TransactionID = txID
+	if _, err := engine.ManualTransition(txCtx, entity, "T1", IfMatch{}); err != nil {
+		t.Fatalf("ManualTransition: %v", err)
+	}
+	if seen == nil {
+		t.Fatal("p1's callback read nothing")
+	}
+	if seen.Meta.State != "S_mid" || seen.Meta.TransactionID != txID {
+		t.Errorf("read state %q, transactionId %q; want S_mid and the run's %q", seen.Meta.State, seen.Meta.TransactionID, txID)
 	}
 }
