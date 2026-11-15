@@ -62,6 +62,11 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if locked, err := storedModelLocked(ctx, tx, s.tenantID, desc.Ref); err != nil {
+		return fmt.Errorf("failed to save model %s: %w", desc.Ref, classifyError(err))
+	} else if locked {
+		return fmt.Errorf("model %s is locked: %w", desc.Ref, spi.ErrModelLocked)
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT OR REPLACE INTO models (tenant_id, model_name, model_version, doc)
 		 VALUES (?, ?, ?, jsonb(?))`,
@@ -80,6 +85,22 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 			"pkg", "sqlite", "ref", desc.Ref, "count", stale)
 	}
 	return nil
+}
+
+// storedModelLocked reports whether the stored model of ref is LOCKED, read
+// in tx. An absent model is not locked.
+func storedModelLocked(ctx context.Context, tx *sql.Tx, tenantID spi.TenantID, ref spi.ModelRef) (bool, error) {
+	var state string
+	err := tx.QueryRowContext(ctx,
+		`SELECT json_extract(doc, '$.state') FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		string(tenantID), ref.EntityName, ref.ModelVersion).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return spi.ModelState(state) == spi.ModelLocked, nil
 }
 
 // clearExtensionLog deletes every extension row — deltas and savepoints —
@@ -168,6 +189,11 @@ func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if locked, err := storedModelLocked(ctx, tx, s.tenantID, modelRef); err != nil {
+		return fmt.Errorf("failed to delete model %s: %w", modelRef, classifyError(err))
+	} else if locked {
+		return fmt.Errorf("model %s is locked: %w", modelRef, spi.ErrModelLocked)
+	}
 	res, err := tx.ExecContext(ctx,
 		`DELETE FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
@@ -273,6 +299,16 @@ func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 	var doc modelDoc
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return fmt.Errorf("failed to unmarshal model doc: %w", err)
+	}
+
+	var live int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM entities WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&live); err != nil {
+		return fmt.Errorf("failed to count entities of %s: %w", modelRef, classifyError(err))
+	}
+	if live > 0 {
+		return fmt.Errorf("unlock %s: %w", modelRef, &spi.ModelHasEntitiesError{Ref: modelRef, Count: live})
 	}
 
 	folded, _, err := s.foldLocked(ctx, tx, modelRef, doc.Schema, false)
