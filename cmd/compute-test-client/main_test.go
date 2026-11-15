@@ -590,6 +590,46 @@ func TestCatalog_WriteTargetReadByTx_ReadsTheJoinedTransactionAndRecords(t *test
 	}
 }
 
+// TestCatalog_RivalWrite_WritesTheEntityWithoutTheToken: the processor writes
+// its entity with one PUT that carries no transaction token — its data with
+// status set to the marker — waits for the answer and answers with no data.
+func TestCatalog_RivalWrite_WritesTheEntityWithoutTheToken(t *testing.T) {
+	var calls []targetCall
+	door := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		calls = append(calls, targetCall{r.Header.Get("X-Tx-Token"), r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
+		_, _ = w.Write([]byte(`{"transactionId":"tx-rival","entityIds":["ent"]}`))
+	}))
+	defer door.Close()
+
+	proc, ok := newCatalog(nil, nil).callbackProcessor("cb-rival-write")
+	if !ok {
+		t.Fatal("cb-rival-write callback processor not registered")
+	}
+	out, err := proc(context.Background(), &Entity{ID: "ent", State: "OPEN", Data: []byte(`{"k":1,"status":"loop"}`)},
+		cbConfig{Marker: "rival"}, "the-pass", newCallbackClient(door.URL, staticToken("bearer")))
+	if err != nil {
+		t.Fatalf("processor: %v", err)
+	}
+	var data map[string]any
+	if len(calls) != 1 || calls[0].token != "" || calls[0].method != http.MethodPut || calls[0].path != "/api/entity/JSON/ent" ||
+		json.Unmarshal([]byte(calls[0].body), &data) != nil || data["status"] != "rival" || data["k"] != float64(1) {
+		t.Fatalf("calls = %+v; want one PUT of ent without the token, its data with status rival", calls)
+	}
+	if out == nil || out.ID != "ent" || out.Data != nil {
+		t.Fatalf("result = %+v; want the entity with no data", out)
+	}
+
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer failing.Close()
+	if _, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{}`)}, cbConfig{Marker: "rival"}, "the-pass",
+		newCallbackClient(failing.URL, staticToken("bearer"))); err == nil {
+		t.Fatal("a rival write not answered 200 must fail the processor")
+	}
+}
+
 // TestCatalog_UnlockThenTag_UnlocksUnjoinedAndAddsAField: the processor
 // unlocks the model with a call that carries no tx token, then answers with
 // the entity's data plus a field "tag" the model does not hold.

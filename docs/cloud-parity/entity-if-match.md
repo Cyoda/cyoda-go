@@ -70,6 +70,11 @@ segment stays.
 
 ## Tests
 
+- Parity (memory, SQLite, PostgreSQL): `e2e/parity/ifmatch_lost_race.go`
+  (`IfMatch_ChangeAfterReadIs409`) — rule 4 on the loopback `PUT`: another
+  client's write committed during the callout, before the final save or
+  before the first segment's flush and commit, is a retryable `409`, and the
+  entity keeps that write.
 - E2E (PostgreSQL): `internal/e2e/ifmatch_doors_test.go`, on every door above
   (`PUT` loopback, `PUT` with a transition, `PATCH`, collection `PUT`, gRPC
   `EntityPatchRequest`):
