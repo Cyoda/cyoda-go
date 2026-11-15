@@ -76,9 +76,9 @@ func newKeyFireEnv(t *testing.T, newCode string, others map[string]string) keyFi
 		},
 	}
 	saveWorkflow(t, factory, ctx, ref, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "kf-e1", ref, "OPEN", "seed-tx-1", map[string]any{"code": "A"})
+	seedFireEntity(t, factory, ctx, "kf-e1", ref, "OPEN", true, map[string]any{"code": "A"})
 	for id, code := range others {
-		seedFireEntity(t, factory, ctx, id, ref, "CLOSED", "seed-tx-"+id, map[string]any{"code": code})
+		seedFireEntity(t, factory, ctx, id, ref, "CLOSED", true, map[string]any{"code": code})
 	}
 
 	id := taskID(testTenant, "kf-e1", "OPEN", "AutoClose")
