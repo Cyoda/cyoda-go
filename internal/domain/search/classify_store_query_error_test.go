@@ -227,6 +227,9 @@ func saveBareLeafModel(t *testing.T, ctx context.Context, factory *memory.StoreF
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: marshalled}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
+	}
 }
 
 func TestSearch_BareLeafField_RealMemoryPlugin_Bounded_MapsTo400(t *testing.T) {

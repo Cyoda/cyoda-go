@@ -6,6 +6,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
@@ -48,6 +49,7 @@ func TestSearch_FailsClosedOnGenuineModelLoadError(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"age":30}`))
 
 	factory := &corruptSchemaFactory{

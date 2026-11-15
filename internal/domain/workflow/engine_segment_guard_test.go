@@ -658,13 +658,6 @@ func (h *segmentGuardHarness) fireSegment(t *testing.T) error {
 func (h *segmentGuardHarness) begin(t *testing.T) (string, context.Context) {
 	t.Helper()
 	saveWorkflow(t, h.factory, h.ctx, h.modelRef, []spi.WorkflowDefinition{h.wf})
-	ms, err := h.factory.ModelStore(h.ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	if err := ms.Save(h.ctx, &spi.ModelDescriptor{Ref: h.modelRef}); err != nil {
-		t.Fatalf("Save model: %v", err)
-	}
 
 	txID, txCtx, err := h.txMgr.Begin(h.ctx)
 	if err != nil {

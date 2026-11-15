@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
@@ -173,6 +174,7 @@ func recordScheduledFailure(t *testing.T) (spi.StoreFactory, context.Context, st
 	})
 	entityID := uuid.NewString()
 	ref := spi.ModelRef{EntityName: "fail-model", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, mem, ctx, ref)
 	es, err := mem.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

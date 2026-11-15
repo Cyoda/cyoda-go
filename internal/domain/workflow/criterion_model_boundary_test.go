@@ -373,13 +373,7 @@ func buildNestedAddressModel(t *testing.T, ctx context.Context, factory spi.Stor
 	if err != nil {
 		t.Fatalf("schema.Marshal: %v", err)
 	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
-		t.Fatalf("Save model: %v", err)
-	}
+	saveLockedModel(t, factory, ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw})
 }
 
 // TestEvaluateCriterion_ContainerPathScalarComparisonAbortsTheSave covers the

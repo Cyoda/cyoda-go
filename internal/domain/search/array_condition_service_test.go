@@ -45,6 +45,9 @@ func saveScalarArrayModel(t *testing.T, ctx context.Context, factory *memory.Sto
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
+	}
 }
 
 // TestSearch_ArrayConditionOnContainerPath_IsRejected is the service-level

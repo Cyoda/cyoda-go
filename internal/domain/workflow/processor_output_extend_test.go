@@ -34,17 +34,7 @@ func registerExtensibleModel(t *testing.T, ctx context.Context, factory spi.Stor
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw, ChangeLevel: spi.ChangeLevelStructural}); err != nil {
-		t.Fatal(err)
-	}
-	// ExtendSchema refuses an unlocked model.
-	if err := ms.Lock(ctx, ref); err != nil {
-		t.Fatal(err)
-	}
+	saveLockedModel(t, factory, ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw, ChangeLevel: spi.ChangeLevelStructural})
 }
 
 // extendDoubleFactory counts ExtendSchema calls and can fail them.

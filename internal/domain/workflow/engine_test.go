@@ -45,6 +45,7 @@ func saveWorkflow(t *testing.T, factory spi.StoreFactory, ctx context.Context, m
 	if err := ws.Save(ctx, modelRef, workflows); err != nil {
 		t.Fatalf("failed to save workflows: %v", err)
 	}
+	lockTestModel(t, factory, ctx, modelRef)
 }
 
 func makeEntity(id string, modelRef spi.ModelRef, data map[string]any) *spi.Entity {
@@ -1904,6 +1905,7 @@ func TestEngine_SegmentBoundary_FlushesCommitsAndReopens(t *testing.T) {
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "SegmentModel", ModelVersion: "1.0"}
+	lockTestModel(t, factory, ctx, modelRef)
 
 	txID, txCtx, err := txMgr.Begin(ctx)
 	if err != nil {

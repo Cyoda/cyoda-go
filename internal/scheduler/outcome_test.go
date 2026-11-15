@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
@@ -458,6 +459,7 @@ func TestService_FailEventCarriesTheEntityStateAndTheTaskCounters(t *testing.T) 
 	h.svc.deps.Clock = fixedClock{at: at}
 
 	ctx := commontest.SystemUserContext(task.TenantID)
+	spitest.EnsureLockedModel(t, h.mem, ctx, spi.ModelRef{EntityName: task.ModelName, ModelVersion: "1"})
 	entities, err := h.mem.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("entity store: %v", err)

@@ -82,6 +82,9 @@ func saveModelWithFields(t *testing.T, ctx context.Context, factory *memory.Stor
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
+	}
 }
 
 // helper: register a model whose schema declares `arrayField` as an array of
@@ -104,6 +107,9 @@ func saveModelWithArrayOfStringField(t *testing.T, ctx context.Context, factory 
 	}
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
+	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
 	}
 }
 
@@ -128,6 +134,9 @@ func saveModelWithValAndItemsArray(t *testing.T, ctx context.Context, factory *m
 	}
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
+	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
 	}
 }
 
@@ -1866,8 +1875,10 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 		t.Fatalf("got %d result(s), want 1: the EQUALS leaf against $.name must match when FieldsMap is threaded correctly", len(results))
 	}
 
-	if cms.getCalls < 2 {
-		t.Errorf("ModelStore.Get calls = %d, want >= 2 (EnsureModelRegistered + at least one real schema-consulting check)", cms.getCalls)
+	// The model is LOCKED, so the model cache serves the schema-consulting
+	// checks after the first read; the store sees at least that one.
+	if cms.getCalls < 1 {
+		t.Errorf("ModelStore.Get calls = %d, want >= 1 (the schema is read from the model store)", cms.getCalls)
 	}
 }
 

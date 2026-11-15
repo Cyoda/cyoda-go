@@ -44,6 +44,9 @@ func registerModelWithSchema(t *testing.T, factory *memory.StoreFactory, entityN
 	if err := ms.Save(ctx, desc); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
+	}
 	return ref
 }
 

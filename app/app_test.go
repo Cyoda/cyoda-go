@@ -15,6 +15,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -351,6 +352,7 @@ func TestMultiTenantAPIIsolation(t *testing.T) {
 
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
+	spitest.EnsureLockedModel(t, factory, ctxA, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 
 	storeA, err := factory.EntityStore(ctxA)
 	if err != nil {
@@ -369,7 +371,9 @@ func TestMultiTenantAPIIsolation(t *testing.T) {
 		},
 		Data: []byte(`{"tenant": "A"}`),
 	}
-	storeA.Save(ctxA, entityA)
+	if _, err := storeA.Save(ctxA, entityA); err != nil {
+		t.Fatalf("tenant-A save: %v", err)
+	}
 
 	_, err = storeB.Get(ctxB, "e-001")
 	if err == nil {

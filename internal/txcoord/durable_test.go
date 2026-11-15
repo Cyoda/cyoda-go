@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/txcoord/txcoordtest"
@@ -49,6 +50,7 @@ func newCluster(t *testing.T) *cluster {
 	userCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "u1", Kind: spi.PrincipalUser, Tenant: spi.Tenant{ID: spi.TenantID("tenant-" + uuid.NewString())},
 	})
+	spitest.EnsureLockedModel(t, f, userCtx, spi.ModelRef{EntityName: "m", ModelVersion: "1"})
 	txID, txCtx, err := tm.Begin(userCtx)
 	if err != nil {
 		t.Fatal(err)

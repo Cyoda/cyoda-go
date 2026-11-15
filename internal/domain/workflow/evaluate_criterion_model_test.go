@@ -28,13 +28,7 @@ func registerTypedModel(t *testing.T, ctx context.Context, factory spi.StoreFact
 	if err != nil {
 		t.Fatalf("schema.Marshal: %v", err)
 	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
-		t.Fatalf("Save model: %v", err)
-	}
+	saveLockedModel(t, factory, ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw})
 }
 
 // registerModelFields saves a model descriptor whose schema declares the given
@@ -59,13 +53,7 @@ func registerModelFields(t *testing.T, ctx context.Context, factory spi.StoreFac
 	if err != nil {
 		t.Fatalf("schema.Marshal: %v", err)
 	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
-		t.Fatalf("Save model: %v", err)
-	}
+	saveLockedModel(t, factory, ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw})
 }
 
 // registerUnionTypedModel saves a model descriptor whose schema declares a
@@ -99,13 +87,7 @@ func registerUnionTypedModel(t *testing.T, ctx context.Context, factory spi.Stor
 	if err != nil {
 		t.Fatalf("schema.Marshal: %v", err)
 	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
-		t.Fatalf("Save model: %v", err)
-	}
+	saveLockedModel(t, factory, ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw})
 }
 
 // errModelStoreFactory wraps a StoreFactory but makes ModelStore fail, modelling

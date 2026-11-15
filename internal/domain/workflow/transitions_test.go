@@ -110,6 +110,7 @@ func TestGetAvailableTransitions_NoWorkflow_UsesDefault(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "widget", ModelVersion: "1.0"}
+	lockTestModel(t, factory, ctx, modelRef)
 
 	// No workflow registered for this model. Entity in CREATED state.
 	// Default workflow has CREATED state with transitions: UPDATE, DELETE.

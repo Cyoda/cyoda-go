@@ -10,6 +10,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
@@ -90,6 +91,7 @@ func TestSearch_SchemaLoadFails_FailsClosedInsteadOfAnswering(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	factory := &modelStoreFactory{
@@ -147,6 +149,7 @@ func TestSearch_ModelCarriesNoSchema_RejectsTheDataPath(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	factory := &modelStoreFactory{
@@ -253,6 +256,7 @@ func TestAsyncSearch_SchemaBreaksAfterSubmit_JobFails(t *testing.T) {
 
 	ctx := tenantCtx("tenant-async-broken")
 	ref := spi.ModelRef{EntityName: "asyncbroken", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	ms := &switchableModelStore{ref: ref, good: goodStringSchema(t, "name")}
@@ -314,6 +318,7 @@ func TestSearch_LifecycleOnlyCondition_DoesNotNeedTheSchema(t *testing.T) {
 
 	ctx := tenantCtx("tenant-lifecycle-only")
 	ref := spi.ModelRef{EntityName: "lifecycleonly", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	factory := &modelStoreFactory{
