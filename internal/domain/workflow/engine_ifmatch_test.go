@@ -50,6 +50,7 @@ func newIfMatchFixture(t *testing.T, name string, dispatch func(ctx context.Cont
 			"S_post": {},
 		},
 	}})
+	lockTestModel(t, factory, f.ctx, f.modelRef)
 	seedTxID, seedCtx, err := txMgr.Begin(f.ctx)
 	if err != nil {
 		t.Fatalf("seed Begin: %v", err)

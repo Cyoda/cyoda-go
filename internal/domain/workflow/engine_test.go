@@ -45,7 +45,6 @@ func saveWorkflow(t *testing.T, factory spi.StoreFactory, ctx context.Context, m
 	if err := ws.Save(ctx, modelRef, workflows); err != nil {
 		t.Fatalf("failed to save workflows: %v", err)
 	}
-	lockTestModel(t, factory, ctx, modelRef)
 }
 
 func makeEntity(id string, modelRef spi.ModelRef, data map[string]any) *spi.Entity {
@@ -2887,6 +2886,7 @@ func TestEngine_Execute_ReturnsInputTxOnNonSegmentingCascade(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	txMgr, err := factory.TransactionManager(ctx)
 	if err != nil {
@@ -2975,6 +2975,7 @@ func TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	entryTxID, txCtx, err := txMgr.Begin(ctx)
 	if err != nil {

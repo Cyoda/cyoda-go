@@ -95,6 +95,7 @@ func TestFireScheduled_FiresOnTime(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 	seedFireEntity(t, factory, ctx, "fire-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	id := taskID(testTenant, "fire-e1", "OPEN", "AutoClose")
@@ -200,6 +201,7 @@ func TestFireScheduled_GuardEntityMovedOn(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 	// Entity has already moved on to CLOSED by some other path — the stale
 	// OPEN task below simulates a race where the reconcile hasn't (yet, or
 	// ever will) clean it up.
@@ -256,6 +258,7 @@ func TestFireScheduled_OrphanedTransitionCancelled(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 	seedFireEntity(t, factory, ctx, "orphan-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	id := taskID(testTenant, "orphan-e1", "OPEN", "AutoClose")
@@ -278,6 +281,7 @@ func TestFireScheduled_OrphanedTransitionCancelled(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{reimported})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	r := fireDue(t, engine, ctx, id)
 	if r.Err != nil {
@@ -326,6 +330,7 @@ func TestFireScheduled_CascadeAfterFire(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 	seedFireEntity(t, factory, ctx, "casc-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	openTaskID := taskID(testTenant, "casc-e1", "OPEN", "AutoClose")
@@ -399,6 +404,7 @@ func TestFireScheduled_SiblingScheduledTaskStillCancelled(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 	seedFireEntity(t, factory, ctx, "sib-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	closeID := taskID(testTenant, "sib-e1", "OPEN", "AutoClose")
@@ -521,6 +527,7 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 	}
 	setupCtx := ctxWithTenant(testTenant)
 	saveWorkflow(t, factory, setupCtx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, setupCtx, modelRef)
 	seedFireEntity(t, factory, setupCtx, "attr-user-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	id := taskID(testTenant, "attr-user-e1", "OPEN", "AutoClose")
@@ -654,6 +661,7 @@ func TestFireScheduled_ReArmedAtReRead_Superseded(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, realFactory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, realFactory, ctx, modelRef)
 	seedFireEntity(t, realFactory, ctx, "race-armedby-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	id := taskID(testTenant, "race-armedby-e1", "OPEN", "AutoClose")
@@ -740,6 +748,7 @@ func TestFireScheduled_FirstAttemptAtDeadline_Fires(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 	seedFireEntity(t, factory, ctx, "eq-timeout-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	id := taskID(testTenant, "eq-timeout-e1", "OPEN", "AutoClose")
@@ -978,6 +987,7 @@ func TestFireScheduled_CBDSegmentedFire_ErrorAfterTXPre_NoLeak(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 	seedFireEntity(t, factory, ctx, "cbd-leak-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	id := taskID(testTenant, "cbd-leak-e1", "OPEN", "AutoClose")
@@ -1055,6 +1065,7 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	// Pre-seed the entity stamped with a DISTINCT prior committer's
 	// attribution — exactly the "stale Meta the previous committer left"
@@ -1385,6 +1396,7 @@ func TestFireScheduled_GuardCASRace_SafeFailureWithoutTornWrite(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, realFactory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, realFactory, ctx, modelRef)
 	seedFireEntity(t, realFactory, ctx, "race-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	id := taskID(testTenant, "race-e1", "OPEN", "AutoClose")

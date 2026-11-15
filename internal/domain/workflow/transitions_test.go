@@ -24,6 +24,7 @@ func TestGetAvailableTransitions_WithTransitions(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	// Save entity directly to store in state OPEN.
 	entity := makeEntity("e-trans-1", modelRef, map[string]any{"amount": 42})
@@ -64,6 +65,7 @@ func TestGetAvailableTransitions_TerminalState(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	entity := makeEntity("e-trans-2", modelRef, map[string]any{})
 	entity.Meta.State = "CLOSED"
@@ -157,6 +159,7 @@ func TestGetAvailableTransitions_CustomWorkflowTakesPrecedence(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{customWF})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	entity := makeEntity("e-trans-5", modelRef, map[string]any{})
 	entity.Meta.State = "DRAFT"

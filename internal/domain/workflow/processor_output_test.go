@@ -186,10 +186,15 @@ func TestProcessorOutput_FailsClosedWhenTheModelCannotBeRead(t *testing.T) {
 	})
 
 	t.Run("model not registered", func(t *testing.T) {
-		// nil modelFields — no descriptor is saved for this model.
+		// nil modelFields — no descriptor is saved for this model, so the
+		// model read answers not-found and the output check refuses on that.
 		engine, _, txMgr, ctx, ref := procOutputEngine(t, ExecutionModeSync, nil, `{"x":1}`, nil)
-		if _, err := runProcOutput(t, engine, txMgr, ctx, ref); !errors.Is(err, ErrProcessorOutputInfra) {
+		_, err := runProcOutput(t, engine, txMgr, ctx, ref)
+		if !errors.Is(err, ErrProcessorOutputInfra) {
 			t.Errorf("err = %v; want ErrProcessorOutputInfra", err)
+		}
+		if !errors.Is(err, spi.ErrNotFound) {
+			t.Errorf("err = %v; want it to wrap spi.ErrNotFound: the refusal is for the missing model", err)
 		}
 	})
 }

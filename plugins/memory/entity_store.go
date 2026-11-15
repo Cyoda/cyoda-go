@@ -286,7 +286,7 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 	// Non-transaction mode: direct write (implicit auto-commit).
 	s.factory.entityMu.Lock()
 	defer s.factory.entityMu.Unlock()
-	return s.saveUnlocked(ctx, entity)
+	return s.saveUnlocked(entity)
 }
 
 // CompareAndSave writes entity only if its stored transaction ID is still
@@ -380,7 +380,7 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		return 0, spi.ErrConflict
 	}
 
-	return s.saveUnlocked(ctx, entity)
+	return s.saveUnlocked(entity)
 }
 
 // currentTxIDLocked returns the transaction ID a compare-and-save compares
@@ -408,7 +408,7 @@ func currentTxIDLocked(versions []entityVersion) string {
 // not exist or is not LOCKED, and enforces that model's unique keys, all in
 // the caller's critical section, so the check and the write are atomic with
 // every commit, every other save and every model change.
-func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int64, error) {
+func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 	tid := s.tenant
 	eid := entity.Meta.ID
 

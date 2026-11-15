@@ -9,19 +9,23 @@ import (
 	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
-// A commit that aborts — on a first-committer-wins conflict or on a unique
-// key violation — leaves the transaction rolled back, not committed: every
-// later call with its ctx answers ErrTxRolledBack, and a Rollback of it
-// finds nothing left to roll back.
+// A commit that aborts — on a first-committer-wins conflict, on a unique key
+// violation, or on an entity whose model is not LOCKED — leaves the
+// transaction rolled back, not committed: every later call with its ctx
+// answers ErrTxRolledBack, and a Rollback of it finds nothing left to roll
+// back.
 func TestTx_AnAbortedCommitLeavesTheTransactionRolledBack(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "abort", ModelVersion: "1"}
+	unlockedRef := spi.ModelRef{EntityName: "abort-unlocked", ModelVersion: "1"}
 	aborts := []struct {
 		name string
 		want error
+		// before, when set, runs before the transaction begins.
+		before func(t *testing.T, fx taskFixture)
 		// abort makes txCtx's commit fail.
 		abort func(t *testing.T, fx taskFixture, store spi.EntityStore, txCtx context.Context)
 	}{
-		{"conflict", spi.ErrConflict, func(t *testing.T, fx taskFixture, store spi.EntityStore, txCtx context.Context) {
+		{"conflict", spi.ErrConflict, nil, func(t *testing.T, fx taskFixture, store spi.EntityStore, txCtx context.Context) {
 			if _, err := store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: "e1", ModelRef: ref}, Data: []byte(`{}`)}); err != nil {
 				t.Fatalf("Save: %v", err)
 			}
@@ -33,11 +37,26 @@ func TestTx_AnAbortedCommitLeavesTheTransactionRolledBack(t *testing.T) {
 				t.Fatalf("other Commit: %v", err)
 			}
 		}},
-		{"unique violation", spi.ErrUniqueViolation, func(t *testing.T, fx taskFixture, store spi.EntityStore, txCtx context.Context) {
+		{"unique violation", spi.ErrUniqueViolation, nil, func(t *testing.T, fx taskFixture, store spi.EntityStore, txCtx context.Context) {
 			for _, id := range []string{"e1", "e2"} {
 				if _, err := store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: id, ModelRef: ref}, Data: []byte(`{"email":"a@x.com"}`)}); err != nil {
 					t.Fatalf("Save %s: %v", id, err)
 				}
+			}
+		}},
+		{"model not LOCKED", spi.ErrModelNotLocked, func(t *testing.T, fx taskFixture) {
+			ctx := ctxWithTenant(taskTenantA)
+			spitest.EnsureLockedModel(t, fx.f, ctx, unlockedRef)
+			ms, err := fx.f.ModelStore(ctx)
+			if err != nil {
+				t.Fatalf("ModelStore: %v", err)
+			}
+			if err := ms.Unlock(ctx, unlockedRef); err != nil {
+				t.Fatalf("Unlock: %v", err)
+			}
+		}, func(t *testing.T, fx taskFixture, store spi.EntityStore, txCtx context.Context) {
+			if _, err := store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: "e1", ModelRef: unlockedRef}, Data: []byte(`{}`)}); err != nil {
+				t.Fatalf("Save: %v", err)
 			}
 		}},
 	}
@@ -52,6 +71,9 @@ func TestTx_AnAbortedCommitLeavesTheTransactionRolledBack(t *testing.T) {
 			}
 			arm(t, context.Background(), fx.sts, taskTenantA, "e1", "T")
 			armed, _ := getTask(t, context.Background(), fx.sts, taskTenantA, "e1:S:T")
+			if a.before != nil {
+				a.before(t, fx)
+			}
 			txID, txCtx := fx.begin(t, taskTenantA)
 			a.abort(t, fx, store, txCtx)
 			if err := fx.commit(taskTenantA, txID); !errors.Is(err, a.want) {

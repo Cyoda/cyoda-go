@@ -431,6 +431,7 @@ func armedBy(t *testing.T, beginCtx context.Context, writer *spi.UserContext, na
 		},
 	}
 	saveWorkflow(t, factory, beginCtx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, beginCtx, modelRef)
 	txMgr, err := factory.TransactionManager(beginCtx)
 	if err != nil {
 		t.Fatal(err)
@@ -889,6 +890,7 @@ func TestReconcile_LoopbackStateNotInWorkflow_RemovesTasks(t *testing.T) {
 			"CLOSED": {},
 		},
 	}})
+	lockTestModel(t, factory, ctx, modelRef)
 	seedFireEntity(t, factory, ctx, "legacy-e1", modelRef, "LEGACY", "seed-tx-1", map[string]any{})
 	id := taskID(testTenant, "legacy-e1", "LEGACY", "Tick")
 	armTask(t, factory, ctx, spi.ScheduledTask{ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,

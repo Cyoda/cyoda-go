@@ -166,6 +166,7 @@ func TestFireScheduled_SelfLoopReArmsWithSameArmedBy(t *testing.T) {
 	const entityID = "loop-armedby-e1"
 	model := spi.ModelRef{EntityName: "run-" + entityID, ModelVersion: "1.0"}
 	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{oneHopWF("OPEN", nil, nil)})
+	lockTestModel(t, env.factory, env.ctx, model)
 	seedFireEntity(t, env.factory, env.ctx, entityID, model, "OPEN", "seed-tx-1", map[string]any{})
 	now := env.nowMs()
 	wantArmedBy := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
@@ -216,6 +217,7 @@ func TestFireScheduled_CBDOutsideTxCalloutCarriesArmedBy(t *testing.T) {
 	proc.StartNewTxOnDispatch = &noNewTx
 	model := spi.ModelRef{EntityName: "run-" + entityID, ModelVersion: "1.0"}
 	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{oneHopWF("CLOSED", []spi.ProcessorDefinition{proc}, nil)})
+	lockTestModel(t, env.factory, env.ctx, model)
 	seedFireEntity(t, env.factory, env.ctx, entityID, model, "OPEN", "seed-tx-1", map[string]any{})
 	now := env.nowMs()
 	armedBy := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}

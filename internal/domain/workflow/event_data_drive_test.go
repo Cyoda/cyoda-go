@@ -68,6 +68,7 @@ func recordEngineEvents(t *testing.T) (spi.StoreFactory, context.Context, []stri
 			},
 		},
 	})
+	lockTestModel(t, env.factory, ctx, ref)
 	main := makeEntity(uuid.NewString(), ref, map[string]any{"kind": "a", "x": 1})
 	// START, WORKFLOW_SKIP, WORKFLOW_FOUND, TRANSITION_MAKE,
 	// PAUSE_FOR_PROCESSING, STATE_PROCESS_RESULT (one failed, with the
@@ -120,6 +121,7 @@ func recordEngineEvents(t *testing.T) (spi.StoreFactory, context.Context, []stri
 			"A": {Transitions: []spi.TransitionDefinition{{Name: "again", Next: "A"}}},
 		},
 	}})
+	lockTestModel(t, env.factory, ctx, loopRef)
 	loop := makeEntity(uuid.NewString(), loopRef, map[string]any{})
 	if _, err := env.engine.Execute(ctx, loop); err == nil {
 		t.Fatal("Execute succeeded, want the visit limit")
@@ -159,6 +161,7 @@ func recordEngineEvents(t *testing.T) (spi.StoreFactory, context.Context, []stri
 		Version: "1.1", Name: "RunWF", InitialState: "OPEN", Active: true,
 		States: map[string]spi.StateDefinition{"OPEN": {}, "CLOSED": {}},
 	}})
+	lockTestModel(t, env.factory, ctx, spi.ModelRef{EntityName: orphaned.ModelName, ModelVersion: "1.0"})
 	run(orphaned, OutcomeCancelled)
 
 	// The fire-time SCHEDULED_TRANSITION_CANCEL: the entity carries no
@@ -166,6 +169,7 @@ func recordEngineEvents(t *testing.T) (spi.StoreFactory, context.Context, []stri
 	unstampedID := uuid.NewString()
 	unstampedRef := spi.ModelRef{EntityName: "run-" + unstampedID, ModelVersion: "1.0"}
 	saveWorkflow(t, env.factory, ctx, unstampedRef, []spi.WorkflowDefinition{oneHopWF("CLOSED", nil, nil)})
+	lockTestModel(t, env.factory, ctx, unstampedRef)
 	seedFireEntity(t, env.factory, ctx, unstampedID, unstampedRef, "OPEN", "", map[string]any{})
 	unstamped := armTask(t, env.factory, ctx, spi.ScheduledTask{
 		ID: taskID(testTenant, unstampedID, "OPEN", "AutoClose"), TenantID: testTenant,

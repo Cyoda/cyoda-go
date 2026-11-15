@@ -59,6 +59,7 @@ func calloutModeEngine(t *testing.T, mode string, startNewTx *bool, failure erro
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	entryTxID, txCtx, err := txMgr.Begin(ctx)
 	if err != nil {

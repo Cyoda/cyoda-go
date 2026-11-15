@@ -179,6 +179,7 @@ func (env *runEnv) setup(t *testing.T, entityID string, wf spi.WorkflowDefinitio
 	t.Helper()
 	model := spi.ModelRef{EntityName: "run-" + entityID, ModelVersion: "1.0"}
 	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, env.factory, env.ctx, model)
 	seedFireEntity(t, env.factory, env.ctx, entityID, model, "OPEN", "seed-tx-1", map[string]any{})
 	now := env.nowMs()
 	return armTask(t, env.factory, env.ctx, spi.ScheduledTask{

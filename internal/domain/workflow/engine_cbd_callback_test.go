@@ -70,6 +70,7 @@ func newCallbackEnv(t *testing.T, procs []spi.ProcessorDefinition, dispatch func
 			"S_post": {},
 		},
 	}})
+	lockTestModel(t, factory, ctx, modelRef)
 	return &cbdCallbackEnv{factory: factory, txMgr: txMgr, engine: engine, ctx: ctx, model: modelRef}
 }
 

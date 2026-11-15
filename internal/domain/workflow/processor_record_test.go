@@ -34,6 +34,7 @@ func processorRecords(t *testing.T, procs []spi.ProcessorDefinition, answer func
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	entity := makeEntity("e1", modelRef, map[string]any{})
 	entity.Meta.State = "INITIAL"

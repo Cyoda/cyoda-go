@@ -499,6 +499,7 @@ func TestFireScheduled_ExpiresEvenWhenWorkflowCannotBeResolved(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "fire-expire-unresolvable", ModelVersion: "1.0"}
 
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{fnCriterionWorkflow("AutoClose", delayMs)})
+	lockTestModel(t, factory, ctx, modelRef)
 	seedFireEntity(t, factory, ctx, "fire-expire-1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	timeout := timeoutMs
@@ -536,6 +537,7 @@ func TestFireScheduled_UnresolvableWorkflowLeavesTaskForRetry(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "fire-retry-unresolvable", ModelVersion: "1.0"}
 
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{fnCriterionWorkflow("AutoClose", delayMs)})
+	lockTestModel(t, factory, ctx, modelRef)
 	seedFireEntity(t, factory, ctx, "fire-retry-1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
 
 	id := taskID(testTenant, "fire-retry-1", "OPEN", "AutoClose")
@@ -881,6 +883,7 @@ func TestFireScheduled_EntityMovedOnRemoveFailureIsSurfaced(t *testing.T) {
 			"CLOSED": {},
 		},
 	}})
+	lockTestModel(t, realFactory, ctx, modelRef)
 	// Entity has already left the task's SourceState — the guard fires.
 	seedFireEntity(t, realFactory, ctx, "fire-del-1", modelRef, "CLOSED", "seed-tx-1", map[string]any{})
 
