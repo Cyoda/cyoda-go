@@ -6,6 +6,68 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A callback read returns the entity as the workflow has it, and a callout
+  never writes the entity it runs for.** The engine saves the entity into the
+  transaction before every callout that carries the transaction token, so a
+  callback read (get, search, count) returns the current data, including the
+  changes earlier processors returned; on a create it is found, and during a
+  processor it is in its source state. On PostgreSQL the callout holds the
+  entity's row lock, so another writer of the entity, and another transaction
+  that read it, wait until the workflow ends. A processor, a function
+  criterion and a schedule function never write or delete the entity they run
+  for, with or without the token; a processor changes it only through the data
+  it returns, and the engine no longer adopts such a write. Writing other
+  entities through the token is unchanged.
+- **One version per entity per transaction, on every backend.** A later write
+  of an entity the transaction already wrote replaces its pending version.
+  `GET /entity/{id}?transactionId=X` returns X's final entity and reads
+  committed versions only (`404 ENTITY_NOT_FOUND` inside X, where PostgreSQL
+  returned X's first uncommitted save); `/entity/{id}/changes` and the audit
+  history carry one entry per transaction. Delete then recreate in one
+  transaction is one version on PostgreSQL too. A savepoint rollback restores
+  the pending version, and a rollback of a create frees the id's model. An
+  entity's model stays fixed within a transaction after a same-transaction
+  delete. An auto-commit write ignores a transaction id and change type the
+  caller supplies, and a pending read in a transaction carries store-assigned
+  metadata.
+- **Unique keys are checked at commit, on the final entities.** The store
+  reads the keys from its own stored model; `spi.WithUniqueKeys` and
+  `spi.UniqueKeysFromContext` are removed. Two entities that swap key values,
+  a chain of moves, and a value freed and claimed in one transaction now
+  commit on every backend (memory and sqlite answered `409`, PostgreSQL `409`
+  unless the saves freed first). A key a joined callback's write breaks, or a
+  partial key its processors' returned data leaves, is now found at the
+  owner's commit on PostgreSQL (`409 UNIQUE_VIOLATION`, `422
+  INVALID_UNIQUE_KEY`), not on the callback request, as on memory and sqlite.
+  Two commits on PostgreSQL that claim each other's values and deadlock
+  (`40P01`) answer a retryable `409 CONFLICT`. A scheduled fire follows the
+  final entity's keys (memory dropped them, the others kept stale claims) and
+  a fire that breaks a key fails at commit.
+- **Model administration is atomic with entity commits.** An entity commit
+  into a model that does not exist or is not `LOCKED` is refused `409
+  MODEL_NOT_LOCKED` on every door (PostgreSQL: a retryable `409 CONFLICT` first
+  when the model changed after the transaction's snapshot); a transaction that
+  only deletes commits whatever the model's state. Unlock refuses a model with
+  live entities atomically (`409 MODEL_HAS_ENTITIES`), so a write in progress
+  when the unlock lands is refused at its commit. A model import or unique-key
+  change over a `LOCKED` model, which could save it back as `UNLOCKED` with
+  new keys, is refused `409 MODEL_ALREADY_LOCKED`. `DELETE /model/...` no
+  longer answers `MODEL_HAS_ENTITIES`: a model with entities is `LOCKED`, so
+  delete answers `MODEL_ALREADY_LOCKED`. PostgreSQL gains a `model_lifecycle`
+  table (migration 000019).
+- **A scheduled fire seals after its schedule functions.** Their callbacks are
+  admitted; before, every one was refused `410`. A fire refused at commit on
+  keys or the model records the doors' text (for example `UNIQUE_VIOLATION:
+  ...`) in the task's `lastError`, logged at warn level.
+- **SPI.** New sentinels `ErrModelLocked`, `ErrModelHasEntities` and
+  `*ModelHasEntitiesError`; `ErrModelNotLocked` is also returned by an entity
+  commit or save; `WithUniqueKeys` and `UniqueKeysFromContext` are removed.
+  New conformance cases: `OneVersionPerTx/*`, `Unique/*`, the model refusal
+  and interleave cases, `Save/ModelReference*`, `Save/NonTx*`,
+  `Save/PendingReadCarriesStoreMetadata` and `Save/InTxIgnoresCallerChangeType`;
+  `Save/UpdateDoesNotRestampCreationDate` is tightened. A storage plugin that
+  does not meet them fails its conformance run.
+
 - **A schema extension commits on its own, never conflicts, and stays when
   the write fails.** A write that extends a model under its `changeLevel`
   (entity create and update, collection create and update, data a workflow
