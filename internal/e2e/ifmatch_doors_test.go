@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -25,16 +26,18 @@ type ifMatchDoor struct {
 
 const ifMatchLoop = `{"name":"e","amount":1,"status":"loop"}`
 
-// ifMatchDoors is every door that takes If-Match. A collection item's
-// precondition failure, reported inside a 200 as failed[], reads as 412.
-func ifMatchDoors() []ifMatchDoor {
-	const loop = ifMatchLoop
+// ifMatchDoors is every door that takes If-Match. loop is the body of the
+// updates without a transition, which sets status loop and so runs the
+// automated "loop" transition; goBody is the body of the manual transition
+// "go". The patches set status loop. A collection item's precondition
+// failure, reported inside a 200 as failed[], reads as 412.
+func ifMatchDoors(loop, goBody string) []ifMatchDoor {
 	return []ifMatchDoor{
 		{name: "Update", request: func(h *callbackHarness, eID, eTxID string) joinedCommitOutcome {
 			return httpJoinedOutcome(h.putIfMatch("/api/entity/JSON/"+eID, eTxID, loop))
 		}},
 		{name: "ManualTransition", request: func(h *callbackHarness, eID, eTxID string) joinedCommitOutcome {
-			return httpJoinedOutcome(h.putIfMatch("/api/entity/JSON/"+eID+"/go", eTxID, `{"name":"e","amount":1,"status":"draft"}`))
+			return httpJoinedOutcome(h.putIfMatch("/api/entity/JSON/"+eID+"/go", eTxID, goBody))
 		}},
 		{name: "Patch", request: func(h *callbackHarness, eID, eTxID string) joinedCommitOutcome {
 			return httpJoinedOutcome(h.joinedPatch(eID, eTxID, `{"status":"loop"}`, ""))
@@ -63,13 +66,43 @@ func ifMatchDoors() []ifMatchDoor {
 	}
 }
 
+// ifMatchStored is E's data as the 409 test stores it and as every door
+// sends it back: compact, keys in the order PostgreSQL returns them.
+const ifMatchStored = `{"amount":1,"name":"e","status":"loop"}`
+
+// ifMatchRestWorkflow rests a created entity in OPEN and has no other
+// transition, so E can be stored there with status loop.
+func ifMatchRestWorkflow(name string) string {
+	return fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
+			"states": {
+				"NONE": {"transitions": [{"name": "rest", "next": "OPEN", "manual": false}]},
+				"OPEN": {}
+			}
+		}]
+	}`, name+"-rest-wf")
+}
+
 // TestIfMatch_ChangeAfterReadIs409 — another client commits a change to E
 // after the request read it. The test makes that write while the processor is
 // called out, to time it; it carries no transaction token and is not the
-// processor's write. The request's If-Match held when it started, so
-// this is a lost race, not a failed precondition: a retryable 409 CONFLICT,
-// and E keeps the other client's write. A collection item is not isolated:
-// the transaction the chunk runs in cannot commit.
+// processor's write. The request's If-Match held when it started, so this is
+// a lost race, not a failed precondition: a retryable 409 CONFLICT, and E
+// keeps the other client's write. A collection item is not isolated: the
+// transaction the chunk runs in cannot commit.
+//
+// Every door sends E's stored data unchanged (ifMatchStored; the patches set
+// the status E already has). Before a callout that carries the transaction
+// token the engine saves E into the transaction when E differs from what the
+// transaction holds, and on PostgreSQL that save holds E's row lock until the
+// transaction ends: a rival write made during the callout would wait for it,
+// and the processor waiting for the rival would time out. With E unchanged
+// the engine saves nothing before the callout and the rival commits at once.
+// So that an unchanged body still runs the automated "loop" transition, E is
+// stored with status loop under a workflow without it (ifMatchRestWorkflow),
+// and the door workflow is imported after.
 func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 	shapes := []struct {
 		name  string
@@ -82,7 +115,7 @@ func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 			{name: "ifm-rival-p", mode: "SYNC"}, {name: "ifm-rival-cbd", mode: "COMMIT_BEFORE_DISPATCH"},
 		}},
 	}
-	for _, door := range ifMatchDoors() {
+	for _, door := range ifMatchDoors(ifMatchStored, ifMatchStored) {
 		for _, shape := range shapes {
 			t.Run(door.name+"/"+shape.name, func(t *testing.T) {
 				h := newCalloutHarness(t, nil)
@@ -102,8 +135,12 @@ func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 					}
 					return answerOK()
 				}})
-				h.SetupModelWithWorkflow(t, model, conflictDoorWorkflow(model, tag, shape.procs...))
-				eID, eTxID := createWithTx(t, h, model, workflowSampleModel)
+				h.SetupModelWithWorkflow(t, model, ifMatchRestWorkflow(model))
+				eID, eTxID := createWithTx(t, h, model, ifMatchStored)
+				resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/model/%s/1/workflow/import", model), conflictDoorWorkflow(model, tag, shape.procs...), "")
+				if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+					t.Fatalf("import the door workflow: %d %s", resp.StatusCode, body)
+				}
 
 				out := door.request(h, eID, eTxID)
 				if out.err != nil {
@@ -135,7 +172,7 @@ func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 // it: the request's own precondition fails, 412 ENTITY_MODIFIED, and E keeps
 // the other client's write. No processor runs.
 func TestIfMatch_StaleIs412(t *testing.T) {
-	for _, door := range ifMatchDoors() {
+	for _, door := range ifMatchDoors(ifMatchLoop, `{"name":"e","amount":1,"status":"draft"}`) {
 		t.Run(door.name, func(t *testing.T) {
 			h := newCalloutHarness(t, nil)
 			model, tag := uniq("ifm-stale"), uniq("ifm-stale-tag")
