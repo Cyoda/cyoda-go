@@ -52,12 +52,15 @@ func (s *saveFailingStore) Save(ctx context.Context, e *spi.Entity) (int64, erro
 }
 
 // TestRPC_PreCalloutSaveFailure_Envelope: the save the engine makes before a
-// SYNC processor's callout fails (before "reader", after "changer" changed the
-// data). Every gRPC write door answers as the HTTP
-// doors do: a conflict is a retryable CONFLICT, a storage outage a retryable
-// STORAGE_UNAVAILABLE, any other failure a SERVER_ERROR with a ticket — never
-// WORKFLOW_FAILED or ENTITY_MODIFIED, never the store's text, and nothing is
-// dispatched.
+// SYNC processor's callout fails. On a create the anchor is not stored yet and
+// on an update the request's data differs from it, so the first save — the one
+// before "changer" — fails. A transition sends no data, so nothing is saved
+// before "changer"; it returns new data and the save before "reader" fails.
+// Every gRPC write door answers as the HTTP doors do: a conflict is a
+// retryable CONFLICT, a storage outage a retryable STORAGE_UNAVAILABLE, any
+// other failure a SERVER_ERROR with a ticket — never WORKFLOW_FAILED or
+// ENTITY_MODIFIED, never the store's text — and no processor is dispatched
+// after the failed save.
 func TestRPC_PreCalloutSaveFailure_Envelope(t *testing.T) {
 	failures := []struct {
 		name  string
@@ -145,9 +148,10 @@ func TestRPC_PreCalloutSaveFailure_Envelope(t *testing.T) {
 
 				const modelName = "presave"
 				importAndLockModel(t, svc, ctx, modelName, "1", map[string]any{"name": "A", "amount": 1})
-				// A transition sends no data, so the anchor is unchanged before
-				// "changer" and nothing is saved there (spec §2.2); the save
-				// before "reader" carries changer's data on every door.
+				// Create and update doors fail at the save before "changer". A
+				// transition leaves the anchor unchanged before "changer", so
+				// nothing is saved there (spec §2.2); it fails at the save
+				// before "reader", which carries changer's data.
 				reader := []spi.ProcessorDefinition{
 					{Type: workflow.ProcessorTypeExternalized, Name: "changer", ExecutionMode: workflow.ExecutionModeSync},
 					{Type: workflow.ProcessorTypeExternalized, Name: "reader", ExecutionMode: workflow.ExecutionModeSync},
@@ -184,6 +188,7 @@ func TestRPC_PreCalloutSaveFailure_Envelope(t *testing.T) {
 					entityID = txInfo["entityIds"].([]any)[0].(string)
 				}
 				calls := lp.ProcessorCallCount("reader")
+				changerCalls := lp.ProcessorCallCount("changer")
 
 				armed := f.err
 				failing.saveErr.Store(&armed)
@@ -191,6 +196,13 @@ func TestRPC_PreCalloutSaveFailure_Envelope(t *testing.T) {
 
 				if n := lp.ProcessorCallCount("reader") - calls; n != 0 {
 					t.Fatalf("processor dispatched %d time(s) after the save before it failed", n)
+				}
+				wantChanger := 0
+				if door.name == "transition" {
+					wantChanger = 1
+				}
+				if n := lp.ProcessorCallCount("changer") - changerCalls; n != wantChanger {
+					t.Fatalf("changer dispatched %d time(s); want %d — the failing save is the first one the door makes", n, wantChanger)
 				}
 				if env.success {
 					t.Fatal("expected a failure envelope")

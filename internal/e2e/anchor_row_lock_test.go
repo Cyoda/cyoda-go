@@ -123,8 +123,9 @@ func problemCode(body string) (code string, retryable bool) {
 
 // TestAnchorRowLock_OtherClientWaits_OneWinner: while an update's processor
 // callout runs, another client writes the same entity. The other client waits
-// until the cascade ends. Then one side wins and the other is refused with a
-// retryable 409; the entity holds the winner's data.
+// until the cascade ends; then the cascade has committed and the other
+// client's write, made from the older snapshot, is refused with a retryable
+// 409 CONFLICT. The entity holds the cascade's data in DONE.
 func TestAnchorRowLock_OtherClientWaits_OneWinner(t *testing.T) {
 	h := newCallbackHarness(t)
 	const model = "rowlock-other-client"
@@ -147,23 +148,24 @@ func TestAnchorRowLock_OtherClientWaits_OneWinner(t *testing.T) {
 	requireNotFinished(t, "the other client's write", rival)
 	close(held.release)
 
-	c := awaitRequest(t, "the cascade", cascade)
+	// The other client read the entity before the cascade committed, so a
+	// write from that snapshot would overwrite the committed transition: on
+	// postgres (REPEATABLE READ) it is refused when the row lock is released.
+	if c := awaitRequest(t, "the cascade", cascade); c.StatusCode != http.StatusOK {
+		t.Fatalf("cascade: %d %s; want 200", c.StatusCode, c.Body)
+	}
 	r := awaitRequest(t, "the other client's write", rival)
-	final := h.GetEntityData(t, id)["status"]
-	switch {
-	case c.StatusCode == http.StatusOK && r.StatusCode == http.StatusConflict:
-		if code, retryable := problemCode(r.Body); code != "CONFLICT" || !retryable {
-			t.Errorf("other client refused with %s retryable=%v; want a retryable CONFLICT: %s", code, retryable, r.Body)
-		}
-		if final != "cascade" {
-			t.Errorf("entity status = %v; want the cascade's (it won)", final)
-		}
-	case r.StatusCode == http.StatusOK && (c.StatusCode == http.StatusOK || c.StatusCode == http.StatusConflict):
-		if final != "rival" {
-			t.Errorf("entity status = %v; want the other client's (it wrote last)", final)
-		}
-	default:
-		t.Fatalf("cascade %d %s, other client %d %s; want one winner and the other a 409", c.StatusCode, c.Body, r.StatusCode, r.Body)
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("other client: %d %s; want 409 — it wrote from a snapshot the cascade then replaced", r.StatusCode, r.Body)
+	}
+	if code, retryable := problemCode(r.Body); code != "CONFLICT" || !retryable {
+		t.Errorf("other client refused with %s retryable=%v; want a retryable CONFLICT: %s", code, retryable, r.Body)
+	}
+	if got := h.GetEntityData(t, id)["status"]; got != "cascade" {
+		t.Errorf("entity status = %v; want the cascade's", got)
+	}
+	if st, _ := h.GetEntityState(t, id); st != "DONE" {
+		t.Errorf("entity state = %q; want DONE", st)
 	}
 }
 

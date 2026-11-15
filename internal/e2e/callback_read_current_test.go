@@ -358,6 +358,8 @@ func TestCallbackReadCurrent(t *testing.T) {
 		const model = "cbrc-create-sync"
 		h.RegisterProc("cbrc-create-sync", func(rc *reqCtx) (map[string]any, error) {
 			seen.put("create/get", readAnchorJoined(rc))
+			found, marker, err := h.getEntityGRPC(rc.entityID, rc.token)
+			seen.put("create/grpc-get", fmt.Sprintf("found=%v status=%s err=%v", found, marker, err))
 			n, err := rc.modelCountHTTP(model)
 			seen.put("create/http-count", fmt.Sprintf("%d err=%v", n, err))
 			g, err := rc.modelCountGRPC(model)
@@ -379,6 +381,7 @@ func TestCallbackReadCurrent(t *testing.T) {
 		got := seen.anchor(t, "create/get")
 		requireCurrentAnchor(t, "create, SYNC processor", got, "NONE", "new")
 		for key, want := range map[string]string{
+			"create/grpc-get":   "found=true status=new err=<nil>",
 			"create/http-count": "1 err=<nil>",
 			"create/grpc-count": "1 err=<nil>",
 			"create/http-page":  "new err=<nil>",

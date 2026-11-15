@@ -66,6 +66,7 @@ var presaveFailures = []struct {
 		err:  fmt.Errorf("%s: %w", presaveDriverText, spi.ErrConflict),
 		check: func(t *testing.T, err error) {
 			t.Helper()
+			requirePresaveAppError(t, err)
 			requireConflict409(t, err)
 		},
 	},
@@ -161,12 +162,23 @@ func TestPreCalloutSaveFailure_Classification(t *testing.T) {
 // update whose items carry If-Match, an ENTITY_MODIFIED item is isolated and
 // the loop carries on. A conflict from the save before a callout is not that:
 // the transaction cannot commit, so the whole request fails with a retryable
-// 409 and the loop stops — no later item is dispatched or committed.
+// 409 and the loop stops. Only the first item's save fails, so a loop that
+// carried on would dispatch the second item's processor.
 func TestPreCalloutSaveConflict_CollectionIfMatch_NotIsolated(t *testing.T) {
 	hn, dispatched := newPresaveHarness(t)
 	first := hn.createEntityIn(t, rollbackModel, `{"name":"before"}`)
 	second := hn.createEntityIn(t, rollbackModel, `{"name":"before"}`)
 	hn.engineCAS.saveErr = fmt.Errorf("%s: %w", presaveDriverText, spi.ErrConflict)
+	// One-shot: the engine's first Save fails, every later one succeeds.
+	// onSave runs before saveErr is read, so clearing it on the second call
+	// lets that call through.
+	saves := 0
+	hn.engineCAS.onSave = func(string) {
+		saves++
+		if saves > 1 {
+			hn.engineCAS.saveErr = nil
+		}
+	}
 
 	res, err := hn.h.UpdateEntityCollection(hn.ctx, []UpdateCollectionItem{
 		{EntityID: first, Payload: json.RawMessage(`{"name":"after"}`), Transition: "go", IfMatch: hn.committedEntity(t, first).Meta.TransactionID},
@@ -175,9 +187,13 @@ func TestPreCalloutSaveConflict_CollectionIfMatch_NotIsolated(t *testing.T) {
 	if err == nil {
 		t.Fatalf("err = nil, result %+v; want the request to fail with 409", res)
 	}
+	requirePresaveAppError(t, err)
 	requireConflict409(t, err)
 	if n := dispatched.Load(); n != 0 {
 		t.Fatalf("%d processor(s) dispatched: the loop carried on past the failed save", n)
+	}
+	if saves != 1 {
+		t.Fatalf("the engine saved %d time(s); want only the first item's failed save", saves)
 	}
 	for _, id := range []string{first, second} {
 		if got := hn.committedName(t, id); got != "before" {
