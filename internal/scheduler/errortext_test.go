@@ -77,6 +77,10 @@ func TestRecordedError_AnythingElseIsATicketOnly(t *testing.T) {
 		"a store error": fmt.Errorf("failed to read entity: %w",
 			errors.New("pq: connection refused host=db.internal user=cyoda")),
 		"an Internal AppError": common.Internal("failed to save", errors.New("disk full at /var/lib/pg")),
+		// A storage outage that also carries a commit-refusal sentinel is the
+		// outage: it keeps the ticket, never a warn-only text.
+		"a storage outage carrying a unique key violation": fmt.Errorf("failed to commit scheduled run: %w",
+			errors.Join(storageDown{}, spi.ErrUniqueViolation)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			text, ticket, warnOnly := recordedError(err)

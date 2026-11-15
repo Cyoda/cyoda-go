@@ -811,13 +811,16 @@ func (s *Service) fire(ctx context.Context, r *liveRun) (rep workflow.RunReport,
 
 // logOutcome writes the §9 line once the outcome is accepted. ticket is the
 // one lastError carries, or nil. runErr is the run's error: when its recorded
-// text is an Operational AppError that keeps its cause out of lastError (a
-// storage outage), the line carries that cause, as the HTTP door's log does.
+// text keeps the cause out of lastError — an Operational AppError (a storage
+// outage), or a commit refused on the run's final entities — the line
+// carries that cause, as the HTTP door's log does.
 func (s *Service) logOutcome(r *liveRun, bk Bookkeeping, err error, ticket uuid.UUID, runErr error) {
 	attrs := []any{"pkg", "scheduler", "taskId", r.task.ID, "tenant", string(r.task.TenantID),
 		"entityId", r.task.EntityID, "transition", r.task.Transition}
 	if cause := operationalCause(runErr); cause != nil {
 		attrs = append(attrs, "cause", cause.Error())
+	} else if _, refused := refusedAtCommit(runErr); refused {
+		attrs = append(attrs, "cause", runErr.Error())
 	}
 	switch {
 	case errors.Is(err, spi.ErrStaleClaim):

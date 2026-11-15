@@ -559,3 +559,34 @@ func TestService_StorageUnavailableWarnLogsItsCause(t *testing.T) {
 		t.Errorf("outcome line = %s, want the storage failure's cause", line)
 	}
 }
+
+// A commit refused on the run's final entities records the doors' text,
+// without the store's detail; the WARN line carries that detail as its cause.
+func TestService_RefusedAtCommitWarnLogsItsCause(t *testing.T) {
+	logs := captureLogs(t)
+	runErr := fmt.Errorf("failed to commit scheduled run: %w",
+		fmt.Errorf("%w: insert unique claims: unique_claims_uq", spi.ErrUniqueViolation))
+	h := newHarness(t, testConfig(), reportFirer(workflow.RunReport{Outcome: workflow.OutcomeFailed, Err: runErr}))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
+	h.start(t)
+	eventually(t, "the attempt recorded", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
+	if a := h.fs.attemptsRecorded()[0]; a.Error != "UNIQUE_VIOLATION: a composite unique key constraint was violated" {
+		t.Errorf("lastError = %q, want the UNIQUE_VIOLATION text without the store's detail", a.Error)
+	}
+	eventually(t, "the WARN line", func() bool { return strings.Contains(logs.String(), "the task waits for its next attempt") })
+	var line string
+	for l := range strings.SplitSeq(logs.String(), "\n") {
+		if strings.Contains(l, "the task waits for its next attempt") {
+			line = l
+		}
+	}
+	if !strings.Contains(line, `"level":"WARN"`) || strings.Contains(line, `"ticket"`) {
+		t.Errorf("outcome line = %s, want WARN without a ticket", line)
+	}
+	if want := `"cause":"` + runErr.Error() + `"`; !strings.Contains(line, want) {
+		t.Errorf("outcome line = %s, want %s", line, want)
+	}
+	if strings.Contains(logs.String(), `"level":"ERROR"`) {
+		t.Errorf("logs = %s, want no ERROR line", logs.String())
+	}
+}
