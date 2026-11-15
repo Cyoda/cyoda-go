@@ -1677,6 +1677,28 @@ func (c *Client) LockModelRaw(t *testing.T, name string, version int) (int, []by
 	return resp.StatusCode, raw, nil
 }
 
+// UnlockModelRaw issues PUT /api/model/{name}/{version}/unlock and returns the
+// HTTP status code + raw body without raising on non-2xx.
+func (c *Client) UnlockModelRaw(t *testing.T, name string, version int) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/unlock", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // SetChangeLevelRaw issues POST /api/model/{name}/{version}/changeLevel/{level}
 // and returns status+body for negative-path assertions via errorcontract.Match.
 func (c *Client) SetChangeLevelRaw(t *testing.T, name string, version int, level string) (int, []byte, error) {

@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 267 scenarios in this package: the entries of its literal
+// allTests holds 268 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go, ifmatch_callback_self_write.go,
 // schema_extension_contract.go).
@@ -43,6 +43,7 @@ var allTests = []NamedTest{
 	{"ModelLockAndUnlock", RunModelLockAndUnlock},
 	{"ModelListModels", RunModelListModels},
 	{"ModelDelete", RunModelDelete},
+	{"UnlockWithEntities", RunUnlockWithEntities},
 	{"WorkflowImportExport", RunWorkflowImportExport},
 	{"WorkflowImportManualRequired", RunWorkflowImportManualRequired},
 	// What import accepts and refuses in a callout's configuration, and that

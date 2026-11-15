@@ -38,6 +38,12 @@ type refreshingModelStore struct {
 	// saved is the last descriptor passed to Save, if any.
 	saved     *spi.ModelDescriptor
 	saveCount int
+
+	// saveErr, deleteErr and unlockErr are what the store answers for those
+	// calls (nil = success).
+	saveErr   error
+	deleteErr error
+	unlockErr error
 }
 
 func (s *refreshingModelStore) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
@@ -59,13 +65,13 @@ func (s *refreshingModelStore) Save(_ context.Context, d *spi.ModelDescriptor) e
 	defer s.mu.Unlock()
 	s.saveCount++
 	s.saved = d
-	return nil
+	return s.saveErr
 }
 
 func (s *refreshingModelStore) GetAll(context.Context) ([]spi.ModelRef, error) { return nil, nil }
-func (s *refreshingModelStore) Delete(context.Context, spi.ModelRef) error     { return nil }
+func (s *refreshingModelStore) Delete(context.Context, spi.ModelRef) error     { return s.deleteErr }
 func (s *refreshingModelStore) Lock(context.Context, spi.ModelRef) error       { return nil }
-func (s *refreshingModelStore) Unlock(context.Context, spi.ModelRef) error     { return nil }
+func (s *refreshingModelStore) Unlock(context.Context, spi.ModelRef) error     { return s.unlockErr }
 func (s *refreshingModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) {
 	return true, nil
 }

@@ -132,6 +132,36 @@ func getModelFresh(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 	return r.RefreshAndGet(ctx, ref)
 }
 
+// importLockedErr is the 409 for an import over a model that is LOCKED.
+func importLockedErr(entityName string, ver int32) *common.AppError {
+	appErr := common.Operational(
+		http.StatusConflict,
+		common.ErrCodeModelAlreadyLocked,
+		fmt.Sprintf("cannot save entityModel{name=%s, version=%d} because this model has already been registered", entityName, ver))
+	appErr.Props = map[string]any{
+		"entityName":    entityName,
+		"entityVersion": ver,
+	}
+	return appErr
+}
+
+// modelLockedErr is the 409 for a change that needs an UNLOCKED model and found
+// it LOCKED, whether the service's early state check or the store's own atomic
+// check saw it.
+func modelLockedErr(action, entityName string, ver int32) *common.AppError {
+	appErr := common.Operational(
+		http.StatusConflict,
+		common.ErrCodeModelAlreadyLocked,
+		fmt.Sprintf("%s entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", action, entityName, ver))
+	appErr.Props = map[string]any{
+		"entityName":    entityName,
+		"entityVersion": ver,
+		"expectedState": "UNLOCKED",
+		"actualState":   "LOCKED",
+	}
+	return appErr
+}
+
 // ImportModel imports a model from sample data, merging with any existing schema.
 func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*ImportModelResult, error) {
 	if input.Converter != "SAMPLE_DATA" {
@@ -158,15 +188,7 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	}
 
 	if existing != nil && existing.State == spi.ModelLocked {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelAlreadyLocked,
-			fmt.Sprintf("cannot save entityModel{name=%s, version=%d} because this model has already been registered", input.EntityName, ver))
-		appErr.Props = map[string]any{
-			"entityName":    input.EntityName,
-			"entityVersion": ver,
-		}
-		return nil, appErr
+		return nil, importLockedErr(input.EntityName, ver)
 	}
 
 	newNode, err := importer.NewSampleDataImporter().Import(
@@ -227,6 +249,9 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	}
 
 	if err := store.Save(ctx, desc); err != nil {
+		if errors.Is(err, spi.ErrModelLocked) {
+			return nil, importLockedErr(input.EntityName, ver)
+		}
 		return nil, common.Internal("failed to save model", err)
 	}
 
@@ -319,17 +344,7 @@ func (h *Handler) LockModel(ctx context.Context, entityName, modelVersion string
 	}
 
 	if desc.State == spi.ModelLocked {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelAlreadyLocked,
-			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"expectedState": "UNLOCKED",
-			"actualState":   "LOCKED",
-		}
-		return nil, appErr
+		return nil, modelLockedErr("cannot process", entityName, ver)
 	}
 
 	if err := store.Lock(ctx, ref); err != nil {
@@ -376,29 +391,20 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 		return nil, appErr
 	}
 
-	entityStore, err := h.factory.EntityStore(ctx)
-	if err != nil {
-		return nil, common.Internal("failed to access entity store", err)
-	}
-
-	count, err := entityStore.Count(ctx, ref, nil)
-	if err != nil {
-		return nil, common.Internal("failed to count entities", err)
-	}
-	if count > 0 {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelHasEntities,
-			fmt.Sprintf("cannot unlock: %d entities exist", count))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"entityCount":   count,
-		}
-		return nil, appErr
-	}
-
 	if err := modelStore.Unlock(ctx, ref); err != nil {
+		var hasEntities *spi.ModelHasEntitiesError
+		if errors.As(err, &hasEntities) {
+			appErr := common.Operational(
+				http.StatusConflict,
+				common.ErrCodeModelHasEntities,
+				fmt.Sprintf("cannot unlock: %d entities exist", hasEntities.Count))
+			appErr.Props = map[string]any{
+				"entityName":    entityName,
+				"entityVersion": ver,
+				"entityCount":   hasEntities.Count,
+			}
+			return nil, appErr
+		}
 		return nil, common.Internal("failed to unlock model", err)
 	}
 
@@ -408,7 +414,8 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 	}, nil
 }
 
-// DeleteModel deletes a model. Blocked if model is locked or entities exist.
+// DeleteModel deletes a model. Blocked if the model is locked; a model with
+// entities is always locked.
 func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion string) error {
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {
@@ -429,42 +436,13 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 	}
 
 	if desc.State == spi.ModelLocked {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelAlreadyLocked,
-			fmt.Sprintf("cannot delete entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"expectedState": "UNLOCKED",
-			"actualState":   "LOCKED",
-		}
-		return appErr
-	}
-
-	entityStore, err := h.factory.EntityStore(ctx)
-	if err != nil {
-		return common.Internal("failed to access entity store", err)
-	}
-
-	count, err := entityStore.Count(ctx, ref, nil)
-	if err != nil {
-		return common.Internal("failed to count entities", err)
-	}
-	if count > 0 {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelHasEntities,
-			fmt.Sprintf("cannot delete: %d entities exist", count))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"entityCount":   count,
-		}
-		return appErr
+		return modelLockedErr("cannot delete", entityName, ver)
 	}
 
 	if err := modelStore.Delete(ctx, ref); err != nil {
+		if errors.Is(err, spi.ErrModelLocked) {
+			return modelLockedErr("cannot delete", entityName, ver)
+		}
 		return common.Internal("failed to delete model", err)
 	}
 
@@ -633,17 +611,7 @@ func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion st
 	}
 
 	if desc.State == spi.ModelLocked {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelAlreadyLocked,
-			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"expectedState": "UNLOCKED",
-			"actualState":   "LOCKED",
-		}
-		return nil, appErr
+		return nil, modelLockedErr("cannot process", entityName, ver)
 	}
 
 	node, err := schema.Unmarshal(desc.Schema)
@@ -672,6 +640,9 @@ func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion st
 	updated := *desc
 	updated.UniqueKeys = keys
 	if err := store.Save(ctx, &updated); err != nil {
+		if errors.Is(err, spi.ErrModelLocked) {
+			return nil, modelLockedErr("cannot process", entityName, ver)
+		}
 		return nil, common.Internal("failed to save model", err)
 	}
 
