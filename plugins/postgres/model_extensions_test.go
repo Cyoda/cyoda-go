@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -250,10 +251,11 @@ func TestStoreFactory_SetApplyFuncTwicePanics(t *testing.T) {
 	factory.SetApplyFunc(jsonRecordingApplyFunc())
 }
 
-// --- Save clears the extension log ---
+// --- Save over a LOCKED model keeps its extension log ---
 
-func TestSave_AfterPriorExtensions_ClearsLog(t *testing.T) {
-	// Save logs a warn but succeeds; the log is cleared unconditionally.
+// A refused Save over a LOCKED model leaves its extension log, and so the
+// extended schema a Get returns, as it was.
+func TestSave_OverLockedModel_KeepsExtensionLog(t *testing.T) {
 	factory := setupModelExtTest(t)
 	factory.SetApplyFunc(jsonRecordingApplyFunc())
 
@@ -263,26 +265,35 @@ func TestSave_AfterPriorExtensions_ClearsLog(t *testing.T) {
 		t.Fatalf("ModelStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-
-	// Create an extension row.
+	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural) // LOCKED
 	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
 		t.Fatalf("ExtendSchema: %v", err)
 	}
+	before, err := ms.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("Get before Save: %v", err)
+	}
 
-	// Save again (simulating operator-misuse: Save while stale rows exist).
-	if err := ms.Save(ctx, &spi.ModelDescriptor{
+	err = ms.Save(ctx, &spi.ModelDescriptor{
 		Ref:         ref,
 		State:       spi.ModelUnlocked,
 		ChangeLevel: spi.ChangeLevelStructural,
 		Schema:      []byte(`{"base":2}`),
 		UpdateDate:  time.Now().UTC().Truncate(time.Millisecond),
-	}); err != nil {
-		t.Fatalf("Save: %v", err)
+	})
+	if !errors.Is(err, spi.ErrModelLocked) {
+		t.Fatalf("Save over a LOCKED model = %v, want spi.ErrModelLocked", err)
 	}
 
-	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 0 {
-		t.Errorf("expected 0 extension rows after Save, got %d", n)
+	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 1 {
+		t.Errorf("extension rows after the refused Save = %d, want 1", n)
+	}
+	after, err := ms.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("Get after Save: %v", err)
+	}
+	if !bytes.Equal(after.Schema, before.Schema) {
+		t.Errorf("schema after the refused Save = %s, want %s", after.Schema, before.Schema)
 	}
 }
 
