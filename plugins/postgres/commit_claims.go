@@ -35,31 +35,29 @@ import (
 // while it had no entities) has its old keys there. Either is a LOCKED model
 // the API lets the transaction write into, and the commit must enforce the
 // keys the model holds now, as memory and sqlite do. So the transactional
-// commit reads them on the model pool, outside its transaction
-// (TransactionManager.commitWrittenClaims). A write outside a transaction
-// reads them on its own READ COMMITTED transaction, which sees the latest
-// committed model too.
+// commit reads them on the model pool, outside its transaction, and gives
+// the connection back before steps 2-4 (TransactionManager.readModelKeys):
+// step 4 can wait on another transaction's uncommitted claim, and a model
+// connection held through that wait would bound entity commits by the model
+// pool's size and starve the model reads the pool protects. A write outside
+// a transaction reads them on its own READ COMMITTED transaction, which sees
+// the latest committed model too (replaceClaims).
 //
 // Every step runs before the commit stamp: nothing after cyoda_stamp may
 // wait on a lock (stampCommitInstant).
 
-// commitClaims runs steps 1-4: step 1 on keysQ, steps 2-4 on q. It runs at
-// Commit inside a caller's transaction, and for a write outside a transaction
-// (replaceClaims) in the transaction that write opened for itself. written is
-// the record of the entities written (txState.WrittenEntities): the model and
-// bytes of each entity's last save, or a delete. Both save paths store the
-// entity under the model the save names (the upsert's model guard,
-// replacePendingSave's spi.ErrEntityModelMismatch), so the recorded model is
-// the stored one.
-func commitClaims(ctx context.Context, q, keysQ Querier, tenantID spi.TenantID, written map[string]writtenEntity) error {
+// commitClaims runs steps 2-4 on q, with keys, the unique keys step 1 read
+// (modelKeys) for the models of the entities whose last write is a save
+// (savedModels). It runs at Commit inside a caller's transaction, and for a
+// write outside a transaction (replaceClaims) in the transaction that write
+// opened for itself. written is the record of the entities written
+// (txState.WrittenEntities): the model and bytes of each entity's last save,
+// or a delete. Both save paths store the entity under the model the save
+// names (the upsert's model guard, replacePendingSave's
+// spi.ErrEntityModelMismatch), so the recorded model is the stored one.
+func commitClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written map[string]writtenEntity, keys map[spi.ModelRef][]spi.UniqueKey) error {
 	if len(written) == 0 {
 		return nil
-	}
-
-	// Step 1.
-	keys, err := modelKeys(ctx, keysQ, tenantID, savedModels(written))
-	if err != nil {
-		return err
 	}
 
 	// Step 3, before any write: a partial key fails the whole commit.

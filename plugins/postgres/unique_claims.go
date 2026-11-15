@@ -20,8 +20,12 @@ import (
 // follows the stamp. A save inside a caller's transaction does no claim work:
 // the transaction's Commit runs commitClaims over its final entities.
 func (s *entityStore) replaceClaims(ctx context.Context, e *spi.Entity) error {
-	return commitClaims(ctx, s.q, s.q, s.tenantID,
-		map[string]writtenEntity{e.Meta.ID: {ref: e.Meta.ModelRef, data: e.Data}})
+	written := map[string]writtenEntity{e.Meta.ID: {ref: e.Meta.ModelRef, data: e.Data}}
+	keys, err := modelKeys(ctx, s.q, s.tenantID, savedModels(written))
+	if err != nil {
+		return err
+	}
+	return commitClaims(ctx, s.q, s.tenantID, written, keys)
 }
 
 // releaseClaims removes all unique-key claims held by entityID. Called from a

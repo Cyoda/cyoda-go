@@ -82,10 +82,12 @@ type TransactionManager struct {
 	// production. It supplies commit stamps and consistency times
 	// (stampAtArg) and the retention cutoff of submit times.
 	clock spi.Clock
-	// models returns the model pool of the factory the manager serves
-	// (StoreFactory.setTransactionManager). The commit reads the unique keys
-	// of its entities' models on it (commitWrittenClaims); nil until a
-	// factory takes the manager.
+	// models returns the model pool of the factory the manager serves. The
+	// commit reads the unique keys of its entities' models on it
+	// (readModelKeys). StoreFactory.setTransactionManager sets it in the
+	// same call that hands the manager to the factory, and a transaction
+	// records entity writes only through a factory's stores, so it is set
+	// whenever a commit has keys to read.
 	models func() (*modelPool, error)
 }
 
@@ -402,34 +404,47 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	return nil
 }
 
-// commitWrittenClaims runs commitClaims over the entities the transaction
-// wrote, reading the models' unique keys on the model pool. A transaction
-// that wrote no entity issues no statement here.
+// commitWrittenClaims runs the commit-time unique-key check over the
+// entities the transaction wrote: step 1 on the model pool (readModelKeys),
+// steps 2-4 in the transaction (commitClaims). A transaction that wrote no
+// entity issues no statement here, and one that wrote only deletes reads no
+// model.
 func (tm *TransactionManager) commitWrittenClaims(ctx context.Context, tx pgx.Tx, state *txState) error {
 	written := state.WrittenEntities()
 	if len(written) == 0 {
 		return nil
 	}
-	if tm.models == nil {
-		return errors.New("failed to read the models' unique keys: the transaction manager has no model pool")
+	keys, err := tm.readModelKeys(ctx, state.tenantID, savedModels(written))
+	if err != nil {
+		return err
+	}
+	return commitClaims(ctx, tx, state.tenantID, written, keys)
+}
+
+// readModelKeys is step 1 of the commit-time check (commitClaims) for a
+// transaction: it reads the unique keys of refs outside the transaction's
+// snapshot, on the model pool, and gives the connection back before it
+// returns. The model pool, because the commit already holds a main-pool
+// connection, and taking a second from the same pool could wait forever on a
+// saturated pool. The acquire is bounded, as every acquire made while a
+// transaction holds a connection is: a timeout is a retryable
+// storage-unavailable error. With no refs it reads nothing.
+func (tm *TransactionManager) readModelKeys(ctx context.Context, tenantID spi.TenantID, refs []spi.ModelRef) (map[spi.ModelRef][]spi.UniqueKey, error) {
+	if len(refs) == 0 {
+		return map[spi.ModelRef][]spi.UniqueKey{}, nil
 	}
 	models, err := tm.models()
 	if err != nil {
-		return fmt.Errorf("failed to read the models' unique keys: %w", err)
+		return nil, fmt.Errorf("failed to read the models' unique keys: %w", err)
 	}
-	// The keys are read outside the transaction's snapshot (see
-	// commitClaims), on the model pool: the commit already holds a main-pool
-	// connection, and taking a second from the same pool could wait forever
-	// on a saturated pool. The acquire is bounded, as every acquire made
-	// while a transaction holds a connection is.
 	acquireCtx, cancelAcquire := newAcquireContext(ctx, models.acquireTimeout)
 	conn, err := models.pool.Acquire(acquireCtx)
 	cancelAcquire()
 	if err != nil {
-		return classifyAcquireErr(ctx, acquireCtx, "model keys acquire", err)
+		return nil, classifyAcquireErr(ctx, acquireCtx, "model keys acquire", err)
 	}
 	defer conn.Release()
-	return commitClaims(ctx, tx, classifiedQuerier{inner: conn}, state.tenantID, written)
+	return modelKeys(ctx, classifiedQuerier{inner: conn}, tenantID, refs)
 }
 
 // stampCommitInstant fixes the transaction's instant and applies it to every

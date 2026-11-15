@@ -199,6 +199,25 @@ func TestCommitClaims_KeysReadAtCommit_ModelRekeyedAfterSnapshot(t *testing.T) {
 	ccRequireAbsent(t, fx, id, "the refused commit")
 }
 
+// TestCommitClaims_KeysReadOnModelPool — the commit reads the models' keys
+// on the model pool, not the main pool. With a main pool of one connection,
+// which the committing transaction holds, a key read on the main pool could
+// not get a connection; on the model pool the commit goes through and
+// claims its value.
+func TestCommitClaims_KeysReadOnModelPool(t *testing.T) {
+	fx := newPGFixtureSized(t, defaultStoreConfig().SchemaSavepointInterval, 1)
+	tm := fx.txManager(t)
+	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
+	ccModel(t, fx, ref, ccCodeKey)
+
+	txID, txCtx, es := ccBegin(t, fx, tm)
+	ccSave(t, txCtx, es, ccEntity(ref, uuid.NewString(), `{"code":"x"}`))
+	if err := tm.Commit(boundedCtx(t, fx), txID); err != nil {
+		t.Fatalf("Commit with the one main-pool connection held by the transaction: %v", err)
+	}
+	ccRequireClaimed(t, fx, ref, `"x"`, "the committed value")
+}
+
 // TestCommitClaims_ExtendAndChangeLevel_DoNotBlock — the commit reads the
 // models' keys without a lock. An extension and a change-level change, which
 // write the models row, neither fail nor delay the commit, whether committed

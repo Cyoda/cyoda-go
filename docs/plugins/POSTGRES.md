@@ -100,8 +100,10 @@ Full transaction-lifecycle implementation
   model of every entity whose final write is a save (no lock, no state
   check). It reads them on the model pool, outside the transaction's
   snapshot, so a model locked or re-keyed after the transaction began is
-  enforced with the keys it holds at commit. It then releases the claims of every entity it wrote, and inserts the
-  claims of its final entities, computed with those keys, in a fixed order.
+  enforced with the keys it holds at commit, and gives the model connection
+  back before it goes on. It then releases the claims of every entity it
+  wrote, and inserts the claims of its final entities, computed with those
+  keys, in a fixed order.
   A duplicate fails on `unique_claims_uq` (`spi.ErrUniqueViolation`). A
   write outside a transaction runs the same steps in its own statements.
 

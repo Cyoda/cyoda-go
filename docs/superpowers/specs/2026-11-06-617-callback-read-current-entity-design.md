@@ -376,9 +376,11 @@ by each model store). It has two failure modes:
 
 At commit, a transaction's claims are computed from its final entities:
 
-1. Read, inside the committing transaction, the unique keys of the model of
-   every entity whose final write in the transaction is a save (one read per
-   distinct model). The model's state is not checked: the API guarantees that
+1. Read the unique keys of the model of every entity whose final write in
+   the transaction is a save (one read per distinct model), as the model
+   store holds them at commit, never from the transaction's snapshot: a model
+   locked or re-keyed after the transaction began is enforced with its
+   current keys. The model's state is not checked: the API guarantees that
    an entity is saved only into a `LOCKED` model (§4.5). An entity whose final
    write is a delete needs no model read.
 2. Release the claims of every entity the transaction wrote or deleted.
@@ -474,11 +476,13 @@ longer passes anything to storage.
   from that pool could wait forever on a saturated pool. The non-transactional
   path does the same inside `replaceClaims`, before `stampOwnCommitInstant`.
 
-  **Errors.** The step 1-4 statements can now be the first statements
-  `Commit` issues (when the read set is empty), so their errors go through
-  `abortedCommitError` (`transaction_manager.go` ~:283-288) and then
-  `classifyTxError`, as read-set validation's do, mapping `40001`, `40P01` and
-  `23505` on `unique_claims_uq`.
+  **Errors.** The step 2-4 statements can now be the first statements
+  `Commit` issues in the transaction (when the read set is empty), so their
+  errors go through `abortedCommitError` (`transaction_manager.go` ~:283-288)
+  and then `classifyTxError`, as read-set validation's do, mapping `40001`,
+  `40P01` and `23505` on `unique_claims_uq`. Step 1 runs on the model pool
+  and gives its connection back before step 2; an acquire that times out
+  there is a retryable storage-unavailable error (`503`).
 
   *What the record holds.* For each entity the transaction wrote, the bytes
   of its last write (none for a delete); step 3 computes claims from these.
