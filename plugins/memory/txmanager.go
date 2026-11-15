@@ -146,10 +146,10 @@ type TransactionManager struct {
 	// stale) when a later same-tx Save re-buffers id before commit — that
 	// value is unstaged from tx.Deletes and flows through the normal
 	// buffer-flush path instead. Protected by mu. Cleaned up after commit
-	// or rollback (no leak); not savepoint-scoped,
-	// because a RollbackToSavepoint that restores id to tx.Buffer also
-	// removes it from tx.Deletes, so a stale entry here is simply never
-	// read again.
+	// or rollback (no leak). It need not be savepoint-scoped: every entry
+	// for an id carries that id's one model, because the in-tx model check
+	// (checkModelImmutable) refuses a write under any other, so an entry
+	// left by a rolled-back delete still names the right model.
 	deletedBufferModels map[string]map[string]spi.ModelRef // txID -> entityID -> evicted model
 
 	// scheduledTaskOps holds the task-row ops staged while the transaction
@@ -248,6 +248,15 @@ func (m *TransactionManager) recordUniqueKeys(txID, entityID string, keys []spi.
 		m.txUniqueKeys[txID] = make(map[string][]spi.UniqueKey)
 	}
 	m.txUniqueKeys[txID][entityID] = keys
+}
+
+// deletedBufferModel returns the model reference stageDeletedBufferModel
+// recorded for entityID in txID, if any. Protected by mu.
+func (m *TransactionManager) deletedBufferModel(txID, entityID string) (spi.ModelRef, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ref, ok := m.deletedBufferModels[txID][entityID]
+	return ref, ok
 }
 
 // stageDeletedBufferModel records the model reference of a buffered

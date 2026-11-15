@@ -218,6 +218,11 @@ func (s *EntityStore) checkModelImmutable(tx *spi.TransactionState, entity *spi.
 		}
 		return nil
 	}
+	// A create or update this transaction buffered and then deleted left
+	// the buffer; its model is still the entity's model.
+	if ref, ok := s.factory.txManager.deletedBufferModel(tx.ID, id); ok && ref != entity.Meta.ModelRef {
+		return modelMismatchErr(id)
+	}
 	var mismatch bool
 	func() {
 		s.factory.entityMu.RLock()
