@@ -160,6 +160,30 @@ func TestSetUniqueKeysSaveAfterLockCommits_Refused(t *testing.T) {
 	}
 }
 
+// TestSaveOverUnlockedBumpsGeneration — Save over a stored UNLOCKED model
+// (the SetUniqueKeys and ImportModel path) changes its unique keys, so it
+// bumps the lifecycle row.
+func TestSaveOverUnlockedBumpsGeneration(t *testing.T) {
+	fx := newPGFixture(t)
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.saveModel(t, ref, []byte(`{}`), spi.ModelUnlocked)
+	g0 := mustGeneration(t, fx, ref)
+
+	keyed := &spi.ModelDescriptor{
+		Ref:         ref,
+		State:       spi.ModelUnlocked,
+		ChangeLevel: spi.ChangeLevelStructural,
+		Schema:      []byte(`{}`),
+		UniqueKeys:  []spi.UniqueKey{{ID: "k1", Fields: []string{"$.code"}}},
+	}
+	if err := fx.store.Save(fx.ctx, keyed); err != nil {
+		t.Fatalf("Save over an UNLOCKED model: %v", err)
+	}
+	if gen := mustGeneration(t, fx, ref); gen != g0+1 {
+		t.Errorf("generation after Save over an UNLOCKED model = %d, want %d", gen, g0+1)
+	}
+}
+
 // TestLockIdempotent_NoBump — Lock of an UNLOCKED model bumps the lifecycle
 // row; Lock of a model already LOCKED neither bumps it nor touches it, so it
 // does not wait for an entity commit holding the row FOR SHARE. Lock of a

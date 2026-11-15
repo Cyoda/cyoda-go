@@ -159,7 +159,8 @@ func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 // On zero rows the model row is read under its lock: absent is
 // spi.ErrNotFound, LOCKED is the idempotent no-op, and a model that left
 // LOCKED or was created between the two statements is locked under the row
-// lock just taken.
+// lock just taken by the same conditional UPDATE, whose row count again
+// decides the bump.
 func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 	return s.inModelTx(ctx, fmt.Sprintf("Lock(%s)", modelRef), func(q Querier) error {
 		changed, err := lockIfUnlocked(ctx, q, s.tenantID, modelRef)
@@ -182,9 +183,12 @@ func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 			if state == string(spi.ModelLocked) {
 				return nil // already LOCKED: no change, no bump
 			}
-			if err := updateStateField(ctx, q, s.tenantID, modelRef, spi.ModelLocked, "lock"); err != nil {
+			if changed, err = lockIfUnlocked(ctx, q, s.tenantID, modelRef); err != nil {
 				return err
 			}
+		}
+		if !changed {
+			return nil
 		}
 		return bumpLifecycle(ctx, q, s.tenantID, modelRef)
 	})
