@@ -1051,14 +1051,10 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 				// buffered create from tx.Buffer before this flush ran, so
 				// there is no `entities` row to soft-delete (see
 				// deletedBufferedEntities's field doc). Write the
-				// create+tombstone as one committed row instead of
-				// skipping — an id genuinely never saved at all (Delete
-				// bypassing EntityStore) has no staged entry either, and
-				// stays a no-op skip.
-				buffered, ok := m.deletedBufferedEntityFor(tx.ID, entityID)
-				if !ok {
-					continue
-				}
+				// create+tombstone as one committed row. Every delete of a
+				// buffered entity stages it, and a savepoint rollback
+				// restores both maps together, so the entry is present.
+				buffered, _ := m.deletedBufferedEntityFor(tx.ID, entityID)
 				if err := insertDeletedBufferedTombstone(ctx, sqlTx, tid, tx.ID, entityID, submitMicro, buffered, attribution); err != nil {
 					return err
 				}

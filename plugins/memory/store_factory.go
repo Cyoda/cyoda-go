@@ -311,8 +311,9 @@ func (f *StoreFactory) Close() error {
 // stored models: the keys enforced are the ones the model holds now, never
 // ones a caller passes. The model's state is not checked (the caller saves
 // entities only into a LOCKED model), and a model not found contributes no
-// keys. modelMu is taken inside entityMu, the order every model operation
-// uses.
+// keys. Lock order: modelKeys takes modelMu while its callers hold entityMu;
+// model operations never take entityMu, and nothing takes entityMu while
+// holding modelMu.
 func (f *StoreFactory) modelKeys(tid spi.TenantID, refs []spi.ModelRef) map[spi.ModelRef][]spi.UniqueKey {
 	f.modelMu.RLock()
 	defer f.modelMu.RUnlock()

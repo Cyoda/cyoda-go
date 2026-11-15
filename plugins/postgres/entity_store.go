@@ -551,20 +551,7 @@ func (s *entityStore) maintainClaims(ctx context.Context, entity *spi.Entity) er
 	if spi.GetTransaction(ctx) == nil {
 		return s.replaceClaims(ctx, entity)
 	}
-	if s.tm == nil {
-		return errNoTransactionManager(entity.Meta.ID)
-	}
 	return s.tm.recordSave(ctx, entity.Meta.ID, entity.Meta.ModelRef, entity.Data)
-}
-
-// errNoTransactionManager is the answer to a write that carries a transaction
-// on a store from a factory with no transaction manager (NewStoreFactory, or
-// a test constructor before InitTransactionManager). Such a factory's
-// resolveRaw resolves no transaction: the write's statements already ran on
-// the pool, each auto-committed, and the transaction on ctx was never joined.
-// The error reports that wiring fault; it does not undo them.
-func errNoTransactionManager(entityID string) error {
-	return fmt.Errorf("record the write of entity %s: the store has no transaction manager", entityID)
 }
 
 // stampOwnCommitInstant dates a write that has no SPI transaction at the
@@ -1064,8 +1051,6 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 		if err := s.releaseClaims(ctx, entityID); err != nil {
 			return fmt.Errorf("failed to release unique claims: %w", err)
 		}
-	} else if s.tm == nil {
-		return errNoTransactionManager(entityID)
 	} else if err := s.tm.recordDelete(ctx, entityID); err != nil {
 		return err
 	}
