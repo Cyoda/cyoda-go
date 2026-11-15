@@ -1794,7 +1794,19 @@ func (c *Client) UpdateEntityRaw(t *testing.T, id uuid.UUID, transition, body st
 // UpdateEntityData for the no-precondition path.
 func (c *Client) UpdateEntityDataWithIfMatchRaw(t *testing.T, id uuid.UUID, body, ifMatch string) (int, []byte, error) {
 	t.Helper()
+	return c.UpdateEntityWithIfMatchRaw(t, id, "", body, ifMatch)
+}
+
+// UpdateEntityWithIfMatchRaw issues PUT /api/entity/JSON/{entityId}, or
+// PUT /api/entity/JSON/{entityId}/{transition} when transition is not empty,
+// with an `If-Match` HTTP header carrying ifMatch when it is not empty.
+// Returns status + body for negative-path assertions.
+func (c *Client) UpdateEntityWithIfMatchRaw(t *testing.T, id uuid.UUID, transition, body, ifMatch string) (int, []byte, error) {
+	t.Helper()
 	path := "/api/entity/JSON/" + id.String()
+	if transition != "" {
+		path += "/" + transition
+	}
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(body))
 	if err != nil {
 		return 0, nil, fmt.Errorf("build request: %w", err)

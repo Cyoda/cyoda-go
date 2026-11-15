@@ -19,6 +19,15 @@ import (
 // client changed E before the request began) answers 412. When the callback's
 // write loses a race to a write another client committed after the request
 // began, the answer is a retryable 409 on every backend.
+//
+// The rival write in that race can commit only while the request's
+// transaction holds no write of E. Before a callout that carries the
+// transaction token the engine saves E into the transaction when E differs
+// from what the transaction holds, and on postgres that save keeps E's row
+// locked until the transaction ends: a rival write made during the callout
+// waits for it. So the race is run through a manual transition that brings
+// E's stored data unchanged: E is as stored when the processor is called out,
+// the engine saves nothing, and the rival write commits at once.
 
 func init() {
 	Register(
@@ -38,6 +47,18 @@ func ifmSelfWorkflow(name string, procs []any) string {
 			"name": "go", "next": "DONE", "manual": false,
 			"criterion":  map[string]any{"type": "simple", "jsonPath": "$.status", "operatorType": "EQUALS", "value": "go"},
 			"processors": procs,
+		}}},
+		"DONE": map[string]any{},
+	})
+}
+
+// ifmSelfRaceWorkflow moves E from OPEN to DONE through the manual
+// transition "race", running procs on the way.
+func ifmSelfRaceWorkflow(name string, procs []any) string {
+	return cbWorkflowDoc(name, map[string]any{
+		"NONE": map[string]any{"transitions": []any{map[string]any{"name": "store", "next": "OPEN", "manual": false}}},
+		"OPEN": map[string]any{"transitions": []any{map[string]any{
+			"name": "race", "next": "DONE", "manual": true, "processors": procs,
 		}}},
 		"DONE": map[string]any{},
 	})
@@ -109,15 +130,19 @@ func RunIfMatch_OwnEntityCallbackWrite(t *testing.T, fixture BackendFixture) {
 	// The callback's write of E loses to a write that another client
 	// committed after the request began. cb-race-target-strict makes that
 	// rival write itself, outside the transaction, and then writes E again
-	// through the joined callback.
+	// through the joined callback. The request is the manual transition
+	// "race" with E's stored data as its body: the body is the bytes E was
+	// stored with (compact, keys in the order every backend returns them), so
+	// E is unchanged when the processor is called out and the engine saves
+	// nothing before it.
 	for _, mode := range []string{"SYNC", "ASYNC_SAME_TX"} {
 		t.Run("LostRace/"+mode, func(t *testing.T) {
 			model := "ifm-self-" + uuid.NewString()[:8]
 			setupModelWithWorkflow(t, c, model, 1, ifmSelfSample,
-				ifmSelfWorkflow(model+"-wf", []any{cbProc("cb-race-target-strict", mode, "", nil)}))
+				ifmSelfRaceWorkflow(model+"-wf", []any{cbProc("cb-race-target-strict", mode, "", nil)}))
 			eID, before := ifmSelfCreate(t, c, model)
 
-			status, raw, err := c.UpdateEntityDataWithIfMatchRaw(t, eID, ifmSelfBody(eID, "go"), before.Meta.TransactionID)
+			status, raw, err := c.UpdateEntityWithIfMatchRaw(t, eID, "race", ifmSelfBody(eID, "one"), before.Meta.TransactionID)
 			if err != nil {
 				t.Fatalf("update: %v", err)
 			}
