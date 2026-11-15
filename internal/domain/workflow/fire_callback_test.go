@@ -2,12 +2,15 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 )
 
 func runWithin(t *testing.T, env *runEnv, task spi.ScheduledTask) RunReport {
@@ -475,5 +478,178 @@ func TestCallback_SyncObservationFails_RunFails(t *testing.T) {
 				t.Errorf("p1 dispatched %d times, want %d", n, tc.wantDispatches)
 			}
 		})
+	}
+}
+
+// enterAsCallback begins a callout of the transaction txID from the chain's
+// context ctx and opens a joined write scope under it, as a compute node's
+// callback is admitted. It returns the scope's context and a function that
+// ends the scope and the callout, or the admission's refusal.
+func enterAsCallback(env *runEnv, ctx context.Context, txID, calloutID string) (context.Context, func(), error) {
+	coord := env.engine.coord
+	_, endCallout := coord.BeginCallout(ctx, txID, calloutID)
+	coord.Advance(calloutID, 1)
+	joined, err := env.txMgr.Join(env.ctx, txID)
+	if err != nil {
+		endCallout()
+		return nil, nil, err
+	}
+	sc, sctx, err := coord.Enter(joined, txID, []txcoord.Pair{{Callout: calloutID, Major: 1}}, txcoord.Write, 0)
+	if err != nil {
+		endCallout()
+		return nil, nil, err
+	}
+	return sctx, func() {
+		sc.End(nil)
+		endCallout()
+	}, nil
+}
+
+// fireArmsFunctionWF: OPEN --AutoClose--> DONE, and DONE arms Tick by the
+// schedule function "tick".
+func fireArmsFunctionWF() spi.WorkflowDefinition {
+	return oneHopWF("DONE", nil, map[string]spi.StateDefinition{
+		"DONE": {Transitions: []spi.TransitionDefinition{{Name: "Tick", Next: "OPEN",
+			Schedule: &spi.TransitionSchedule{Function: &spi.ScheduleFunction{Name: "tick", ResultKind: "Schedule", CalculationNodesTags: "sched"}}}}},
+	})
+}
+
+func fireInAMinute() contract.FunctionResult {
+	return contract.FunctionResult{Kind: "Schedule", Value: json.RawMessage(`{"fireAfterMs":60000}`)}
+}
+
+// A scheduled fire seals its transaction after its schedule functions: their
+// callbacks are admitted and read the anchor the fire saved before the
+// callout, in the target state.
+func TestFireScheduled_ScheduleFunctionCallbackAdmitted(t *testing.T) {
+	var env *runEnv
+	var enterErr error
+	var seen *spi.Entity
+	var seenErr error
+	var fireTxID string
+	probe := &calloutProbe{function: func(ctx context.Context, entity *spi.Entity, txID string) (contract.FunctionResult, error) {
+		fireTxID = txID
+		sctx, end, err := enterAsCallback(env, ctx, txID, "fn-callout")
+		enterErr = err
+		if err == nil {
+			seen, seenErr = readUnderToken(sctx, env.factory, entity.Meta.ID)
+			end()
+		}
+		return fireInAMinute(), nil
+	}}
+	env = newRunEnv(t, probe)
+	claimed := env.claimed(t, "fsfa-e1", fireArmsFunctionWF())
+
+	r := runWithin(t, env, claimed)
+	if enterErr != nil {
+		t.Fatalf("the schedule function's callback was refused: %v", enterErr)
+	}
+	if seenErr != nil {
+		t.Fatalf("the callback's read: %v", seenErr)
+	}
+	if seen.Meta.State != "DONE" || seen.Meta.TransactionID != fireTxID {
+		t.Errorf("callback read state %q, transactionId %q; want DONE and the fire's %q", seen.Meta.State, seen.Meta.TransactionID, fireTxID)
+	}
+	if r.Outcome != OutcomeFired || r.Err != nil {
+		t.Fatalf("report = %+v, want fired", r)
+	}
+	if got := env.state(t, "fsfa-e1"); got != "DONE" {
+		t.Errorf("entity state = %q, want DONE", got)
+	}
+}
+
+// A schedule function's callback deletes the entity the fire has just moved
+// and re-armed: the run fails and nothing of it commits.
+func TestFireScheduled_ScheduleFunctionCallbackDeletesAnchor_RunFails(t *testing.T) {
+	var env *runEnv
+	var enterErr, deleteErr error
+	probe := &calloutProbe{function: func(ctx context.Context, entity *spi.Entity, txID string) (contract.FunctionResult, error) {
+		sctx, end, err := enterAsCallback(env, ctx, txID, "fn-callout")
+		enterErr = err
+		if err == nil {
+			deleteErr = deleteUnderToken(sctx, env.factory, entity.Meta.ID)
+			end()
+		}
+		return fireInAMinute(), nil
+	}}
+	env = newRunEnv(t, probe)
+	claimed := env.claimed(t, "fsfd-e1", fireArmsFunctionWF())
+
+	r := runWithin(t, env, claimed)
+	if enterErr != nil {
+		t.Fatalf("the schedule function's callback was refused: %v", enterErr)
+	}
+	if deleteErr != nil {
+		t.Fatalf("the callback's delete: %v", deleteErr)
+	}
+	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, errFiredEntityDeletedByScheduleFunction) {
+		t.Fatalf("report = %+v, want failed: a schedule function's callback deleted the fired entity", r)
+	}
+	if got := env.state(t, "fsfd-e1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN: nothing of the failed run may commit", got)
+	}
+	if got, found := env.task(t, claimed.ID); !found || got.ArmToken != claimed.ArmToken {
+		t.Errorf("task = %+v (found %v), want the claimed life: the run's removal of it must roll back", got, found)
+	}
+	if n := countAuditEvents(t, env.factory, env.ctx, "fsfd-e1", spi.SMEventScheduledTransitionFired); n != 0 {
+		t.Errorf("FIRE events = %d, want 0", n)
+	}
+}
+
+// casRecordingFactory records the precondition and the transaction of every
+// EntityStore.CompareAndSave.
+type casRecordingFactory struct {
+	spi.StoreFactory
+	cas *[]casCall
+}
+
+type casCall struct{ expected, txID string }
+
+type casRecordingEntityStore struct {
+	spi.EntityStore
+	cas *[]casCall
+}
+
+func (f casRecordingFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	es, err := f.StoreFactory.EntityStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return casRecordingEntityStore{EntityStore: es, cas: f.cas}, nil
+}
+
+func (s casRecordingEntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
+	call := casCall{expected: expectedTxID}
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		call.txID = tx.ID
+	}
+	*s.cas = append(*s.cas, call)
+	return s.EntityStore.CompareAndSave(ctx, entity, expectedTxID)
+}
+
+// A fire whose target state arms a function schedule has written the anchor
+// in its transaction by the time of its final persist (the save before the
+// schedule function): the final CompareAndSave names this transaction.
+func TestFireScheduled_ArmsFunctionSchedule_FinalCASNamesThisTx(t *testing.T) {
+	var cas []casCall
+	ext := &scriptedExtProc{function: func(context.Context) (contract.FunctionResult, error) {
+		return fireInAMinute(), nil
+	}}
+	env := newRunEnvWith(t, ext, func(f spi.StoreFactory) spi.StoreFactory {
+		return casRecordingFactory{StoreFactory: f, cas: &cas}
+	}, nil)
+	claimed := env.claimed(t, "fsfc-e1", fireArmsFunctionWF())
+	cas = nil
+
+	r := runWithin(t, env, claimed)
+	if r.Outcome != OutcomeFired || r.Err != nil {
+		t.Fatalf("report = %+v, want fired", r)
+	}
+	if len(cas) == 0 {
+		t.Fatal("the fire made no CompareAndSave")
+	}
+	final := cas[len(cas)-1]
+	if final.txID == "" || final.expected != final.txID {
+		t.Errorf("final CompareAndSave expects %q in transaction %q; want this transaction's id", final.expected, final.txID)
 	}
 }
