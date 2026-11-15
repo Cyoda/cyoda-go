@@ -86,8 +86,9 @@ type StoreFactory struct {
 	wfMu       sync.RWMutex
 	smAuditMu  sync.RWMutex
 	entityData map[spi.TenantID]map[string][]entityVersion
-	// txIndex maps (tenant, entityID, txID) to the earliest NON-DELETED
-	// version that transaction txID wrote for that entity — the index
+	// txIndex maps (tenant, entityID, txID) to the NON-DELETED version
+	// that transaction txID wrote for that entity (a transaction writes at most
+	// one) — the index
 	// GetVersionByTransaction reads. Deletes never enter it (a DELETED
 	// tombstone never matches GetVersionByTransaction — see its SPI doc
 	// comment). Guarded by entityMu (same mutex as entityData: maintained

@@ -266,7 +266,7 @@ func (f *StoreFactory) stampAuditEventsForTx(tenant spi.TenantID, txID string, i
 // rolled back. Nothing can read it again. Without this, a long-running
 // process accumulates one reference per audited event forever. It is
 // therefore discarded on exactly the paths that discard the transaction's
-// other staged maps (supersededSaves, deletedBufferModels, scheduledTaskOps,
+// other staged maps (deletedBufferModels, scheduledTaskOps,
 // auditOps), at the same points and for the same reason.
 //
 // This drops the INDEX, not the trail: the audit events themselves are

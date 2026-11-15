@@ -260,13 +260,11 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		if err := s.checkModelImmutable(tx, entity); err != nil {
 			return 0, err
 		}
-		// Transaction mode: write to buffer, not main store. Stage any
-		// value this overwrites (see stageSuperseded's godoc) BEFORE
-		// overwriting tx.Buffer, so a same-tx double-save of the same
-		// entity can still flush both versions at Commit.
+		// Transaction mode: write to buffer, not main store. A later write
+		// of the same entity replaces the buffered one: the transaction
+		// records one version per entity.
 		cp := copyEntity(entity)
 		cp.Meta.TransactionID = tx.ID
-		s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
 		// If the entity was previously marked for deletion in this tx, unmark it
@@ -343,7 +341,6 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			}
 			cp := copyEntity(entity)
 			cp.Meta.TransactionID = tx.ID
-			s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, buffered)
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
 			s.factory.txManager.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
@@ -361,11 +358,9 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 				conflict = true
 				return
 			}
-			// Write to buffer under the same lock hold. Stage any value
-			// this overwrites (see stageSuperseded's godoc) first.
+			// Write to buffer under the same lock hold.
 			cp := copyEntity(entity)
 			cp.Meta.TransactionID = tx.ID
-			s.factory.txManager.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
 		}()
