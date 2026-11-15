@@ -766,3 +766,115 @@ func TestCatalog_SchedFnResolve_UsesRequestTime(t *testing.T) {
 		t.Error("a request without a time attribute must fail")
 	}
 }
+
+// anchorDoor is a callback door for an anchor "ent" of model "m": a GET of the
+// anchor, a direct search, a grouped count and a page of m each answer with
+// the anchor in READY with status "new" (the page and the search also list an
+// entity "other"). It records every call.
+func anchorDoor(calls *[]targetCall) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		*calls = append(*calls, targetCall{r.Header.Get("X-Tx-Token"), r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/entity/ent":
+			_, _ = w.Write([]byte(`{"meta":{"id":"ent","state":"READY"},"data":{"name":"a","status":"new"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/search/direct/m/1":
+			_, _ = w.Write([]byte("{\"meta\":{\"id\":\"other\"},\"data\":{\"status\":\"new\"}}\n{\"meta\":{\"id\":\"ent\"},\"data\":{\"status\":\"new\"}}\n"))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/entity/stats/m/1/query":
+			_, _ = w.Write([]byte(`[{"groupKey":[{"path":"$.status","value":"old"}],"count":4},{"groupKey":[{"path":"$.status","value":"new"}],"count":2}]`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/entity/m/1":
+			_, _ = w.Write([]byte(`[{"meta":{"id":"other"},"data":{"status":"old"}},{"meta":{"id":"ent"},"data":{"status":"new"}}]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+// TestCatalog_ReadAnchor_RecordsEveryJoinedReadOfTheAnchor: cb-read-anchor
+// reads its own entity through the joined GET, search, grouped count and page
+// — every one carrying the token — and answers with the entity's data plus
+// what each read saw of it. It writes nothing.
+func TestCatalog_ReadAnchor_RecordsEveryJoinedReadOfTheAnchor(t *testing.T) {
+	var calls []targetCall
+	door := anchorDoor(&calls)
+	defer door.Close()
+
+	proc, ok := newCatalog(nil, nil).callbackProcessor("cb-read-anchor")
+	if !ok {
+		t.Fatal("cb-read-anchor callback processor not registered")
+	}
+	anchor := &Entity{ID: "ent", State: "READY", Data: []byte(`{"name":"a","status":"new"}`)}
+	out, err := proc(context.Background(), anchor, cbConfig{AnchorModel: "m"}, "the-pass", newCallbackClient(door.URL, staticToken("bearer")))
+	if err != nil {
+		t.Fatalf("processor: %v", err)
+	}
+	if len(calls) != 4 {
+		t.Fatalf("calls = %+v; want a GET, a search, a count and a page", calls)
+	}
+	for _, c := range calls {
+		if c.token != "the-pass" {
+			t.Errorf("call %s %s carried token %q; want the pass", c.method, c.path, c.token)
+		}
+		if c.method == http.MethodPut || c.method == http.MethodDelete || c.method == http.MethodPatch {
+			t.Errorf("call %s %s writes; cb-read-anchor only reads", c.method, c.path)
+		}
+	}
+	if !strings.Contains(calls[1].body, `"value":"new"`) {
+		t.Errorf("search body = %s; want a condition on the anchor's current status", calls[1].body)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(out.Data, &data); err != nil {
+		t.Fatalf("result data: %v", err)
+	}
+	want := map[string]any{
+		"name": "a", "status": "new",
+		"anchorGetStatus": float64(200), "anchorGetState": "READY", "anchorGetMarker": "new",
+		"anchorSearchHits": float64(1), "anchorCountByMarker": float64(2), "anchorPageMarker": "new",
+	}
+	for k, v := range want {
+		if data[k] != v {
+			t.Errorf("%s = %v; want %v", k, data[k], v)
+		}
+	}
+
+	missing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer missing.Close()
+	out, err = proc(context.Background(), anchor, cbConfig{AnchorModel: "m"}, "the-pass", newCallbackClient(missing.URL, staticToken("bearer")))
+	if err != nil {
+		t.Fatalf("a refused read is recorded, not a failure: %v", err)
+	}
+	_ = json.Unmarshal(out.Data, &data)
+	if data["anchorGetStatus"] != float64(404) || data["anchorGetMarker"] != "" || data["anchorSearchHits"] != float64(0) || data["anchorPageMarker"] != "" {
+		t.Errorf("data = %+v; want the 404 recorded and nothing found", data)
+	}
+}
+
+// TestCatalog_CriterionReadsAnchor_MatchesTheAnchorsCurrentStatus: the
+// criterion GETs its own entity under the token and matches only when the
+// read's data.status is the marker.
+func TestCatalog_CriterionReadsAnchor_MatchesTheAnchorsCurrentStatus(t *testing.T) {
+	var calls []targetCall
+	door := anchorDoor(&calls)
+	defer door.Close()
+
+	crit, ok := newCatalog(nil, nil).callbackCriterion("cb-criterion-reads-anchor")
+	if !ok {
+		t.Fatal("cb-criterion-reads-anchor callback criterion not registered")
+	}
+	anchor := &Entity{ID: "ent", Data: []byte(`{"status":"new"}`)}
+	cb := newCallbackClient(door.URL, staticToken("bearer"))
+	if m, err := crit(context.Background(), anchor, cbConfig{Marker: "new"}, "the-pass", cb); err != nil || !m {
+		t.Fatalf("marker new: matches=%v err=%v; want a match", m, err)
+	}
+	if c := calls[0]; c.token != "the-pass" || c.method != http.MethodGet || c.path != "/api/entity/ent" {
+		t.Fatalf("call = %+v; want the joined GET of the anchor", c)
+	}
+	if m, err := crit(context.Background(), anchor, cbConfig{Marker: "old"}, "the-pass", cb); err != nil || m {
+		t.Fatalf("marker old: matches=%v err=%v; want no match", m, err)
+	}
+	if m, err := crit(context.Background(), &Entity{ID: "gone"}, cbConfig{Marker: "new"}, "the-pass", cb); err != nil || m {
+		t.Fatalf("anchor not found: matches=%v err=%v; want no match", m, err)
+	}
+}

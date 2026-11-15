@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 275 scenarios in this package: the entries of its literal
+// allTests holds 278 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go, ifmatch_lost_race.go,
 // schema_extension_contract.go).
@@ -243,6 +243,10 @@ var allTests = []NamedTest{
 	{"CallbackTxJoin_CBDPostJoinsTxPost", RunCallback_CBDPostJoinsTxPost},
 	{"CallbackTxJoin_AsyncNewTxDiscardOnFailure", RunCallback_AsyncNewTxDiscardOnFailure},
 	{"CallbackTxJoin_PITCommittedOnly", RunPITCommittedOnlyInJoinedTx},
+	// A callout under the token reads its anchor as the workflow has it.
+	{"CallbackReadCurrent_UpdateSync", RunCallbackReadCurrent_UpdateSync},
+	{"CallbackReadCurrent_CreateSync", RunCallbackReadCurrent_CreateSync},
+	{"CallbackReadCurrent_FunctionCriterion", RunCallbackReadCurrent_FunctionCriterion},
 	{"ConsistencyTime_Endpoint", RunConsistencyTimeEndpoint},
 	{"ConsistencyTime_FenceRefusesLater", RunConsistencyTimeFenceRefuses},
 	{"ConsistencyTime_ReadAtCServed", RunConsistencyTimeReadAtC},
