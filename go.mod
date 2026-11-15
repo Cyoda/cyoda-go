@@ -5,9 +5,9 @@ go 1.27.4
 require (
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261115231626-e573a8c32d9d
-	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261115231726-34eb97fbe148
-	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261115231726-34eb97fbe148
-	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261115231726-34eb97fbe148
+	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261115233236-bd974a4af3ff
+	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261115233236-bd974a4af3ff
+	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261115233236-bd974a4af3ff
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/google/uuid v1.6.0
