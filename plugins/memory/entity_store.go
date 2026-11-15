@@ -123,6 +123,47 @@ func deriveChangeType(hasPriorVersion bool) string {
 	return "UPDATED"
 }
 
+// pendingVersion returns the version a transactional write buffers: a copy of
+// entity carrying the store's metadata for the transaction's one pending
+// version of it, as a read inside the transaction returns it and as the
+// commit records it — never the values the caller left on the entity (the
+// metadata is the store's). The caller holds tx.OpMu (read); this takes
+// factory.entityMu (read) to read the committed history.
+func (s *EntityStore) pendingVersion(tx *spi.TransactionState, entity *spi.Entity) *spi.Entity {
+	s.factory.entityMu.RLock()
+	defer s.factory.entityMu.RUnlock()
+	return s.pendingVersionLocked(tx, entity)
+}
+
+// pendingVersionLocked is pendingVersion for a caller already holding
+// factory.entityMu (read or write).
+//
+// The transaction id and tenant are the transaction's. The version number and
+// change type come from the committed history, as the commit derives them:
+// the previous version's number + 1, and CREATED for the entity's first
+// version, else UPDATED. The dates are provisional until the commit stamps
+// them with its instant: the last-modified date is the business clock's
+// reading at this write, and the creation date is the committed creation date
+// of an existing entity, or for a new one the first pending write's reading,
+// kept when a later write replaces the pending version.
+func (s *EntityStore) pendingVersionLocked(tx *spi.TransactionState, entity *spi.Entity) *spi.Entity {
+	versions := s.factory.entityData[s.tenant][entity.Meta.ID]
+	now := s.factory.bizClock.Now().Round(0)
+	cp := copyEntity(entity)
+	cp.Meta.TenantID = s.tenant
+	cp.Meta.TransactionID = tx.ID
+	cp.Meta.Version = lastVersion(versions) + 1
+	cp.Meta.ChangeType = deriveChangeType(len(versions) > 0)
+	cp.Meta.LastModifiedDate = now
+	cp.Meta.CreationDate = now
+	if e, ok := firstNonTombstone(versions); ok {
+		cp.Meta.CreationDate = e.Meta.CreationDate
+	} else if buffered, ok := tx.Buffer[entity.Meta.ID]; ok {
+		cp.Meta.CreationDate = buffered.Meta.CreationDate
+	}
+	return cp
+}
+
 // getSnapshotVersion walks the version history for entityID and returns the
 // latest version whose submitTime <= snapshotTime. Caller must hold at least
 // s.factory.entityMu.RLock().
@@ -257,9 +298,7 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		// Transaction mode: write to buffer, not main store. A later write
 		// of the same entity replaces the buffered one: the transaction
 		// records one version per entity.
-		cp := copyEntity(entity)
-		cp.Meta.TransactionID = tx.ID
-		tx.Buffer[entity.Meta.ID] = cp
+		tx.Buffer[entity.Meta.ID] = s.pendingVersion(tx, entity)
 		tx.WriteSet[entity.Meta.ID] = true
 		// If the entity was previously marked for deletion in this tx, unmark it
 		// (last-write-wins: Save-after-Delete → present). Keeps tx.Buffer and
@@ -330,9 +369,7 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			if buffered.Meta.TransactionID != expectedTxID {
 				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 			}
-			cp := copyEntity(entity)
-			cp.Meta.TransactionID = tx.ID
-			tx.Buffer[entity.Meta.ID] = cp
+			tx.Buffer[entity.Meta.ID] = s.pendingVersion(tx, entity)
 			tx.WriteSet[entity.Meta.ID] = true
 			return 0, nil
 		}
@@ -349,9 +386,7 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 				return
 			}
 			// Write to buffer under the same lock hold.
-			cp := copyEntity(entity)
-			cp.Meta.TransactionID = tx.ID
-			tx.Buffer[entity.Meta.ID] = cp
+			tx.Buffer[entity.Meta.ID] = s.pendingVersionLocked(tx, entity)
 			tx.WriteSet[entity.Meta.ID] = true
 		}()
 		if conflict {

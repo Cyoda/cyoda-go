@@ -14,8 +14,8 @@ import (
 // write if it has one, else the committed row's. It must be non-empty. The
 // empty string is not a value any live entity's transaction ID can be trusted
 // to differ from — a write taken outside a transaction stores it — so
-// accepting it as "expect no entity" made a guard whose job is to fail closed fail open instead, and
-// silently overwrite an entity that was there. It is now rejected as a caller
+// accepting it as "expect no entity" made a guard whose job is to fail
+// closed fail open instead, and silently overwrite an entity that was there. It is now rejected as a caller
 // error, and CompareAndSave neither creates an entity nor resurrects a
 // deleted one: Save does that.
 type casOutcome int
@@ -235,19 +235,12 @@ func literalEntity(ref spi.ModelRef, id, txID string) *spi.Entity {
 }
 
 // seedLiteral commits the seed in a transaction of its own and returns that
-// transaction's id: a write outside a transaction records none.
+// transaction's id.
 func seedLiteral(t *testing.T, tm spi.TransactionManager, store spi.EntityStore, ctx context.Context, ref spi.ModelRef, id string) string {
 	t.Helper()
 	seed := literalEntity(ref, id, "")
 	seed.Data = []byte(seedLiteralData)
-	txID, txCtx := beginGuarded(t, tm, ctx)
-	if _, err := store.Save(txCtx, seed); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
-	if err := tm.Commit(txCtx, txID); err != nil {
-		t.Fatalf("seed Commit: %v", err)
-	}
-	return txID
+	return saveCommitted(t, tm, store, ctx, seed)
 }
 
 // expectedID resolves a case's expected transaction id: placeholder stands

@@ -22,7 +22,7 @@ func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	seed := &spi.Entity{
-		Meta: spi.EntityMeta{ID: "e-cas-recreate", TenantID: "tenant-dtw", ModelRef: ref, State: "open", TransactionID: "tx-seed", ChangeUser: "user-1"},
+		Meta: spi.EntityMeta{ID: "e-cas-recreate", TenantID: "tenant-dtw", ModelRef: ref, State: "open", ChangeUser: "user-1"},
 		Data: []byte(`{"n":1}`),
 	}
 	if _, err := store.Save(ctx, seed); err != nil {

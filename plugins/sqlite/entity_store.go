@@ -255,6 +255,47 @@ func (s *entityStore) committedModelRef(ctx context.Context, entityID string) (s
 	return spi.ModelRef{EntityName: name, ModelVersion: version}, true, nil
 }
 
+// pendingVersion returns the version a transactional write buffers: a copy of
+// entity carrying the store's metadata for the transaction's one pending
+// version of it, as a read inside the transaction returns it and as the
+// commit (flushToSQLite) records it — never the values the caller left on the
+// entity (the metadata is the store's).
+//
+// The transaction id and tenant are the transaction's. The version number and
+// change type come from the committed entities row, as the commit derives
+// them: its version + 1, and CREATED when there is no row, else UPDATED. The
+// dates are provisional until the commit stamps them with its instant: the
+// last-modified date is the business clock's reading at this write, and the
+// creation date is the committed row's, or for a new entity the first
+// pending write's reading, kept when a later write replaces the pending
+// version.
+func (s *entityStore) pendingVersion(ctx context.Context, tx *spi.TransactionState, entity *spi.Entity) (*spi.Entity, error) {
+	var version, createdAt int64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT version, created_at FROM entities WHERE tenant_id = ? AND entity_id = ?",
+		string(s.tenantID), entity.Meta.ID).Scan(&version, &createdAt)
+	isNew := errors.Is(err, sql.ErrNoRows)
+	if err != nil && !isNew {
+		return nil, fmt.Errorf("read committed version of entity %s: %w", entity.Meta.ID, classifyError(err))
+	}
+	now := microToTime(s.tm.factory.bizClock.Now().UnixMicro())
+	cp := copyEntity(entity)
+	cp.Meta.TenantID = s.tenantID
+	cp.Meta.TransactionID = tx.ID
+	cp.Meta.Version = version + 1
+	cp.Meta.ChangeType = deriveChangeType(isNew)
+	cp.Meta.LastModifiedDate = now
+	switch buffered, ok := tx.Buffer[entity.Meta.ID]; {
+	case !isNew:
+		cp.Meta.CreationDate = microToTime(createdAt)
+	case ok:
+		cp.Meta.CreationDate = buffered.Meta.CreationDate
+	default:
+		cp.Meta.CreationDate = now
+	}
+	return cp, nil
+}
+
 // modelMismatchErr wraps spi.ErrEntityModelMismatch for entity id.
 func modelMismatchErr(id string) error {
 	return fmt.Errorf("entity %s: %w", id, spi.ErrEntityModelMismatch)
@@ -312,9 +353,10 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 			return 0, err
 		}
 		// Transaction mode: write to buffer, not main store.
-		cp := copyEntity(entity)
-		cp.Meta.TenantID = s.tenantID
-		cp.Meta.TransactionID = tx.ID
+		cp, err := s.pendingVersion(ctx, tx, entity)
+		if err != nil {
+			return 0, err
+		}
 		// The buffer holds the entity's one pending version; this write
 		// replaces it.
 		tx.Buffer[entity.Meta.ID] = cp
@@ -529,9 +571,10 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			if buffered.Meta.TransactionID != expectedTxID {
 				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 			}
-			cp := copyEntity(entity)
-			cp.Meta.TenantID = s.tenantID
-			cp.Meta.TransactionID = tx.ID
+			cp, err := s.pendingVersion(ctx, tx, entity)
+			if err != nil {
+				return 0, err
+			}
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
 			return 0, nil
@@ -547,9 +590,10 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		}
 
 		// Write to buffer, replacing any pending version.
-		cp := copyEntity(entity)
-		cp.Meta.TenantID = s.tenantID
-		cp.Meta.TransactionID = tx.ID
+		cp, err := s.pendingVersion(ctx, tx, entity)
+		if err != nil {
+			return 0, err
+		}
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
 		return 0, nil
