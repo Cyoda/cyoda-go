@@ -1147,8 +1147,8 @@ func (s *EntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 	return page, nil
 }
 
-// GetVersionByTransaction returns the earliest (lowest-Version) version of
-// entityID written by transaction txID. DELETED tombstones never match
+// GetVersionByTransaction returns the version of entityID that
+// transaction txID wrote (a transaction writes at most one). DELETED tombstones never match
 // (they carry no entity payload — see the SPI doc comment) and an empty
 // txID never matches, even a stored-empty one from a non-transactional
 // write.

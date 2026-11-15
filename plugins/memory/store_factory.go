@@ -87,9 +87,11 @@ type StoreFactory struct {
 	smAuditMu  sync.RWMutex
 	entityData map[spi.TenantID]map[string][]entityVersion
 	// txIndex maps (tenant, entityID, txID) to the NON-DELETED version
-	// that transaction txID wrote for that entity (a transaction writes at most
-	// one) — the index
-	// GetVersionByTransaction reads. Deletes never enter it (a DELETED
+	// that transaction txID wrote for that entity — the index
+	// GetVersionByTransaction reads. A transaction writes one version per
+	// entity; the exception is non-transactional saves that carry a shared
+	// caller-supplied id, where the earliest is kept (parity with
+	// postgres's ORDER BY version ASC LIMIT 1). Deletes never enter it (a DELETED
 	// tombstone never matches GetVersionByTransaction — see its SPI doc
 	// comment). Guarded by entityMu (same mutex as entityData: maintained
 	// inside the same write-lock critical section as every entityData
@@ -342,8 +344,8 @@ func (f *StoreFactory) insertClaims(entityID, tenant, model, version string, cla
 //
 // First write wins: the index holds the EARLIEST version recorded for
 // (tenant, entity, txID), so the invariant holds structurally rather than
-// by caller discipline. The transactional path already passes the commit's
-// first version once, but saveUnlocked calls this per non-transactional
+// by caller discipline. The transactional path passes the commit's single
+// version once, but saveUnlocked calls this per non-transactional
 // save with entity.Meta.TransactionID taken verbatim — two such saves
 // sharing a txID would otherwise record the latest version, where the SQL
 // backends' ORDER BY version ASC LIMIT 1 returns the earliest.

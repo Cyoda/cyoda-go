@@ -17,11 +17,10 @@ func txIndexCtx(tenant string) context.Context {
 	})
 }
 
-// TestRecordTxIndex_FirstWriteWins: the tx-index promises "the earliest
-// NON-DELETED version that transaction txID wrote for that entity", and
-// GetVersionByTransaction's contract is earliest-wins. The transactional path
-// upholds that by passing the first version once per commit, but the
-// non-transactional path calls recordTxIndex per save with the caller's
+// TestRecordTxIndex_FirstWriteWins: a transaction writes one version per
+// entity, so earliest-wins applies only to non-transactional saves sharing a
+// caller-supplied id. The transactional path passes its single version once
+// per commit, but the non-transactional path calls recordTxIndex per save with the caller's
 // TransactionID taken verbatim — so two non-tx saves carrying the same txID
 // recorded the LATEST version, where the SQL backends' ORDER BY version ASC
 // LIMIT 1 returns the earliest. The invariant has to hold structurally, not

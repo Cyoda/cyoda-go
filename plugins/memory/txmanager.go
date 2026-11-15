@@ -1340,8 +1340,9 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 
 // RollbackToSavepoint restores the transaction's buffer maps from the snapshot
 // captured when the savepoint was created, truncates the transaction's staged
-// scheduledTaskOps back to the length recorded at that savepoint, then
-// removes the snapshot.
+// scheduledTaskOps and auditOps back to the lengths recorded at that
+// savepoint. The savepoint itself is kept; savepoints taken after it are
+// destroyed.
 //
 // Locking discipline: RollbackToSavepoint replaces tx.Buffer /
 // tx.ReadSet / tx.WriteSet / tx.Deletes — exclusive against every other
