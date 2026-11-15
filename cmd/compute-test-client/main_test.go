@@ -510,6 +510,60 @@ func TestCatalog_WriteSelf_WritesThroughTheCallbackAndReturnsNoData(t *testing.T
 	}
 }
 
+// TestCatalog_WriteSelfReadByTx_ReadsTheJoinedTransactionAndRecords: the
+// processor writes its own entity through a joined update, reads it through a
+// joined GET with ?transactionId= naming the transaction the update answered,
+// records that read's answer outside the transaction, and answers with no
+// data.
+func TestCatalog_WriteSelfReadByTx_ReadsTheJoinedTransactionAndRecords(t *testing.T) {
+	type call struct{ token, method, path, query, body string }
+	var calls []call
+	const notFound = `{"status":404,"properties":{"errorCode":"ENTITY_NOT_FOUND"}}`
+	door := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		calls = append(calls, call{r.Header.Get("X-Tx-Token"), r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
+		switch r.Method {
+		case http.MethodPut:
+			_, _ = w.Write([]byte(`{"transactionId":"tx-1","entityIds":["ent"]}`))
+		case http.MethodGet:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(notFound))
+		default:
+			_, _ = w.Write([]byte(`[{"transactionId":"tx-rec","entityIds":["rec"]}]`))
+		}
+	}))
+	defer door.Close()
+
+	proc, ok := newCatalog(nil, nil).callbackProcessor("cb-write-self-read-by-tx")
+	if !ok {
+		t.Fatal("cb-write-self-read-by-tx callback processor not registered")
+	}
+	out, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{"name":"p","status":"new"}`)},
+		cbConfig{Marker: "m", RecordModel: "rec"}, "the-pass", newCallbackClient(door.URL, staticToken("bearer")))
+	if err != nil {
+		t.Fatalf("processor: %v", err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("calls = %+v; want a joined update, a joined read and the record", calls)
+	}
+	if c := calls[0]; c.token != "the-pass" || c.method != http.MethodPut || c.path != "/api/entity/JSON/ent" {
+		t.Fatalf("first call = %+v; want the joined update of ent", c)
+	}
+	if c := calls[1]; c.token != "the-pass" || c.method != http.MethodGet || c.path != "/api/entity/ent" || c.query != "transactionId=tx-1" {
+		t.Fatalf("second call = %+v; want a joined GET of ent with transactionId=tx-1", c)
+	}
+	var rec map[string]any
+	if c := calls[2]; c.token != "" || c.method != http.MethodPost || c.path != "/api/entity/JSON/rec/1" || json.Unmarshal([]byte(c.body), &rec) != nil {
+		t.Fatalf("third call = %+v; want the record created outside the transaction", c)
+	}
+	if rec["marker"] != "m" || rec["hopStatus"] != float64(http.StatusNotFound) || rec["hopBody"] != notFound {
+		t.Fatalf("record = %+v; want marker m with the read's 404 and body", rec)
+	}
+	if out == nil || out.Data != nil {
+		t.Fatalf("result = %+v; want an entity with no data", out)
+	}
+}
+
 // TestCatalog_UnlockThenTag_UnlocksUnjoinedAndAddsAField: the processor
 // unlocks the model with a call that carries no tx token, then answers with
 // the entity's data plus a field "tag" the model does not hold.

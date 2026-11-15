@@ -225,19 +225,19 @@ func assertStrictOrder(t *testing.T, events []map[string]any) {
 	}
 }
 
-// TestAuditE2E_TwoJoinedSavesHaveDistinctVersions proves identity and order
-// for two saves joined into the SAME transaction: a secondary entity created
-// then updated (loopback) inside the primary transition's transaction T.
-// Both EntityChange events share T's transactionId and commit instant, so
-// only `version` DESC distinguishes them (2 then 1); every StateMachine
-// event of that same transaction sorts after both, each carrying a distinct
+// TestAuditE2E_TwoJoinedSavesAreOneVersion proves identity and order for two
+// saves joined into the SAME transaction: a secondary entity created then
+// updated (loopback) inside the primary transition's transaction T. An entity
+// has one version per transaction, so the two saves are one EntityChange
+// event (CREATE, version 1) of T; every StateMachine event of that same
+// transaction sorts after it at T's commit instant, each carrying a distinct
 // store-assigned eventId.
-func TestAuditE2E_TwoJoinedSavesHaveDistinctVersions(t *testing.T) {
+func TestAuditE2E_TwoJoinedSavesAreOneVersion(t *testing.T) {
 	h, secondaryID := setupAuditIdentitySecondary(t, "cb-audit-create-update", "audit-e2e-primary-1", "audit-e2e-secondary-1")
 
 	events, _ := getAuditPage(t, h, secondaryID, "limit=1000")
 	if len(events) < 3 {
-		t.Fatalf("expected at least 3 audit events (2 EntityChange + >=1 StateMachine), got %d: %v", len(events), events)
+		t.Fatalf("expected at least 3 audit events (1 EntityChange + >=2 StateMachine), got %d: %v", len(events), events)
 	}
 
 	assertStrictOrder(t, events)
@@ -253,40 +253,28 @@ func TestAuditE2E_TwoJoinedSavesHaveDistinctVersions(t *testing.T) {
 			t.Fatalf("unexpected auditEventType %v in %v", ev["auditEventType"], ev)
 		}
 	}
-	if len(ecEvents) != 2 {
-		t.Fatalf("expected exactly 2 EntityChange events (create + update), got %d: %v", len(ecEvents), ecEvents)
+	if len(ecEvents) != 1 {
+		t.Fatalf("expected exactly 1 EntityChange event (the create and the update are one version), got %d: %v", len(ecEvents), ecEvents)
 	}
 	if len(smEvents) == 0 {
 		t.Fatal("expected at least 1 StateMachine event")
 	}
 
-	// Both EntityChange events belong to T: same transactionId, same commit
-	// instant (utcTime) — the two saves were joined into one transaction.
+	// The EntityChange event is T's one version of the secondary.
 	txID, _ := ecEvents[0]["transactionId"].(string)
 	if txID == "" {
-		t.Fatal("expected non-empty transactionId on the first EntityChange event")
+		t.Fatal("expected non-empty transactionId on the EntityChange event")
 	}
-	if got := ecEvents[1]["transactionId"]; got != txID {
-		t.Fatalf("EntityChange events do not share a transactionId: %v vs %v", txID, got)
-	}
-	if ecEvents[0]["utcTime"] != ecEvents[1]["utcTime"] {
-		t.Fatalf("EntityChange events do not share a commit instant: %v vs %v", ecEvents[0]["utcTime"], ecEvents[1]["utcTime"])
+	if ecEvents[0]["version"] != float64(1) || ecEvents[0]["changeType"] != "CREATE" {
+		t.Fatalf("expected CREATE version 1, got %v version %v", ecEvents[0]["changeType"], ecEvents[0]["version"])
 	}
 
-	// Newest first: UPDATE (version 2) before CREATE (version 1).
-	if ecEvents[0]["version"] != float64(2) || ecEvents[1]["version"] != float64(1) {
-		t.Fatalf("expected versions [2,1], got [%v,%v]", ecEvents[0]["version"], ecEvents[1]["version"])
-	}
-	if ecEvents[0]["changeType"] != "UPDATE" || ecEvents[1]["changeType"] != "CREATE" {
-		t.Fatalf("expected changeTypes [UPDATE,CREATE], got [%v,%v]", ecEvents[0]["changeType"], ecEvents[1]["changeType"])
-	}
-
-	// The two EntityChange events come first; every event after them is
+	// The EntityChange event comes first; every event after it is
 	// StateMachine (of the same transaction T).
-	if events[0]["auditEventType"] != "EntityChange" || events[1]["auditEventType"] != "EntityChange" {
-		t.Fatalf("expected the two EntityChange events first, got %v then %v", events[0]["auditEventType"], events[1]["auditEventType"])
+	if events[0]["auditEventType"] != "EntityChange" {
+		t.Fatalf("expected the EntityChange event first, got %v", events[0]["auditEventType"])
 	}
-	for i := 2; i < len(events); i++ {
+	for i := 1; i < len(events); i++ {
 		if events[i]["auditEventType"] != "StateMachine" {
 			t.Fatalf("position %d: expected StateMachine, got %v", i, events[i]["auditEventType"])
 		}

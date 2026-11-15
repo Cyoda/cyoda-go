@@ -897,8 +897,6 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 		// after it lost the race.
 		"cb-race-target-thenfail": targetWriter(true, verdictFail),
 
-		// cb-ifmatch-update — creates a secondary inside T, then issues a
-		// loopback update with If-Match set to the create's in-T transactionId.
 		// cb-write-self — writes its own entity through a joined update (its
 		// data with status set to cfg.Marker) and answers with no data, so the
 		// engine keeps that write rather than applying a payload over it.
@@ -921,6 +919,49 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			}
 			if res.Status != http.StatusOK {
 				return nil, fmt.Errorf("callback write status=%d body=%s", res.Status, res.Body)
+			}
+			return &Entity{ID: entity.ID, State: entity.State}, nil
+		},
+		// cb-write-self-read-by-tx — writes its own entity through a joined
+		// update as cb-write-self does, then reads that entity back through a
+		// joined GET with ?transactionId= naming the transaction the write
+		// joined, and records the read's answer (cfg.RecordModel, outside the
+		// transaction). The transaction has not committed, so the read is
+		// answered 404 ENTITY_NOT_FOUND although it is made inside it. It
+		// answers with no data, so the engine keeps the joined write.
+		"cb-write-self-read-by-tx": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["status"] = cfg.Marker
+			body, err := json.Marshal(data)
+			if err != nil {
+				return nil, err
+			}
+			res, err := cb.do(ctx, http.MethodPut, "/api/entity/JSON/"+entity.ID, string(body), token, "")
+			if err != nil {
+				return nil, fmt.Errorf("callback write: %w", err)
+			}
+			if res.Status != http.StatusOK {
+				return nil, fmt.Errorf("callback write status=%d body=%s", res.Status, res.Body)
+			}
+			var written struct {
+				TransactionID string `json:"transactionId"`
+			}
+			if err := json.Unmarshal([]byte(res.Body), &written); err != nil || written.TransactionID == "" {
+				return nil, fmt.Errorf("callback write response has no transactionId: %s", res.Body)
+			}
+			txID := written.TransactionID
+			read, err := cb.do(ctx, http.MethodGet, "/api/entity/"+entity.ID+"?transactionId="+url.QueryEscape(txID), "", token, "")
+			if err != nil {
+				return nil, fmt.Errorf("callback by-transaction read: %w", err)
+			}
+			if err := cb.recordHop(ctx, cfg, read, token); err != nil {
+				return nil, err
 			}
 			return &Entity{ID: entity.ID, State: entity.State}, nil
 		},
@@ -955,6 +996,8 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			}
 			return &Entity{ID: entity.ID, State: entity.State, Data: out}, nil
 		},
+		// cb-ifmatch-update — creates a secondary inside T, then issues a
+		// loopback update with If-Match set to the create's in-T transactionId.
 		"cb-ifmatch-update": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
 			if err := requireCB(cb); err != nil {
 				return nil, err

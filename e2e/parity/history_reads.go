@@ -1,8 +1,11 @@
 package parity
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
@@ -161,4 +164,154 @@ func RunHistoryReadsChangesMetadataAndTransactionLookup(t *testing.T, fixture Ba
 	if status != http.StatusNotFound {
 		t.Errorf("GetEntityByTransactionIDRaw(delete) status = %d, want %d (tombstone never matches)", status, http.StatusNotFound)
 	}
+}
+
+// ovptSample is the model of RunHistoryOneVersionPerTransaction's entity.
+const ovptSample = `{"name":"e","amount":1,"status":"new"}`
+
+// ovptWorkflow rests a created entity in OPEN and moves it to DONE through
+// the manual transition "go", running procs on the way. A write of the
+// entity that names no transition, such as a processor's joined write of
+// it, leaves it in OPEN and runs no processor.
+func ovptWorkflow(name string, procs []any) string {
+	return cbWorkflowDoc(name, map[string]any{
+		"NONE": map[string]any{"transitions": []any{map[string]any{"name": "store", "next": "OPEN", "manual": false}}},
+		"OPEN": map[string]any{"transitions": []any{map[string]any{
+			"name": "go", "next": "DONE", "manual": true, "processors": procs,
+		}}},
+		"DONE": map[string]any{},
+	})
+}
+
+// RunHistoryOneVersionPerTransaction proves, on every backend, that an
+// entity has at most one version per transaction and that the by-transaction
+// read is committed-only:
+//
+//   - SYNC: the manual transition's processor writes the entity through a
+//     joined callback, and the engine then saves it in DONE — two writes in
+//     one transaction X. /changes lists one entry for X, and
+//     GET /entity/{id}?transactionId=X returns X's final entity (DONE, with
+//     the callback's write), not the callback's intermediate write (OPEN).
+//   - SYNC_ThenCommitBeforeDispatch: the same, followed by a
+//     COMMIT_BEFORE_DISPATCH processor, so the request runs in two
+//     transactions, each writing the entity twice. /changes lists one entry
+//     per transaction, and each transaction's by-transaction read is found.
+//   - InsideWritingTx: the processor's callback reads the entity with
+//     ?transactionId= naming the transaction it joined. X has not committed,
+//     so the read is answered 404 ENTITY_NOT_FOUND although it is made inside
+//     X; after the commit the same read returns X's final entity.
+func RunHistoryOneVersionPerTransaction(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+	const goBody = `{"name":"e","amount":1,"status":"go"}`
+
+	// setup creates the entity in OPEN under a model whose "go" runs procs,
+	// and returns its id.
+	setup := func(t *testing.T, procs []any) uuid.UUID {
+		t.Helper()
+		model := "ovpt-" + uuid.NewString()[:8]
+		setupModelWithWorkflow(t, c, model, 1, ovptSample, ovptWorkflow(model+"-wf", procs))
+		eID, err := c.CreateEntity(t, model, 1, ovptSample)
+		if err != nil {
+			t.Fatalf("CreateEntity: %v", err)
+		}
+		return eID
+	}
+	// changes reads /changes and fails unless every entry names a
+	// transaction no other entry names.
+	changes := func(t *testing.T, eID uuid.UUID) []client.EntityChangeMeta {
+		t.Helper()
+		ch, err := c.GetEntityChanges(t, eID)
+		if err != nil {
+			t.Fatalf("GetEntityChanges: %v", err)
+		}
+		seen := map[string]bool{}
+		for i, e := range ch {
+			if e.TransactionID == "" {
+				t.Fatalf("changes[%d] (%s) has no transactionId: %+v", i, e.ChangeType, ch)
+			}
+			if seen[e.TransactionID] {
+				t.Fatalf("transaction %s has more than one /changes entry; want one version per transaction: %+v", e.TransactionID, ch)
+			}
+			seen[e.TransactionID] = true
+		}
+		return ch
+	}
+	// byTx reads the entity as transaction txID left it.
+	byTx := func(t *testing.T, eID uuid.UUID, txID string) client.EntityResult {
+		t.Helper()
+		e, err := c.GetEntityByTransactionID(t, eID, txID)
+		if err != nil {
+			t.Fatalf("GetEntityByTransactionID(%s): %v", txID, err)
+		}
+		return e
+	}
+	selfWrite := cbProc("cb-write-self", "SYNC", `{"marker":"self"}`, nil)
+
+	t.Run("SYNC", func(t *testing.T) {
+		eID := setup(t, []any{selfWrite})
+		txID, err := c.UpdateEntityWithTxID(t, eID, "go", goBody)
+		if err != nil {
+			t.Fatalf("go: %v", err)
+		}
+		ch := changes(t, eID)
+		if len(ch) != 2 || ch[0].TransactionID != txID || ch[0].ChangeType != "UPDATE" || ch[1].ChangeType != "CREATE" {
+			t.Fatalf("changes = %+v; want [UPDATE by %s, CREATE]", ch, txID)
+		}
+		e := byTx(t, eID, txID)
+		if e.Meta.State != "DONE" || e.Data["status"] != "self" {
+			t.Fatalf("by-transaction read of %s is %s with status %v; want the transaction's final entity, DONE with the callback's write (status self)",
+				txID, e.Meta.State, e.Data["status"])
+		}
+	})
+
+	t.Run("SYNC_ThenCommitBeforeDispatch", func(t *testing.T) {
+		eID := setup(t, []any{selfWrite, cbProc("noop", "COMMIT_BEFORE_DISPATCH", "", nil)})
+		txID, err := c.UpdateEntityWithTxID(t, eID, "go", goBody)
+		if err != nil {
+			t.Fatalf("go: %v", err)
+		}
+		ch := changes(t, eID)
+		// CREATE, the segment committed before the dispatch (the request's
+		// transaction), and the segment after it.
+		if len(ch) != 3 || ch[1].TransactionID != txID {
+			t.Fatalf("changes = %+v; want 3 entries, the middle one by the request's transaction %s", ch, txID)
+		}
+		if e := byTx(t, eID, txID); e.Data["status"] != "self" {
+			t.Fatalf("by-transaction read of %s has status %v; want the callback's write (status self)", txID, e.Data["status"])
+		}
+		if e := byTx(t, eID, ch[0].TransactionID); e.Meta.State != "DONE" || e.Data["status"] != "self" {
+			t.Fatalf("by-transaction read of the last segment %s is %s with status %v; want DONE with status self",
+				ch[0].TransactionID, e.Meta.State, e.Data["status"])
+		}
+	})
+
+	t.Run("InsideWritingTx", func(t *testing.T) {
+		rec := "ovpt-rec-" + uuid.NewString()[:8]
+		marker := "ovpt-" + uuid.NewString()[:8]
+		SetupHopRecordModel(t, c, rec)
+		eID := setup(t, []any{cbProc("cb-write-self-read-by-tx", "SYNC", HopRecordContext("", marker, rec), nil)})
+		txID, err := c.UpdateEntityWithTxID(t, eID, "go", goBody)
+		if err != nil {
+			t.Fatalf("go: %v", err)
+		}
+		hop := ReadHopRecord(t, c, rec, marker)
+		if hop.TokenWasEmpty {
+			t.Fatalf("the callout carried no transaction token; the read was not made inside the transaction")
+		}
+		var pd struct {
+			Properties map[string]any `json:"properties"`
+		}
+		_ = json.Unmarshal([]byte(hop.Body), &pd)
+		if code, _ := pd.Properties["errorCode"].(string); hop.Status != http.StatusNotFound || code != "ENTITY_NOT_FOUND" {
+			t.Fatalf("by-transaction read inside the uncommitted transaction answered %d %s; want 404 ENTITY_NOT_FOUND: %s", hop.Status, code, hop.Body)
+		}
+		ch := changes(t, eID)
+		if len(ch) != 2 || ch[0].TransactionID != txID {
+			t.Fatalf("changes = %+v; want [UPDATE by %s, CREATE]", ch, txID)
+		}
+		if e := byTx(t, eID, txID); e.Meta.State != "DONE" || e.Data["status"] != marker {
+			t.Fatalf("by-transaction read of %s after its commit is %s with status %v; want DONE with status %s", txID, e.Meta.State, e.Data["status"], marker)
+		}
+	})
 }

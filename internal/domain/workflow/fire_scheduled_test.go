@@ -1102,28 +1102,22 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 	// [0] = the pre-seeded prior-committer version; [1] = the CBD TX_pre
 	// flush (mid-cascade — entity still in OPEN, the state BEFORE the
 	// transition's Next is applied — its own segmented transaction);
-	// [2] = executeCommitBeforeDispatch's CompareAndSave applying the
-	// processor's returned entity back in the post-dispatch transaction
-	// (engine_processors.go) — still OPEN, since Meta.State only advances
-	// to Next afterward, back in fireTransition (engine.go); [3] = the
-	// terminal post-cascade persist (state MID, fire_scheduled.go). [2]
-	// and [3] land as separate rows, not one: every Save/CompareAndSave
-	// call inside a transaction gets its own version — same-tx multiple
-	// saves are never coalesced into one (Postgres has always behaved
-	// this way; the in-memory store's txmanager.go documents this as a
-	// deliberate backend-parity fix, supersededSaves). The defect this
+	// [2] = the post-dispatch transaction's one version. That transaction
+	// writes the entity twice — executeCommitBeforeDispatch's
+	// CompareAndSave applying the processor's returned entity
+	// (engine_processors.go), then the terminal post-cascade persist (state
+	// MID, fire_scheduled.go) — and an entity has at most one version per
+	// transaction, carrying the transaction's last write. The defect this
 	// test guards against lived in [1]: before the fix it carried the
 	// prior committer's stale attribution instead of the arming
 	// principal's.
-	if len(versionMetas) != 4 {
-		t.Fatalf("versions = %d, want 4 (seed, CBD TX_pre flush, CBD post-dispatch apply, terminal)", len(versionMetas))
+	if len(versionMetas) != 3 {
+		t.Fatalf("versions = %d, want 3 (seed, CBD TX_pre flush, CBD post-dispatch transaction)", len(versionMetas))
 	}
 	intermediate := versionMetas[1]
 	// GetVersionMetadata carries no Entity payload; GetVersionByTransaction
-	// does — fetched by the intermediate write's own TransactionID, whose
-	// contract ("earliest version written by txID") resolves to exactly
-	// this write even if the terminal write shares the same transaction
-	// (the CBD TX_pre flush is, by construction, the earlier of the two).
+	// does — fetched by the intermediate write's own TransactionID, which
+	// wrote exactly this one version.
 	intermediateEntity, err := es.GetVersionByTransaction(ctx, entityID, intermediate.TransactionID)
 	if err != nil {
 		t.Fatalf("GetVersionByTransaction (intermediate): %v", err)
@@ -1147,32 +1141,23 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 		t.Error("intermediate version must never carry the stale prior-committer attribution")
 	}
 
-	// [2]: the post-dispatch CompareAndSave applying the processor's
-	// returned entity, inside the SAME transaction as the terminal write
-	// [3]. GetVersionByTransaction resolves to [2] here — not [3] — because
-	// its contract is "the EARLIEST version written by txID", and [2] is
-	// chronologically first within that shared transaction.
-	postDispatchApply := versionMetas[2]
-	postDispatchEntity, err := es.GetVersionByTransaction(ctx, entityID, postDispatchApply.TransactionID)
+	// [2]: the post-dispatch transaction's one version is its last write,
+	// the terminal persist in MID — not the processor's returned entity in
+	// OPEN, which the same transaction wrote first.
+	terminal := versionMetas[2]
+	if terminal.TransactionID == intermediate.TransactionID {
+		t.Fatalf("terminal version shares the CBD TX_pre flush's transaction %q; want the post-dispatch transaction's own", terminal.TransactionID)
+	}
+	terminalByTx, err := es.GetVersionByTransaction(ctx, entityID, terminal.TransactionID)
 	if err != nil {
-		t.Fatalf("GetVersionByTransaction (post-dispatch apply): %v", err)
+		t.Fatalf("GetVersionByTransaction (post-dispatch transaction): %v", err)
 	}
-	if postDispatchEntity == nil || postDispatchEntity.Entity == nil {
-		t.Fatalf("post-dispatch apply version has no Entity")
+	if terminalByTx == nil || terminalByTx.Entity == nil {
+		t.Fatalf("post-dispatch transaction's version has no Entity")
 	}
-	if got := postDispatchEntity.Entity.Meta.State; got != "OPEN" {
-		t.Fatalf("post-dispatch apply version state = %q, want OPEN (Meta.State advances to Next only after this write, in fireTransition)", got)
+	if got := terminalByTx.Entity.Meta.State; got != "MID" {
+		t.Fatalf("post-dispatch transaction's version state = %q, want MID (its last write, the terminal persist)", got)
 	}
-	if postDispatchApply.User != armingUser.ID || postDispatchApply.AttributedKind != armingUser.Kind || postDispatchApply.Executor != common.SystemPrincipal() {
-		t.Errorf("post-dispatch apply version attribution = {%q %v %+v}, want {%q %v %+v} — this write must not carry the stale prior-committer attribution either",
-			postDispatchApply.User, postDispatchApply.AttributedKind, postDispatchApply.Executor,
-			armingUser.ID, armingUser.Kind, common.SystemPrincipal())
-	}
-
-	// The terminal version is simply the entity's current state — no
-	// history lookup needed for its payload (and GetVersionByTransaction
-	// could not distinguish it from [2] above; both share one transaction
-	// and that lookup always resolves to the earliest of the two).
 	terminalEntity, err := es.Get(ctx, entityID)
 	if err != nil {
 		t.Fatalf("Get (terminal): %v", err)
@@ -1180,7 +1165,6 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 	if terminalEntity.Meta.State != "MID" {
 		t.Fatalf("terminal version state = %q, want MID", terminalEntity.Meta.State)
 	}
-	terminal := versionMetas[3]
 	if terminal.User != armingUser.ID || terminal.AttributedKind != armingUser.Kind || terminal.Executor != common.SystemPrincipal() {
 		t.Errorf("terminal version attribution = {%q %v %+v}, want {%q %v %+v}",
 			terminal.User, terminal.AttributedKind, terminal.Executor,

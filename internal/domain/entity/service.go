@@ -364,12 +364,15 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	}, nil
 }
 
-// getEntityByTransactionID returns the entity version whose meta.TransactionID
-// matches txID, via the store's purposed by-transaction lookup (earliest
-// matching version; tombstones never match — see GetVersionByTransaction's
-// doc comment). spi.ErrNotFound is returned both when the entity itself is
-// unknown to the store and when no version matches the supplied
-// transactionId — the caller maps both to ENTITY_NOT_FOUND (404), which
+// getEntityByTransactionID returns the entity version transaction txID
+// wrote, via the store's purposed by-transaction lookup. An entity has at
+// most one version per transaction, carrying the transaction's last write,
+// so this is the entity as txID left it. The lookup reads committed versions
+// only, also for a caller inside txID; tombstones never match — see
+// GetVersionByTransaction's doc comment. spi.ErrNotFound is returned when
+// the entity itself is unknown to the store, when no committed version
+// matches the supplied transactionId (txID has not committed, never wrote
+// the entity, or deleted it) — the caller maps it to ENTITY_NOT_FOUND (404), which
 // mirrors Cyoda Cloud's contract (and matches dictionary
 // scenario 12/neg/05). The caller treats other errors as infrastructure
 // failures (5xx).

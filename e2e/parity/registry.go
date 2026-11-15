@@ -106,6 +106,10 @@ var allTests = []NamedTest{
 	// getOneEntity's by-transaction lookup, both now backed by
 	// spi.EntityStore.GetVersionMetadata / GetVersionByTransaction.
 	{"HistoryReadsChangesMetadataAndTransactionLookup", RunHistoryReadsChangesMetadataAndTransactionLookup},
+	// One version per entity per transaction, seen through /changes, and the
+	// by-transaction read: X's final entity once X commits, 404 before,
+	// inside X too.
+	{"HistoryOneVersionPerTransaction", RunHistoryOneVersionPerTransaction},
 
 	// Phase 4a — tenant isolation (Task 4a.5)
 	{"TenantIsolationEntities", RunTenantIsolationEntities},
