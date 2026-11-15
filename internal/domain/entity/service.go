@@ -267,10 +267,6 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		return nil, classifyValidateOrExtendErr(err)
 	}
 
-	// Thread the unique keys onto ctx before Begin, so the keyed ctx propagates
-	// into Begin → txCtx → Execute → FinalCtx → Save.
-	ctx = spi.WithUniqueKeys(ctx, desc.UniqueKeys)
-
 	// Begin a fresh transaction, or PARTICIPATE in a joined tx already on ctx
 	// (a routed compute-node callback). A joined callback does not Begin and
 	// does not commit; the owner does. It runs in the callback scope the join
@@ -1943,7 +1939,6 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		ref          spi.ModelRef
 		payloadBytes []byte
 		parsedData   any
-		uniqueKeys   []spi.UniqueKey
 	}
 	// The latest descriptor of each model the batch names. The second pass
 	// replaces an entry with the descriptor an extension returns, so a later
@@ -1993,7 +1988,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			return nil, err
 		}
 
-		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes, parsedData: parsedData, uniqueKeys: desc.UniqueKeys})
+		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes, parsedData: parsedData})
 	}
 	for _, it := range parsed {
 		// Validate or extend model schema
@@ -2071,13 +2066,6 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			},
 			Data: item.payloadBytes,
 		}
-
-		// Stamp the current item's unique-key definitions onto the context
-		// BEFORE engine execution. Called unconditionally (even for models with
-		// no keys) so a keyed item never leaks its keys to the next item via the
-		// reused currentCtx. spi.WithUniqueKeys overwrites any previously set
-		// value, so passing nil/empty correctly clears a prior item's keys.
-		currentCtx = spi.WithUniqueKeys(currentCtx, item.uniqueKeys)
 
 		// Run workflow engine within the current segment's transaction
 		// context. Mirrors single CreateEntity's flow so initial-state
@@ -2261,9 +2249,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			return nil, classifyValidateOrExtendErr(vErr)
 		}
 	}
-
-	// Thread the unique keys onto txCtx so they propagate into Execute and Save.
-	txCtx = spi.WithUniqueKeys(txCtx, desc.UniqueKeys)
 
 	now := h.clock.Now()
 
@@ -2530,11 +2515,6 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		if err := checkUniqueKeys(desc, item.parsedData, item.bodyBytes, fmt.Sprintf("item %d: ", i)); err != nil {
 			return nil, err
 		}
-
-		// Stamp this item's unique-key definitions onto the context before
-		// engine execution. Called unconditionally so a keyed item never leaks
-		// its keys to the next item; spi.WithUniqueKeys overwrites any prior value.
-		currentCtx = spi.WithUniqueKeys(currentCtx, desc.UniqueKeys)
 
 		if _, err := ingest.ValidateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
 			return nil, classifyValidateOrExtendErr(err)
