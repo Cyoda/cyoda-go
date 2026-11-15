@@ -440,8 +440,6 @@ longer passes anything to storage.
 
 ### 4.2 Per backend
 
-- **all backends:** step 1 reads the models in a fixed order (by model name,
-  then version).
 - **memory:** in commit, under `entityMu`, the release set is every entity in `tx.Buffer` and
   `tx.Deletes`; a committed claim held by an entity in that set does not
   conflict, and the intra-batch check (`pending`) catches a value two buffered
