@@ -86,7 +86,7 @@ func clientAttributableStoreErr(err error) bool {
 // that also covers the criterion failures and store errors invisible from here.
 // The deferred guard below covers only the panic case, where no caller ever gets
 // that hand-back.
-func (e *Engine) executeProcessors(ctx context.Context, processors []spi.ProcessorDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, workflow string, transition string, txID string) (retCtx context.Context, retTxID string, retErr error) {
+func (e *Engine) executeProcessors(ctx context.Context, processors []spi.ProcessorDefinition, entity *spi.Entity, run *cascadeRun, auditStore spi.StateMachineAuditStore, workflow string, transition string, txID string) (retCtx context.Context, retTxID string, retErr error) {
 	if len(processors) == 0 {
 		return ctx, txID, nil
 	}
@@ -134,13 +134,17 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 			var nTxID string
 			nCtx, nTxID, boundaryCommitted, procErr = e.executeCommitBeforeDispatch(currentCtx, entity, desc, proc, workflow, transition, currentTxID)
 			success = procErr == nil
+			if boundaryCommitted {
+				// The boundary flushed and committed the anchor.
+				run.anchorStored = true
+			}
 			if procErr == nil {
 				currentCtx = nCtx
 				currentTxID = nTxID
 			}
 
 		default: // SYNC, ASYNC_SAME_TX — both inline in caller's transaction.
-			procErr = e.executeSyncProcessor(currentCtx, entity, desc, proc, workflow, transition, currentTxID)
+			procErr = e.executeSyncProcessor(currentCtx, entity, run, desc, proc, workflow, transition, currentTxID)
 			success = procErr == nil
 		}
 
@@ -224,16 +228,24 @@ func memberFailReason(err error) string {
 // processor's returned modifications. A processor that returns none may
 // instead have written the entity through a callback that joined the
 // transaction; that write is kept (adoptCallbackWrite).
-func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
+func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, run *cascadeRun, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
 	if e.extProc == nil {
 		return nil
 	}
-	// The anchor as the transaction sees it before the dispatch. Without a
-	// transaction no callback can join one, and there is nothing to observe.
+	// The anchor as the transaction sees it before the dispatch, read after
+	// the transaction was made to hold the engine's anchor (spec §2.4).
+	// Without a transaction no callback can join one, and there is nothing to
+	// save or observe.
 	tx := spi.GetTransaction(ctx)
 	var es spi.EntityStore
 	var before anchorView
 	if tx != nil {
+		if err := e.saveAnchorBeforeCallout(ctx, entity, txID, run.newAnchorPending()); err != nil {
+			return err
+		}
+		if txID != "" {
+			run.anchorStored = true
+		}
 		var err error
 		if es, err = e.factory.EntityStore(ctx); err != nil {
 			return fmt.Errorf("failed to get entity store before processor dispatch: %w", errors.Join(ErrProcessorOutputInfra, err))

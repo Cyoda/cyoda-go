@@ -338,6 +338,9 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity) (*EngineResult
 		}
 	}()
 
+	// The anchor is new: no transaction holds it until the run stores it.
+	run := &cascadeRun{creating: true}
+
 	// Record STARTED.
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "State machine started", startedData(entity.Meta.State))
@@ -351,7 +354,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity) (*EngineResult
 	entity.Meta.State = selectedWF.InitialState
 
 	// Cascade automated transitions.
-	currentCtx, currentTxID, stop, err := e.cascadeAutomated(ctx, entity, selectedWF, auditStore, txID)
+	currentCtx, currentTxID, stop, err := e.cascadeAutomated(ctx, entity, run, selectedWF, auditStore, txID)
 	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
@@ -435,13 +438,14 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 		return nil, err
 	}
 
-	currentCtx, currentTxID, err := e.attemptTransition(ctx, entity, wf, transitionName, auditStore, txID)
+	run := &cascadeRun{}
+	currentCtx, currentTxID, err := e.attemptTransition(ctx, entity, run, wf, transitionName, auditStore, txID)
 	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
 	}
 
-	currentCtx, currentTxID, stop, err := e.cascadeAutomated(currentCtx, entity, wf, auditStore, currentTxID)
+	currentCtx, currentTxID, stop, err := e.cascadeAutomated(currentCtx, entity, run, wf, auditStore, currentTxID)
 	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
@@ -543,7 +547,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMat
 		}, nil
 	}
 
-	currentCtx, currentTxID, stop, err := e.cascadeAutomated(ctx, entity, wf, auditStore, txID)
+	currentCtx, currentTxID, stop, err := e.cascadeAutomated(ctx, entity, &cascadeRun{}, wf, auditStore, txID)
 	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
@@ -726,7 +730,7 @@ func (discardedAuditStore) GetEventsByTransaction(context.Context, string, strin
 // segment boundary may shift these when a COMMIT_BEFORE_DISPATCH processor
 // runs. Audit events continue to use the cascade-entry txID for
 // client-correlation continuity (spec §8).
-func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transitionName string, auditStore spi.StateMachineAuditStore, txID string) (context.Context, string, error) {
+func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, run *cascadeRun, wf *spi.WorkflowDefinition, transitionName string, auditStore spi.StateMachineAuditStore, txID string) (context.Context, string, error) {
 	stateDef, ok := wf.States[entity.Meta.State]
 	if !ok {
 		return ctx, txID, fmt.Errorf("state %q not found in workflow %q", entity.Meta.State, wf.Name)
@@ -764,7 +768,7 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 			transitionName, entity.Meta.State, scheduledReason, ErrTransitionNotFound)
 	}
 
-	newCtx, newTxID, err := e.fireTransition(ctx, entity, wf, transition, auditStore, txID)
+	newCtx, newTxID, err := e.fireTransition(ctx, entity, run, wf, transition, auditStore, txID)
 	return newCtx, newTxID, err
 }
 
@@ -775,7 +779,7 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 // FireScheduledTransition reuses the mechanism without going through
 // attemptTransition's manual/scheduled reject policy. On any error
 // entity.Meta.State is left unchanged.
-func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transition *spi.TransitionDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, retErr error) {
+func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, run *cascadeRun, wf *spi.WorkflowDefinition, transition *spi.TransitionDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, retErr error) {
 	transitionName := transition.Name
 
 	// Panic-only guard (see rollbackSegment). segCtx/segTxID track the segment
@@ -816,7 +820,7 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 	}
 
 	// Execute processors. May shift (ctx, txID) for COMMIT_BEFORE_DISPATCH.
-	newCtx, newTxID, err := e.executeProcessors(ctx, transition.Processors, entity, auditStore, wf.Name, transitionName, txID)
+	newCtx, newTxID, err := e.executeProcessors(ctx, transition.Processors, entity, run, auditStore, wf.Name, transitionName, txID)
 	// Advance before checking err so the deferred rollback always targets the
 	// segment actually open.
 	segCtx, segTxID = newCtx, newTxID
@@ -847,7 +851,7 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 // It also returns why the cascade stopped: the stop reason of the pass it
 // settled on. Only that pass counts; a refusal in a state the cascade then
 // left is not a reason the run stopped.
-func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, stop StopReason, retErr error) {
+func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, run *cascadeRun, wf *spi.WorkflowDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, stop StopReason, retErr error) {
 	ctx, cascadeSpan := tracer.Start(ctx, "workflow.cascade", trace.WithAttributes(
 		observability.AttrWorkflowName.String(wf.Name),
 		observability.AttrEntityID.String(entity.Meta.ID),
@@ -942,7 +946,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 				observability.AttrStateTo.String(tr.Next),
 				observability.AttrCascadeDepth.Int(depth),
 			))
-			newCtx, newTxID, err := e.executeProcessors(currentCtx, tr.Processors, entity, auditStore, wf.Name, tr.Name, currentTxID)
+			newCtx, newTxID, err := e.executeProcessors(currentCtx, tr.Processors, entity, run, auditStore, wf.Name, tr.Name, currentTxID)
 			currentCtx = newCtx
 			currentTxID = newTxID
 			if err != nil {

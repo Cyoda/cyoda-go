@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -13,6 +14,7 @@ import (
 type anchorView struct {
 	found bool
 	txID  string // the transaction id the entity is stamped with
+	state string
 	data  []byte
 }
 
@@ -29,7 +31,7 @@ func readAnchor(ctx context.Context, es spi.EntityStore, entityID string) (ancho
 	if err != nil {
 		return anchorView{}, err
 	}
-	return anchorView{found: true, txID: cur.Meta.TransactionID, data: cur.Data}, nil
+	return anchorView{found: true, txID: cur.Meta.TransactionID, state: cur.Meta.State, data: cur.Data}, nil
 }
 
 // writtenBy reports whether the transaction txID wrote the anchor.
@@ -51,4 +53,70 @@ func adoptCallbackWrite(entity *spi.Entity, before, after anchorView, txID strin
 		return
 	}
 	entity.Data = after.data
+}
+
+// ErrAnchorSaveInfra marks a failure of the save the engine makes before a
+// callout that carries the transaction token.
+var ErrAnchorSaveInfra = errors.New("saving the entity before a callout failed")
+
+// cascadeRun is the state one engine entry point (Execute, ManualTransition,
+// Loopback, a scheduled fire) keeps across its cascade.
+type cascadeRun struct {
+	// creating is set on Execute only: the anchor is new, and the
+	// transaction holds no copy of it until the run stores one.
+	creating bool
+	// anchorStored records that the run's transaction has held the anchor:
+	// the engine saved it, found it, or committed it at a segment boundary.
+	// From then on an anchor the transaction does not hold was deleted in
+	// it.
+	anchorStored bool
+}
+
+// newAnchorPending reports a create whose anchor the run has not stored yet:
+// the one case in which an anchor the transaction does not hold is saved.
+func (r *cascadeRun) newAnchorPending() bool {
+	return r.creating && !r.anchorStored
+}
+
+// saveAnchorBeforeCallout makes the transaction hold the in-memory anchor
+// (spec §2.2) and sets entity.Meta.TransactionID to the stored anchor's id
+// (spec §2.5). No-op unless txID != "" and a transaction is in ctx: with an id
+// and no transaction a save would be a write of its own, and a dispatch with
+// no id sends no token.
+//
+// It reads the anchor in the transaction and saves the in-memory anchor only
+// when its Data bytes or Meta.State differ from the read; meta-only changes
+// do not count. An anchor the transaction does not hold is saved only when
+// creating is set, which the caller sets for a create whose anchor the run
+// has not stored yet; otherwise a callback deleted it in this transaction,
+// nothing is saved and Meta.TransactionID is left as it is.
+//
+// It never acquires the txcoord gate. The caller runs it in the chain's
+// scope, before beforeDispatch and before txcoord.Pause: a failure has
+// dispatched nothing. Every failure is marked ErrAnchorSaveInfra.
+func (e *Engine) saveAnchorBeforeCallout(ctx context.Context, entity *spi.Entity, txID string, creating bool) error {
+	if txID == "" || spi.GetTransaction(ctx) == nil {
+		return nil
+	}
+	es, err := e.factory.EntityStore(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get entity store before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
+	}
+	cur, err := readAnchor(ctx, es, entity.Meta.ID)
+	switch {
+	case err != nil:
+		return fmt.Errorf("failed to read entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
+	case !cur.found:
+		if !creating {
+			return nil
+		}
+	case bytes.Equal(cur.data, entity.Data) && cur.state == entity.Meta.State:
+		entity.Meta.TransactionID = cur.txID
+		return nil
+	}
+	if _, err := es.Save(ctx, entity); err != nil {
+		return fmt.Errorf("failed to save entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
+	}
+	entity.Meta.TransactionID = txID
+	return nil
 }

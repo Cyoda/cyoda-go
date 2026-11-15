@@ -291,7 +291,8 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 			ScheduledCancelledData(cur.Transition, cur.SourceState, wf.Name))
 		return OutcomeCancelled, commit(txID)
 	}
-	newCtx, newTxID, fireErr := e.fireTransition(txCtx, entity, wf, transition, auditStore, txID)
+	run := &cascadeRun{}
+	newCtx, newTxID, fireErr := e.fireTransition(txCtx, entity, run, wf, transition, auditStore, txID)
 	curCtx, curTxID = newCtx, newTxID
 	if fireErr != nil {
 		if errors.Is(fireErr, ErrCriterionNotMatched) {
@@ -308,7 +309,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	}
 	g.firedTransitionDone.Store(true)
 
-	finalCtx, finalTxID, _, err := e.cascadeAutomated(newCtx, entity, wf, auditStore, newTxID)
+	finalCtx, finalTxID, _, err := e.cascadeAutomated(newCtx, entity, run, wf, auditStore, newTxID)
 	curCtx, curTxID = finalCtx, finalTxID
 	if err != nil {
 		return "", err

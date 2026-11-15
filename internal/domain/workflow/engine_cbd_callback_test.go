@@ -490,11 +490,11 @@ func TestCBDCallback_OtherTransactionDeletesBeforeTXPostBegins_Conflicts(t *test
 	}
 }
 
-// A callback write is adopted even when it stores the committed payload
-// unchanged: the transaction had not written the anchor before the dispatch,
-// so the write is this dispatch's, and it replaces the payload an earlier
-// processor returned.
-func TestProcessorCallback_FirstWriteOfCommittedBytes_IsAdopted(t *testing.T) {
+// The "before" view is the anchor the engine saved just before the dispatch
+// (spec §2.4): a callback that stores the anchor as it reads it under the
+// token stores the payload an earlier processor returned, byte for byte. That
+// write cannot be told from no write, and the engine's payload stands.
+func TestProcessorCallback_RewriteOfSavedAnchor_KeepsEnginePayload(t *testing.T) {
 	var env *cbdCallbackEnv
 	env = newCallbackEnv(t, []spi.ProcessorDefinition{
 		{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: ExecutionModeSync},
@@ -511,12 +511,13 @@ func TestProcessorCallback_FirstWriteOfCommittedBytes_IsAdopted(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		_, err = es.Save(ctx, stored) // the committed bytes, unchanged
+		assertData(t, stored.Data, engineApplied)
+		_, err = es.Save(ctx, stored) // the saved anchor, unchanged
 		return nil, err
 	})
 	_, entity, _, err := env.transition(t, "cbf-1")
 	if err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
-	assertData(t, entity.Data, map[string]any{"x": float64(0)})
+	assertData(t, entity.Data, engineApplied)
 }

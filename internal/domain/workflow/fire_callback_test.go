@@ -431,20 +431,25 @@ func (s nthFailEntityStore) Get(ctx context.Context, id string) (*spi.Entity, er
 }
 
 // The reads a SYNC dispatch makes around the callout to observe a callback's
-// write cannot be made: the run fails as an infrastructure failure.
+// write, and the read before the save that precedes them, cannot be made: the
+// run fails as an infrastructure failure.
 func TestCallback_SyncObservationFails_RunFails(t *testing.T) {
 	// In a one-hop run with one SYNC processor, the first EntityStore call and
 	// the first Get are the fire's own read; the second of each is the store
-	// and the read before the dispatch; the third Get is the read after it.
+	// and the read before the save; the third of each, the store and the read
+	// before the dispatch; the fourth Get is the read after it.
 	cases := []struct {
 		name                   string
 		failStoreAt, failGetAt int
 		wantDispatches         int
+		wantErr                error
 		wantText               string
 	}{
-		{"store before dispatch", 2, 0, 0, "before processor dispatch"},
-		{"read before dispatch", 0, 2, 0, "before processor dispatch"},
-		{"read after dispatch", 0, 3, 1, "after processor dispatch"},
+		{"store before save", 2, 0, 0, ErrAnchorSaveInfra, "before a callout"},
+		{"read before save", 0, 2, 0, ErrAnchorSaveInfra, "before a callout"},
+		{"store before dispatch", 3, 0, 0, ErrProcessorOutputInfra, "before processor dispatch"},
+		{"read before dispatch", 0, 3, 0, ErrProcessorOutputInfra, "before processor dispatch"},
+		{"read after dispatch", 0, 4, 1, ErrProcessorOutputInfra, "after processor dispatch"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -461,7 +466,7 @@ func TestCallback_SyncObservationFails_RunFails(t *testing.T) {
 				failStoreAt: tc.failStoreAt, failGetAt: tc.failGetAt, stores: &stores, gets: &gets, err: storeErr})
 
 			r := runWithin(t, env, claimed)
-			if r.Outcome != OutcomeFailed || !errors.Is(r.Err, storeErr) || !errors.Is(r.Err, ErrProcessorOutputInfra) ||
+			if r.Outcome != OutcomeFailed || !errors.Is(r.Err, storeErr) || !errors.Is(r.Err, tc.wantErr) ||
 				!strings.Contains(r.Err.Error(), tc.wantText) {
 				t.Fatalf("report = %+v, want failed %s, marked infrastructure", r, tc.wantText)
 			}
