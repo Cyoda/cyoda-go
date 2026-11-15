@@ -430,10 +430,11 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 	}
 	tid := string(tenantID)
 
-	// creation_date is stamped on the version that creates its entity:
-	// version 1. A transaction records at most one version of an entity
-	// (saveOn, deleteOn), so an entity this transaction created has no other
-	// row here to carry the provisional creation date.
+	// creation_date is stamped on the version that creates its entity,
+	// version 1, and on that entity's row, which is then at version 1 too. A
+	// transaction records at most one version of an entity (saveOn, deleteOn),
+	// so an entity this transaction created has no other row here to carry
+	// the provisional creation date.
 	//
 	// The CASE must stay conditional. By the time this runs, the version
 	// INSERT already sources creation_date by sub-select from the entity's own
@@ -455,11 +456,7 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 
 	if _, err := tx.Exec(ctx,
 		`UPDATE entities e SET last_modified = $1,
-		        creation_date = CASE WHEN EXISTS (
-		            SELECT 1 FROM entity_versions v
-		             WHERE v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id
-		               AND v.transaction_id = $3 AND v.version = 1
-		        ) THEN $1 ELSE e.creation_date END
+		        creation_date = CASE WHEN e.version = 1 THEN $1 ELSE e.creation_date END
 		  WHERE e.tenant_id = $2 AND e.entity_id IN (
 		            SELECT entity_id FROM entity_versions
 		             WHERE tenant_id = $2 AND transaction_id = $3)`,

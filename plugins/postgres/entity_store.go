@@ -229,28 +229,23 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	//
 	// clock_timestamp() is a deliberately different value: wall_clock_time is
 	// the physical moment of insertion by design, and no stamp ever rewrites it.
+	//
+	// The same statement finds this transaction's pending version of the
+	// entity, if it has one (saveTimesQuery), so finding it costs no round
+	// trip of its own.
 	var dbNow, wallClockTime time.Time
-	if err := s.q.QueryRow(ctx, `SELECT coalesce($1::pg_catalog.timestamptz,
-		CURRENT_TIMESTAMP), -- realtime: no test clock configured; production's business clock is the database clock, a test clock is passed as $1
-		clock_timestamp() -- realtime: wall_clock_time is the physical insertion time, kept for analysis`,
-		placeholderAtArg(s.clock)).Scan(&dbNow, &wallClockTime); err != nil {
+	var pendingVersion *int64
+	var pending pendingVersionRow
+	if err := s.q.QueryRow(ctx, saveTimesQuery,
+		placeholderAtArg(s.clock), tid, eid, ambientTxID).Scan(&dbNow, &wallClockTime, &pendingVersion, &pending.prior); err != nil {
 		return 0, fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
 
 	// One version per entity per transaction: a transaction that already
 	// wrote this entity replaces its pending version instead of adding one.
-	// Only a caller's transaction has a pending version to find — outside
-	// one, every write is its own transaction and its own version, and its
-	// rows carry the empty transaction_id that would otherwise match every
-	// earlier non-transactional write.
-	if ambientTxID != "" {
-		pending, found, err := s.pendingVersion(ctx, tid, eid, ambientTxID)
-		if err != nil {
-			return 0, err
-		}
-		if found {
-			return s.replacePendingSave(ctx, entity, ambientTxID, pending, dbNow, wallClockTime)
-		}
+	if pendingVersion != nil {
+		pending.version = *pendingVersion
+		return s.replacePendingSave(ctx, entity, ambientTxID, pending, dbNow, wallClockTime)
 	}
 
 	// Atomically upsert the entities row, incrementing version in the database
@@ -442,50 +437,45 @@ type pendingVersionRow struct {
 	prior bool
 }
 
-// pendingVersionQuery finds the version transaction $3 has written of entity
-// $2 and not yet committed: the entity_versions row at the entity's current
-// version, when that row carries $3. A transaction writes at most one version
-// of an entity, always the newest, so every other version of it was written
-// before the transaction — which is what the EXISTS reads.
+// saveTimesQuery is saveOn's first statement. It reads the provisional and
+// wall-clock times (see saveOn) and finds the version transaction $4 has
+// written of entity $3 and not yet committed: the entity_versions row at the
+// entity's current version, when that row carries $4. The pending version's
+// number is NULL when there is none. The last column reports whether the
+// entity has a version from before the transaction: a transaction writes at
+// most one version of an entity, always the newest, so every lower version
+// was written before it.
 //
 // The lookup is in SQL rather than recorded in Go, so it is never stale: a
 // ROLLBACK TO SAVEPOINT undoes the row writes that made or replaced a pending
 // version, and this query sees exactly what is left. txState's savepoint
 // snapshots hold only the read and write sets.
 //
-// Only a caller's transaction may be passed. A write outside a transaction
-// stores the empty transaction_id, which this query would match on every
-// earlier non-transactional version.
+// The guard that $4 is not empty is required: only a caller's transaction
+// has a pending version. A write outside a transaction passes the empty id,
+// which its own rows and every earlier non-transactional version store, and
+// must add a version.
 //
-// $1 tenant, $2 entity id, $3 transaction id.
-const pendingVersionQuery = `SELECT e.version,
-	        EXISTS (SELECT 1 FROM entity_versions p
-	                 WHERE p.tenant_id = e.tenant_id AND p.entity_id = e.entity_id
-	                   AND p.version < e.version)
-	   FROM entities e
-	   JOIN entity_versions v
-	     ON v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id AND v.version = e.version
-	  WHERE e.tenant_id = $1 AND e.entity_id = $2 AND v.transaction_id = $3`
-
-// pendingVersion returns the version txID has written of entityID and not yet
-// committed, and whether there is one. txID must be the caller's transaction,
-// never empty (see pendingVersionQuery).
+// When there is a pending version, this transaction already holds the
+// entities row lock: the write that made the pending version took it, and a
+// ROLLBACK TO SAVEPOINT that released it would also have removed the pending
+// version. So no other writer can change the row between this read and the
+// write that follows.
 //
-// When there is one, this transaction already holds the entities row lock: the
-// write that made the pending version took it, and a ROLLBACK TO SAVEPOINT
-// that released it would also have removed the pending version. So no other
-// writer can change the row between this read and the write that follows.
-func (s *entityStore) pendingVersion(ctx context.Context, tid, entityID, txID string) (pendingVersionRow, bool, error) {
-	var p pendingVersionRow
-	err := s.q.QueryRow(ctx, pendingVersionQuery, tid, entityID, txID).Scan(&p.version, &p.prior)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return pendingVersionRow{}, false, nil
-	}
-	if err != nil {
-		return pendingVersionRow{}, false, fmt.Errorf("failed to find the transaction's pending version of entity %s: %w", entityID, err)
-	}
-	return p, true, nil
-}
+// $1 business-clock reading or NULL, $2 tenant, $3 entity id, $4 the
+// caller's transaction id or the empty string.
+const saveTimesQuery = `WITH pending AS (
+	    SELECT e.version
+	      FROM entities e
+	      JOIN entity_versions v
+	        ON v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id AND v.version = e.version
+	     WHERE e.tenant_id = $2 AND e.entity_id = $3 AND $4 <> '' AND v.transaction_id = $4)
+	SELECT coalesce($1::pg_catalog.timestamptz,
+		CURRENT_TIMESTAMP), -- realtime: no test clock configured; production's business clock is the database clock, a test clock is passed as $1
+		clock_timestamp(), -- realtime: wall_clock_time is the physical insertion time, kept for analysis
+		(SELECT version FROM pending),
+		EXISTS (SELECT 1 FROM entity_versions p, pending
+		         WHERE p.tenant_id = $2 AND p.entity_id = $3 AND p.version < pending.version)`
 
 // replacePendingVersionRow writes a replacing write's version into the
 // pending version's entity_versions row, in place: every column the version
@@ -528,7 +518,7 @@ func (s *entityStore) replacePendingSave(ctx context.Context, entity *spi.Entity
 
 	// The model guard is the upsert's (see saveOn): an entity's model is
 	// fixed at creation, also within the transaction that created it. The
-	// row exists and this transaction holds its lock (pendingVersion), so a
+	// row exists and this transaction holds its lock (saveTimesQuery), so a
 	// row the UPDATE does not match is a row of a different model.
 	tag, err := s.q.Exec(ctx,
 		`UPDATE entities SET deleted = false, doc = $1, last_modified = $2
@@ -899,12 +889,33 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// excludes, so it comes back spi.ErrNotFound. Either way it fails before
 	// ever reading a version, so it can never reach the entity_versions
 	// INSERT with a value the winner already claimed.
+	//
+	// The same lookup reports whether this transaction already wrote the
+	// entity's current version: one version per entity per transaction, as in
+	// saveOn, so a delete of such an entity turns that pending version into
+	// the tombstone, in place and under the same number, instead of adding
+	// one. The guard that $3 is not empty is required for the reason
+	// saveTimesQuery gives: only a caller's transaction has a pending
+	// version, and a write outside one passes the empty id that every
+	// non-transactional version stores. The row lock taken here is then the
+	// one the pending version's write already held.
+	ambientTxID := ""
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		ambientTxID = tx.ID
+	}
 	var doc []byte
 	var maxVersion int64
 	var creationDate, lastModified time.Time
+	var replacesPending bool
 	err := s.q.QueryRow(ctx,
-		`SELECT doc, version, creation_date, last_modified FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted FOR UPDATE`,
-		tid, entityID).Scan(&doc, &maxVersion, &creationDate, &lastModified)
+		`SELECT e.doc, e.version, e.creation_date, e.last_modified,
+		        EXISTS (SELECT 1 FROM entity_versions v
+		                 WHERE v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id
+		                   AND v.version = e.version AND $3 <> '' AND v.transaction_id = $3)
+		   FROM entities e
+		  WHERE e.tenant_id = $1 AND e.entity_id = $2 AND NOT e.deleted
+		    FOR UPDATE OF e`,
+		tid, entityID, ambientTxID).Scan(&doc, &maxVersion, &creationDate, &lastModified, &replacesPending)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
@@ -921,24 +932,6 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 		return fmt.Errorf("failed to unmarshal entity for delete: %w", err)
 	}
 
-	// One version per entity per transaction, as in saveOn: a transaction
-	// that already wrote this entity turns its pending version into the
-	// tombstone, in place and under the same number, instead of adding one.
-	// Only a caller's transaction has a pending version to find (see
-	// saveOn). The lock this statement's lookup above took is the one the
-	// pending version's write already held.
-	ambientTxID := ""
-	if tx := spi.GetTransaction(ctx); tx != nil {
-		ambientTxID = tx.ID
-	}
-	replacesPending := false
-	if ambientTxID != "" {
-		_, found, err := s.pendingVersion(ctx, tid, entityID, ambientTxID)
-		if err != nil {
-			return err
-		}
-		replacesPending = found
-	}
 	nextVersion := maxVersion + 1
 	if replacesPending {
 		nextVersion = maxVersion
