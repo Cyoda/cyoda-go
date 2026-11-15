@@ -17,10 +17,10 @@ import (
 //   - An entity ID appears in at most one of readSet/writeSet at any time.
 //   - readSet[id] = the version as first observed by a Get within this tx.
 //   - writeSet[id] = the pre-write version for an entity we updated or deleted.
-//   - writeBytes[id] = the bytes of the last write of every entity this
-//     transaction wrote: the data its last save was given, or nil when its
-//     last write is a delete. Commit computes the unique-key claims from
-//     these (commitClaims), never from a re-read of the stored document.
+//   - written[id] = the last write of every entity this transaction wrote:
+//     the model and bytes of its last save, or a delete. Commit checks the
+//     models and computes the unique-key claims from these (commitClaims),
+//     never from a re-read of the stored document.
 //
 // writeSet is maintained for the readSet-disjoint invariant (RecordRead skips
 // entities in writeSet, keeping readSet correct) and for future use with
@@ -40,7 +40,7 @@ type txState struct {
 	markerKey  int32
 	readSet    map[string]int64
 	writeSet   map[string]int64
-	writeBytes map[string][]byte
+	written    map[string]writtenEntity
 	savepoints []savepointEntry
 	// abortCause is the error that aborted this transaction server-side,
 	// when it was a ceiling or a concurrent writer. See RecordAbort.
@@ -48,19 +48,27 @@ type txState struct {
 }
 
 type savepointEntry struct {
-	id         string
-	readSet    map[string]int64
-	writeSet   map[string]int64
-	writeBytes map[string][]byte
+	id       string
+	readSet  map[string]int64
+	writeSet map[string]int64
+	written  map[string]writtenEntity
+}
+
+// writtenEntity is the last write of an entity in a transaction: a save of
+// data into the model ref, or a delete.
+type writtenEntity struct {
+	ref     spi.ModelRef
+	data    []byte
+	deleted bool
 }
 
 func newTxState(tenantID spi.TenantID, markerKey int32) *txState {
 	return &txState{
-		tenantID:   tenantID,
-		markerKey:  markerKey,
-		readSet:    make(map[string]int64),
-		writeSet:   make(map[string]int64),
-		writeBytes: make(map[string][]byte),
+		tenantID:  tenantID,
+		markerKey: markerKey,
+		readSet:   make(map[string]int64),
+		writeSet:  make(map[string]int64),
+		written:   make(map[string]writtenEntity),
 	}
 }
 
@@ -148,30 +156,32 @@ func (s *txState) RecordWrite(id string, preWriteVersion int64) {
 	s.writeSet[id] = preWriteVersion
 }
 
-// RecordWriteBytes records the bytes of a write of the given entity: the data
-// a save was given, or nil for a delete. A later write of the entity replaces
-// them, so the record holds the transaction's last write. The bytes are kept
-// as given (a copy). A save passes non-nil data (savedBytes), so a save of no
-// data is not read as a delete.
-func (s *txState) RecordWriteBytes(id string, data []byte) {
+// RecordSave records a save of the given entity into the model ref with
+// data, replacing any earlier write of it, so the record holds the
+// transaction's last write. data is kept as given: the caller hands over a
+// copy it owns (saveOn's defensive copy) and does not change it afterwards.
+func (s *txState) RecordSave(id string, ref spi.ModelRef, data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if data == nil {
-		s.writeBytes[id] = nil
-		return
-	}
-	s.writeBytes[id] = append(make([]byte, 0, len(data)), data...)
+	s.written[id] = writtenEntity{ref: ref, data: data}
+}
+
+// RecordDelete records a delete of the given entity, replacing any earlier
+// write of it.
+func (s *txState) RecordDelete(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.written[id] = writtenEntity{deleted: true}
 }
 
 // WrittenEntities returns a copy of the record of every entity this
-// transaction wrote: the bytes of its last save, or nil when its last write
-// is a delete.
-func (s *txState) WrittenEntities() map[string][]byte {
+// transaction wrote: its last write, a save or a delete.
+func (s *txState) WrittenEntities() map[string]writtenEntity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make(map[string][]byte, len(s.writeBytes))
-	for id, data := range s.writeBytes {
-		out[id] = data
+	out := make(map[string]writtenEntity, len(s.written))
+	for id, w := range s.written {
+		out[id] = w
 	}
 	return out
 }
@@ -210,17 +220,17 @@ func (s *txState) ValidateReadSet(current map[string]int64) error {
 	return nil
 }
 
-// PushSavepoint stores a copy of the current readSet/writeSet/writeBytes under the
+// PushSavepoint stores a copy of the current readSet/writeSet/written under the
 // given savepoint ID. Subsequent RestoreSavepoint(id) restores them to this
 // snapshot and trims later savepoints (postgres nested savepoint semantics).
 func (s *txState) PushSavepoint(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snap := savepointEntry{
-		id:         id,
-		readSet:    make(map[string]int64, len(s.readSet)),
-		writeSet:   make(map[string]int64, len(s.writeSet)),
-		writeBytes: make(map[string][]byte, len(s.writeBytes)),
+		id:       id,
+		readSet:  make(map[string]int64, len(s.readSet)),
+		writeSet: make(map[string]int64, len(s.writeSet)),
+		written:  make(map[string]writtenEntity, len(s.written)),
 	}
 	for k, v := range s.readSet {
 		snap.readSet[k] = v
@@ -228,10 +238,10 @@ func (s *txState) PushSavepoint(id string) {
 	for k, v := range s.writeSet {
 		snap.writeSet[k] = v
 	}
-	// The byte slices are shared, not copied: RecordWriteBytes never mutates
-	// a recorded slice, it replaces it.
-	for k, v := range s.writeBytes {
-		snap.writeBytes[k] = v
+	// The byte slices are shared, not copied: a recorded slice is never
+	// changed, only replaced.
+	for k, v := range s.written {
+		snap.written[k] = v
 	}
 	s.savepoints = append(s.savepoints, snap)
 }
@@ -252,7 +262,7 @@ func (s *txState) HasSavepoint(id string) bool {
 	return false
 }
 
-// RestoreSavepoint restores readSet/writeSet/writeBytes to the snapshot captured at
+// RestoreSavepoint restores readSet/writeSet/written to the snapshot captured at
 // PushSavepoint(id) and trims any savepoints pushed after id. The named
 // savepoint itself remains (mirroring postgres ROLLBACK TO SAVEPOINT).
 //
@@ -289,15 +299,15 @@ func (s *txState) RestoreSavepoint(id string) error {
 	snap := s.savepoints[idx]
 	s.readSet = make(map[string]int64, len(snap.readSet))
 	s.writeSet = make(map[string]int64, len(snap.writeSet))
-	s.writeBytes = make(map[string][]byte, len(snap.writeBytes))
+	s.written = make(map[string]writtenEntity, len(snap.written))
 	for k, v := range snap.readSet {
 		s.readSet[k] = v
 	}
 	for k, v := range snap.writeSet {
 		s.writeSet[k] = v
 	}
-	for k, v := range snap.writeBytes {
-		s.writeBytes[k] = v
+	for k, v := range snap.written {
+		s.written[k] = v
 	}
 	s.savepoints = s.savepoints[:idx+1]
 	if !isConcurrentWriterAbort(s.abortCause) {
@@ -334,22 +344,47 @@ func (tm *TransactionManager) recordWriteIfInTx(ctx context.Context, entityID st
 	s.RecordWrite(entityID, preWriteVersion)
 }
 
-// recordWriteBytes records the bytes of a write into the state of the
-// transaction on ctx: the data a save was given, or nil for a delete. The
-// caller has checked that ctx carries a transaction. A transaction with no
-// state here fails the write: its commit would check nothing for it.
-func (tm *TransactionManager) recordWriteBytes(ctx context.Context, entityID string, data []byte) error {
-	txID := spi.GetTransaction(ctx).ID
-	s, ok := tm.lookupTxState(txID)
-	if !ok {
-		return fmt.Errorf("record the write of entity %s: transaction %s: %w", entityID, txID, spi.ErrTxNotFound)
+// recordSave records a save into the state of the transaction on ctx; see
+// txState.RecordSave. The caller has checked that ctx carries a transaction.
+func (tm *TransactionManager) recordSave(ctx context.Context, entityID string, ref spi.ModelRef, data []byte) error {
+	s, err := tm.writtenState(ctx, entityID)
+	if err != nil {
+		return err
 	}
-	s.RecordWriteBytes(entityID, data)
+	s.RecordSave(entityID, ref, data)
 	return nil
 }
 
+// recordDelete records a delete into the state of the transaction on ctx.
+// The caller has checked that ctx carries a transaction.
+func (tm *TransactionManager) recordDelete(ctx context.Context, entityID string) error {
+	s, err := tm.writtenState(ctx, entityID)
+	if err != nil {
+		return err
+	}
+	s.RecordDelete(entityID)
+	return nil
+}
+
+// writtenState returns the state of the transaction on ctx, for a write of
+// entityID to be recorded in. A transaction with no state here fails the
+// write, since its commit would check nothing for it: with
+// spi.ErrTxAlreadyCommitted once it committed, as a statement on it answers
+// (deadTxQuerier), and spi.ErrTxNotFound otherwise.
+func (tm *TransactionManager) writtenState(ctx context.Context, entityID string) (*txState, error) {
+	txID := spi.GetTransaction(ctx).ID
+	if s, ok := tm.lookupTxState(txID); ok {
+		return s, nil
+	}
+	sentinel := spi.ErrTxNotFound
+	if tm.wasCommitted(txID) {
+		sentinel = spi.ErrTxAlreadyCommitted
+	}
+	return nil, fmt.Errorf("record the write of entity %s: transaction %s: %w", entityID, txID, sentinel)
+}
+
 // ReleaseSavepoint drops the savepoint entry and every savepoint pushed after
-// it, without touching the current readSet/writeSet/writeBytes — work done after the push
+// it, without touching the current readSet/writeSet/written — work done after the push
 // is kept. Mirrors postgres RELEASE SAVEPOINT semantics.
 func (s *txState) ReleaseSavepoint(id string) error {
 	s.mu.Lock()

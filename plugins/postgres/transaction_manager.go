@@ -406,11 +406,7 @@ func (tm *TransactionManager) commitWrittenClaims(ctx context.Context, tx pgx.Tx
 	if len(written) == 0 {
 		return nil
 	}
-	refs, err := writtenModelRefs(ctx, tx, state.tenantID, written)
-	if err != nil {
-		return err
-	}
-	return commitClaims(ctx, tx, state.tenantID, written, refs)
+	return commitClaims(ctx, tx, state.tenantID, written)
 }
 
 // stampCommitInstant fixes the transaction's instant and applies it to every

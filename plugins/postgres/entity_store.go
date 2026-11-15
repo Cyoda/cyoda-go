@@ -447,8 +447,8 @@ type pendingVersionRow struct {
 // The lookup is in SQL rather than recorded in Go, so it is never stale: a
 // ROLLBACK TO SAVEPOINT undoes the row writes that made or replaced a pending
 // version, and this query sees exactly what is left. txState's savepoint
-// snapshots hold the read and write sets and the bytes record, never the
-// pending version.
+// snapshots hold the read and write sets and the record of written entities,
+// never the pending version.
 //
 // The guard that $4 is not empty is required: only a caller's transaction
 // has a pending version. A write outside a transaction passes the empty id,
@@ -545,26 +545,29 @@ func (s *entityStore) replacePendingSave(ctx context.Context, entity *spi.Entity
 
 // maintainClaims is a save's unique-key and model work. Outside a caller's
 // transaction the save is its own transaction and does it now
-// (replaceClaims). Inside one it only records the bytes the save was given:
-// the transaction's Commit checks the models and computes the claims of its
-// final entities (commitClaims), so a save in between claims nothing and
-// checks no model.
+// (replaceClaims). Inside one it only records the save — its model and the
+// bytes it was given — for the transaction's Commit, which checks the models
+// and computes the claims of its final entities (commitClaims); a save in
+// between claims nothing and checks no model. entity is saveOn's own copy, so
+// its bytes are handed over without another copy.
 func (s *entityStore) maintainClaims(ctx context.Context, entity *spi.Entity) error {
 	if spi.GetTransaction(ctx) == nil {
 		return s.replaceClaims(ctx, entity)
 	}
-	return s.recordWriteBytes(ctx, entity.Meta.ID, savedBytes(entity.Data))
+	if s.tm == nil {
+		return errNoTransactionManager(entity.Meta.ID)
+	}
+	return s.tm.recordSave(ctx, entity.Meta.ID, entity.Meta.ModelRef, entity.Data)
 }
 
-// recordWriteBytes records a write inside a caller's transaction for its
-// commit: the bytes a save was given, or nil for a delete. A store with no
-// transaction manager cannot record it, and fails the write rather than let
-// the commit check nothing.
-func (s *entityStore) recordWriteBytes(ctx context.Context, entityID string, data []byte) error {
-	if s.tm == nil {
-		return fmt.Errorf("record the write of entity %s: no transaction manager", entityID)
-	}
-	return s.tm.recordWriteBytes(ctx, entityID, data)
+// errNoTransactionManager is the answer to a write that carries a transaction
+// on a store with no transaction manager: the test-only construction in
+// export_test.go. There resolveRaw has no transaction to resolve, so the
+// write's statements already ran on the pool, each auto-committed, and the
+// transaction on ctx was never joined; the error reports that wiring fault
+// and does not undo them.
+func errNoTransactionManager(entityID string) error {
+	return fmt.Errorf("record the write of entity %s: the store has no transaction manager", entityID)
 }
 
 // stampOwnCommitInstant dates a write that has no SPI transaction at the
@@ -1066,7 +1069,9 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 		if err := s.releaseClaims(ctx, entityID); err != nil {
 			return fmt.Errorf("failed to release unique claims: %w", err)
 		}
-	} else if err := s.recordWriteBytes(ctx, entityID, nil); err != nil {
+	} else if s.tm == nil {
+		return errNoTransactionManager(entityID)
+	} else if err := s.tm.recordDelete(ctx, entityID); err != nil {
 		return err
 	}
 

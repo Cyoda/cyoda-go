@@ -23,18 +23,7 @@ import (
 // the transaction's Commit runs commitClaims over its final entities.
 func (s *entityStore) replaceClaims(ctx context.Context, e *spi.Entity) error {
 	return applyClaims(ctx, s.q, s.tenantID,
-		map[string][]byte{e.Meta.ID: savedBytes(e.Data)},
-		map[string]spi.ModelRef{e.Meta.ID: e.Meta.ModelRef},
-		false)
-}
-
-// savedBytes is the bytes record of a save: data, made non-nil, because nil
-// records a delete.
-func savedBytes(data []byte) []byte {
-	if data == nil {
-		return []byte{}
-	}
-	return data
+		map[string]writtenEntity{e.Meta.ID: {ref: e.Meta.ModelRef, data: e.Data}}, false)
 }
 
 // releaseClaims removes all unique-key claims held by entityID. Called from a

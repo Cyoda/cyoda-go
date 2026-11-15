@@ -17,8 +17,8 @@ import (
 // commits, from the transaction's final entities and the model as stored:
 //
 //  1. Lock the lifecycle row (model_lifecycle) of the model of every entity
-//     whose last write is a save, FOR SHARE, in (name, version) order; then
-//     read each model's state and unique keys from the models row. A model
+//     whose last write is a save, FOR SHARE, in (name, version) byte order,
+//     and read each model's state and unique keys from the models row. A model
 //     that does not exist or is not LOCKED fails with spi.ErrModelNotLocked.
 //     An entity whose last write is a delete needs no model.
 //  2. Release the claims of every entity written.
@@ -43,112 +43,71 @@ import (
 // wait on a lock (stampCommitInstant).
 
 // commitClaims runs steps 1-4 inside a caller's transaction, at Commit.
-// written is the transaction's bytes record (txState.WrittenEntities): the
-// bytes of each written entity's last save, or nil for a delete. refs holds
-// the model of every entity whose last write is a save (writtenModelRefs).
+// written is the transaction's record of the entities it wrote
+// (txState.WrittenEntities): the model and bytes of each entity's last save,
+// or a delete. Both save paths store the entity under the model the save
+// names (the upsert's model guard, replacePendingSave's
+// spi.ErrEntityModelMismatch), so the recorded model is the stored one.
 //
 // The transaction is REPEATABLE READ, and its snapshot is older than the
-// commit. The FOR SHARE makes the snapshot's model the current one: a
-// lifecycle row bumped and committed after the snapshot fails it with 40001
-// (a retryable spi.ErrConflict once classified), and an uncommitted bump
-// makes it wait for the outcome. So the state and keys read from the
-// snapshot's models row are the ones in force, and stay so until the commit
-// ends.
+// commit. Step 1 is one statement here, since every read shares that
+// snapshot (modelsInSnapshot). The FOR SHARE makes the snapshot's model the
+// current one: a lifecycle row bumped and committed after the snapshot fails
+// it with 40001 (a retryable spi.ErrConflict once classified), and an
+// uncommitted bump makes it wait for the outcome. So the state and keys read
+// from the snapshot's models row are the ones in force, and stay so until the
+// commit ends.
 //
 // A lifecycle row the snapshot does not see is either a model that does not
 // exist or one created after the snapshot. The probe insert tells them apart:
 // a row it inserts is a missing model (spi.ErrModelNotLocked; the
 // transaction rolls back and takes the row with it), and a conflict with a
 // row the snapshot cannot see fails it with 40001.
-func commitClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written map[string][]byte, refs map[string]spi.ModelRef) error {
-	return applyClaims(ctx, q, tenantID, written, refs, true)
-}
-
-// writtenModelRefs reads the model of every entity whose last write in the
-// transaction is a save, from the transaction's own entities rows. An
-// entity's model is fixed at creation, so the row's model is the one the
-// save wrote.
-func writtenModelRefs(ctx context.Context, q Querier, tenantID spi.TenantID, written map[string][]byte) (map[string]spi.ModelRef, error) {
-	ids := make([]string, 0, len(written))
-	for id, data := range written {
-		if data != nil {
-			ids = append(ids, id)
-		}
-	}
-	refs := make(map[string]spi.ModelRef, len(ids))
-	if len(ids) == 0 {
-		return refs, nil
-	}
-	rows, err := q.Query(ctx,
-		`SELECT entity_id, model_name, model_version FROM entities
-		  WHERE tenant_id = $1 AND entity_id = ANY($2::text[])`,
-		string(tenantID), ids)
-	if err != nil {
-		return nil, fmt.Errorf("read the models of the written entities: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		var ref spi.ModelRef
-		if err := rows.Scan(&id, &ref.EntityName, &ref.ModelVersion); err != nil {
-			return nil, fmt.Errorf("read the models of the written entities: %w", err)
-		}
-		refs[id] = ref
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the models of the written entities: %w", err)
-	}
-	if len(refs) != len(ids) {
-		return nil, fmt.Errorf("read the models of the written entities: %d of %d entity rows found", len(refs), len(ids))
-	}
-	return refs, nil
+func commitClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written map[string]writtenEntity) error {
+	return applyClaims(ctx, q, tenantID, written, true)
 }
 
 // applyClaims is steps 1-4 on q. inSnapshot is true inside a caller's
-// REPEATABLE READ transaction (commitClaims), where a lifecycle row the
-// snapshot does not see is probed. It is false for a write outside a
-// transaction (replaceClaims), which runs READ COMMITTED: there every
-// statement takes a fresh snapshot, so a missing lifecycle row is a missing
-// model, and the models reads, statements after the FOR SHARE, see the commit
-// of any bump the FOR SHARE waited for.
-func applyClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written map[string][]byte, refs map[string]spi.ModelRef, inSnapshot bool) error {
+// REPEATABLE READ transaction (commitClaims). It is false for a write outside
+// a transaction (replaceClaims), which runs READ COMMITTED: there every
+// statement takes a fresh snapshot, so the FOR SHARE of each lifecycle row is
+// a statement of its own, a missing lifecycle row is a missing model, and the
+// models reads, statements after the FOR SHARE, see the commit of any bump
+// the FOR SHARE waited for (modelsReadCommitted).
+func applyClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written map[string]writtenEntity, inSnapshot bool) error {
 	if len(written) == 0 {
 		return nil
 	}
 
 	// Step 1.
-	models := distinctRefs(refs)
-	for _, ref := range models {
-		if err := shareLifecycle(ctx, q, tenantID, ref, inSnapshot); err != nil {
-			return err
-		}
+	models := savedModels(written)
+	var keys map[spi.ModelRef][]spi.UniqueKey
+	var err error
+	if inSnapshot {
+		keys, err = modelsInSnapshot(ctx, q, tenantID, models)
+	} else {
+		keys, err = modelsReadCommitted(ctx, q, tenantID, models)
 	}
-	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(models))
-	for _, ref := range models {
-		k, err := lockedModelKeys(ctx, q, tenantID, ref)
-		if err != nil {
-			return err
-		}
-		keys[ref] = k
+	if err != nil {
+		return err
 	}
 
 	// Step 3, before any write: a partial key fails the whole commit.
 	var claims []claimRow
-	for id, data := range written {
-		if data == nil {
+	for id, w := range written {
+		if w.deleted {
 			continue
 		}
-		ref := refs[id]
-		k := keys[ref]
+		k := keys[w.ref]
 		if len(k) == 0 {
 			continue
 		}
-		cs, err := spi.ComputeClaims(k, data)
+		cs, err := spi.ComputeClaims(k, w.data)
 		if err != nil {
 			return fmt.Errorf("entity %s: %w", id, err)
 		}
 		for _, c := range cs {
-			claims = append(claims, claimRow{ref: ref, keyID: c.KeyID, signature: c.Signature, entityID: id})
+			claims = append(claims, claimRow{ref: w.ref, keyID: c.KeyID, signature: c.Signature, entityID: id})
 		}
 	}
 	slices.SortFunc(claims, func(a, b claimRow) int {
@@ -209,16 +168,20 @@ type claimRow struct {
 	entityID  string
 }
 
-// distinctRefs returns the distinct models of refs, by name, then version.
-func distinctRefs(refs map[string]spi.ModelRef) []spi.ModelRef {
-	seen := make(map[spi.ModelRef]struct{}, len(refs))
-	out := make([]spi.ModelRef, 0, len(refs))
-	for _, ref := range refs {
-		if _, ok := seen[ref]; ok {
+// savedModels returns the distinct models of the entities whose last write is
+// a save, by name, then version, in byte order (the order of COLLATE "C").
+func savedModels(written map[string]writtenEntity) []spi.ModelRef {
+	seen := make(map[spi.ModelRef]struct{}, len(written))
+	out := make([]spi.ModelRef, 0, len(written))
+	for _, w := range written {
+		if w.deleted {
 			continue
 		}
-		seen[ref] = struct{}{}
-		out = append(out, ref)
+		if _, ok := seen[w.ref]; ok {
+			continue
+		}
+		seen[w.ref] = struct{}{}
+		out = append(out, w.ref)
 	}
 	slices.SortFunc(out, func(a, b spi.ModelRef) int {
 		return cmp.Or(cmp.Compare(a.EntityName, b.EntityName), cmp.Compare(a.ModelVersion, b.ModelVersion))
@@ -226,26 +189,83 @@ func distinctRefs(refs map[string]spi.ModelRef) []spi.ModelRef {
 	return out
 }
 
-// shareLifecycle takes FOR SHARE on ref's lifecycle row, as a statement of
-// its own. With no row, a write outside a transaction is refused at once; in
-// a snapshot the probe insert decides (see commitClaims).
-func shareLifecycle(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.ModelRef, inSnapshot bool) error {
+// modelsInSnapshot is step 1 inside a caller's transaction: one statement
+// locks the lifecycle rows of models FOR SHARE, in (name, version) byte order,
+// and reads each model's state and keys from its models row in the same
+// snapshot. A model whose lifecycle row the snapshot does not see is probed
+// (probeLifecycle), and refused either way. It returns the keys of every
+// model, each of which is LOCKED.
+func modelsInSnapshot(ctx context.Context, q Querier, tenantID spi.TenantID, models []spi.ModelRef) (map[spi.ModelRef][]spi.UniqueKey, error) {
+	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(models))
+	if len(models) == 0 {
+		return keys, nil
+	}
+	names := make([]string, len(models))
+	versions := make([]string, len(models))
+	for i, ref := range models {
+		names[i], versions[i] = ref.EntityName, ref.ModelVersion
+	}
+	rows, err := q.Query(ctx,
+		`SELECT l.model_name, l.model_version, m.doc->>'state', m.doc->'uniqueKeys'
+		   FROM model_lifecycle l
+		   JOIN unnest($2::text[], $3::text[]) AS r(model_name, model_version)
+		     ON l.model_name = r.model_name AND l.model_version = r.model_version
+		   LEFT JOIN models m
+		     ON m.tenant_id = l.tenant_id AND m.model_name = l.model_name AND m.model_version = l.model_version
+		  WHERE l.tenant_id = $1
+		  ORDER BY l.model_name COLLATE "C", l.model_version COLLATE "C"
+		    FOR SHARE OF l`,
+		string(tenantID), names, versions)
+	if err != nil {
+		return nil, fmt.Errorf("lock and read the models: %w", err)
+	}
+	type modelRow struct {
+		state   *string
+		rawKeys []byte
+	}
+	found := make(map[spi.ModelRef]modelRow, len(models))
+	for rows.Next() {
+		var ref spi.ModelRef
+		var r modelRow
+		if err := rows.Scan(&ref.EntityName, &ref.ModelVersion, &r.state, &r.rawKeys); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("lock and read the models: %w", err)
+		}
+		found[ref] = r
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("lock and read the models: %w", err)
+	}
+	for _, ref := range models {
+		r, ok := found[ref]
+		if !ok {
+			continue
+		}
+		if r.state == nil {
+			return nil, fmt.Errorf("model %s does not exist: %w", ref, spi.ErrModelNotLocked)
+		}
+		k, err := lockedKeys(ref, *r.state, r.rawKeys)
+		if err != nil {
+			return nil, err
+		}
+		keys[ref] = k
+	}
+	for _, ref := range models {
+		if _, ok := found[ref]; !ok {
+			return nil, probeLifecycle(ctx, q, tenantID, ref)
+		}
+	}
+	return keys, nil
+}
+
+// probeLifecycle tells a model that does not exist from one created after the
+// snapshot, for a lifecycle row the snapshot does not see (see
+// commitClaims), and refuses the commit either way: spi.ErrModelNotLocked for
+// the first, 40001 for the second.
+func probeLifecycle(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.ModelRef) error {
 	var one int
 	err := q.QueryRow(ctx,
-		`SELECT 1 FROM model_lifecycle
-		  WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
-		    FOR SHARE`,
-		string(tenantID), ref.EntityName, ref.ModelVersion).Scan(&one)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("lock the lifecycle of model %s: %w", ref, err)
-	}
-	if !inSnapshot {
-		return fmt.Errorf("model %s does not exist: %w", ref, spi.ErrModelNotLocked)
-	}
-	err = q.QueryRow(ctx,
 		`INSERT INTO model_lifecycle (tenant_id, model_name, model_version)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT DO NOTHING
@@ -256,26 +276,57 @@ func shareLifecycle(ctx context.Context, q Querier, tenantID spi.TenantID, ref s
 	}
 	// A conflict with a row this snapshot cannot see is 40001. No row
 	// returned would be a conflict with a row it can see, which the FOR SHARE
-	// above just did not find; it is an error like any other.
+	// did not find; it is an error like any other.
 	return fmt.Errorf("probe the lifecycle of model %s: %w", ref, err)
 }
 
-// lockedModelKeys reads ref's state and unique keys from its models row and
-// returns the keys, refusing a model that does not exist or is not LOCKED
-// with spi.ErrModelNotLocked.
-func lockedModelKeys(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.ModelRef) ([]spi.UniqueKey, error) {
-	var state string
-	var rawKeys []byte
-	err := q.QueryRow(ctx,
-		`SELECT doc->>'state', doc->'uniqueKeys' FROM models
-		  WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(tenantID), ref.EntityName, ref.ModelVersion).Scan(&state, &rawKeys)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("model %s does not exist: %w", ref, spi.ErrModelNotLocked)
+// modelsReadCommitted is step 1 for a write outside a transaction (READ
+// COMMITTED): the FOR SHARE of each model's lifecycle row is a statement of
+// its own, in (name, version) order, and each models read is a later
+// statement, whose snapshot includes the commit of any bump the FOR SHARE
+// waited for. A missing lifecycle row is a missing model.
+func modelsReadCommitted(ctx context.Context, q Querier, tenantID spi.TenantID, models []spi.ModelRef) (map[spi.ModelRef][]spi.UniqueKey, error) {
+	for _, ref := range models {
+		var one int
+		err := q.QueryRow(ctx,
+			`SELECT 1 FROM model_lifecycle
+			  WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
+			    FOR SHARE`,
+			string(tenantID), ref.EntityName, ref.ModelVersion).Scan(&one)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("model %s does not exist: %w", ref, spi.ErrModelNotLocked)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("lock the lifecycle of model %s: %w", ref, err)
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("read model %s: %w", ref, err)
+	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(models))
+	for _, ref := range models {
+		var state string
+		var rawKeys []byte
+		err := q.QueryRow(ctx,
+			`SELECT doc->>'state', doc->'uniqueKeys' FROM models
+			  WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+			string(tenantID), ref.EntityName, ref.ModelVersion).Scan(&state, &rawKeys)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("model %s does not exist: %w", ref, spi.ErrModelNotLocked)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read model %s: %w", ref, err)
+		}
+		k, err := lockedKeys(ref, state, rawKeys)
+		if err != nil {
+			return nil, err
+		}
+		keys[ref] = k
 	}
+	return keys, nil
+}
+
+// lockedKeys returns the unique keys of a model read with the given state and
+// keys document, refusing a model that is not LOCKED with
+// spi.ErrModelNotLocked.
+func lockedKeys(ref spi.ModelRef, state string, rawKeys []byte) ([]spi.UniqueKey, error) {
 	if state != string(spi.ModelLocked) {
 		return nil, fmt.Errorf("model %s is %s: %w", ref, state, spi.ErrModelNotLocked)
 	}
