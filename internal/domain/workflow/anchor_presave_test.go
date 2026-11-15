@@ -2,12 +2,14 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
@@ -643,5 +645,358 @@ func TestPreCalloutSave_StateOnlyChange_Saves(t *testing.T) {
 	}
 	if seen.Meta.State != "S_mid" || seen.Meta.TransactionID != txID {
 		t.Errorf("read state %q, transactionId %q; want S_mid and the run's %q", seen.Meta.State, seen.Meta.TransactionID, txID)
+	}
+}
+
+// calloutProbe is an external processing service whose processor, criterion
+// and schedule-function dispatches each run a test's function.
+type calloutProbe struct {
+	processor func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, txID string) (*spi.Entity, error)
+	criterion func(ctx context.Context, entity *spi.Entity, target, transition, txID string) (bool, string, error)
+	function  func(ctx context.Context, entity *spi.Entity, txID string) (contract.FunctionResult, error)
+}
+
+func (p *calloutProbe) DispatchProcessor(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {
+	if p.processor == nil {
+		return nil, nil
+	}
+	return p.processor(ctx, entity, proc, txID)
+}
+
+func (p *calloutProbe) DispatchCriteria(ctx context.Context, entity *spi.Entity, _ json.RawMessage, target, _, transition, _, txID string) (bool, string, error) {
+	if p.criterion == nil {
+		return true, "", nil
+	}
+	return p.criterion(ctx, entity, target, transition, txID)
+}
+
+func (p *calloutProbe) DispatchFunction(ctx context.Context, entity *spi.Entity, _ spi.ScheduleFunction, _, _, txID string) (contract.FunctionResult, error) {
+	if p.function == nil {
+		return contract.FunctionResult{}, errors.New("no schedule function")
+	}
+	return p.function(ctx, entity, txID)
+}
+
+// newProbeEnv is an engine on a memory backend with probe as its external
+// processing service and wfs as the model's workflows.
+func newProbeEnv(t *testing.T, probe *calloutProbe, wfs []spi.WorkflowDefinition) *cbdCallbackEnv {
+	t.Helper()
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := factory.NewTransactionManager(uuids)
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(probe), WithCoordination(txcoord.New(txMgr)))
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "presave-probe", ModelVersion: "1.0"}
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x": schema.Integer, "by": schema.String,
+	})
+	saveWorkflow(t, factory, ctx, modelRef, wfs)
+	return &cbdCallbackEnv{factory: factory, txMgr: txMgr, engine: engine, ctx: ctx, model: modelRef}
+}
+
+// begin opens a transaction rolled back at the end of the test.
+func (env *cbdCallbackEnv) begin(t *testing.T) (string, context.Context) {
+	t.Helper()
+	txID, txCtx, err := env.txMgr.Begin(env.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	t.Cleanup(func() { _ = env.txMgr.Rollback(env.ctx, txID) })
+	return txID, txCtx
+}
+
+// fnCriterion is a criterion that is one function condition.
+func fnCriterion(name string) json.RawMessage {
+	return json.RawMessage(`{"type":"function","function":{"name":"` + name + `"}}`)
+}
+
+// calloutSight is what one callout's callback saw: the anchor read under the
+// token, and the payload's transaction id.
+type calloutSight struct {
+	read      *spi.Entity
+	readErr   error
+	payloadTx string
+}
+
+func lookUnderToken(ctx context.Context, factory spi.StoreFactory, entity *spi.Entity) calloutSight {
+	read, err := readUnderToken(ctx, factory, entity.Meta.ID)
+	return calloutSight{read: read, readErr: err, payloadTx: entity.Meta.TransactionID}
+}
+
+// assertSight checks that the callback found the anchor in state, holding
+// data, stamped with txID, and that the payload carried that id.
+func assertSight(t *testing.T, what string, s *calloutSight, state string, data map[string]any, txID string) {
+	t.Helper()
+	if s == nil {
+		t.Fatalf("%s: no callout was made", what)
+	}
+	if s.readErr != nil {
+		t.Fatalf("%s: read under the token: %v", what, s.readErr)
+	}
+	assertData(t, s.read.Data, data)
+	if s.read.Meta.State != state {
+		t.Errorf("%s: state = %q, want %q", what, s.read.Meta.State, state)
+	}
+	if s.read.Meta.TransactionID != txID {
+		t.Errorf("%s: read transactionId = %q, want %q", what, s.read.Meta.TransactionID, txID)
+	}
+	if s.payloadTx != s.read.Meta.TransactionID {
+		t.Errorf("%s: payload transactionId = %q, want the read's %q", what, s.payloadTx, s.read.Meta.TransactionID)
+	}
+}
+
+// An ASYNC_NEW_TX processor's callback sees the anchor the engine saved
+// before the dispatch. The save is in the chain's scope, not the processor's:
+// a processor failure discards the processor's scope and keeps the save.
+func TestPreCalloutSave_AsyncNewTx_CallbackSeesAnchor_FailureKeepsSave(t *testing.T) {
+	var env *cbdCallbackEnv
+	var seen *calloutSight
+	probe := &calloutProbe{processor: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+		s := lookUnderToken(ctx, env.factory, entity)
+		seen = &s
+		return nil, errors.New("processor failed")
+	}}
+	env = newProbeEnv(t, probe, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "PresaveAsyncWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre": {Transitions: []spi.TransitionDefinition{{Name: "CALLOUT", Next: "S_post", Manual: true, Processors: []spi.ProcessorDefinition{
+				{Type: ProcessorTypeExternalized, Name: "a1", ExecutionMode: ExecutionModeAsyncNewTx},
+			}}}},
+			"S_post": {},
+		},
+	}})
+	seedFireEntity(t, env.factory, env.ctx, "pca-1", env.model, "S_pre", true, map[string]any{"x": 0})
+	txID, txCtx := env.begin(t)
+	entity, err := readUnderToken(txCtx, env.factory, "pca-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	entity.Data = []byte(`{"x":5,"by":"request"}`)
+	entity.Meta.TransactionID = txID
+	if _, err := env.engine.ManualTransition(txCtx, entity, "CALLOUT", IfMatch{}); err != nil {
+		t.Fatalf("ManualTransition: %v", err)
+	}
+	assertSight(t, "a1", seen, "S_pre", map[string]any{"x": float64(5), "by": "request"}, txID)
+
+	after, err := readUnderToken(txCtx, env.factory, "pca-1")
+	if err != nil {
+		t.Fatalf("Get after the run: %v", err)
+	}
+	if after.Meta.TransactionID != txID {
+		t.Errorf("after the failed processor: transactionId = %q, want the save of %q kept", after.Meta.TransactionID, txID)
+	}
+	assertData(t, after.Data, map[string]any{"x": float64(5), "by": "request"})
+}
+
+// A failed save before an ASYNC_NEW_TX processor fails the operation: it is
+// not the processor's failure, which the pipeline logs and goes past.
+func TestPreCalloutSave_AsyncNewTx_SaveFails_FailsOperation(t *testing.T) {
+	storeErr := errors.New("store unavailable")
+	dispatched := 0
+	probe := &calloutProbe{processor: func(context.Context, *spi.Entity, spi.ProcessorDefinition, string) (*spi.Entity, error) {
+		dispatched++
+		return nil, nil
+	}}
+	env := newProbeEnv(t, probe, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "PresaveAsyncFailWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre": {Transitions: []spi.TransitionDefinition{{Name: "CALLOUT", Next: "S_post", Manual: true, Processors: []spi.ProcessorDefinition{
+				{Type: ProcessorTypeExternalized, Name: "a1", ExecutionMode: ExecutionModeAsyncNewTx},
+			}}}},
+			"S_post": {},
+		},
+	}})
+	seedFireEntity(t, env.factory, env.ctx, "pcaf-1", env.model, "S_pre", true, map[string]any{"x": 0})
+	txID, txCtx := env.begin(t)
+	entity, err := readUnderToken(txCtx, env.factory, "pcaf-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	entity.Data = []byte(`{"x":5}`)
+	entity.Meta.TransactionID = txID
+	armed := true
+	env.engine.factory = cachedFactory(failingSaveFactory{StoreFactory: env.factory, armed: &armed, err: storeErr})
+
+	_, err = env.engine.ManualTransition(txCtx, entity, "CALLOUT", IfMatch{})
+	if !errors.Is(err, storeErr) || !errors.Is(err, ErrAnchorSaveInfra) {
+		t.Fatalf("err = %v, want the store error marked ErrAnchorSaveInfra", err)
+	}
+	if dispatched != 0 {
+		t.Errorf("a1 dispatched %d times, want 0", dispatched)
+	}
+}
+
+// A function criterion's callback sees the anchor as it is at the callout:
+// on a manual transition the request's data in the source state, and on the
+// automated cascade after it the data a processor returned, in the state the
+// cascade reached.
+func TestPreCalloutSave_CriterionCascade_SeesCurrentStateAndData(t *testing.T) {
+	var env *cbdCallbackEnv
+	seen := map[string]*calloutSight{}
+	probe := &calloutProbe{
+		processor: func(context.Context, *spi.Entity, spi.ProcessorDefinition, string) (*spi.Entity, error) {
+			return &spi.Entity{Data: []byte(`{"x":42,"by":"engine"}`)}, nil
+		},
+		criterion: func(ctx context.Context, entity *spi.Entity, _, transition, _ string) (bool, string, error) {
+			s := lookUnderToken(ctx, env.factory, entity)
+			seen[transition] = &s
+			return true, "", nil
+		},
+	}
+	env = newProbeEnv(t, probe, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "PresaveCritWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre": {Transitions: []spi.TransitionDefinition{{Name: "T1", Next: "S_mid", Manual: true,
+				Criterion: fnCriterion("fm"), Processors: []spi.ProcessorDefinition{syncProc("p1")}}}},
+			"S_mid":  {Transitions: []spi.TransitionDefinition{{Name: "AUTO", Next: "S_done", Criterion: fnCriterion("fa")}}},
+			"S_done": {},
+		},
+	}})
+	seedFireEntity(t, env.factory, env.ctx, "pcc-crit", env.model, "S_pre", true, map[string]any{"x": 0})
+	txID, txCtx := env.begin(t)
+	entity, err := readUnderToken(txCtx, env.factory, "pcc-crit")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	entity.Data = []byte(`{"x":5,"by":"request"}`)
+	entity.Meta.TransactionID = txID
+	if _, err := env.engine.ManualTransition(txCtx, entity, "T1", IfMatch{}); err != nil {
+		t.Fatalf("ManualTransition: %v", err)
+	}
+	assertSight(t, "manual transition criterion", seen["T1"], "S_pre", map[string]any{"x": float64(5), "by": "request"}, txID)
+	assertSight(t, "cascade criterion", seen["AUTO"], "S_mid", engineApplied, txID)
+}
+
+// On a create, workflow selection runs before the anchor has a state: the
+// selection criterion's callback finds the anchor with the request's data
+// and an empty state.
+func TestPreCalloutSave_WorkflowSelectionOnCreate_EmptyState(t *testing.T) {
+	var env *cbdCallbackEnv
+	var seen *calloutSight
+	probe := &calloutProbe{criterion: func(ctx context.Context, entity *spi.Entity, target, _, _ string) (bool, string, error) {
+		if target == "WORKFLOW" {
+			s := lookUnderToken(ctx, env.factory, entity)
+			seen = &s
+		}
+		return true, "", nil
+	}}
+	env = newProbeEnv(t, probe, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "PresaveSelectWF", InitialState: "S_new", Active: true, Criterion: fnCriterion("sel"),
+		States: map[string]spi.StateDefinition{"S_new": {}},
+	}})
+	txID, txCtx := env.begin(t)
+	entity := makeEntity("pcw-1", env.model, map[string]any{"x": 3, "by": "request"})
+	entity.Meta.TransactionID = txID
+	if _, err := env.engine.Execute(txCtx, entity); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	assertSight(t, "workflow selection", seen, "", map[string]any{"x": float64(3), "by": "request"}, txID)
+}
+
+// A schedule function on a client door runs before the door's final save:
+// its callback sees the anchor in the state the cascade settled in, with the
+// request's data.
+func TestPreCalloutSave_ScheduleFunction_ClientDoor(t *testing.T) {
+	var env *cbdCallbackEnv
+	var seen *calloutSight
+	probe := &calloutProbe{function: func(ctx context.Context, entity *spi.Entity, _ string) (contract.FunctionResult, error) {
+		s := lookUnderToken(ctx, env.factory, entity)
+		seen = &s
+		return contract.FunctionResult{Kind: "Schedule", Value: json.RawMessage(`{"fireAfterMs":60000}`)}, nil
+	}}
+	env = newProbeEnv(t, probe, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "PresaveSchedWF", InitialState: "S_pre", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S_pre": {Transitions: []spi.TransitionDefinition{{Name: "WAIT", Next: "S_wait", Manual: true}}},
+			"S_wait": {Transitions: []spi.TransitionDefinition{{Name: "TIMEOUT", Next: "S_done", Schedule: &spi.TransitionSchedule{
+				Function: &spi.ScheduleFunction{Name: "calc", ResultKind: "Schedule", CalculationNodesTags: "sched"},
+			}}}},
+			"S_done": {},
+		},
+	}})
+	seedFireEntity(t, env.factory, env.ctx, "pcsch-1", env.model, "S_pre", true, map[string]any{"x": 0})
+	txID, txCtx := env.begin(t)
+	entity, err := readUnderToken(txCtx, env.factory, "pcsch-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	entity.Data = []byte(`{"x":5,"by":"request"}`)
+	entity.Meta.TransactionID = txID
+	if _, err := env.engine.ManualTransition(txCtx, entity, "WAIT", IfMatch{}); err != nil {
+		t.Fatalf("ManualTransition: %v", err)
+	}
+	assertSight(t, "schedule function", seen, "S_wait", map[string]any{"x": float64(5), "by": "request"}, txID)
+}
+
+// The available-transitions read runs the workflow-selection criterion with
+// no transaction id. It writes nothing, even inside a transaction and with
+// an entity that differs from the stored one.
+func TestAvailableTransitionsRead_RunsCriterion_NoWrite(t *testing.T) {
+	var env *cbdCallbackEnv
+	var seen *calloutSight
+	var dispatchTxID string
+	probe := &calloutProbe{criterion: func(ctx context.Context, entity *spi.Entity, _, _, txID string) (bool, string, error) {
+		dispatchTxID = txID
+		s := lookUnderToken(ctx, env.factory, entity)
+		seen = &s
+		return true, "", nil
+	}}
+	env = newProbeEnv(t, probe, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "PresaveQueryWF", InitialState: "S_pre", Active: true, Criterion: fnCriterion("sel"),
+		States: map[string]spi.StateDefinition{
+			"S_pre":  {Transitions: []spi.TransitionDefinition{{Name: "T1", Next: "S_done", Manual: true}}},
+			"S_done": {},
+		},
+	}})
+	seeded := seedFireEntity(t, env.factory, env.ctx, "pcq-1", env.model, "S_pre", true, map[string]any{"x": 0})
+	_, txCtx := env.begin(t)
+	entity, err := readUnderToken(txCtx, env.factory, "pcq-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	entity.Data = []byte(`{"x":9}`)
+	names, err := env.engine.GetAvailableTransitionsForEntity(txCtx, entity)
+	if err != nil {
+		t.Fatalf("GetAvailableTransitionsForEntity: %v", err)
+	}
+	if len(names) != 1 || names[0] != "T1" {
+		t.Errorf("transitions = %v, want [T1]", names)
+	}
+	if seen == nil {
+		t.Fatal("the selection criterion was not called")
+	}
+	if dispatchTxID != "" {
+		t.Errorf("dispatch transaction id = %q, want none", dispatchTxID)
+	}
+	after, err := readUnderToken(txCtx, env.factory, "pcq-1")
+	if err != nil {
+		t.Fatalf("Get after the read: %v", err)
+	}
+	if after.Meta.TransactionID != seeded.Meta.TransactionID {
+		t.Errorf("transactionId = %q, want the committed %q: a read must not write", after.Meta.TransactionID, seeded.Meta.TransactionID)
+	}
+	assertData(t, after.Data, map[string]any{"x": float64(0)})
+}
+
+// A scheduled fire whose target state arms a function schedule fires: the
+// save before the schedule function writes the anchor in the fire's
+// transaction, and the final persist names that transaction, not the
+// committed version it read first.
+func TestPreCalloutSave_ScheduledFire_TargetArmsFunctionSchedule_Fires(t *testing.T) {
+	ext := &scriptedExtProc{function: func(context.Context) (contract.FunctionResult, error) {
+		return contract.FunctionResult{Kind: "Schedule", Value: json.RawMessage(`{"fireAfterMs":60000}`)}, nil
+	}}
+	env := newRunEnv(t, ext)
+	claimed := env.claimed(t, "pcfire-1", oneHopWF("DONE", nil, map[string]spi.StateDefinition{
+		"DONE": {Transitions: []spi.TransitionDefinition{{Name: "Tick", Next: "OPEN",
+			Schedule: &spi.TransitionSchedule{Function: &spi.ScheduleFunction{Name: "tick", ResultKind: "Schedule", CalculationNodesTags: "sched"}}}}},
+	}))
+	r, _ := env.run(claimed)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("report = %+v, want fired", r)
+	}
+	if got := env.state(t, "pcfire-1"); got != "DONE" {
+		t.Errorf("entity state = %q, want DONE", got)
 	}
 }

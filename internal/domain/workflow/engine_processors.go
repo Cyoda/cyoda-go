@@ -127,7 +127,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 
 		switch proc.ExecutionMode {
 		case ExecutionModeAsyncNewTx:
-			procErr = e.executeAsyncNewTx(currentCtx, entity, proc, workflow, transition, currentTxID)
+			procErr = e.executeAsyncNewTx(currentCtx, entity, run, proc, workflow, transition, currentTxID)
 			success = procErr == nil
 		case ExecutionModeCommitBeforeDispatch:
 			var nCtx context.Context
@@ -163,9 +163,12 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		// scope is discarded with it. A scope that could not be opened or
 		// ended is not that — the transaction is unusable, so it kills the
 		// pipeline like any other mode's failure. Nor is an unsafe processor
-		// a scheduled run refused to dispatch: the run must end there.
+		// a scheduled run refused to dispatch: the run must end there. Nor is
+		// a failed save of the anchor before the dispatch: the transaction
+		// could not be made to hold the anchor.
 		nonFatal := proc.ExecutionMode == ExecutionModeAsyncNewTx &&
-			!errors.Is(procErr, txcoord.ErrScopeInfra) && !errors.Is(procErr, errUnsafeNotDispatched)
+			!errors.Is(procErr, txcoord.ErrScopeInfra) && !errors.Is(procErr, errUnsafeNotDispatched) &&
+			!errors.Is(procErr, ErrAnchorSaveInfra)
 		if procErr != nil && nonFatal {
 			slog.Warn("ASYNC_NEW_TX processor failed, continuing pipeline",
 				"pkg", "workflow", "processor", proc.Name, "error", procErr)
@@ -335,10 +338,17 @@ func (e *Engine) conflictOverDispatchFailure(ctx context.Context, proc spi.Proce
 //
 // A scope that cannot be opened or ended carries txcoord.ErrScopeInfra and
 // fails the operation: it says the transaction is unusable, not that the
-// processor misbehaved.
-func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
+// processor misbehaved. So does a failed save of the anchor before the scope
+// opens (ErrAnchorSaveInfra).
+func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, run *cascadeRun, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
 	if e.extProc == nil {
 		return nil
+	}
+	// The transaction holds the anchor as it is before the callout (spec
+	// §2.2). The save is in the chain's scope, before the processor's scope
+	// opens: discarding that scope on the processor's failure keeps it.
+	if _, err := e.saveAnchorBeforeCallout(ctx, entity, txID, run); err != nil {
+		return err
 	}
 
 	scope, pctx, err := e.coord.OpenChild(ctx)

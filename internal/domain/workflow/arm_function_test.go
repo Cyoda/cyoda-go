@@ -199,6 +199,9 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "born-expired-order", ModelVersion: "1.0"}
 	wf := scheduleFunctionWorkflow("BornExpiredWF", "calcFire")
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	// The engine stores the anchor before the schedule function; the commit
+	// needs its model locked.
+	lockTestModel(t, factory, ctx, modelRef)
 
 	txMgr, err := factory.TransactionManager(ctx)
 	if err != nil {
@@ -295,6 +298,9 @@ func TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "armedby-fn-order", ModelVersion: "1.0"}
 	wf := scheduleFunctionWorkflow("ArmedByFnWF", "calcFire")
 	saveWorkflow(t, factory, ownerCtx, modelRef, []spi.WorkflowDefinition{wf})
+	// The engine stores the anchor before the schedule function; the commit
+	// needs its model locked.
+	lockTestModel(t, factory, ownerCtx, modelRef)
 
 	txMgr, err := factory.TransactionManager(ownerCtx)
 	if err != nil {
@@ -374,6 +380,9 @@ func TestReconcile_FunctionArmedByIsTheWritesAttributedUser(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "armedby-fn-attr-order", ModelVersion: "1.0"}
 	wf := scheduleFunctionWorkflow("ArmedByFnAttrWF", "calcFire")
 	saveWorkflow(t, factory, bobCtx, modelRef, []spi.WorkflowDefinition{wf})
+	// The engine stores the anchor before the schedule function; the commit
+	// needs its model locked.
+	lockTestModel(t, factory, bobCtx, modelRef)
 
 	txMgr, err := factory.TransactionManager(bobCtx)
 	if err != nil {

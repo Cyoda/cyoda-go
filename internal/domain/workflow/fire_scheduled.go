@@ -236,7 +236,8 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	// Selection is criterion-based, as on the client doors: a fire runs the
 	// definition the entity is bound to now. A resolution failure is a safe
 	// failure; it never falls through to another definition.
-	wf, modelScheduled, err := e.resolveWorkflow(txCtx, entity, auditStore, txID)
+	run := &cascadeRun{}
+	wf, modelScheduled, err := e.resolveWorkflow(txCtx, entity, run, auditStore, txID)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve workflow for scheduled fire: %w", err)
 	}
@@ -291,7 +292,6 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 			ScheduledCancelledData(cur.Transition, cur.SourceState, wf.Name))
 		return OutcomeCancelled, commit(txID)
 	}
-	run := &cascadeRun{}
 	newCtx, newTxID, fireErr := e.fireTransition(txCtx, entity, run, wf, transition, auditStore, txID)
 	curCtx, curTxID = newCtx, newTxID
 	if fireErr != nil {
@@ -340,7 +340,6 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		}
 		return OutcomeCancelled, commit(finalTxID)
 	}
-	writtenHere := anchor.writtenBy(finalTxID)
 
 	// Order at the end (spec §5.2): the run removes its own life first, then
 	// the re-arm step runs for the final state. A self-loop therefore re-arms
@@ -353,9 +352,17 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	if err := removeOwnLife(finalCtx, g); err != nil {
 		return "", err
 	}
-	if err := e.reconcileScheduledTasks(finalCtx, entity, wf, modelScheduled, finalTxID, auditStore); err != nil {
+	if err := e.reconcileScheduledTasks(finalCtx, entity, run, wf, modelScheduled, finalTxID, auditStore); err != nil {
 		return "", fmt.Errorf("failed to reconcile scheduled tasks after fire: %w", err)
 	}
+	// A schedule function saves the anchor in this transaction before its
+	// callout, so whether this transaction wrote the anchor is read after the
+	// reconcile.
+	anchor, err = readAnchor(finalCtx, finalEntityStore, entity.Meta.ID)
+	if err != nil {
+		return "", fmt.Errorf("failed to re-read fired entity after reconciling its scheduled tasks: %w", err)
+	}
+	writtenHere := anchor.writtenBy(finalTxID)
 
 	// The precondition of the final persist. A version written earlier in this
 	// transaction is the one the persist supersedes: the engine's result is

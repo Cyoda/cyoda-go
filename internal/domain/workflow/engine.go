@@ -345,7 +345,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity) (*EngineResult
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "State machine started", startedData(entity.Meta.State))
 
-	selectedWF, modelScheduled, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	selectedWF, modelScheduled, err := e.resolveWorkflow(ctx, entity, run, auditStore, txID)
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +364,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity) (*EngineResult
 	// settles, using the FINAL ctx/txID — the write joins whatever
 	// transaction currentCtx carries, atomic with the entity write it just
 	// cascaded into.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, selectedWF, modelScheduled, currentTxID, auditStore); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, run, selectedWF, modelScheduled, currentTxID, auditStore); err != nil {
 		// Already self-describing, and marked ErrScheduledTaskInfra when the
 		// store is what failed — re-wrapping only doubles the phrase.
 		return nil, err
@@ -433,12 +433,12 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	// entity's current state is absent from that definition, attemptTransition
 	// below rejects the call — the engine never falls through to another
 	// definition that happens to declare the state.
-	wf, modelScheduled, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	run := &cascadeRun{}
+	wf, modelScheduled, err := e.resolveWorkflow(ctx, entity, run, auditStore, txID)
 	if err != nil {
 		return nil, err
 	}
 
-	run := &cascadeRun{}
 	currentCtx, currentTxID, err := e.attemptTransition(ctx, entity, run, wf, transitionName, auditStore, txID)
 	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
@@ -453,7 +453,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 
 	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
 	// treatment as Execute, atomic with the entity write.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, modelScheduled, currentTxID, auditStore); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, run, wf, modelScheduled, currentTxID, auditStore); err != nil {
 		// Already self-describing, and marked ErrScheduledTaskInfra when the
 		// store is what failed — re-wrapping only doubles the phrase.
 		return nil, err
@@ -512,7 +512,8 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMat
 		return nil, err
 	}
 
-	wf, modelScheduled, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	run := &cascadeRun{}
+	wf, modelScheduled, err := e.resolveWorkflow(ctx, entity, run, auditStore, txID)
 	if err != nil {
 		return nil, err
 	}
@@ -528,7 +529,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMat
 		// Its tasks are still reconciled: nothing can be armed for a state the
 		// selected workflow does not declare, so every task of the entity is
 		// removed.
-		if err := e.reconcileScheduledTasks(ctx, entity, wf, modelScheduled, txID, auditStore); err != nil {
+		if err := e.reconcileScheduledTasks(ctx, entity, run, wf, modelScheduled, txID, auditStore); err != nil {
 			return nil, err
 		}
 		stop := StopReason{
@@ -547,7 +548,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMat
 		}, nil
 	}
 
-	currentCtx, currentTxID, stop, err := e.cascadeAutomated(ctx, entity, &cascadeRun{}, wf, auditStore, txID)
+	currentCtx, currentTxID, stop, err := e.cascadeAutomated(ctx, entity, run, wf, auditStore, txID)
 	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
@@ -555,7 +556,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMat
 
 	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
 	// treatment as Execute/ManualTransition, atomic with the entity write.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, modelScheduled, currentTxID, auditStore); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, run, wf, modelScheduled, currentTxID, auditStore); err != nil {
 		// Already self-describing, and marked ErrScheduledTaskInfra when the
 		// store is what failed — re-wrapping only doubles the phrase.
 		return nil, err
@@ -576,7 +577,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMat
 
 // selectWorkflow iterates active workflows and returns the first whose criterion
 // matches the entity. Workflows without a criterion match unconditionally.
-func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
+func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDefinition, entity *spi.Entity, run *cascadeRun, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
 	for i := range workflows {
 		wf := &workflows[i]
 		if !wf.Active {
@@ -591,7 +592,7 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 		}
 
 		out, err := e.evaluateCriterion(wf.Criterion, entity, &criterionContext{
-			ctx: ctx, txID: txID, workflowName: wf.Name, target: "WORKFLOW",
+			ctx: ctx, txID: txID, run: run, workflowName: wf.Name, target: "WORKFLOW",
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to evaluate workflow criterion for %q: %w", wf.Name, err)
@@ -648,8 +649,8 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 // every workflow the entity can be bound to: the stored ones and the default
 // workflow, which selection falls back to when none is stored or none
 // matches.
-func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, bool, error) {
-	return e.resolveWorkflowWith(ctx, entity, auditStore, txID)
+func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, run *cascadeRun, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, bool, error) {
+	return e.resolveWorkflowWith(ctx, entity, run, auditStore, txID)
 }
 
 // resolveWorkflowForQuery is resolveWorkflow for read-only callers: it
@@ -663,11 +664,11 @@ func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditS
 // Cyoda-Warning header), while the log line is the operator's channel, which
 // every door that substitutes the default feeds alike.
 func (e *Engine) resolveWorkflowForQuery(ctx context.Context, entity *spi.Entity) (*spi.WorkflowDefinition, error) {
-	wf, _, err := e.resolveWorkflowWith(ctx, entity, discardedAuditStore{}, "")
+	wf, _, err := e.resolveWorkflowWith(ctx, entity, &cascadeRun{}, discardedAuditStore{}, "")
 	return wf, err
 }
 
-func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, bool, error) {
+func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, run *cascadeRun, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, bool, error) {
 	// Store failures are server-side conditions, never attributable to the
 	// caller's input, so they are minted as sanitized 5xx AppErrors here
 	// rather than left as bare errors: callers classify a bare engine error
@@ -700,7 +701,7 @@ func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, au
 	// or none matches.
 	modelScheduled := modelHasSchedule(workflows) || modelHasSchedule(e.defaultWorkflows)
 
-	wf, err := e.selectWorkflow(ctx, workflows, entity, auditStore, txID)
+	wf, err := e.selectWorkflow(ctx, workflows, entity, run, auditStore, txID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -798,7 +799,7 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, run *ca
 		// inputs, and nothing can have segmented yet — processors (the only
 		// thing that can open a new segment) run after the criterion below.
 		out, err := e.evaluateCriterion(transition.Criterion, entity, &criterionContext{
-			ctx: ctx, txID: txID, workflowName: wf.Name, transitionName: transitionName, target: "TRANSITION",
+			ctx: ctx, txID: txID, run: run, workflowName: wf.Name, transitionName: transitionName, target: "TRANSITION",
 		})
 		if err != nil {
 			return ctx, txID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
@@ -921,7 +922,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, run *
 				// keeps using the entry txID; that is a separate concern from
 				// transaction identity.
 				out, err := e.evaluateCriterion(tr.Criterion, entity, &criterionContext{
-					ctx: currentCtx, txID: currentTxID, workflowName: wf.Name, transitionName: tr.Name, target: "TRANSITION",
+					ctx: currentCtx, txID: currentTxID, run: run, workflowName: wf.Name, transitionName: tr.Name, target: "TRANSITION",
 				})
 				if err != nil {
 					return currentCtx, currentTxID, StopReason{}, fmt.Errorf("failed to evaluate transition criterion: %w", err)
@@ -1000,6 +1001,7 @@ func settledStop(state string, automated int, rejected []RejectedTransition) Sto
 type criterionContext struct {
 	ctx            context.Context
 	txID           string
+	run            *cascadeRun // the entry point's run; the pre-callout save reads and marks it
 	workflowName   string
 	transitionName string
 	target         string // "WORKFLOW", "TRANSITION", "PROCESSOR"
