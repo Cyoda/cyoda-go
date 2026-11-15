@@ -167,7 +167,7 @@ func (e *Engine) dispatchCriterionFunction(cc *criterionContext, entity *spi.Ent
 	// The transaction holds the anchor as it is before the callout (spec
 	// §2.2), in the chain's scope, before Pause releases the gate. A read
 	// passes no transaction id and saves nothing.
-	if _, err := e.saveAnchorBeforeCallout(cc.ctx, entity, cc.txID, cc.run); err != nil {
+	if err := e.saveAnchorBeforeCallout(cc.ctx, entity, cc.txID); err != nil {
 		return false, "", err
 	}
 	// Pause this chain's scope across the blocking FUNCTION-criterion

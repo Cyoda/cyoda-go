@@ -35,11 +35,6 @@ const (
 	OutcomeFailed ScheduledOutcome = "failed"
 )
 
-// errFiredEntityDeletedByScheduleFunction fails a scheduled fire whose
-// entity a schedule function's callback deleted after the fire moved it and
-// re-armed its scheduled transitions.
-var errFiredEntityDeletedByScheduleFunction = errors.New("scheduled fire failed: a schedule function's callback deleted the fired entity after its scheduled transitions were re-armed")
-
 // RunReport is what the scheduler needs to record a run's outcome (spec
 // §5.6). Err is nil when the run committed or was superseded.
 type RunReport struct {
@@ -254,8 +249,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	// Selection is criterion-based, as on the client doors: a fire runs the
 	// definition the entity is bound to now. A resolution failure is a safe
 	// failure; it never falls through to another definition.
-	run := &cascadeRun{}
-	wf, modelScheduled, err := e.resolveWorkflow(txCtx, entity, run, auditStore, txID)
+	wf, modelScheduled, err := e.resolveWorkflow(txCtx, entity, auditStore, txID)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve workflow for scheduled fire: %w", err)
 	}
@@ -283,11 +277,8 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		// No precondition to fire under. Refused before any processor runs,
 		// because a COMMIT_BEFORE_DISPATCH segment would already have
 		// committed. The task is removed and audited; a later write re-arms
-		// it. The commit also commits any write of the entity made in this
-		// transaction during workflow selection, by a criterion's callback or
-		// by the save before a later criterion callout when the entity then
-		// differed from the stored one; the stored entity then carries this
-		// transaction's id.
+		// it. The entity is not written: it is as stored but for its meta, so
+		// the saves before workflow selection's callouts saved nothing.
 		slog.Error("scheduled fire refused: stored entity carries no transaction ID to guard against",
 			"pkg", "workflow", "taskID", cur.ID, "entityID", cur.EntityID)
 		if err := seal(txID); err != nil {
@@ -303,7 +294,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 			ScheduledCancelledData(cur.Transition, cur.SourceState, wf.Name))
 		return OutcomeCancelled, commit(txID)
 	}
-	newCtx, newTxID, fireErr := e.fireTransition(txCtx, entity, run, wf, transition, auditStore, txID)
+	newCtx, newTxID, fireErr := e.fireTransition(txCtx, entity, wf, transition, auditStore, txID)
 	curCtx, curTxID = newCtx, newTxID
 	if fireErr != nil {
 		if errors.Is(fireErr, ErrCriterionNotMatched) {
@@ -320,7 +311,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	}
 	g.firedTransitionDone.Store(true)
 
-	finalCtx, finalTxID, _, err := e.cascadeAutomated(newCtx, entity, run, wf, auditStore, newTxID)
+	finalCtx, finalTxID, _, err := e.cascadeAutomated(newCtx, entity, wf, auditStore, newTxID)
 	curCtx, curTxID = finalCtx, finalTxID
 	if err != nil {
 		return "", err
@@ -329,42 +320,19 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	if err != nil {
 		return "", fmt.Errorf("failed to get entity store for persist: %w", err)
 	}
-	// The cascade's callouts have ended, and with them every callback admitted
-	// under them. A joined callback may have written or deleted the fired
-	// entity earlier in this transaction; the re-read sees both. A write or
-	// delete committed by another transaction is invisible to this
-	// transaction's snapshot and fails at commit instead.
-	anchor, err := readAnchor(finalCtx, finalEntityStore, entity.Meta.ID)
-	if err != nil {
-		return "", fmt.Errorf("failed to re-read fired entity: %w", err)
-	}
-	if !anchor.found {
-		// Deleted in this transaction: the transition did not take effect.
-		// The run removes its life and commits the delete, re-creates
-		// nothing, re-arms nothing and records no FIRE event.
-		if err := seal(finalTxID); err != nil {
-			return "", err
-		}
-		if err := removeOwnLife(finalCtx, g); err != nil {
-			return "", err
-		}
-		return OutcomeCancelled, commit(finalTxID)
-	}
-
 	// Order at the end (spec §5.2): the run removes its own life first, then
 	// the re-arm step runs for the final state. A self-loop therefore re-arms
 	// the same id as a new life. A joining read sees the operations staged
 	// earlier in the same transaction on every backend (C2): reconcile does
-	// not see the life removed here, and RemoveLife does nothing if a joined
-	// callback already replaced the task in this transaction. PostgreSQL
-	// writes task rows into the open transaction at once; memory and SQLite
-	// overlay the staged operations on the committed state.
+	// not see the life removed here. PostgreSQL writes task rows into the
+	// open transaction at once; memory and SQLite overlay the staged
+	// operations on the committed state.
 	if err := removeOwnLife(finalCtx, g); err != nil {
 		return "", err
 	}
 	// The reconcile runs before the seal, as on the client doors: the
 	// callbacks of its schedule functions are admitted.
-	if err := e.reconcileScheduledTasks(finalCtx, entity, run, wf, modelScheduled, finalTxID, auditStore); err != nil {
+	if err := e.reconcileScheduledTasks(finalCtx, entity, wf, modelScheduled, finalTxID, auditStore); err != nil {
 		return "", fmt.Errorf("failed to reconcile scheduled tasks after fire: %w", err)
 	}
 	// The schedule functions' callouts have ended: seal before the final
@@ -372,30 +340,25 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	if err := seal(finalTxID); err != nil {
 		return "", err
 	}
-	// Read again after the reconcile: a schedule function's callout writes
-	// the anchor in this transaction (the save before the callout), and its
-	// callbacks may write or delete it.
-	anchor, err = readAnchor(finalCtx, finalEntityStore, entity.Meta.ID)
+	// The cascade's callouts and the reconcile's schedule functions have
+	// ended, and with them every callback admitted under them. The read
+	// decides the precondition of the final persist. This transaction has
+	// written the anchor when a segment boundary did (every segmented run: the
+	// boundary's CompareAndSave writes the entity into the segment it opens),
+	// or when a save before a callout that carries the token did (a processor,
+	// a function criterion, or a schedule function of the reconcile above,
+	// dispatched while the in-memory entity differed from the stored one in
+	// its data or state: so every run that moved the entity or changed its
+	// data and whose final state arms a function schedule). The persist then
+	// supersedes that version: the engine's result is the last writer inside
+	// the transaction, as for an ordinary transition. Otherwise the stored
+	// entity is still the committed version read at the start. A write or
+	// delete committed by another transaction is invisible to this
+	// transaction's snapshot and fails the persist or the commit instead.
+	anchor, err := readAnchor(finalCtx, finalEntityStore, entity.Meta.ID)
 	if err != nil {
-		return "", fmt.Errorf("failed to re-read fired entity after reconciling its scheduled tasks: %w", err)
+		return "", fmt.Errorf("failed to re-read fired entity: %w", err)
 	}
-	if !anchor.found {
-		// A schedule function's callback deleted the entity the run has just
-		// moved and re-armed. The run fails and nothing of it commits.
-		return "", errFiredEntityDeletedByScheduleFunction
-	}
-	// The precondition of the final persist. This transaction has written the
-	// anchor when a segment boundary did (every segmented run: the boundary's
-	// CompareAndSave writes the entity into the segment it opens), when a save
-	// before a callout that carries the token did (a processor, a function
-	// criterion, or a schedule function of the reconcile above, dispatched
-	// while the in-memory entity differed from the stored one in its data or
-	// state: so every run that moved the entity or changed its data and whose
-	// final state arms a function schedule), or when a joined callback wrote
-	// it. The persist then supersedes that version: the engine's result is the
-	// last writer inside the transaction, as for an ordinary transition.
-	// Otherwise the stored entity is still the committed version read at the
-	// start.
 	writtenHere := anchor.writtenBy(finalTxID)
 	persistAgainst := expectedTxID
 	if writtenHere {

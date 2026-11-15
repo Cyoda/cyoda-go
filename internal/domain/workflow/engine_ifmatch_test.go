@@ -87,27 +87,20 @@ func (f *ifMatchFixture) stored(t *testing.T) *spi.Entity {
 var cbdProc = spi.ProcessorDefinition{Type: ProcessorTypeExternalized, Name: "cbd", ExecutionMode: ExecutionModeCommitBeforeDispatch}
 
 // TestIfMatch_OwnWriteBeforeSegmentKeepsThePrecondition — If-Match states the
-// version the request starts from. A SYNC processor writes the entity in the
-// request's own transaction (as a joined callback does) before a
-// COMMIT_BEFORE_DISPATCH segment commits: the write is the request's own, so
-// the precondition still holds and the cascade completes with that write.
+// version the request starts from. The request's own transaction writes the
+// entity before a COMMIT_BEFORE_DISPATCH segment commits: the writer
+// processor returns new data, and the engine saves it before the next
+// processor's callout. The write is the request's own, so the precondition
+// still holds and the cascade completes with that data.
 func TestIfMatch_OwnWriteBeforeSegmentKeepsThePrecondition(t *testing.T) {
 	var f *ifMatchFixture
-	f = newIfMatchFixture(t, "ifmatch-own-write", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
+	f = newIfMatchFixture(t, "ifmatch-own-write", func(_ context.Context, _ *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		if proc.Name != "writer" {
 			return nil, nil
 		}
-		es, err := f.factory.EntityStore(ctx)
-		if err != nil {
-			return nil, err
-		}
-		own := *entity
-		own.Data = []byte(`{"x":2}`)
-		if _, err := es.Save(ctx, &own); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}, spi.ProcessorDefinition{Type: ProcessorTypeExternalized, Name: "writer", ExecutionMode: ExecutionModeSync}, cbdProc)
+		return &spi.Entity{Data: []byte(`{"x":2}`)}, nil
+	}, spi.ProcessorDefinition{Type: ProcessorTypeExternalized, Name: "writer", ExecutionMode: ExecutionModeSync},
+		spi.ProcessorDefinition{Type: ProcessorTypeExternalized, Name: "probe", ExecutionMode: ExecutionModeSync}, cbdProc)
 
 	txID, txCtx, err := f.txMgr.Begin(f.ctx)
 	if err != nil {

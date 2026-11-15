@@ -65,7 +65,7 @@ func TestArmViaFunction_PanickingCalloutLeavesGateHeld(t *testing.T) {
 	panicked := false
 	func() {
 		defer func() { panicked = recover() != nil }()
-		_, _, _ = engine.armViaFunction(ctx, entity, &cascadeRun{}, &wf, &tr, "OPEN", "task-1", nowMs, 1, txID)
+		_, _, _ = engine.armViaFunction(ctx, entity, &wf, &tr, "OPEN", "task-1", nowMs, 1, txID)
 	}()
 	if !panicked {
 		t.Fatal("the callout panic did not propagate — recovery is the door's job, not the engine's")

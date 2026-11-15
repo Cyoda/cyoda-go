@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -1625,81 +1624,51 @@ func TestFireScheduled_DeclineAfterCriterion_NoVersion_IfMatchStillValid(t *test
 	}
 }
 
-// The fire's precondition and attribution are taken from the entity as first
-// read, before any callout. Workflow selection makes two function-criterion
-// callouts; the first one's callback writes the anchor in the fire's
-// transaction, so the save before the second callout stamps the anchor with
-// that transaction's id. The stored entity carried no transaction id, so the
-// fire is still refused, and the second callout already sees the arming
-// principal's attribution.
-func TestFireScheduled_PreconditionTakenBeforeCallouts(t *testing.T) {
+// The fire's attribution stamp reaches the first save of the anchor: a save
+// before a processor callout stores the anchor attributed to the arming
+// principal and executed by the system, so a callback read of it sees that
+// attribution.
+func TestFireScheduled_SaveBeforeCalloutCarriesArmingAttribution(t *testing.T) {
 	var env *runEnv
-	calls := 0
 	var second *spi.Entity
-	probe := &calloutProbe{criterion: func(ctx context.Context, entity *spi.Entity, target, _, _ string) (bool, string, error) {
-		if target != "WORKFLOW" {
-			return true, "", nil
+	var secondErr error
+	probe := &calloutProbe{processor: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+		if proc.Name == "p1" {
+			return &spi.Entity{Data: []byte(`{"x":1}`)}, nil
 		}
-		calls++
-		switch calls {
-		case 1:
-			if err := writeAnchor(ctx, env.factory, entity); err != nil {
-				return false, "", err
-			}
-		case 2:
-			read, err := readUnderToken(ctx, env.factory, entity.Meta.ID)
-			if err != nil {
-				return false, "", err
-			}
-			second = read
-		}
-		return true, "", nil
+		second, secondErr = readUnderToken(ctx, env.factory, entity.Meta.ID)
+		return nil, nil
 	}}
 	env = newRunEnv(t, probe)
-	wf := oneHopWF("DONE", nil, nil)
-	wf.Name = "PreconditionWF"
-	wf.Criterion = json.RawMessage(`{"type":"group","operator":"AND","conditions":[` +
-		string(fnCriterion("first")) + `,` + string(fnCriterion("second")) + `]}`)
-	model := spi.ModelRef{EntityName: "precondition-order", ModelVersion: "1.0"}
-	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{wf})
+	model := spi.ModelRef{EntityName: "attribution-order", ModelVersion: "1.0"}
+	registerModelFields(t, env.ctx, env.factory, model, map[string]schema.DataType{"x": schema.Integer})
+	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{oneHopWF("CLOSED", []spi.ProcessorDefinition{
+		safeProc("p1", ExecutionModeSync), safeProc("p2", ExecutionModeSync),
+	}, nil)})
 	lockTestModel(t, env.factory, env.ctx, model)
-	// Stored without a transaction id: written outside a transaction.
-	seedFireEntity(t, env.factory, env.ctx, "pre-e1", model, "OPEN", false, map[string]any{})
+	seedFireEntity(t, env.factory, env.ctx, "attr-e1", model, "OPEN", true, map[string]any{})
 	armed := spi.Principal{ID: "arm-user", Kind: spi.PrincipalUser}
 	now := env.nowMs()
 	armTask(t, env.factory, env.ctx, spi.ScheduledTask{
-		ID: taskID(testTenant, "pre-e1", "OPEN", "AutoClose"), TenantID: testTenant,
-		Type: spi.ScheduledTaskFireTransition, ScheduledTime: now, EntityID: "pre-e1",
+		ID: taskID(testTenant, "attr-e1", "OPEN", "AutoClose"), TenantID: testTenant,
+		Type: spi.ScheduledTaskFireTransition, ScheduledTime: now, EntityID: "attr-e1",
 		ModelName: model.EntityName, ModelVersion: 1, Transition: "AutoClose", SourceState: "OPEN",
 		ArmedAt: now, ArmedBy: armed,
 	})
 	claimed := env.claimOne(t, testOwner, false)
 
 	r, _ := env.run(claimed)
-	if calls != 2 {
-		t.Fatalf("selection callouts = %d, want 2", calls)
+	if r.Outcome != OutcomeFired || r.Err != nil {
+		t.Fatalf("report = %+v, want fired", r)
 	}
-	if r.Outcome != OutcomeCancelled || r.Err != nil {
-		t.Fatalf("report = %+v, want a clean cancel: the stored entity carried no transaction id", r)
-	}
-	if got := env.state(t, "pre-e1"); got != "OPEN" {
-		t.Errorf("entity state = %q, want OPEN", got)
-	}
-	if n := countAuditEvents(t, env.factory, env.ctx, "pre-e1", spi.SMEventScheduledTransitionFired); n != 0 {
-		t.Errorf("fired audit events = %d, want 0", n)
-	}
-	cancelled := onlyEvent(t, allEvents(t, env.factory, env.ctx, "pre-e1"), spi.SMEventScheduledTransitionCancelled)
-	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN", "workflowName": "PreconditionWF"}; !reflect.DeepEqual(cancelled.Data, want) {
-		t.Errorf("SCHEDULED_TRANSITION_CANCEL data = %v, want %v", cancelled.Data, want)
-	}
-	if second == nil {
-		t.Fatal("the second callout read nothing")
+	if secondErr != nil {
+		t.Fatalf("p2's callback read: %v", secondErr)
 	}
 	if second.Meta.ChangeUser != armed.ID || second.Meta.ChangeUserKind != armed.Kind {
-		t.Errorf("second callout: anchor attributed to %q (%v), want the arming principal %q (%v)",
+		t.Errorf("p2's read: anchor attributed to %q (%v), want the arming principal %q (%v)",
 			second.Meta.ChangeUser, second.Meta.ChangeUserKind, armed.ID, armed.Kind)
 	}
 	if second.Meta.ChangeExecutor != common.SystemPrincipal() {
-		t.Errorf("second callout: executor = %+v, want %+v", second.Meta.ChangeExecutor, common.SystemPrincipal())
+		t.Errorf("p2's read: executor = %+v, want %+v", second.Meta.ChangeExecutor, common.SystemPrincipal())
 	}
 }

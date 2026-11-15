@@ -100,7 +100,7 @@ var ErrScheduledTaskInfra = errors.New("scheduled task reconciliation failed")
 // events share the same guaranteed-non-nil store as every other audit event
 // in the call — reconcile no longer re-derives its own and silently skips
 // the audit block on a transient resolution failure.
-func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity, run *cascadeRun, wf *spi.WorkflowDefinition, modelScheduled bool, txID string, auditStore spi.StateMachineAuditStore) error {
+func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, modelScheduled bool, txID string, auditStore spi.StateMachineAuditStore) error {
 	if !modelScheduled {
 		return nil
 	}
@@ -135,7 +135,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 			id := taskID(entity.Meta.TenantID, entity.Meta.ID, state, tr.Name)
 
 			if tr.Schedule.Function != nil {
-				task, expired, err := e.armViaFunction(ctx, entity, run, wf, tr, state, id, armMs, int(modelVersion), txID)
+				task, expired, err := e.armViaFunction(ctx, entity, wf, tr, state, id, armMs, int(modelVersion), txID)
 				if err != nil {
 					return err
 				}
@@ -261,14 +261,14 @@ type expiredSchedule struct {
 // (ReconcileForEntity) is made under the gate by a chain still entitled to
 // it; the deferred call covers the path where the dispatch panics, so the
 // scope ends holding its gate. resume is idempotent, so having both is free.
-func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, run *cascadeRun, wf *spi.WorkflowDefinition, tr *spi.TransitionDefinition, state, id string, armMs int64, modelVersion int, txID string) (task *spi.ScheduledTask, expired *expiredSchedule, err error) {
+func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, tr *spi.TransitionDefinition, state, id string, armMs int64, modelVersion int, txID string) (task *spi.ScheduledTask, expired *expiredSchedule, err error) {
 	if e.extProc == nil {
 		return nil, nil, fmt.Errorf("no external processing service configured for scheduled-transition Function %q", tr.Schedule.Function.Name)
 	}
 
 	// The transaction holds the anchor as it is before the callout (spec
 	// §2.2), in the chain's scope, before Pause releases the gate.
-	if _, err := e.saveAnchorBeforeCallout(ctx, entity, txID, run); err != nil {
+	if err := e.saveAnchorBeforeCallout(ctx, entity, txID); err != nil {
 		return nil, nil, err
 	}
 	resume := txcoord.Pause(ctx)
