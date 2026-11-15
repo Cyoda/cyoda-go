@@ -84,6 +84,10 @@ type savepointSnapshot struct {
 	// truncate-back-to-length approach (auditOps is append-only too — see
 	// stageAuditEvent).
 	auditOpsLen int
+
+	// deletedBufferModels is a copy of TransactionManager.deletedBufferModels[txID]
+	// at the moment this savepoint was taken; RollbackToSavepoint restores it.
+	deletedBufferModels map[string]spi.ModelRef
 }
 
 // TransactionManager implements spi.TransactionManager using Snapshot Isolation
@@ -146,10 +150,11 @@ type TransactionManager struct {
 	// stale) when a later same-tx Save re-buffers id before commit — that
 	// value is unstaged from tx.Deletes and flows through the normal
 	// buffer-flush path instead. Protected by mu. Cleaned up after commit
-	// or rollback (no leak). It need not be savepoint-scoped: every entry
-	// for an id carries that id's one model, because the in-tx model check
-	// (checkModelImmutable) refuses a write under any other, so an entry
-	// left by a rolled-back delete still names the right model.
+	// or rollback (no leak). Savepoint-scoped like tx.Buffer: the in-tx model
+	// check (checkModelImmutable) reads it, so an entry staged after a
+	// savepoint must not outlive RollbackToSavepoint — a create and delete
+	// that rollback undoes leave no model behind to refuse a later Save
+	// under another one.
 	deletedBufferModels map[string]map[string]spi.ModelRef // txID -> entityID -> evicted model
 
 	// scheduledTaskOps holds the task-row ops staged while the transaction
@@ -1343,6 +1348,7 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 		deleteAttribution:   delAttrCopy,
 		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
 		auditOpsLen:         len(m.auditOps[txID]),
+		deletedBufferModels: maps.Clone(m.deletedBufferModels[txID]),
 	})
 	return spID, nil
 }
@@ -1445,6 +1451,14 @@ func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	// scheduledTaskOps above.
 	if n := snap.auditOpsLen; n < len(m.auditOps[txID]) {
 		m.auditOps[txID] = m.auditOps[txID][:n]
+	}
+
+	// Restore the staged deleted-buffer models to the savepoint's: they are
+	// savepoint-scoped like tx.Buffer.
+	if snap.deletedBufferModels == nil {
+		delete(m.deletedBufferModels, txID)
+	} else {
+		m.deletedBufferModels[txID] = maps.Clone(snap.deletedBufferModels)
 	}
 
 	// A rollback destroys the savepoints taken after this one and keeps it.
