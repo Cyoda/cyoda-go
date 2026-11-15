@@ -351,7 +351,7 @@ func (c *callbackClient) setStatus(ctx context.Context, entityID, status, txToke
 	env.Data["status"] = status
 	body, err := json.Marshal(env.Data)
 	if err != nil {
-		return err
+		return fmt.Errorf("callback update of %s: encode data: %w", entityID, err)
 	}
 	res, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entityID, string(body), txToken, "")
 	if err != nil {

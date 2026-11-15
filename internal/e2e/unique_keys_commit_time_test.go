@@ -304,7 +304,8 @@ func TestModelNotLockedAtCommit_GRPCCollectionCreate(t *testing.T) {
 // committed entity E runs a SYNC processor that creates, through a joined
 // callback, an entity of a second model M2, and then unlocks M2 (unjoined;
 // the joined entity is not committed, so M2 has none). The commit finds M2
-// not LOCKED: 409, and nothing is committed — E keeps its data and state,
+// not LOCKED: 409 CONFLICT (retryable; the transaction's snapshot predates
+// the unlock), and nothing is committed — E keeps its data and state,
 // and M2 is UNLOCKED with no entity.
 func TestModelNotLockedAtCommit_UpdateViaCallbackCreate(t *testing.T) {
 	h := newCallbackHarness(t)
@@ -353,11 +354,8 @@ func TestModelNotLockedAtCommit_UpdateViaCallbackCreate(t *testing.T) {
 		t.Fatalf("joined create in M2: err=%v %d %s", r.cErr, r.created.StatusCode, r.created.Body)
 	}
 	requireUnlocked(t, r.unlock.res, r.unlock.err)
-	out := httpJoinedOutcome(res, nil)
-	if out.status != http.StatusConflict || (out.errorCode != "CONFLICT" && out.errorCode != notLockedCode) {
-		t.Fatalf("update: %d %q; want 409 CONFLICT or %s: %s", out.status, out.errorCode, notLockedCode, res.Body)
-	}
-	t.Logf("update answered 409 %s", out.errorCode)
+	// The transaction's snapshot predates the unlock: a retryable conflict.
+	assertProblem(t, res.StatusCode, res.Body, http.StatusConflict, "CONFLICT", true)
 
 	if state, _ := h.GetEntityState(t, e); state != "OPEN" {
 		t.Errorf("E is %s; want OPEN (the update is not committed)", state)
