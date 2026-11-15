@@ -860,7 +860,7 @@ scenario: they differ from the `SYNC` rows only in the engine; the storage call
 they rely on (a read of the transaction's pending version under the token) is
 the one the `SYNC` parity rows cover on every backend.
 
-Concurrency scenarios (row-lock wait, stray standalone write) are isolated
+Concurrency scenarios (row-lock waits) are isolated
 single-backend e2e tests asserting consistency (one winner, loser `409`, or the
 callout failure), never in the parity suite. Each must be shown failing (or
 showing the old outcome) on the unfixed code, or it is dropped.
