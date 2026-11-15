@@ -746,9 +746,14 @@ Per backend:
     models.doc->>'state' <> 'LOCKED' RETURNING 1`: no row returned on a
     conflict is `ErrModelLocked` (`READ COMMITTED` re-checks the `WHERE`
     against the latest row version, so a lock committed in between is seen);
-    then bump or insert the lifecycle row. The `model_schema_extensions`
-    `DELETE` in the same statement runs even when the update is refused; the
-    refusal's rollback undoes it.
+    then bump or insert the lifecycle row. The extension-log `DELETE` and its
+    stale-row warning are removed from `Save` and `Delete` on every backend:
+    rows exist only while the model is `LOCKED` (`ExtendSchema` checks it;
+    `Unlock` folds and clears the log in its own transaction), and `Save` and
+    `Delete` now refuse a `LOCKED` model, so the log of a model they change is
+    always empty. sqlite's `SetChangeLevel`, today a separate read and
+    whole-document write that can put back a stale state, schema or keys,
+    becomes one statement that sets only the change level, as on postgres.
 - memory: `Unlock`, `Delete` and `Save` check and change under `entityMu`
   (write), the lock entity commits hold, counting with an internal helper that
   takes no lock (`EntityStore.Count` takes `entityMu.RLock`,
