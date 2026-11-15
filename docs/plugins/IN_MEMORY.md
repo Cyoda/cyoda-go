@@ -73,20 +73,41 @@ type TransactionState struct {
 4. FOR EACH committed_tx where seq > tx's snapshot commitSeq:
      IF committed_tx.writeSet intersects (tx.ReadSet UNION tx.WriteSet):
        ABORT -> ErrConflict
-5. Stamp submitTime = max(now, lastSubmitTime + 1µs); record it as the floor
-6. Flush tx.Buffer to factory.entityData (deep copy)
-7. Apply tx.Deletes (append tombstone versions)
-8. Append to committedLog: {txID, seq, submitTime, writeSet}
-9. Record submitTime in submitTimes map
-10. Remove from active map
-11. Prune committedLog (entries older than oldest active snapshot)
-12. Release entityMu, then tx.OpMu
+5. Read the stored model of every buffered entity (lockedModelKeys,
+   one read per model, by name then version):
+     model missing or not LOCKED -> ABORT -> ErrModelNotLocked
+   Compute each buffered entity's claims from its buffered bytes with
+   that model's keys:
+     partial key -> ABORT -> ErrPartialUniqueKey
+     a value two buffered entities claim, or a committed claim held by
+     an entity the transaction neither wrote nor deleted
+                 -> ABORT -> ErrUniqueViolation
+   (deleted entities need no model)
+6. Stamp submitTime = max(now, lastSubmitTime + 1µs); record it as the floor
+7. Release the claims of every buffered and deleted entity, then
+   flush tx.Buffer to factory.entityData (deep copy) and insert the
+   final entities' claims
+8. Apply tx.Deletes (append tombstone versions)
+9. Append to committedLog: {txID, seq, submitTime, writeSet}
+10. Record submitTime in submitTimes map
+11. Remove from active map
+12. Prune committedLog (entries older than oldest active snapshot)
+13. Release entityMu, then tx.OpMu
 ```
 
-`tm.mu` is not held across steps 3–12. It is a leaf lock, taken and released
+`tm.mu` is not held across steps 3–13. It is a leaf lock, taken and released
 three times: for the conflict scan (steps 3–4), inside `nextSubmitTime` for the
-stamp (step 5), and for the commit-log append, the submit-time record and the
-prune (steps 8–11). Everything in between runs under `entityMu`, which is what
+stamp (step 6), and for the commit-log append, the submit-time record and the
+prune (steps 9–12). Every claim is released before any is inserted, so a swap
+of key values between two entities of one transaction is judged only on its
+final state. A save outside a transaction runs the same model read and claim
+check under `entityMu`.
+
+**Model changes under `entityMu`.** `ModelStore.Unlock`, `Delete` and `Save`
+take `entityMu` (write) before the model mutex, so each checks and changes
+atomically with entity commits: `Unlock` counts the model's live entities and
+refuses a model that has any (`*spi.ModelHasEntitiesError`); `Delete` and
+`Save` refuse a `LOCKED` model (`spi.ErrModelLocked`). Everything in between runs under `entityMu`, which is what
 makes the flush atomic. Each acquisition still follows the one order below.
 
 This is first-committer-wins: the transaction that reaches step 4

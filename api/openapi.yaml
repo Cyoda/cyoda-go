@@ -63,7 +63,7 @@ info:
     stays if the write fails. An extension of a model that is not locked is
     refused with 409 MODEL_NOT_LOCKED. So is the commit of a transaction
     that saves an entity whose model is no longer locked, or no longer
-    exists, when the transaction commits.
+    exists.
 
 
     ### Search
@@ -310,7 +310,7 @@ tags:
       stays if the write fails. An extension of a model that is not locked is
       refused with 409 MODEL_NOT_LOCKED. So is the commit of a transaction
       that saves an entity whose model is no longer locked, or no longer
-      exists, when the transaction commits.
+      exists.
 
       \    "
   - name: Search
