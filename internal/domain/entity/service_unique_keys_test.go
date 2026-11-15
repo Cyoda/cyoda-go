@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -318,4 +319,27 @@ func TestUpdateEntityCollection_MixedModels_KeysFromModel(t *testing.T) {
 		{EntityID: p, Payload: json.RawMessage(`{"name":"Other"}`)},
 	})
 	assertStatus(t, err, http.StatusConflict)
+
+	// Moving o1 to a fresh key, in a batch with the unkeyed item, commits
+	// both; o1's old value is free afterwards.
+	if _, err := h.UpdateEntityCollection(ctx, []UpdateCollectionItem{
+		{EntityID: o1, Payload: json.RawMessage(`{"email":"c@b.com","accountId":"acc-1"}`)},
+		{EntityID: p, Payload: json.RawMessage(`{"name":"Other"}`)},
+	}); err != nil {
+		t.Fatalf("mixed batch with a fresh key: %v", err)
+	}
+	for id, want := range map[string]string{o1: `"c@b.com"`, p: `"Other"`} {
+		env, err := h.GetEntity(ctx, GetOneEntityInput{EntityID: id})
+		if err != nil {
+			t.Fatalf("GetEntity %s: %v", id, err)
+		}
+		data, err := json.Marshal(env.Data)
+		if err != nil {
+			t.Fatalf("marshal data of %s: %v", id, err)
+		}
+		if !strings.Contains(string(data), want) {
+			t.Errorf("entity %s data = %s; want it to hold %s", id, data, want)
+		}
+	}
+	mk("Order", "1", `{"email":"a@b.com","accountId":"acc-1"}`)
 }

@@ -331,6 +331,38 @@ func (c *callbackClient) writeBack(ctx context.Context, entityID, txToken string
 	return res.Status, nil
 }
 
+// setStatus reads entityID through txToken's transaction and writes its data
+// back there with status set to status. A read or write not answered 200 is
+// an error.
+func (c *callbackClient) setStatus(ctx context.Context, entityID, status, txToken string) error {
+	got, err := c.getEntity(ctx, entityID, txToken)
+	if err != nil {
+		return fmt.Errorf("callback read of %s: %w", entityID, err)
+	}
+	if got.Status != http.StatusOK {
+		return fmt.Errorf("callback read of %s status=%d body=%s", entityID, got.Status, got.Body)
+	}
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(got.Body), &env); err != nil || env.Data == nil {
+		return fmt.Errorf("callback read of %s: no entity data in %s", entityID, got.Body)
+	}
+	env.Data["status"] = status
+	body, err := json.Marshal(env.Data)
+	if err != nil {
+		return err
+	}
+	res, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entityID, string(body), txToken, "")
+	if err != nil {
+		return fmt.Errorf("callback update of %s: %w", entityID, err)
+	}
+	if res.Status != http.StatusOK {
+		return fmt.Errorf("callback update of %s status=%d body=%s", entityID, res.Status, res.Body)
+	}
+	return nil
+}
+
 // targetVerdict is how a cb-*-target processor answers after its joined write.
 type targetVerdict int
 
@@ -993,6 +1025,35 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 				return nil, err
 			}
 			return &Entity{ID: entity.ID, State: entity.State, Data: out}, nil
+		},
+		// cb-move-status — for each {id, status} on the anchor's data.moves, in
+		// order, reads that entity through a joined GET and writes it back
+		// through a joined update with data.status set to the move's status. A
+		// read or write not answered 200 fails the processor. It answers with
+		// the anchor unchanged. With a unique key on $.status, the moves let a
+		// scenario swap or chain key values between entities in one
+		// transaction.
+		"cb-move-status": func(ctx context.Context, entity *Entity, _ cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			var anchor struct {
+				Moves []struct {
+					ID     string `json:"id"`
+					Status string `json:"status"`
+				} `json:"moves"`
+			}
+			if len(entity.Data) > 0 {
+				if err := json.Unmarshal(entity.Data, &anchor); err != nil {
+					return nil, fmt.Errorf("cb-move-status: decode moves: %w", err)
+				}
+			}
+			for _, m := range anchor.Moves {
+				if err := cb.setStatus(ctx, m.ID, m.Status, token); err != nil {
+					return nil, err
+				}
+			}
+			return entity, nil
 		},
 		// cb-ifmatch-update — creates a secondary inside T, then issues a
 		// loopback update with If-Match set to the create's in-T transactionId.

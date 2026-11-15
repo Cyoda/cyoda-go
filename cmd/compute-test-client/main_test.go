@@ -621,6 +621,80 @@ func TestCatalog_UnlockThenTag_UnlocksUnjoinedAndAddsAField(t *testing.T) {
 	}
 }
 
+// TestCatalog_MoveStatus_WritesEachMoveThroughTheTransaction: for each move
+// on the anchor's data, in order, the processor reads the named entity through
+// a joined GET and writes it back through a joined update with status set to
+// the move's value; it answers with the anchor unchanged. A refused read or
+// write fails the processor.
+func TestCatalog_MoveStatus_WritesEachMoveThroughTheTransaction(t *testing.T) {
+	type call struct{ token, method, path, body string }
+	var calls []call
+	stored := map[string]string{
+		"/api/entity/a": `{"meta":{"id":"a"},"data":{"name":"a","status":"x"}}`,
+		"/api/entity/b": `{"meta":{"id":"b"},"data":{"name":"b","status":"y"}}`,
+	}
+	door := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		calls = append(calls, call{r.Header.Get("X-Tx-Token"), r.Method, r.URL.Path, string(b)})
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(stored[r.URL.Path]))
+			return
+		}
+		_, _ = w.Write([]byte(`{"transactionId":"tx-1","entityIds":["a"]}`))
+	}))
+	defer door.Close()
+
+	proc, ok := newCatalog(nil, nil).callbackProcessor("cb-move-status")
+	if !ok {
+		t.Fatal("cb-move-status callback processor not registered")
+	}
+	anchor := []byte(`{"name":"d","moves":[{"id":"a","status":"y"},{"id":"b","status":"x"}]}`)
+	out, err := proc(context.Background(), &Entity{ID: "d", Data: anchor}, cbConfig{}, "the-pass", newCallbackClient(door.URL, staticToken("bearer")))
+	if err != nil {
+		t.Fatalf("processor: %v", err)
+	}
+	want := []struct{ method, path, status string }{
+		{http.MethodGet, "/api/entity/a", ""},
+		{http.MethodPut, "/api/entity/JSON/a", "y"},
+		{http.MethodGet, "/api/entity/b", ""},
+		{http.MethodPut, "/api/entity/JSON/b", "x"},
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("calls = %+v; want a joined read and update of a, then of b", calls)
+	}
+	for i, w := range want {
+		c := calls[i]
+		if c.token != "the-pass" || c.method != w.method || c.path != w.path {
+			t.Fatalf("call %d = %+v; want a joined %s %s", i, c, w.method, w.path)
+		}
+		if w.method != http.MethodPut {
+			continue
+		}
+		var data map[string]any
+		if err := json.Unmarshal([]byte(c.body), &data); err != nil || data["status"] != w.status || data["name"] == nil {
+			t.Fatalf("call %d body = %s; want the entity's data with status %s", i, c.body, w.status)
+		}
+	}
+	if out == nil || string(out.Data) != string(anchor) {
+		t.Fatalf("result = %+v; want the anchor unchanged", out)
+	}
+
+	for _, refused := range []string{http.MethodGet, http.MethodPut} {
+		failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == refused {
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			_, _ = w.Write([]byte(stored["/api/entity/a"]))
+		}))
+		_, err := proc(context.Background(), &Entity{ID: "d", Data: anchor}, cbConfig{}, "the-pass", newCallbackClient(failing.URL, staticToken("bearer")))
+		failing.Close()
+		if err == nil {
+			t.Fatalf("a refused %s must fail the processor", refused)
+		}
+	}
+}
+
 // An absolute schedule is computed from the request's time attribute, which is
 // platform time, not from the test client's own clock.
 func TestCatalog_SchedFnResolve_UsesRequestTime(t *testing.T) {
