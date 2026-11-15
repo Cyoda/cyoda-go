@@ -9,8 +9,8 @@ package parity
 //   - a value claimed first and freed later in the transaction → commits;
 //   - one value claimed by two entities of one transaction → 409
 //     UNIQUE_VIOLATION, nothing committed;
-//   - a callback write that duplicates a value, fixed by a later processor →
-//     commits;
+//   - a callback write of another entity that duplicates a value, fixed by a
+//     later processor's callback → commits;
 //   - a create whose processor unlocks the model during the callout → 409,
 //     nothing stored.
 //
@@ -21,6 +21,7 @@ package parity
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -29,9 +30,9 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// ukctSample declares every field the scenarios write: the key field status
-// and the moves cb-move-status reads.
-const ukctSample = `{"name":"","status":"","moves":[{"id":"","status":""}]}`
+// ukctSample declares every field the scenarios write: the key field status,
+// the moves cb-move-status reads and the targetId cb-write-target reads.
+const ukctSample = `{"name":"","status":"","targetId":"","moves":[{"id":"","status":""}]}`
 
 // ukctKeys is the unique key every scenario model carries.
 const ukctKeys = `{"uniqueKeys":[{"id":"status-key","fields":["$.status"]}]}`
@@ -236,10 +237,11 @@ func RunUniqueSameValueTwiceInTx(t *testing.T, fixture BackendFixture) {
 	ukctRequireFree(t, c, model, "z")
 }
 
-// RunUniqueIntermediateDuplicateFixed: A holds x. A manual transition of D
-// runs two processors: the first writes D's status to x through a joined
-// update (a duplicate of A's value), the second writes it to fixed. Only the
-// final entity is checked, so the transition commits.
+// RunUniqueIntermediateDuplicateFixed: A holds x and B holds b. A manual
+// transition of D runs two processors whose joined callbacks write B, D's
+// targetId: the first sets B's status to x (a duplicate of A's value), the
+// second to fixed. Only the final entities are checked, so the transition
+// commits.
 func RunUniqueIntermediateDuplicateFixed(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.ComputeTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -248,29 +250,33 @@ func RunUniqueIntermediateDuplicateFixed(t *testing.T, fixture BackendFixture) {
 		"DONE": map[string]any{"transitions": []any{map[string]any{
 			"name": "fix", "next": "FIXED", "manual": true,
 			"processors": []any{
-				cbProc("cb-write-self", "SYNC", `{"marker":"x"}`, nil),
-				cbProc("cb-write-self", "SYNC", `{"marker":"fixed"}`, nil),
+				cbProc("cb-write-target", "SYNC", `{"marker":"x"}`, nil),
+				cbProc("cb-write-target", "SYNC", `{"marker":"fixed"}`, nil),
 			},
 		}}},
 		"FIXED": map[string]any{},
 	})
 
 	a := ukctCreate(t, c, model, "a", "x")
+	b := ukctCreate(t, c, model, "b", "b")
 	d := ukctCreate(t, c, model, "d", "d")
 
-	if code, raw, err := c.UpdateEntityRaw(t, d, "fix", `{"name":"d","status":"d"}`); err != nil || code != http.StatusOK {
+	body := fmt.Sprintf(`{"name":"d","status":"d","targetId":%q}`, b)
+	if code, raw, err := c.UpdateEntityRaw(t, d, "fix", body); err != nil || code != http.StatusOK {
 		t.Fatalf("transition with an intermediate duplicate: got %d err=%v; want 200: %s", code, err, raw)
 	}
 	e, err := c.GetEntity(t, d)
 	if err != nil {
 		t.Fatalf("GetEntity: %v", err)
 	}
-	if e.Meta.State != "FIXED" || e.Data["status"] != "fixed" {
-		t.Fatalf("D is %s with status %v; want FIXED with status fixed", e.Meta.State, e.Data["status"])
+	if e.Meta.State != "FIXED" {
+		t.Fatalf("D is %s; want FIXED", e.Meta.State)
 	}
 	ukctRequireStatus(t, c, a, "x")
+	ukctRequireStatus(t, c, b, "fixed")
 	ukctRequireClaimed(t, c, model, "x")
-	ukctRequireFree(t, c, model, "d")
+	ukctRequireClaimed(t, c, model, "fixed")
+	ukctRequireFree(t, c, model, "b")
 }
 
 // RunModelNotLockedAtCommit: a create's processor unlocks the model during

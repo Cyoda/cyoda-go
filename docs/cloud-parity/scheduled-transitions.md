@@ -187,23 +187,11 @@ joins a client request's.
   see the mutations an earlier processor returned and the engine has not yet
   saved, so a processor bases its own write on the payload of its request.
   This behaviour is under decision (§16, open item 2).
-- A processor can write the fired entity through a callback. The engine keeps
-  a callback's write only under `SYNC`, `ASYNC_SAME_TX`, and
-  `COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch: true`; under
-  `ASYNC_NEW_TX` a callback can write, but the engine's payload overwrites it.
-  In the modes that keep it, the write is kept when the processor returns no
-  mutations; a processor that returns mutations overrides it. When the
-  transaction had already written the entity before the dispatch, a callback
-  write that leaves the stored payload unchanged cannot be told from no write,
-  and the engine's payload stands.
-- A callback that writes the fired entity also holds the task. When a
-  processor that is not `idempotent`, or a `COMMIT_BEFORE_DISPATCH` step,
-  follows in the same run, the run cannot mark or commit the task, so the
-  attempt fails safely — and every retry fails the same way. The run never
-  hangs and never repeats unsafe work.
-- A callback that deletes the fired entity ends the run as follows: the delete
-  commits, the task is removed, nothing is re-created or re-armed, and no
-  `SCHEDULED_TRANSITION_FIRE` is recorded.
+- A processor, a function criterion and a schedule function never write or
+  delete the fired entity through a callback, with or without the
+  transaction token: a processor changes it only through the data it
+  returns. This is the contract of workflow processing; the engine does not
+  detect or guard against a breach. Callbacks may write other entities.
 
 ## 9. Lateness
 

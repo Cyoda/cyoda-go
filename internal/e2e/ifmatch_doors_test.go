@@ -11,11 +11,10 @@ import (
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
-// ifmatch_callback_self_write_test.go — every door that takes If-Match, with
-// If-Match naming E's current version, runs a processor whose joined callback
-// writes E itself. If-Match states the version the request starts from, so the
-// callback's write does not fail it: the request succeeds and E keeps the
-// callback's write.
+// ifmatch_doors_test.go — every door that takes If-Match. If-Match states the
+// version the request starts from: a stale one is 412 before any processor
+// runs, and a change another client commits after the request read E is a
+// lost race, the retryable 409.
 
 // ifMatchDoor is one door that takes If-Match, run on E with the If-Match
 // eTxID. Its request moves E through the workflow's processors.
@@ -64,69 +63,10 @@ func ifMatchDoors() []ifMatchDoor {
 	}
 }
 
-func TestIfMatch_OwnEntityCallbackWriteIsKept(t *testing.T) {
-	doors := ifMatchDoors()
-	shapes := []struct {
-		name  string
-		procs []conflictProc
-	}{
-		{name: "SYNC", procs: []conflictProc{{name: "ifm-self-p", mode: "SYNC"}}},
-		{name: "ASYNC_SAME_TX", procs: []conflictProc{{name: "ifm-self-p", mode: "ASYNC_SAME_TX"}}},
-		// The callback's write lands before a COMMIT_BEFORE_DISPATCH segment
-		// commits.
-		{name: "SYNC_ThenCommitBeforeDispatch", procs: []conflictProc{
-			{name: "ifm-self-p", mode: "SYNC"}, {name: "ifm-self-cbd", mode: "COMMIT_BEFORE_DISPATCH"},
-		}},
-	}
-	for _, door := range doors {
-		for _, shape := range shapes {
-			t.Run(door.name+"/"+shape.name, func(t *testing.T) {
-				h := newCalloutHarness(t, nil)
-				model, tag := uniq("ifm-self"), uniq("ifm-self-tag")
-				var calls atomic.Int32
-				callbackStatus := make(chan int, 1)
-				h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: func(_ context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
-					if calls.Add(1) > 1 {
-						return answerOK()
-					}
-					// The joined write of E itself. Its status matches no
-					// transition, so its own loopback leaves E in OPEN.
-					res, err := rc.UpdateEntity(rc.entityID, `{"name":"e","amount":7,"status":"self"}`)
-					if err != nil || res.StatusCode != http.StatusOK {
-						callbackStatus <- res.StatusCode
-						return answerFail("the joined write of E was refused")
-					}
-					return answerOK()
-				}})
-				h.SetupModelWithWorkflow(t, model, conflictDoorWorkflow(model, tag, shape.procs...))
-				eID, eTxID := createWithTx(t, h, model, workflowSampleModel)
-
-				out := door.request(h, eID, eTxID)
-				if out.err != nil {
-					t.Fatalf("request: %v", out.err)
-				}
-				select {
-				case st := <-callbackStatus:
-					t.Fatalf("the joined write of E answered %d", st)
-				default:
-				}
-				if (out.status != 0 && out.status != http.StatusOK) || out.errorCode != "" {
-					t.Fatalf("answered %d %s; want success: %s", out.status, out.errorCode, out.detail)
-				}
-				if st, _ := h.GetEntityState(t, eID); st != "DONE" {
-					t.Fatalf("E is %s; want DONE", st)
-				}
-				if amount := h.GetEntityData(t, eID)["amount"]; amount != float64(7) {
-					t.Fatalf("E has amount %v; want the callback's write (7)", amount)
-				}
-			})
-		}
-	}
-}
-
 // TestIfMatch_ChangeAfterReadIs409 — another client commits a change to E
-// after the request read it (the processor makes that write itself, without
-// the transaction token). The request's If-Match held when it started, so
+// after the request read it. The test makes that write while the processor is
+// called out, to time it; it carries no transaction token and is not the
+// processor's write. The request's If-Match held when it started, so
 // this is a lost race, not a failed precondition: a retryable 409 CONFLICT,
 // and E keeps the other client's write. A collection item is not isolated:
 // the transaction the chunk runs in cannot commit.
@@ -153,8 +93,9 @@ func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 					if calls.Add(1) > 1 {
 						return answerOK()
 					}
-					// The other client's write: no transaction token, so it
-					// commits at once. Its status matches no transition.
+					// The other client's write, made here only to time it: no
+					// transaction token, so it commits at once. Its status
+					// matches no transition.
 					res, err := h.callback(http.MethodPut, "/api/entity/JSON/"+rc.entityID, `{"name":"e","amount":5,"status":"rival"}`, "")
 					if err != nil || res.StatusCode != http.StatusOK {
 						rivalStatus <- res.StatusCode

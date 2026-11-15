@@ -466,121 +466,127 @@ func TestCatalog_CreateSecondaryRecord_RecordsTheAnswerAndSucceeds(t *testing.T)
 	}
 }
 
-// TestCatalog_WriteSelf_WritesThroughTheCallbackAndReturnsNoData: the
-// processor writes its own entity through a joined update — its data with
-// status set to the marker — and answers with no data, so the engine keeps
-// that write.
-func TestCatalog_WriteSelf_WritesThroughTheCallbackAndReturnsNoData(t *testing.T) {
-	var gotToken, gotMethod, gotPath, gotBody string
-	door := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// targetCall is one call a targetDoor received.
+type targetCall struct{ token, method, path, query, body string }
+
+const targetNotFound = `{"status":404,"properties":{"errorCode":"ENTITY_NOT_FOUND"}}`
+
+// targetDoor is a callback door that answers a GET of the target with its
+// envelope, a PUT with a write answer naming tx-1, a by-transaction GET with
+// a 404 and anything else (the record) with a create answer. It records every
+// call.
+func targetDoor(calls *[]targetCall) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		gotToken, gotMethod, gotPath, gotBody = r.Header.Get("X-Tx-Token"), r.Method, r.URL.Path, string(b)
-		w.WriteHeader(http.StatusOK)
+		*calls = append(*calls, targetCall{r.Header.Get("X-Tx-Token"), r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
+		switch {
+		case r.Method == http.MethodGet && r.URL.RawQuery != "":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(targetNotFound))
+		case r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"meta":{"id":"tgt"},"data":{"name":"t","status":"new"}}`))
+		case r.Method == http.MethodPut:
+			_, _ = w.Write([]byte(`{"transactionId":"tx-1","entityIds":["tgt"]}`))
+		default:
+			_, _ = w.Write([]byte(`[{"transactionId":"tx-rec","entityIds":["rec"]}]`))
+		}
 	}))
+}
+
+// TestCatalog_WriteTarget_WritesTheTargetThroughTheCallback: the processor
+// reads the entity named by targetId through a joined GET and writes it back
+// through a joined update with status set to the marker; the anchor is
+// returned unchanged and never written.
+func TestCatalog_WriteTarget_WritesTheTargetThroughTheCallback(t *testing.T) {
+	var calls []targetCall
+	door := targetDoor(&calls)
 	defer door.Close()
 
-	cat := newCatalog(nil, nil)
-	proc, ok := cat.callbackProcessor("cb-write-self")
+	proc, ok := newCatalog(nil, nil).callbackProcessor("cb-write-target")
 	if !ok {
-		t.Fatal("cb-write-self callback processor not registered")
+		t.Fatal("cb-write-target callback processor not registered")
 	}
-	out, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{"name":"p","status":"new"}`)},
-		cbConfig{Marker: "written"}, "the-pass", newCallbackClient(door.URL, staticToken("bearer")))
+	anchor := &Entity{ID: "ent", Data: []byte(`{"name":"p","targetId":"tgt"}`)}
+	out, err := proc(context.Background(), anchor, cbConfig{Marker: "written"}, "the-pass", newCallbackClient(door.URL, staticToken("bearer")))
 	if err != nil {
 		t.Fatalf("processor: %v", err)
 	}
-	if gotToken != "the-pass" || gotMethod != http.MethodPut || gotPath != "/api/entity/JSON/ent" {
-		t.Fatalf("callback token=%q %s %s; want the pass on a joined update of ent", gotToken, gotMethod, gotPath)
+	if len(calls) != 2 {
+		t.Fatalf("calls = %+v; want a joined read and a joined update of the target", calls)
+	}
+	if c := calls[0]; c.token != "the-pass" || c.method != http.MethodGet || c.path != "/api/entity/tgt" {
+		t.Fatalf("first call = %+v; want the joined read of tgt", c)
 	}
 	var data map[string]any
-	if err := json.Unmarshal([]byte(gotBody), &data); err != nil || data["status"] != "written" || data["name"] != "p" {
-		t.Fatalf("written body = %s; want the entity's data with status set to the marker", gotBody)
+	if c := calls[1]; c.token != "the-pass" || c.method != http.MethodPut || c.path != "/api/entity/JSON/tgt" ||
+		json.Unmarshal([]byte(c.body), &data) != nil || data["status"] != "written" || data["name"] != "t" {
+		t.Fatalf("second call = %+v; want the joined update of tgt with its data and status set to the marker", c)
 	}
-	if out == nil || out.Data != nil {
-		t.Fatalf("result = %+v; want an entity with no data", out)
+	if out != anchor {
+		t.Fatalf("result = %+v; want the anchor unchanged", out)
 	}
 
 	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 	}))
 	defer failing.Close()
-	if _, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{}`)},
-		cbConfig{Marker: "written"}, "the-pass", newCallbackClient(failing.URL, staticToken("bearer"))); err == nil {
-		t.Fatal("a refused write must fail the processor")
+	if _, err := proc(context.Background(), anchor, cbConfig{Marker: "written"}, "the-pass", newCallbackClient(failing.URL, staticToken("bearer"))); err == nil {
+		t.Fatal("a refused read or write must fail the processor")
+	}
+	if _, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{}`)}, cbConfig{Marker: "written"}, "the-pass", newCallbackClient(door.URL, staticToken("bearer"))); err == nil {
+		t.Fatal("an anchor with no targetId must fail the processor")
 	}
 }
 
-// TestCatalog_WriteSelfReadByTx_ReadsTheJoinedTransactionAndRecords: the
-// processor writes its own entity through a joined update, reads it through a
-// joined GET with ?transactionId= naming the transaction the update answered,
-// records that read's answer outside the transaction, and answers with no
-// data.
-func TestCatalog_WriteSelfReadByTx_ReadsTheJoinedTransactionAndRecords(t *testing.T) {
-	type call struct{ token, method, path, query, body string }
-	var calls []call
-	const notFound = `{"status":404,"properties":{"errorCode":"ENTITY_NOT_FOUND"}}`
-	door := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		calls = append(calls, call{r.Header.Get("X-Tx-Token"), r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
-		switch r.Method {
-		case http.MethodPut:
-			_, _ = w.Write([]byte(`{"transactionId":"tx-1","entityIds":["ent"]}`))
-		case http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(notFound))
-		default:
-			_, _ = w.Write([]byte(`[{"transactionId":"tx-rec","entityIds":["rec"]}]`))
-		}
-	}))
+// TestCatalog_WriteTargetReadByTx_ReadsTheJoinedTransactionAndRecords: the
+// processor writes the target through a joined update, reads the target
+// through a joined GET with ?transactionId= naming the transaction the update
+// answered, records that read's answer outside the transaction, and returns
+// the anchor unchanged.
+func TestCatalog_WriteTargetReadByTx_ReadsTheJoinedTransactionAndRecords(t *testing.T) {
+	var calls []targetCall
+	door := targetDoor(&calls)
 	defer door.Close()
 
-	proc, ok := newCatalog(nil, nil).callbackProcessor("cb-write-self-read-by-tx")
+	proc, ok := newCatalog(nil, nil).callbackProcessor("cb-write-target-read-by-tx")
 	if !ok {
-		t.Fatal("cb-write-self-read-by-tx callback processor not registered")
+		t.Fatal("cb-write-target-read-by-tx callback processor not registered")
 	}
-	out, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{"name":"p","status":"new"}`)},
-		cbConfig{Marker: "m", RecordModel: "rec"}, "the-pass", newCallbackClient(door.URL, staticToken("bearer")))
+	anchor := &Entity{ID: "ent", Data: []byte(`{"name":"p","targetId":"tgt"}`)}
+	out, err := proc(context.Background(), anchor, cbConfig{Marker: "m", RecordModel: "rec"}, "the-pass", newCallbackClient(door.URL, staticToken("bearer")))
 	if err != nil {
 		t.Fatalf("processor: %v", err)
 	}
-	if len(calls) != 3 {
-		t.Fatalf("calls = %+v; want a joined update, a joined read and the record", calls)
+	if len(calls) != 4 {
+		t.Fatalf("calls = %+v; want a joined read, a joined update, a joined by-transaction read and the record", calls)
 	}
-	if c := calls[0]; c.token != "the-pass" || c.method != http.MethodPut || c.path != "/api/entity/JSON/ent" {
-		t.Fatalf("first call = %+v; want the joined update of ent", c)
+	if c := calls[1]; c.token != "the-pass" || c.method != http.MethodPut || c.path != "/api/entity/JSON/tgt" {
+		t.Fatalf("second call = %+v; want the joined update of tgt", c)
 	}
-	if c := calls[1]; c.token != "the-pass" || c.method != http.MethodGet || c.path != "/api/entity/ent" || c.query != "transactionId=tx-1" {
-		t.Fatalf("second call = %+v; want a joined GET of ent with transactionId=tx-1", c)
+	if c := calls[2]; c.token != "the-pass" || c.method != http.MethodGet || c.path != "/api/entity/tgt" || c.query != "transactionId=tx-1" {
+		t.Fatalf("third call = %+v; want a joined GET of tgt with transactionId=tx-1", c)
 	}
 	var rec map[string]any
-	if c := calls[2]; c.token != "" || c.method != http.MethodPost || c.path != "/api/entity/JSON/rec/1" || json.Unmarshal([]byte(c.body), &rec) != nil {
-		t.Fatalf("third call = %+v; want the record created outside the transaction", c)
+	if c := calls[3]; c.token != "" || c.method != http.MethodPost || c.path != "/api/entity/JSON/rec/1" || json.Unmarshal([]byte(c.body), &rec) != nil {
+		t.Fatalf("fourth call = %+v; want the record created outside the transaction", c)
 	}
-	if rec["marker"] != "m" || rec["hopStatus"] != float64(http.StatusNotFound) || rec["hopBody"] != notFound {
+	if rec["marker"] != "m" || rec["hopStatus"] != float64(http.StatusNotFound) || rec["hopBody"] != targetNotFound {
 		t.Fatalf("record = %+v; want marker m with the read's 404 and body", rec)
 	}
-	if out == nil || out.Data != nil {
-		t.Fatalf("result = %+v; want an entity with no data", out)
+	if out != anchor {
+		t.Fatalf("result = %+v; want the anchor unchanged", out)
 	}
 
-	for _, refusal := range []struct {
-		name   string
-		status int
-		body   string
-	}{
-		{name: "refused write", status: http.StatusConflict, body: `{"status":409}`},
-		{name: "answer with no transactionId", status: http.StatusOK, body: `{"entityIds":["ent"]}`},
-	} {
-		failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(refusal.status)
-			_, _ = w.Write([]byte(refusal.body))
-		}))
-		_, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{}`)},
-			cbConfig{Marker: "m", RecordModel: "rec"}, "the-pass", newCallbackClient(failing.URL, staticToken("bearer")))
-		failing.Close()
-		if err == nil {
-			t.Fatalf("%s: the processor must fail", refusal.name)
+	noTx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"data":{"name":"t"}}`))
+			return
 		}
+		_, _ = w.Write([]byte(`{"entityIds":["tgt"]}`))
+	}))
+	defer noTx.Close()
+	if _, err := proc(context.Background(), anchor, cbConfig{Marker: "m", RecordModel: "rec"}, "the-pass", newCallbackClient(noTx.URL, staticToken("bearer"))); err == nil {
+		t.Fatal("a write answer with no transactionId must fail the processor")
 	}
 }
 

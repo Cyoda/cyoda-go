@@ -255,29 +255,6 @@ func (c *callbackClient) recordHop(ctx context.Context, cfg cbConfig, res cbResu
 	return nil
 }
 
-// writeSelf writes entity through a joined update: its data with status set
-// to cfg.Marker. A write not answered 200 is an error; the answer is returned
-// for the caller to read the transaction id from.
-func (c *callbackClient) writeSelf(ctx context.Context, entity *Entity, cfg cbConfig, txToken string) (cbResult, error) {
-	data, err := decodeData(entity)
-	if err != nil {
-		return cbResult{}, err
-	}
-	data["status"] = cfg.Marker
-	body, err := json.Marshal(data)
-	if err != nil {
-		return cbResult{}, err
-	}
-	res, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entity.ID, string(body), txToken, "")
-	if err != nil {
-		return cbResult{}, fmt.Errorf("callback write: %w", err)
-	}
-	if res.Status != http.StatusOK {
-		return cbResult{}, fmt.Errorf("callback write status=%d body=%s", res.Status, res.Body)
-	}
-	return res, nil
-}
-
 // loopbackUpdate issues a PUT /api/entity/JSON/{id} (loopback, no transition)
 // callback carrying an If-Match precondition, within the joined transaction.
 func (c *callbackClient) loopbackUpdate(ctx context.Context, entityID, ifMatch, txToken, status string) (cbResult, error) {
@@ -333,46 +310,45 @@ func (c *callbackClient) writeBack(ctx context.Context, entityID, txToken string
 
 // setStatus reads entityID through txToken's transaction and writes its data
 // back there with status set to status. A read or write not answered 200 is
-// an error.
-func (c *callbackClient) setStatus(ctx context.Context, entityID, status, txToken string) error {
+// an error; the write's answer is returned for the caller to read the
+// transaction id from.
+func (c *callbackClient) setStatus(ctx context.Context, entityID, status, txToken string) (cbResult, error) {
 	got, err := c.getEntity(ctx, entityID, txToken)
 	if err != nil {
-		return fmt.Errorf("callback read of %s: %w", entityID, err)
+		return cbResult{}, fmt.Errorf("callback read of %s: %w", entityID, err)
 	}
 	if got.Status != http.StatusOK {
-		return fmt.Errorf("callback read of %s status=%d body=%s", entityID, got.Status, got.Body)
+		return cbResult{}, fmt.Errorf("callback read of %s status=%d body=%s", entityID, got.Status, got.Body)
 	}
 	var env struct {
 		Data map[string]any `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(got.Body), &env); err != nil || env.Data == nil {
-		return fmt.Errorf("callback read of %s: no entity data in %s", entityID, got.Body)
+		return cbResult{}, fmt.Errorf("callback read of %s: no entity data in %s", entityID, got.Body)
 	}
 	env.Data["status"] = status
 	body, err := json.Marshal(env.Data)
 	if err != nil {
-		return fmt.Errorf("callback update of %s: encode data: %w", entityID, err)
+		return cbResult{}, fmt.Errorf("callback update of %s: encode data: %w", entityID, err)
 	}
 	res, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entityID, string(body), txToken, "")
 	if err != nil {
-		return fmt.Errorf("callback update of %s: %w", entityID, err)
+		return cbResult{}, fmt.Errorf("callback update of %s: %w", entityID, err)
 	}
 	if res.Status != http.StatusOK {
-		return fmt.Errorf("callback update of %s status=%d body=%s", entityID, res.Status, res.Body)
+		return cbResult{}, fmt.Errorf("callback update of %s status=%d body=%s", entityID, res.Status, res.Body)
 	}
-	return nil
+	return res, nil
 }
 
 // targetVerdict is how a cb-*-target processor answers after its joined write.
 type targetVerdict int
 
 const (
-	// verdictSucceed answers success with the primary unchanged, whatever the
-	// joined write was answered.
-	verdictSucceed targetVerdict = iota
 	// verdictStrict fails when the joined write is not answered 200, as a
-	// processor checking its own callback would.
-	verdictStrict
+	// processor checking its own callback would, and otherwise answers
+	// success with the primary unchanged.
+	verdictStrict targetVerdict = iota
 	// verdictFail ignores the joined write's answer and always fails.
 	verdictFail
 )
@@ -924,58 +900,64 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			return withData(entity, data)
 		},
 
-		// cb-update-target — reads, through a joined callback, the entity whose
-		// id rides on the primary's data as targetId, and writes its data back
-		// unchanged through a joined update. The write is a new version of the
-		// target in T, so a change another client committed to the target after
-		// T began makes T lose first-committer-wins. The callback's own answer
-		// is not this processor's verdict: it answers success with the primary
-		// unchanged, and the transaction's owner meets the conflict.
-		"cb-update-target": targetWriter(false, verdictSucceed),
-		// cb-update-target-strict — cb-update-target that fails, as a real
-		// processor checking its own callback would, when the joined write is
-		// not answered 200.
+		// cb-update-target-strict — reads, through a joined callback, the
+		// entity whose id rides on the primary's data as targetId, and writes
+		// its data back unchanged through a joined update. The write is a new
+		// version of the target in T, so a change another client committed to
+		// the target after T began makes T lose first-committer-wins. It
+		// fails, as a real processor checking its own callback would, when
+		// the joined write is not answered 200, and otherwise answers success
+		// with the primary unchanged.
 		"cb-update-target-strict": targetWriter(false, verdictStrict),
 
-		// cb-race-target — cb-update-target with the rival write made by this
-		// processor itself: it first writes the target back OUTSIDE T (no
-		// token), which commits a new version after T began, and then does the
-		// joined write. T therefore loses first-committer-wins on the target
-		// with no second client and nothing running at the same time.
-		"cb-race-target": targetWriter(true, verdictSucceed),
-		// cb-race-target-strict — cb-race-target that fails when the joined
-		// write is not answered 200.
+		// cb-race-target-strict — cb-update-target-strict with the rival write
+		// made by this processor itself: it first writes the target back
+		// OUTSIDE T (no token), which commits a new version after T began, and
+		// then does the joined write. T therefore loses first-committer-wins on
+		// the target with no second client and nothing running at the same
+		// time.
 		"cb-race-target-strict": targetWriter(true, verdictStrict),
-		// cb-race-target-thenfail — cb-race-target that ignores the joined
-		// write's answer and then fails. Under ASYNC_NEW_TX the failure rolls
-		// back the processor's savepoint, which discards the joined write
-		// after it lost the race.
+		// cb-race-target-thenfail — cb-race-target-strict that ignores the
+		// joined write's answer and then fails. Under ASYNC_NEW_TX the failure
+		// rolls back the processor's savepoint, which discards the joined
+		// write after it lost the race.
 		"cb-race-target-thenfail": targetWriter(true, verdictFail),
 
-		// cb-write-self — writes its own entity through a joined update (its
-		// data with status set to cfg.Marker) and answers with no data, so the
-		// engine keeps that write rather than applying a payload over it.
-		"cb-write-self": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+		// cb-write-target — reads, through a joined GET, the entity whose id
+		// rides on the anchor's data as targetId, and writes it back through
+		// a joined update with data.status set to cfg.Marker. A read or write
+		// not answered 200 fails the processor. It answers with the anchor
+		// unchanged. Two of them in one transition write the target twice in
+		// one transaction.
+		"cb-write-target": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
 			if err := requireCB(cb); err != nil {
 				return nil, err
 			}
-			if _, err := cb.writeSelf(ctx, entity, cfg, token); err != nil {
+			targetID, err := targetOf(entity)
+			if err != nil {
 				return nil, err
 			}
-			return &Entity{ID: entity.ID, State: entity.State}, nil
+			if _, err := cb.setStatus(ctx, targetID, cfg.Marker, token); err != nil {
+				return nil, err
+			}
+			return entity, nil
 		},
-		// cb-write-self-read-by-tx — writes its own entity through a joined
-		// update as cb-write-self does, then reads that entity back through a
-		// joined GET with ?transactionId= naming the transaction the write
-		// joined, and records the read's answer (cfg.RecordModel, outside the
-		// transaction). The transaction has not committed, so the read is
-		// answered 404 ENTITY_NOT_FOUND although it is made inside it. It
-		// answers with no data, so the engine keeps the joined write.
-		"cb-write-self-read-by-tx": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+		// cb-write-target-read-by-tx — writes the target as cb-write-target
+		// does, then reads the target back through a joined GET with
+		// ?transactionId= naming the transaction the write joined, and records
+		// the read's answer (cfg.RecordModel, outside the transaction). The
+		// transaction has not committed, so the read is answered 404
+		// ENTITY_NOT_FOUND although it is made inside it. It answers with the
+		// anchor unchanged.
+		"cb-write-target-read-by-tx": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
 			if err := requireCB(cb); err != nil {
 				return nil, err
 			}
-			res, err := cb.writeSelf(ctx, entity, cfg, token)
+			targetID, err := targetOf(entity)
+			if err != nil {
+				return nil, err
+			}
+			res, err := cb.setStatus(ctx, targetID, cfg.Marker, token)
 			if err != nil {
 				return nil, err
 			}
@@ -985,15 +967,14 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err := json.Unmarshal([]byte(res.Body), &written); err != nil || written.TransactionID == "" {
 				return nil, fmt.Errorf("callback write response has no transactionId: %s", res.Body)
 			}
-			txID := written.TransactionID
-			read, err := cb.do(ctx, http.MethodGet, "/api/entity/"+entity.ID+"?transactionId="+url.QueryEscape(txID), "", token, "")
+			read, err := cb.do(ctx, http.MethodGet, "/api/entity/"+targetID+"?transactionId="+url.QueryEscape(written.TransactionID), "", token, "")
 			if err != nil {
 				return nil, fmt.Errorf("callback by-transaction read: %w", err)
 			}
 			if err := cb.recordHop(ctx, cfg, read, token); err != nil {
 				return nil, err
 			}
-			return &Entity{ID: entity.ID, State: entity.State}, nil
+			return entity, nil
 		},
 		// cb-unlock-then-tag — unlocks cfg.SecondaryModel/SecondaryVersion with
 		// an UNJOINED call (a joined admin call is refused), then returns the
@@ -1049,7 +1030,7 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 				}
 			}
 			for _, m := range anchor.Moves {
-				if err := cb.setStatus(ctx, m.ID, m.Status, token); err != nil {
+				if _, err := cb.setStatus(ctx, m.ID, m.Status, token); err != nil {
 					return nil, err
 				}
 			}

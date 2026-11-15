@@ -16,9 +16,9 @@ import (
 // ENTITY_NOT_FOUND for every caller, a callback inside X too. A transaction
 // that deleted the entity is 404 as well: its one version is the tombstone.
 //
-// Each test runs the manual transition "go" of conflictDoorWorkflow, whose
-// SYNC processor writes through joined callbacks, so X writes an entity more
-// than once.
+// Each test runs the manual transition "go" of conflictDoorWorkflow on an
+// entity E, whose SYNC processor writes another entity T through joined
+// callbacks, so X writes an entity more than once.
 
 const byTxGoBody = `{"name":"e","amount":1,"status":"draft"}`
 
@@ -94,51 +94,67 @@ func entityStateAndData(t *testing.T, body string) (string, map[string]any) {
 	return env.Meta.State, env.Data
 }
 
-// TestByTransaction_FinalEntityAfterCommit — X writes E through the
-// processor's joined callback (E stays OPEN) and then saves it in DONE. The
-// read by X returns X's final entity, and /changes lists one entry for X.
+// TestByTransaction_FinalEntityAfterCommit — X writes T twice through the
+// processor's joined callbacks (amount 7, then 8), and writes E twice itself
+// (the save before the callout, as the request changed E, and the final save
+// in DONE). The read of each by X returns X's final entity, and /changes of
+// each lists one entry for X.
 func TestByTransaction_FinalEntityAfterCommit(t *testing.T) {
+	var target atomic.Value // string: T's id
 	var calls atomic.Int32
 	failed := make(chan string, 1)
 	h, model := byTxSetup(t, func(rc *reqCtx) cnodeReply {
 		if calls.Add(1) > 1 {
 			return answerOK()
 		}
-		res, err := rc.UpdateEntity(rc.entityID, `{"name":"e","amount":7,"status":"self"}`)
-		if err != nil || res.StatusCode != http.StatusOK {
-			failed <- res.Body
-			return answerFail("the joined write of E was refused")
+		tID, _ := target.Load().(string)
+		for _, amount := range []string{"7", "8"} {
+			res, err := rc.UpdateEntity(tID, `{"name":"t","amount":`+amount+`,"status":"self"}`)
+			if err != nil || res.StatusCode != http.StatusOK {
+				failed <- res.Body
+				return answerFail("the joined write of T was refused")
+			}
 		}
 		return answerOK()
 	})
+	tID, _ := createWithTx(t, h, model, workflowSampleModel)
+	target.Store(tID)
 	eID, _ := createWithTx(t, h, model, workflowSampleModel)
 
 	txID := byTxGo(t, h, eID)
 	select {
 	case body := <-failed:
-		t.Fatalf("the joined write of E failed: %s", body)
+		t.Fatalf("a joined write of T failed: %s", body)
 	default:
 	}
 
-	status, body := byTxGet(t, h, eID, txID)
+	status, body := byTxGet(t, h, tID, txID)
 	if status != http.StatusOK {
-		t.Fatalf("GET ?transactionId=%s answered %d; want 200: %s", txID, status, body)
+		t.Fatalf("GET T ?transactionId=%s answered %d; want 200: %s", txID, status, body)
 	}
-	state, data := entityStateAndData(t, body)
-	if state != "DONE" || data["amount"] != float64(7) {
-		t.Fatalf("by-transaction read is %s with amount %v; want X's final entity, DONE with the callback's write (amount 7)", state, data["amount"])
+	if state, data := entityStateAndData(t, body); state != "OPEN" || data["amount"] != float64(8) {
+		t.Fatalf("by-transaction read of T is %s with amount %v; want X's last write, OPEN with amount 8", state, data["amount"])
+	}
+	status, body = byTxGet(t, h, eID, txID)
+	if status != http.StatusOK {
+		t.Fatalf("GET E ?transactionId=%s answered %d; want 200: %s", txID, status, body)
+	}
+	if state, data := entityStateAndData(t, body); state != "DONE" || data["amount"] != float64(1) {
+		t.Fatalf("by-transaction read of E is %s with amount %v; want X's final entity, DONE with amount 1", state, data["amount"])
 	}
 
-	changes := h.getChanges(t, eID)
-	if len(changes) != 2 || changes[0]["transactionId"] != txID || changes[0]["changeType"] != "UPDATE" || changes[1]["changeType"] != "CREATE" {
-		t.Fatalf("changes = %v; want [UPDATE by %s, CREATE]: one version per transaction", changes, txID)
+	for what, id := range map[string]string{"T": tID, "E": eID} {
+		changes := h.getChanges(t, id)
+		if len(changes) != 2 || changes[0]["transactionId"] != txID || changes[0]["changeType"] != "UPDATE" || changes[1]["changeType"] != "CREATE" {
+			t.Fatalf("changes of %s = %v; want [UPDATE by %s, CREATE]: one version per transaction", what, changes, txID)
+		}
 	}
 }
 
-// TestByTransaction_InsideWritingTx_404 — a callback inside X reads E with
-// ?transactionId=X. X has not committed, so the read is 404 ENTITY_NOT_FOUND
-// inside X as outside it; a plain read under the token finds E (the callback
-// did join X). Once X commits the same read returns X's final entity.
+// TestByTransaction_InsideWritingTx_404 — a callback inside X writes T and
+// reads it with ?transactionId=X. X has not committed, so the read is 404
+// ENTITY_NOT_FOUND inside X as outside it; a plain read under the token finds
+// T (the callback did join X). Once X commits the same read returns X's T.
 func TestByTransaction_InsideWritingTx_404(t *testing.T) {
 	type observed struct {
 		writeTx                     string
@@ -146,6 +162,7 @@ func TestByTransaction_InsideWritingTx_404(t *testing.T) {
 		insideStatus, outsideStatus int
 		insideBody, outsideBody     string
 	}
+	var target atomic.Value // string: T's id
 	var calls atomic.Int32
 	seen := make(chan observed, 1)
 	h, model := byTxSetup(t, func(rc *reqCtx) cnodeReply {
@@ -154,22 +171,25 @@ func TestByTransaction_InsideWritingTx_404(t *testing.T) {
 		}
 		var o observed
 		defer func() { seen <- o }()
-		res, err := rc.UpdateEntity(rc.entityID, `{"name":"e","amount":7,"status":"self"}`)
+		tID, _ := target.Load().(string)
+		res, err := rc.UpdateEntity(tID, `{"name":"t","amount":7,"status":"self"}`)
 		if err != nil || res.StatusCode != http.StatusOK {
-			return answerFail("the joined write of E was refused")
+			return answerFail("the joined write of T was refused")
 		}
 		o.writeTx = txIDOfBody(res.Body)
-		if plain, err := rc.GetEntity(rc.entityID); err == nil {
+		if plain, err := rc.GetEntity(tID); err == nil {
 			o.plainStatus = plain.StatusCode
 		}
-		if inside, err := rc.h.callback(http.MethodGet, byTxPath(rc.entityID, o.writeTx), "", rc.token); err == nil {
+		if inside, err := rc.h.callback(http.MethodGet, byTxPath(tID, o.writeTx), "", rc.token); err == nil {
 			o.insideStatus, o.insideBody = inside.StatusCode, inside.Body
 		}
-		if outside, err := rc.h.callback(http.MethodGet, byTxPath(rc.entityID, o.writeTx), "", ""); err == nil {
+		if outside, err := rc.h.callback(http.MethodGet, byTxPath(tID, o.writeTx), "", ""); err == nil {
 			o.outsideStatus, o.outsideBody = outside.StatusCode, outside.Body
 		}
 		return answerOK()
 	})
+	tID, _ := createWithTx(t, h, model, workflowSampleModel)
+	target.Store(tID)
 	eID, _ := createWithTx(t, h, model, workflowSampleModel)
 
 	txID := byTxGo(t, h, eID)
@@ -183,7 +203,7 @@ func TestByTransaction_InsideWritingTx_404(t *testing.T) {
 		t.Fatalf("the joined write answered transaction %q; want the request's %s", o.writeTx, txID)
 	}
 	if o.plainStatus != http.StatusOK {
-		t.Fatalf("plain read of E under the token answered %d; want 200 (the callback joined X)", o.plainStatus)
+		t.Fatalf("plain read of T under the token answered %d; want 200 (the callback joined X)", o.plainStatus)
 	}
 	if code := problemErrorCode(o.insideBody); o.insideStatus != http.StatusNotFound || code != "ENTITY_NOT_FOUND" {
 		t.Fatalf("GET ?transactionId=X inside X answered %d %s; want 404 ENTITY_NOT_FOUND: %s", o.insideStatus, code, o.insideBody)
@@ -192,12 +212,12 @@ func TestByTransaction_InsideWritingTx_404(t *testing.T) {
 		t.Fatalf("GET ?transactionId=X outside X before its commit answered %d %s; want 404 ENTITY_NOT_FOUND: %s", o.outsideStatus, code, o.outsideBody)
 	}
 
-	status, body := byTxGet(t, h, eID, txID)
+	status, body := byTxGet(t, h, tID, txID)
 	if status != http.StatusOK {
 		t.Fatalf("GET ?transactionId=%s after the commit answered %d; want 200: %s", txID, status, body)
 	}
-	if state, data := entityStateAndData(t, body); state != "DONE" || data["amount"] != float64(7) {
-		t.Fatalf("by-transaction read after the commit is %s with amount %v; want DONE with amount 7", state, data["amount"])
+	if state, data := entityStateAndData(t, body); state != "OPEN" || data["amount"] != float64(7) {
+		t.Fatalf("by-transaction read of T after the commit is %s with amount %v; want OPEN with amount 7", state, data["amount"])
 	}
 }
 

@@ -33,10 +33,11 @@ Every entity update that takes a precondition:
    - Collection `PUT`: the item is listed in `failed[]`, its siblings commit,
      and so do those two events.
 3. A write to the entity later in the same transaction is the update's own and
-   does not break the precondition: a processor's callback that joined the
-   transaction (`SYNC`, `ASYNC_SAME_TX`), or a `COMMIT_BEFORE_DISPATCH`
-   segment's own commit. The update succeeds; a callback's write is kept when
-   the processor answers with no payload.
+   does not break the precondition: the engine's save of the entity before a
+   callout that carries the transaction token, or a `COMMIT_BEFORE_DISPATCH`
+   segment's own commit. A processor's callback never writes the entity the
+   workflow runs for; a processor changes it only through the data it
+   returns.
 4. A change that another transaction commits after the update's read is a lost
    race, not a failed precondition: the update answers the retryable
    `409 CONFLICT`, and the transaction that lost the race does not commit. On
@@ -55,9 +56,9 @@ segment stays.
 
 - Before, the precondition was compared at the update's final save (or at the
   first `COMMIT_BEFORE_DISPATCH` segment's flush), against the entity as the
-  transaction then saw it. A processor's callback that wrote the entity in the
-  same transaction made every such update answer `412` although nobody else
-  had written the entity.
+  transaction then saw it. A write the update's own transaction had made to
+  the entity made such an update answer `412` although nobody else had
+  written the entity.
 - A change committed by another transaction after the update's read could
   answer `412` (and be isolated as a collection item). It is now `409` on every
   backend.
@@ -69,16 +70,9 @@ segment stays.
 
 ## Tests
 
-- Parity (memory, SQLite, PostgreSQL): `e2e/parity/ifmatch_callback_self_write.go`
-  (`IfMatch_OwnEntityCallbackWrite`) — the loopback `PUT` door: a callback's
-  write kept under `SYNC`, `ASYNC_SAME_TX` and before a `COMMIT_BEFORE_DISPATCH`
-  segment; a stale `If-Match` is `412`; a callback write that loses a race is
-  `409`.
-- E2E (PostgreSQL): `internal/e2e/ifmatch_callback_self_write_test.go`, on every
-  door above (`PUT` loopback, `PUT` with a transition, `PATCH`, collection `PUT`,
-  gRPC `EntityPatchRequest`):
-  - `TestIfMatch_OwnEntityCallbackWriteIsKept` — rule 3 under `SYNC`,
-    `ASYNC_SAME_TX` and before a `COMMIT_BEFORE_DISPATCH` segment;
+- E2E (PostgreSQL): `internal/e2e/ifmatch_doors_test.go`, on every door above
+  (`PUT` loopback, `PUT` with a transition, `PATCH`, collection `PUT`, gRPC
+  `EntityPatchRequest`):
   - `TestIfMatch_ChangeAfterReadIs409` — rule 4, the rival committing before
     the final save or before the first segment's flush and commit;
   - `TestIfMatch_StaleIs412` — rule 2, with no processor dispatched.
