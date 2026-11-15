@@ -92,20 +92,15 @@ func storedModelLocked(ctx context.Context, tx *sql.Tx, tenantID spi.TenantID, r
 }
 
 // clearExtensionLog deletes every extension row — deltas and savepoints —
-// of ref in tx, and returns how many it deleted.
-func clearExtensionLog(ctx context.Context, tx *sql.Tx, tenantID spi.TenantID, ref spi.ModelRef) (int64, error) {
-	res, err := tx.ExecContext(ctx,
+// of ref in tx.
+func clearExtensionLog(ctx context.Context, tx *sql.Tx, tenantID spi.TenantID, ref spi.ModelRef) error {
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM model_schema_extensions
 		 WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
-		string(tenantID), ref.EntityName, ref.ModelVersion)
-	if err != nil {
-		return 0, classifyError(fmt.Errorf("clear extension log for %s: %w", ref, err))
+		string(tenantID), ref.EntityName, ref.ModelVersion); err != nil {
+		return classifyError(fmt.Errorf("clear extension log for %s: %w", ref, err))
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("clear extension log for %s: rows affected: %w", ref, err)
-	}
-	return n, nil
+	return nil
 }
 
 // Get reads the model doc and folds its extension log inside one deferred
@@ -293,7 +288,7 @@ func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 	if err != nil {
 		return classifyError(fmt.Errorf("unlock fold for %s: %w", modelRef, err))
 	}
-	if _, err := clearExtensionLog(ctx, tx, s.tenantID, modelRef); err != nil {
+	if err := clearExtensionLog(ctx, tx, s.tenantID, modelRef); err != nil {
 		return fmt.Errorf("Unlock: %w", err)
 	}
 
