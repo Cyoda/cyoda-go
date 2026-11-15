@@ -26,6 +26,9 @@ func cloneDescriptor(src *spi.ModelDescriptor) *spi.ModelDescriptor {
 func (s *ModelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error {
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
+	if existing, ok := s.factory.modelData[s.tenant][desc.Ref]; ok && existing.State == spi.ModelLocked {
+		return fmt.Errorf("model %s: %w", desc.Ref, spi.ErrModelLocked)
+	}
 	if s.factory.modelData[s.tenant] == nil {
 		s.factory.modelData[s.tenant] = make(map[spi.ModelRef]*spi.ModelDescriptor)
 	}
@@ -56,8 +59,12 @@ func (s *ModelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 func (s *ModelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
-	if _, ok := s.factory.modelData[s.tenant][modelRef]; !ok {
+	entry, ok := s.factory.modelData[s.tenant][modelRef]
+	if !ok {
 		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
+	}
+	if entry.State == spi.ModelLocked {
+		return fmt.Errorf("model %s: %w", modelRef, spi.ErrModelLocked)
 	}
 	delete(s.factory.modelData[s.tenant], modelRef)
 	return nil
@@ -75,11 +82,18 @@ func (s *ModelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 }
 
 func (s *ModelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
+	// Lock order: entityMu, then modelMu. Holding entityMu keeps the live
+	// count stable while the state flips, so the check and change are atomic.
+	s.factory.entityMu.Lock()
+	defer s.factory.entityMu.Unlock()
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]
 	if !ok {
 		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
+	}
+	if n := s.factory.countLiveUnlocked(s.tenant, modelRef); n > 0 {
+		return &spi.ModelHasEntitiesError{Ref: modelRef, Count: n}
 	}
 	entry.State = spi.ModelUnlocked
 	return nil

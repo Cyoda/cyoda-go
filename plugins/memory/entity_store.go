@@ -928,6 +928,22 @@ func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *ti
 	return count, nil
 }
 
+// countLiveUnlocked counts the tenant's live (non-tombstoned) entities of the
+// model by latest version. The caller must hold entityMu.
+func (f *StoreFactory) countLiveUnlocked(tenant spi.TenantID, ref spi.ModelRef) int64 {
+	var n int64
+	for _, versions := range f.entityData[tenant] {
+		if len(versions) == 0 {
+			continue
+		}
+		latest := versions[len(versions)-1]
+		if !latest.deleted && latest.entity.Meta.ModelRef == ref {
+			n++
+		}
+	}
+	return n
+}
+
 // CountByState returns counts of non-deleted entities grouped by state for the
 // given model. See SPI godoc on EntityStore.CountByState for filter semantics.
 func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
