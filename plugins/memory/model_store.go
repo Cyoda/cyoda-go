@@ -24,6 +24,10 @@ func cloneDescriptor(src *spi.ModelDescriptor) *spi.ModelDescriptor {
 }
 
 func (s *ModelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error {
+	// Lock order: entityMu, then modelMu. Holding entityMu serialises this
+	// check-and-change against entity writes.
+	s.factory.entityMu.Lock()
+	defer s.factory.entityMu.Unlock()
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
 	if existing, ok := s.factory.modelData[s.tenant][desc.Ref]; ok && existing.State == spi.ModelLocked {
@@ -57,6 +61,10 @@ func (s *ModelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 }
 
 func (s *ModelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
+	// Lock order: entityMu, then modelMu. Holding entityMu serialises this
+	// check-and-change against entity writes.
+	s.factory.entityMu.Lock()
+	defer s.factory.entityMu.Unlock()
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]

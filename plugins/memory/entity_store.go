@@ -912,20 +912,7 @@ func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *ti
 	s.factory.entityMu.RLock()
 	defer s.factory.entityMu.RUnlock()
 
-	var count int64
-	for _, versions := range s.factory.entityData[s.tenant] {
-		if len(versions) == 0 {
-			continue
-		}
-		latest := versions[len(versions)-1]
-		if latest.deleted {
-			continue
-		}
-		if latest.entity.Meta.ModelRef == modelRef {
-			count++
-		}
-	}
-	return count, nil
+	return s.factory.countLiveUnlocked(s.tenant, modelRef), nil
 }
 
 // countLiveUnlocked counts the tenant's live (non-tombstoned) entities of the
