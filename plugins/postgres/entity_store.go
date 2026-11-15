@@ -561,11 +561,11 @@ func (s *entityStore) maintainClaims(ctx context.Context, entity *spi.Entity) er
 }
 
 // errNoTransactionManager is the answer to a write that carries a transaction
-// on a store with no transaction manager: the test-only construction in
-// export_test.go. There resolveRaw has no transaction to resolve, so the
-// write's statements already ran on the pool, each auto-committed, and the
-// transaction on ctx was never joined; the error reports that wiring fault
-// and does not undo them.
+// on a store from a factory with no transaction manager (NewStoreFactory, or
+// a test constructor before InitTransactionManager). Such a factory's
+// resolveRaw resolves no transaction: the write's statements already ran on
+// the pool, each auto-committed, and the transaction on ctx was never joined.
+// The error reports that wiring fault; it does not undo them.
 func errNoTransactionManager(entityID string) error {
 	return fmt.Errorf("record the write of entity %s: the store has no transaction manager", entityID)
 }

@@ -219,8 +219,11 @@ func modelsInSnapshot(ctx context.Context, q Querier, tenantID spi.TenantID, mod
 	if err != nil {
 		return nil, fmt.Errorf("lock and read the models: %w", err)
 	}
+	// The models row exists wherever the lifecycle row does: a model's Save
+	// and Delete write both in one transaction, and the migration filled the
+	// lifecycle rows of existing models. A NULL state would fail the scan.
 	type modelRow struct {
-		state   *string
+		state   string
 		rawKeys []byte
 	}
 	found := make(map[spi.ModelRef]modelRow, len(models))
@@ -242,10 +245,7 @@ func modelsInSnapshot(ctx context.Context, q Querier, tenantID spi.TenantID, mod
 		if !ok {
 			continue
 		}
-		if r.state == nil {
-			return nil, fmt.Errorf("model %s does not exist: %w", ref, spi.ErrModelNotLocked)
-		}
-		k, err := lockedKeys(ref, *r.state, r.rawKeys)
+		k, err := lockedKeys(ref, r.state, r.rawKeys)
 		if err != nil {
 			return nil, err
 		}
@@ -308,9 +308,8 @@ func modelsReadCommitted(ctx context.Context, q Querier, tenantID spi.TenantID, 
 			`SELECT doc->>'state', doc->'uniqueKeys' FROM models
 			  WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
 			string(tenantID), ref.EntityName, ref.ModelVersion).Scan(&state, &rawKeys)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("model %s does not exist: %w", ref, spi.ErrModelNotLocked)
-		}
+		// The FOR SHARE held on the lifecycle row keeps a Delete of the
+		// model from committing, so the models row is there.
 		if err != nil {
 			return nil, fmt.Errorf("read model %s: %w", ref, err)
 		}
