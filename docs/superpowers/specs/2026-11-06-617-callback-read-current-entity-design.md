@@ -227,14 +227,13 @@ because §2.1's save before a schedule function serves no one while it stands.
 The fire's end becomes, in order:
 
 1. the cascade (unchanged);
-2. the anchor read (~:333), still before any schedule function;
-3. `removeOwnLife`, then `reconcileScheduledTasks` (its schedule functions save
+2. `removeOwnLife`, then `reconcileScheduledTasks` (its schedule functions save
    the anchor first, §2.1, and their callbacks are admitted);
-4. `Seal`;
-5. a second anchor read, which decides `writtenHere`. A fire whose target state
+3. `Seal`;
+4. an anchor read, which decides `writtenHere`. A fire whose target state
    arms a function schedule has now written the anchor in this transaction, so
    the final `CompareAndSave` names this transaction's id;
-6. the final `CompareAndSave` and the commit (unchanged).
+5. the final `CompareAndSave` and the commit (unchanged).
 
 
 
