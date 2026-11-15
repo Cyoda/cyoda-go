@@ -31,20 +31,31 @@ func RunUnlockWithEntities(t *testing.T, fixture BackendFixture) {
 	if err != nil {
 		t.Fatalf("UnlockModelRaw: %v", err)
 	}
+	props := unlockProblem(t, status, raw, "MODEL_HAS_ENTITIES")
+	if n, _ := props["entityCount"].(float64); n != 2 {
+		t.Errorf("entityCount = %v, want 2 (body: %s)", props["entityCount"], raw)
+	}
+	assertModelState(t, c, modelName, 1, "LOCKED")
+
+	status, raw, err = c.DeleteModelRaw(t, modelName, 1)
+	if err != nil {
+		t.Fatalf("DeleteModelRaw: %v", err)
+	}
+	unlockProblem(t, status, raw, "MODEL_ALREADY_LOCKED")
+}
+
+// unlockProblem asserts a 409 problem document with the errorCode and returns
+// its properties.
+func unlockProblem(t *testing.T, status int, raw []byte, wantCode string) map[string]any {
+	t.Helper()
 	var pd struct {
 		Properties map[string]any `json:"properties"`
 	}
 	if err := json.Unmarshal(raw, &pd); err != nil {
-		t.Fatalf("unlock answered %d, not a problem document: %v (body: %s)", status, err, raw)
+		t.Fatalf("answered %d, not a problem document: %v (body: %s)", status, err, raw)
 	}
-	if status != 409 || pd.Properties["errorCode"] != "MODEL_HAS_ENTITIES" {
-		t.Fatalf("unlock answered %d %v; want 409 MODEL_HAS_ENTITIES (body: %s)", status, pd.Properties["errorCode"], raw)
+	if status != 409 || pd.Properties["errorCode"] != wantCode {
+		t.Fatalf("answered %d %v; want 409 %s (body: %s)", status, pd.Properties["errorCode"], wantCode, raw)
 	}
-	if n, _ := pd.Properties["entityCount"].(float64); n != 2 {
-		t.Errorf("entityCount = %v, want 2 (body: %s)", pd.Properties["entityCount"], raw)
-	}
-	assertModelState(t, c, modelName, 1, "LOCKED")
-	if err := c.DeleteModel(t, modelName, 1); err == nil {
-		t.Error("DeleteModel of a model with entities: expected refusal, got success")
-	}
+	return pd.Properties
 }

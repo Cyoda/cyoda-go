@@ -611,6 +611,8 @@ func TestUnlockBlockedByEntities(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestDeleteBlockedByEntities pins the rule: a model with entities is LOCKED and
+// delete answers MODEL_ALREADY_LOCKED, never MODEL_HAS_ENTITIES.
 func TestDeleteBlockedByEntities(t *testing.T) {
 	a, srv := newTestApp(t)
 

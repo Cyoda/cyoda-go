@@ -34,4 +34,21 @@ func TestRPC_ModelTransitionUnlock_HasEntities_409(t *testing.T) {
 	if !strings.Contains(typed.Error.Message, "MODEL_HAS_ENTITIES") {
 		t.Errorf("expected message to contain MODEL_HAS_ENTITIES, got %s", typed.Error.Message)
 	}
+
+	models, err := svc.modelHandler.ListModels(ctx)
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	found := false
+	for _, m := range models {
+		if m.Name == "unlock-entities" && m.Version == 1 {
+			found = true
+			if m.State != "LOCKED" {
+				t.Errorf("model state = %s, want LOCKED", m.State)
+			}
+		}
+	}
+	if !found {
+		t.Error("model unlock-entities/1 not listed")
+	}
 }

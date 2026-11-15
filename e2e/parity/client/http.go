@@ -1677,6 +1677,27 @@ func (c *Client) LockModelRaw(t *testing.T, name string, version int) (int, []by
 	return resp.StatusCode, raw, nil
 }
 
+// DeleteModelRaw issues DELETE /api/model/{name}/{version} and returns the HTTP
+// status code + raw body without raising on non-2xx.
+func (c *Client) DeleteModelRaw(t *testing.T, name string, version int) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, c.baseURL+path, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // UnlockModelRaw issues PUT /api/model/{name}/{version}/unlock and returns the
 // HTTP status code + raw body without raising on non-2xx.
 func (c *Client) UnlockModelRaw(t *testing.T, name string, version int) (int, []byte, error) {
