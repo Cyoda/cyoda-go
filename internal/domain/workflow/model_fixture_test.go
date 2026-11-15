@@ -8,7 +8,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// lockTestModel makes ref exist LOCKED in factory's model store, as storage
+// lockTestModel makes ref exist LOCKED in factory's model store, as the API
 // saves an entity only into a LOCKED model. A model the test already stored
 // keeps its schema and keys; a missing one is stored with none.
 func lockTestModel(t testing.TB, factory spi.StoreFactory, ctx context.Context, ref spi.ModelRef) {

@@ -105,9 +105,9 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 
 func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, error) {
 	// A non-transactional save issues several statements — the entities
-	// upsert, its doc update, the entity_versions insert, and the model check
-	// and unique-claims delete-then-insert replaceClaims issues at the end of
-	// saveOn's body — that would otherwise auto-commit one at a time. Run them in one
+	// upsert, its doc update, the entity_versions insert, and the model-keys
+	// read and unique-claims delete-then-insert replaceClaims issues at the
+	// end of saveOn's body — that would otherwise auto-commit one at a time. Run them in one
 	// transaction of its own so a failure cannot leave the entities row
 	// updated without its version row (or a claim row without the write it
 	// belongs to), and so no reader observes the placeholder document the

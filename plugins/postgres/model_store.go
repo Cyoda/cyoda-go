@@ -63,28 +63,18 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 		return fmt.Errorf("failed to marshal model descriptor: %w", err)
 	}
 
-	// Save replaces a stored model only while it is UNLOCKED. The upsert's
-	// WHERE is checked against the latest row version (READ COMMITTED
-	// re-checks it after a wait), so a Lock committed before the upsert is
-	// seen and the Save is refused with spi.ErrModelLocked. The extension log
-	// of a model that is not LOCKED is empty — an extension is written only
-	// to a LOCKED model, and Unlock folds and clears the log — so the saved
-	// schema is the whole schema a Get returns.
-	return s.inModelTx(ctx, fmt.Sprintf("Save(%s)", desc.Ref), func(q Querier) error {
-		tag, err := q.Exec(ctx, `
-			INSERT INTO models (tenant_id, model_name, model_version, doc)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (tenant_id, model_name, model_version) DO UPDATE SET doc = EXCLUDED.doc
-			WHERE models.doc->>'state' <> 'LOCKED'`,
-			string(s.tenantID), desc.Ref.EntityName, desc.Ref.ModelVersion, raw)
-		if err != nil {
-			return fmt.Errorf("failed to save model %s: %w", desc.Ref, err)
-		}
-		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("cannot save model %s over a locked model: %w", desc.Ref, spi.ErrModelLocked)
-		}
-		return bumpLifecycle(ctx, q, s.tenantID, desc.Ref)
-	})
+	// Save replaces the descriptor of a model that is not LOCKED, whose
+	// extension log is empty — an extension is written only to a LOCKED
+	// model, and Unlock folds and clears the log — so the saved schema is
+	// the whole schema a Get returns.
+	if _, err := s.q.Exec(ctx, `
+		INSERT INTO models (tenant_id, model_name, model_version, doc)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (tenant_id, model_name, model_version) DO UPDATE SET doc = EXCLUDED.doc`,
+		string(s.tenantID), desc.Ref.EntityName, desc.Ref.ModelVersion, raw); err != nil {
+		return fmt.Errorf("failed to save model %s: %w", desc.Ref, err)
+	}
+	return nil
 }
 
 // Get returns the latest committed model with its extension log folded
@@ -120,93 +110,28 @@ func (s *modelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 	return refs, nil
 }
 
-// Delete removes an UNLOCKED model and its lifecycle row. A LOCKED model is
-// refused with spi.ErrModelLocked: the state checked is the one the DELETE
-// removed, and the refusal rolls the DELETE back. The extension log of a
-// model that is not LOCKED is empty — an extension is written only to a
-// LOCKED model, and Unlock folds and clears the log — so there is no log to
-// remove. Delete counts no entities: Unlock refuses a model with live
-// entities and an entity commit refuses a model that is not LOCKED, so an
-// UNLOCKED model has none.
+// Delete removes an UNLOCKED model. Its extension log is empty — an
+// extension is written only to a LOCKED model, and Unlock folds and clears
+// the log — so there is no log to remove.
 func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
-	return s.inModelTx(ctx, fmt.Sprintf("Delete(%s)", modelRef), func(q Querier) error {
-		var state string
-		err := q.QueryRow(ctx, `
-			DELETE FROM models
-			WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
-			RETURNING doc->>'state'`,
-			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&state)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
-		}
-		if err != nil {
-			return fmt.Errorf("failed to delete model %s: %w", modelRef, err)
-		}
-		if state == string(spi.ModelLocked) {
-			return fmt.Errorf("cannot delete model %s: %w", modelRef, spi.ErrModelLocked)
-		}
-		return deleteLifecycle(ctx, q, s.tenantID, modelRef)
-	})
+	tag, err := s.q.Exec(ctx,
+		`DELETE FROM models
+		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
+	if err != nil {
+		return fmt.Errorf("failed to delete model %s: %w", modelRef, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
+	}
+	return nil
 }
 
 // Lock transitions the model to the LOCKED state. It is the state update
 // alone: the extension log of a model that is not LOCKED is empty, so there
 // is nothing to fold.
-//
-// Whether Lock changed the state is decided by the row count of its own
-// conditional UPDATE, never by a read before it: a model it moves to LOCKED
-// gets its lifecycle row bumped, and a model already LOCKED is left as it is.
-// On zero rows the model row is read under its lock: absent is
-// spi.ErrNotFound, LOCKED is the idempotent no-op, and a model that left
-// LOCKED or was created between the two statements is locked under the row
-// lock just taken by the same conditional UPDATE, whose row count again
-// decides the bump.
 func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
-	return s.inModelTx(ctx, fmt.Sprintf("Lock(%s)", modelRef), func(q Querier) error {
-		changed, err := lockIfUnlocked(ctx, q, s.tenantID, modelRef)
-		if err != nil {
-			return err
-		}
-		if !changed {
-			var state string
-			err := q.QueryRow(ctx,
-				`SELECT doc->>'state' FROM models
-				 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
-				 FOR NO KEY UPDATE`,
-				string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&state)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
-			}
-			if err != nil {
-				return fmt.Errorf("failed to lock model %s: %w", modelRef, err)
-			}
-			if state == string(spi.ModelLocked) {
-				return nil // already LOCKED: no change, no bump
-			}
-			if changed, err = lockIfUnlocked(ctx, q, s.tenantID, modelRef); err != nil {
-				return err
-			}
-		}
-		if !changed {
-			return nil
-		}
-		return bumpLifecycle(ctx, q, s.tenantID, modelRef)
-	})
-}
-
-// lockIfUnlocked sets the model's state to LOCKED where it is not LOCKED
-// already, and reports whether it changed a row.
-func lockIfUnlocked(ctx context.Context, q Querier, tenantID spi.TenantID, modelRef spi.ModelRef) (bool, error) {
-	tag, err := q.Exec(ctx,
-		`UPDATE models
-		 SET doc = jsonb_set(doc, '{state}', to_jsonb($4::text))
-		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
-		   AND doc->>'state' <> $4`,
-		string(tenantID), modelRef.EntityName, modelRef.ModelVersion, string(spi.ModelLocked))
-	if err != nil {
-		return false, fmt.Errorf("failed to lock model %s: %w", modelRef, err)
-	}
-	return tag.RowsAffected() != 0, nil
+	return updateStateField(ctx, s.q, s.tenantID, modelRef, spi.ModelLocked, "lock")
 }
 
 // Unlock transitions the model to the UNLOCKED state and folds its
@@ -218,98 +143,44 @@ func lockIfUnlocked(ctx context.Context, q Querier, tenantID spi.TenantID, model
 // The state update runs first: it takes the model row's lock, which every
 // extension takes too, so the fold sees every extension committed before it
 // and no extension commits after it.
-//
-// The lifecycle row is bumped after the fold, and the model's live entities
-// are counted after the bump, in a statement of its own, which sees every
-// entity commit before it. A model with live entities is refused with a
-// *spi.ModelHasEntitiesError, and the refusal rolls the whole Unlock back.
 func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 	return s.inModelTx(ctx, fmt.Sprintf("Unlock(%s)", modelRef), func(q Querier) error {
 		if err := updateStateField(ctx, q, s.tenantID, modelRef, spi.ModelUnlocked, "unlock"); err != nil {
 			return err
 		}
-		if err := s.foldExtensionLog(ctx, q, modelRef); err != nil {
-			return err
+		m, err := foldModel(ctx, q, s.tenantID, modelRef, s.applyFunc, false)
+		if err != nil {
+			return fmt.Errorf("Unlock: %w", err)
 		}
-		if err := bumpLifecycle(ctx, q, s.tenantID, modelRef); err != nil {
-			return err
+
+		tag, err := q.Exec(ctx, `
+			DELETE FROM model_schema_extensions
+			WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
+		if err != nil {
+			return fmt.Errorf("Unlock: clear extension log for %s: %w", modelRef, err)
 		}
-		var live int64
-		if err := q.QueryRow(ctx,
-			`SELECT count(*) FROM entities
-			 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`,
-			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&live); err != nil {
-			return fmt.Errorf("Unlock: count the entities of %s: %w", modelRef, err)
+		if tag.RowsAffected() == 0 {
+			return nil // nothing was folded; the stored schema is current
 		}
-		if live != 0 {
-			return &spi.ModelHasEntitiesError{Ref: modelRef, Count: live}
+
+		var doc modelDoc
+		if err := json.Unmarshal(m.doc, &doc); err != nil {
+			return fmt.Errorf("Unlock: unmarshal model %s: %w", modelRef, err)
+		}
+		doc.Schema = m.desc.Schema
+		updated, err := json.Marshal(doc)
+		if err != nil {
+			return fmt.Errorf("Unlock: marshal model %s: %w", modelRef, err)
+		}
+		if _, err := q.Exec(ctx,
+			`UPDATE models SET doc = $4
+			 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, updated); err != nil {
+			return fmt.Errorf("Unlock: store folded schema for %s: %w", modelRef, err)
 		}
 		return nil
 	})
-}
-
-// foldExtensionLog folds the model's extension log into its stored schema
-// and empties the log, on q. With an empty log it writes nothing.
-func (s *modelStore) foldExtensionLog(ctx context.Context, q Querier, modelRef spi.ModelRef) error {
-	m, err := foldModel(ctx, q, s.tenantID, modelRef, s.applyFunc, false)
-	if err != nil {
-		return fmt.Errorf("Unlock: %w", err)
-	}
-
-	tag, err := q.Exec(ctx, `
-		DELETE FROM model_schema_extensions
-		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
-	if err != nil {
-		return fmt.Errorf("Unlock: clear extension log for %s: %w", modelRef, err)
-	}
-	if tag.RowsAffected() == 0 {
-		return nil // nothing was folded; the stored schema is current
-	}
-
-	var doc modelDoc
-	if err := json.Unmarshal(m.doc, &doc); err != nil {
-		return fmt.Errorf("Unlock: unmarshal model %s: %w", modelRef, err)
-	}
-	doc.Schema = m.desc.Schema
-	updated, err := json.Marshal(doc)
-	if err != nil {
-		return fmt.Errorf("Unlock: marshal model %s: %w", modelRef, err)
-	}
-	if _, err := q.Exec(ctx,
-		`UPDATE models SET doc = $4
-		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, updated); err != nil {
-		return fmt.Errorf("Unlock: store folded schema for %s: %w", modelRef, err)
-	}
-	return nil
-}
-
-// bumpLifecycle advances the model's lifecycle row on q, inserting it when
-// the model has none. Every change of a model's state or unique keys calls
-// it in the transaction that writes the models row, after that write.
-func bumpLifecycle(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.ModelRef) error {
-	if _, err := q.Exec(ctx,
-		`INSERT INTO model_lifecycle (tenant_id, model_name, model_version)
-		 VALUES ($1, $2, $3)
-		 ON CONFLICT (tenant_id, model_name, model_version)
-		 DO UPDATE SET generation = model_lifecycle.generation + 1`,
-		string(tenantID), ref.EntityName, ref.ModelVersion); err != nil {
-		return fmt.Errorf("failed to bump the lifecycle of model %s: %w", ref, err)
-	}
-	return nil
-}
-
-// deleteLifecycle deletes the model's lifecycle row on q, in the transaction
-// that deletes the models row, after that delete.
-func deleteLifecycle(ctx context.Context, q Querier, tenantID spi.TenantID, ref spi.ModelRef) error {
-	if _, err := q.Exec(ctx,
-		`DELETE FROM model_lifecycle
-		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(tenantID), ref.EntityName, ref.ModelVersion); err != nil {
-		return fmt.Errorf("failed to delete the lifecycle of model %s: %w", ref, err)
-	}
-	return nil
 }
 
 func (s *modelStore) IsLocked(ctx context.Context, modelRef spi.ModelRef) (bool, error) {
@@ -346,7 +217,7 @@ func (s *modelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, 
 	return nil
 }
 
-// updateStateField updates the state field in the doc JSONB column.
+// updateStateField updates the state field in the doc JSONB column for Lock/Unlock.
 func updateStateField(ctx context.Context, q Querier, tenantID spi.TenantID, modelRef spi.ModelRef, state spi.ModelState, op string) error {
 	tag, err := q.Exec(ctx,
 		`UPDATE models

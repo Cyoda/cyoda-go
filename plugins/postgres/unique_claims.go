@@ -6,15 +6,12 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// replaceClaims checks the model and refreshes the unique-key claims of e, a
-// save outside any transaction, in the transaction that save opened for
-// itself (READ COMMITTED). It is steps 1-4 of the commit-time check
-// (commit_claims.go) for one entity: the FOR SHARE of the model's lifecycle
-// row as a statement of its own, then the models read as a later statement,
-// whose snapshot includes the commit of any bump the FOR SHARE waited for.
-// A model that does not exist or is not LOCKED is spi.ErrModelNotLocked; a
-// partial composite key is spi.ErrPartialUniqueKey; a value held by another
-// entity is spi.ErrUniqueViolation, classified by the querier.
+// replaceClaims refreshes the unique-key claims of e, a save outside any
+// transaction, in the transaction that save opened for itself. It is steps
+// 1-4 of the commit-time check (commitClaims) for one entity: the keys are
+// read from the stored model; a partial composite key is
+// spi.ErrPartialUniqueKey; a value held by another entity is
+// spi.ErrUniqueViolation, classified by the querier.
 //
 // The claims are computed from e.Data, the bytes the save was given. The
 // entity's old claims are always released, so a value its new data no longer
@@ -22,8 +19,8 @@ import (
 // follows the stamp. A save inside a caller's transaction does no claim work:
 // the transaction's Commit runs commitClaims over its final entities.
 func (s *entityStore) replaceClaims(ctx context.Context, e *spi.Entity) error {
-	return applyClaims(ctx, s.q, s.tenantID,
-		map[string]writtenEntity{e.Meta.ID: {ref: e.Meta.ModelRef, data: e.Data}}, false)
+	return commitClaims(ctx, s.q, s.tenantID,
+		map[string]writtenEntity{e.Meta.ID: {ref: e.Meta.ModelRef, data: e.Data}})
 }
 
 // releaseClaims removes all unique-key claims held by entityID. Called from a

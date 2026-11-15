@@ -753,8 +753,7 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 // the transaction's final entities and the keys of their stored models; a
 // save inside the transaction does none of that work.
 //
-// A commit that aborts — on a conflict, on a model that does not exist or is
-// not LOCKED, or on a unique-key violation — applies
+// A commit that aborts — on a conflict or on a unique-key violation — applies
 // nothing and leaves the transaction rolled back as well as closed, so a
 // later call with its ctx answers spi.ErrTxRolledBack, never
 // spi.ErrTxAlreadyCommitted. Its state is discarded as Rollback discards it,
@@ -791,7 +790,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 	}()
 
 	// 2–6. Acquire the factory write lock for atomic flush.
-	// All abort paths (FCW conflict, model not LOCKED, claim violation) and the success path are
+	// All abort paths (FCW conflict, claim violation) and the success path are
 	// enclosed in a result-returning IIFE so that entityMu is always released
 	// via defer — no bare Unlock() calls (go-mutex-discipline.md).
 	tid := tx.TenantID
@@ -863,10 +862,10 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// 3.5. Read the models and check the unique-key claims, inside the
 		// entityMu critical section, from the transaction's final entities.
 		//
-		// Every entity whose final write is a save needs its model LOCKED;
-		// the models are read once each, in (name, version) order, and their
-		// keys are the ones enforced. An entity whose final write is a delete
-		// needs no model. The claims are computed from the buffered bytes.
+		// The keys enforced are the ones the stored model of each entity
+		// whose final write is a save holds now; its state is not checked.
+		// An entity whose final write is a delete needs no model. The claims
+		// are computed from the buffered bytes.
 		// Every entity the transaction wrote or deleted gives up its committed
 		// claims, so a committed claim held by one of them does not conflict;
 		// pending catches a value two final entities claim. Buffered entity
@@ -893,10 +892,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 		sort.Strings(ids)
 
-		modelKeys, err := m.factory.lockedModelKeys(tid, refs)
-		if err != nil {
-			return abort(fmt.Errorf("Commit: %w", err))
-		}
+		modelKeys := m.factory.modelKeys(tid, refs)
 
 		toRelease := make(map[string]bool, len(tx.Buffer)+len(tx.Deletes))
 		for id := range tx.Buffer {

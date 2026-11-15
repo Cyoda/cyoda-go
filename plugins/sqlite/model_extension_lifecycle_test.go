@@ -3,7 +3,6 @@ package sqlite_test
 import (
 	"bytes"
 	"database/sql"
-	"errors"
 	"testing"
 	"time"
 
@@ -100,50 +99,6 @@ func TestSQLite_Unlock_FoldsExtensionsIntoSchema(t *testing.T) {
 	}
 	if n := extensionLogRows(t, openRawDB(t, dbPath), "t1", ref); n != 0 {
 		t.Errorf("extension log after Unlock has %d rows, want 0", n)
-	}
-}
-
-// Save over a LOCKED model is refused and leaves the stored model and its
-// extension log untouched.
-func TestModelStore_SaveAfterLockRefused(t *testing.T) {
-	f, dbPath := setupSQLiteExt(t)
-	ctx := extTestCtx("t1")
-	ms, err := f.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	saveLifecycleModel(t, ms, ref, `{"base":1}`)
-	stale, err := ms.Get(ctx, ref) // the UNLOCKED descriptor a racing writer holds
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if err := ms.Lock(ctx, ref); err != nil {
-		t.Fatalf("Lock: %v", err)
-	}
-	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(lifecycleDelta)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-	before, err := ms.Get(ctx, ref)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	rowsBefore := extensionLogRows(t, openRawDB(t, dbPath), "t1", ref)
-
-	stale.Schema = []byte(`{"base":2}`)
-	if err := ms.Save(ctx, stale); !errors.Is(err, spi.ErrModelLocked) {
-		t.Fatalf("Save over LOCKED = %v, want ErrModelLocked", err)
-	}
-
-	after, err := ms.Get(ctx, ref)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if after.State != spi.ModelLocked || !bytes.Equal(after.Schema, before.Schema) {
-		t.Errorf("stored model changed by a refused Save: state=%s schema=%s, want LOCKED %s", after.State, after.Schema, before.Schema)
-	}
-	if n := extensionLogRows(t, openRawDB(t, dbPath), "t1", ref); n != rowsBefore {
-		t.Errorf("extension log rows = %d after refused Save, want %d", n, rowsBefore)
 	}
 }
 

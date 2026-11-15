@@ -1,12 +1,10 @@
 package memory
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -309,32 +307,22 @@ func (f *StoreFactory) Close() error {
 	return errors.Join(closeErr, os.RemoveAll(f.blobDir))
 }
 
-// lockedModelKeys reads, from the tenant's stored models, the unique keys of
-// every model in refs, in (name, version) order. A model that does not exist
-// or is not LOCKED refuses the whole read with spi.ErrModelNotLocked: an
-// entity is saved only into a LOCKED model, and the keys enforced are the
-// ones the model holds now, never ones a caller passes. The caller holds
-// entityMu for writing, which every operation that changes a model's state
-// or keys (Save, Delete, Unlock) also takes, so the answer holds until the
-// caller releases it. modelMu is taken inside entityMu, the order every
-// model operation uses.
-func (f *StoreFactory) lockedModelKeys(tid spi.TenantID, refs []spi.ModelRef) (map[spi.ModelRef][]spi.UniqueKey, error) {
-	sorted := slices.Clone(refs)
-	slices.SortFunc(sorted, func(a, b spi.ModelRef) int {
-		return cmp.Or(cmp.Compare(a.EntityName, b.EntityName), cmp.Compare(a.ModelVersion, b.ModelVersion))
-	})
-	sorted = slices.Compact(sorted)
+// modelKeys reads the unique keys of every model in refs from the tenant's
+// stored models: the keys enforced are the ones the model holds now, never
+// ones a caller passes. The model's state is not checked (the caller saves
+// entities only into a LOCKED model), and a model not found contributes no
+// keys. modelMu is taken inside entityMu, the order every model operation
+// uses.
+func (f *StoreFactory) modelKeys(tid spi.TenantID, refs []spi.ModelRef) map[spi.ModelRef][]spi.UniqueKey {
 	f.modelMu.RLock()
 	defer f.modelMu.RUnlock()
-	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(sorted))
-	for _, ref := range sorted {
-		desc, ok := f.modelData[tid][ref]
-		if !ok || desc.State != spi.ModelLocked {
-			return nil, fmt.Errorf("model %s: %w", ref, spi.ErrModelNotLocked)
+	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(refs))
+	for _, ref := range refs {
+		if desc, ok := f.modelData[tid][ref]; ok {
+			keys[ref] = desc.UniqueKeys
 		}
-		keys[ref] = desc.UniqueKeys
 	}
-	return keys, nil
+	return keys
 }
 
 // releaseClaims removes all unique-key claims held by (tenantID, entityID) from

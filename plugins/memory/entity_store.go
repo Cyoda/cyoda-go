@@ -451,18 +451,14 @@ func currentTxIDLocked(versions []entityVersion) string {
 
 // saveUnlocked performs a write outside a transaction without acquiring the
 // lock. The caller must hold s.factory.entityMu (write lock). The write is its
-// own transaction: it reads the entity's stored model, refusing one that does
-// not exist or is not LOCKED, and enforces that model's unique keys, all in
-// the caller's critical section, so the check and the write are atomic with
-// every commit, every other save and every model change.
+// own transaction: it reads the unique keys of the entity's stored model and
+// enforces them in the caller's critical section, so the check and the write
+// are atomic with every commit and every other save.
 func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 	tid := s.tenant
 	eid := entity.Meta.ID
 
-	modelKeys, err := s.factory.lockedModelKeys(tid, []spi.ModelRef{entity.Meta.ModelRef})
-	if err != nil {
-		return 0, fmt.Errorf("Save: %w", err)
-	}
+	modelKeys := s.factory.modelKeys(tid, []spi.ModelRef{entity.Meta.ModelRef})
 	newClaims, err := spi.ComputeClaims(modelKeys[entity.Meta.ModelRef], entity.Data)
 	if err != nil {
 		return 0, err // ErrPartialUniqueKey family
@@ -957,23 +953,20 @@ func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *ti
 	s.factory.entityMu.RLock()
 	defer s.factory.entityMu.RUnlock()
 
-	return s.factory.countLiveUnlocked(s.tenant, modelRef), nil
-}
-
-// countLiveUnlocked counts the tenant's live (non-tombstoned) entities of the
-// model by latest version. The caller must hold entityMu.
-func (f *StoreFactory) countLiveUnlocked(tenant spi.TenantID, ref spi.ModelRef) int64 {
-	var n int64
-	for _, versions := range f.entityData[tenant] {
+	var count int64
+	for _, versions := range s.factory.entityData[s.tenant] {
 		if len(versions) == 0 {
 			continue
 		}
 		latest := versions[len(versions)-1]
-		if !latest.deleted && latest.entity.Meta.ModelRef == ref {
-			n++
+		if latest.deleted {
+			continue
+		}
+		if latest.entity.Meta.ModelRef == modelRef {
+			count++
 		}
 	}
-	return n
+	return count, nil
 }
 
 // CountByState returns counts of non-deleted entities grouped by state for the

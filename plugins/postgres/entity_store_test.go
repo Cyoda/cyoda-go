@@ -43,8 +43,8 @@ func setupEntityTest(t *testing.T) *postgres.StoreFactory {
 	return postgres.NewStoreFactory(pool)
 }
 
-// lockModels creates each ref LOCKED, without unique keys, for ctx's tenant:
-// storage refuses an entity whose model does not exist or is not LOCKED.
+// lockModels creates each ref LOCKED, without unique keys, for ctx's tenant,
+// as the API saves an entity only into a LOCKED model.
 func lockModels(t *testing.T, f spi.StoreFactory, ctx context.Context, refs ...spi.ModelRef) {
 	t.Helper()
 	for _, ref := range refs {

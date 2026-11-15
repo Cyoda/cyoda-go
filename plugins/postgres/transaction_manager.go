@@ -233,11 +233,10 @@ func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Conte
 // Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001),
 // including one a savepoint rollback has since undone, or when the
 // application-layer first-committer-wins validation detects a stale read or
-// write set. The commit checks unique keys and models on the transaction's
-// final entities (commitClaims): spi.ErrModelNotLocked for an entity saved
-// into a model that does not exist or is not LOCKED, spi.ErrPartialUniqueKey
-// for a partial composite key, spi.ErrUniqueViolation for a value already
-// held, and spi.ErrConflict when a model changed after the snapshot.
+// write set. The commit checks unique keys on the transaction's final
+// entities (commitClaims): spi.ErrPartialUniqueKey for a partial composite
+// key, spi.ErrUniqueViolation for a value already held, and spi.ErrConflict
+// when two commits deadlock claiming values each frees.
 //
 // Tenant isolation: rejects callers whose UserContext
 // tenant does not match the transaction's tenant. RLS protects data-path
@@ -305,8 +304,8 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 	}
 
-	// Unique keys and models, from the transaction's final entities and the
-	// stored models (commitClaims). Before the stamp: these statements can
+	// Unique keys, from the transaction's final entities and the stored
+	// models' keys (commitClaims). Before the stamp: these statements can
 	// wait on a lock, and nothing after cyoda_stamp may. With an empty read
 	// set they are the first statements Commit issues, so on an aborted
 	// transaction they meet the 25P02.
@@ -318,8 +317,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 		// Classified while the transaction is still registered: 40001 and
 		// 40P01 become spi.ErrConflict, a 23505 on unique_claims_uq
-		// spi.ErrUniqueViolation; spi.ErrModelNotLocked and
-		// spi.ErrPartialUniqueKey pass through.
+		// spi.ErrUniqueViolation; spi.ErrPartialUniqueKey passes through.
 		classified := tm.classifyTxError(txID, fmt.Errorf("Commit: unique keys: %w", err))
 		tm.cleanupTx(txID)
 		_ = pgxTx.Rollback(context.Background())

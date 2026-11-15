@@ -1,18 +1,15 @@
 package parity
 
 // unique_keys_commit_time.go — unique keys are checked at commit, on the
-// transaction's final entities, with the keys of the stored model; and the
-// commit refuses an entity whose model is no longer LOCKED. The same on every
-// backend:
+// transaction's final entities, with the keys of the stored model. The same
+// on every backend:
 //   - two entities swap key values in one transaction → commits;
 //   - a chain of moves (A takes B's value, B takes C's) → commits;
 //   - a value claimed first and freed later in the transaction → commits;
 //   - one value claimed by two entities of one transaction → 409
 //     UNIQUE_VIOLATION, nothing committed;
 //   - a callback write of another entity that duplicates a value, fixed by a
-//     later processor's callback → commits;
-//   - a create whose processor unlocks the model during the callout → 409,
-//     nothing stored.
+//     later processor's callback → commits.
 //
 // The moves are made by the compute node's cb-move-status processor: it writes
 // each entity named on the anchor's data.moves through joined updates, so all
@@ -277,57 +274,4 @@ func RunUniqueIntermediateDuplicateFixed(t *testing.T, fixture BackendFixture) {
 	ukctRequireClaimed(t, c, model, "x")
 	ukctRequireClaimed(t, c, model, "fixed")
 	ukctRequireFree(t, c, model, "b")
-}
-
-// RunModelNotLockedAtCommit: a create's processor unlocks the model during
-// the callout (an unjoined call; the created entity is not committed, so the
-// model has no entity) and returns the entity with a field the model already
-// holds. The commit finds the model not LOCKED: 409. memory and sqlite answer
-// MODEL_NOT_LOCKED at once; postgres answers a retryable CONFLICT (the model
-// changed after the transaction began) and its retry MODEL_NOT_LOCKED. No
-// entity is stored; the model is UNLOCKED with no entity.
-func RunModelNotLockedAtCommit(t *testing.T, fixture BackendFixture) {
-	tenant := fixture.ComputeTenant(t)
-	c := client.NewClient(fixture.BaseURL(), tenant.Token)
-	const model = "ukct-model-not-locked"
-
-	// The sample holds tag, so cb-unlock-then-tag's output extends nothing:
-	// the commit's model check is the only refusal.
-	setupModelWithWorkflow(t, c, model, 1, `{"name":"seed","tag":"seed"}`, cbWorkflowDoc(model+"-wf", map[string]any{
-		"NONE": map[string]any{"transitions": []any{map[string]any{
-			"name": "init", "next": "DONE", "manual": false,
-			"processors": []any{cbProc("cb-unlock-then-tag", "SYNC",
-				`{"secondaryModel":"`+model+`","secondaryVersion":1}`, nil)},
-		}}},
-		"DONE": map[string]any{},
-	}))
-
-	code, raw, err := c.CreateEntityRaw(t, model, 1, `{"name":"a"}`)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if code != http.StatusConflict {
-		t.Fatalf("create answered %d; want 409: %s", code, raw)
-	}
-	t.Logf("first answer: 409 %s", problemErrorCode(raw))
-	for attempt := 0; code == http.StatusConflict && problemErrorCode(raw) == "CONFLICT"; attempt++ {
-		if attempt == 5 {
-			t.Fatalf("create still answers 409 CONFLICT after %d retries: %s", attempt, raw)
-		}
-		if code, raw, err = c.CreateEntityRaw(t, model, 1, `{"name":"a"}`); err != nil {
-			t.Fatalf("retry: %v", err)
-		}
-	}
-	if code != http.StatusConflict || problemErrorCode(raw) != "MODEL_NOT_LOCKED" {
-		t.Fatalf("create answered %d %q; want 409 MODEL_NOT_LOCKED: %s", code, problemErrorCode(raw), raw)
-	}
-
-	list, err := c.ListEntitiesByModel(t, model, 1)
-	if err != nil {
-		t.Fatalf("ListEntitiesByModel: %v", err)
-	}
-	if len(list) != 0 {
-		t.Errorf("model has %d entities; want 0", len(list))
-	}
-	assertModelState(t, c, model, 1, "UNLOCKED")
 }

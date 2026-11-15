@@ -1,27 +1,26 @@
 package sqlite
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// commitClaims checks the models and writes the unique-key claims of one
+// commitClaims reads the models' keys and writes the unique-key claims of one
 // commit, in the commit's own sqlTx: the transaction flush, or the single
 // write of a save outside a transaction.
 //
 // saves are the entities whose final write in the commit is a save; released
 // are the ids of every entity the commit writes or deletes. In order:
 //
-//  1. Read the stored model of every entity in saves, one read per distinct
-//     model, by model name then version. A model that does not exist or is
-//     not LOCKED fails with spi.ErrModelNotLocked. A delete needs no model.
+//  1. Read the unique keys of the stored model of every entity in saves,
+//     one read per distinct model. The model's state is not checked (the
+//     caller saves entities only into a LOCKED model), and a model not found
+//     contributes no keys. A delete needs no model.
 //  2. Release the claims of every entity in released.
 //  3. Compute the claims of every entity in saves from the bytes it was
 //     given, with its model's stored unique keys. A partial composite key
@@ -38,7 +37,7 @@ import (
 // store writes through the writer pool, which has one connection, and the
 // commit already holds it.
 func commitClaims(ctx context.Context, sqlTx *sql.Tx, tid string, saves []*spi.Entity, released []string) error {
-	keys, err := lockedModelKeys(ctx, sqlTx, tid, saves)
+	keys, err := modelKeys(ctx, sqlTx, tid, saves)
 	if err != nil {
 		return err
 	}
@@ -81,43 +80,31 @@ func commitClaims(ctx context.Context, sqlTx *sql.Tx, tid string, saves []*spi.E
 	return nil
 }
 
-// lockedModelKeys reads, in sqlTx, the stored model of every entity in saves
-// and returns each model's unique keys. The models are read in a fixed
-// order, by name then version. A model that does not exist or is not LOCKED
-// fails with spi.ErrModelNotLocked.
-func lockedModelKeys(ctx context.Context, sqlTx *sql.Tx, tid string, saves []*spi.Entity) (map[spi.ModelRef][]spi.UniqueKey, error) {
-	refs := make([]spi.ModelRef, 0, len(saves))
+// modelKeys reads, in sqlTx, the unique keys of the stored model of every
+// entity in saves, one read per distinct model. A model not found
+// contributes no keys.
+func modelKeys(ctx context.Context, sqlTx *sql.Tx, tid string, saves []*spi.Entity) (map[spi.ModelRef][]spi.UniqueKey, error) {
+	keys := make(map[spi.ModelRef][]spi.UniqueKey)
 	for _, e := range saves {
-		refs = append(refs, e.Meta.ModelRef)
-	}
-	slices.SortFunc(refs, func(a, b spi.ModelRef) int {
-		return cmp.Or(cmp.Compare(a.EntityName, b.EntityName), cmp.Compare(a.ModelVersion, b.ModelVersion))
-	})
-	refs = slices.Compact(refs)
-
-	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(refs))
-	for _, ref := range refs {
-		var state, rawKeys sql.NullString
-		err := sqlTx.QueryRowContext(ctx,
-			`SELECT json_extract(doc, '$.state'), json_extract(doc, '$.uniqueKeys')
-			 FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
-			tid, ref.EntityName, ref.ModelVersion).Scan(&state, &rawKeys)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("model %s does not exist: %w", ref, spi.ErrModelNotLocked)
+		ref := e.Meta.ModelRef
+		if _, read := keys[ref]; read {
+			continue
 		}
-		if err != nil {
+		var rawKeys sql.NullString
+		err := sqlTx.QueryRowContext(ctx,
+			`SELECT json_extract(doc, '$.uniqueKeys')
+			 FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+			tid, ref.EntityName, ref.ModelVersion).Scan(&rawKeys)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("read model %s: %w", ref, err)
 		}
-		if spi.ModelState(state.String) != spi.ModelLocked {
-			return nil, fmt.Errorf("model %s is not locked: %w", ref, spi.ErrModelNotLocked)
-		}
+		var uk []spi.UniqueKey
 		if rawKeys.Valid {
-			var uk []spi.UniqueKey
 			if err := json.Unmarshal([]byte(rawKeys.String), &uk); err != nil {
 				return nil, fmt.Errorf("decode unique keys of model %s: %w", ref, err)
 			}
-			keys[ref] = uk
 		}
+		keys[ref] = uk
 	}
 	return keys, nil
 }

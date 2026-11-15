@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -249,52 +248,6 @@ func TestStoreFactory_SetApplyFuncTwicePanics(t *testing.T) {
 		}
 	}()
 	factory.SetApplyFunc(jsonRecordingApplyFunc())
-}
-
-// --- Save over a LOCKED model keeps its extension log ---
-
-// A refused Save over a LOCKED model leaves its extension log, and so the
-// extended schema a Get returns, as it was.
-func TestSave_OverLockedModel_KeepsExtensionLog(t *testing.T) {
-	factory := setupModelExtTest(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural) // LOCKED
-	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-	before, err := ms.Get(ctx, ref)
-	if err != nil {
-		t.Fatalf("Get before Save: %v", err)
-	}
-
-	err = ms.Save(ctx, &spi.ModelDescriptor{
-		Ref:         ref,
-		State:       spi.ModelUnlocked,
-		ChangeLevel: spi.ChangeLevelStructural,
-		Schema:      []byte(`{"base":2}`),
-		UpdateDate:  time.Now().UTC().Truncate(time.Millisecond),
-	})
-	if !errors.Is(err, spi.ErrModelLocked) {
-		t.Fatalf("Save over a LOCKED model = %v, want spi.ErrModelLocked", err)
-	}
-
-	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 1 {
-		t.Errorf("extension rows after the refused Save = %d, want 1", n)
-	}
-	after, err := ms.Get(ctx, ref)
-	if err != nil {
-		t.Fatalf("Get after Save: %v", err)
-	}
-	if !bytes.Equal(after.Schema, before.Schema) {
-		t.Errorf("schema after the refused Save = %s, want %s", after.Schema, before.Schema)
-	}
 }
 
 // --- D5: conformance extras — caller rollback, multi-delta fold, tenant isolation ---

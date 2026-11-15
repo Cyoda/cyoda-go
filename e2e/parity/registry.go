@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 278 scenarios in this package: the entries of its literal
+// allTests holds 277 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go, ifmatch_lost_race.go,
 // schema_extension_contract.go).
@@ -359,15 +359,13 @@ var allTests = []NamedTest{
 	// Centerpiece: a processor rewrites the key field → enforcement is on the
 	// POST-MERGE value, not the input (two distinct inputs collide → 409).
 	{"UniqueKeys_ProcessorRewritesKeyField", RunUniqueKeys_ProcessorRewritesKeyField},
-	// Keys checked at commit on the transaction's final entities, and the
-	// commit's check that the model is still LOCKED
+	// Keys checked at commit on the transaction's final entities
 	// (unique_keys_commit_time.go).
 	{"UniqueSwapInOneTx", RunUniqueSwapInOneTx},
 	{"UniqueChainOfMoves", RunUniqueChainOfMoves},
 	{"UniqueFreeAfterClaim", RunUniqueFreeAfterClaim},
 	{"UniqueSameValueTwiceInTx", RunUniqueSameValueTwiceInTx},
 	{"UniqueIntermediateDuplicateFixed", RunUniqueIntermediateDuplicateFixed},
-	{"ModelNotLockedAtCommit", RunModelNotLockedAtCommit},
 
 	// Search sort — cross-backend sort ordering contract (Task 15).
 	// Each scenario seeds entities, issues a sorted sync search, and asserts

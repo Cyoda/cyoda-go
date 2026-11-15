@@ -1,25 +1,17 @@
 package e2e_test
 
-// unique_keys_commit_time_test.go — unique keys and the model's state are
-// checked when the transaction commits, on its final entities, with the
-// stored model. Through the full HTTP and gRPC stack on postgres:
-//
-//   - a joined callback's write whose entity duplicates a key, or whose
-//     processors' returned data leaves a partial key, is answered 2xx; the
-//     owner's commit is refused (409 UNIQUE_VIOLATION / 422
-//     INVALID_UNIQUE_KEY);
-//   - a write whose model is unlocked during the callout (an unjoined unlock;
-//     the uncommitted entity does not count) is refused at commit. The
-//     transaction's snapshot predates the unlock, so postgres answers a
-//     retryable 409 CONFLICT, and the retry 409 MODEL_NOT_LOCKED.
+// unique_keys_commit_time_test.go — unique keys are checked when the
+// transaction commits, on its final entities, with the stored model's keys.
+// Through the full HTTP and gRPC stack on postgres, a joined callback's write
+// whose entity duplicates a key, or whose processors' returned data leaves a
+// partial key, is answered 2xx; the owner's commit is refused (409
+// UNIQUE_VIOLATION / 422 INVALID_UNIQUE_KEY).
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
-
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
 // ukctKeyedModel imports model from workflowSampleModel, declares keysJSON on
@@ -186,182 +178,4 @@ func TestUniqueKeys_CallbackProcessorPartialKey_OwnerCommit422(t *testing.T) {
 	if n := h.countEntities(t, owner); n != 0 {
 		t.Errorf("owner model has %d entities; want 0", n)
 	}
-}
-
-// unlockingModel sets up model with a SYNC processor that unlocks it with an
-// unjoined call during the callout and returns no data. The first unlock's
-// answer is sent on the returned channel.
-func unlockingModel(t *testing.T, h *callbackHarness, prefix string) (model string, unlocked <-chan unlockRecord) {
-	t.Helper()
-	proc := prefix + "-proc"
-	model = uniq(prefix)
-	ch := make(chan unlockRecord, 1)
-	h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
-		res, err := rc.h.unlockUnjoined(model)
-		select {
-		case ch <- unlockRecord{res, err}:
-		default:
-		}
-		return nil, nil
-	})
-	h.SetupModelWithWorkflow(t, model, syncProcWorkflow(proc))
-	return model, ch
-}
-
-// requireNothingStored fails unless model is UNLOCKED with no entity.
-func requireNothingStored(t *testing.T, h *callbackHarness, model string) {
-	t.Helper()
-	if n := h.countEntities(t, model); n != 0 {
-		t.Errorf("model %s has %d entities; want 0", model, n)
-	}
-	h.requireModelState(t, model, "UNLOCKED")
-}
-
-// TestModelNotLockedAtCommit_Create: the create's processor unlocks the
-// model. The commit is refused 409 CONFLICT (retryable); the retry 409
-// MODEL_NOT_LOCKED.
-func TestModelNotLockedAtCommit_Create(t *testing.T) {
-	h := newCallbackHarness(t)
-	model, unlocked := unlockingModel(t, h, "ukct-nl-create")
-
-	_, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
-	u := awaitOutcome(t, unlocked)
-	requireUnlocked(t, u.res, u.err)
-	assertProblem(t, status, body, http.StatusConflict, "CONFLICT", true)
-
-	_, status, body = h.CreateEntity(t, model, 1, workflowSampleModel)
-	assertProblem(t, status, body, http.StatusConflict, notLockedCode, false)
-	requireNothingStored(t, h, model)
-}
-
-// TestModelNotLockedAtCommit_CollectionCreate is the create scenario on the
-// collection create door (POST /api/entity/{format}).
-func TestModelNotLockedAtCommit_CollectionCreate(t *testing.T) {
-	h := newCallbackHarness(t)
-	model, unlocked := unlockingModel(t, h, "ukct-nl-ccreate")
-	h.token(t)
-
-	res, err := h.callback(http.MethodPost, "/api/entity/JSON", collectionCreateItems(model, workflowSampleModel), "")
-	if err != nil {
-		t.Fatalf("collection create: %v", err)
-	}
-	u := awaitOutcome(t, unlocked)
-	requireUnlocked(t, u.res, u.err)
-	assertProblem(t, res.StatusCode, res.Body, http.StatusConflict, "CONFLICT", true)
-
-	if res, err = h.callback(http.MethodPost, "/api/entity/JSON", collectionCreateItems(model, workflowSampleModel), ""); err != nil {
-		t.Fatalf("collection create retry: %v", err)
-	}
-	assertProblem(t, res.StatusCode, res.Body, http.StatusConflict, notLockedCode, false)
-	requireNothingStored(t, h, model)
-}
-
-// TestModelNotLockedAtCommit_GRPCCreate is the create scenario on the gRPC
-// door: the envelope reports a retryable CONFLICT, the retry's
-// MODEL_NOT_LOCKED.
-func TestModelNotLockedAtCommit_GRPCCreate(t *testing.T) {
-	h := newCallbackHarness(t)
-	model, unlocked := unlockingModel(t, h, "ukct-nl-grpc")
-	h.token(t)
-
-	env, err := h.createEntityGRPC(model, 1, workflowSampleModel)
-	u := awaitOutcome(t, unlocked)
-	requireUnlocked(t, u.res, u.err)
-	assertEnvelope(t, "gRPC create", env, err, "CONFLICT", true)
-
-	env, err = h.createEntityGRPC(model, 1, workflowSampleModel)
-	requireNotLockedEnvelope(t, "gRPC create retry", env, err)
-	requireNothingStored(t, h, model)
-}
-
-// TestModelNotLockedAtCommit_GRPCCollectionCreate is the create scenario on
-// the gRPC collection create door (EntityManageCollection).
-func TestModelNotLockedAtCommit_GRPCCollectionCreate(t *testing.T) {
-	h := newCallbackHarness(t)
-	model, unlocked := unlockingModel(t, h, "ukct-nl-grpc-ccreate")
-	h.token(t)
-
-	create := func() (txEnvelope, error) {
-		return h.joinedManageCollectionGRPC(internalgrpc.EntityCreateCollectionRequest, map[string]any{
-			"id": "ukct-nl-grpc-ccreate", "dataFormat": "JSON",
-			"payloads": []any{map[string]any{
-				"model": map[string]any{"name": model, "version": 1},
-				"data":  mustJSONMap(workflowSampleModel),
-			}},
-		}, "")
-	}
-	env, err := create()
-	u := awaitOutcome(t, unlocked)
-	requireUnlocked(t, u.res, u.err)
-	assertEnvelope(t, "gRPC collection create", env, err, "CONFLICT", true)
-
-	env, err = create()
-	requireNotLockedEnvelope(t, "gRPC collection create retry", env, err)
-	requireNothingStored(t, h, model)
-}
-
-// TestModelNotLockedAtCommit_UpdateViaCallbackCreate: an update of a
-// committed entity E runs a SYNC processor that creates, through a joined
-// callback, an entity of a second model M2, and then unlocks M2 (unjoined;
-// the joined entity is not committed, so M2 has none). The commit finds M2
-// not LOCKED: 409 CONFLICT (retryable; the transaction's snapshot predates
-// the unlock), and nothing is committed — E keeps its data and state,
-// and M2 is UNLOCKED with no entity.
-func TestModelNotLockedAtCommit_UpdateViaCallbackCreate(t *testing.T) {
-	h := newCallbackHarness(t)
-	const proc = "ukct-nl-update-proc"
-	owner, m2 := uniq("ukct-nl-update-owner"), uniq("ukct-nl-update-m2")
-
-	type record struct {
-		created callbackResult
-		cErr    error
-		unlock  unlockRecord
-	}
-	done := make(chan record, 1)
-	h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
-		var r record
-		r.created, r.cErr = rc.CreateEntity(m2, 1, workflowSampleModel)
-		if r.cErr == nil && r.created.StatusCode == http.StatusOK {
-			r.unlock.res, r.unlock.err = rc.h.unlockUnjoined(m2)
-		}
-		done <- r
-		return nil, nil
-	})
-	// E rests in OPEN until an update sets status go, which takes the
-	// automated transition that runs the processor.
-	h.SetupModelWithWorkflow(t, owner, workflowDocJSON(proc+"-wf", map[string]any{
-		"NONE": map[string]any{"transitions": []any{map[string]any{"name": "open", "next": "OPEN", "manual": false}}},
-		"OPEN": map[string]any{"transitions": []any{map[string]any{
-			"name": "go", "next": "DONE", "manual": false,
-			"criterion":  map[string]any{"type": "simple", "jsonPath": "$.status", "operatorType": "EQUALS", "value": "go"},
-			"processors": []any{map[string]any{"type": "externalized", "name": proc, "executionMode": "SYNC", "config": map[string]any{"attachEntity": true, "calculationNodesTags": ""}}},
-		}}},
-		"DONE": map[string]any{},
-	}))
-	h.SetupModelWithWorkflow(t, m2, chainWorkflowJSON(m2+"-wf"))
-
-	e, status, body := h.CreateEntity(t, owner, 1, workflowSampleModel)
-	if status != http.StatusOK {
-		t.Fatalf("create E: %d %s", status, body)
-	}
-
-	res, err := h.callback(http.MethodPut, "/api/entity/JSON/"+e, `{"name":"Test Order","amount":100,"status":"go"}`, "")
-	if err != nil {
-		t.Fatalf("update E: %v", err)
-	}
-	r := awaitOutcome(t, done)
-	if r.cErr != nil || r.created.StatusCode != http.StatusOK {
-		t.Fatalf("joined create in M2: err=%v %d %s", r.cErr, r.created.StatusCode, r.created.Body)
-	}
-	requireUnlocked(t, r.unlock.res, r.unlock.err)
-	// The transaction's snapshot predates the unlock: a retryable conflict.
-	assertProblem(t, res.StatusCode, res.Body, http.StatusConflict, "CONFLICT", true)
-
-	if state, _ := h.GetEntityState(t, e); state != "OPEN" {
-		t.Errorf("E is %s; want OPEN (the update is not committed)", state)
-	}
-	if got := h.GetEntityData(t, e)["status"]; got != "draft" {
-		t.Errorf("E has status %v; want draft (the update is not committed)", got)
-	}
-	requireNothingStored(t, h, m2)
 }

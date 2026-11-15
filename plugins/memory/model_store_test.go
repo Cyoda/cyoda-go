@@ -318,38 +318,3 @@ func TestModelStoreGetAllDescriptors(t *testing.T) {
 		t.Errorf("expected Order and Product in refs, got %v", refs)
 	}
 }
-
-// TestModelStore_SaveAfterLockRefused: a descriptor read while UNLOCKED and
-// saved back after the model was locked is refused, leaving the stored keys
-// unchanged.
-func TestModelStore_SaveAfterLockRefused(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	ctx := ctxWithTenant("tenant-A")
-	store, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	if err := store.Save(ctx, &spi.ModelDescriptor{Ref: ref, State: spi.ModelUnlocked,
-		UniqueKeys: []spi.UniqueKey{{ID: "uk1", Fields: []string{"a"}}}}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	read, err := store.Get(ctx, ref)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if err := store.Lock(ctx, ref); err != nil {
-		t.Fatalf("Lock: %v", err)
-	}
-	read.UniqueKeys = append(read.UniqueKeys, spi.UniqueKey{ID: "uk2", Fields: []string{"b"}})
-	if err := store.Save(ctx, read); !errors.Is(err, spi.ErrModelLocked) {
-		t.Fatalf("Save over locked: got %v, want ErrModelLocked", err)
-	}
-	got, err := store.Get(ctx, ref)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if len(got.UniqueKeys) != 1 || got.State != spi.ModelLocked {
-		t.Fatalf("stored descriptor changed: keys=%d state=%v", len(got.UniqueKeys), got.State)
-	}
-}

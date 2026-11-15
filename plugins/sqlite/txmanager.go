@@ -894,7 +894,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 			tx.RolledBack = true
 			m.forgetLocked(txID)
 		}()
-		// ErrUniqueViolation, ErrPartialUniqueKey and ErrModelNotLocked from
+		// ErrUniqueViolation and ErrPartialUniqueKey from
 		// commitClaims must not be re-classified — classifyError passes
 		// through non-sqlite errors unchanged.
 		return fmt.Errorf("flush to sqlite: %w", classifyError(err))
@@ -946,8 +946,8 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 	submitMicro := timeToMicro(submitTime)
 	tid := string(tx.TenantID)
 
-	// Unique keys and model state, checked on the transaction's final
-	// entities before anything is written: see commitClaims. tx.Buffer holds
+	// Unique keys, checked on the transaction's final entities before
+	// anything is written: see commitClaims. tx.Buffer holds
 	// every entity whose final write is a save, tx.Deletes every one whose
 	// final write is a delete; the two never share an id.
 	saveIDs := slices.Sorted(maps.Keys(tx.Buffer))

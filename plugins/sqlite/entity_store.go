@@ -486,8 +486,8 @@ func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity
 	}
 	defer sqlTx.Rollback()
 
-	// A write outside a transaction is its own commit: the model check and
-	// the claims run in its own sqlTx, as the transaction flush runs them.
+	// A write outside a transaction is its own commit: the claims run in its
+	// own sqlTx, as the transaction flush runs them.
 	if err := commitClaims(ctx, sqlTx, tid, []*spi.Entity{cp}, []string{cp.Meta.ID}); err != nil {
 		return 0, err
 	}
