@@ -182,65 +182,6 @@ func TestCommitDeleteAttribution_StagerNotCommitter(t *testing.T) {
 	}
 }
 
-// TestCommitFlushesDeletes_FallbackAttribution: when a delete is staged
-// directly on tx.Deletes without a corresponding tx.DeleteAttribution entry
-// (simulating a caller that bypassed EntityStore.Delete), Commit's flush
-// must fall back to spi.AttributionFor(ctx) evaluated at commit time.
-func TestCommitFlushesDeletes_FallbackAttribution(t *testing.T) {
-	factory, tm := newAttrFactory(t)
-	ctx := attrCtx("tenant-A", "test-user", spi.PrincipalUser)
-	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
-
-	store, err := factory.EntityStore(ctx)
-	if err != nil {
-		t.Fatalf("EntityStore: %v", err)
-	}
-	if _, err := store.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID:         "e-del-fallback",
-			TenantID:   "tenant-A",
-			ModelRef:   spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
-			ChangeType: "CREATED",
-		},
-		Data: []byte(`{}`),
-	}); err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
-
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin failed: %v", err)
-	}
-	tx := spi.GetTransaction(txCtx)
-	// Stage the delete directly, bypassing EntityStore.Delete — no
-	// DeleteAttribution entry is recorded.
-	tx.Deletes["e-del-fallback"] = true
-	tx.WriteSet["e-del-fallback"] = true
-	if _, ok := tx.DeleteAttribution["e-del-fallback"]; ok {
-		t.Fatal("test setup error: DeleteAttribution must be absent to exercise the fallback path")
-	}
-
-	if err := tm.Commit(ctx, txID); err != nil {
-		t.Fatalf("Commit failed: %v", err)
-	}
-
-	metas, err := store.GetVersionMetadata(ctx, "e-del-fallback", spi.VersionMetadataOptions{})
-	if err != nil {
-		t.Fatalf("GetVersionMetadata failed: %v", err)
-	}
-	tomb := metas[0]
-	if !tomb.Deleted {
-		t.Fatal("expected the newest version to be the DELETE tombstone")
-	}
-	want := spi.Principal{ID: "test-user", Kind: spi.PrincipalUser}
-	if tomb.User != want.ID {
-		t.Errorf("tombstone User = %q, want fallback (commit ctx) user %q", tomb.User, want.ID)
-	}
-	if tomb.Executor != want {
-		t.Errorf("tombstone Executor = %+v, want fallback %+v", tomb.Executor, want)
-	}
-}
-
 // TestDelete_NonTx_AttributionIsCaller verifies that a non-transactional
 // Delete stamps the tombstone's attribution from the caller's own context
 // (attributed == executor == caller) via spi.AttributionFor.

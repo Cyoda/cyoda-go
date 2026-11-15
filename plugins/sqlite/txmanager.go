@@ -1032,19 +1032,12 @@ func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.Transact
 
 	// Flush deletes.
 	for entityID := range tx.Deletes {
-		// Attribution: prefer tx.DeleteAttribution[entityID], captured at
-		// stage time (the STAGER's context, under the same OpMu section
-		// that set tx.Deletes[entityID] — see entityStore.Delete/DeleteAll).
-		// Fall back to spi.AttributionFor(ctx) — this Commit call's own
-		// ctx, i.e. the committer — only when no staged entry exists (a
-		// caller that mutated tx.Deletes directly, bypassing EntityStore).
-		// This is what fixes the prior bug: the tombstone's user_id column
-		// was always written as '' — no actor at all, staged or committer.
-		attribution, staged := tx.DeleteAttribution[entityID]
-		if !staged {
-			a, e := spi.AttributionFor(ctx)
-			attribution = spi.WriteAttribution{Attributed: a, Executor: e}
-		}
+		// Attribution: tx.DeleteAttribution[entityID], captured at stage
+		// time (the STAGER's context, under the same OpMu section that set
+		// tx.Deletes[entityID] — see entityStore.Delete/DeleteAll), not the
+		// committer's. Every site that stages a delete records its
+		// attribution, and a savepoint rollback restores both maps together.
+		attribution := tx.DeleteAttribution[entityID]
 
 		// Get current entity info for the delete version record.
 		var curVersion int64

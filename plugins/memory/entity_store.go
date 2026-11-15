@@ -686,8 +686,9 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 			// evicts it from tx.Buffer below, so Commit's delete flush
 			// never flushes it separately; when the entity has no
 			// committed version the tombstone that flush appends is its
-			// ONLY one —
-			// stage its model now so that flush can stamp it (see
+			// ONLY one — stage the evicted pending version now so that
+			// flush can stamp its model on the tombstone, and a later
+			// same-tx Save takes its pending base from it (see
 			// deletedBufferEntities's field doc); otherwise a later
 			// Save/CompareAndSave against this id could never tell what
 			// model it was created under.
@@ -794,11 +795,12 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 			}
 		}
 		// Second pass: delete. Same same-tx create-then-delete gap as
-		// single-entity Delete — stage each evicted buffered entity's model
-		// before evicting it, so a same-tx-created-then-DeleteAll'd id whose
-		// create never separately flushed still leaves its model recoverable
-		// on the tombstone Commit's delete flush appends (see
-		// deletedBufferEntities's field doc).
+		// single-entity Delete — stage each evicted pending version before
+		// evicting it, so a same-tx-created-then-DeleteAll'd id whose create
+		// never separately flushed still leaves its model recoverable on the
+		// tombstone Commit's delete flush appends, and a later same-tx Save
+		// takes its pending base from it (see deletedBufferEntities's field
+		// doc).
 		for _, id := range toDelete {
 			s.factory.txManager.stageDeletedBufferEntity(tx.ID, id, tx.Buffer[id])
 			delete(tx.Buffer, id)

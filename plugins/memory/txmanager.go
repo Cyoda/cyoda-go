@@ -800,8 +800,8 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		defer m.factory.entityMu.Unlock()
 
 		// 3. Conflict detection: check committed log for overlapping write sets.
-		// Also snapshot the staged scheduled-task ops, deleted-buffer models
-		// and audit events captured at Save/Upsert/Delete time so that the
+		// Also snapshot the staged scheduled-task ops, deleted-buffer
+		// entities and audit events captured at Save/Upsert/Delete time so that the
 		// later steps can read them without re-acquiring m.mu.
 		var capturedScheduledTaskOps []scheduledTaskOp
 		var capturedDeletedBufferEntities map[string]*spi.Entity
@@ -1041,21 +1041,15 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 
 		// 5. Apply deletes (tombstones). Their claims were released above.
 		//
-		// Attribution: prefer tx.DeleteAttribution[entityID], captured at
-		// stage time (the STAGER's context, under the same OpMu section
-		// that set tx.Deletes[entityID] — see EntityStore.Delete/DeleteAll).
-		// Fall back to spi.AttributionFor(ctx) — this Commit call's own
-		// ctx, i.e. the committer — only when no staged entry exists (a
-		// caller that mutated tx.Deletes directly, bypassing EntityStore).
-		// This is what fixes the prior bug: the committer's identity was
-		// always used, even for deletes staged by a different (possibly
-		// joined) caller earlier in the transaction.
+		// Attribution: tx.DeleteAttribution[entityID], captured at stage
+		// time (the STAGER's context, under the same OpMu section that set
+		// tx.Deletes[entityID] — see EntityStore.Delete/DeleteAll), not the
+		// committer's: a delete may be staged by a different (possibly
+		// joined) caller earlier in the transaction. Every site that stages
+		// a delete records its attribution, and a savepoint rollback
+		// restores both maps together.
 		for entityID := range tx.Deletes {
-			attribution, staged := tx.DeleteAttribution[entityID]
-			if !staged {
-				a, e := spi.AttributionFor(ctx)
-				attribution = spi.WriteAttribution{Attributed: a, Executor: e}
-			}
+			attribution := tx.DeleteAttribution[entityID]
 			if m.factory.entityData[tid] == nil {
 				m.factory.entityData[tid] = make(map[string][]entityVersion)
 			}
@@ -1434,7 +1428,7 @@ func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 		m.auditOps[txID] = m.auditOps[txID][:n]
 	}
 
-	// Restore the staged deleted-buffer models to the savepoint's: they are
+	// Restore the staged deleted-buffer entities to the savepoint's: they are
 	// savepoint-scoped like tx.Buffer.
 	if snap.deletedBufferEntities == nil {
 		delete(m.deletedBufferEntities, txID)

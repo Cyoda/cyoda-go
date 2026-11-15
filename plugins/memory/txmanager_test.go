@@ -775,63 +775,6 @@ func TestCommitDeleteAttribution_StagerNotCommitter(t *testing.T) {
 	}
 }
 
-// TestCommitFlushesDeletes_FallbackAttribution extends
-// TestCommitFlushesDeletes: when a delete is staged directly on tx.Deletes
-// without a corresponding tx.DeleteAttribution entry (simulating a caller
-// that bypassed EntityStore.Delete), Commit's flush must fall back to
-// spi.AttributionFor(ctx) evaluated at commit time.
-func TestCommitFlushesDeletes_FallbackAttribution(t *testing.T) {
-	factory, tm := newTxManager(t)
-	ctx := ctxWithUserKind("tenant-A", "test-user", spi.PrincipalUser)
-	lockModels(t, factory, ctx, txTestModel)
-
-	store, _ := factory.EntityStore(ctx)
-	if _, err := store.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID:         "e-del-fallback",
-			TenantID:   "tenant-A",
-			ModelRef:   txTestModel,
-			ChangeType: "CREATED",
-		},
-		Data: []byte(`{}`),
-	}); err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
-
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin failed: %v", err)
-	}
-	tx := spi.GetTransaction(txCtx)
-	// Stage the delete directly, bypassing EntityStore.Delete — no
-	// DeleteAttribution entry is recorded.
-	tx.Deletes["e-del-fallback"] = true
-	tx.WriteSet["e-del-fallback"] = true
-	if _, ok := tx.DeleteAttribution["e-del-fallback"]; ok {
-		t.Fatal("test setup error: DeleteAttribution must be absent to exercise the fallback path")
-	}
-
-	if err := tm.Commit(ctx, txID); err != nil {
-		t.Fatalf("Commit failed: %v", err)
-	}
-
-	metas, err := store.GetVersionMetadata(ctx, "e-del-fallback", spi.VersionMetadataOptions{})
-	if err != nil {
-		t.Fatalf("GetVersionMetadata failed: %v", err)
-	}
-	tomb := metas[0]
-	if !tomb.Deleted {
-		t.Fatal("expected the newest version to be the DELETE tombstone")
-	}
-	want := spi.Principal{ID: "test-user", Kind: spi.PrincipalUser}
-	if tomb.User != want.ID {
-		t.Errorf("tombstone User = %q, want fallback (commit ctx) user %q", tomb.User, want.ID)
-	}
-	if tomb.Executor != want {
-		t.Errorf("tombstone Executor = %+v, want fallback %+v", tomb.Executor, want)
-	}
-}
-
 // gatedClock is a memory.Clock whose Now() call, once armed, blocks until
 // the test releases it via the returned unblock channel — signaling entry
 // first via the returned entered channel. It exists to deterministically

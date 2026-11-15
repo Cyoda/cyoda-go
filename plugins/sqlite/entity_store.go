@@ -319,7 +319,7 @@ func (s *entityStore) checkModelImmutableInTx(ctx context.Context, tx *spi.Trans
 		return pendingBase{version: 1, changeType: deriveChangeType(true)}, nil
 	}
 	if err != nil {
-		return pendingBase{}, fmt.Errorf("check existing model for entity %s: %w", id, err)
+		return pendingBase{}, fmt.Errorf("check existing model for entity %s: %w", id, classifyError(err))
 	}
 	if (spi.ModelRef{EntityName: name, ModelVersion: modelVersion}) != entity.Meta.ModelRef {
 		return pendingBase{}, modelMismatchErr(id)
