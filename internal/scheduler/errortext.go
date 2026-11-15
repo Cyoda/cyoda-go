@@ -51,6 +51,14 @@ func recordedError(err error) (text string, ticket uuid.UUID, warnOnly bool) {
 		// through to the ticket row below, which mints a ticket and lets the
 		// caller log the full cause at ERROR under it.
 	}
+	// A commit refused on the run's final entities (a duplicate or partial
+	// unique key, a model no longer locked) is the answer a client write
+	// gets on the doors, not a fault of this pnode: the doors' text. Other
+	// store errors, a storage outage among them, keep the ticket.
+	if errors.Is(err, spi.ErrUniqueViolation) || errors.Is(err, spi.ErrPartialUniqueKey) ||
+		errors.Is(err, spi.ErrModelNotLocked) {
+		return common.Internal("", err).Message, uuid.Nil, true
+	}
 	var appErr *common.AppError
 	if errors.As(err, &appErr) && appErr.Level == common.LevelOperational {
 		return appErr.Message, uuid.Nil, true

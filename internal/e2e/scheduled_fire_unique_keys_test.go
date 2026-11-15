@@ -75,7 +75,8 @@ func TestSchedFire_KeyChangeMovesClaim(t *testing.T) {
 // to a name another entity holds. Each run fails at commit and commits
 // nothing; the processor is idempotent, so each failure is a counted attempt,
 // and the task ends FAILED EXPIRED_AFTER_FAILED_ATTEMPTS once its timeoutMs
-// has passed, with the error text and the SCHEDULED_TRANSITION_FAIL event.
+// has passed, with the UNIQUE_VIOLATION text a client write gets and the
+// SCHEDULED_TRANSITION_FAIL event.
 func TestSchedFire_BreaksKey_FailedRun(t *testing.T) {
 	h, s := newSchedulerHarness(t, nil)
 	model, tag := uniq("sf-uk-break"), uniq("sf-uk-break-tag")
@@ -93,8 +94,9 @@ func TestSchedFire_BreaksKey_FailedRun(t *testing.T) {
 	if r.FailureReason != "EXPIRED_AFTER_FAILED_ATTEMPTS" || r.Attempts < 1 || r.ClaimToken != "" || r.Marked {
 		t.Errorf("failed task = %+v; want EXPIRED_AFTER_FAILED_ATTEMPTS after at least one counted attempt, no claim, no mark", r)
 	}
-	if r.LastError == "" {
-		t.Error("lastError is empty; want the failed run's error text")
+	// The text a client write gets for the same commit, not a ticket.
+	if want := "UNIQUE_VIOLATION: a composite unique key constraint was violated"; r.LastError != want {
+		t.Errorf("lastError = %q; want %q", r.LastError, want)
 	}
 	if data := failEvent(t, h, id); data["reason"] != "EXPIRED_AFTER_FAILED_ATTEMPTS" {
 		t.Errorf("SCHEDULED_TRANSITION_FAIL data = %v", data)
