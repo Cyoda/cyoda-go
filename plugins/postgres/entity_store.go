@@ -238,7 +238,7 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	var pending pendingVersionRow
 	if err := s.q.QueryRow(ctx, saveTimesQuery,
 		placeholderAtArg(s.clock), tid, eid, ambientTxID).Scan(&dbNow, &wallClockTime, &pendingVersion, &pending.prior); err != nil {
-		return 0, fmt.Errorf("failed to get DB timestamps: %w", err)
+		return 0, fmt.Errorf("failed to read save times and pending version: %w", err)
 	}
 
 	// One version per entity per transaction: a transaction that already
@@ -760,7 +760,7 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 		`SELECT doc, creation_date, last_modified FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
 		string(s.tenantID), entityID).Scan(&doc, &creationDate, &lastModified)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get entity %s: %w", entityID, err)
@@ -796,7 +796,7 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		 LIMIT 1`,
 		string(s.tenantID), entityID, asAt).Scan(&doc, &creationDate, &transactionTime)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found at %v: %w", entityID, asAt, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get entity %s as-at %v: %w", entityID, asAt, err)
@@ -917,7 +917,7 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 		    FOR UPDATE OF e`,
 		tid, entityID, ambientTxID).Scan(&doc, &maxVersion, &creationDate, &lastModified, &replacesPending)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
 		}
 		return fmt.Errorf("failed to get entity %s for delete: %w", entityID, err)
@@ -1358,7 +1358,7 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 	err := s.committedQuerier().QueryRow(ctx, getVersionByTransactionQuery,
 		string(s.tenantID), entityID, txID).Scan(&doc, &version, &validTime, &transactionTime, &creationDate)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("GetVersionByTransaction: %w", err)

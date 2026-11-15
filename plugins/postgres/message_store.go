@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -63,7 +64,7 @@ func (s *messageStore) Get(ctx context.Context, id string) (spi.MessageHeader, s
 		`SELECT header, metadata, payload FROM messages WHERE tenant_id = $1 AND message_id = $2`,
 		string(s.tenantID), id).Scan(&headerJSON, &metaJSON, &payloadBytes)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return spi.MessageHeader{}, spi.MessageMetaData{}, nil,
 				fmt.Errorf("message %s not found: %w", id, spi.ErrNotFound)
 		}
