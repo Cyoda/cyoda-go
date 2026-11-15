@@ -255,6 +255,29 @@ func (c *callbackClient) recordHop(ctx context.Context, cfg cbConfig, res cbResu
 	return nil
 }
 
+// writeSelf writes entity through a joined update: its data with status set
+// to cfg.Marker. A write not answered 200 is an error; the answer is returned
+// for the caller to read the transaction id from.
+func (c *callbackClient) writeSelf(ctx context.Context, entity *Entity, cfg cbConfig, txToken string) (cbResult, error) {
+	data, err := decodeData(entity)
+	if err != nil {
+		return cbResult{}, err
+	}
+	data["status"] = cfg.Marker
+	body, err := json.Marshal(data)
+	if err != nil {
+		return cbResult{}, err
+	}
+	res, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entity.ID, string(body), txToken, "")
+	if err != nil {
+		return cbResult{}, fmt.Errorf("callback write: %w", err)
+	}
+	if res.Status != http.StatusOK {
+		return cbResult{}, fmt.Errorf("callback write status=%d body=%s", res.Status, res.Body)
+	}
+	return res, nil
+}
+
 // loopbackUpdate issues a PUT /api/entity/JSON/{id} (loopback, no transition)
 // callback carrying an If-Match precondition, within the joined transaction.
 func (c *callbackClient) loopbackUpdate(ctx context.Context, entityID, ifMatch, txToken, status string) (cbResult, error) {
@@ -904,21 +927,8 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err := requireCB(cb); err != nil {
 				return nil, err
 			}
-			data, err := decodeData(entity)
-			if err != nil {
+			if _, err := cb.writeSelf(ctx, entity, cfg, token); err != nil {
 				return nil, err
-			}
-			data["status"] = cfg.Marker
-			body, err := json.Marshal(data)
-			if err != nil {
-				return nil, err
-			}
-			res, err := cb.do(ctx, http.MethodPut, "/api/entity/JSON/"+entity.ID, string(body), token, "")
-			if err != nil {
-				return nil, fmt.Errorf("callback write: %w", err)
-			}
-			if res.Status != http.StatusOK {
-				return nil, fmt.Errorf("callback write status=%d body=%s", res.Status, res.Body)
 			}
 			return &Entity{ID: entity.ID, State: entity.State}, nil
 		},
@@ -933,21 +943,9 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err := requireCB(cb); err != nil {
 				return nil, err
 			}
-			data, err := decodeData(entity)
+			res, err := cb.writeSelf(ctx, entity, cfg, token)
 			if err != nil {
 				return nil, err
-			}
-			data["status"] = cfg.Marker
-			body, err := json.Marshal(data)
-			if err != nil {
-				return nil, err
-			}
-			res, err := cb.do(ctx, http.MethodPut, "/api/entity/JSON/"+entity.ID, string(body), token, "")
-			if err != nil {
-				return nil, fmt.Errorf("callback write: %w", err)
-			}
-			if res.Status != http.StatusOK {
-				return nil, fmt.Errorf("callback write status=%d body=%s", res.Status, res.Body)
 			}
 			var written struct {
 				TransactionID string `json:"transactionId"`

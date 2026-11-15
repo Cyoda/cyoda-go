@@ -562,6 +562,26 @@ func TestCatalog_WriteSelfReadByTx_ReadsTheJoinedTransactionAndRecords(t *testin
 	if out == nil || out.Data != nil {
 		t.Fatalf("result = %+v; want an entity with no data", out)
 	}
+
+	for _, refusal := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "refused write", status: http.StatusConflict, body: `{"status":409}`},
+		{name: "answer with no transactionId", status: http.StatusOK, body: `{"entityIds":["ent"]}`},
+	} {
+		failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(refusal.status)
+			_, _ = w.Write([]byte(refusal.body))
+		}))
+		_, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{}`)},
+			cbConfig{Marker: "m", RecordModel: "rec"}, "the-pass", newCallbackClient(failing.URL, staticToken("bearer")))
+		failing.Close()
+		if err == nil {
+			t.Fatalf("%s: the processor must fail", refusal.name)
+		}
+	}
 }
 
 // TestCatalog_UnlockThenTag_UnlocksUnjoinedAndAddsAField: the processor

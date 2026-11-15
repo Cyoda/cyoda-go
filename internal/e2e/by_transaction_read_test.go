@@ -226,7 +226,7 @@ func TestByTransaction_TxDeletedEntity_404(t *testing.T) {
 		}
 		return answerOK()
 	})
-	tID, _ := createWithTx(t, h, model, workflowSampleModel)
+	tID, tCreateTx := createWithTx(t, h, model, workflowSampleModel)
 	target.Store(tID)
 	eID, _ := createWithTx(t, h, model, workflowSampleModel)
 
@@ -241,8 +241,14 @@ func TestByTransaction_TxDeletedEntity_404(t *testing.T) {
 	if code := problemErrorCode(body); status != http.StatusNotFound || code != "ENTITY_NOT_FOUND" {
 		t.Fatalf("GET ?transactionId=X of the entity X deleted answered %d %s; want 404 ENTITY_NOT_FOUND: %s", status, code, body)
 	}
+	// A tombstone's entry carries no transactionId (the handler omits it when
+	// the version has no entity), so X is named by elimination: the only
+	// other entry is T's own create.
 	changes := h.getChanges(t, tID)
 	if len(changes) != 2 || changes[0]["changeType"] != "DELETE" || changes[1]["changeType"] != "CREATE" {
 		t.Fatalf("changes of T = %v; want [DELETE, CREATE]: X's update and delete are one version", changes)
+	}
+	if _, named := changes[0]["transactionId"]; named || changes[1]["transactionId"] != tCreateTx {
+		t.Fatalf("changes of T = %v; want the DELETE without a transactionId and the CREATE by %s", changes, tCreateTx)
 	}
 }
