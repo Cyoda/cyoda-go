@@ -8,6 +8,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // Commit bumps lastSubmitTime (step 4) before its sqlTx commits, holding
@@ -106,6 +107,7 @@ func TestBegin_SeesConcurrentCommitRows(t *testing.T) {
 	m := f.tm
 	ctx := attrInternalCtx("tenant-gate", "alice", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-gate", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 
 	store, err := f.EntityStore(ctx)
 	if err != nil {
@@ -250,6 +252,7 @@ func TestDirectSave_ThenBegin_SeesRow(t *testing.T) {
 	m := f.tm
 	ctx := attrInternalCtx("tenant-direct", "alice", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-direct", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 
 	store, err := f.EntityStore(ctx)
 	if err != nil {
@@ -434,6 +437,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 	m := f.tm
 	ctx := attrInternalCtx("tenant-floor", "alice", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-floor", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 
 	store, err := f.EntityStore(ctx)
 	if err != nil {

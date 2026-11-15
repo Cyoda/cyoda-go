@@ -7,6 +7,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -28,6 +29,7 @@ func TestCrashRecovery_CommittedDataSurvivesReopen(t *testing.T) {
 			t.Fatalf("create factory (phase 1): %v", err)
 		}
 		defer factory.Close()
+		spitest.EnsureLockedModel(t, factory, ctx, ref)
 
 		store, err := factory.EntityStore(ctx)
 		if err != nil {
@@ -131,6 +133,7 @@ func TestCrashRecovery_TransactionalCommitSurvives(t *testing.T) {
 			t.Fatalf("create factory (phase 1): %v", err)
 		}
 		defer factory.Close()
+		spitest.EnsureLockedModel(t, factory, ctx, ref)
 
 		tm, err := factory.TransactionManager(ctx)
 		if err != nil {
@@ -201,6 +204,7 @@ func TestCrashRecovery_VersionHistoryPreserved(t *testing.T) {
 			t.Fatalf("create factory (phase 1): %v", err)
 		}
 		defer factory.Close()
+		spitest.EnsureLockedModel(t, factory, ctx, ref)
 
 		store, err := factory.EntityStore(ctx)
 		if err != nil {

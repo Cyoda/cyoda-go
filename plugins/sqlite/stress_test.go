@@ -13,6 +13,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -52,6 +53,7 @@ func TestConcurrencyStress(t *testing.T) {
 
 	ctx := testCtx("tenant-stress")
 	ref := spi.ModelRef{EntityName: "counter", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 
 	// Seed the shared entity so update transactions find it.
 	store, err := factory.EntityStore(ctx)

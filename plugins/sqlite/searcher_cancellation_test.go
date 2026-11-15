@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -47,6 +48,7 @@ func TestSearch_PreExpiredCtxAborts(t *testing.T) {
 	// distinct model so the total scanned set is ~10 rows, matching the T12
 	// shape without disturbing the existing "person" fixture semantics.
 	extraRef := spi.ModelRef{EntityName: "widget", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, extraRef)
 	for i := 0; i < 5; i++ {
 		id := "w-" + string(rune('0'+i))
 		_, err := store.Save(ctx, &spi.Entity{
@@ -148,6 +150,7 @@ func TestSearch_MidScanTimeoutChainsDeadlineExceeded(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "bulk", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

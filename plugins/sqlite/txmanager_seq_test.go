@@ -7,15 +7,19 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
 func seqEntity(id string) *spi.Entity {
 	return &spi.Entity{
-		Meta: spi.EntityMeta{ID: id, ModelRef: spi.ModelRef{EntityName: "SeqModel", ModelVersion: "1"}},
+		Meta: spi.EntityMeta{ID: id, ModelRef: seqModel},
 		Data: []byte(`{"n":1}`),
 	}
 }
+
+// seqModel is the model every entity of these tests belongs to.
+var seqModel = spi.ModelRef{EntityName: "SeqModel", ModelVersion: "1"}
 
 func newFrozenTM(t *testing.T) (*sqlite.StoreFactory, spi.TransactionManager, context.Context) {
 	t.Helper()
@@ -30,6 +34,7 @@ func newFrozenTM(t *testing.T) (*sqlite.StoreFactory, spi.TransactionManager, co
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
+	spitest.EnsureLockedModel(t, f, ctx, seqModel)
 	return f, tm, ctx
 }
 
@@ -149,7 +154,7 @@ func TestCommittedLogPruningKeepsAnOpenTransactionsConflict(t *testing.T) {
 			write := func(txCtx context.Context, id string) {
 				tx := spi.GetTransaction(txCtx)
 				tx.WriteSet[id] = true
-				tx.Buffer[id] = &spi.Entity{Meta: spi.EntityMeta{ID: id, TenantID: "tenant-A", ChangeType: "CREATED"}, Data: []byte(`{}`)}
+				tx.Buffer[id] = &spi.Entity{Meta: spi.EntityMeta{ID: id, TenantID: "tenant-A", ModelRef: seqModel, ChangeType: "CREATED"}, Data: []byte(`{}`)}
 			}
 			commitOne := func(id string) {
 				t.Helper()

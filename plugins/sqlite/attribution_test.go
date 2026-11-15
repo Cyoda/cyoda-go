@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -99,6 +100,7 @@ func TestBeginCapturesAmbientOrigin(t *testing.T) {
 func TestCommitDeleteAttribution_StagerNotCommitter(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	rootCtx := attrCtx("tenant-A", "root-user", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, rootCtx, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 
 	store, err := factory.EntityStore(rootCtx)
 	if err != nil {
@@ -187,6 +189,7 @@ func TestCommitDeleteAttribution_StagerNotCommitter(t *testing.T) {
 func TestCommitFlushesDeletes_FallbackAttribution(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-A", "test-user", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -196,6 +199,7 @@ func TestCommitFlushesDeletes_FallbackAttribution(t *testing.T) {
 		Meta: spi.EntityMeta{
 			ID:         "e-del-fallback",
 			TenantID:   "tenant-A",
+			ModelRef:   spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
 			ChangeType: "CREATED",
 		},
 		Data: []byte(`{}`),
@@ -243,6 +247,7 @@ func TestCommitFlushesDeletes_FallbackAttribution(t *testing.T) {
 func TestDelete_NonTx_AttributionIsCaller(t *testing.T) {
 	factory, _ := newAttrFactory(t)
 	ctx := attrCtx("tenant-A", "alice", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -289,12 +294,14 @@ func TestDelete_NonTx_AttributionIsCaller(t *testing.T) {
 func TestDeleteAll_NonTx_Attribution(t *testing.T) {
 	factory, _ := newAttrFactory(t)
 	ctx := attrCtx("tenant-A", "bob", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
 
 	modelRef := spi.ModelRef{EntityName: "m-delall", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, modelRef)
 	for _, id := range []string{"e-da-1", "e-da-2"} {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: id, TenantID: "tenant-A", ModelRef: modelRef},
@@ -337,6 +344,7 @@ func TestDeleteAll_NonTx_Attribution(t *testing.T) {
 func TestSave_NonTx_StampsUserIDColumn(t *testing.T) {
 	factory, _ := newAttrFactory(t)
 	ctx := attrCtx("tenant-A", "caller", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -377,12 +385,14 @@ func TestSave_NonTx_StampsUserIDColumn(t *testing.T) {
 func TestDeleteAll_Tx_AttributionStaged(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-A", "carol", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	modelRef := spi.ModelRef{EntityName: "m-delall-tx", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, modelRef)
 	for _, id := range []string{"e-dat-1", "e-dat-2"} {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: id, TenantID: "tenant-A", ModelRef: modelRef},
@@ -448,6 +458,7 @@ func TestDeleteAll_Tx_AttributionStaged(t *testing.T) {
 func TestSaveAndDelete_ExecutorRoundTrip(t *testing.T) {
 	factory, _ := newAttrFactory(t)
 	ctx := attrCtx("tenant-A", "test-user", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

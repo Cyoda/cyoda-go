@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // TestFlushToSQLite_ChangeTypeMatchesStoredValue is the regression test for
@@ -23,6 +24,7 @@ import (
 func TestFlushToSQLite_ChangeTypeMatchesStoredValue(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-repro", "u1", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "m", ModelVersion: "1"})
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -90,6 +92,7 @@ func TestFlushToSQLite_ChangeTypeMatchesStoredValue(t *testing.T) {
 func TestFlushToSQLite_ChangeTypeSameTxDoubleSave(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-repro-2", "u1", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "m", ModelVersion: "1"})
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {

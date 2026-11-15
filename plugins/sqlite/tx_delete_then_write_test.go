@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 type contextT = context.Context
@@ -37,6 +38,7 @@ func TestTx_DeleteThenCompareAndSave_Conflicts(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -69,6 +71,7 @@ func TestTx_DeleteThenSave_CommitsPresent(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -115,6 +118,7 @@ func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -152,6 +156,7 @@ func TestTx_SaveThenCompareAndSave_Conflicts(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -193,6 +198,7 @@ func TestTx_SaveThenCompareAndSave_WithOwnTxID_Succeeds(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

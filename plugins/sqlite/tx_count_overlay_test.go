@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // In-tx counts reflect the transaction's own view for every buffer shape:
@@ -13,6 +14,7 @@ func TestTxCount_EveryBufferShape(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-cnt", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, _ := f.EntityStore(ctx)
 	seedN(t, store, ctx, ref, 4) // e00 open, e01 closed, e02 open, e03 closed
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -81,6 +82,7 @@ func TestSavepoint_VsCommit_NoRace(t *testing.T) {
 		func() {
 			factory := newSqliteTxFactory(t)
 			ctx := testCtx("tenant-A")
+			spitest.EnsureLockedModel(t, factory, ctx, sqliteSavepointModelRef)
 			tm, err := factory.TransactionManager(ctx)
 			if err != nil {
 				t.Fatalf("TransactionManager failed: %v", err)
@@ -153,6 +155,7 @@ func TestSavepoint_VsRollback_NoRace(t *testing.T) {
 		func() {
 			factory := newSqliteTxFactory(t)
 			ctx := testCtx("tenant-A")
+			spitest.EnsureLockedModel(t, factory, ctx, sqliteSavepointModelRef)
 			tm, err := factory.TransactionManager(ctx)
 			if err != nil {
 				t.Fatalf("TransactionManager failed: %v", err)
@@ -204,6 +207,7 @@ func TestRollbackToSavepoint_VsCommit_NoRace(t *testing.T) {
 		func() {
 			factory := newSqliteTxFactory(t)
 			ctx := testCtx("tenant-A")
+			spitest.EnsureLockedModel(t, factory, ctx, sqliteSavepointModelRef)
 			tm, err := factory.TransactionManager(ctx)
 			if err != nil {
 				t.Fatalf("TransactionManager failed: %v", err)
@@ -278,6 +282,7 @@ func TestRollbackToSavepoint_VsSave_NoRace(t *testing.T) {
 		func() {
 			factory := newSqliteTxFactory(t)
 			ctx := testCtx("tenant-A")
+			spitest.EnsureLockedModel(t, factory, ctx, sqliteSavepointModelRef)
 			tm, err := factory.TransactionManager(ctx)
 			if err != nil {
 				t.Fatalf("TransactionManager failed: %v", err)

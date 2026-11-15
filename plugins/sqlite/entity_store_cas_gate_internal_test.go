@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // A non-transactional CompareAndSave must read the current transaction ID and
@@ -26,6 +27,7 @@ func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 
 	ctx := attrInternalCtx("tenant-cas", "alice", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-cas", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

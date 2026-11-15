@@ -322,11 +322,8 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		// If the entity was previously marked for deletion in this tx, unmark
 		// it (last-write-wins: Save after Delete → present).
 		unstageDelete(tx, entity.Meta.ID)
-		// Capture unique keys at buffer time (last-write-wins, matching tx.Buffer).
-		// flushToSQLite runs once at Commit with a single context, so keys must
-		// be stored per-entity here to support mixed-model batches where each Save
-		// may carry a different key set.
-		s.tm.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
+		// No claim or model work here: the commit checks both on the
+		// transaction's final entities (commitClaims).
 		return 0, nil // actual version assigned at commit
 	}
 
@@ -446,6 +443,12 @@ func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity
 	}
 	defer sqlTx.Rollback()
 
+	// A write outside a transaction is its own commit: the model check and
+	// the claims run in its own sqlTx, as the transaction flush runs them.
+	if err := commitClaims(ctx, sqlTx, tid, []*spi.Entity{cp}, []string{cp.Meta.ID}); err != nil {
+		return 0, err
+	}
+
 	_, err = sqlTx.ExecContext(ctx,
 		`INSERT OR REPLACE INTO entities
 		 (tenant_id, entity_id, model_name, model_version, version, data, meta, deleted, created_at, updated_at)
@@ -466,12 +469,6 @@ func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity
 		cp.Meta.ChangeUser)
 	if err != nil {
 		return 0, fmt.Errorf("insert version: %w", classifyError(err))
-	}
-
-	// Maintain unique-key claims for the non-transactional (direct) write path.
-	// Keys are read from ctx inline since there is no buffer to pre-capture them.
-	if err := replaceClaims(ctx, sqlTx, tid, cp, spi.UniqueKeysFromContext(ctx)); err != nil {
-		return 0, fmt.Errorf("replace claims: %w", err)
 	}
 
 	if err := sqlTx.Commit(); err != nil {
@@ -535,9 +532,6 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			cp.Meta.TransactionID = tx.ID
 			tx.Buffer[entity.Meta.ID] = cp
 			tx.WriteSet[entity.Meta.ID] = true
-			// Capture unique keys at buffer time, as Save does — see the
-			// comment there for why the flush cannot recover them.
-			s.tm.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 			return 0, nil
 		}
 
@@ -556,9 +550,6 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		cp.Meta.TransactionID = tx.ID
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
-		// Capture unique keys at buffer time, as Save does — see the comment
-		// there for why the flush cannot recover them.
-		s.tm.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 		return 0, nil
 	}
 

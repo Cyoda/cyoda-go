@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -121,6 +122,7 @@ func newSoundnessStore(t *testing.T) (*sqlite.StoreFactory, spi.EntityStore, con
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
+	spitest.EnsureLockedModel(t, factory, ctx, gsModel)
 	return factory, store, ctx, clock
 }
 
