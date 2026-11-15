@@ -460,11 +460,18 @@ longer passes anything to storage.
   commit, after read-set validation and **before** `stampCommitInstant` (its
   rule: nothing after `cyoda_stamp` waits on a lock,
   `transaction_manager.go` ~:417-420, relied on by `ConsistencyTime`,
-  `consistency_time.go` ~:186-191), run steps 1-4: step 1 as a plain read of
-  the `models` rows' unique keys in the transaction's snapshot (no lock: keys
-  change only while a model is `UNLOCKED`, and an `UNLOCKED` model has no
-  entities, §4.5), steps 2-4 as `DELETE` and `INSERT` statements, inserting in
-  a deterministic order (by model, key id, signature). The non-transactional
+  `consistency_time.go` ~:186-191), run steps 1-4: step 1 as one plain,
+  lock-free read of the `models` rows' unique keys at commit, outside the
+  transaction's snapshot, on the model pool; steps 2-4 as `DELETE` and
+  `INSERT` statements in the transaction, inserting in a deterministic order
+  (by model, key id, signature). Step 1 must not read in the snapshot: the
+  REPEATABLE READ snapshot is older than the commit, so a model created and
+  locked after it has no row there, and a model re-keyed after it (unlocked
+  while empty, given new keys, locked again) has its old keys there. Both are
+  `LOCKED` models the API lets the transaction write into, and memory and
+  sqlite enforce the current keys. It reads on the model pool, not the main
+  pool: the commit already holds a main-pool connection, and a second acquire
+  from that pool could wait forever on a saturated pool. The non-transactional
   path does the same inside `replaceClaims`, before `stampOwnCommitInstant`.
 
   **Errors.** The step 1-4 statements can now be the first statements
@@ -501,9 +508,10 @@ longer passes anything to storage.
   other committed or proceeds if it rolled back. Claims are inserted in a fixed
   order, so commits claiming the same values wait rather than deadlock. Two
   commits that each claim a value the other frees in the same commit meet
-  PostgreSQL's deadlock detection (`40P01`), classified as a retryable
-  `spi.ErrConflict` (`409 CONFLICT`) where memory and sqlite answer `409
-  UNIQUE_VIOLATION`. This is an accepted, transient difference: both
+  PostgreSQL's deadlock detection (`40P01`): one is classified as a retryable
+  `spi.ErrConflict` (`409 CONFLICT`) and the other gets `409
+  UNIQUE_VIOLATION`, where memory and sqlite answer `409 UNIQUE_VIOLATION` to
+  both. This is an accepted, transient difference: both
   answers fail closed, the `409 CONFLICT` is retryable, and the retry gets the
   same `UNIQUE_VIOLATION` the other backends gave.
 

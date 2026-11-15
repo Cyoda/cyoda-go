@@ -296,7 +296,8 @@ unique keys — runs from one place, not concurrently on one model, and
 not while writes to the model are in flight. Two administration calls
 that overlap on one model have no defined order: an import or
 unique-key change reads the model and then saves it whole, so a lock or
-an extension landing between the read and the save can be overwritten.
+a change-level change landing between the read and the save is
+overwritten.
 
 Unlock is not atomic with its entity check either: it counts the
 model's committed entities, then unlocks. An entity write still in

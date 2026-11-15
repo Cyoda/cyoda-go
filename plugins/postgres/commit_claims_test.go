@@ -137,6 +137,68 @@ func TestCommitClaims_UsesWrittenBytes(t *testing.T) {
 	ccRequireClaimed(t, fx, ref, "1e100", "the committed value")
 }
 
+// TestCommitClaims_KeysReadAtCommit_ModelLockedAfterSnapshot — the model is
+// created and locked after the transaction's snapshot, and an entity holding
+// a key value is committed into it elsewhere. The transaction then saves an
+// entity of the model with the same value. The commit reads the model's keys
+// as they are at commit, not in its snapshot (which has no row for the
+// model): the duplicate is refused.
+func TestCommitClaims_KeysReadAtCommit_ModelLockedAfterSnapshot(t *testing.T) {
+	fx := newPGFixture(t)
+	tm := fx.txManager(t)
+	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
+
+	txID, txCtx, es := ccBegin(t, fx, tm)
+	ccModel(t, fx, ref, ccCodeKey)
+	if _, err := ccStore(t, fx).Save(fx.ctx, ccEntity(ref, uuid.NewString(), `{"code":"x"}`)); err != nil {
+		t.Fatalf("seed the holder: %v", err)
+	}
+
+	id := uuid.NewString()
+	ccSave(t, txCtx, es, ccEntity(ref, id, `{"code":"x"}`))
+	if err := tm.Commit(boundedCtx(t, fx), txID); !errors.Is(err, spi.ErrUniqueViolation) {
+		t.Fatalf("Commit of a duplicate into a model locked after the snapshot = %v, want spi.ErrUniqueViolation", err)
+	}
+	ccRequireAbsent(t, fx, id, "the refused commit")
+}
+
+// TestCommitClaims_KeysReadAtCommit_ModelRekeyedAfterSnapshot — the model,
+// with no entities, is unlocked, given a new key and locked again after the
+// transaction's snapshot, and an entity holding a value of the new key is
+// committed elsewhere. The commit enforces the new key, not the one in its
+// snapshot.
+func TestCommitClaims_KeysReadAtCommit_ModelRekeyedAfterSnapshot(t *testing.T) {
+	fx := newPGFixture(t)
+	tm := fx.txManager(t)
+	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
+	ccModel(t, fx, ref, ccCodeKey)
+
+	txID, txCtx, es := ccBegin(t, fx, tm)
+	if err := fx.store.Unlock(fx.ctx, ref); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	otherKey := spi.UniqueKey{ID: "other", Fields: []string{"$.other"}}
+	if err := fx.store.Save(fx.ctx, &spi.ModelDescriptor{
+		Ref: ref, State: spi.ModelUnlocked, ChangeLevel: spi.ChangeLevelStructural,
+		Schema: []byte(`{}`), UniqueKeys: []spi.UniqueKey{otherKey},
+	}); err != nil {
+		t.Fatalf("Save new keys: %v", err)
+	}
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	if _, err := ccStore(t, fx).Save(fx.ctx, ccEntity(ref, uuid.NewString(), `{"code":"a","other":"y"}`)); err != nil {
+		t.Fatalf("seed the holder: %v", err)
+	}
+
+	id := uuid.NewString()
+	ccSave(t, txCtx, es, ccEntity(ref, id, `{"code":"b","other":"y"}`))
+	if err := tm.Commit(boundedCtx(t, fx), txID); !errors.Is(err, spi.ErrUniqueViolation) {
+		t.Fatalf("Commit of a duplicate of the new key = %v, want spi.ErrUniqueViolation", err)
+	}
+	ccRequireAbsent(t, fx, id, "the refused commit")
+}
+
 // TestCommitClaims_ExtendAndChangeLevel_DoNotBlock — the commit reads the
 // models' keys without a lock. An extension and a change-level change, which
 // write the models row, neither fail nor delay the commit, whether committed

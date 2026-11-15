@@ -9,7 +9,8 @@ import (
 // replaceClaims refreshes the unique-key claims of e, a save outside any
 // transaction, in the transaction that save opened for itself. It is steps
 // 1-4 of the commit-time check (commitClaims) for one entity: the keys are
-// read from the stored model; a partial composite key is
+// read from the stored model on that READ COMMITTED transaction, which sees
+// the latest committed model; a partial composite key is
 // spi.ErrPartialUniqueKey; a value held by another entity is
 // spi.ErrUniqueViolation, classified by the querier.
 //
@@ -19,7 +20,7 @@ import (
 // follows the stamp. A save inside a caller's transaction does no claim work:
 // the transaction's Commit runs commitClaims over its final entities.
 func (s *entityStore) replaceClaims(ctx context.Context, e *spi.Entity) error {
-	return commitClaims(ctx, s.q, s.tenantID,
+	return commitClaims(ctx, s.q, s.q, s.tenantID,
 		map[string]writtenEntity{e.Meta.ID: {ref: e.Meta.ModelRef, data: e.Data}})
 }
 

@@ -63,7 +63,7 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 		return fmt.Errorf("failed to marshal model descriptor: %w", err)
 	}
 
-	// Save replaces the descriptor of a model that is not LOCKED, whose
+	// Save creates a model, or replaces one that is not LOCKED, whose
 	// extension log is empty — an extension is written only to a LOCKED
 	// model, and Unlock folds and clears the log — so the saved schema is
 	// the whole schema a Get returns.

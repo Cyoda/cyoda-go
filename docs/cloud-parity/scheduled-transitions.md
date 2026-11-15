@@ -144,9 +144,9 @@ A run fails **safely** when nothing unsafe may have reached a compute member:
 a criterion or function error, no compute member for the tag, a conflict with a
 concurrent write, a storage error, a commit refused because the run's final
 entities break a composite unique key, an `idempotent` processor's failure,
-or an unsafe processor that provably never reached a member (`callout-failover.md` §1: no hand-off). The
-task goes back to `WAITING`, `attempts` goes up by one,
-and its last error is recorded. The next attempt is after
+or an unsafe processor that provably never reached a member
+(`callout-failover.md` §1: no hand-off). The task goes back to `WAITING`,
+`attempts` goes up by one, and its last error is recorded. The next attempt is after
 
 ```
 delay = RETRY_DELAY × 2^(attempts−1), at most RETRY_DELAY_MAX   (cyoda-go: 30 s, 15 min)

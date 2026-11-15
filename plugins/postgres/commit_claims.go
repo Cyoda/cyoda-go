@@ -14,10 +14,11 @@ import (
 // entities and the unique keys of their models as stored:
 //
 //  1. Read the unique keys of the model of every entity whose last write is
-//     a save, in one statement, from the models rows. The model's state is
-//     not checked (the caller saves entities only into a LOCKED model), and
-//     a model the read does not find contributes no keys. An entity whose
-//     last write is a delete needs no model.
+//     a save, in one statement, from the models rows, as they are committed
+//     at that moment. The model's state is not checked (the caller saves
+//     entities only into a LOCKED model), and a model the read does not find
+//     contributes no keys. An entity whose last write is a delete needs no
+//     model.
 //  2. Release the claims of every entity written.
 //  3. Compute the claims of every entity whose last write is a save, from the
 //     bytes that save was given and its model's keys. A partial composite key
@@ -27,28 +28,36 @@ import (
 //     entity outside the writes: 23505, spi.ErrUniqueViolation once
 //     classified.
 //
-// Step 1 takes no lock. Inside a caller's transaction it reads the
-// transaction's snapshot, which may be older than the commit: a model's keys
-// change only while it is UNLOCKED, and an UNLOCKED model has no entities,
-// so the snapshot's keys are the ones in force.
+// Step 1 takes no lock, and it must not read in the transaction's snapshot.
+// An entity transaction is REPEATABLE READ, and its snapshot is older than
+// the commit: a model created and locked after the snapshot has no row there,
+// and a model re-keyed after it (unlocked, given new keys and locked again
+// while it had no entities) has its old keys there. Either is a LOCKED model
+// the API lets the transaction write into, and the commit must enforce the
+// keys the model holds now, as memory and sqlite do. So the transactional
+// commit reads them on the model pool, outside its transaction
+// (TransactionManager.commitWrittenClaims). A write outside a transaction
+// reads them on its own READ COMMITTED transaction, which sees the latest
+// committed model too.
 //
 // Every step runs before the commit stamp: nothing after cyoda_stamp may
 // wait on a lock (stampCommitInstant).
 
-// commitClaims runs steps 1-4 on q: at Commit inside a caller's transaction,
-// and for a write outside a transaction (replaceClaims) in the transaction
-// that write opened for itself. written is the record of the entities written
-// (txState.WrittenEntities): the model and bytes of each entity's last save,
-// or a delete. Both save paths store the entity under the model the save
-// names (the upsert's model guard, replacePendingSave's
-// spi.ErrEntityModelMismatch), so the recorded model is the stored one.
-func commitClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written map[string]writtenEntity) error {
+// commitClaims runs steps 1-4: step 1 on keysQ, steps 2-4 on q. It runs at
+// Commit inside a caller's transaction, and for a write outside a transaction
+// (replaceClaims) in the transaction that write opened for itself. written is
+// the record of the entities written (txState.WrittenEntities): the model and
+// bytes of each entity's last save, or a delete. Both save paths store the
+// entity under the model the save names (the upsert's model guard,
+// replacePendingSave's spi.ErrEntityModelMismatch), so the recorded model is
+// the stored one.
+func commitClaims(ctx context.Context, q, keysQ Querier, tenantID spi.TenantID, written map[string]writtenEntity) error {
 	if len(written) == 0 {
 		return nil
 	}
 
 	// Step 1.
-	keys, err := modelKeys(ctx, q, tenantID, savedModels(written))
+	keys, err := modelKeys(ctx, keysQ, tenantID, savedModels(written))
 	if err != nil {
 		return err
 	}

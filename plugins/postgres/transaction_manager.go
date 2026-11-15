@@ -82,6 +82,11 @@ type TransactionManager struct {
 	// production. It supplies commit stamps and consistency times
 	// (stampAtArg) and the retention cutoff of submit times.
 	clock spi.Clock
+	// models returns the model pool of the factory the manager serves
+	// (StoreFactory.setTransactionManager). The commit reads the unique keys
+	// of its entities' models on it (commitWrittenClaims); nil until a
+	// factory takes the manager.
+	models func() (*modelPool, error)
 }
 
 // TransactionManagerOption configures a TransactionManager at construction.
@@ -398,13 +403,33 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 }
 
 // commitWrittenClaims runs commitClaims over the entities the transaction
-// wrote. A transaction that wrote no entity issues no statement here.
+// wrote, reading the models' unique keys on the model pool. A transaction
+// that wrote no entity issues no statement here.
 func (tm *TransactionManager) commitWrittenClaims(ctx context.Context, tx pgx.Tx, state *txState) error {
 	written := state.WrittenEntities()
 	if len(written) == 0 {
 		return nil
 	}
-	return commitClaims(ctx, tx, state.tenantID, written)
+	if tm.models == nil {
+		return errors.New("failed to read the models' unique keys: the transaction manager has no model pool")
+	}
+	models, err := tm.models()
+	if err != nil {
+		return fmt.Errorf("failed to read the models' unique keys: %w", err)
+	}
+	// The keys are read outside the transaction's snapshot (see
+	// commitClaims), on the model pool: the commit already holds a main-pool
+	// connection, and taking a second from the same pool could wait forever
+	// on a saturated pool. The acquire is bounded, as every acquire made
+	// while a transaction holds a connection is.
+	acquireCtx, cancelAcquire := newAcquireContext(ctx, models.acquireTimeout)
+	conn, err := models.pool.Acquire(acquireCtx)
+	cancelAcquire()
+	if err != nil {
+		return classifyAcquireErr(ctx, acquireCtx, "model keys acquire", err)
+	}
+	defer conn.Release()
+	return commitClaims(ctx, tx, classifiedQuerier{inner: conn}, state.tenantID, written)
 }
 
 // stampCommitInstant fixes the transaction's instant and applies it to every
