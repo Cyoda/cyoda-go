@@ -27,8 +27,9 @@ func runWithin(t *testing.T, env *runEnv, task spi.ScheduledTask) RunReport {
 }
 
 // A delete committed by another transaction while the run is open: the run's
-// snapshot still sees the entity, and the final persist conflicts. Only the entity is deleted here, not its task, so the
-// run is not superseded and the conflict is reported as it is.
+// snapshot still sees the entity, and the final persist conflicts. Only the
+// entity is deleted here, not its task, so the run is not superseded and the
+// conflict is reported as it is.
 func TestCallback_OtherTransactionDeletesFiredEntity_RunConflicts(t *testing.T) {
 	var env *runEnv
 	var claimed spi.ScheduledTask

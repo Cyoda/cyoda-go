@@ -35,8 +35,9 @@ const TransitionAbortedReasonEntityModified = "ENTITY_MODIFIED"
 // engine ran. An empty Expected is no precondition.
 //
 // The engine checks it once, at the start of the transition, and never again:
-// a write to the entity later in the same transaction — a joined callback's,
-// or a COMMIT_BEFORE_DISPATCH segment's — is the request's own and does not
+// a write to the entity later in the same transaction — the engine's save
+// before a callout that carries the transaction token, or a
+// COMMIT_BEFORE_DISPATCH segment's commit — is the request's own and does not
 // break it. A write another transaction commits after the request's read is
 // not the precondition's business: the transaction's commit refuses it, as it
 // refuses every such race.

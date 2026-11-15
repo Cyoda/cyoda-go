@@ -29,7 +29,7 @@ const conflictText = "CONFLICT: a concurrent write changed the entity or its tas
 const targetSample = `{"k":1,"targetId":"00000000-0000-0000-0000-000000000000"}`
 
 // RunScheduledTransition_JoinedCallbackConflictRecorded: E's scheduled Fire
-// runs cb-update-target, which writes F through a joined callback. F is
+// runs cb-update-target-strict, which writes F through a joined callback. F is
 // changed and committed by a client after the run's transaction began, so the
 // run's write of F loses first-committer-wins. Where the backend reports the
 // loss — at the callback's write or at the run's commit — is its own; what the

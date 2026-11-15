@@ -2283,9 +2283,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	//
 	// If-Match states the version the request starts from: the engine checks
 	// it against existing — E as this transaction read it — before it runs
-	// anything. A later write to E in this transaction (a joined callback's, a
-	// segment's) is the request's own; a write another transaction commits
-	// after the read fails the commit.
+	// anything. A later write to E in this transaction (the engine's save
+	// before a callout, a segment's commit) is the request's own; a write
+	// another transaction commits after the read fails the commit.
 	ifMatch := wfengine.IfMatch{Expected: input.IfMatch, Current: existing.Meta.TransactionID}
 	if input.Transition == "" {
 		res, lbErr := h.engine.Loopback(txCtx, updated, ifMatch)

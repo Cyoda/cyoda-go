@@ -516,9 +516,8 @@ type processorPayload struct {
 // applyProcessorResponse extracts updated entity data from the response
 // payload. A response with no payload, or a payload whose data is absent or
 // null, returns no entity: the processor sent nothing to apply. It is never
-// read as the entity it was dispatched with, because the engine then keeps a
-// write the processor made through a joined callback instead of applying its
-// own payload again.
+// read as the entity it was dispatched with: that is not data the processor
+// sent, and the engine applies only data a processor sent.
 func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.Entity, error) {
 	if resp.Payload == nil {
 		return nil, nil

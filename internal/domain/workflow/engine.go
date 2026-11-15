@@ -338,8 +338,6 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity) (*EngineResult
 		}
 	}()
 
-	// The anchor is new: no transaction holds it until the run stores it.
-
 	// Record STARTED.
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "State machine started", startedData(entity.Meta.State))
