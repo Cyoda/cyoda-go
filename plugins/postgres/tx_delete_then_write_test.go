@@ -16,6 +16,7 @@ func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("tenant-dtw")
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

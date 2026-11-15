@@ -60,6 +60,7 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	for _, tc := range cases {
 		// One entity ID per subtest: the fixture's schema is shared, so a
@@ -125,6 +126,7 @@ func TestCompareAndSave_EmptyExpectedAfterSameTxDelete_Rejected(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	const id = "e-lit-same-tx-delete"
 	seedLiteral(t, store, ctx, ref, id, "tx-seed")
 
@@ -159,6 +161,7 @@ func TestCompareAndSave_EmptyExpectedOnDeadTransaction_ReportsArgumentError(t *t
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	for _, kill := range []string{"Committed", "RolledBack"} {
 		t.Run(kill, func(t *testing.T) {

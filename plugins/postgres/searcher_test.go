@@ -20,6 +20,7 @@ func setupSearcher(t *testing.T) (spi.EntityStore, context.Context) {
 	t.Helper()
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("search-tenant")
+	lockModels(t, factory, ctx, searchModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -309,6 +310,7 @@ func TestPGSearcher_OrderByNumericData(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, e := range []struct{ id, data string }{
 		{"a", `{"n":"9"}`},
 		{"b", `{"n":"10"}`},
@@ -355,6 +357,7 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, id := range []string{"z", "m", "a"} {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
@@ -408,6 +411,7 @@ func TestPGSearcher_OrderByStateMeta(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, e := range []struct {
 		id    string
 		state string
@@ -463,6 +467,7 @@ func TestPGSearcher_OrderByMetaEmptyTransitionLast(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	// Both entities start with transition="" (zero value, stored without omitempty).
 	// We then patch e-has to a non-empty value so the two entities differ.
 	for _, id := range []string{"e-has", "e-empty"} {
@@ -510,6 +515,7 @@ func TestPGSearcher_OrderByNullsLast(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, e := range []struct{ id, data string }{
 		{"has-score", `{"score":"50","present":true}`},
 		{"high-score", `{"score":"90","present":true}`},
@@ -552,6 +558,7 @@ func TestPGSearcher_OrderByTiebreaker(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, id := range []string{"z-ent", "a-ent", "m-ent"} {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
@@ -589,6 +596,7 @@ func TestPGSearcher_OrderByPointInTime(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, id := range []string{"pit-1", "pit-2"} {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
@@ -708,6 +716,7 @@ func TestPGSearcher_TenantIsolation(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctxA := ctxWithTenant("tenant-a")
 	ctxB := ctxWithTenant("tenant-b")
+	lockModels(t, factory, ctxA, searchModel)
 
 	storeA, err := factory.EntityStore(ctxA)
 	if err != nil {
@@ -831,6 +840,7 @@ func pitSearchSetup(t *testing.T) (spi.EntityStore, context.Context, time.Time) 
 	)
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant(tenant)
+	lockModels(t, factory, ctx, searchModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -904,6 +914,7 @@ func TestPGSearcher_OrderByNullsLastDesc(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, e := range []struct{ id, data string }{
 		{"has-score", `{"score":"50","present":true}`},
 		{"high-score", `{"score":"90","present":true}`},
@@ -946,6 +957,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, e := range []struct{ id, data string }{
 		{"t", `{"active":true,"tag":"y"}`},
 		{"f", `{"active":false,"tag":"y"}`},
@@ -1001,6 +1013,7 @@ func newBoundedSearchStore(t *testing.T) (spi.EntityStore, context.Context) {
 	t.Helper()
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("bounded-search-tenant")
+	lockModels(t, factory, ctx, boundedSearchModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

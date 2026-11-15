@@ -104,10 +104,10 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 }
 
 func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, error) {
-	// A non-transactional save issues five statements — the entities upsert,
-	// its doc update, the entity_versions insert, and the unique-claims
-	// delete-then-insert(s) replaceClaims issues at the end of saveOn's body
-	// — that would otherwise auto-commit one at a time. Run them in one
+	// A non-transactional save issues several statements — the entities
+	// upsert, its doc update, the entity_versions insert, and the model check
+	// and unique-claims delete-then-insert replaceClaims issues at the end of
+	// saveOn's body — that would otherwise auto-commit one at a time. Run them in one
 	// transaction of its own so a failure cannot leave the entities row
 	// updated without its version row (or a claim row without the write it
 	// belongs to), and so no reader observes the placeholder document the
@@ -390,9 +390,7 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 		return 0, fmt.Errorf("failed to insert entity version: %w", err)
 	}
 
-	// Maintain unique-key claims atomically within this transaction.
-	// replaceClaims is a no-op when no keys are declared in context.
-	if err := s.replaceClaims(ctx, entity); err != nil {
+	if err := s.maintainClaims(ctx, entity); err != nil {
 		return 0, fmt.Errorf("failed to maintain unique claims: %w", err)
 	}
 
@@ -449,7 +447,8 @@ type pendingVersionRow struct {
 // The lookup is in SQL rather than recorded in Go, so it is never stale: a
 // ROLLBACK TO SAVEPOINT undoes the row writes that made or replaced a pending
 // version, and this query sees exactly what is left. txState's savepoint
-// snapshots hold only the read and write sets.
+// snapshots hold the read and write sets and the bytes record, never the
+// pending version.
 //
 // The guard that $4 is not empty is required: only a caller's transaction
 // has a pending version. A write outside a transaction passes the empty id,
@@ -538,10 +537,34 @@ func (s *entityStore) replacePendingSave(ctx context.Context, entity *spi.Entity
 		return 0, err
 	}
 
-	if err := s.replaceClaims(ctx, entity); err != nil {
+	if err := s.maintainClaims(ctx, entity); err != nil {
 		return 0, fmt.Errorf("failed to maintain unique claims: %w", err)
 	}
 	return pending.version, nil
+}
+
+// maintainClaims is a save's unique-key and model work. Outside a caller's
+// transaction the save is its own transaction and does it now
+// (replaceClaims). Inside one it only records the bytes the save was given:
+// the transaction's Commit checks the models and computes the claims of its
+// final entities (commitClaims), so a save in between claims nothing and
+// checks no model.
+func (s *entityStore) maintainClaims(ctx context.Context, entity *spi.Entity) error {
+	if spi.GetTransaction(ctx) == nil {
+		return s.replaceClaims(ctx, entity)
+	}
+	return s.recordWriteBytes(ctx, entity.Meta.ID, savedBytes(entity.Data))
+}
+
+// recordWriteBytes records a write inside a caller's transaction for its
+// commit: the bytes a save was given, or nil for a delete. A store with no
+// transaction manager cannot record it, and fails the write rather than let
+// the commit check nothing.
+func (s *entityStore) recordWriteBytes(ctx context.Context, entityID string, data []byte) error {
+	if s.tm == nil {
+		return fmt.Errorf("record the write of entity %s: no transaction manager", entityID)
+	}
+	return s.tm.recordWriteBytes(ctx, entityID, data)
 }
 
 // stampOwnCommitInstant dates a write that has no SPI transaction at the
@@ -1033,9 +1056,18 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 		return fmt.Errorf("failed to mark entity deleted: %w", err)
 	}
 
-	// Release unique-key claims so the freed values can be re-claimed immediately.
-	if err := s.releaseClaims(ctx, entityID); err != nil {
-		return fmt.Errorf("failed to release unique claims: %w", err)
+	// Outside a caller's transaction, release the entity's unique-key claims
+	// in this delete's own transaction. Inside one, record the delete: the
+	// transaction's Commit releases the claims of every entity it wrote
+	// (commitClaims). Released here, an uncommitted delete would make another
+	// transaction's commit of the value wait for this one, where the value is
+	// still held by a committed entity.
+	if spi.GetTransaction(ctx) == nil {
+		if err := s.releaseClaims(ctx, entityID); err != nil {
+			return fmt.Errorf("failed to release unique claims: %w", err)
+		}
+	} else if err := s.recordWriteBytes(ctx, entityID, nil); err != nil {
+		return err
 	}
 
 	// Last statement before this delete's own transaction commits — see
@@ -1075,22 +1107,17 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		return fmt.Errorf("row iteration error: %w", err)
 	}
 
+	// Each Delete releases its entity's claims: at once outside a caller's
+	// transaction, at the transaction's commit inside one. There is no
+	// model-wide release: a claim row exists only for an entity whose write
+	// committed it, and a model-wide DELETE would also drop the claims of an
+	// entity saved after the query above, or, inside a transaction, of an
+	// entity a rolled-back savepoint restored.
 	for _, id := range ids {
 		if err := s.Delete(ctx, id); err != nil {
 			return fmt.Errorf("failed to delete entity %s: %w", id, err)
 		}
 	}
-
-	// Belt-and-suspenders: bulk-delete any remaining claim rows for the model.
-	// Individual Delete calls already invoke releaseClaims; this catches any
-	// orphaned rows (e.g. from a previous partial run) and ensures a clean slate.
-	if _, err := s.q.Exec(ctx,
-		`DELETE FROM unique_claims WHERE tenant_id=$1 AND model_name=$2 AND model_version=$3`,
-		tid, modelRef.EntityName, modelRef.ModelVersion,
-	); err != nil {
-		return fmt.Errorf("failed to bulk-release unique claims for model: %w", err)
-	}
-
 	return nil
 }
 

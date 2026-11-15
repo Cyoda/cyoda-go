@@ -56,6 +56,7 @@ func setupFCWTest(t *testing.T) (*postgres.StoreFactory, *postgres.TransactionMa
 func TestFCW_DisjointConcurrentInserts_NoFalseConflicts(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("fcw-tenant-1")
+	lockModels(t, factory, ctx, orderModel)
 
 	// Seed 200 rows to fill the b-tree (mirrors the reproducer).
 	seedStore, err := factory.EntityStore(ctx)
@@ -135,6 +136,7 @@ func TestFCW_DisjointConcurrentInserts_NoFalseConflicts(t *testing.T) {
 func TestFCW_SameEntityUpdate_FirstCommitterWins(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("fcw-tenant-2")
+	lockModels(t, factory, ctx, orderModel)
 
 	// Seed shared entity at v=1.
 	seedStore, err := factory.EntityStore(ctx)
@@ -227,6 +229,7 @@ func TestFCW_SameEntityUpdate_FirstCommitterWins(t *testing.T) {
 func TestFCW_ReadThenConcurrentDelete_Conflict(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("fcw-tenant-3")
+	lockModels(t, factory, ctx, orderModel)
 
 	// Seed e1 at v=1.
 	seedStore, err := factory.EntityStore(ctx)
@@ -285,6 +288,7 @@ func TestFCW_ReadThenConcurrentDelete_Conflict(t *testing.T) {
 func TestFCW_LargeReadSet_ChunkedValidation(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("fcw-tenant-4")
+	lockModels(t, factory, ctx, orderModel)
 
 	const entityCount = 2500
 
@@ -342,6 +346,7 @@ func TestFCW_LargeReadSet_ChunkedValidation(t *testing.T) {
 func TestFCW_SavepointRollback_DropsReadSet_CommitSucceeds(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("fcw-tenant-5")
+	lockModels(t, factory, ctx, orderModel)
 
 	// Seed x and y at v=1.
 	seedStore, err := factory.EntityStore(ctx)
@@ -440,6 +445,7 @@ func TestFCW_SavepointRollback_DropsReadSet_CommitSucceeds(t *testing.T) {
 func TestFCW_PureReadSetConflict_NoWriteOverlap(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("fcw-tenant-6")
+	lockModels(t, factory, ctx, orderModel)
 
 	// Step 1: Seed x and y at v=1.
 	seedStore, err := factory.EntityStore(ctx)

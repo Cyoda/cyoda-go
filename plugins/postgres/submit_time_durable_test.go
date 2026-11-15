@@ -16,6 +16,7 @@ import (
 func TestGetSubmitTime_AnswersFromAnotherManager(t *testing.T) {
 	factory, tmA := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("submit-durable-tenant")
+	lockModels(t, factory, ctx, spi.ModelRef{EntityName: "submit-durable", ModelVersion: "1"})
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -62,6 +63,7 @@ func TestGetSubmitTime_AnswersFromAnotherManager(t *testing.T) {
 func TestGetSubmitTime_AnotherManagerRejectsCrossTenant(t *testing.T) {
 	factory, tmA := setupEntityTestWithTM(t)
 	ctxA := ctxWithTenant("submit-durable-tenant-a")
+	lockModels(t, factory, ctxA, spi.ModelRef{EntityName: "submit-durable-x", ModelVersion: "1"})
 	ctxB := ctxWithTenant("submit-durable-tenant-b")
 	store, err := factory.EntityStore(ctxA)
 	if err != nil {

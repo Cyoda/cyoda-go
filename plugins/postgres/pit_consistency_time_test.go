@@ -20,6 +20,7 @@ import (
 // new version of an entity, the listing shows the committed versions alone.
 func TestGetVersionMetadata_CommittedOnlyInTx(t *testing.T) {
 	f, ctx := newCTFactory(t)
+	lockModels(t, f, ctx, ctModel)
 	tm := ctTM(t, f, ctx)
 	es, err := f.EntityStore(ctx)
 	if err != nil {
@@ -62,6 +63,7 @@ func TestGetVersionMetadata_CommittedOnlyInTx(t *testing.T) {
 // above CURRENT_TIMESTAMP; a read at the consistency time must still find it.
 func TestPIT_FloorAheadOfDBClock_RowsVisible(t *testing.T) {
 	f, ctx := newCTFactoryOwnDB(t)
+	lockModels(t, f, ctx, ctModel)
 	pool := postgres.PoolForTest(f)
 	ahead := time.Now().Add(time.Hour).UnixMicro()
 	if _, err := pool.Exec(context.Background(), `SELECT setval('cyoda_stamp_floor', $1, true)`, ahead); err != nil {

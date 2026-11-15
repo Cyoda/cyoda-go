@@ -103,6 +103,7 @@ func TestNonTxCommit_TornSocketIsNotRetryable(t *testing.T) {
 			seed := postgres.NewStoreFactory(direct)
 			seed.InitTransactionManager(newTestUUIDGenerator())
 			ctx := ctxWithTenant(ctTenant)
+			lockModels(t, seed, ctx, ctModel)
 
 			// The entity the write targets, committed by a transaction so
 			// compare-and-save has a transaction id to name.

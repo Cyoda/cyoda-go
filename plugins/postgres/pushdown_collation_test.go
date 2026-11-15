@@ -169,6 +169,7 @@ func TestPostgresPushdownSoundness_TextRangeUnderNonCCollation(t *testing.T) {
 	factory := postgres.NewStoreFactory(pool)
 	const tenant spi.TenantID = "icu-collation-tenant"
 	fctx := ctxWithTenant(tenant)
+	lockModels(t, factory, fctx, gsModel)
 	store, err := factory.EntityStore(fctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

@@ -1,9 +1,10 @@
 package postgres_test
 
 // unique_claims_test.go — integration tests for composite unique-key enforcement
-// in the postgres entity store. These tests require a real PostgreSQL instance
-// (CYODA_TEST_DB_URL / docker-compose dev-up). They exercise the full stack:
-// replaceClaims → unique_claims_uq UNIQUE index → classifyError → ErrUniqueViolation.
+// in the postgres entity store. The keys are declared on the stored model
+// (spitest.EnsureLockedModel); the store reads them from there. They exercise
+// the full stack: the model's keys → claims → unique_claims_uq UNIQUE index →
+// classifyError → ErrUniqueViolation.
 
 import (
 	"context"
@@ -15,16 +16,22 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
-// setupUCStore creates a fresh schema and returns an EntityStore bound to
-// "uc-tenant", a base context with that tenant, and a helper that counts
-// rows in the unique_claims table for "uc-tenant".
-func setupUCStore(t *testing.T) (spi.EntityStore, context.Context, func() int) {
+// ucModel is ucEntity's model.
+var ucModel = spi.ModelRef{EntityName: "UCModel", ModelVersion: "1"}
+
+// setupUCStore creates a fresh schema with ucModel LOCKED and declaring keys,
+// and returns an EntityStore bound to "uc-tenant", a base context with that
+// tenant, and a helper that counts rows in the unique_claims table for
+// "uc-tenant".
+func setupUCStore(t *testing.T, keys ...spi.UniqueKey) (spi.EntityStore, context.Context, func() int) {
 	t.Helper()
 	factory := setupEntityTest(t)
 	baseCtx := ctxWithTenant("uc-tenant")
+	spitest.EnsureLockedModel(t, factory, baseCtx, ucModel, keys...)
 	store, err := factory.EntityStore(baseCtx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -43,17 +50,15 @@ func setupUCStore(t *testing.T) (spi.EntityStore, context.Context, func() int) {
 	return store, baseCtx, countClaims
 }
 
-// emailKeys returns a single composite unique key over the $.email field.
-func emailKeys() []spi.UniqueKey {
-	return []spi.UniqueKey{{ID: "email-key", Fields: []string{"$.email"}}}
-}
+// emailKey is a single-field unique key over the $.email field.
+var emailKey = spi.UniqueKey{ID: "email-key", Fields: []string{"$.email"}}
 
 // ucEntity builds a minimal entity with the given id and email payload.
 func ucEntity(id, email string) *spi.Entity {
 	return &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID:       id,
-			ModelRef: spi.ModelRef{EntityName: "UCModel", ModelVersion: "1"},
+			ModelRef: ucModel,
 		},
 		Data: []byte(fmt.Sprintf(`{"email":%q}`, email)),
 	}
@@ -62,8 +67,7 @@ func ucEntity(id, email string) *spi.Entity {
 // TestUniqueClaims_DuplicateSignature verifies that saving two distinct entities
 // with the same key value returns spi.ErrUniqueViolation on the second save.
 func TestUniqueClaims_DuplicateSignature(t *testing.T) {
-	store, baseCtx, _ := setupUCStore(t)
-	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
+	store, ctx, _ := setupUCStore(t, emailKey)
 
 	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
 		t.Fatalf("first Save: %v", err)
@@ -77,8 +81,7 @@ func TestUniqueClaims_DuplicateSignature(t *testing.T) {
 // TestUniqueClaims_SoftDeleteFreesValue verifies that soft-deleting the holder
 // of a key value allows another entity to claim that same value.
 func TestUniqueClaims_SoftDeleteFreesValue(t *testing.T) {
-	store, baseCtx, _ := setupUCStore(t)
-	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
+	store, ctx, _ := setupUCStore(t, emailKey)
 
 	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
 		t.Fatalf("first Save: %v", err)
@@ -95,9 +98,8 @@ func TestUniqueClaims_SoftDeleteFreesValue(t *testing.T) {
 // TestUniqueClaims_DeleteAllFreesValues verifies that DeleteAll releases all
 // claim rows for the model, allowing previously-used values to be re-saved.
 func TestUniqueClaims_DeleteAllFreesValues(t *testing.T) {
-	store, baseCtx, countClaims := setupUCStore(t)
-	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
-	modelRef := spi.ModelRef{EntityName: "UCModel", ModelVersion: "1"}
+	store, ctx, countClaims := setupUCStore(t, emailKey)
+	modelRef := ucModel
 
 	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
 		t.Fatalf("Save e1: %v", err)
@@ -120,8 +122,7 @@ func TestUniqueClaims_DeleteAllFreesValues(t *testing.T) {
 // TestUniqueClaims_UpdateMovesKey verifies that updating an entity to a new key
 // value frees the old claim so another entity can take the old value.
 func TestUniqueClaims_UpdateMovesKey(t *testing.T) {
-	store, baseCtx, _ := setupUCStore(t)
-	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
+	store, ctx, _ := setupUCStore(t, emailKey)
 
 	// e1 claims a@x.com.
 	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
@@ -177,14 +178,13 @@ func TestUniqueClaims_ClassifyError_Discrimination(t *testing.T) {
 // TestUniqueClaims_NonScalarKeyPath verifies that a non-scalar value at a
 // declared key path causes Save to return ErrPartialUniqueKey (not a 5xx).
 func TestUniqueClaims_NonScalarKeyPath(t *testing.T) {
-	store, baseCtx, _ := setupUCStore(t)
-	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
+	store, ctx, _ := setupUCStore(t, emailKey)
 
 	// $.email is an object rather than a scalar string.
 	ent := &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID:       "e1",
-			ModelRef: spi.ModelRef{EntityName: "UCModel", ModelVersion: "1"},
+			ModelRef: ucModel,
 		},
 		Data: []byte(`{"email":{"nested":"object"}}`),
 	}
@@ -194,17 +194,19 @@ func TestUniqueClaims_NonScalarKeyPath(t *testing.T) {
 	}
 }
 
-// TestUniqueClaims_NoContextKeys verifies that when no unique keys are present
-// in the context, Save succeeds and writes zero rows to unique_claims.
-func TestUniqueClaims_NoContextKeys(t *testing.T) {
-	store, baseCtx, countClaims := setupUCStore(t)
-	// Intentionally no spi.WithUniqueKeys — baseline context only.
+// TestUniqueClaims_KeylessModel verifies that a model declaring no unique
+// keys claims nothing: Save succeeds and writes zero rows to unique_claims.
+func TestUniqueClaims_KeylessModel(t *testing.T) {
+	store, ctx, countClaims := setupUCStore(t)
 
-	if _, err := store.Save(baseCtx, ucEntity("e1", "a@x.com")); err != nil {
-		t.Fatalf("Save without unique keys: %v", err)
+	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
+		t.Fatalf("Save into a keyless model: %v", err)
+	}
+	if _, err := store.Save(ctx, ucEntity("e2", "a@x.com")); err != nil {
+		t.Fatalf("Save of an equal value into a keyless model: %v", err)
 	}
 	if n := countClaims(); n != 0 {
-		t.Errorf("expected 0 claim rows when context carries no unique keys, got %d", n)
+		t.Errorf("expected 0 claim rows for a keyless model, got %d", n)
 	}
 }
 
@@ -214,8 +216,7 @@ func TestUniqueClaims_NoContextKeys(t *testing.T) {
 // A subsequent entity claiming the same value must succeed — not see a
 // spurious 409.
 func TestUniqueClaims_UpdateToAllNullFreesValue(t *testing.T) {
-	store, baseCtx, countClaims := setupUCStore(t)
-	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
+	store, ctx, countClaims := setupUCStore(t, emailKey)
 
 	// e1 claims a@x.com.
 	if _, err := store.Save(ctx, ucEntity("e1", "a@x.com")); err != nil {
@@ -230,7 +231,7 @@ func TestUniqueClaims_UpdateToAllNullFreesValue(t *testing.T) {
 	nullEntity := &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID:       "e1",
-			ModelRef: spi.ModelRef{EntityName: "UCModel", ModelVersion: "1"},
+			ModelRef: ucModel,
 		},
 		Data: []byte(`{"status":"updated"}`), // no email field
 	}
@@ -248,86 +249,79 @@ func TestUniqueClaims_UpdateToAllNullFreesValue(t *testing.T) {
 	}
 }
 
-// TestUniqueClaims_SameTransactionDeleteAndReclaim verifies that within ONE
-// transaction, deleting entity A (which holds a key value) and creating entity B
-// with that same value commits successfully — A's delete frees the value for B.
-// Mirrors plugins/memory and plugins/sqlite. Postgres enforces claims inline
-// (no buffer), so the delete's claim-release must precede B's claim-insert within
-// the tx — which the delete-first ordering here guarantees.
-func TestUniqueClaims_SameTransactionDeleteAndReclaim(t *testing.T) {
+// ucTxSetup is setupUCStore with a transaction manager: a fresh schema with
+// ucModel LOCKED declaring emailKey, a non-transactional store on the
+// returned context, and entity "a" committed holding "shared@x.com".
+func ucTxSetup(t *testing.T) (spi.EntityStore, *postgres.TransactionManager, context.Context) {
+	t.Helper()
 	factory, tm := setupEntityTestWithTM(t)
-	baseCtx := ctxWithTenant("uc-tenant")
-	store, err := factory.EntityStore(baseCtx)
+	ctx := ctxWithTenant("uc-tenant")
+	spitest.EnsureLockedModel(t, factory, ctx, ucModel, emailKey)
+	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-
-	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
-
-	// Pre-condition (non-tx): entity A holds "shared@x.com".
 	if _, err := store.Save(ctx, ucEntity("a", "shared@x.com")); err != nil {
 		t.Fatalf("pre-save A: %v", err)
 	}
+	return store, tm, ctx
+}
 
-	txID, txCtx := beginGuarded(t, tm, baseCtx)
-
-	// Same transaction: delete A, then create B with A's former value.
-	if err := store.Delete(txCtx, "a"); err != nil {
-		t.Fatalf("tx Delete a: %v", err)
+// ucRequireReclaimed asserts that "a" is gone, "b" holds "shared@x.com", and
+// the value is claimed: a third entity cannot take it.
+func ucRequireReclaimed(t *testing.T, store spi.EntityStore, ctx context.Context) {
+	t.Helper()
+	if exists, err := store.Exists(ctx, "a"); err != nil || exists {
+		t.Errorf("a should not exist after the tx delete: exists=%v err=%v", exists, err)
 	}
-	if _, err := store.Save(spi.WithUniqueKeys(txCtx, emailKeys()), ucEntity("b", "shared@x.com")); err != nil {
-		t.Fatalf("tx Save b: %v", err)
-	}
-
-	// Commit must succeed: A's claim is released by the delete, so B may hold it.
-	if err := tm.Commit(txCtx, txID); err != nil {
-		t.Fatalf("Commit: expected success (delete-then-reclaim), got %v", err)
-	}
-
-	// Post-conditions: A is gone, B holds the value.
-	if exists, err := store.Exists(baseCtx, "a"); err != nil || exists {
-		t.Errorf("a should not exist after tx delete: exists=%v err=%v", exists, err)
-	}
-	b, err := store.Get(baseCtx, "b")
+	b, err := store.Get(ctx, "b")
 	if err != nil {
 		t.Fatalf("Get b: %v", err)
 	}
 	if string(b.Data) != `{"email":"shared@x.com"}` {
 		t.Errorf("b.Data = %s, want {\"email\":\"shared@x.com\"}", b.Data)
 	}
-
-	// B's claim is enforced: a third entity cannot steal the value.
 	if _, err := store.Save(ctx, ucEntity("c", "shared@x.com")); !errors.Is(err, spi.ErrUniqueViolation) {
 		t.Errorf("c with b's value: expected ErrUniqueViolation, got %v", err)
 	}
 }
 
-// TestUniqueClaims_SameTxReclaimBeforeDelete_RejectedAtInsert documents that
-// postgres REJECTS the save-first (claim-before-free) ordering. Unlike the
-// buffered engines (memory/sqlite), postgres enforces the unique_claims_uq index
-// inline at insert time, so claiming value V on B while A still holds it fails AT
-// THE SAVE — A has not been deleted yet. This is the legitimate, stricter
-// interpretation (claim-before-free is an application smell). The divergence is
-// documented (models.md / errors/UNIQUE_VIOLATION.md / OpenAPI), not reconciled:
-// the buffered engines cannot replicate insert-time ordering without abandoning
-// commit-time validation.
-func TestUniqueClaims_SameTxReclaimBeforeDelete_RejectedAtInsert(t *testing.T) {
-	factory, tm := setupEntityTestWithTM(t)
-	baseCtx := ctxWithTenant("uc-tenant")
-	store, err := factory.EntityStore(baseCtx)
-	if err != nil {
-		t.Fatalf("EntityStore: %v", err)
-	}
-	ctx := spi.WithUniqueKeys(baseCtx, emailKeys())
+// TestUniqueClaims_SameTxReclaimAfterDelete_Commits verifies that within ONE
+// transaction, deleting entity A (which holds a key value) and then creating
+// entity B with that same value commits: the claims are computed at commit,
+// from the transaction's final entities, in which only B holds the value.
+func TestUniqueClaims_SameTxReclaimAfterDelete_Commits(t *testing.T) {
+	store, tm, ctx := ucTxSetup(t)
 
-	if _, err := store.Save(ctx, ucEntity("a", "shared@x.com")); err != nil {
-		t.Fatalf("pre-save A: %v", err)
+	txID, txCtx := beginGuarded(t, tm, ctx)
+	if err := store.Delete(txCtx, "a"); err != nil {
+		t.Fatalf("tx Delete a: %v", err)
 	}
-	_, txCtx := beginGuarded(t, tm, baseCtx)
-	// SAVE-FIRST: claim V on B before freeing it on A. Postgres enforces inline,
-	// so this fails AT THE SAVE (A still holds V) — not deferred to commit.
-	_, errSave := store.Save(spi.WithUniqueKeys(txCtx, emailKeys()), ucEntity("b", "shared@x.com"))
-	if !errors.Is(errSave, spi.ErrUniqueViolation) {
-		t.Fatalf("postgres save-before-delete: expected ErrUniqueViolation at Save, got %v", errSave)
+	if _, err := store.Save(txCtx, ucEntity("b", "shared@x.com")); err != nil {
+		t.Fatalf("tx Save b: %v", err)
 	}
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit (delete, then reclaim): %v", err)
+	}
+	ucRequireReclaimed(t, store, ctx)
+}
+
+// TestUniqueClaims_SameTxReclaimBeforeDelete_Commits verifies the other
+// order: within ONE transaction, B claims A's value first and A is deleted
+// after. A save inside a transaction claims nothing; the commit judges the
+// final entities, in which only B holds the value, so it commits.
+func TestUniqueClaims_SameTxReclaimBeforeDelete_Commits(t *testing.T) {
+	store, tm, ctx := ucTxSetup(t)
+
+	txID, txCtx := beginGuarded(t, tm, ctx)
+	if _, err := store.Save(txCtx, ucEntity("b", "shared@x.com")); err != nil {
+		t.Fatalf("tx Save b: a save inside a transaction claims nothing, got %v", err)
+	}
+	if err := store.Delete(txCtx, "a"); err != nil {
+		t.Fatalf("tx Delete a: %v", err)
+	}
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit (reclaim, then delete): %v", err)
+	}
+	ucRequireReclaimed(t, store, ctx)
 }

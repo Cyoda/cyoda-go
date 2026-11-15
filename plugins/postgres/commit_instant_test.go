@@ -56,6 +56,7 @@ func TestCommit_DatesWritesAtCommitNotAtStart(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "commit-instant", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -114,6 +115,7 @@ func TestCommit_OneInstantForEveryEntity(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "commit-shared", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -190,6 +192,7 @@ func TestCommit_CreationDateOfACreateAndUpdateIsTheCommitInstant(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "commit-creation", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 	id := uuid.NewString()
 
 	txID, txCtx, err := tm.Begin(ctx)
@@ -243,6 +246,7 @@ func TestCommit_CreationDateSurvivesALaterTransaction(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "commit-creation-later", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 	id := uuid.NewString()
 
 	createTx, createCtx, err := tm.Begin(ctx)
@@ -317,6 +321,7 @@ func TestCommit_AuditEventsShareTheTransactionsInstant(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "commit-audit", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 	id := uuid.NewString()
 
 	txID, txCtx, err := tm.Begin(ctx)
@@ -380,6 +385,7 @@ func TestGetVersionMetadata_WindowBoundsOnCommitInstant(t *testing.T) {
 	}
 	id := uuid.NewString()
 	mref := spi.ModelRef{EntityName: "history-window", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -425,6 +431,7 @@ func TestNonTxSave_StampedAtItsOwnCommit(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "nontx-save-stamp", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 	id := uuid.NewString()
 	if _, err := store.Save(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: id, ModelRef: mref}, Data: []byte(`{"n":0}`),
@@ -471,6 +478,7 @@ func TestNonTxDelete_StampedAtItsOwnCommit(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "nontx-delete-stamp", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 	id := uuid.NewString()
 	if _, err := store.Save(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: id, ModelRef: mref}, Data: []byte(`{"n":0}`),

@@ -233,7 +233,11 @@ func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Conte
 // Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001),
 // including one a savepoint rollback has since undone, or when the
 // application-layer first-committer-wins validation detects a stale read or
-// write set.
+// write set. The commit checks unique keys and models on the transaction's
+// final entities (commitClaims): spi.ErrModelNotLocked for an entity saved
+// into a model that does not exist or is not LOCKED, spi.ErrPartialUniqueKey
+// for a partial composite key, spi.ErrUniqueViolation for a value already
+// held, and spi.ErrConflict when a model changed after the snapshot.
 //
 // Tenant isolation: rejects callers whose UserContext
 // tenant does not match the transaction's tenant. RLS protects data-path
@@ -301,12 +305,33 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 	}
 
+	// Unique keys and models, from the transaction's final entities and the
+	// stored models (commitClaims). Before the stamp: these statements can
+	// wait on a lock, and nothing after cyoda_stamp may. With an empty read
+	// set they are the first statements Commit issues, so on an aborted
+	// transaction they meet the 25P02.
+	if err := tm.commitWrittenClaims(ctx, pgxTx, state); err != nil {
+		if aborted, ok := abortedCommitError(state, err); ok {
+			tm.cleanupTx(txID)
+			_ = pgxTx.Rollback(context.Background())
+			return aborted
+		}
+		// Classified while the transaction is still registered: 40001 and
+		// 40P01 become spi.ErrConflict, a 23505 on unique_claims_uq
+		// spi.ErrUniqueViolation; spi.ErrModelNotLocked and
+		// spi.ErrPartialUniqueKey pass through.
+		classified := tm.classifyTxError(txID, fmt.Errorf("Commit: unique keys: %w", err))
+		tm.cleanupTx(txID)
+		_ = pgxTx.Rollback(context.Background())
+		return classified
+	}
+
 	// Fix the transaction's instant and stamp it onto every row the
 	// transaction wrote, immediately before COMMIT.
 	//
 	// If the transaction is already in an aborted state (e.g. an earlier Exec
-	// returned 40001 and left the tx aborted) and had no read set to validate,
-	// the first statement of the stamp fails with SQLSTATE 25P02
+	// returned 40001 and left the tx aborted) and had no read set to validate
+	// and no entity written, the first statement of the stamp fails with SQLSTATE 25P02
 	// (in_failed_sql_transaction), which abortedCommitError reads.
 	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, state.markerKey, txID)
 	if tsErr != nil {
@@ -372,6 +397,20 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	tm.cleanupTx(txID)
 
 	return nil
+}
+
+// commitWrittenClaims runs commitClaims over the entities the transaction
+// wrote. A transaction that wrote no entity issues no statement here.
+func (tm *TransactionManager) commitWrittenClaims(ctx context.Context, tx pgx.Tx, state *txState) error {
+	written := state.WrittenEntities()
+	if len(written) == 0 {
+		return nil
+	}
+	refs, err := writtenModelRefs(ctx, tx, state.tenantID, written)
+	if err != nil {
+		return err
+	}
+	return commitClaims(ctx, tx, state.tenantID, written, refs)
 }
 
 // stampCommitInstant fixes the transaction's instant and applies it to every

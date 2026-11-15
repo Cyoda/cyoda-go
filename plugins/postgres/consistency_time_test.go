@@ -139,6 +139,7 @@ func newCTFactoryTinyPool(t *testing.T) (*postgres.StoreFactory, context.Context
 // commits, returning the transaction id and the Commit (or earlier) error.
 func commitOneEntityErr(t *testing.T, f *postgres.StoreFactory, ctx context.Context) (string, error) {
 	t.Helper()
+	lockModels(t, f, ctx, ctModel)
 	tm, err := f.TransactionManager(ctx)
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
@@ -340,6 +341,7 @@ func TestConsistencyTime_WaitsForAStampedTransaction(t *testing.T) {
 // the test may take to observe it.
 func TestConsistencyTime_WaitsForACommitInItsCommitPhase(t *testing.T) {
 	f, ctx := newCTFactory(t)
+	lockModels(t, f, ctx, ctModel)
 	pool := postgres.PoolForTest(f)
 	tm := ctTM(t, f, ctx)
 	prewarm(t, pool, 5)
@@ -758,6 +760,7 @@ func TestConsistencyTime_CancelLeavesNoLock(t *testing.T) {
 // hour ahead, C and the next stamps on both stamp paths are at or above it.
 func TestConsistencyTime_FloorAheadOfClock(t *testing.T) {
 	f, ctx := newCTFactoryOwnDB(t)
+	lockModels(t, f, ctx, ctModel)
 	pool := postgres.PoolForTest(f)
 	ahead := time.Now().Add(time.Hour).UnixMicro()
 	if _, err := pool.Exec(context.Background(), `SELECT setval('cyoda_stamp_floor', $1, true)`, ahead); err != nil {
@@ -861,6 +864,7 @@ func TestConsistencyTimeMigration_SeedsFloorFromStoredStamps(t *testing.T) {
 // non-transactional save.
 func TestStamp_LockTimeoutIsStorageUnavailable(t *testing.T) {
 	f, ctx := newCTFactory(t)
+	lockModels(t, f, ctx, ctModel)
 	holdFloorMutex(t)
 
 	assertRetryable := func(what string, err error) {
@@ -964,6 +968,7 @@ func TestStamp_ErrorClosesConnection(t *testing.T) {
 			f := postgres.NewStoreFactory(pool)
 			f.InitTransactionManager(newTestUUIDGenerator())
 			ctx := ctxWithTenant(ctTenant)
+			lockModels(t, f, ctx, ctModel)
 			backend := func() int {
 				var pid int
 				if err := pool.QueryRow(context.Background(), `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
@@ -1075,6 +1080,7 @@ func TestTenantKeys_DistinctPerTenantAndStable(t *testing.T) {
 		t.Fatalf("ConsistencyTime: %v", err)
 	}
 	saveCtx := ctxWithTenant(viaNonTxSave)
+	lockModels(t, f2, saveCtx, ctModel)
 	es, err := f2.EntityStore(saveCtx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -1109,6 +1115,7 @@ func TestTenantKeys_DistinctPerTenantAndStable(t *testing.T) {
 // transaction.
 func TestStamp_CommitPhaseDoesNotTouchTenantKeys(t *testing.T) {
 	f, ctx := newCTFactory(t)
+	lockModels(t, f, ctx, ctModel)
 	pool := postgres.PoolForTest(f)
 	tm := ctTM(t, f, ctx)
 	prewarm(t, pool, 5)
@@ -1211,6 +1218,7 @@ func TestTenantKeys_LookupFailureFailsClosed(t *testing.T) {
 // the committing transaction's id.
 func seedEntity(t *testing.T, f *postgres.StoreFactory, ctx context.Context) (id, txID string) {
 	t.Helper()
+	lockModels(t, f, ctx, ctModel)
 	tm := ctTM(t, f, ctx)
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {

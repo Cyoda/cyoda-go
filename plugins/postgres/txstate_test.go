@@ -382,3 +382,39 @@ func TestRestoreSavepoint_KeepsAConflictCause(t *testing.T) {
 		t.Fatalf("AbortCause = %v, want the conflict kept across the savepoint rollback", cause)
 	}
 }
+
+// TestRecordWriteBytes_LastWriteAndSavepoints verifies the bytes record: it
+// holds each entity's last write (nil for a delete), keeps a copy of the
+// given bytes, and is restored by a savepoint rollback and kept by a release.
+func TestRecordWriteBytes_LastWriteAndSavepoints(t *testing.T) {
+	s := newTxState("tenant-1", 1)
+	data := []byte(`{"code":"x"}`)
+	s.RecordWriteBytes("a", data)
+	data[0] = '!'
+	if got := string(s.WrittenEntities()["a"]); got != `{"code":"x"}` {
+		t.Fatalf("recorded bytes = %s, want a copy of the given bytes", got)
+	}
+
+	s.PushSavepoint("sp1")
+	s.RecordWriteBytes("a", []byte(`{"code":"y"}`))
+	s.RecordWriteBytes("b", nil)
+	if got := s.WrittenEntities(); string(got["a"]) != `{"code":"y"}` || got["b"] != nil || len(got) != 2 {
+		t.Fatalf("after the writes: %v, want a's last save and b's delete", got)
+	}
+	if err := s.RestoreSavepoint("sp1"); err != nil {
+		t.Fatalf("RestoreSavepoint: %v", err)
+	}
+	got := s.WrittenEntities()
+	if _, ok := got["b"]; ok || string(got["a"]) != `{"code":"x"}` {
+		t.Fatalf("after the rollback: %v, want only a's write before the savepoint", got)
+	}
+
+	s.PushSavepoint("sp2")
+	s.RecordWriteBytes("c", nil)
+	if err := s.ReleaseSavepoint("sp2"); err != nil {
+		t.Fatalf("ReleaseSavepoint: %v", err)
+	}
+	if _, ok := s.WrittenEntities()["c"]; !ok {
+		t.Fatal("a released savepoint dropped the write made after it")
+	}
+}

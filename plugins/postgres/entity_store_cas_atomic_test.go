@@ -24,6 +24,7 @@ func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("tenant-cas")
 	ref := spi.ModelRef{EntityName: "m-cas", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -91,6 +92,7 @@ func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
 	const tenant spi.TenantID = "tenant-cas-rls"
 	ctx := ctxWithTenant(tenant)
 	ref := spi.ModelRef{EntityName: "m-cas-rls", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	owner := postgres.PoolForTest(factory)
 	ownerStore, err := factory.EntityStore(ctx)
@@ -188,6 +190,7 @@ func TestNonTxCompareAndSave_StampsAfterTheLockWait(t *testing.T) {
 	const tenant spi.TenantID = "tenant-cas-stamp"
 	ctx := ctxWithTenant(tenant)
 	ref := spi.ModelRef{EntityName: "m-cas-stamp", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	pool := postgres.PoolForTest(factory)
 
 	store, err := factory.EntityStore(ctx)
@@ -317,6 +320,7 @@ func TestNonTxCompareAndSave_OwnTxGuardPreventsSelfDeadlock(t *testing.T) {
 	const tenant spi.TenantID = "tenant-cas-no-nested-tx"
 	ctx := ctxWithTenant(tenant)
 	ref := spi.ModelRef{EntityName: "m-cas-no-nested-tx", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	pool := postgres.PoolForTest(factory)
 
 	store, err := factory.EntityStore(ctx)

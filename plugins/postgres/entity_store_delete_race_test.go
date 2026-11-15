@@ -98,6 +98,7 @@ func TestPostgres_DeleteConcurrent_NonTx_OneWinner(t *testing.T) {
 	const tenant spi.TenantID = "tenant-delete-race"
 	ctx := ctxWithTenant(tenant)
 	ref := spi.ModelRef{EntityName: "m-delete-race", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -155,6 +156,7 @@ func TestPostgres_DeleteConcurrent_TxJoined_OneWinner(t *testing.T) {
 	const tenant spi.TenantID = "tenant-delete-race-tx"
 	ctx := ctxWithTenant(tenant)
 	ref := spi.ModelRef{EntityName: "m-delete-race-tx", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {

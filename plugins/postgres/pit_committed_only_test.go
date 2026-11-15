@@ -45,6 +45,7 @@ func setupPITCommitted(t *testing.T) (*postgres.StoreFactory, *postgres.Transact
 	t.Helper()
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant(pitCommittedTenant)
+	lockModels(t, factory, ctx, pitModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore (seed): %v", err)

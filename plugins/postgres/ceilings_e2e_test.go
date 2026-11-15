@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // testDBURL returns the database every test in this package runs against.
@@ -347,14 +348,18 @@ func seedSearchCeilingModel(t *testing.T, dsn string) {
 		}
 	})
 
-	store, err := newStoreFactoryWithConfig(pool, defaultStoreConfig()).EntityStore(searchCeilingCtx())
+	factory := newStoreFactoryWithConfig(pool, defaultStoreConfig())
+	t.Cleanup(factory.closeModelPool)
+	ref := spi.ModelRef{EntityName: searchCeilingModel, ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, searchCeilingCtx(), ref)
+	store, err := factory.EntityStore(searchCeilingCtx())
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	if _, err := store.Save(searchCeilingCtx(), &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID:       "seed",
-			ModelRef: spi.ModelRef{EntityName: searchCeilingModel, ModelVersion: "1"},
+			ModelRef: ref,
 			State:    "NEW",
 		},
 		Data: []byte(`{"name":"Alice","city":"Berlin"}`),

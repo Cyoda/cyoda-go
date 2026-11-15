@@ -44,6 +44,7 @@ func explainPlan(t *testing.T, ctx context.Context, conn *pgxpool.Conn, query st
 func seedPagePlanEntities(t *testing.T, factory *postgres.StoreFactory, tenant spi.TenantID, mref spi.ModelRef, n int) {
 	t.Helper()
 	ctx := ctxWithTenant(tenant)
+	lockModels(t, factory, ctx, mref)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

@@ -22,6 +22,7 @@ func TestTx_OpAfterCommit_WrapsSentinel(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("tenant-op-after-commit")
 	ref := spi.ModelRef{EntityName: "m-op-after-commit", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {

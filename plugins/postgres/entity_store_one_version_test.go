@@ -48,6 +48,7 @@ func TestSaveOn_NonTransactionalAddsVersionEachTime(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "one-version-nontx", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 	id := uuid.NewString()
 
 	for i, data := range []string{`{"n":1}`, `{"n":2}`} {
@@ -117,6 +118,7 @@ func TestSaveOn_RecreateAfterCommittedDeleteStaysUpdated(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "one-version-recreate", ModelVersion: "1"}
+	lockModels(t, factory, baseCtx, mref)
 	id := uuid.NewString()
 
 	if _, err := store.Save(baseCtx, oneVersionEntity(id, mref, `{"n":0}`)); err != nil {

@@ -125,6 +125,7 @@ func mustOpenPluginFactory(t *testing.T, opts ...spi.FactoryOption) spi.StoreFac
 func TestPlugin_NewFactoryPassesClock(t *testing.T) {
 	f := mustOpenPluginFactory(t, spi.WithClock(fixedClock{clockStart}))
 	ctx := ctxWithTenant(ctTenant)
+	lockModels(t, f, ctx, ctModel)
 	near := func(what string, got time.Time) {
 		t.Helper()
 		if d := got.Sub(clockStart); d < -time.Second || d > time.Second {
@@ -245,6 +246,7 @@ func TestClock_PlaceholderDatesInsideTx(t *testing.T) {
 func TestNoClock_StampFunctionsUnchanged(t *testing.T) {
 	f := mustOpenPluginFactory(t)
 	ctx := ctxWithTenant(ctTenant)
+	lockModels(t, f, ctx, ctModel)
 	tm, err := f.TransactionManager(ctx)
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)

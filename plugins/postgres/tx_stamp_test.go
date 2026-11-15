@@ -21,6 +21,7 @@ func TestTx_UnstampedWrite_CarriesTheTransactionID(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := ctxWithTenant(spi.TenantID("tenant-stamp"))
 	ref := spi.ModelRef{EntityName: "m-stamp", ModelVersion: "1"}
+	lockModels(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -68,6 +69,7 @@ func TestTx_ForeignStampIsOverwritten(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := ctxWithTenant(spi.TenantID("tenant-stamp2"))
 	ref := spi.ModelRef{EntityName: "m-stamp2", ModelVersion: "1"}
+	lockModels(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

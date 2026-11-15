@@ -38,6 +38,7 @@ func TestPIT_DeletedSinceInstant_StillReturned(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "pit-lateral", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 
 	id := uuid.NewString()
 	if _, err := store.Save(ctx, &spi.Entity{
@@ -86,6 +87,7 @@ func TestPIT_CreatedAfterInstant_Absent(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "pit-lateral-after", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 
 	seed := uuid.NewString()
 	if _, err := store.Save(ctx, &spi.Entity{
@@ -138,6 +140,7 @@ func TestPIT_DeleteThenRecreateInOneTx_ReadsTheOneRecreatedVersion(t *testing.T)
 		t.Fatalf("EntityStore: %v", err)
 	}
 	mref := spi.ModelRef{EntityName: "pit-recreate", ModelVersion: "1"}
+	lockModels(t, factory, baseCtx, mref)
 
 	id := uuid.NewString()
 	if _, err := store.Save(baseCtx, &spi.Entity{
