@@ -581,11 +581,12 @@ longer passes anything to storage.
   Concurrency on postgres: a transaction whose commit inserts a value that
   another, uncommitted transaction has just inserted at its own commit waits
   for it (this wait is before its stamp), then gets `ErrUniqueViolation` if the
-  other committed or proceeds if it rolled back. Two commits inserting each
-  other's values in opposite orders meet PostgreSQL's deadlock detection
-  (`40P01`), classified as a retryable `spi.ErrConflict` (`409 CONFLICT`)
-  where memory and sqlite answer `409 UNIQUE_VIOLATION`; the deterministic
-  insert order makes that rare. This is an accepted, transient difference: both
+  other committed or proceeds if it rolled back. Claims are inserted in a fixed
+  order, so commits claiming the same values wait rather than deadlock. Two
+  commits that each claim a value the other frees in the same commit meet
+  PostgreSQL's deadlock detection (`40P01`), classified as a retryable
+  `spi.ErrConflict` (`409 CONFLICT`) where memory and sqlite answer `409
+  UNIQUE_VIOLATION`. This is an accepted, transient difference: both
   answers fail closed, the `409 CONFLICT` is retryable, and the retry gets the
   same `UNIQUE_VIOLATION` the other backends gave.
 
@@ -818,7 +819,7 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | Schedule function reads anchor → current, on a client door and in a scheduled fire (the fire is `410` today, §2.6) | engine unit | yes | — | — |
 | Callback search under token finds anchor by its current data | — | yes | yes | yes |
 | Callback count and page under token count/list the anchor by its current data | — | yes | yes | yes |
-| One version per transaction: each §3.1 row | spitest + per-plugin unit | — | yes (history via `/changes`) | — |
+| One version per transaction: each §3.1 row | spitest + per-plugin unit | — | save, save and create, save through `/changes`; the other rows waived: spitest runs each row on every backend and the HTTP layer adds no per-row logic | — |
 | Savepoint rollback restores pending version | spitest | — | — | — |
 | `?transactionId` → final entity after commit | — | yes | yes | n/a (no gRPC by-tx read) |
 | `?transactionId=X` inside X → 404 | spitest | yes | yes | n/a |
@@ -836,11 +837,11 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | Unique key: two entities swap values; chain of moves; same value twice in one tx (refused) | plugin unit | yes | yes | — |
 | Joined callback writes a duplicate key → callback 2xx, owner commit 409 | — | yes | — | yes (joined write over gRPC `tx-token`) |
 | Two commits claim each other's values → postgres `409 CONFLICT` (40P01) | — | waived: the deadlock needs a precise interleave of two commits; the classification of 40P01 is covered by the existing postgres classifier tests | — | — |
-| Scheduled fire declines / is cancelled after a function criterion → no entity version, client `If-Match` still valid | engine unit | yes | — | — |
-| Available-transitions read under a token runs a function criterion → no write | engine unit | yes | — | — |
+| Scheduled fire declines / is cancelled after a function criterion → no entity version, client `If-Match` still valid | engine unit | waived: cannot go RED (the pre-#617 base writes nothing either) | — | — |
+| Available-transitions read under a token runs a function criterion → no write | engine unit | waived: cannot go RED (the base writes nothing either) | — | — |
 | Scheduled fire breaks a key → task outcome per §4.3 | scheduler/engine unit | yes | — | — |
 | Keys come from the stored model: a transactional and a non-transactional save with no keys anywhere on the call path enforce the model's keys | spitest + per-plugin unit | — | existing `unique_keys` parity (unchanged results) | — |
-| Commit of an entity whose model is no longer `LOCKED`, or does not exist → `ErrModelNotLocked`, nothing committed | spitest + per-plugin unit | yes (postgres, isolated): a test processor unlocks the model without the token during the create's callout (count is 0: the entity is uncommitted; the transaction's snapshot was taken at `Begin`, `transaction_manager.go` ~:181, before the unlock); answer `409 CONFLICT`, its retry `409 MODEL_NOT_LOCKED`; single create and collection create; and an update whose `SYNC` processor's joined callback creates an entity of a second model that the test processor then unlocks (answer `409`, nothing committed, the second model `UNLOCKED` with zero entities). Collection update and transition: waived, every door answers through the same `classifyCommitErr` (`service.go` ~:772), and the mapping is a `common.Internal` unit test. memory/sqlite give `MODEL_NOT_LOCKED` in their plugin tests. | yes: single create with the unlocking processor; every backend answers `409`, and on postgres its retry until not `CONFLICT` answers `MODEL_NOT_LOCKED` (the code memory and sqlite give at once); no entity stored | gRPC single create and collection create: envelope `Error.Code` |
+| Commit of an entity whose model is no longer `LOCKED`, or does not exist → `ErrModelNotLocked`, nothing committed | spitest + per-plugin unit | yes (postgres, isolated): a test processor unlocks the model without the token during the create's callout (count is 0: the entity is uncommitted; the transaction's snapshot was taken at `Begin`, `transaction_manager.go` ~:181, before the unlock); answer `409 CONFLICT`, its retry `409 MODEL_NOT_LOCKED`; single create and collection create; and an update whose `SYNC` processor's joined callback creates an entity of a second model that the test processor then unlocks (answer `409`, nothing committed, the second model `UNLOCKED` with zero entities). Collection update and transition: waived, every door answers through the same `classifyCommitErr` (`service.go` ~:772), and the mapping is a `common.Internal` unit test. memory/sqlite give `MODEL_NOT_LOCKED` in their plugin tests. | yes: single create with the unlocking processor; every backend answers `409`, and on postgres its retry until not `CONFLICT` answers `MODEL_NOT_LOCKED` (the code memory and sqlite give at once); no entity stored | gRPC single create and collection create: envelope `Error.Code` (`CLIENT_ERROR` with the code in the message); the gRPC update door waived (same `classifyCommitErr` funnel as the HTTP update test) |
 | A transaction that creates an entity and deletes it again commits while the model is unlocked (tombstone only, no model read) | spitest + per-plugin unit | — | — | — |
 | `ModelStore.Unlock` with live entities → `ModelHasEntitiesError` with the count, model unchanged | spitest + per-plugin unit | existing (`model_errors_test.go` ~:45) | new scenario | new: unlock over gRPC, envelope `Error.Code=MODEL_HAS_ENTITIES` |
 | `ModelStore.Delete` of a `LOCKED` model, `Save` over a `LOCKED` model → `ErrModelLocked`, model unchanged | spitest + per-plugin unit | existing service-level answers (`MODEL_ALREADY_LOCKED`) unchanged | — | — |
