@@ -95,6 +95,12 @@ type savepointSnapshot struct {
 	// stageAuditEvent), so RollbackToSavepoint restores it the same way as
 	// scheduledTaskOpsLen: by truncating back to this recorded length.
 	auditOpsLen int
+
+	// deletedBuffered is the transaction's deletedBufferedEntities entry at
+	// the moment this savepoint was taken; RollbackToSavepoint restores it.
+	// The staged entities are never mutated after staging, so the map is
+	// cloned shallowly.
+	deletedBuffered map[string]*spi.Entity
 }
 
 // transactionManager implements spi.TransactionManager with application-layer
@@ -170,11 +176,12 @@ type transactionManager struct {
 	// spi.ErrEntityModelMismatch exists to close). flushToSQLite uses this
 	// to write the create+tombstone as one committed row when the SELECT
 	// comes back empty. Protected by mu.
-	// Not savepoint-scoped: every entry for an id carries that id's one
-	// model, because the in-tx model check (checkModelImmutableInTx) refuses
-	// a write of the id under any other model, so an entry a savepoint
-	// rollback leaves behind can never name a different model. Cleaned up
-	// after commit or rollback (no leak).
+	// Savepoint-scoped like tx.Buffer (snapshotted at Savepoint, restored at
+	// RollbackToSavepoint — see savepointSnapshot.deletedBuffered): both the
+	// in-tx model check (checkModelImmutableInTx) and the create-then-delete
+	// tombstone read it, so an entry staged after a savepoint must not
+	// outlive a rollback past the create it records. Cleaned up after commit
+	// or rollback (no leak).
 	deletedBufferedEntities map[string]map[string]*spi.Entity // txID -> entityID -> evicted entity
 
 	// lostDiscardedWrite marks a transaction that a RollbackToSavepoint made
@@ -1424,6 +1431,7 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.savepoints[txID] = append(m.savepoints[txID], savepointSnapshot{
+		deletedBuffered:     maps.Clone(m.deletedBufferedEntities[txID]),
 		id:                  spID,
 		buffer:              bufCopy,
 		readSet:             readCopy,
@@ -1512,6 +1520,11 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 	tx.WriteSet = maps.Clone(snap.writeSet)
 	tx.Deletes = maps.Clone(snap.deletes)
 	tx.DeleteAttribution = maps.Clone(snap.deleteAttribution)
+	if snap.deletedBuffered == nil {
+		delete(m.deletedBufferedEntities, txID)
+	} else {
+		m.deletedBufferedEntities[txID] = maps.Clone(snap.deletedBuffered)
+	}
 
 	// Truncate staged scheduled-task ops back to the length recorded at the
 	// savepoint — append-only, so truncation (not replacement) is how it is

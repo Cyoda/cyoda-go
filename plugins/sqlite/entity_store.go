@@ -264,7 +264,8 @@ func modelMismatchErr(id string) error {
 // does not change entity's model reference: against the transaction's own
 // earlier buffered write for this id when one exists, then against the
 // buffered entity this transaction deleted (a create-then-delete leaves no
-// committed row to check), and against committed state otherwise. Mirrors plugins/memory's checkModelImmutable.
+// committed row to check), and against committed state otherwise. Mirrors
+// plugins/memory's checkModelImmutable.
 func (s *entityStore) checkModelImmutableInTx(ctx context.Context, tx *spi.TransactionState, entity *spi.Entity) error {
 	id := entity.Meta.ID
 	if buffered, ok := tx.Buffer[id]; ok {
@@ -1403,8 +1404,9 @@ const getVersionByTransactionQuery = `SELECT ev.entity_id, ev.model_name, ev.mod
 // GetVersionByTransaction returns the version of entityID that transaction
 // txID wrote (a transaction records at most one version per entity). DELETED
 // tombstones never match — see spi.EntityStore.GetVersionByTransaction's doc
-// comment — and an empty txID never matches, even a stored-empty one from a non-transactional write, so
-// it is rejected pre-query rather than reaching SQL at all.
+// comment — and an empty txID never matches, even a stored-empty one from a
+// non-transactional write, so it is rejected pre-query rather than reaching
+// SQL at all.
 //
 // Reads on the dedicated reader connection (readDB), not the writer db, for
 // the reason GetPage states: entity_versions rows only become visible on
