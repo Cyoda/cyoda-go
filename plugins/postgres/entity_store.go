@@ -194,28 +194,10 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	// in-transaction compare-and-save precondition depend on what the caller
 	// happened to stamp rather than on the transaction's own view.
 	//
-	// KNOWN ASYMMETRY, pre-dating this stamp and wider than it: this
-	// function writes back into the CALLER's *spi.Entity — TenantID here,
-	// TransactionID below, then Version, ChangeType, CreationDate and
-	// LastModifiedDate further down — while memory and sqlite stamp only
-	// their own buffered copy. Nothing may rely on the write-back, precisely
-	// because it is not portable across backends; the stamped values reach a
-	// caller through a subsequent read, and the version through this
-	// function's return. Converging the three is a change to all six fields,
-	// not to this one.
-	//
-	// Since the temporal columns moved out of the document (entity_doc.go),
-	// the write-back is Go-side convenience ONLY — it no longer round-trips
-	// through what gets persisted, and the two can disagree even on THIS
-	// entityStore. CreationDate is written back only when isNew (further
-	// down): on an UPDATE it is left as whatever the caller supplied,
-	// typically the correct original value carried forward from a prior Get
-	// in a read-modify-save cycle, but not guaranteed to be — while the
-	// PERSISTED entities.creation_date always holds the true original
-	// (the upsert below never touches it on conflict). A caller trusting the
-	// write-back instead of a subsequent read can therefore see a stale or
-	// absent CreationDate on an update even though the stored value is
-	// correct.
+	// The stamp lands on saveOn's own copy (made above), as every other field
+	// this function sets does: nothing is written back to the caller's
+	// *spi.Entity. The stamped values reach a caller through a subsequent
+	// read, and the version through this function's return.
 	//
 	// ambientTxID is the same value, kept separately because it is what the
 	// entity_versions.transaction_id COLUMN gets, and the column must carry
@@ -253,6 +235,22 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 		clock_timestamp() -- realtime: wall_clock_time is the physical insertion time, kept for analysis`,
 		placeholderAtArg(s.clock)).Scan(&dbNow, &wallClockTime); err != nil {
 		return 0, fmt.Errorf("failed to get DB timestamps: %w", err)
+	}
+
+	// One version per entity per transaction: a transaction that already
+	// wrote this entity replaces its pending version instead of adding one.
+	// Only a caller's transaction has a pending version to find — outside
+	// one, every write is its own transaction and its own version, and its
+	// rows carry the empty transaction_id that would otherwise match every
+	// earlier non-transactional write.
+	if ambientTxID != "" {
+		pending, found, err := s.pendingVersion(ctx, tid, eid, ambientTxID)
+		if err != nil {
+			return 0, err
+		}
+		if found {
+			return s.replacePendingSave(ctx, entity, ambientTxID, pending, dbNow, wallClockTime)
+		}
 	}
 
 	// Atomically upsert the entities row, incrementing version in the database
@@ -343,16 +341,15 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 		s.tm.recordWriteIfInTx(ctx, eid, nextVersion-1)
 	}
 
-	// Set metadata based on whether this is a new or updated entity.
-	if isNew {
-		entity.Meta.ChangeType = "CREATED"
-		entity.Meta.CreationDate = dbNow
-	} else {
-		if entity.Meta.ChangeType == "" || entity.Meta.ChangeType == "CREATED" {
-			entity.Meta.ChangeType = "UPDATED"
-		}
-	}
-	entity.Meta.LastModifiedDate = dbNow
+	// No pending version, so this write adds the transaction's version: the
+	// entity's first version exactly when the upsert inserted its row, since
+	// an entities row is never removed while it has versions. isNew reads
+	// that from the upsert itself, which matters outside a transaction: at
+	// READ COMMITTED a writer that lost an insert race updates a row its
+	// statement snapshot cannot see, so a lookup of earlier versions would
+	// find none and wrongly report CREATED. The dates are columns, not part
+	// of the document (entity_doc.go), so they are not set on the copy.
+	setSaveChangeType(entity, isNew)
 
 	// Marshal document with the now-known version.
 	doc, err := marshalEntityDoc(entity, false)
@@ -415,6 +412,146 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	}
 
 	return nextVersion, nil
+}
+
+// setSaveChangeType sets the change type of a save's version: CREATED for the
+// entity's first version, otherwise UPDATED unless the caller supplied
+// another change type.
+func setSaveChangeType(entity *spi.Entity, first bool) {
+	if first {
+		entity.Meta.ChangeType = "CREATED"
+		return
+	}
+	if entity.Meta.ChangeType == "" || entity.Meta.ChangeType == "CREATED" {
+		entity.Meta.ChangeType = "UPDATED"
+	}
+}
+
+// pendingVersionRow is the version a caller's transaction has already written
+// of an entity and not yet committed.
+type pendingVersionRow struct {
+	// version is the pending version's number, which a write replacing it
+	// keeps.
+	version int64
+	// prior reports whether the entity has a version from before this
+	// transaction. A save that replaces the pending version is CREATED
+	// without one and UPDATED with one, whatever the transaction wrote in
+	// between: a delete followed by a save of an entity that existed is one
+	// UPDATED version, and so is a re-create of an entity an earlier
+	// transaction deleted.
+	prior bool
+}
+
+// pendingVersionQuery finds the version transaction $3 has written of entity
+// $2 and not yet committed: the entity_versions row at the entity's current
+// version, when that row carries $3. A transaction writes at most one version
+// of an entity, always the newest, so every other version of it was written
+// before the transaction — which is what the EXISTS reads.
+//
+// The lookup is in SQL rather than recorded in Go, so it is never stale: a
+// ROLLBACK TO SAVEPOINT undoes the row writes that made or replaced a pending
+// version, and this query sees exactly what is left. txState's savepoint
+// snapshots hold only the read and write sets.
+//
+// Only a caller's transaction may be passed. A write outside a transaction
+// stores the empty transaction_id, which this query would match on every
+// earlier non-transactional version.
+//
+// $1 tenant, $2 entity id, $3 transaction id.
+const pendingVersionQuery = `SELECT e.version,
+	        EXISTS (SELECT 1 FROM entity_versions p
+	                 WHERE p.tenant_id = e.tenant_id AND p.entity_id = e.entity_id
+	                   AND p.version < e.version)
+	   FROM entities e
+	   JOIN entity_versions v
+	     ON v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id AND v.version = e.version
+	  WHERE e.tenant_id = $1 AND e.entity_id = $2 AND v.transaction_id = $3`
+
+// pendingVersion returns the version txID has written of entityID and not yet
+// committed, and whether there is one. txID must be the caller's transaction,
+// never empty (see pendingVersionQuery).
+//
+// When there is one, this transaction already holds the entities row lock: the
+// write that made the pending version took it, and a ROLLBACK TO SAVEPOINT
+// that released it would also have removed the pending version. So no other
+// writer can change the row between this read and the write that follows.
+func (s *entityStore) pendingVersion(ctx context.Context, tid, entityID, txID string) (pendingVersionRow, bool, error) {
+	var p pendingVersionRow
+	err := s.q.QueryRow(ctx, pendingVersionQuery, tid, entityID, txID).Scan(&p.version, &p.prior)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pendingVersionRow{}, false, nil
+	}
+	if err != nil {
+		return pendingVersionRow{}, false, fmt.Errorf("failed to find the transaction's pending version of entity %s: %w", entityID, err)
+	}
+	return p, true, nil
+}
+
+// replacePendingVersionRow writes a replacing write's version into the
+// pending version's entity_versions row, in place: every column the version
+// INSERT writes, except the key and creation_date, which the replaced row
+// already holds correctly (the entity's original creation instant). The dates
+// are the same provisional values the INSERT takes, and the commit stamp,
+// which finds the row by transaction_id, corrects them in the same way.
+func (s *entityStore) replacePendingVersionRow(ctx context.Context, tid, entityID string, mref spi.ModelRef, version int64, txID string, doc []byte, dbNow, wallClockTime time.Time) error {
+	if _, err := s.q.Exec(ctx,
+		`UPDATE entity_versions SET model_name = $1, model_version = $2, doc = $3,
+		        valid_time = $4, transaction_time = $4, wall_clock_time = $5
+		  WHERE tenant_id = $6 AND entity_id = $7 AND version = $8 AND transaction_id = $9`,
+		mref.EntityName, mref.ModelVersion, doc, dbNow, wallClockTime,
+		tid, entityID, version, txID); err != nil {
+		return fmt.Errorf("failed to replace pending version: %w", err)
+	}
+	return nil
+}
+
+// replacePendingSave is saveOn's body when the caller's transaction has
+// already written the entity: the save replaces that transaction's pending
+// version in place and keeps its number, so the transaction still records one
+// version of the entity. It runs only inside a caller's transaction, which
+// stamps the rows at commit (TransactionManager.stampCommitInstant).
+//
+// The write set needs no update: the write that made the pending version
+// recorded the entity, or, for an entity this transaction created, had no
+// committed version to record.
+func (s *entityStore) replacePendingSave(ctx context.Context, entity *spi.Entity, txID string, pending pendingVersionRow, dbNow, wallClockTime time.Time) (int64, error) {
+	tid := string(s.tenantID)
+	eid := entity.Meta.ID
+
+	entity.Meta.Version = pending.version
+	setSaveChangeType(entity, !pending.prior)
+
+	doc, err := marshalEntityDoc(entity, false)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal entity doc: %w", err)
+	}
+
+	// The model guard is the upsert's (see saveOn): an entity's model is
+	// fixed at creation, also within the transaction that created it. The
+	// row exists and this transaction holds its lock (pendingVersion), so a
+	// row the UPDATE does not match is a row of a different model.
+	tag, err := s.q.Exec(ctx,
+		`UPDATE entities SET deleted = false, doc = $1, last_modified = $2
+		  WHERE tenant_id = $3 AND entity_id = $4
+		    AND model_name = $5 AND model_version = $6`,
+		doc, dbNow, tid, eid,
+		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update entity: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return 0, fmt.Errorf("entity %s: %w", eid, spi.ErrEntityModelMismatch)
+	}
+
+	if err := s.replacePendingVersionRow(ctx, tid, eid, entity.Meta.ModelRef, pending.version,
+		txID, doc, dbNow, wallClockTime); err != nil {
+		return 0, err
+	}
+
+	if err := s.replaceClaims(ctx, entity); err != nil {
+		return 0, fmt.Errorf("failed to maintain unique claims: %w", err)
+	}
+	return pending.version, nil
 }
 
 // stampOwnCommitInstant dates a write that has no SPI transaction at the
@@ -784,7 +921,28 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 		return fmt.Errorf("failed to unmarshal entity for delete: %w", err)
 	}
 
+	// One version per entity per transaction, as in saveOn: a transaction
+	// that already wrote this entity turns its pending version into the
+	// tombstone, in place and under the same number, instead of adding one.
+	// Only a caller's transaction has a pending version to find (see
+	// saveOn). The lock this statement's lookup above took is the one the
+	// pending version's write already held.
+	ambientTxID := ""
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		ambientTxID = tx.ID
+	}
+	replacesPending := false
+	if ambientTxID != "" {
+		_, found, err := s.pendingVersion(ctx, tid, entityID, ambientTxID)
+		if err != nil {
+			return err
+		}
+		replacesPending = found
+	}
 	nextVersion := maxVersion + 1
+	if replacesPending {
+		nextVersion = maxVersion
+	}
 
 	// Provisional stamp, corrected to this write's real instant before its
 	// transaction commits — exactly as in saveOn, whose comment on the same
@@ -832,38 +990,40 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// transaction_id COLUMN, which the commit phase finds its own rows by —
 	// see saveOn's note on why only a transaction that actually commits these
 	// rows may appear there.
-	ambientTxID := ""
-	if tx := spi.GetTransaction(ctx); tx != nil {
-		ambientTxID = tx.ID
-		current.Meta.TransactionID = tx.ID
-	} else {
-		current.Meta.TransactionID = ""
-	}
+	current.Meta.TransactionID = ambientTxID
 
 	deleteDoc, err := marshalEntityDoc(current, true)
 	if err != nil {
 		return fmt.Errorf("failed to marshal delete doc: %w", err)
 	}
 
-	// Insert delete version. The entities row lock is already held — taken by
-	// the point-lookup above, before version was read — so this INSERT's
-	// version number cannot collide with a concurrent delete's: any other
-	// writer of this row is still waiting on that earlier statement.
-	//
-	// creation_date is sourced from the entities row's own creation_date via
-	// a sub-select, exactly as saveOn's version insert does — see that
-	// statement's comment. The tombstone must report when the entity was
-	// CREATED, not when it was deleted.
-	_, err = s.q.Exec(ctx,
-		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, wall_clock_time, transaction_id, creation_date, doc)
-		 VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8,
-		         (SELECT creation_date FROM entities WHERE tenant_id = $1 AND entity_id = $2),
-		         $9)`,
-		tid, entityID,
-		current.Meta.ModelRef.EntityName, current.Meta.ModelRef.ModelVersion,
-		nextVersion, dbNow, wallClockTime, ambientTxID, deleteDoc)
-	if err != nil {
-		return fmt.Errorf("failed to insert delete version: %w", err)
+	if replacesPending {
+		if err := s.replacePendingVersionRow(ctx, tid, entityID, current.Meta.ModelRef, nextVersion,
+			ambientTxID, deleteDoc, dbNow, wallClockTime); err != nil {
+			return err
+		}
+	} else {
+		// Insert delete version. The entities row lock is already held — taken
+		// by the point-lookup above, before version was read — so this
+		// INSERT's version number cannot collide with a concurrent delete's:
+		// any other writer of this row is still waiting on that earlier
+		// statement.
+		//
+		// creation_date is sourced from the entities row's own creation_date
+		// via a sub-select, exactly as saveOn's version insert does — see that
+		// statement's comment. The tombstone must report when the entity was
+		// CREATED, not when it was deleted.
+		_, err = s.q.Exec(ctx,
+			`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, wall_clock_time, transaction_id, creation_date, doc)
+			 VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8,
+			         (SELECT creation_date FROM entities WHERE tenant_id = $1 AND entity_id = $2),
+			         $9)`,
+			tid, entityID,
+			current.Meta.ModelRef.EntityName, current.Meta.ModelRef.ModelVersion,
+			nextVersion, dbNow, wallClockTime, ambientTxID, deleteDoc)
+		if err != nil {
+			return fmt.Errorf("failed to insert delete version: %w", err)
+		}
 	}
 
 	// Update entities table to mark deleted — the row lock this statement
@@ -1173,11 +1333,16 @@ const getVersionByTransactionQuery = `SELECT doc, version, valid_time, transacti
 	 ORDER BY version ASC
 	 LIMIT 1`
 
-// GetVersionByTransaction returns the earliest (lowest-Version) version of
-// entityID written by transaction txID. DELETED tombstones never match —
-// see spi.EntityStore.GetVersionByTransaction's doc comment — and an empty
-// txID never matches, even a stored-empty one from a non-transactional
-// write, so it is rejected pre-query rather than reaching SQL at all.
+// GetVersionByTransaction returns the version of entityID that transaction
+// txID wrote — a transaction writes at most one version of an entity — once
+// txID has committed. DELETED tombstones never match — see
+// spi.EntityStore.GetVersionByTransaction's doc comment — and an empty txID
+// never matches, even a stored-empty one from a non-transactional write, so
+// it is rejected pre-query rather than reaching SQL at all.
+//
+// The read is committed-only, like every history read (GetAsAt,
+// GetVersionMetadata): it runs through committedQuerier, so a caller inside
+// a transaction — txID itself included — never sees txID's pending version.
 //
 // The deleted predicate is the same (doc->'_meta'->>'deleted') probe used by
 // the PIT base query's outer filter (search_base.go) and by GetAsAt's
@@ -1197,7 +1362,7 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 	var doc []byte
 	var version int64
 	var validTime, transactionTime, creationDate time.Time
-	err := s.q.QueryRow(ctx, getVersionByTransactionQuery,
+	err := s.committedQuerier().QueryRow(ctx, getVersionByTransactionQuery,
 		string(s.tenantID), entityID, txID).Scan(&doc, &version, &validTime, &transactionTime, &creationDate)
 	if err != nil {
 		if err == pgx.ErrNoRows {

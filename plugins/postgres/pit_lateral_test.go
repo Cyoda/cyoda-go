@@ -117,22 +117,27 @@ func TestPIT_CreatedAfterInstant_Absent(t *testing.T) {
 	}
 }
 
-// TestPIT_DeleteThenRecreateInOneTx_VersionTiebreakPicksRecreated pins the
-// version DESC tiebreak documented on pitBaseQueryTemplate and on GetAsAt's
-// ORDER BY: Delete then Save inside one transaction stamps both the
-// tombstone version and the recreated version from that transaction's
-// single CURRENT_TIMESTAMP, so valid_time and transaction_time tie between
-// them and version is the only column left to break the tie. Both rows are
-// committed together, so a wrong pick here is not a timing accident — it is
-// the tiebreak firing on the wrong column, deterministically, every run.
-func TestPIT_DeleteThenRecreateInOneTx_VersionTiebreakPicksRecreated(t *testing.T) {
+// TestPIT_DeleteThenRecreateInOneTx_ReadsTheOneRecreatedVersion pins the
+// point-in-time reads of an entity that existed before a transaction which
+// deletes it and saves it again. The transaction records one version of the
+// entity: the delete's tombstone is its pending version, and the save
+// replaces that row in place with the recreated content. A point-in-time read
+// at that version's instant must therefore find the recreated content, on
+// both instant-resolving paths: the PIT base query (Search) and GetAsAt.
+//
+// The spitest case PointInTime/DeleteRecreateSameTxResolvesToRecreate covers a
+// create, delete and recreate of a NEW entity, read after the commit instant;
+// this one covers an entity with an earlier committed version, read at the
+// recreate's own instant, where the replaced tombstone row would be found if
+// the in-place replacement left its document behind.
+func TestPIT_DeleteThenRecreateInOneTx_ReadsTheOneRecreatedVersion(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	baseCtx := ctxWithTenant("entity-tenant")
 	store, err := factory.EntityStore(baseCtx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	mref := spi.ModelRef{EntityName: "pit-tiebreak", ModelVersion: "1"}
+	mref := spi.ModelRef{EntityName: "pit-recreate", ModelVersion: "1"}
 
 	id := uuid.NewString()
 	if _, err := store.Save(baseCtx, &spi.Entity{
@@ -160,10 +165,15 @@ func TestPIT_DeleteThenRecreateInOneTx_VersionTiebreakPicksRecreated(t *testing.
 		t.Fatalf("commit: %v", err)
 	}
 
-	// The recreated version's own valid_time is the instant to query at —
-	// and, per the tie this test forces, it is also the tombstone's
-	// valid_time and transaction_time.
-	instant := readbackInstant(baseCtx, t, store, id)
+	metas, err := store.GetVersionMetadata(baseCtx, id, spi.VersionMetadataOptions{})
+	if err != nil {
+		t.Fatalf("GetVersionMetadata: %v", err)
+	}
+	if len(metas) != 2 || metas[0].TransactionID != txID || metas[0].ChangeType != "UPDATED" {
+		t.Fatalf("history must be the seed and the transaction's one UPDATED version (tx %s), got %+v", txID, metas)
+	}
+
+	instant := metas[0].Timestamp
 
 	got, err := store.Search(baseCtx, spi.Filter{}, spi.SearchOptions{
 		ModelName: mref.EntityName, ModelVersion: mref.ModelVersion,
@@ -173,7 +183,7 @@ func TestPIT_DeleteThenRecreateInOneTx_VersionTiebreakPicksRecreated(t *testing.
 		t.Fatalf("Search at instant: %v", err)
 	}
 	if len(got) != 1 || string(got[0].Data) != `{"n":1}` {
-		t.Fatalf("Search at the tied instant must resolve to the recreated (higher-version) row, got %d results", len(got))
+		t.Fatalf("Search at the transaction's instant must resolve to the recreated content, got %d results", len(got))
 	}
 
 	asAt, err := store.GetAsAt(baseCtx, id, instant)
@@ -181,6 +191,6 @@ func TestPIT_DeleteThenRecreateInOneTx_VersionTiebreakPicksRecreated(t *testing.
 		t.Fatalf("GetAsAt at instant: %v", err)
 	}
 	if string(asAt.Data) != `{"n":1}` {
-		t.Fatalf("GetAsAt at the tied instant must resolve to the recreated (higher-version) row, got %s", asAt.Data)
+		t.Fatalf("GetAsAt at the transaction's instant must resolve to the recreated content, got %s", asAt.Data)
 	}
 }

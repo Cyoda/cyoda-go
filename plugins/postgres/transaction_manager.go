@@ -430,28 +430,24 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 	}
 	tid := string(tenantID)
 
-	// creation_date is stamped on EVERY row of an entity whose first version
-	// belongs to this transaction — not only on version 1. A transaction that
-	// creates an entity and then updates it carries the creation date forward
-	// by reading inside the transaction, so the later version holds the
-	// provisional value; stamping only version 1 would leave them disagreeing.
+	// creation_date is stamped on the version that creates its entity:
+	// version 1. A transaction records at most one version of an entity
+	// (saveOn, deleteOn), so an entity this transaction created has no other
+	// row here to carry the provisional creation date.
 	//
-	// The CASE must stay conditional in BOTH directions. By the time this runs,
-	// the version INSERT already sources creation_date by sub-select from the
-	// entity's own entities.creation_date, so a version written by a LATER
-	// transaction correctly inherits the entity's original creation date.
-	// Replacing this CASE with an unconditional SET creation_date = $1 would
-	// restamp every updated entity's creation as that update's instant — which
-	// is exactly the defect found when this column was first projected into
-	// reads: history reporting when a revision was written rather than when the
+	// The CASE must stay conditional. By the time this runs, the version
+	// INSERT already sources creation_date by sub-select from the entity's own
+	// entities.creation_date, so a version written by a LATER transaction
+	// correctly inherits the entity's original creation date. Replacing this
+	// CASE with an unconditional SET creation_date = $1 would restamp every
+	// updated entity's creation as that update's instant — which is exactly
+	// the defect found when this column was first projected into reads:
+	// history reporting when a revision was written rather than when the
 	// entity was created, and diverging from the memory backend, which
 	// preserves the original.
 	if _, err := tx.Exec(ctx,
 		`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,
-		        creation_date = CASE WHEN entity_id IN (
-		            SELECT entity_id FROM entity_versions
-		             WHERE tenant_id = $2 AND transaction_id = $3 AND version = 1
-		        ) THEN $1 ELSE creation_date END
+		        creation_date = CASE WHEN version = 1 THEN $1 ELSE creation_date END
 		  WHERE tenant_id = $2 AND transaction_id = $3`,
 		instant, tid, txID); err != nil {
 		return time.Time{}, fmt.Errorf("stamp entity versions: %w", err)

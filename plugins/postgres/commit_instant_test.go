@@ -176,12 +176,13 @@ func TestCommit_OneInstantForEveryEntity(t *testing.T) {
 	}
 }
 
-// TestCommit_CreationDateIsOneInstantAcrossACreateAndUpdate pins the first
+// TestCommit_CreationDateOfACreateAndUpdateIsTheCommitInstant pins the first
 // direction of the creation_date CASE. A transaction that creates an entity
-// and then updates it writes two version rows; the second one carried the
-// provisional value it read inside the transaction, so stamping only version
-// 1 would leave the two disagreeing about when the entity was created.
-func TestCommit_CreationDateIsOneInstantAcrossACreateAndUpdate(t *testing.T) {
+// and then updates it records one version, version 1, which the update
+// replaced in place: the commit stamp must give it, and the entity, the
+// commit instant as the creation date, not the provisional value the create
+// wrote.
+func TestCommit_CreationDateOfACreateAndUpdateIsTheCommitInstant(t *testing.T) {
 	const tenant spi.TenantID = "commit-creation-tenant"
 	factory, tm, pool, ctx := commitInstantFixture(t, tenant)
 	store, err := factory.EntityStore(ctx)
@@ -207,17 +208,6 @@ func TestCommit_CreationDateIsOneInstantAcrossACreateAndUpdate(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	var distinct int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(DISTINCT creation_date) FROM entity_versions
-		  WHERE tenant_id = $1 AND entity_id = $2`,
-		string(tenant), id).Scan(&distinct); err != nil {
-		t.Fatalf("count distinct creation_date: %v", err)
-	}
-	if distinct != 1 {
-		t.Errorf("every version of an entity created in this transaction must report one creation instant: got %d distinct values", distinct)
-	}
-
 	submit, err := tm.GetSubmitTime(ctx, txID)
 	if err != nil {
 		t.Fatalf("GetSubmitTime: %v", err)
@@ -226,7 +216,7 @@ func TestCommit_CreationDateIsOneInstantAcrossACreateAndUpdate(t *testing.T) {
 	if err := pool.QueryRow(ctx,
 		`SELECT e.creation_date, v.creation_date
 		   FROM entities e JOIN entity_versions v
-		     ON v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id AND v.version = 2
+		     ON v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id AND v.version = 1
 		  WHERE e.tenant_id = $1 AND e.entity_id = $2`,
 		string(tenant), id).Scan(&entityCreation, &versionCreation); err != nil {
 		t.Fatalf("read creation dates: %v", err)
@@ -235,7 +225,7 @@ func TestCommit_CreationDateIsOneInstantAcrossACreateAndUpdate(t *testing.T) {
 		t.Errorf("a newly created entity's creation_date must be its transaction's commit instant: got %s, want %s", entityCreation, submit)
 	}
 	if !versionCreation.Equal(submit) {
-		t.Errorf("the second version's creation_date must be the same commit instant: got %s, want %s", versionCreation, submit)
+		t.Errorf("the transaction's one version must carry the same creation instant: got %s, want %s", versionCreation, submit)
 	}
 }
 
