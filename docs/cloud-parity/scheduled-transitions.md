@@ -142,9 +142,11 @@ intended and must not regress to an entry-time-only timer.
 
 A run fails **safely** when nothing unsafe may have reached a compute member:
 a criterion or function error, no compute member for the tag, a conflict with a
-concurrent write, a storage error, an `idempotent` processor's failure, or an
-unsafe processor that provably never reached a member (`callout-failover.md`
-§1: no hand-off). The task goes back to `WAITING`, `attempts` goes up by one,
+concurrent write, a storage error, a commit refused because the run's final
+entities break a composite unique key or save into a model that is no longer
+`LOCKED`, an `idempotent` processor's failure, or an unsafe processor that
+provably never reached a member (`callout-failover.md` §1: no hand-off). The
+task goes back to `WAITING`, `attempts` goes up by one,
 and its last error is recorded. The next attempt is after
 
 ```
@@ -168,7 +170,7 @@ no hand-off happened lets the run clear the mark and retry.
 A processor declared `idempotent: true` is not marked; its failures are retried
 (§6). Criteria and functions are repeat-safe by rule and are not marked; one
 whose callbacks trigger an unsafe processor is unsupported. cyoda-go does not
-detect this; that processor can run twice (§16, open item 4).
+detect this; that processor can run twice (§16, open item 3).
 
 A run that committed a `COMMIT_BEFORE_DISPATCH` segment after the fired
 transition changed the entity's state, and then stopped, ends `FAILED`
@@ -183,10 +185,11 @@ failure after it is retried from there.
 A compute member's callback during a run joins the run's transaction, as it
 joins a client request's.
 
-- A callback read sees what is stored in that transaction. Today it does not
-  see the mutations an earlier processor returned and the engine has not yet
-  saved, so a processor bases its own write on the payload of its request.
-  This behaviour is under decision (§16, open item 2).
+- A callback read under the token sees the fired entity as the run has it
+  when the callout is made: the engine saves it to the transaction before
+  each callout that carries the token, so the read includes the mutations
+  earlier processors returned. The callbacks of a `schedule.function` the
+  run calls to arm the state it reaches are admitted like any other.
 - A processor, a function criterion and a schedule function never write or
   delete the fired entity through a callback, with or without the
   transaction token: a processor changes it only through the data it
@@ -270,7 +273,10 @@ allow-list: a compute member's own message, a coded client-safe message, three
 fixed texts — a cancelled run, a conflict with a concurrent write, and a task
 row held by another open transaction — or `internal error [ticket: <uuid>]`. A
 conflict records the conflict text on every backend, and a busy task row the
-busy-row text; both are retried.
+busy-row text; both are retried. A commit refused on a duplicate or partial
+unique key, or on a model no longer `LOCKED`, records the coded text a client
+write gets for it (`UNIQUE_VIOLATION: …`, `INVALID_UNIQUE_KEY: …`,
+`MODEL_NOT_LOCKED: …`), with no ticket.
 
 | Status | Code | When |
 |---|---|---|
@@ -414,7 +420,7 @@ The visible contract to match:
    ownership.
 2. §6 and §7: safe failures retried with a doubling delay until the deadline;
    an unsafe processor never repeated after a possible hand-off, except one
-   reached from inside a criterion's or function's callback (§7, open item 4).
+   reached from inside a criterion's or function's callback (§7, open item 3).
    `idempotent` means the same on a scheduled run as on any callout.
 3. §9's lateness table, decided by the task's one owner.
 4. The `FAILED` status, its five reasons, and **[ruling]** that it never moves
@@ -422,9 +428,8 @@ The visible contract to match:
 5. §2: an arm is a new life that clears a `FAILED` status; a write removes every
    task not in its arm set; deletes and imports remove tasks.
 6. §1's import minimums and arm-time range.
-7. §8: in the modes it names, a callback write to the fired entity that the
-   processor does not override is kept; a callback write followed by an unsafe
-   processor or a `COMMIT_BEFORE_DISPATCH` step fails every attempt safely.
+7. §8: a callback read sees the fired entity as the run has it; no callout
+   writes or deletes the fired entity.
 8. `GET /scheduled-tasks` as §11 states it.
 9. The `409` cells of §12.
 10. One `RUNNING` task per entity.
@@ -443,17 +448,13 @@ these answers yet:
    save that joins a caller's transaction commits or rolls back with it; on
    memory and SQLite it applies at once. The SPI does not say which is right.
    The task removal of §2 is correct under either.
-2. **The engine's unsaved payload and callbacks.** §8's first point is today's
-   behaviour: a callback does not see the mutations an earlier processor
-   returned. Whether the engine should make them visible to a joined callback
-   is under decision.
-3. **An unguarded scheduled self-loop.** The import's loop check counts a
+2. **An unguarded scheduled self-loop.** The import's loop check counts a
    scheduled transition as automated, so a scheduled transition back to its
    own state with no criterion is refused with `400 VALIDATION_FAILED`
    ("infinite loop detected"), although the cascade never follows a scheduled
    transition. A criterion on the transition, or `allowCycles: true` on the
    import, passes the check.
-4. **An unsafe processor inside a criterion's or function's callback.** Such a
+3. **An unsafe processor inside a criterion's or function's callback.** Such a
    processor is not detected, so it can run twice (§7). Enforcing the rule —
    refusing it through the run's guard found by transaction id — is under
    decision.

@@ -186,17 +186,11 @@ Each node caches its tenants' locked models. Every change to a model — import,
 
 So a schema extension is in use on the node that served the write when the write returns, and on another node when the broadcast arrives. Until then that node uses the older schema; see `cyoda help models` (SCHEMA EXTENSION) for what that means for searches, criteria and writes there. A `changeLevel` change on a locked model takes effect on each node the same way.
 
-## COMPOSITE UNIQUE KEY STALENESS
+## COMPOSITE UNIQUE KEYS
 
-Composite unique keys are part of the model descriptor. They inherit the descriptor's cross-cluster coherence (MODEL CACHE above): when a model is locked or unlocked, the node that performs the operation evicts it from its own model cache and broadcasts `model.invalidate`, so every other node evicts and reloads the descriptor (keys included).
+Composite unique keys are part of the model descriptor, but they are not enforced from a node's model cache. When a transaction commits, the store reads the model of every entity it saves from its own stored model, and checks the keys that model holds at that moment. A node whose cached model is out of date after an unlock, key change and relock therefore still enforces the stored keys. On PostgreSQL a transaction that began before such a model change is refused at commit with a retryable `409 CONFLICT`, and its retry is checked against the new keys. The early check of a request body for a partly filled key (`422 INVALID_UNIQUE_KEY`) uses the node's cached model.
 
-**Changing a key on a live multi-node postgres deployment** requires a destructive teardown: unlock the model (requires zero live entities, so all entities must be deleted first), change the key definitions, then relock. This is an inherently disruptive operation. There is a bounded window during which a node that missed both the unlock and relock gossip messages may still enforce the **old** key set. Data written through that node in the window will carry claim rows under the old key IDs.
-
-**Operator guidance:** after changing a composite unique key on a multi-node deployment, pause writes and allow the cluster to settle for at least one cache-lease TTL before resuming. The cache TTL is the backstop that guarantees every node has reloaded the new descriptor.
-
-A relock does not wait for every online node to confirm the eviction before it completes; the cache lease is the bound.
-
-**Scope:** this limitation applies to multi-node postgres only. The memory and sqlite backends are single-process; their cache invalidation is synchronous.
+Changing a key needs the model unlocked, which needs zero live entities: delete the model's entities, unlock, change the key definitions, then relock.
 
 ## SEE ALSO
 

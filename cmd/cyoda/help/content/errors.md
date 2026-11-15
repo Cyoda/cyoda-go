@@ -121,9 +121,9 @@ Cyoda-Warning: no workflows imported for model %E2%80%94 using default workflow
 - `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — not retryable — a request carrying a transaction token asked to change a model or its workflows (import, delete, change level, lock, unlock, unique keys, workflow import); model and workflow administration never runs inside a transaction, and the refusal precedes the token's verification
 - `errors.MODEL_ALREADY_LOCKED` — `409` — not retryable — admin operation requires `UNLOCKED` state but the model is `LOCKED` (relock attempt or re-import on a locked model)
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — not retryable — admin operation requires `LOCKED` state but the model is `UNLOCKED` (unlock-of-already-unlocked-model)
-- `errors.MODEL_HAS_ENTITIES` — `409` — not retryable — unlock or delete blocked because at least one entity of the model exists
+- `errors.MODEL_HAS_ENTITIES` — `409` — not retryable — unlock blocked because at least one entity of the model exists
 - `errors.MODEL_NOT_FOUND` — `404` — not retryable — referenced entity model does not exist in the tenant's model registry
-- `errors.MODEL_NOT_LOCKED` — `409` — not retryable — model exists but is not in `LOCKED` state; entity writes and schema extensions require a locked model, including a model unlocked while a write that extends it was in progress
+- `errors.MODEL_NOT_LOCKED` — `409` — not retryable — the model is not in `LOCKED` state; entity writes and schema extensions require a locked model, also at a transaction's commit, so a write in progress when its model is unlocked or deleted is refused
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no compute member for the required tag appeared, on any cluster node, within `CYODA_DISPATCH_WAIT_TIMEOUT`; no try was made
 - `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — not retryable — the read's pointInTime is later than the consistency time

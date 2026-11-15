@@ -20,10 +20,12 @@ HTTP: `409` `Conflict`. Retryable: `yes`, except on a request that joined a tran
 
 ## DESCRIPTION
 
-When a write commits, the server checks that nothing it wrote was changed by another transaction that committed after it began. Two kinds of change are checked:
+When a write commits, the server checks that nothing it wrote was changed by another transaction that committed after it began. These changes are checked:
 
 - **The entity.** Another client or a workflow changed the entity first.
 - **A scheduled task of the entity.** The scheduler changed one of the entity's scheduled tasks first. The scheduler changes a task when it claims it, stamps a segment of its run, records an attempt, marks it failed, or gives it back. A write that arms or cancels the entity's scheduled transitions writes those tasks, and so can race the scheduler.
+- **The model (PostgreSQL).** The model of an entity the write saves was locked, unlocked, deleted or given new unique keys after the write's transaction began. The retry is checked against the model as it now is, and answers `409 MODEL_NOT_LOCKED` if the model is no longer `LOCKED`.
+- **Unique keys (PostgreSQL).** Two transactions that commit at the same time, each claiming a unique-key value the other claims, can meet PostgreSQL's deadlock detection; one is answered 409, and its retry gets the `409 UNIQUE_VIOLATION` the other backends give at once.
 
 Both are normal outcomes under concurrent load.
 
@@ -31,9 +33,10 @@ A schema extension never causes this answer. Two writes that extend the same mod
 
 A race can also be lost before the commit, while the request is still running. The answer is still 409 — never a `500`, a `400 WORKFLOW_FAILED` or a `412 ENTITY_MODIFIED`:
 
-- **A processor's callback write.** A processor's joined callback writes an entity — the request's own entity or another one — or a scheduled task, and loses the race. The request answers 409, with or without `If-Match`. When the processor then fails, for any reason, the lost race is the answer, not the processor's failure. This holds for `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX` and `COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch`, on every storage backend. Under `ASYNC_NEW_TX` the race stays lost when its savepoint is undone: the request answers 409 and the request's transaction does not commit.
+- **A processor's callback write.** A processor's joined callback writes another entity, or a scheduled task, and loses the race. The request answers 409, with or without `If-Match`. When the processor then fails, for any reason, the lost race is the answer, not the processor's failure. This holds for `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX` and `COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch`, on every storage backend. Under `ASYNC_NEW_TX` the race stays lost when its savepoint is undone: the request answers 409 and the request's transaction does not commit.
+- **The engine's save before a callout.** Before each callout that carries the transaction token, the engine saves the entity the workflow runs for to the transaction. When another transaction changed that entity after the request began, the save loses the race and the request answers 409; a collection request fails whole, and the item is not listed as a per-item failure.
 - **A transaction already aborted (PostgreSQL).** On PostgreSQL the statement that loses the race aborts the transaction, and every later statement in it is refused. Those refusals are the same lost race, and answer 409.
-- **`If-Match`.** `If-Match` states the version the request starts from, and the server checks it once, when the request's transition starts. `412 ENTITY_MODIFIED` answers only that check: the entity was already at another version when the request read it. A write to the entity later in the same transaction, such as a joined callback's, is the request's own and does not break it. A change that another transaction commits after the request's read is a lost race, and answers 409. The one exception is described in `errors.ENTITY_MODIFIED`: a change made during the callout of a `COMMIT_BEFORE_DISPATCH` processor, after the request's first segment committed.
+- **`If-Match`.** `If-Match` states the version the request starts from, and the server checks it once, when the request's transition starts. `412 ENTITY_MODIFIED` answers only that check: the entity was already at another version when the request read it. A write to the entity later in the same transaction, such as the engine's save of the entity before a callout, is the request's own and does not break it. A change that another transaction commits after the request's read is a lost race, and answers 409. The one exception is described in `errors.ENTITY_MODIFIED`: a change made during the callout of a `COMMIT_BEFORE_DISPATCH` processor, after the request's first segment committed.
 
 How each operation handles a race with the scheduler:
 

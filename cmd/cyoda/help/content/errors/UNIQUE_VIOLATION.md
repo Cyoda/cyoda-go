@@ -24,7 +24,7 @@ The entity payload contains field values that collide with an existing entity's 
 
 To resolve: change the values of the fields that form the unique key so they no longer duplicate an existing entity.
 
-On write-time backends (PostgreSQL) this can also fire within one transaction when a value is claimed before its holder is freed; free-before-claim is portable (see `cyoda help models`).
+Keys are checked when the transaction commits, on the entities as the transaction leaves them, on every storage backend. A value another entity of the same transaction frees — by being deleted or re-keyed — is free for this one, in either order; only the final entities count. Two entities of one transaction that end with the same value, or an entity that ends with a value an entity outside the transaction holds, refuse the commit with this code. When a request joined another operation's transaction (a compute member's callback), the clash is found at that operation's commit, which answers this code; the callback itself succeeds (see `cyoda help models`, the unique-keys operation).
 
 ## SEE ALSO
 
