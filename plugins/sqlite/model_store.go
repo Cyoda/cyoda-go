@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -50,12 +49,9 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 		return fmt.Errorf("failed to marshal model descriptor: %w", err)
 	}
 
-	// Save replaces the model's schema wholesale, so the extension log of
-	// the ref goes with it, in the same transaction: a Get after Save
-	// returns the saved schema alone. Through the model state machine the
-	// log is already empty here — Unlock folds it into the schema and
-	// Delete removes it — so rows found here were written by a caller that
-	// bypassed the state machine, and are reported.
+	// The extension log of a model that is not LOCKED is empty — Unlock folds
+	// it into the schema and clears it — so a Save over a non-LOCKED model
+	// has no log to clear, and a Save over a LOCKED one is refused.
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return classifyError(fmt.Errorf("begin save tx for %s: %w", desc.Ref, err))
@@ -73,16 +69,8 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 		string(s.tenantID), desc.Ref.EntityName, desc.Ref.ModelVersion, raw); err != nil {
 		return fmt.Errorf("failed to save model %s: %w", desc.Ref, classifyError(err))
 	}
-	stale, err := clearExtensionLog(ctx, tx, s.tenantID, desc.Ref)
-	if err != nil {
-		return fmt.Errorf("Save: %w", err)
-	}
 	if err := tx.Commit(); err != nil {
 		return classifyError(fmt.Errorf("commit save of %s: %w", desc.Ref, err))
-	}
-	if stale != 0 {
-		slog.Warn("Save cleared stale extension rows",
-			"pkg", "sqlite", "ref", desc.Ref, "count", stale)
 	}
 	return nil
 }
@@ -177,11 +165,9 @@ func (s *modelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 	return refs, nil
 }
 
-// Delete removes the model and, in the same transaction, its extension
-// log: a model imported later under the same reference starts from its
-// imported schema alone. Through the model state machine the log is
-// already empty here (Delete requires UNLOCKED, and Unlock folds the log
-// into the schema), so rows found here are reported.
+// Delete removes an UNLOCKED model. The extension log of a model that is
+// not LOCKED is empty (Unlock folds it into the schema and clears it), so
+// there is no log to remove; a LOCKED model is refused.
 func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -207,16 +193,8 @@ func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	if n == 0 {
 		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
-	stale, err := clearExtensionLog(ctx, tx, s.tenantID, modelRef)
-	if err != nil {
-		return fmt.Errorf("Delete: %w", err)
-	}
 	if err := tx.Commit(); err != nil {
 		return classifyError(fmt.Errorf("commit delete of %s: %w", modelRef, err))
-	}
-	if stale != 0 {
-		slog.Warn("Delete cleared stale extension rows",
-			"pkg", "sqlite", "ref", modelRef, "count", stale)
 	}
 	return nil
 }
@@ -356,35 +334,19 @@ func (s *modelStore) IsLocked(ctx context.Context, modelRef spi.ModelRef) (bool,
 }
 
 func (s *modelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, level spi.ChangeLevel) error {
-	// SQLite has no jsonb_set; read-modify-write.
-	var raw []byte
-	err := s.db.QueryRowContext(ctx,
-		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
-		}
-		return fmt.Errorf("failed to read model %s: %w", modelRef, err)
-	}
-
-	var doc modelDoc
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("failed to unmarshal model doc: %w", err)
-	}
-	doc.ChangeLevel = level
-	updated, err := json.Marshal(doc)
-	if err != nil {
-		return fmt.Errorf("failed to marshal model doc: %w", err)
-	}
-
+	// One statement that sets only the change level, so a concurrent
+	// Lock, Unlock or Save is never overwritten by a stale copy of the doc.
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE models SET doc = jsonb(?) WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
-		updated, string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
+		`UPDATE models SET doc = jsonb_set(doc, '$.changeLevel', ?)
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		string(level), string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
 	if err != nil {
-		return fmt.Errorf("failed to set change level for model %s: %w", modelRef, err)
+		return fmt.Errorf("failed to set change level for model %s: %w", modelRef, classifyError(err))
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
 	if n == 0 {
 		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
