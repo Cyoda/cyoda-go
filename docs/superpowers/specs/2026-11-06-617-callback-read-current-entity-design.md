@@ -384,6 +384,8 @@ At commit, a transaction's claims are computed from its final entities:
    an entity is saved only into a `LOCKED` model (§4.5). An entity whose final
    write is a delete needs no model read.
 2. Release the claims of every entity the transaction wrote or deleted.
+   Steps 1 and 2 are independent; postgres runs 2 first, so a transaction
+   already aborted answers its abort before it borrows a model connection.
 3. Compute the claims of every entity whose final write is a save, from the
    bytes that final write was given (never a re-read of stored data), with
    its model's unique keys as read in step 1. A partial composite

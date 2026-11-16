@@ -62,7 +62,9 @@ func (c *heldCallout) proc(rc *reqCtx) (map[string]any, error) {
 	}
 	select {
 	case <-c.release:
-	case <-time.After(8 * time.Second):
+	// Longer than awaitBlockedStatement's 10s wait, so a slow rival still
+	// finds the callout held; the test releases it explicitly.
+	case <-time.After(20 * time.Second):
 	}
 	return nil, nil
 }

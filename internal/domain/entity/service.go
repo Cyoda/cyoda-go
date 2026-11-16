@@ -46,9 +46,10 @@ type EntityTransactionResult struct {
 //
 // At most one of PointInTime and TransactionID may be set; the handler
 // rejects requests carrying both with HTTP 400 BAD_REQUEST. When
-// TransactionID is non-empty, GetEntity scans the entity's version
-// history and returns the version whose meta.TransactionID matches; if
-// no version matches, ENTITY_NOT_FOUND (404) is returned.
+// TransactionID is non-empty, GetEntity returns the one version that
+// transaction wrote, once it has committed (getEntityByTransactionID); a
+// transaction that has not committed, never wrote the entity, or deleted it
+// answers ENTITY_NOT_FOUND (404), also to a caller inside that transaction.
 type GetOneEntityInput struct {
 	EntityID      string
 	PointInTime   *time.Time
