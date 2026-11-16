@@ -231,8 +231,8 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 	if e.extProc == nil {
 		return nil
 	}
-	// The transaction holds the anchor as it is before the callout (spec
-	// §2.2).
+	// The transaction holds the anchor as it is before the callout
+	// (saveAnchorBeforeCallout).
 	if err := e.saveAnchorBeforeCallout(ctx, entity, txID); err != nil {
 		return err
 	}
@@ -321,9 +321,10 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 	if e.extProc == nil {
 		return nil
 	}
-	// The transaction holds the anchor as it is before the callout (spec
-	// §2.2). The save is in the chain's scope, before the processor's scope
-	// opens: discarding that scope on the processor's failure keeps it.
+	// The transaction holds the anchor as it is before the callout
+	// (saveAnchorBeforeCallout). The save is in the chain's scope, before the
+	// processor's scope opens: discarding that scope on the processor's
+	// failure keeps it.
 	if err := e.saveAnchorBeforeCallout(ctx, entity, txID); err != nil {
 		return err
 	}

@@ -666,13 +666,13 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | Joined callback's processor returns data with a partial key → callback 2xx, owner commit 422 | — | yes | — | — |
 | postgres: another client writes the anchor during a callout → waits; one winner, loser `409` | — | yes (isolated, not parity) | — | — |
 | postgres: another transaction that read the anchor commits during a callout → waits, then validates | — | yes (isolated, not parity) | — | — |
-| Unique key: intermediate duplicate then fixed → commits | plugin unit | yes | yes | — |
+| Unique key: intermediate duplicate then fixed → commits | plugin unit | covered by the parity scenario (runs on postgres over HTTP) | yes | — |
 | Unique key: final duplicate → 409 at commit; partial → 422 | plugin unit | existing (`unique_keys_*`) | existing | existing |
 | Unique key: free-after-claim in one tx → commits | plugin unit (`SameTxReclaim*` rewritten) | — | yes | — |
 | Scheduled fire changes a key field → claims follow | engine/plugin unit | yes | — | — |
 | Pre-callout save conflict → retryable 409, collection not isolated as ENTITY_MODIFIED | service unit | gRPC transition door, isolated; the HTTP doors waived: each HTTP door that sends data saves before its first callout, so no deterministic window for a rival exists, and HTTP and gRPC answer through the same `classifyWorkflowError` | — | yes (envelope `Success=false`, `Error.Code=CLIENT_ERROR` with `CONFLICT` in the message) |
 | Pre-callout save storage failure → 503 / 500, never 400 WORKFLOW_FAILED | service unit (failing store double) | waived: a storage outage cannot be produced in the e2e suite without a test hook in production code | — | yes (envelope) |
-| Unique key: two entities swap values; chain of moves; same value twice in one tx (refused) | plugin unit | yes | yes | — |
+| Unique key: two entities swap values; chain of moves; same value twice in one tx (refused) | plugin unit | covered by the parity scenario (runs on postgres over HTTP) | yes | — |
 | Joined callback writes a duplicate key → callback 2xx, owner commit 409 | — | yes | — | yes (joined write over gRPC `tx-token`) |
 | Two commits claim each other's values → postgres `409 CONFLICT` (40P01) | — | waived: the deadlock needs a precise interleave of two commits; the classification of 40P01 is covered by the existing postgres classifier tests | — | — |
 | Scheduled fire declines / is cancelled after a function criterion → no entity version, client `If-Match` still valid | engine unit | waived: cannot go RED (the pre-#617 base writes nothing either) | — | — |
