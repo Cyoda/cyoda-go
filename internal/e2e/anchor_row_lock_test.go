@@ -22,9 +22,11 @@ import (
 // Isolated single-backend tests (they hold a callout open while another
 // request runs), never parity scenarios.
 
-// stillRunningAfter is how long the test lets a request that must wait run
-// before it checks that the request has not finished.
-const stillRunningAfter = 1500 * time.Millisecond
+// noLockerAppName is the lock holder awaitBlockedStatement excludes. Here
+// the lock holder is the cascade's own transaction on the server's pool,
+// idle in its callout, never waiting on a lock, so no backend is excluded:
+// the name matches no connection.
+const noLockerAppName = "anchor-row-lock-no-locker"
 
 // holdWorkflowJSON is a READY -go(manual)-> DONE workflow whose transition runs
 // the given SYNC processors in order, each with a short answer limit so a
@@ -98,15 +100,18 @@ func awaitRequest(t *testing.T, what string, ch <-chan callbackResult) callbackR
 	}
 }
 
-// requireNotFinished asserts a request has not answered after
-// stillRunningAfter; when it has, it returns that answer for the report.
-func requireNotFinished(t *testing.T, what string, ch <-chan callbackResult) {
+// requireWaitingOnRowLock returns once a statement on entities waits on a
+// lock in PostgreSQL (awaitBlockedStatement), and then asserts the request
+// has not answered: the request is waiting on the anchor's row lock, not
+// merely slow.
+func requireWaitingOnRowLock(t *testing.T, what string, ch <-chan callbackResult) {
 	t.Helper()
+	awaitBlockedStatement(t, "entities", noLockerAppName)
 	select {
 	case res := <-ch:
 		t.Fatalf("%s answered %d %s while the cascade's callout was still running; want it to wait for the cascade to end",
 			what, res.StatusCode, res.Body)
-	case <-time.After(stillRunningAfter):
+	default:
 	}
 }
 
@@ -145,7 +150,7 @@ func TestAnchorRowLock_OtherClientWaits_OneWinner(t *testing.T) {
 	rival := asyncRequest(func() (callbackResult, error) {
 		return h.callback(http.MethodPut, "/api/entity/JSON/"+id, `{"name":"anchor","amount":3,"status":"rival"}`, "")
 	})
-	requireNotFinished(t, "the other client's write", rival)
+	requireWaitingOnRowLock(t, "the other client's write", rival)
 	close(held.release)
 
 	// The other client read the entity before the cascade committed, so a
@@ -210,7 +215,7 @@ func TestAnchorRowLock_ReaderCommitWaitsThenValidates(t *testing.T) {
 		res := h.CreateEntityRaw(readerModel, 1, fmt.Sprintf(`{"name":"reader","amount":1,"status":"r","targetId":%q}`, id))
 		return callbackResult{StatusCode: res.status, Body: res.body}, res.err
 	})
-	requireNotFinished(t, "the reader's commit", reader)
+	requireWaitingOnRowLock(t, "the reader's commit", reader)
 	close(held.release)
 
 	if c := awaitRequest(t, "the cascade", cascade); c.StatusCode != http.StatusOK {
