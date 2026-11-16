@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
@@ -86,23 +88,23 @@ func ifMatchRestWorkflow(name string) string {
 }
 
 // TestIfMatch_ChangeAfterReadIs409 — another client commits a change to E
-// after the request read it. The test makes that write while the processor is
-// called out, to time it; it carries no transaction token and is not the
-// processor's write. The request's If-Match held when it started, so this is
-// a lost race, not a failed precondition: a retryable 409 CONFLICT, and E
-// keeps the other client's write. A collection item is not isolated: the
-// transaction the chunk runs in cannot commit.
+// after the request read it. The processor's callout is held while the test
+// makes that write, then released; the processor itself writes nothing. The
+// request's If-Match held when it started, so this is a lost race, not a
+// failed precondition: a retryable 409 CONFLICT, and E keeps the other
+// client's write. A collection item is not isolated: the transaction the
+// chunk runs in cannot commit.
 //
 // Every door sends E's stored data unchanged (ifMatchStored; the patches set
 // the status E already has). Before a callout that carries the transaction
 // token the engine saves E into the transaction when E differs from what the
 // transaction holds, and on PostgreSQL that save holds E's row lock until the
-// transaction ends: a rival write made during the callout would wait for it,
-// and the processor waiting for the rival would time out. With E unchanged
-// the engine saves nothing before the callout and the rival commits at once.
-// So that an unchanged body still runs the automated "loop" transition, E is
-// stored with status loop under a workflow without it (ifMatchRestWorkflow),
-// and the door workflow is imported after.
+// transaction ends: a rival write made during the callout would wait for it
+// (anchor_row_lock_test.go). With E unchanged the engine saves nothing before
+// the callout and the rival commits at once. So that an unchanged body still
+// runs the automated "loop" transition, E is stored with status loop under a
+// workflow without it (ifMatchRestWorkflow), and the door workflow is
+// imported after.
 func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 	shapes := []struct {
 		name  string
@@ -121,17 +123,18 @@ func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 				h := newCalloutHarness(t, nil)
 				model, tag := uniq("ifm-rival"), uniq("ifm-rival-tag")
 				var calls atomic.Int32
-				rivalStatus := make(chan int, 1)
-				h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: func(_ context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
+				running, release := make(chan struct{}), make(chan struct{})
+				var releaseOnce sync.Once
+				releaseCallout := func() { releaseOnce.Do(func() { close(release) }) }
+				t.Cleanup(releaseCallout)
+				h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: func(context.Context, receivedCallout, *reqCtx) cnodeReply {
 					if calls.Add(1) > 1 {
 						return answerOK()
 					}
-					// The other client's write, made here only to time it: no
-					// transaction token, so it commits at once. Its status
-					// matches no transition.
-					res, err := h.callback(http.MethodPut, "/api/entity/JSON/"+rc.entityID, `{"name":"e","amount":5,"status":"rival"}`, "")
-					if err != nil || res.StatusCode != http.StatusOK {
-						rivalStatus <- res.StatusCode
+					close(running)
+					select {
+					case <-release:
+					case <-time.After(20 * time.Second):
 					}
 					return answerOK()
 				}})
@@ -142,14 +145,32 @@ func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 					t.Fatalf("import the door workflow: %d %s", resp.StatusCode, body)
 				}
 
-				out := door.request(h, eID, eTxID)
+				done := make(chan joinedCommitOutcome, 1)
+				go func() { done <- door.request(h, eID, eTxID) }()
+				select {
+				case <-running:
+				case out := <-done:
+					t.Fatalf("the request answered %d %s before its processor was called out: %s", out.status, out.errorCode, out.detail)
+				case <-time.After(30 * time.Second):
+					t.Fatal("the processor was never called out")
+				}
+				// The other client's write, while the callout is held: no
+				// transaction token, so it commits at once. Its status matches
+				// no transition.
+				rival, err := h.callback(http.MethodPut, "/api/entity/JSON/"+eID, `{"name":"e","amount":5,"status":"rival"}`, "")
+				releaseCallout()
+				if err != nil || rival.StatusCode != http.StatusOK {
+					t.Fatalf("the other client's write: %v %d %s; want 200", err, rival.StatusCode, rival.Body)
+				}
+
+				var out joinedCommitOutcome
+				select {
+				case out = <-done:
+				case <-time.After(30 * time.Second):
+					t.Fatal("the request did not finish")
+				}
 				if out.err != nil {
 					t.Fatalf("request: %v", out.err)
-				}
-				select {
-				case st := <-rivalStatus:
-					t.Fatalf("the other client's write answered %d", st)
-				default:
 				}
 				if (out.status != 0 && out.status != http.StatusConflict) || out.errorCode != "CONFLICT" || !out.retryable {
 					t.Fatalf("answered %d %s retryable=%v; want a retryable 409 CONFLICT: %s", out.status, out.errorCode, out.retryable, out.detail)
