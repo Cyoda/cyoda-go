@@ -458,6 +458,13 @@ func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 	tid := s.tenant
 	eid := entity.Meta.ID
 
+	// An entity's model is fixed at creation: a write under another model is
+	// refused before its unique keys are computed or checked, as on postgres
+	// and sqlite.
+	if ref, ok := s.modelRefOfLocked(tid, eid); ok && ref != entity.Meta.ModelRef {
+		return 0, modelMismatchErr(eid)
+	}
+
 	modelKeys := s.factory.modelKeys(tid, []spi.ModelRef{entity.Meta.ModelRef})
 	newClaims, err := spi.ComputeClaims(modelKeys[entity.Meta.ModelRef], entity.Data)
 	if err != nil {
@@ -474,10 +481,6 @@ func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 
 	if s.factory.entityData[tid] == nil {
 		s.factory.entityData[tid] = make(map[string][]entityVersion)
-	}
-
-	if ref, ok := s.modelRefOfLocked(tid, eid); ok && ref != entity.Meta.ModelRef {
-		return 0, modelMismatchErr(eid)
 	}
 
 	versions := s.factory.entityData[tid][eid]

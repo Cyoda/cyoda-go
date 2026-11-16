@@ -453,3 +453,29 @@ func TestUniqueClaims_CompareAndSaveInTxRecordsClaims(t *testing.T) {
 		t.Fatalf("e2 with e1's value: expected ErrUniqueViolation at commit, got %v", err)
 	}
 }
+
+// TestUniqueClaims_ModelMismatchAnswersBeforeKeyClash: a write outside a
+// transaction that names an existing entity under another model, and whose key
+// value another entity of that model already holds, is refused for the model
+// mismatch, as on postgres and sqlite. An entity's model is fixed at creation,
+// so the write never reaches the key check.
+func TestUniqueClaims_ModelMismatchAnswersBeforeKeyClash(t *testing.T) {
+	factory, store := setupUCFactory(t)
+	baseCtx := ctxWithTenant("uc-tenant")
+	other := spi.ModelRef{EntityName: "UCOther", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, baseCtx, other, ucEmailKeys()...)
+
+	if _, err := store.Save(baseCtx, ucEntity("holder", "a@x.com")); err != nil {
+		t.Fatalf("Save holder: %v", err)
+	}
+	elsewhere := ucEntity("moved", "b@x.com")
+	elsewhere.Meta.ModelRef = other
+	if _, err := store.Save(baseCtx, elsewhere); err != nil {
+		t.Fatalf("Save moved under %s: %v", other.EntityName, err)
+	}
+
+	_, err := store.Save(baseCtx, ucEntity("moved", "a@x.com"))
+	if !errors.Is(err, spi.ErrEntityModelMismatch) {
+		t.Fatalf("Save of an entity under another model, clashing on a key: got %v, want ErrEntityModelMismatch", err)
+	}
+}
