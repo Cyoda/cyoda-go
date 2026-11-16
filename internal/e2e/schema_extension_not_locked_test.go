@@ -153,9 +153,8 @@ func TestSchemaExtension_NotLocked_CreateCollection(t *testing.T) {
 // model unlocked during the callout, and returns what the write answered: an
 // HTTP answer or a gRPC envelope, whichever door write uses.
 //
-// An entity being created is not stored until its first transition ends, so
-// a callback cannot write the owner's own entity during a create's callout;
-// and an existing entity is committed, which stops the unlock. So the owner
+// A callback never writes the entity its callout runs for, and an existing
+// entity is committed, which stops the unlock. So the owner
 // is an entity of a second model: its processor creates entity S of the
 // target model (joined, so S is uncommitted), unlocks the target model
 // (unjoined), and makes the joined write on S. The target's workflow takes S

@@ -43,27 +43,6 @@ var ErrCommitBeforeDispatchInfra = errors.New("commit-before-dispatch infrastruc
 // 409 CONFLICT.
 var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
 
-// clientAttributableStoreErr reports whether a store error is an outcome the
-// caller can act on — a stale precondition, a unique-key clash — as opposed to
-// an infrastructure failure that merely surfaced through the same call.
-//
-// It is a deliberate allow-list rather than an "is this pgx?" heuristic,
-// because the consequence of guessing wrong runs one way only: an unrecognised
-// error reaches the entity service's catch-all, which mints a 400
-// WORKFLOW_FAILED whose detail is the raw text — driver wording, table,
-// constraint and index names, a SQLSTATE. The three sentinels below are exactly
-// the ones that classifier (and common.Internal underneath it) maps to a
-// specific status; anything else has no client-facing meaning to preserve.
-//
-// The list is what keeps the apply-result CAS honest: an infrastructure
-// failure there must be marked (unmarked, it reaches that catch-all), while a
-// conflict keeps the ErrPostSegmentConflict chain its callers read.
-func clientAttributableStoreErr(err error) bool {
-	return errors.Is(err, spi.ErrConflict) ||
-		errors.Is(err, spi.ErrUniqueViolation) ||
-		errors.Is(err, spi.ErrPartialUniqueKey)
-}
-
 // executeProcessors runs each processor in the transition's processor pipeline
 // sequentially. Processors are dispatched according to their ExecutionMode:
 // ASYNC_NEW_TX runs in a processor scope of its own (the processor's failure
@@ -506,7 +485,12 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		}
 	}
 	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
-		if !clientAttributableStoreErr(saveErr) {
+		// A save inside a transaction does no unique-key work (the commit
+		// does), so a conflict is the only outcome here the caller can act on.
+		// Anything else is the store failing: an unmarked error would reach the
+		// entity service's catch-all, a 400 WORKFLOW_FAILED carrying the raw
+		// store text.
+		if !errors.Is(saveErr, spi.ErrConflict) {
 			// Not a conflict at all — the store failed. Marked infra so the text
 			// takes the sanitized-5xx path instead of the 4xx body below.
 			// ErrPostSegmentConflict is dropped: the marker exists to say "a
