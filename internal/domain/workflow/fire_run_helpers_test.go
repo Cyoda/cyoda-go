@@ -340,3 +340,87 @@ func (m *scriptedExtProc) DispatchFunction(ctx context.Context, _ *spi.Entity, _
 	}
 	return m.function(ctx)
 }
+
+// heldStub is a processor stub that tells the test it is running and returns
+// only when the test releases it. It touches no store: a processor never
+// writes the entity it runs for, so a rival write comes from the test, in a
+// transaction of its own, while the stub is held.
+type heldStub struct {
+	running     chan struct{}
+	release     chan struct{}
+	runningOnce sync.Once
+	releaseOnce sync.Once
+}
+
+// newHeldStub returns a held stub that the test releases on cleanup at the
+// latest, so a failed test does not leave the stub waiting.
+func newHeldStub(t *testing.T) *heldStub {
+	h := &heldStub{running: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(h.releaseNow)
+	return h
+}
+
+// hold signals that the stub is running and waits for the release. The wait
+// is bounded so that a test which never releases does not hang the run.
+func (h *heldStub) hold() {
+	h.runningOnce.Do(func() { close(h.running) })
+	select {
+	case <-h.release:
+	// Longer than any wait of the test before it releases the stub.
+	case <-time.After(20 * time.Second):
+	}
+}
+
+func (h *heldStub) awaitRunning(t *testing.T) {
+	t.Helper()
+	select {
+	case <-h.running:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the processor never started")
+	}
+}
+
+func (h *heldStub) releaseNow() { h.releaseOnce.Do(func() { close(h.release) }) }
+
+// rivalSave writes data to entity id in a transaction of its own and commits.
+func rivalSave(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager, ctx context.Context, id string, data []byte) {
+	t.Helper()
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("rival Begin: %v", err)
+	}
+	es, err := factory.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("rival EntityStore: %v", err)
+	}
+	cur, err := es.Get(txCtx, id)
+	if err != nil {
+		t.Fatalf("rival Get: %v", err)
+	}
+	cur.Data = data
+	if _, err := es.Save(txCtx, cur); err != nil {
+		t.Fatalf("rival Save: %v", err)
+	}
+	if err := txMgr.Commit(ctx, txID); err != nil {
+		t.Fatalf("rival Commit: %v", err)
+	}
+}
+
+// rivalDelete deletes entity id in a transaction of its own and commits.
+func rivalDelete(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager, ctx context.Context, id string) {
+	t.Helper()
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("rival Begin: %v", err)
+	}
+	es, err := factory.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("rival EntityStore: %v", err)
+	}
+	if err := es.Delete(txCtx, id); err != nil {
+		t.Fatalf("rival Delete: %v", err)
+	}
+	if err := txMgr.Commit(ctx, txID); err != nil {
+		t.Fatalf("rival Commit: %v", err)
+	}
+}

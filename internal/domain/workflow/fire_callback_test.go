@@ -15,15 +15,41 @@ import (
 
 func runWithin(t *testing.T, env *runEnv, task spi.ScheduledTask) RunReport {
 	t.Helper()
+	return startRun(env, task)(t)
+}
+
+// startRun starts the run on a goroutine and returns a wait for its report.
+func startRun(env *runEnv, task spi.ScheduledTask) func(t *testing.T) RunReport {
 	done := make(chan RunReport, 1)
 	go func() { r, _ := env.run(task); done <- r }()
-	select {
-	case r := <-done:
-		return r
-	case <-time.After(10 * time.Second):
-		t.Fatal("the run hung")
-		return RunReport{}
+	return func(t *testing.T) RunReport {
+		t.Helper()
+		select {
+		case r := <-done:
+			return r
+		case <-time.After(10 * time.Second):
+			t.Fatal("the run hung")
+			return RunReport{}
+		}
 	}
+}
+
+// heldRun starts the run with its processor held, lets rival commit in a
+// transaction of its own while the processor runs, then releases the
+// processor and returns the run's report.
+func heldRun(t *testing.T, entityID string, rival func(env *runEnv, task spi.ScheduledTask)) (*runEnv, spi.ScheduledTask, RunReport) {
+	t.Helper()
+	held := newHeldStub(t)
+	env := newRunEnv(t, &scriptedExtProc{processor: func(context.Context, spi.ProcessorDefinition, string) (*spi.Entity, error) {
+		held.hold()
+		return nil, nil
+	}})
+	claimed := env.claimed(t, entityID, oneHopWF("CLOSED", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
+	wait := startRun(env, claimed)
+	held.awaitRunning(t)
+	rival(env, claimed)
+	held.releaseNow()
+	return env, claimed, wait(t)
 }
 
 // A delete committed by another transaction while the run is open: the run's
@@ -31,26 +57,9 @@ func runWithin(t *testing.T, env *runEnv, task spi.ScheduledTask) RunReport {
 // entity is deleted here, not its task, so the run is not superseded and the
 // conflict is reported as it is.
 func TestCallback_OtherTransactionDeletesFiredEntity_RunConflicts(t *testing.T) {
-	var env *runEnv
-	var claimed spi.ScheduledTask
-	ext := &scriptedExtProc{processor: func(context.Context, spi.ProcessorDefinition, string) (*spi.Entity, error) {
-		otherTxID, otherCtx, err := env.txMgr.Begin(env.ctx)
-		if err != nil {
-			return nil, err
-		}
-		es, err := env.factory.EntityStore(otherCtx)
-		if err != nil {
-			return nil, err
-		}
-		if err := es.Delete(otherCtx, claimed.EntityID); err != nil {
-			return nil, err
-		}
-		return nil, env.txMgr.Commit(env.ctx, otherTxID)
-	}}
-	env = newRunEnv(t, ext)
-	claimed = env.claimed(t, "cbo-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
-
-	r := runWithin(t, env, claimed)
+	env, claimed, r := heldRun(t, "cbo-e1", func(env *runEnv, task spi.ScheduledTask) {
+		rivalDelete(t, env.factory, env.txMgr, env.ctx, task.EntityID)
+	})
 	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, spi.ErrConflict) {
 		t.Fatalf("report = %+v, want failed on a conflict", r)
 	}
@@ -66,31 +75,9 @@ func TestCallback_OtherTransactionDeletesFiredEntity_RunConflicts(t *testing.T) 
 // is open makes the run conflict: nothing of it commits, and the other write
 // stands.
 func TestCallback_OtherTransactionWritesFiredEntity_RunConflicts(t *testing.T) {
-	var env *runEnv
-	var claimed spi.ScheduledTask
-	ext := &scriptedExtProc{processor: func(context.Context, spi.ProcessorDefinition, string) (*spi.Entity, error) {
-		otherTxID, otherCtx, err := env.txMgr.Begin(env.ctx)
-		if err != nil {
-			return nil, err
-		}
-		oes, err := env.factory.EntityStore(otherCtx)
-		if err != nil {
-			return nil, err
-		}
-		other, err := oes.Get(otherCtx, claimed.EntityID)
-		if err != nil {
-			return nil, err
-		}
-		other.Data = []byte(`{"by":"other"}`)
-		if _, err := oes.Save(otherCtx, other); err != nil {
-			return nil, err
-		}
-		return nil, env.txMgr.Commit(env.ctx, otherTxID)
-	}}
-	env = newRunEnv(t, ext)
-	claimed = env.claimed(t, "cbow-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
-
-	r := runWithin(t, env, claimed)
+	env, claimed, r := heldRun(t, "cbow-e1", func(env *runEnv, task spi.ScheduledTask) {
+		rivalSave(t, env.factory, env.txMgr, env.ctx, task.EntityID, []byte(`{"by":"other"}`))
+	})
 	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, spi.ErrConflict) {
 		t.Fatalf("report = %+v, want failed on a conflict", r)
 	}

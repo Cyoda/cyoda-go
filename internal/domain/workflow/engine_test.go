@@ -2296,8 +2296,8 @@ func TestEngine_SingleSegment_NoEngineCommit(t *testing.T) {
 }
 
 // TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict drives the
-// COMMIT_BEFORE_DISPATCH execution branch (startNewTxOnDispatch=false) and
-// simulates a concurrent writer that commits a competing modification to the
+// COMMIT_BEFORE_DISPATCH execution branch (startNewTxOnDispatch=false). While
+// the processor is held, the test commits a competing modification to the
 // cascade-anchor entity between the cascade's TX_pre.Commit and the engine's
 // CompareAndSave (in TX_post). The engine's CAS — which expects the durable
 // entity's TransactionID to still match TX_pre — must fail and surface
@@ -2323,37 +2323,15 @@ func TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict(t *testing
 		"interloper": schema.Boolean,
 	})
 
+	// The processor is held while the test commits the competing write in a
+	// transaction of its own, between TX_pre.Commit and TX_post's CAS. That
+	// advances the durable entity's TransactionID off TX_pre and forces
+	// CompareAndSave(expected=TX_pre) to fail. The processor itself returns
+	// only the cascade's intended result.
+	held := newHeldStub(t)
 	mock := &mockExternalProcessing{
-		dispatchFunc: func(_ context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
-			// Competing transaction from a fresh root context (no tx token in
-			// ctx). This commits a write between TX_pre.Commit and TX_post's
-			// CAS, which advances the durable entity's TransactionID off TX_pre
-			// and forces CompareAndSave(expected=TX_pre) to fail.
-			interloperCtx := ctxWithTenant(testTenant)
-			itxID, ictx, err := txMgr.Begin(interloperCtx)
-			if err != nil {
-				return nil, fmt.Errorf("interloper Begin: %w", err)
-			}
-			ies, err := factory.EntityStore(ictx)
-			if err != nil {
-				return nil, fmt.Errorf("interloper EntityStore: %w", err)
-			}
-			cur, err := ies.Get(ictx, entity.Meta.ID)
-			if err != nil {
-				_ = txMgr.Rollback(ictx, itxID)
-				return nil, fmt.Errorf("interloper Get: %w", err)
-			}
-			cur.Data = []byte(`{"interloper":true}`)
-			if _, err := ies.Save(ictx, cur); err != nil {
-				_ = txMgr.Rollback(ictx, itxID)
-				return nil, fmt.Errorf("interloper Save: %w", err)
-			}
-			if err := txMgr.Commit(ictx, itxID); err != nil {
-				return nil, fmt.Errorf("interloper Commit: %w", err)
-			}
-
-			// Cascade's intended result. The engine will attempt to apply this
-			// via CompareAndSave against TX_pre, which will now fail.
+		dispatchFunc: func(context.Context, *spi.Entity, spi.ProcessorDefinition, string, string, string) (*spi.Entity, error) {
+			held.hold()
 			modified, _ := json.Marshal(map[string]any{"cascade": true})
 			return &spi.Entity{Data: modified}, nil
 		},
@@ -2392,7 +2370,19 @@ func TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict(t *testing
 		Data: []byte(`{"x":1}`),
 	}
 
-	_, err = engine.Execute(txCtx, entity)
+	done := make(chan error, 1)
+	go func() {
+		_, execErr := engine.Execute(txCtx, entity)
+		done <- execErr
+	}()
+	held.awaitRunning(t)
+	rivalSave(t, factory, txMgr, ctx, "cbd-cas-conflict-1", []byte(`{"interloper":true}`))
+	held.releaseNow()
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cascade hung")
+	}
 	if err == nil {
 		t.Fatalf("expected ErrConflict from CompareAndSave, got nil")
 	}

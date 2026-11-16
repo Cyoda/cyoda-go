@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -80,6 +81,15 @@ func newCallbackEnv(t *testing.T, procs []spi.ProcessorDefinition, dispatch func
 // engine's entity, the engine's result and error.
 func (env *cbdCallbackEnv) transition(t *testing.T, id string) (string, *spi.Entity, *EngineResult, error) {
 	t.Helper()
+	txID, txCtx, entity := env.prepare(t, id)
+	result, err := env.engine.ManualTransition(txCtx, entity, "CALLOUT", IfMatch{})
+	return txID, entity, result, err
+}
+
+// prepare seeds entity id in S_pre with {"x":0} and reads it in a new
+// transaction, ready for the transition.
+func (env *cbdCallbackEnv) prepare(t *testing.T, id string) (string, context.Context, *spi.Entity) {
+	t.Helper()
 	seedFireEntity(t, env.factory, env.ctx, id, env.model, "S_pre", true, map[string]any{"x": 0})
 	txID, txCtx, err := env.txMgr.Begin(env.ctx)
 	if err != nil {
@@ -94,8 +104,7 @@ func (env *cbdCallbackEnv) transition(t *testing.T, id string) (string, *spi.Ent
 		t.Fatalf("Get: %v", err)
 	}
 	entity.Meta.TransactionID = txID
-	result, err := env.engine.ManualTransition(txCtx, entity, "CALLOUT", IfMatch{})
-	return txID, entity, result, err
+	return txID, txCtx, entity
 }
 
 func (env *cbdCallbackEnv) committed(t *testing.T, id string) (*spi.Entity, bool) {
@@ -136,39 +145,45 @@ func TestProcessor_NoMutations_KeepsEnginePayload(t *testing.T) {
 }
 
 // A write that another transaction commits during the callout makes the
-// apply-result CompareAndSave conflict.
+// apply-result CompareAndSave conflict. The processor is held while the test
+// commits the rival write in a transaction of its own.
 func TestCBDCallback_OtherTransactionWrites_Conflicts(t *testing.T) {
-	var env *cbdCallbackEnv
-	env = newCBDCallbackEnv(t, func(_ context.Context, entity *spi.Entity, _ string) (*spi.Entity, error) {
-		otherID, otherCtx, err := env.txMgr.Begin(env.ctx)
-		if err != nil {
-			return nil, err
-		}
-		es, err := env.factory.EntityStore(otherCtx)
-		if err != nil {
-			return nil, err
-		}
-		cur, err := es.Get(otherCtx, entity.Meta.ID)
-		if err != nil {
-			return nil, err
-		}
-		cur.Data = []byte(`{"x":9,"by":"other"}`)
-		if _, err := es.Save(otherCtx, cur); err != nil {
-			return nil, err
-		}
-		return nil, env.txMgr.Commit(env.ctx, otherID)
+	held := newHeldStub(t)
+	env := newCBDCallbackEnv(t, func(context.Context, *spi.Entity, string) (*spi.Entity, error) {
+		held.hold()
+		return nil, nil
 	})
-	_, entity, result, err := env.transition(t, "cbdo-1")
+	_, txCtx, entity := env.prepare(t, "cbdo-1")
+	type outcome struct {
+		result *EngineResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := env.engine.ManualTransition(txCtx, entity, "CALLOUT", IfMatch{})
+		done <- outcome{result, err}
+	}()
+	held.awaitRunning(t)
+	rivalSave(t, env.factory, env.txMgr, env.ctx, "cbdo-1", []byte(`{"x":9,"by":"other"}`))
+	held.releaseNow()
+	var out outcome
+	select {
+	case out = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the transition hung")
+	}
+	err := out.err
 	if err == nil {
-		err = finish(env, entity, result)
+		err = finish(env, entity, out.result)
 	}
 	if !errors.Is(err, spi.ErrConflict) {
 		t.Fatalf("err = %v, want a conflict", err)
 	}
 	got, _ := env.committed(t, "cbdo-1")
 	if got == nil || got.Meta.State == "S_post" {
-		t.Errorf("committed entity = %+v, want the other transaction's write to stand", got)
+		t.Fatalf("committed entity = %+v, want the other transaction's write to stand", got)
 	}
+	assertData(t, got.Data, map[string]any{"x": float64(9), "by": "other"})
 }
 
 // finish saves the engine's entity in the open transaction and commits it, as
