@@ -241,7 +241,7 @@ func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Conte
 // including one a savepoint rollback has since undone, or when the
 // application-layer first-committer-wins validation detects a stale read or
 // write set. The commit checks unique keys on the transaction's final
-// entities (commitClaims): spi.ErrPartialUniqueKey for a partial composite
+// entities (commitWrittenClaims): spi.ErrPartialUniqueKey for a partial composite
 // key, spi.ErrUniqueViolation for a value already held, and spi.ErrConflict
 // when two commits deadlock claiming values each frees.
 //
@@ -312,10 +312,11 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	}
 
 	// Unique keys, from the transaction's final entities and the stored
-	// models' keys (commitClaims). Before the stamp: these statements can
-	// wait on a lock, and nothing after cyoda_stamp may. With an empty read
-	// set they are the first statements Commit issues, so on an aborted
-	// transaction they meet the 25P02.
+	// models' keys (commitWrittenClaims). Before the stamp: these statements
+	// can wait on a lock, and nothing after cyoda_stamp may. With an empty
+	// read set the claim release is the first statement Commit issues, so on
+	// an aborted transaction it meets the 25P02, before a model connection is
+	// borrowed.
 	if err := tm.commitWrittenClaims(ctx, pgxTx, state); err != nil {
 		if aborted, ok := abortedCommitError(state, err); ok {
 			tm.cleanupTx(txID)
@@ -404,24 +405,27 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	return nil
 }
 
-// commitWrittenClaims runs the commit-time unique-key check over the
-// entities the transaction wrote: step 1 on the model pool (readModelKeys),
-// steps 2-4 in the transaction (commitClaims). A transaction that wrote no
-// entity issues no statement here, and one that wrote only deletes reads no
-// model.
+// commitWrittenClaims runs the commit-time unique-key check (commit_claims.go)
+// over the entities the transaction wrote: step 1 in the transaction
+// (releaseClaims), step 2 on the model pool (readModelKeys), steps 3-4 in the
+// transaction (insertClaims). A transaction that wrote no entity issues no
+// statement here, and one that wrote only deletes reads no model.
 func (tm *TransactionManager) commitWrittenClaims(ctx context.Context, tx pgx.Tx, state *txState) error {
 	written := state.WrittenEntities()
 	if len(written) == 0 {
 		return nil
 	}
+	if err := releaseClaims(ctx, tx, state.tenantID, writtenIDs(written)); err != nil {
+		return err
+	}
 	keys, err := tm.readModelKeys(ctx, state.tenantID, savedModels(written))
 	if err != nil {
 		return err
 	}
-	return commitClaims(ctx, tx, state.tenantID, written, keys)
+	return insertClaims(ctx, tx, state.tenantID, written, keys)
 }
 
-// readModelKeys is step 1 of the commit-time check (commitClaims) for a
+// readModelKeys is step 2 of the commit-time check (commit_claims.go) for a
 // transaction: it reads the unique keys of refs outside the transaction's
 // snapshot, on the model pool, and gives the connection back before it
 // returns. The model pool, because the commit already holds a main-pool

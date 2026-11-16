@@ -19,7 +19,7 @@ import (
 //   - writeSet[id] = the pre-write version for an entity we updated or deleted.
 //   - written[id] = the last write of every entity this transaction wrote:
 //     the model and bytes of its last save, or a delete. Commit checks the
-//     models and computes the unique-key claims from these (commitClaims),
+//     models and computes the unique-key claims from these (commitWrittenClaims),
 //     never from a re-read of the stored document.
 //
 // writeSet is maintained for the readSet-disjoint invariant (RecordRead skips

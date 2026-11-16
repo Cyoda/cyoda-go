@@ -544,7 +544,7 @@ func (s *entityStore) replacePendingSave(ctx context.Context, entity *spi.Entity
 // transaction the save is its own transaction and does it now
 // (replaceClaims). Inside one it only records the save — its model and the
 // bytes it was given — for the transaction's Commit, which checks the models
-// and computes the claims of its final entities (commitClaims); a save in
+// and computes the claims of its final entities (commitWrittenClaims); a save in
 // between claims nothing and checks no model. entity is saveOn's own copy, so
 // its bytes are handed over without another copy.
 func (s *entityStore) maintainClaims(ctx context.Context, entity *spi.Entity) error {
@@ -1044,12 +1044,12 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// Outside a caller's transaction, release the entity's unique-key claims
 	// in this delete's own transaction. Inside one, record the delete: the
 	// transaction's Commit releases the claims of every entity it wrote
-	// (commitClaims). Released here, an uncommitted delete would make another
+	// (TransactionManager.commitWrittenClaims). Released here, an uncommitted delete would make another
 	// transaction's commit of the value wait for this one, where the value is
 	// still held by a committed entity.
 	if spi.GetTransaction(ctx) == nil {
-		if err := s.releaseClaims(ctx, entityID); err != nil {
-			return fmt.Errorf("failed to release unique claims: %w", err)
+		if err := releaseClaims(ctx, s.q, s.tenantID, []string{entityID}); err != nil {
+			return err
 		}
 	} else if err := s.tm.recordDelete(ctx, entityID); err != nil {
 		return err

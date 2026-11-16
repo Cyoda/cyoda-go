@@ -13,22 +13,26 @@ import (
 // Unique keys are checked when a write commits, from the transaction's final
 // entities and the unique keys of their models as stored:
 //
-//  1. Read the unique keys of the model of every entity whose last write is
+//  1. Release the claims of every entity written (releaseClaims).
+//  2. Read the unique keys of the model of every entity whose last write is
 //     a save, in one statement, from the models rows, as they are committed
-//     at that moment. The model's state is not checked (the caller saves
-//     entities only into a LOCKED model), and a model the read does not find
-//     contributes no keys. An entity whose last write is a delete needs no
-//     model.
-//  2. Release the claims of every entity written.
+//     at that moment (modelKeys). The model's state is not checked (the
+//     caller saves entities only into a LOCKED model), and a model the read
+//     does not find contributes no keys. An entity whose last write is a
+//     delete needs no model.
 //  3. Compute the claims of every entity whose last write is a save, from the
 //     bytes that save was given and its model's keys. A partial composite key
-//     fails with spi.ErrPartialUniqueKey.
+//     fails with spi.ErrPartialUniqueKey (insertClaims).
 //  4. Insert those claims in (model, key id, signature) order. The immediate
 //     index unique_claims_uq refuses a value claimed twice or held by an
 //     entity outside the writes: 23505, spi.ErrUniqueViolation once
-//     classified.
+//     classified (insertClaims).
 //
-// Step 1 takes no lock, and it must not read in the transaction's snapshot.
+// Step 1 is the first statement on the transaction, so a transaction an
+// earlier statement aborted meets its 25P02 there, before step 2 borrows a
+// model connection for it.
+//
+// Step 2 takes no lock, and it must not read in the transaction's snapshot.
 // An entity transaction is REPEATABLE READ, and its snapshot is older than
 // the commit: a model created and locked after the snapshot has no row there,
 // and a model re-keyed after it (unlocked, given new keys and locked again
@@ -36,31 +40,43 @@ import (
 // the API lets the transaction write into, and the commit must enforce the
 // keys the model holds now, as memory and sqlite do. So the transactional
 // commit reads them on the model pool, outside its transaction, and gives
-// the connection back before steps 2-4 (TransactionManager.readModelKeys):
+// the connection back before steps 3-4 (TransactionManager.readModelKeys):
 // step 4 can wait on another transaction's uncommitted claim, and a model
 // connection held through that wait would bound entity commits by the model
 // pool's size and starve the model reads the pool protects. A write outside
 // a transaction reads them on its own READ COMMITTED transaction, which sees
 // the latest committed model too (replaceClaims).
 //
-// Every step runs before the commit stamp: nothing after cyoda_stamp may
-// wait on a lock (stampCommitInstant).
+// The transactional commit (TransactionManager.commitWrittenClaims) and a
+// save outside a transaction (replaceClaims) run the same steps in the same
+// order. Every step runs before the commit stamp: nothing after cyoda_stamp
+// may wait on a lock (stampCommitInstant).
 
-// commitClaims runs steps 2-4 on q, with keys, the unique keys step 1 read
+// releaseClaims is step 1: it removes every unique-key claim held by the
+// entities ids, on q. At Commit it runs inside the caller's transaction, for
+// every entity the transaction wrote; for a write outside a transaction it
+// runs in the transaction that write opened for itself.
+func releaseClaims(ctx context.Context, q Querier, tenantID spi.TenantID, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if _, err := q.Exec(ctx,
+		`DELETE FROM unique_claims WHERE tenant_id = $1 AND entity_id = ANY($2::text[])`,
+		string(tenantID), ids); err != nil {
+		return fmt.Errorf("failed to release unique claims: %w", err)
+	}
+	return nil
+}
+
+// insertClaims is steps 3-4 on q, with keys, the unique keys step 2 read
 // (modelKeys) for the models of the entities whose last write is a save
-// (savedModels). It runs at Commit inside a caller's transaction, and for a
-// write outside a transaction (replaceClaims) in the transaction that write
-// opened for itself. written is the record of the entities written
+// (savedModels). written is the record of the entities written
 // (txState.WrittenEntities): the model and bytes of each entity's last save,
 // or a delete. Both save paths store the entity under the model the save
 // names (the upsert's model guard, replacePendingSave's
 // spi.ErrEntityModelMismatch), so the recorded model is the stored one.
-func commitClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written map[string]writtenEntity, keys map[spi.ModelRef][]spi.UniqueKey) error {
-	if len(written) == 0 {
-		return nil
-	}
-
-	// Step 3, before any write: a partial key fails the whole commit.
+func insertClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written map[string]writtenEntity, keys map[spi.ModelRef][]spi.UniqueKey) error {
+	// Step 3: a partial key fails the whole commit.
 	var claims []claimRow
 	for id, w := range written {
 		if w.deleted {
@@ -78,6 +94,9 @@ func commitClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written
 			claims = append(claims, claimRow{ref: w.ref, keyID: c.KeyID, signature: c.Signature, entityID: id})
 		}
 	}
+	if len(claims) == 0 {
+		return nil
+	}
 	slices.SortFunc(claims, func(a, b claimRow) int {
 		return cmp.Or(
 			cmp.Compare(a.ref.EntityName, b.ref.EntityName),
@@ -88,22 +107,7 @@ func commitClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written
 		)
 	})
 
-	// Step 2.
-	ids := make([]string, 0, len(written))
-	for id := range written {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	if _, err := q.Exec(ctx,
-		`DELETE FROM unique_claims WHERE tenant_id = $1 AND entity_id = ANY($2::text[])`,
-		string(tenantID), ids); err != nil {
-		return fmt.Errorf("release unique claims: %w", err)
-	}
-
 	// Step 4.
-	if len(claims) == 0 {
-		return nil
-	}
 	names := make([]string, len(claims))
 	versions := make([]string, len(claims))
 	keyIDs := make([]string, len(claims))
@@ -126,6 +130,16 @@ func commitClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written
 		return fmt.Errorf("insert unique claims: %w", err)
 	}
 	return nil
+}
+
+// writtenIDs returns the ids of the entities written, sorted.
+func writtenIDs(written map[string]writtenEntity) []string {
+	ids := make([]string, 0, len(written))
+	for id := range written {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // claimRow is one unique_claims row a commit inserts.
@@ -154,7 +168,7 @@ func savedModels(written map[string]writtenEntity) []spi.ModelRef {
 	return out
 }
 
-// modelKeys is step 1: one statement reads the unique keys of every model in
+// modelKeys is step 2: one statement reads the unique keys of every model in
 // models from its models row. A model it does not find contributes no keys.
 func modelKeys(ctx context.Context, q Querier, tenantID spi.TenantID, models []spi.ModelRef) (map[spi.ModelRef][]spi.UniqueKey, error) {
 	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(models))
