@@ -374,7 +374,13 @@ func TestCreate_TransactionTimeout_408NothingCommitted(t *testing.T) {
 
 	h, ctx := newReqTimeoutHandler(t, factory, rtm)
 
-	millis := int64(1)
+	// The deadline must fire while Save blocks, after Begin, for the test to
+	// see the rollback. With a 1ms deadline a loaded runner can spend the whole
+	// budget before Begin: the request still answers 408 with nothing
+	// committed, but no transaction exists to roll back. Save waits on the
+	// deadline itself, so a budget far above the work before Begin costs only
+	// its own length.
+	millis := int64(250)
 	r := httptest.NewRequest(http.MethodPost, "/entity/JSON/Person/1", strings.NewReader(`{"name":"A","age":1}`)).WithContext(ctx)
 	w := httptest.NewRecorder()
 	h.Create(w, r, "JSON", "Person", 1, genapi.CreateParams{TransactionTimeoutMillis: &millis})
