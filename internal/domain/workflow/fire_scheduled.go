@@ -348,8 +348,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	// or when a save before a callout that carries the token did (a processor,
 	// a function criterion, or a schedule function of the reconcile above,
 	// dispatched while the in-memory entity differed from the stored one in
-	// its data or state: so every run that moved the entity or changed its
-	// data and whose final state arms a function schedule). The persist then
+	// its data or state). The persist then
 	// supersedes that version: the engine's result is the last writer inside
 	// the transaction, as for an ordinary transition. Otherwise the stored
 	// entity is still the committed version read at the start. A write or

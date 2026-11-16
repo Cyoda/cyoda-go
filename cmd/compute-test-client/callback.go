@@ -1026,34 +1026,6 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 		// write after it lost the race.
 		"cb-race-target-thenfail": targetWriter(true, verdictFail),
 
-		// cb-rival-write — the write of another client, timed during the
-		// callout: one PUT of the processor's entity WITHOUT the transaction
-		// token, its data with status set to cfg.Marker. It commits at once
-		// unless something holds the entity, and the processor waits for its
-		// answer; an answer that is not 200 fails the processor. It answers
-		// with no data and never writes through the token.
-		"cb-rival-write": func(ctx context.Context, entity *Entity, cfg cbConfig, _ string, cb *callbackClient) (*Entity, error) {
-			if err := requireCB(cb); err != nil {
-				return nil, err
-			}
-			data, err := decodeData(entity)
-			if err != nil {
-				return nil, err
-			}
-			data["status"] = cfg.Marker
-			body, err := json.Marshal(data)
-			if err != nil {
-				return nil, fmt.Errorf("cb-rival-write: encode data: %w", err)
-			}
-			res, err := cb.do(ctx, http.MethodPut, "/api/entity/JSON/"+entity.ID, string(body), "", "")
-			if err != nil {
-				return nil, fmt.Errorf("rival write: %w", err)
-			}
-			if res.Status != http.StatusOK {
-				return nil, fmt.Errorf("rival write status=%d body=%s", res.Status, res.Body)
-			}
-			return &Entity{ID: entity.ID, State: entity.State}, nil
-		},
 		// cb-write-target — reads, through a joined GET, the entity whose id
 		// rides on the anchor's data as targetId, and writes it back through
 		// a joined update with data.status set to cfg.Marker. A read or write
