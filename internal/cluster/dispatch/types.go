@@ -128,8 +128,8 @@ type DispatchCalloutResponse struct {
 	EntityData []byte `json:"entityData,omitempty"`
 	// NoPayload is set for a processor callout response when the compute
 	// member answered with no payload: the owner then has no entity data to
-	// apply, and keeps any write the processor made through a joined
-	// callback. It and EntityData are never both set.
+	// apply and leaves the entity as it is. It and EntityData are never both
+	// set.
 	NoPayload bool `json:"noPayload,omitempty"`
 
 	// Matches and Reason are populated for a criteria callout response.

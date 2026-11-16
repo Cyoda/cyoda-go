@@ -795,9 +795,8 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		delete(tx.Buffer, entityID)
 		tx.WriteSet[entityID] = true
 		// Capture attribution at STAGE time (this caller), not at commit
-		// time (the eventual committer, possibly a different actor) — see
-		// transactionManager.flushToSQLite's flush, which prefers this
-		// entry over re-deriving attribution from the commit ctx.
+		// time (the eventual committer, possibly a different actor);
+		// transactionManager.flushToSQLite records this entry.
 		a, e := spi.AttributionFor(ctx)
 		tx.DeleteAttribution[entityID] = spi.WriteAttribution{Attributed: a, Executor: e}
 		return nil
