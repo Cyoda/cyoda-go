@@ -189,7 +189,11 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
   entity the workflow runs for, with or without the transaction token. A
   processor changes that entity in one way only: through the data it
   returns. Under the token its callbacks may read that entity, and read or
-  write any other entity. This is the contract of workflow processing; the
+  write any other entity except one whose workflow is running in the same
+  transaction: no callback, at any depth (a callback's own processors and
+  their callbacks included), writes or deletes the entity of a callout that
+  has not ended. Such a write is not refused; the workflow's next save
+  replaces it, so it is lost. This is the contract of workflow processing; the
   engine does not detect or guard against a breach. A write to the entity by
   another transaction while the workflow runs fails one of the two with a
   conflict (see the next item).

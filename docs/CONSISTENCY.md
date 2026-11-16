@@ -689,15 +689,17 @@ A short checklist:
    function criterion and a schedule function never write or delete the
    entity the workflow runs for, with or without the transaction token; a
    processor changes it only through the data it returns. Callbacks under
-   the token may write other entities. A callback read under the token
-   returns the entity as the workflow has it when the callout is made: the
-   engine saves it to the transaction before each callout that carries the
-   token. On postgres that save takes the entity's row lock, so another
-   writer of the entity, and another transaction that read it, wait at
-   their write or commit until the workflow's transaction ends. A write to
-   the entity by another transaction makes one of the two fail with a
-   conflict. Cross-link: `cmd/cyoda/help/content/workflows.md` carries
-   this rule.
+   the token may write other entities, except the entity of any callout of
+   the same transaction that has not ended, at any depth; such a write is
+   not refused, and that workflow's next save replaces it. A callback read
+   under the token returns the entity as the workflow has it when the
+   callout is made: the engine saves it to the transaction before each
+   callout that carries the token. On postgres that save takes the entity's
+   row lock, so another writer of the entity, and another transaction that
+   read it, wait at their write or commit until the workflow's transaction
+   ends. A write to the entity by another transaction makes one of the two
+   fail with a conflict. Cross-link: `cmd/cyoda/help/content/workflows.md`
+   carries this rule.
 10. **Batch operations degrade under `COMMIT_BEFORE_DISPATCH`.** Under
     `UpdateEntityCollection` (or any all-or-nothing batch) where at
     least one item triggers a cascade segmented by

@@ -19,8 +19,9 @@ until the workflow ends.
 A processor, a function criterion and a schedule function never write or delete
 the anchor, with or without the token; a processor changes the anchor only
 through the data it returns. Writing other entities through the token stays
-supported. The engine does not detect a breach and no longer adopts such a
-write.
+supported, except the entity of any callout of the same transaction that has
+not ended, at any depth. The engine does not detect a breach and no longer
+adopts such a write: the workflow's next save replaces it.
 
 ## One version per entity per transaction
 

@@ -28,9 +28,9 @@ import (
 //     entity outside the writes: 23505, spi.ErrUniqueViolation once
 //     classified (insertClaims).
 //
-// Step 1 is the first statement on the transaction, so a transaction an
-// earlier statement aborted meets its 25P02 there, before step 2 borrows a
-// model connection for it.
+// Step 1 is the first statement of this check (the first Commit issues when
+// the read set is empty), so a transaction an earlier statement aborted meets
+// its 25P02 there, before step 2 borrows a model connection for it.
 //
 // Step 2 takes no lock, and it must not read in the transaction's snapshot.
 // An entity transaction is REPEATABLE READ, and its snapshot is older than
