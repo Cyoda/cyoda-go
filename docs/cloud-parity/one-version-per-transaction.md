@@ -3,25 +3,27 @@
 cyoda-go is the authoritative implementation. This file is the contract Cyoda
 Cloud follows.
 
-## Callback reads return the current anchor
+## Callback reads return the current entity
 
-The entity a workflow runs for (the anchor) is saved into the transaction
-before every callout that carries the transaction token. A callback read under
-the token returns the anchor as the workflow has it now: the request's data,
-the state changes so far and the data earlier processors returned. On a create
-the anchor is found; during a processor it is in its source state. On
-PostgreSQL the callout holds the anchor's row lock, so another writer of the
-anchor, and another transaction that read it, wait (at the write or the commit)
-until the workflow ends.
+Before every callout that carries the transaction token, the engine writes the
+entity the workflow runs for into the open transaction, uncommitted. Nothing is
+committed early: the operation commits once, at its end, and that commit
+replaces this pending version (one version per transaction). A callback read
+under the token returns the entity as the workflow has it now: the request's
+data, the state changes so far and the data earlier processors returned. On a
+create the entity is found; during a processor it is in its source state. On
+PostgreSQL the pending write holds the entity's row lock, so another writer of
+the entity, and another transaction that read it, wait (at the write or the
+commit) until the workflow's transaction ends.
 
 ## A callout never writes the entity it runs for
 
 A processor, a function criterion and a schedule function never write or delete
-the anchor, with or without the token; a processor changes the anchor only
-through the data it returns, also a change a nested processor (of another
-entity a callback creates or updates) works out for the anchor: it is passed
-back up and returned by the processor the anchor's transition called, never
-saved to the anchor. Writing other entities through the token stays supported,
+the entity they run for, with or without the token; a processor changes that
+entity only through the data it returns. That holds also for a change a nested
+processor (of another entity a callback creates or updates) works out for the
+entity: it is passed back up and returned by the processor the entity's
+transition called, never saved to the entity. Writing other entities through the token stays supported,
 except an entity whose cascade is running in the same transaction, at any
 depth: the entity is passing from one state to the next, so such a write moves
 it out from under the running transition, and it starts that entity's workflow

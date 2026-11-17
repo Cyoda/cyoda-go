@@ -13207,8 +13207,9 @@ components:
         extension attribute `cyodatxtoken`); echoing it here runs this request
         inside the open transaction the token names, so the request sees what
         that transaction has saved so far and its own writes commit with it.
-        The engine saves the entity the callout runs for to the transaction
-        before the callout, so a read of it returns the entity as the workflow
+        Before the callout, the engine writes the entity the callout runs for
+        into that open transaction, uncommitted (the operation still commits
+        once, at its end), so a read of it returns the entity as the workflow
         has it: found on a create, with the changes earlier processors
         returned, in the transition's source state while its processors run.
         A callout never writes or deletes the entity it runs for; a processor

@@ -224,8 +224,12 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
 - **What a callback read of the entity returns.** A callback that reads,
   searches, counts or pages under the transaction token sees the entity as
   the workflow has it when the callout is made. Before each callout that
-  carries the token, the engine saves the entity to the transaction if it
-  changed since it was last saved. On a create the entity is found; during
+  carries the token, the engine reads the entity in the open transaction
+  and, if the stored data or state differ from the workflow's, writes the
+  entity into that transaction. The write is not committed: only that
+  transaction and the requests joined to it see it, the operation still
+  commits once, at its end, and the operation's final write of the entity
+  replaces it, so it adds no version. On a create the entity is found; during
   workflow selection on a create it has no state yet. While a transition's
   processors run, its state is the transition's source state (the state
   advances after the processors) and its data includes the changes earlier
