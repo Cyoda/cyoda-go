@@ -6,6 +6,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Helm chart: Gateway API routing needs a Gateway.** With
+  `gateway.enabled=true`, the default, the chart's schema refuses an empty
+  `gateway.parentRefs`, so the install fails. Before, it rendered an
+  `HTTPRoute` and a `GRPCRoute` attached to no Gateway and the install
+  succeeded unrouted. Set `gateway.parentRefs`, or `gateway.enabled=false`.
+
 - **A callback read returns the entity as the workflow has it, and a callout
   never writes the entity it runs for.** Before every callout that carries
   the transaction token, other than a `COMMIT_BEFORE_DISPATCH` processor's, the engine reads the entity in the
@@ -1506,6 +1512,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **`cyoda help install` and `cyoda help design`.** `install` gives every
+  way to install and upgrade the binary (Homebrew, the install script and its
+  settings, `.deb`/`.rpm`, the container image, `go install`). `design` gives
+  practices for entity models and workflows, each pointing to the reference
+  topic that states the rule.
+
 - **`CYODA_POSTGRES_MODEL_CONNS` (default `8`, at least `2`).** The
   PostgreSQL model store — model reads, schema extensions and model
   administration — runs on a pool of its own, apart from the main pool, so
@@ -2051,6 +2063,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **Help text that did not match the server.** The Helm chart is published
+  (`cyoda/cyoda` from `https://cyoda.github.io/cyoda-go`), and every install
+  example now renders. A `PUT` with an empty body is refused with `400`; use
+  `PATCH` with `{}` to fire a transition without changing data. A save can
+  name any transition that is not disabled and has no schedule, whatever its
+  `manual`. A workflow export posted back unchanged is refused; re-import its
+  `workflows`. A replayed `COMMIT_BEFORE_DISPATCH` processor carries a new
+  `requestId`. `$.items.0` in a `groupBy` names a field called `0`. The
+  `migrate.postgres.*` chart values are documented. The compose and
+  `docker run` production examples read the signing key and the Postgres DSN
+  from files.
 
 - **gRPC: a snapshot the caller does not have, or results of one that has
   not finished, is the caller's error,** as it is on HTTP. A
