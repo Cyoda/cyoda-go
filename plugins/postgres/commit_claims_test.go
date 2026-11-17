@@ -137,83 +137,32 @@ func TestCommitClaims_UsesWrittenBytes(t *testing.T) {
 	ccRequireClaimed(t, fx, ref, "1e100", "the committed value")
 }
 
-// TestCommitClaims_KeysReadAtCommit_ModelLockedAfterSnapshot — the model is
-// created and locked after the transaction's snapshot, and an entity holding
-// a key value is committed into it elsewhere. The transaction then saves an
-// entity of the model with the same value. The commit reads the model's keys
-// as they are at commit, not in its snapshot (which has no row for the
-// model): the duplicate is refused.
-func TestCommitClaims_KeysReadAtCommit_ModelLockedAfterSnapshot(t *testing.T) {
-	fx := newPGFixture(t)
-	tm := fx.txManager(t)
-	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
-
-	txID, txCtx, es := ccBegin(t, fx, tm)
-	ccModel(t, fx, ref, ccCodeKey)
-	if _, err := ccStore(t, fx).Save(fx.ctx, ccEntity(ref, uuid.NewString(), `{"code":"x"}`)); err != nil {
-		t.Fatalf("seed the holder: %v", err)
-	}
-
-	id := uuid.NewString()
-	ccSave(t, txCtx, es, ccEntity(ref, id, `{"code":"x"}`))
-	if err := tm.Commit(boundedCtx(t, fx), txID); !errors.Is(err, spi.ErrUniqueViolation) {
-		t.Fatalf("Commit of a duplicate into a model locked after the snapshot = %v, want spi.ErrUniqueViolation", err)
-	}
-	ccRequireAbsent(t, fx, id, "the refused commit")
-}
-
-// TestCommitClaims_KeysReadAtCommit_ModelRekeyedAfterSnapshot — the model,
-// with no entities, is unlocked, given a new key and locked again after the
-// transaction's snapshot, and an entity holding a value of the new key is
-// committed elsewhere. The commit enforces the new key, not the one in its
-// snapshot.
-func TestCommitClaims_KeysReadAtCommit_ModelRekeyedAfterSnapshot(t *testing.T) {
+// TestCommitClaims_KeysReadInTransaction — the commit reads the models'
+// unique-key definitions in its own transaction and takes no connection from
+// the model pool. With every model-pool connection held, a commit of a save
+// goes through and claims its value.
+func TestCommitClaims_KeysReadInTransaction(t *testing.T) {
 	fx := newPGFixture(t)
 	tm := fx.txManager(t)
 	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
 	ccModel(t, fx, ref, ccCodeKey)
 
-	txID, txCtx, es := ccBegin(t, fx, tm)
-	if err := fx.store.Unlock(fx.ctx, ref); err != nil {
-		t.Fatalf("Unlock: %v", err)
+	models, err := fx.factory.modelPool()
+	if err != nil {
+		t.Fatalf("model pool: %v", err)
 	}
-	otherKey := spi.UniqueKey{ID: "other", Fields: []string{"$.other"}}
-	if err := fx.store.Save(fx.ctx, &spi.ModelDescriptor{
-		Ref: ref, State: spi.ModelUnlocked, ChangeLevel: spi.ChangeLevelStructural,
-		Schema: []byte(`{}`), UniqueKeys: []spi.UniqueKey{otherKey},
-	}); err != nil {
-		t.Fatalf("Save new keys: %v", err)
+	for i := int32(0); i < models.pool.Config().MaxConns; i++ {
+		conn, err := models.pool.Acquire(fx.ctx)
+		if err != nil {
+			t.Fatalf("hold model pool connection %d: %v", i, err)
+		}
+		t.Cleanup(conn.Release)
 	}
-	if err := fx.store.Lock(fx.ctx, ref); err != nil {
-		t.Fatalf("Lock: %v", err)
-	}
-	if _, err := ccStore(t, fx).Save(fx.ctx, ccEntity(ref, uuid.NewString(), `{"code":"a","other":"y"}`)); err != nil {
-		t.Fatalf("seed the holder: %v", err)
-	}
-
-	id := uuid.NewString()
-	ccSave(t, txCtx, es, ccEntity(ref, id, `{"code":"b","other":"y"}`))
-	if err := tm.Commit(boundedCtx(t, fx), txID); !errors.Is(err, spi.ErrUniqueViolation) {
-		t.Fatalf("Commit of a duplicate of the new key = %v, want spi.ErrUniqueViolation", err)
-	}
-	ccRequireAbsent(t, fx, id, "the refused commit")
-}
-
-// TestCommitClaims_KeysReadOnModelPool — the commit reads the models' keys
-// on the model pool, not the main pool. With a main pool of one connection,
-// which the committing transaction holds, a key read on the main pool could
-// not get a connection; on the model pool the commit goes through and
-// claims its value.
-func TestCommitClaims_KeysReadOnModelPool(t *testing.T) {
-	fx := newPGFixtureSized(t, defaultStoreConfig().SchemaSavepointInterval, 1)
-	tm := fx.txManager(t)
-	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
-	ccModel(t, fx, ref, ccCodeKey)
 
 	txID, txCtx, es := ccBegin(t, fx, tm)
 	ccSave(t, txCtx, es, ccEntity(ref, uuid.NewString(), `{"code":"x"}`))
 	if err := tm.Commit(boundedCtx(t, fx), txID); err != nil {
-		t.Fatalf("Commit with the one main-pool connection held by the transaction: %v", err)
+		t.Fatalf("Commit with every model-pool connection held: %v", err)
 	}
 	ccRequireClaimed(t, fx, ref, `"x"`, "the committed value")
 }

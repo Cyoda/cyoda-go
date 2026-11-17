@@ -82,13 +82,6 @@ type TransactionManager struct {
 	// production. It supplies commit stamps and consistency times
 	// (stampAtArg) and the retention cutoff of submit times.
 	clock spi.Clock
-	// models returns the model pool of the factory the manager serves. The
-	// commit reads the unique keys of its entities' models on it
-	// (readModelKeys). StoreFactory.setTransactionManager sets it in the
-	// same call that hands the manager to the factory, and a transaction
-	// records entity writes only through a factory's stores, so it is set
-	// whenever a commit has keys to read.
-	models func() (*modelPool, error)
 }
 
 // TransactionManagerOption configures a TransactionManager at construction.
@@ -312,11 +305,11 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	}
 
 	// Unique keys, from the transaction's final entities and the stored
-	// models' keys (commitWrittenClaims). Before the stamp: these statements
-	// can wait on a lock, and nothing after cyoda_stamp may. With an empty
-	// read set the claim release is the first statement Commit issues, so on
-	// an aborted transaction it meets the 25P02, before a model connection is
-	// borrowed.
+	// models' unique-key definitions (commitWrittenClaims). Before the
+	// stamp: these statements can wait on a lock, and nothing after
+	// cyoda_stamp may. With an empty read set the claim release is the first
+	// statement Commit issues, so on an aborted transaction it meets the
+	// 25P02.
 	if err := tm.commitWrittenClaims(ctx, pgxTx, state); err != nil {
 		if aborted, ok := abortedCommitError(state, err); ok {
 			tm.cleanupTx(txID)
@@ -406,10 +399,12 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 }
 
 // commitWrittenClaims runs the commit-time unique-key check (commit_claims.go)
-// over the entities the transaction wrote: step 1 in the transaction
-// (releaseClaims), step 2 on the model pool (readModelKeys), steps 3-4 in the
-// transaction (insertClaims). A transaction that wrote no entity issues no
-// statement here, and one that wrote only deletes reads no model.
+// over the entities the transaction wrote, every step in the transaction:
+// releaseClaims, modelKeys, insertClaims. The unique-key definitions are
+// read in the transaction's snapshot; commit_claims.go says why that is
+// correct and why the commit borrows no second connection for it. A transaction that wrote
+// no entity issues no statement here, and one that wrote only deletes reads
+// no model.
 func (tm *TransactionManager) commitWrittenClaims(ctx context.Context, tx pgx.Tx, state *txState) error {
 	written := state.WrittenEntities()
 	if len(written) == 0 {
@@ -418,37 +413,11 @@ func (tm *TransactionManager) commitWrittenClaims(ctx context.Context, tx pgx.Tx
 	if err := releaseClaims(ctx, tx, state.tenantID, writtenIDs(written)); err != nil {
 		return err
 	}
-	keys, err := tm.readModelKeys(ctx, state.tenantID, savedModels(written))
+	keys, err := modelKeys(ctx, tx, state.tenantID, savedModels(written))
 	if err != nil {
 		return err
 	}
 	return insertClaims(ctx, tx, state.tenantID, written, keys)
-}
-
-// readModelKeys is step 2 of the commit-time check (commit_claims.go) for a
-// transaction: it reads the unique keys of refs outside the transaction's
-// snapshot, on the model pool, and gives the connection back before it
-// returns. The model pool, because the commit already holds a main-pool
-// connection, and taking a second from the same pool could wait forever on a
-// saturated pool. The acquire is bounded, as every acquire made while a
-// transaction holds a connection is: a timeout is a retryable
-// storage-unavailable error. With no refs it reads nothing.
-func (tm *TransactionManager) readModelKeys(ctx context.Context, tenantID spi.TenantID, refs []spi.ModelRef) (map[spi.ModelRef][]spi.UniqueKey, error) {
-	if len(refs) == 0 {
-		return map[spi.ModelRef][]spi.UniqueKey{}, nil
-	}
-	models, err := tm.models()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the models' unique keys: %w", err)
-	}
-	acquireCtx, cancelAcquire := newAcquireContext(ctx, models.acquireTimeout)
-	conn, err := models.pool.Acquire(acquireCtx)
-	cancelAcquire()
-	if err != nil {
-		return nil, classifyAcquireErr(ctx, acquireCtx, "model keys acquire", err)
-	}
-	defer conn.Release()
-	return modelKeys(ctx, classifiedQuerier{inner: conn}, tenantID, refs)
 }
 
 // stampCommitInstant fixes the transaction's instant and applies it to every

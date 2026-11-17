@@ -11,18 +11,18 @@ import (
 )
 
 // Unique keys are checked when a write commits, from the transaction's final
-// entities and the unique keys of their models as stored:
+// entities and the unique-key definitions of their models as stored:
 //
 //  1. Release the claims of every entity written (releaseClaims).
-//  2. Read the unique keys of the model of every entity whose last write is
-//     a save, in one statement, from the models rows, as they are committed
-//     at that moment (modelKeys). The model's state is not checked (the
-//     caller saves entities only into a LOCKED model), and a model the read
-//     does not find contributes no keys. An entity whose last write is a
-//     delete needs no model.
+//  2. Read the unique-key definitions (uniqueKeys) of the model of every
+//     entity whose last write is a save, in one statement, from the models
+//     rows (modelKeys). The model's state is not checked (the caller saves
+//     entities only into a LOCKED model), and a model the read does not
+//     find contributes no unique-key definitions. An entity whose last
+//     write is a delete needs no model.
 //  3. Compute the claims of every entity whose last write is a save, from the
-//     bytes that save was given and its model's keys. A partial composite key
-//     fails with spi.ErrPartialUniqueKey (insertClaims).
+//     bytes that save was given and its model's unique-key definitions. A
+//     partial composite key fails with spi.ErrPartialUniqueKey (insertClaims).
 //  4. Insert those claims in (model, key id, signature) order. The immediate
 //     index unique_claims_uq refuses a value claimed twice or held by an
 //     entity outside the writes: 23505, spi.ErrUniqueViolation once
@@ -30,22 +30,22 @@ import (
 //
 // Step 1 is the first statement of this check (the first Commit issues when
 // the read set is empty), so a transaction an earlier statement aborted meets
-// its 25P02 there, before step 2 borrows a model connection for it.
+// its 25P02 there.
 //
-// Step 2 takes no lock, and it must not read in the transaction's snapshot.
-// An entity transaction is REPEATABLE READ, and its snapshot is older than
-// the commit: a model created and locked after the snapshot has no row there,
-// and a model re-keyed after it (unlocked, given new keys and locked again
-// while it had no entities) has its old keys there. Either is a LOCKED model
-// the API lets the transaction write into, and the commit must enforce the
-// keys the model holds now, as memory and sqlite do. So the transactional
-// commit reads them on the model pool, outside its transaction, and gives
-// the connection back before steps 3-4 (TransactionManager.readModelKeys):
-// step 4 can wait on another transaction's uncommitted claim, and a model
-// connection held through that wait would bound entity commits by the model
-// pool's size and starve the model reads the pool protects. A write outside
-// a transaction reads them on its own READ COMMITTED transaction, which sees
-// the latest committed model too (replaceClaims).
+// Step 2 takes no lock and reads on the same transaction as the other steps.
+// The transactional commit reads in its REPEATABLE READ snapshot, so it sees
+// the models as they were when the transaction began. That is correct under
+// the caller's rule: a model's state and its unique-key definitions change
+// only while no transaction that will write entities of that model is open
+// (spi.UniqueKey). If that rule is broken, the commit may check the unique-key
+// definitions as they were when the transaction began. A read on the model
+// pool, which sees the latest model, would buy nothing under that rule, and
+// would make every commit with a save wait for a second connection, from the
+// model pool, while it holds a main-pool one: a busy model pool would then
+// fail commits as unavailable, and commits would starve the model reads that
+// pool is kept apart for. A write outside a transaction reads on its own READ
+// COMMITTED transaction, which sees the latest committed model
+// (replaceClaims).
 //
 // The transactional commit (TransactionManager.commitWrittenClaims) and a
 // save outside a transaction (replaceClaims) run the same steps in the same
@@ -68,13 +68,13 @@ func releaseClaims(ctx context.Context, q Querier, tenantID spi.TenantID, ids []
 	return nil
 }
 
-// insertClaims is steps 3-4 on q, with keys, the unique keys step 2 read
-// (modelKeys) for the models of the entities whose last write is a save
+// insertClaims is steps 3-4 on q, with keys, the unique-key definitions step 2
+// read (modelKeys) for the models of the entities whose last write is a save
 // (savedModels). written is the record of the entities written
 // (txState.WrittenEntities): the model and bytes of each entity's last save,
-// or a delete. Both save paths store the entity under the model the save
-// names (the upsert's model guard, replacePendingSave's
-// spi.ErrEntityModelMismatch), so the recorded model is the stored one.
+// or a delete. Both save paths store the entity under the model the save names
+// (the upsert's model guard, replacePendingSave's spi.ErrEntityModelMismatch),
+// so the recorded model is the stored one.
 func insertClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written map[string]writtenEntity, keys map[spi.ModelRef][]spi.UniqueKey) error {
 	// Step 3: a partial key fails the whole commit.
 	var claims []claimRow
@@ -168,8 +168,9 @@ func savedModels(written map[string]writtenEntity) []spi.ModelRef {
 	return out
 }
 
-// modelKeys is step 2: one statement reads the unique keys of every model in
-// models from its models row. A model it does not find contributes no keys.
+// modelKeys is step 2: one statement reads the unique-key definitions of
+// every model in models from its models row. A model it does not find
+// contributes no unique-key definitions.
 func modelKeys(ctx context.Context, q Querier, tenantID spi.TenantID, models []spi.ModelRef) (map[spi.ModelRef][]spi.UniqueKey, error) {
 	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(models))
 	if len(models) == 0 {
@@ -188,25 +189,25 @@ func modelKeys(ctx context.Context, q Querier, tenantID spi.TenantID, models []s
 		  WHERE m.tenant_id = $1`,
 		string(tenantID), names, versions)
 	if err != nil {
-		return nil, fmt.Errorf("read the unique keys of the models: %w", err)
+		return nil, fmt.Errorf("read the unique-key definitions of the models: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var ref spi.ModelRef
 		var rawKeys []byte
 		if err := rows.Scan(&ref.EntityName, &ref.ModelVersion, &rawKeys); err != nil {
-			return nil, fmt.Errorf("read the unique keys of the models: %w", err)
+			return nil, fmt.Errorf("read the unique-key definitions of the models: %w", err)
 		}
 		var k []spi.UniqueKey
 		if len(rawKeys) > 0 {
 			if err := json.Unmarshal(rawKeys, &k); err != nil {
-				return nil, fmt.Errorf("read the unique keys of model %s: %w", ref, err)
+				return nil, fmt.Errorf("read the unique-key definitions of model %s: %w", ref, err)
 			}
 		}
 		keys[ref] = k
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the unique keys of the models: %w", err)
+		return nil, fmt.Errorf("read the unique-key definitions of the models: %w", err)
 	}
 	return keys, nil
 }

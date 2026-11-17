@@ -85,26 +85,11 @@ func TestCommitWithReadSetAfterSerializationFailure_IsAConflict(t *testing.T) {
 // TestCommitWithSaveOnAbortedTransaction_IsAConflict: a transaction aborted
 // by a statement no classifier recorded a cause for, that read nothing but
 // saved an entity, has the unique-key check as the first statements of its
-// Commit. The release of the written entities' claims runs on the transaction
-// before the model pool is touched, so it meets the 25P02 first, and Commit
-// answers the conflict abortedCommitError gives an unrecorded abort. The model
-// pool here has one connection, held by the test: had Commit tried to borrow
-// it first, it would have answered storage-unavailable instead.
+// Commit. The release of the written entities' claims meets the 25P02, and
+// Commit answers the conflict abortedCommitError gives an unrecorded abort.
 func TestCommitWithSaveOnAbortedTransaction_IsAConflict(t *testing.T) {
 	fx := newStatementCeilingFixture(t, 0)
 	ctx := classifyTestCtx()
-
-	models, err := openModelPool(ctx, fx.pool.Config(), 1, 200*time.Millisecond)
-	if err != nil {
-		t.Fatalf("open model pool: %v", err)
-	}
-	t.Cleanup(models.close)
-	held, err := models.pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("hold the model pool's one connection: %v", err)
-	}
-	t.Cleanup(held.Release)
-	fx.tm.models = func() (*modelPool, error) { return models, nil }
 
 	txID, txCtx := beginGuarded(t, fx.tm, ctx)
 	state, ok := fx.tm.lookupTxState(txID)
@@ -122,10 +107,6 @@ func TestCommitWithSaveOnAbortedTransaction_IsAConflict(t *testing.T) {
 	}
 
 	commitErr := fx.tm.Commit(ctx, txID)
-	var su interface{ StorageUnavailable() bool }
-	if errors.As(commitErr, &su) && su.StorageUnavailable() {
-		t.Fatalf("an aborted transaction's commit waited for a model connection: %v", commitErr)
-	}
 	if !errors.Is(commitErr, spi.ErrConflict) {
 		t.Fatalf("the commit of an aborted transaction is not a conflict: %v", commitErr)
 	}

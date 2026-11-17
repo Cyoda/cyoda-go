@@ -124,15 +124,12 @@ func (f *StoreFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelt
 // the generator without going through the TransactionManager). Called by
 // InitTransactionManager at construction time, and by test helpers that wire
 // a TM of their own (e.g. NewStoreFactoryWithTMForTest); each call fully
-// replaces both fields. It also gives tm the factory's model pool, on which
-// its commits read the models' unique keys. tm must use this factory's
-// tenant-key cache: InitTransactionManager builds it with that cache, and the
-// test helpers build the factory around the TM's cache
-// (newStoreFactoryWithKeys). Keep
+// replaces both fields. tm must use this factory's tenant-key cache:
+// InitTransactionManager builds it with that cache, and the test helpers
+// build the factory around the TM's cache (newStoreFactoryWithKeys). Keep
 // this unexported: there is no legitimate external caller, and opening it
 // would invite a race the factory isn't designed for.
 func (f *StoreFactory) setTransactionManager(tm *TransactionManager) {
-	tm.models = f.modelPool
 	f.tm = tm
 	f.uuids = tm.uuids
 }
