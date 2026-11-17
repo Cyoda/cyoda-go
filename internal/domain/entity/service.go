@@ -15,6 +15,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
@@ -201,6 +202,26 @@ func checkUniqueKeys(desc *spi.ModelDescriptor, parsedData any, doc []byte, item
 	return nil
 }
 
+// lockedModel returns the model an entity may be created in: desc when it is
+// LOCKED, else the model read again fresh from storage when that read is
+// LOCKED, else nil. A model's state reaches every node eventually, so desc,
+// read through this node's model cache, may predate a lock: the fresh read
+// keeps a node that has not yet seen the lock from refusing the create. A
+// LOCKED desc is not read again; a node learns of an unlock eventually.
+func lockedModel(ctx context.Context, store spi.ModelStore, desc *spi.ModelDescriptor) (*spi.ModelDescriptor, error) {
+	if desc.State == spi.ModelLocked {
+		return desc, nil
+	}
+	fresh, err := modelcache.GetFresh(ctx, store, desc.Ref)
+	if err != nil {
+		return nil, err
+	}
+	if fresh.State != spi.ModelLocked {
+		return nil, nil
+	}
+	return fresh, nil
+}
+
 // CreateEntity creates a single entity with workflow execution and returns
 // the transaction result.
 func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*EntityTransactionResult, error) {
@@ -227,8 +248,14 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		return nil, common.Internal("failed to load model", err)
 	}
 
-	// Reject if model not locked
-	if desc.State != spi.ModelLocked {
+	desc, err = lockedModel(ctx, modelStore, desc)
+	if err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound, "model not found")
+		}
+		return nil, common.Internal("failed to load model", err)
+	}
+	if desc == nil {
 		return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked, "model is not locked")
 	}
 
@@ -1965,7 +1992,15 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 				}
 				return nil, common.Internal(fmt.Sprintf("item %d: failed to load model", i), err)
 			}
-			if desc.State != spi.ModelLocked {
+			desc, err = lockedModel(ctx, modelStore, desc)
+			if err != nil {
+				if errors.Is(err, spi.ErrNotFound) {
+					return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+						fmt.Sprintf("item %d: model not found", i))
+				}
+				return nil, common.Internal(fmt.Sprintf("item %d: failed to load model", i), err)
+			}
+			if desc == nil {
 				return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked,
 					fmt.Sprintf("item %d: model is not locked", i))
 			}
