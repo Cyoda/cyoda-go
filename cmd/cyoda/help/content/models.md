@@ -3,6 +3,7 @@ topic: models
 title: "models — entity model schema system"
 stability: stable
 see_also:
+  - design
   - crud
   - workflows
   - search
@@ -456,6 +457,7 @@ curl -s -X DELETE \
 
 ## SEE ALSO
 
+- design
 - crud
 - workflows
 - search

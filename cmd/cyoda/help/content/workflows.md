@@ -3,6 +3,7 @@ topic: workflows
 title: "workflows — state machine definitions"
 stability: stable
 see_also:
+  - design
   - models
   - crud
   - grpc
@@ -842,6 +843,7 @@ curl -s -X POST \
 
 ## SEE ALSO
 
+- design
 - models
 - crud
 - grpc
