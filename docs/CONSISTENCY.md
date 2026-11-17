@@ -277,9 +277,9 @@ a model is unlocked only when it has no entities; a model's unique keys
 extensions) change only while it is UNLOCKED; a LOCKED model is never
 deleted or re-imported. The API keeps these rules with the checks its
 services make before they act: an entity create refuses a model that is
-not LOCKED (`409 MODEL_NOT_LOCKED`), after it reads the model again from
-storage, past the node's model cache, so that a node that has not yet
-seen a lock does not refuse; unlock counts the model's entities
+not LOCKED (`409 MODEL_NOT_LOCKED`), after it reads the model once more
+from storage, so that a read that raced a lock does not refuse (a node's
+model cache holds only LOCKED models); unlock counts the model's entities
 and refuses `409 MODEL_HAS_ENTITIES`; delete, import and the unique-key
 change refuse a LOCKED model (`409 MODEL_ALREADY_LOCKED`). Because an
 UNLOCKED model has no entities, delete counts none and never answers

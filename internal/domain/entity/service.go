@@ -204,10 +204,10 @@ func checkUniqueKeys(desc *spi.ModelDescriptor, parsedData any, doc []byte, item
 
 // lockedModel returns the model an entity may be created in: desc when it is
 // LOCKED, else the model read again fresh from storage when that read is
-// LOCKED, else nil. A model's state reaches every node eventually, so desc,
-// read through this node's model cache, may predate a lock: the fresh read
-// keeps a node that has not yet seen the lock from refusing the create. A
-// LOCKED desc is not read again; a node learns of an unlock eventually.
+// LOCKED, else nil. The model cache holds only LOCKED models, so a desc that
+// is not LOCKED came from storage, possibly from a read that raced a lock: the
+// fresh read keeps such a read from refusing the create. A LOCKED desc is not
+// read again; a node learns of an unlock eventually.
 func lockedModel(ctx context.Context, store spi.ModelStore, desc *spi.ModelDescriptor) (*spi.ModelDescriptor, error) {
 	if desc.State == spi.ModelLocked {
 		return desc, nil

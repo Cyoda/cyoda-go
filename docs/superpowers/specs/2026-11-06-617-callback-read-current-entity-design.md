@@ -585,11 +585,19 @@ them in the transaction's snapshot, §4.2).
 The rules and that operating assumption are documented in `cyoda help models`
 and `docs/CONSISTENCY.md`.
 
-Because an `UNLOCKED` model has no entities, delete needs no entity count, and
-the extension log of a model that import or delete acts on is always empty
-(rows exist only while the model is `LOCKED`; unlock folds and clears the log):
-the extension-log `DELETE` and its stale-row warning are removed from `Save` and
-`Delete` on every backend. sqlite's `SetChangeLevel`, a separate read and
+A model's state reaches the other nodes eventually, through each node's model
+cache, which holds only a `LOCKED` model. A create that reads its model as not
+`LOCKED` reads it again from storage before it refuses `409 MODEL_NOT_LOCKED`;
+a node that still holds a model as `LOCKED` after an unlock elsewhere is
+accepted until it learns of the unlock. `ExtendSchema` does not check the
+model's state: an entity write extends only a `LOCKED` model.
+
+Because an `UNLOCKED` model has no entities, delete needs no entity count.
+`Save` and `Delete` clear the model's extension log in the same transaction
+(postgres, sqlite; the stale-row warning is gone): a create accepted by a node
+that has not yet seen an unlock can extend the now-unlocked model, and the
+clearing keeps such a delta from outliving an import or a delete. sqlite's
+`SetChangeLevel`, a separate read and
 whole-document write that could put back a stale descriptor, becomes one
 statement that sets only the change level, as on postgres.
 

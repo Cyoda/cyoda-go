@@ -344,9 +344,10 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 
 // ExtendSchema appends a 'delta' row to model_schema_extensions
 // (spi.ErrNotFound when the model is absent). The caller extends only a
-// LOCKED model; the store does not check this. While the model is LOCKED the schema stored in models.doc does not change;
-// Get folds the log on top of it via the injected ApplyFunc. Unlock rewrites
-// it with the folded schema and clears the log.
+// LOCKED model; the store does not check this. While the model is LOCKED the
+// schema stored in models.doc does not change; Get folds the log on top of it
+// via the injected ApplyFunc. Unlock rewrites it with the folded schema and
+// clears the log; Save and Delete clear it too.
 //
 // The write runs in its own transaction and is not part of the caller's
 // ambient transaction. A delta that changes nothing — applying it to the
