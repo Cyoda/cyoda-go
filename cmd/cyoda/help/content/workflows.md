@@ -47,7 +47,7 @@ A workflow definition is a named finite state machine attached to an entity mode
 
 The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. Manual transitions are triggered by the client via `PUT /entity/{format}/{entityId}/{transition}`.
 
-The engine enforces a per-state visit limit of 10 by default (configurable via `WithMaxStateVisits`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time.
+The engine enforces a per-state visit limit of 10 by default (configurable via `WithMaxStateVisits`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time. Both limits count within one cascade. A callout never writes the entity its workflow runs for (PROCESSORS, *Design rule*).
 
 ## WORKFLOW SCHEMA
 
@@ -148,6 +148,35 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 A processor may return modified entity data. That data is governed by the model exactly as a client's write is: it must be storable, and it must satisfy the schema. Introducing a field the model does not declare requires the model's `changeLevel` to permit it; otherwise the transition fails with `WORKFLOW_FAILED` and rolls back, and the refused data changes neither the entity nor the model. Where the level permits it, the returned data extends the model exactly as a client write does, with the same side effects: the extension commits on its own before the transition commits, and stays even if the transition fails afterwards (`cyoda help models`, SCHEMA EXTENSION).
 
+**Design rule: a callout never writes the entity it runs for.** A processor,
+a function criterion and a schedule function change the entity they run for
+in one way only: a processor returns new data, and the engine applies it.
+None of them writes or deletes that entity through the API, with or without
+the transaction token. The same holds at every depth: while an entity's
+cascade is running, no callback writes or deletes that entity, including
+callbacks of the processors of other entities that callbacks create or
+update in the same transaction. Any change to the entity goes back through
+the data returned by the processor its transition called. That includes a
+change worked out by a nested processor (a processor of another entity that
+a callback creates or updates): the nested processor does not write the
+change to the entity, which would launch the entity's workflow from inside
+its own cascade; the change is passed back up and returned by the processor
+the entity's transition called. A processor runs while its entity passes
+from one state to the next: the engine moves the entity to the transition's
+target state only after the processor returns, and the processor's result is
+for the entity in the state and version the transition started from. A write
+to the entity during the callout starts another state change from a state
+the entity is only passing through, so when the processor returns, the
+entity is no longer in that state or version, and the transition's result no
+longer applies to it. Every entity write also runs the entity's workflow, so
+the write starts a second cascade of the same entity inside the first one.
+That cascade can reach the same callout, which makes the same write again:
+the cascade re-enters itself and can loop without end. The per-state visit
+and depth limits count within one cascade, so they do not stop it. A workflow that seems to
+need one is designed wrong: return the data from the processor; put a change
+that must follow the cascade in a later transition (manual or scheduled); or
+keep the changing part in an entity of its own.
+
 A processor must not change a model or a workflow through the API while it
 runs; that is not supported. An EdgeMessage a processor saves is outside the
 entity transaction: make the save idempotent and attach the message id to the
@@ -172,11 +201,11 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
 - `"SYNC"` — the engine dispatches the processor and blocks until a response is received; the entity write transaction remains open during the wait; a failed callout fails the operation and the entity remains in the source state; the error is set out under **What a failed callout leaves behind** below
 - `"ASYNC_SAME_TX"` — same dispatch mechanics as `SYNC` (blocks inline, transaction stays open); failure semantics are identical to `SYNC`
 - `"ASYNC_NEW_TX"` — dispatched within a savepoint; on a processor failure the savepoint is rolled back and the error is logged as a warning; the pipeline continues to the next processor and the transition completes; returned entity modifications are discarded. The processor's failure does not fail the operation. Nor does a callback's write that fails under it with an answer that is not retryable: that makes the processor fail, with everything its callbacks wrote to entities, and the operation goes on; a schema extension a callback's write made stays. A failure of the savepoint itself — it cannot be created, undone or released — does. So does a conflict: undoing the savepoint does not undo a race that a callback's write inside it had already lost against another transaction, and the operation fails with a retryable `409 CONFLICT` and nothing commits, whatever the processor answered.
-- `"COMMIT_BEFORE_DISPATCH"` — the engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout state of the transition and **commits before the processor is dispatched**, releasing the storage connection for the duration of the external compute. The entity is then durable in the pre-callout state. With `startNewTxOnDispatch: false` (the default) the processor runs outside any transaction, and the engine opens `TX_post` on the same node when it returns. With `startNewTxOnDispatch: true` the engine opens `TX_post` before the dispatch and requires the entity there to be the version `TX_pre` committed (another transaction's change in between is the conflict below, and the processor is not dispatched); the processor's callbacks then join `TX_post`. In both shapes the engine applies the result in `TX_post` via `CompareAndSave` — against the version `TX_pre` committed, or against `TX_post`'s own write when a callback wrote the entity there — runs any subsequent SYNC processors and cascade transitions, then commits. A CAS conflict at the boundary — another transaction changed the entity during the dispatch — answers `412 ENTITY_MODIFIED` naming the entity on every write route — a create, an update, and an item of a collection create or update, which fails the collection request whole; the entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. A failed callout fails the operation — the error is as for `SYNC` — and the entity remains in the pre-callout state. Designed to relieve connection-pool pressure for slow processors and supersedes `ASYNC_NEW_TX` as the recommended mode for slow external work.
+- `"COMMIT_BEFORE_DISPATCH"` — the engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout state of the transition and **commits before the processor is dispatched**, releasing the storage connection for the duration of the external compute. The entity is then durable in the pre-callout state. With `startNewTxOnDispatch: false` (the default) the processor runs outside any transaction, and the engine opens `TX_post` on the same node when it returns. With `startNewTxOnDispatch: true` the engine opens `TX_post` before the dispatch and requires the entity there to be the version `TX_pre` committed (another transaction's change in between is the conflict below, and the processor is not dispatched); the processor's callbacks then join `TX_post`. In both shapes the engine applies the result in `TX_post` via `CompareAndSave` against the version `TX_pre` committed, runs any subsequent SYNC processors and cascade transitions, then commits. A CAS conflict at the boundary — another transaction changed the entity during the dispatch — answers `412 ENTITY_MODIFIED` naming the entity on every write route — a create, an update, and an item of a collection create or update, which fails the collection request whole; the entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. A failed callout fails the operation — the error is as for `SYNC` — and the entity remains in the pre-callout state. Designed to relieve connection-pool pressure for slow processors and supersedes `ASYNC_NEW_TX` as the recommended mode for slow external work.
 
 **`COMMIT_BEFORE_DISPATCH` configuration flag:**
 
-- `startNewTxOnDispatch` — boolean — sibling field on the same processor object; default `false`; valid only when `executionMode == "COMMIT_BEFORE_DISPATCH"`. Validator rejects `true` for any other mode. When `true`, the engine opens `TX_post` before the dispatch and supplies its transaction token, so the processor's CRUD callbacks join `TX_post` and may read or write any entity, the cascade-anchor included (see *A processor changes the entity it runs for in one way only* below); `TX_post` then holds its storage connection for the whole callout. When `false`, no transaction context is supplied to the dispatched call, and no connection is held during it.
+- `startNewTxOnDispatch` — boolean — sibling field on the same processor object; default `false`; valid only when `executionMode == "COMMIT_BEFORE_DISPATCH"`. Validator rejects `true` for any other mode. When `true`, the engine opens `TX_post` before the dispatch and supplies its transaction token, so the processor's CRUD callbacks join `TX_post`, may read any entity and may write any entity except the one the processor runs for (see *A callout never writes the entity it runs for* below); `TX_post` then holds its storage connection for the whole callout. When `false`, no transaction context is supplied to the dispatched call, and no connection is held during it.
 
 **`COMMIT_BEFORE_DISPATCH` workflow-author requirements:**
 
@@ -184,37 +213,66 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
 - **Visibility of segment-boundary states.** States on a segment boundary (the pre-callout state of a `COMMIT_BEFORE_DISPATCH` processor) are **publicly observable** to readers between segments. A concurrent transaction's `Get`/`GetPage`/`Iterate`/`Search`/`Count` will see the entity in the pre-callout state, and a second cascade may decide to fire criteria-driven transitions based on that observed state. Workflow authors using `COMMIT_BEFORE_DISPATCH` must treat segment-boundary states as committed states — design state-machine criteria, transition guards, and external monitoring accordingly. If invisibility of an intermediate state is required, model it as a workflow-level `DRAFT` parent state with sub-stages in payload, or do not expose the entity until a designated terminal state.
 - **Attribution handover with `startNewTxOnDispatch=false`.** With no transaction context supplied, the dispatched processor's callback writes are ordinary independent requests — the platform tracks no causal chain for them. Each is recorded as the identity it presents. With the compute node's own client token, that is the compute node's client, as both attributed principal and executor. A compute node never receives a user's token: a callout carries the user only as attributes (`authid`/`authtype`, the executor in `authexecid`/`authexectype`). To record a callback write for that user, the compute node must hold the credentials of an on-behalf-of client of the tenant and the private half of an active trusted key of the tenant (see `cyoda help auth integration`); it must not reuse the backend's on-behalf-of client, and a key of its own is recommended, so that each can be revoked without touching the backend's (see *WHEN ANOTHER PART ACTS FOR A USER* there); a segregation-of-duties check never lists this client among the ids it accepts as "the user approved", sign an assertion for `authid` when `authtype` is `user`, and make the write with the exchanged token; it is then recorded for the user, executed by that on-behalf-of client. Inside a scheduled fire, this processor's callout carries the principal that armed the timer in `authid`/`authtype` and `system` as the executor, as every callout of the fire does, although it is dispatched outside a transaction. The platform supplies no other carrier for this mode.
 - **A write made under a transaction token that reaches one is refused.** A compute member's callback — a request carrying a transaction token — runs in the transaction it joined, and only the operation that began a transaction commits it. A `COMMIT_BEFORE_DISPATCH` processor commits the transaction it runs in, so a callback whose write reaches one is refused with `409` `COMMIT_IN_JOINED_TRANSACTION` at that processor: it is not dispatched, the joined transaction is neither flushed nor committed, and nothing the refused write did is kept but a schema extension it made (`cyoda help models`, SCHEMA EXTENSION). As a failed write it makes the joined transaction rollback-only: its owner fails with `409` `TRANSACTION_ROLLBACK_ONLY` (under an `ASYNC_NEW_TX` processor, that processor fails instead). Both values of `startNewTxOnDispatch` are refused. A compute member that needs such a write from inside a processor makes it as an independent request, without the transaction token. The refusal is deterministic, so a test of the path finds it. Whether a workflow is reached from a callback is decided at run time, not at import, so the import does not reject the combination.
-- **A processor changes the entity it runs for in one way only.**
-  Processors with TX-callback access (SYNC, ASYNC_SAME_TX, COMMIT_BEFORE_DISPATCH
-  with startNewTxOnDispatch=true) can write the cascade-anchor entity via the
-  supplied transaction token. The engine keeps a callback's write only under
-  SYNC, ASYNC_SAME_TX, and COMMIT_BEFORE_DISPATCH with startNewTxOnDispatch:
-  true; under ASYNC_NEW_TX a callback can write, but the engine's payload
-  overwrites it. If the processor then returns no mutations, the
-  engine keeps that write: it takes the written payload, keeps its own state,
-  and the transition still takes effect; later processors see the written
-  payload. If the processor also returns mutations for the same entity, the
-  engine's apply-result overwrites the processor's intra-TX writes
-  (last-writer-wins inside the transaction buffer). Pick one path: let the
-  engine apply the result, OR have the processor write the entity itself and
-  return no mutations for it. A processor that writes the entity bases the
-  write on the payload in its request, not on a callback read (see the next
-  item). A write to the entity by any other transaction makes the transition
-  fail with a conflict.
-- **What a callback read of the entity returns.** A callback that reads or
-  searches under the transaction token sees what the transaction has saved,
-  and nothing else. While a request runs, the engine keeps the entity it is
-  working on in memory. It saves that entity to the transaction only when the
-  whole chain of transitions has run, and before each
-  `COMMIT_BEFORE_DISPATCH` processor. Until then a callback read of that
-  entity returns the last saved version. On an update, that is the entity as
-  it was before the request: without the data the request sent, without the
-  state changes of the transitions so far, and without the changes earlier
-  processors returned. On a create, the entity is not found. After a
-  `COMMIT_BEFORE_DISPATCH` processor, it is the entity as saved there. The
-  payload in a processor's or criterion's request is the current entity.
-  Other entities that the transaction has already saved — for example,
-  through an earlier callback — are returned as saved.
+- **A callout never writes the entity it runs for** (PROCESSORS, *Design
+  rule*). Under the token a callout's callbacks may read that entity, and
+  read or write any other entity whose cascade is not running in the same
+  transaction. A write to the entity by
+  another transaction while the workflow runs fails one of the two with a
+  conflict (see *On PostgreSQL a written entity stays locked until the
+  transaction ends* below).
+- **What a callback read of the entity returns.** A callback that reads,
+  searches, counts or pages under the transaction token sees the entity as
+  the workflow has it when the callout is made. Before each callout that
+  carries the token, other than a `COMMIT_BEFORE_DISPATCH` processor's,
+  the engine reads the entity in the open transaction. It writes the
+  entity into that transaction when that read finds nothing (a create), or
+  when the stored data bytes or state differ from the workflow's copy; a
+  change to the metadata alone does not count. On PostgreSQL the stored
+  data is the JSONB rendering of what was written, so data that came from
+  a request or a processor usually differs in its bytes and is written
+  again. The write is not committed: only that transaction and the
+  requests joined to it see it. It commits or rolls back with the
+  transaction, at the end of the operation that began the transaction, or,
+  when a `COMMIT_BEFORE_DISPATCH` processor follows, at that processor's
+  segment boundary. A later write of the entity in the same transaction
+  replaces the pending version, so the transaction records one version of
+  the entity. A `COMMIT_BEFORE_DISPATCH` processor's first segment commits
+  the entity before the callout. With `startNewTxOnDispatch: true` the
+  transaction its callbacks join reads that committed version before the
+  dispatch, so they see the current entity too; that transaction has not
+  written the entity and holds no row lock on it during the callout. With
+  `false` the callout carries no token. On a create the entity is found;
+  during workflow selection on a create it has no state yet. While a
+  transition's processors run, its state is the transition's source state
+  (the state advances after the processors) and its data includes the
+  changes earlier processors returned. The payload in a processor's or
+  criterion's request is the same entity. Other entities the transaction
+  has written — for example, through an earlier callback — are returned as
+  written. These writes are the operation's own: they do not break the
+  request's `If-Match`.
+- **On PostgreSQL a written entity stays locked until the transaction
+  ends.** From its first write of the entity — the engine's write before a
+  callout, or an earlier one — the transaction holds the entity's row lock
+  until it commits or rolls back: at the end of the operation, or at the
+  boundary of the `COMMIT_BEFORE_DISPATCH` segment it belongs to. A rollback
+  to a savepoint releases the locks of the writes it undoes: the writes of a
+  failed callback, or those of the callbacks of a failed `ASYNC_NEW_TX`
+  processor. The engine's write before an `ASYNC_NEW_TX` processor's
+  callout is made before that processor's savepoint opens, so the
+  processor's failure keeps that write and its lock. A
+  transaction that has not written the entity holds no row lock on it
+  while a callout runs; a manual transition that sends no data, for
+  example, has not written it before its first processor's callout. Another transaction that writes a locked entity
+  waits at its write, and one that read it waits at its commit, until the
+  lock holder ends; if that transaction committed a change to the entity,
+  the waiting write or commit is answered with a retryable `409 CONFLICT`.
+  When `CYODA_POSTGRES_STATEMENT_TIMEOUT` (default `5m`; `0` disables it)
+  is set, a wait longer than it cancels the waiting statement. A compute member that reads a locked
+  entity in a transaction of its own, without the token, and then commits
+  therefore waits on its own callout: the callout times out, or, if the
+  statement timeout is set and shorter than the callout's response timeout,
+  the member's waiting statement is cancelled first. Read the entity under the
+  token, or from the request's payload.
 
 Import-time validation rejects any `executionMode` value not in the list above (and not empty) with `400 VALIDATION_FAILED`. The empty string continues to default to `SYNC` at engine fire.
 
@@ -410,7 +468,7 @@ otherwise `UNSAFE_WORK_NOT_COMPLETED`.
 - **One owner per run.** Every node with `CYODA_SCHEDULER_ENABLED=true` claims due tasks from storage and runs them itself. A claimed task is `RUNNING` under one node, and every write that node makes for the run is checked against its claim. A node proves it is alive with a heartbeat; another node takes over its tasks only after the heartbeats have stopped for `CYODA_SCHEDULER_STALE_AFTER` (default `2m`). A node that is alive keeps its tasks, even when a run hangs. See `cyoda help config scheduler`.
 - **One task per entity at a time.** While one scheduled transition of an entity runs, no other scheduled transition of the same entity is claimed. It can be claimed once the first one ends. If the first one fired and the entity left the state, the other task is removed and recorded as `SCHEDULED_TRANSITION_CANCEL`.
 - **Firing.** When the scheduled time is due, the owner evaluates the transition's criterion. A `true` (or absent) criterion fires the transition normally (processors run, state advances, `TRANSITION_MAKE` is recorded) and the task is removed. A `false` criterion **declines** the transition — the entity stays in its current state, and the task is removed and not retried (`TRANSITION_NOT_MATCH_CRITERION`). See "One-shot vs. polling" below for how to model a retry. A criterion that cannot be evaluated — its compute member is down, for example — is a failure, not `false`.
-- **Retries.** A run that fails when nothing unsafe was handed to a compute member is retried: a criterion or function error, no compute member for the tag, a conflict with a concurrent write, a storage error, a failed `idempotent` processor, or a processor that provably never reached a compute member. The task goes back to `WAITING` with its attempts and last error, and is tried again after `CYODA_SCHEDULER_RETRY_DELAY` (default `30s`), doubling on each failure up to `CYODA_SCHEDULER_RETRY_DELAY_MAX` (default `15m`). With `timeoutMs`, retries stop at the deadline (below). Without `timeoutMs`, a failing task is retried without end and stays visible as `WAITING`.
+- **Retries.** A run that fails when nothing unsafe was handed to a compute member is retried: a criterion or function error, no compute member for the tag, a conflict with a concurrent write, a storage error, a commit refused on a unique key, a failed `idempotent` processor, or a processor that provably never reached a compute member. The task goes back to `WAITING` with its attempts and last error, and is tried again after `CYODA_SCHEDULER_RETRY_DELAY` (default `30s`), doubling on each failure up to `CYODA_SCHEDULER_RETRY_DELAY_MAX` (default `15m`). With `timeoutMs`, retries stop at the deadline (below). Without `timeoutMs`, a failing task is retried without end and stays visible as `WAITING`.
 - **Lateness / expiry (`timeoutMs`).** `timeoutMs` — set directly on a static schedule, or derived from a function schedule's expiry — sets the task's deadline: scheduled time + `timeoutMs`, on the owner's clock. A task with no prior attempt and no lost owner that is first claimed after its deadline is **expired**: it is removed without evaluating the criterion (`SCHEDULED_TRANSITION_EXPIRE`), the transition never fires and the entity stays put. Any counted attempt that fails after the deadline ends `FAILED` (`EXPIRED_AFTER_FAILED_ATTEMPTS`) instead — the first attempt included. A task that already failed an attempt or lost an owner is never expired: it ends `FAILED` the same way, without running again, once it is picked up more than `CYODA_SCHEDULER_RETRY_DELAY` past the deadline; otherwise it runs again. Retry delays are cut to the deadline, so the last retry is scheduled at or before it. No `timeoutMs` (no expiry) means no deadline.
 - **A processor is never repeated for one arm of the task unless it is `idempotent`.** Before the owner sends a processor that is not declared `idempotent` to a compute member, it marks the task. If that processor may have reached a compute member and the run does not commit — the member failed or did not answer, a later step failed, or the owner crashed — the task ends `FAILED` (`UNSAFE_WORK_NOT_COMPLETED`) and the scheduler never runs it again. Declare `idempotent: true` only on a processor that is safe to repeat everywhere it reaches (see **Repeating a processor** above); its failures are then retried like any other safe failure.
 - **Partial commit.** A `COMMIT_BEFORE_DISPATCH` processor in a cascade step after the fired transition commits the entity in that step's state. If the run stops after such a commit, the task ends `FAILED` (`STOPPED_AFTER_PARTIAL_COMMIT`): the entity has already moved, and running the transition again from its source state would be wrong. A `COMMIT_BEFORE_DISPATCH` processor of the fired transition itself commits the entity while it is still in the source state; a safe failure after it is retried from that committed state.
@@ -419,7 +477,8 @@ otherwise `UNSAFE_WORK_NOT_COMPLETED`.
 - **A write can answer `409` when it races the scheduler.** The scheduler writes a task when it claims it, commits part of a run, records an attempt, ends it `FAILED`, or hands it back. A client write that re-arms or removes a task the scheduler wrote after the write began fails with a retryable `409 CONFLICT` — the same answer as a write that races the fire itself. A delete that owns its transaction, and a workflow import — which always does — retry on the server, up to three more times, and answer `409` only if the conflict persists; a batched conditional delete reports it for every id of that batch that did not already fail on its own instead. An entity write that joined another transaction (`X-Tx-Token`) is not retried on the server: it runs once, and the transaction's owner decides at commit. A repeated import saves the same workflows and retries the removal. See `cyoda help errors CONFLICT`.
 - **Explicitly firing a scheduled transition by name returns** HTTP 400 `TRANSITION_NOT_FOUND`, with the message `transition "X" in state "Y" is scheduled and fires automatically; it is not manually fireable`. Same code returned when a transition is `disabled: true` — same semantic: "the transition exists but is not currently dispatchable from the caller's POV." The entity remains in the source state. To allow early firing, give the state an ordinary manual transition alongside the scheduled one.
 - **Audit trail.** Arming, firing, expiry, cancellation and failure each emit a dedicated event: `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE` (alongside the ordinary `TRANSITION_MAKE`), `SCHEDULED_TRANSITION_EXPIRE`, `SCHEDULED_TRANSITION_CANCEL`, `SCHEDULED_TRANSITION_FAIL`. `FAIL` carries the transition, the source state, the reason, the attempts and the lost owners; `cyoda help audit`, *Event data*, lists the data of each. A loopback that re-arms the same state emits only `ARM`, not `CANCEL`. `CANCEL` is recorded at a write, when some other task of the entity is no longer armed from the entity's new current state (see *Workflow-level selection*); or when the task itself comes due and the workflow now selected for the entity does not schedule it from that state, even though the entity never left it. A task whose entity carries no transaction id to guard the fire is also cancelled, and logged at ERROR. At fire time, an entity that is already gone, or has otherwise left the source state, is removed instead with no audit event. A task past its deadline on its first attempt records `EXPIRE`, not `CANCEL`, even when it is obsolete too: lateness is decided from the stored task and the clock before the workflow is consulted. A safe failure records no audit event; it shows in the task's attempts and last error, in the log at WARN, and at ERROR with a ticket when its cause is an internal error.
-- **Callbacks in a scheduled run.** A processor's callbacks join the run's transaction, as in any transition. A callback that writes the entity being fired (see **A processor changes the entity it runs for in one way only** above) also holds the task. When a processor that is not `idempotent`, or a `COMMIT_BEFORE_DISPATCH` step, follows in the same run, the run cannot mark or commit the task, so the attempt fails safely — and every retry fails the same way. The run never hangs and never repeats unsafe work.
+- **Callbacks in a scheduled run.** A processor's callbacks join the run's transaction, as in any transition, and so do the callbacks of a `schedule.function` the run calls to arm the state it reaches. None of them writes or deletes the entity being fired (see **A callout never writes the entity it runs for** above).
+- **A run refused at commit.** A run's commit checks its final entities like any write's: a duplicate or partly filled composite unique key refuses the commit, and nothing the refused transaction wrote is kept. A segment that an earlier `COMMIT_BEFORE_DISPATCH` boundary of the run committed stays committed. That is a failed run under the rules above. Its last error is the text a client write gets for the same refusal (`UNIQUE_VIOLATION: …` or `INVALID_UNIQUE_KEY: …`), with no ticket.
 - **Criteria and functions must not trigger unsafe work.** A criterion and a `schedule.function` are treated as safe to repeat and are not marked. One whose callbacks trigger a processor that is not `idempotent` is not supported: that processor can run twice.
 - **Shutdown.** A node that shuts down stops claiming. From then on none of its runs begins a new unsafe dispatch. It waits `CYODA_SCHEDULER_SHUTDOWN_DRAIN` (default `20s`) for its runs, then cuts every other run and hands back the ones that sent nothing unsafe and made no partial commit: another node claims them at once, and the attempt is not counted. A cut run that already sent unsafe work or partially committed ends `FAILED` (`UNSAFE_WORK_NOT_COMPLETED` or `STOPPED_AFTER_PARTIAL_COMMIT`) instead. A run with a non-idempotent processor callout in flight is not cut, and is allowed to finish. If a run has not ended by the time the shutdown wait runs out, the node stops with its claim still held, and another node takes the task over after `CYODA_SCHEDULER_STALE_AFTER`. See `cyoda help run` (SHUTDOWN TIMING).
 
@@ -477,7 +536,7 @@ Criteria on workflows and transitions use the same `Condition` DSL as search —
 
 `group` criteria combine conditions with `AND`, `OR`, or `NOT`. `NOT` takes **exactly one** child condition (`NOT(A AND B)` is written by nesting, not as a two-entry list); zero entries or two-or-more is rejected at import with `400 VALIDATION_FAILED`. Over a wildcard path `NOT` is a universal quantifier where the leaf beneath it is existential — `NOT($.tags[*] EQUALS "red")` fires when no element equals `"red"`, a different question from `$.tags[*] NOT_EQUAL "red"` (some element differs) — and `NOT` over an empty list, an explicit `null`, or an absent field fires, because the inner leaf is false. See `cyoda help search` for the full contract.
 
-`lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search.
+`lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search. While a workflow runs, the entity's `transactionId` is the id of the transaction it runs in: the request's, a scheduled fire's, or after a `COMMIT_BEFORE_DISPATCH` boundary the new transaction's.
 
 A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
 

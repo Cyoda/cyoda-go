@@ -21,6 +21,7 @@ func TestEntityDoc_TemporalValuesAreNotInTheDocument(t *testing.T) {
 	factory := setupEntityTest(t)
 	tenant := spi.TenantID("doc-shape-tenant")
 	ctx := ctxWithTenant(tenant)
+	lockModels(t, factory, ctx, spi.ModelRef{EntityName: "doc-shape", ModelVersion: "1"})
 	pool := postgres.PoolForTest(factory)
 
 	store, err := factory.EntityStore(ctx)
@@ -94,6 +95,7 @@ func TestGetAsAt_CreationDateSurvivesUpdate(t *testing.T) {
 	}
 	id := uuid.NewString()
 	ref := spi.ModelRef{EntityName: "creation-date-survives", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	if _, err := store.Save(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: id, ModelRef: ref},
@@ -163,6 +165,7 @@ func TestLastModified_AdvancesOnUpdateAndDelete(t *testing.T) {
 	}
 	id := uuid.NewString()
 	ref := spi.ModelRef{EntityName: "last-modified-advances", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	if _, err := store.Save(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: id, ModelRef: ref},

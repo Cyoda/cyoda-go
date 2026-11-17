@@ -12,6 +12,7 @@ import (
 // id-only rewrite; the rewrite itself is reviewed, not measured.)
 func TestTxDeleteAll_StagesCommittedAndBuffered(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-it"), spi.ModelRef{EntityName: "m-dall", ModelVersion: "1"}, spi.ModelRef{EntityName: "m-keep", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-it"))
 	ref := spi.ModelRef{EntityName: "m-dall", ModelVersion: "1"}
 	other := spi.ModelRef{EntityName: "m-keep", ModelVersion: "1"}

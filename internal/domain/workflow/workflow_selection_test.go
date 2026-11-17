@@ -275,7 +275,7 @@ func TestFireScheduled_ResolvesWorkflowByCriterion(t *testing.T) {
 		mk("kind-a-wf", "a", "A_CLOSED"),
 		mk("kind-b-wf", "b", "B_CLOSED"),
 	})
-	seedFireEntity(t, factory, ctx, "fire-select-b", modelRef, "OPEN", "seed-tx-1", map[string]any{"kind": "b"})
+	seedFireEntity(t, factory, ctx, "fire-select-b", modelRef, "OPEN", true, map[string]any{"kind": "b"})
 
 	id := taskID(testTenant, "fire-select-b", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -328,7 +328,7 @@ func TestFireScheduled_TransitionAbsentFromSelectedWorkflow_Cancelled(t *testing
 		},
 	}
 	setupKindModel(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wfB, wfA})
-	seedFireEntity(t, factory, ctx, "fire-orphan-a", modelRef, "OPEN", "seed-tx-1", map[string]any{"kind": "a"})
+	seedFireEntity(t, factory, ctx, "fire-orphan-a", modelRef, "OPEN", true, map[string]any{"kind": "a"})
 
 	id := taskID(testTenant, "fire-orphan-a", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -499,7 +499,8 @@ func TestFireScheduled_ExpiresEvenWhenWorkflowCannotBeResolved(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "fire-expire-unresolvable", ModelVersion: "1.0"}
 
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{fnCriterionWorkflow("AutoClose", delayMs)})
-	seedFireEntity(t, factory, ctx, "fire-expire-1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, factory, ctx, modelRef)
+	seedFireEntity(t, factory, ctx, "fire-expire-1", modelRef, "OPEN", true, map[string]any{})
 
 	timeout := timeoutMs
 	id := taskID(testTenant, "fire-expire-1", "OPEN", "AutoClose")
@@ -536,7 +537,8 @@ func TestFireScheduled_UnresolvableWorkflowLeavesTaskForRetry(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "fire-retry-unresolvable", ModelVersion: "1.0"}
 
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{fnCriterionWorkflow("AutoClose", delayMs)})
-	seedFireEntity(t, factory, ctx, "fire-retry-1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, factory, ctx, modelRef)
+	seedFireEntity(t, factory, ctx, "fire-retry-1", modelRef, "OPEN", true, map[string]any{})
 
 	id := taskID(testTenant, "fire-retry-1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -600,7 +602,7 @@ func TestFireScheduled_NeverFiresAManualTransition(t *testing.T) {
 	}
 	setupKindModel(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wfA, wfB})
 	// Armed under kind-b-wf, but the payload now selects kind-a-wf.
-	seedFireEntity(t, factory, ctx, "fire-manual-1", modelRef, "OPEN", "seed-tx-1", map[string]any{"kind": "a"})
+	seedFireEntity(t, factory, ctx, "fire-manual-1", modelRef, "OPEN", true, map[string]any{"kind": "a"})
 
 	id := taskID(testTenant, "fire-manual-1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -653,7 +655,7 @@ func TestFireScheduled_ObsoleteTaskDiscardIsAudited(t *testing.T) {
 		},
 	}
 	setupKindModel(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wfA, wfB})
-	seedFireEntity(t, factory, ctx, "fire-obsolete-1", modelRef, "OPEN", "seed-tx-1", map[string]any{"kind": "a"})
+	seedFireEntity(t, factory, ctx, "fire-obsolete-1", modelRef, "OPEN", true, map[string]any{"kind": "a"})
 
 	id := taskID(testTenant, "fire-obsolete-1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -701,7 +703,7 @@ func TestFireScheduled_SilentGuardsRecordNoSelectionEvents(t *testing.T) {
 		},
 	})
 	// The entity has already moved on — the task's SourceState no longer matches.
-	seedFireEntity(t, factory, ctx, "fire-silent-1", modelRef, "CLOSED", "seed-tx-1", map[string]any{"kind": "a"})
+	seedFireEntity(t, factory, ctx, "fire-silent-1", modelRef, "CLOSED", true, map[string]any{"kind": "a"})
 
 	id := taskID(testTenant, "fire-silent-1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -881,8 +883,9 @@ func TestFireScheduled_EntityMovedOnRemoveFailureIsSurfaced(t *testing.T) {
 			"CLOSED": {},
 		},
 	}})
+	lockTestModel(t, realFactory, ctx, modelRef)
 	// Entity has already left the task's SourceState — the guard fires.
-	seedFireEntity(t, realFactory, ctx, "fire-del-1", modelRef, "CLOSED", "seed-tx-1", map[string]any{})
+	seedFireEntity(t, realFactory, ctx, "fire-del-1", modelRef, "CLOSED", true, map[string]any{})
 
 	id := taskID(testTenant, "fire-del-1", "OPEN", "AutoClose")
 	armTask(t, realFactory, ctx, spi.ScheduledTask{

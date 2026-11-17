@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -26,6 +27,7 @@ func seedReaderPoolFixture(t *testing.T, name string) (*sqlite.StoreFactory, con
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

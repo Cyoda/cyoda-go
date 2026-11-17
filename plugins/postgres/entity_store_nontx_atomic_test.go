@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
@@ -38,6 +39,7 @@ func TestNonTxSave_IsAtomic(t *testing.T) {
 
 	id := uuid.NewString()
 	mref := spi.ModelRef{EntityName: "atomic-probe", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 
 	// No entities row exists for this id yet, so the constraint only ever
 	// has to reject version 1 — the one saveOn's fresh-insert path is about
@@ -94,6 +96,7 @@ func TestNonTxSave_UpdatePathIsAtomic(t *testing.T) {
 
 	id := uuid.NewString()
 	mref := spi.ModelRef{EntityName: "atomic-probe-update", ModelVersion: "1"}
+	lockModels(t, factory, ctx, mref)
 	const plantedDoc = `{"_meta":{},"marker":"pre-save"}`
 
 	// Plant the entities row the foreign key now requires, at version 0 so
@@ -177,11 +180,12 @@ func TestNonTxDelete_IsAtomic(t *testing.T) {
 
 	id := uuid.NewString()
 	mref := spi.ModelRef{EntityName: "atomic-delete-probe", ModelVersion: "1"}
-	// A declared unique key gives releaseClaims a real claim row to delete
-	// (and, when Delete fails, a real claim row that must survive) — without
-	// one, releaseClaims is a no-op and that half of atomicity goes unchecked.
-	keys := []spi.UniqueKey{{ID: "n-key", Fields: []string{"$.n"}}}
-	ctx := spi.WithUniqueKeys(baseCtx, keys)
+	// A unique key on the model gives releaseClaims a real claim row to
+	// delete (and, when Delete fails, a real claim row that must survive) —
+	// without one, releaseClaims is a no-op and that half of atomicity goes
+	// unchecked.
+	spitest.EnsureLockedModel(t, factory, baseCtx, mref, spi.UniqueKey{ID: "n-key", Fields: []string{"$.n"}})
+	ctx := baseCtx
 
 	if _, err := store.Save(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: id, TenantID: tenant, ModelRef: mref},

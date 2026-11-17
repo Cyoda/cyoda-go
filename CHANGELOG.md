@@ -6,6 +6,71 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A callback read returns the entity as the workflow has it, and a callout
+  never writes the entity it runs for.** Before every callout that carries
+  the transaction token, other than a `COMMIT_BEFORE_DISPATCH` processor's, the engine reads the entity in the
+  transaction and writes it into the transaction (not committed) when that
+  read finds nothing (a create) or the stored data or state differ from the engine's copy,
+  so a callback read (get, search, count, page) returns the current data,
+  including the changes earlier processors returned; on a create it is
+  found, and during a processor it is in its source state. On PostgreSQL a
+  transaction that has written the entity holds its row lock until the
+  transaction ends (or until a rollback to a savepoint undoes the write), so during a callout another writer of the entity, and
+  another transaction that read it, wait until then. A processor, a function
+  criterion and a schedule function never write or delete the entity they run
+  for, with or without the token; a processor changes it only through the data
+  it returns, and the engine no longer adopts such a write. Writing other
+  entities through the token is unchanged.
+- **A callout payload's `meta.transactionId` is the callout's
+  `transactionId`.** While a workflow runs, the entity carries the id of the
+  transaction it runs in, so a callout that carries a `transactionId` carries
+  the same id in its payload, and a `lifecycle` criterion on `transactionId`
+  sees it. Before, a scheduled fire's entity carried the id of its last
+  committed version until a write, and a `COMMIT_BEFORE_DISPATCH` processor
+  with `startNewTxOnDispatch: true` carried the id of the transaction that
+  committed before its callout. A callout without a `transactionId` carries
+  the `transactionId` of the stored version it describes.
+- **One version per entity per transaction, on every backend.** A later write
+  of an entity the transaction already wrote replaces its pending version.
+  `GET /entity/{id}?transactionId=X` returns X's final entity and reads
+  committed versions only (`404 ENTITY_NOT_FOUND` inside X, where PostgreSQL
+  returned X's first uncommitted write); `/entity/{id}/changes` and the
+  `EntityChange` audit events carry one entry per transaction. Delete then
+  recreate in one transaction is one version on PostgreSQL too. A savepoint
+  rollback restores the pending version, and a rollback of a create frees the id's model. An
+  entity's model stays fixed within a transaction after a same-transaction
+  delete. An auto-commit write ignores a transaction id and change type the
+  caller supplies, and a pending read in a transaction carries store-assigned
+  metadata.
+- **Unique keys are checked at commit, on the final entities.** The store
+  reads the unique-key definitions from its own stored model;
+  `spi.WithUniqueKeys` and `spi.UniqueKeysFromContext` are removed. Two entities that swap key values,
+  a chain of moves, and a value freed by re-keying and claimed in one
+  transaction now commit on every backend (memory answered `409` on a swap
+  or a re-key; sqlite `409` or a commit, by map order; PostgreSQL `409`
+  unless the writes freed first). A key a joined callback's write breaks, or a
+  partial key its processors' returned data leaves, is now found at the
+  owner's commit on PostgreSQL (`409 UNIQUE_VIOLATION`, `422
+  INVALID_UNIQUE_KEY`), not on the callback request, as on memory and sqlite.
+  Two commits on PostgreSQL that claim each other's values and deadlock
+  (`40P01`) answer a retryable `409 CONFLICT`. A scheduled fire follows the
+  final entity's keys (memory dropped them, the others kept stale claims) and
+  a fire that breaks a key fails at commit.
+- **`DELETE /model/...` no longer answers `MODEL_HAS_ENTITIES`.** A model
+  with entities is `LOCKED`, and delete answers `MODEL_ALREADY_LOCKED`. The
+  model rules are the API's checks. Change a model's state
+  or its unique-key definitions only while no transaction that will write
+  entities of that model is open.
+- **A scheduled fire seals after its schedule functions.** Their callbacks are
+  admitted; before, every one was refused `410`. A fire refused at commit on
+  a unique key records the doors' text (for example `UNIQUE_VIOLATION:
+  ...`) in the task's `lastError`, logged at warn level.
+- **SPI.** `WithUniqueKeys` and `UniqueKeysFromContext` are removed.
+  New conformance cases: `OneVersionPerTx/*`, `Unique/*`, `Save/ModelReference*`, `Save/NonTx*`,
+  `Save/PendingReadCarriesStoreMetadata` and `Save/InTxIgnoresCallerChangeType`;
+  `Save/UpdateDoesNotRestampCreationDate` is tightened. A storage plugin that
+  does not meet them fails its conformance run.
+
 - **A schema extension commits on its own, never conflicts, and stays when
   the write fails.** A write that extends a model under its `changeLevel`
   (entity create and update, collection create and update, data a workflow
@@ -34,16 +99,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   undeclared field answers `422 INVALID_UNIQUE_KEY`, not `400
   VALIDATION_FAILED`. Every door's `422 INVALID_UNIQUE_KEY` now carries the
   message the store uses, "one or more unique key fields are null or
-  invalid" (prefixed with the item's index in a collection). An extension that
-  finds its model not locked (unlocked while a write to it, or the
-  transaction the write joined, is in progress) is refused with
-  `409 MODEL_NOT_LOCKED` on every backend; before, PostgreSQL appended it to the unlocked model's log. A
+  invalid" (prefixed with the item's index in a collection). A
   storage failure while extending for processor-returned data answers the
   retryable `503 STORAGE_UNAVAILABLE`, not `500`. A `changeLevel` change on
   a locked model takes effect on each node as its model cache picks it up.
   The SPI's `ModelStore.ExtendSchema` and `ModelStore.Get` contracts change
-  to match (`ExtendSchema` never joins the caller's transaction and returns
-  the new `ErrModelNotLocked`; `Get` ignores the caller's transaction), and
+  to match (`ExtendSchema` never joins the caller's transaction, and the
+  caller extends only a `LOCKED` model; `Get` ignores the caller's
+  transaction), and
   an out-of-tree storage plugin must follow them. A storage factory must
   also offer `SetApplyFunc` taking a list of deltas
   (`func(base []byte, deltas []SchemaDelta) ([]byte, error)`; the SPI

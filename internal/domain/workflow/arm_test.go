@@ -431,6 +431,7 @@ func armedBy(t *testing.T, beginCtx context.Context, writer *spi.UserContext, na
 		},
 	}
 	saveWorkflow(t, factory, beginCtx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, beginCtx, modelRef)
 	txMgr, err := factory.TransactionManager(beginCtx)
 	if err != nil {
 		t.Fatal(err)
@@ -861,7 +862,7 @@ func TestReconcile_ModelLevelFlag_RemovesTaskArmedByAnotherWorkflow(t *testing.T
 			}},
 	})
 	// Armed under kind-a-wf; the entity's data now binds it to kind-b-wf, which schedules nothing.
-	seedFireEntity(t, factory, ctx, "flag-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{"kind": "b"})
+	seedFireEntity(t, factory, ctx, "flag-e1", modelRef, "OPEN", true, map[string]any{"kind": "b"})
 	id := taskID(testTenant, "flag-e1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
 		ScheduledTime: nowMs + 1000, EntityID: "flag-e1", ModelName: modelRef.EntityName,
@@ -889,7 +890,8 @@ func TestReconcile_LoopbackStateNotInWorkflow_RemovesTasks(t *testing.T) {
 			"CLOSED": {},
 		},
 	}})
-	seedFireEntity(t, factory, ctx, "legacy-e1", modelRef, "LEGACY", "seed-tx-1", map[string]any{})
+	lockTestModel(t, factory, ctx, modelRef)
+	seedFireEntity(t, factory, ctx, "legacy-e1", modelRef, "LEGACY", true, map[string]any{})
 	id := taskID(testTenant, "legacy-e1", "LEGACY", "Tick")
 	armTask(t, factory, ctx, spi.ScheduledTask{ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
 		ScheduledTime: nowMs + 1000, EntityID: "legacy-e1", ModelName: modelRef.EntityName,

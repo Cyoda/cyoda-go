@@ -611,11 +611,16 @@ func TestUnlockBlockedByEntities(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestDeleteBlockedByEntities pins the rule: a model with entities is LOCKED and
+// delete answers MODEL_ALREADY_LOCKED, never MODEL_HAS_ENTITIES.
 func TestDeleteBlockedByEntities(t *testing.T) {
 	a, srv := newTestApp(t)
 
-	// Import model (stays unlocked).
+	// A model with entities is LOCKED: import and lock it.
 	resp := doImport(t, srv.URL, "DeleteGuard", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doLock(t, srv.URL, "DeleteGuard", 1)
 	expectStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
 
@@ -638,10 +643,10 @@ func TestDeleteBlockedByEntities(t *testing.T) {
 		t.Fatalf("failed to save entity: %v", err)
 	}
 
-	// Attempt delete — should be blocked with 409 + MODEL_HAS_ENTITIES code.
+	// Attempt delete — blocked by the lock: 409 MODEL_ALREADY_LOCKED.
 	resp = doDelete(t, srv.URL, "DeleteGuard", 1)
 	expectStatus(t, resp, http.StatusConflict)
-	commontest.ExpectErrorCode(t, resp, "MODEL_HAS_ENTITIES")
+	commontest.ExpectErrorCode(t, resp, "MODEL_ALREADY_LOCKED")
 	resp.Body.Close()
 }
 

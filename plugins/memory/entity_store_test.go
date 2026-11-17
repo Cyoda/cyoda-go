@@ -55,6 +55,7 @@ func TestFactoryReturnsErrorWithoutTenant(t *testing.T) {
 
 func TestStoreAndRetrieve(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	entity := &spi.Entity{
@@ -120,6 +121,8 @@ func TestTenantIsolationWritesDontCross(t *testing.T) {
 
 func TestTenantIsolationDeletesDontCross(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
+	lockModels(t, factory, ctxWithTenant("tenant-B"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
 	storeA, _ := factory.EntityStore(ctxA)
@@ -167,6 +170,8 @@ func TestSystemTenantIsolated(t *testing.T) {
 
 func TestSameEntityIDDifferentTenants(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
+	lockModels(t, factory, ctxWithTenant("tenant-B"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
 	storeA, _ := factory.EntityStore(ctxA)
@@ -216,6 +221,7 @@ func TestPointInTimeRespectsIsolation(t *testing.T) {
 
 func TestPointInTimeRetrieval(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	entity := &spi.Entity{
@@ -242,6 +248,7 @@ func TestPointInTimeRetrieval(t *testing.T) {
 
 func TestSoftDelete(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	entity := &spi.Entity{
@@ -269,6 +276,7 @@ func TestSoftDelete(t *testing.T) {
 
 func TestSoftDeleteAsAtBeforeDeletion(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	entity := &spi.Entity{
@@ -314,6 +322,7 @@ func TestSoftDeleteCountExcludes(t *testing.T) {
 
 func TestSoftDeleteIterateExcludes(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -344,6 +353,7 @@ func TestSoftDeleteIterateExcludes(t *testing.T) {
 
 func TestGetVersionMetadata(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -397,6 +407,7 @@ func TestGetVersionMetadata(t *testing.T) {
 
 func TestGetVersionMetadataWithDelete(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -445,6 +456,7 @@ func TestGetVersionMetadataWithDelete(t *testing.T) {
 
 func TestIterateAsAt(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -520,6 +532,7 @@ func TestIterateAsAt(t *testing.T) {
 
 func TestIterateAsAtWithDelete(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -566,6 +579,7 @@ func TestGetVersionMetadataNotFound(t *testing.T) {
 
 func TestCompareAndSaveMatchingTxID(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -573,16 +587,15 @@ func TestCompareAndSaveMatchingTxID(t *testing.T) {
 	entity := &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-cas-1", TenantID: "tenant-A", ModelRef: modelRef,
-			State: "NEW", TransactionID: "tx-001",
+			State: "NEW",
 		},
 		Data: []byte(`{"v": 1}`),
 	}
-	store.Save(ctx, entity)
+	seedTxID := saveCommitted(t, factory.NewTransactionManager(newTestUUIDGenerator()), store, ctx, entity)
 
 	// CompareAndSave with matching txID should succeed.
 	entity.Data = []byte(`{"v": 2}`)
-	entity.Meta.TransactionID = "tx-002"
-	ver, err := store.CompareAndSave(ctx, entity, "tx-001")
+	ver, err := store.CompareAndSave(ctx, entity, seedTxID)
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
@@ -598,6 +611,7 @@ func TestCompareAndSaveMatchingTxID(t *testing.T) {
 
 func TestCompareAndSaveMismatchTxID(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -718,6 +732,7 @@ func TestTransactionIsolation(t *testing.T) {
 
 func TestTransactionDeleteVisibility(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	uuids := newTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
@@ -764,6 +779,7 @@ func TestTransactionDeleteVisibility(t *testing.T) {
 
 func TestTransactionIterateIncludesBuffer(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	uuids := newTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
@@ -818,6 +834,7 @@ func TestTransactionIterateIncludesBuffer(t *testing.T) {
 
 func TestImplicitAutoCommit(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 
 	ctx := ctxWithTenant("tenant-A")
@@ -886,6 +903,7 @@ func TestTransactionExistsAndCount(t *testing.T) {
 
 func TestTransactionDeleteAllVisibility(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	uuids := newTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
@@ -931,6 +949,7 @@ func TestTransactionDeleteAllVisibility(t *testing.T) {
 
 func TestTransactionCompareAndSave(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	defer factory.Close()
 	uuids := newTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
@@ -939,15 +958,15 @@ func TestTransactionCompareAndSave(t *testing.T) {
 	store, _ := factory.EntityStore(ctx)
 	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	// Pre-create entity with txID
+	// Pre-create entity in a transaction of its own.
 	entity := &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-tx-cas", TenantID: "tenant-A", ModelRef: modelRef,
-			State: "NEW", TransactionID: "tx-original",
+			State: "NEW",
 		},
 		Data: []byte(`{"v": 1}`),
 	}
-	store.Save(ctx, entity)
+	originalTxID := saveCommitted(t, txMgr, store, ctx, entity)
 
 	// Begin tx, CompareAndSave with matching txID
 	_, txCtx, err := txMgr.Begin(ctx)
@@ -956,8 +975,7 @@ func TestTransactionCompareAndSave(t *testing.T) {
 	}
 
 	entity.Data = []byte(`{"v": 2}`)
-	entity.Meta.TransactionID = "tx-new"
-	_, err = store.CompareAndSave(txCtx, entity, "tx-original")
+	_, err = store.CompareAndSave(txCtx, entity, originalTxID)
 	if err != nil {
 		t.Fatalf("CAS in tx failed: %v", err)
 	}
@@ -1058,6 +1076,7 @@ func TestIterateAsAtReturnsNoEntriesOnEmptyModel(t *testing.T) {
 // dereference.
 func TestSaveAndDelete_ExecutorRoundTrip(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-A")
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -1121,6 +1140,7 @@ func TestSaveAndDelete_ExecutorRoundTrip(t *testing.T) {
 // (attributed == executor == caller) via spi.AttributionFor.
 func TestDelete_NonTx_AttributionIsCaller(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	ctx := ctxWithUserKind("tenant-A", "alice", spi.PrincipalUser)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -1168,6 +1188,7 @@ func TestDelete_NonTx_AttributionIsCaller(t *testing.T) {
 // single-entity Delete.
 func TestDeleteAll_NonTx_Attribution(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "m-delall", ModelVersion: "1"})
 	ctx := ctxWithUserKind("tenant-A", "bob", spi.PrincipalUser)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -1212,6 +1233,7 @@ func TestDeleteAll_NonTx_Attribution(t *testing.T) {
 // under the caller's context at stage time.
 func TestDeleteAll_Tx_AttributionStaged(t *testing.T) {
 	factory, tm := newTxManager(t)
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "m-delall-tx", ModelVersion: "1"})
 	ctx := ctxWithUserKind("tenant-A", "carol", spi.PrincipalUser)
 
 	store, err := factory.EntityStore(ctx)

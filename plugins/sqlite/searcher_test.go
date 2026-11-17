@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -39,6 +40,7 @@ func setupSearcherTest(t *testing.T) (*sqlite.StoreFactory, context.Context) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -426,6 +428,7 @@ func TestSearcher_ResidualScanIsUnbounded_SparseMatches(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	// "decoyN" sorts before "matchN" lexically, so the decoys are examined
@@ -479,6 +482,7 @@ func TestSearcher_ResultBoundStillTripsOnResidualPath(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	for i := 0; i < 5; i++ {
@@ -515,6 +519,8 @@ func TestSearcher_TenantIsolation(t *testing.T) {
 	ctxA := testCtx("tenant-A")
 	ctxB := testCtx("tenant-B")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctxA, ref)
+	spitest.EnsureLockedModel(t, factory, ctxB, ref)
 
 	storeA, _ := factory.EntityStore(ctxA)
 	storeB, _ := factory.EntityStore(ctxB)
@@ -587,6 +593,7 @@ func TestSearcher_OrderByNumericData(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	for _, e := range []struct{ id, data string }{
@@ -639,6 +646,7 @@ func TestSearcher_OrderByCreationDateMeta(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	// "z" saved at t0 (oldest), "m" at t1, "a" at t2 (newest) —
@@ -682,6 +690,7 @@ func TestSearcher_OrderByStateMeta(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	// Insert in reverse alphabetical order to confirm correct sorting.
@@ -730,6 +739,7 @@ func TestSearcher_OrderByNullsLast(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	// All entities share "present":true so they all pass the filter.
@@ -778,6 +788,7 @@ func TestSearcher_OrderByTiebreaker(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	// Deliberate insertion order: z first, then a, then m.
@@ -820,6 +831,7 @@ func TestSearcher_OrderByPointInTime(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	// Save pit-1 at t0.
@@ -948,6 +960,7 @@ func TestSearcher_OrderByBool(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	for _, e := range []struct{ id, data string }{

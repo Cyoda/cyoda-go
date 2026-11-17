@@ -82,8 +82,8 @@ type ExternalProcessingService interface {
 	// DispatchProcessor runs a processor on an external node. It returns the
 	// entity data the processor answered with, or a nil entity when the
 	// processor answered with no payload — never the entity it was given.
-	// A nil entity leaves the entity as it is in the transaction, including a
-	// write the processor made to it through a joined callback.
+	// A nil entity leaves the entity as it is: a processor changes the entity
+	// it runs for only through the data it returns.
 	DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error)
 	// DispatchCriteria evaluates one function condition on an external node.
 	// criterion is that function condition's own JSON

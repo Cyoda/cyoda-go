@@ -38,6 +38,7 @@ func TestNonTxSaveDeleteConcurrent_NoTornWrite(t *testing.T) {
 	const tenant spi.TenantID = "tenant-save-delete-lock-order"
 	ctx := ctxWithTenant(tenant)
 	ref := spi.ModelRef{EntityName: "m-save-delete-lock-order", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	pool := postgres.PoolForTest(factory)
 
 	store, err := factory.EntityStore(ctx)

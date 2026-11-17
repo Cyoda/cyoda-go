@@ -24,6 +24,7 @@ func gsNewStore(t *testing.T) (*memory.StoreFactory, spi.EntityStore, context.Co
 	t.Helper()
 	f := memory.NewStoreFactory()
 	ctx := ctxWithTenant("t1")
+	lockModels(t, f, ctx, gsModel)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore failed: %v", err)
@@ -507,6 +508,7 @@ func TestMemoryGroupedAggregate_TemporalFilterOnCreationDate(t *testing.T) {
 	clock := memory.NewTestClockAt(msBase)
 	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	ctx := ctxWithTenant("t1")
+	lockModels(t, factory, ctx, gsModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

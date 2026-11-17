@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	sqlite "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -40,6 +41,7 @@ func assertMatchAllReturnsEveryRow(t *testing.T, dbName, idPrefix string, filter
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	const rows = 5

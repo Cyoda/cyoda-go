@@ -100,16 +100,15 @@ package e2e_test
 //     layer shift, same guarantee." Already present:
 //     TestGetPage_NonTx_UsesModelIDIndex (plugins/sqlite/entity_page_plan_test.go)
 //     and TestGetPage_NonTx_UsesModelEntityIDIndex (plugins/postgres/entity_page_plan_test.go).
-// 15. GetVersionByTransaction earliest-wins / empty txID rejected / 404:
-//     spitest — the sole home of earliest-wins and of empty-txID rejection.
-//     ?transactionId= never reaches the store as "": genapi types the
-//     query parameter *openapi_types.UUID (api/generated.go,
+// 15. GetVersionByTransaction empty txID rejected / 404:
+//     spitest — the home of empty-txID rejection and of the rule that an
+//     entity has one version per transaction and only committed versions
+//     resolve. ?transactionId= never reaches the store as "": genapi types
+//     the query parameter *openapi_types.UUID (api/generated.go,
 //     GetOneEntityParams), so an empty value fails parameter binding and
 //     the handler never runs.
-//     Earliest-wins needs two versions sharing one transaction id, which
-//     spitest arranges at the store; e2e
-//     TestEntityLifecycle_TemporalByTransactionID
-//     (internal/e2e/entity_lifecycle_test.go) covers the wire half only —
+//     e2e TestEntityLifecycle_TemporalByTransactionID
+//     (internal/e2e/entity_lifecycle_test.go) covers the wire half —
 //     200 for the create transaction's id, 404 for an unknown one; parity
 //     HistoryReadsChangesMetadataAndTransactionLookup (e2e/parity/history_reads.go)
 //     adds per-transaction resolution with no cross-transaction bleed and

@@ -18,6 +18,7 @@ import (
 // matched. Callers in this repo all stamp, which is why it stayed latent.
 func TestTx_UnstampedWrite_CarriesTheTransactionID(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-stamp"), spi.ModelRef{EntityName: "m-stamp", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-stamp"))
 	ref := spi.ModelRef{EntityName: "m-stamp", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)
@@ -68,6 +69,7 @@ func TestTx_UnstampedWrite_CarriesTheTransactionID(t *testing.T) {
 // row claim it was committed by a transaction that did not commit it.
 func TestTx_ForeignStampIsOverwritten(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-stamp2"), spi.ModelRef{EntityName: "m-stamp2", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-stamp2"))
 	ref := spi.ModelRef{EntityName: "m-stamp2", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)

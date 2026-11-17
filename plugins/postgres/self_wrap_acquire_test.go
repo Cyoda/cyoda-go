@@ -208,7 +208,7 @@ func compareAndSaveOnSaturatedPool(t *testing.T, callerCtx context.Context, f *p
 	_, err = es.CompareAndSave(callerCtx, &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-acquire", ModelRef: spi.ModelRef{EntityName: "Widget", ModelVersion: "1"},
-			State: "open", TransactionID: "tx-writer",
+			State: "open",
 		},
 		Data: []byte(`{}`),
 	}, "tx-expected")

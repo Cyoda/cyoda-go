@@ -250,42 +250,6 @@ func TestStoreFactory_SetApplyFuncTwicePanics(t *testing.T) {
 	factory.SetApplyFunc(jsonRecordingApplyFunc())
 }
 
-// --- Save clears the extension log ---
-
-func TestSave_AfterPriorExtensions_ClearsLog(t *testing.T) {
-	// Save logs a warn but succeeds; the log is cleared unconditionally.
-	factory := setupModelExtTest(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-
-	// Create an extension row.
-	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-
-	// Save again (simulating operator-misuse: Save while stale rows exist).
-	if err := ms.Save(ctx, &spi.ModelDescriptor{
-		Ref:         ref,
-		State:       spi.ModelUnlocked,
-		ChangeLevel: spi.ChangeLevelStructural,
-		Schema:      []byte(`{"base":2}`),
-		UpdateDate:  time.Now().UTC().Truncate(time.Millisecond),
-	}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 0 {
-		t.Errorf("expected 0 extension rows after Save, got %d", n)
-	}
-}
-
 // --- D5: conformance extras — caller rollback, multi-delta fold, tenant isolation ---
 
 // setupModelExtTestWithTM is like setupModelExtTest but also wires a

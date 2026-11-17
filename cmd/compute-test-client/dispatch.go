@@ -487,10 +487,13 @@ func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.Ra
 		ProcessorID   string          `json:"processorId"`
 		ProcessorName string          `json:"processorName"`
 		EntityID      string          `json:"entityId"`
+		TransactionID string          `json:"transactionId"`
 		Parameters    json.RawMessage `json:"parameters"`
 		Payload       *struct {
 			Data json.RawMessage `json:"data"`
-			Meta json.RawMessage `json:"meta"`
+			Meta struct {
+				TransactionID string `json:"transactionId"`
+			} `json:"meta"`
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
@@ -510,9 +513,13 @@ func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.Ra
 		AuthID:       auth.ID,
 		AuthExecType: auth.ExecType,
 		AuthExecID:   auth.ExecID,
+		RequestTxID:  req.TransactionID,
 	}
-	if req.Payload != nil && req.Payload.Data != nil {
-		entity.Data = req.Payload.Data
+	if req.Payload != nil {
+		entity.PayloadTxID = req.Payload.Meta.TransactionID
+		if req.Payload.Data != nil {
+			entity.Data = req.Payload.Data
+		}
 	}
 
 	// Callback-capable processors take precedence: they receive

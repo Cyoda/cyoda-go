@@ -1,10 +1,11 @@
-package model
+package modelcache_test
 
 import (
 	"context"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 )
 
 // getOnlyStore answers Get from a stale descriptor and offers no way to read
@@ -18,14 +19,14 @@ func (s getOnlyStore) Get(context.Context, spi.ModelRef) (*spi.ModelDescriptor, 
 	return s.stale, nil
 }
 
-// TestGetModelFresh_StoreThatCannotReadFreshFailsClosed pins that the admin
-// state gate never decides on a read that may be stale: a store without
+// TestGetFresh_StoreThatCannotReadFreshFailsClosed pins that a decision on the
+// model's state is never made on a read that may be stale: a store without
 // RefreshAndGet is a wiring defect, so the read fails instead of falling back
 // to Get.
-func TestGetModelFresh_StoreThatCannotReadFreshFailsClosed(t *testing.T) {
+func TestGetFresh_StoreThatCannotReadFreshFailsClosed(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "m", ModelVersion: "1"}
-	desc, err := getModelFresh(context.Background(), getOnlyStore{stale: &spi.ModelDescriptor{Ref: ref}}, ref)
+	desc, err := modelcache.GetFresh(context.Background(), getOnlyStore{stale: &spi.ModelDescriptor{Ref: ref}}, ref)
 	if err == nil {
-		t.Fatalf("getModelFresh answered %+v from Get; want an error", desc)
+		t.Fatalf("GetFresh answered %+v from Get; want an error", desc)
 	}
 }

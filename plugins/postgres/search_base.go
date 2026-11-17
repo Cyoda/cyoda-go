@@ -22,10 +22,10 @@ import "time"
 // property of the version row, and filtering only the entities row would move
 // that axis onto the entity's current model.
 //
-// version DESC is the final tiebreak. Every row a transaction writes shares
-// one valid_time and one transaction_time, so a delete-then-recreate in one
-// transaction ties on both keys; without the tiebreak the winner is arbitrary
-// and a plan change can flip it.
+// version DESC is the final key, so the order is total. Committed versions
+// of one entity do not tie on the two time keys: a transaction records at
+// most one version of an entity, and commit stamps strictly increase
+// (cyoda_stamp).
 //
 // $1 tenant, $2 entity name, $3 model version, $4 instant.
 //

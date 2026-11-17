@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -49,6 +50,7 @@ func newRunEnvCapped(t *testing.T, maxWaiters int) (*runEnv, string) {
 	}
 	es, _ := factory.EntityStore(ctx)
 	ref := spi.ModelRef{EntityName: "Widget", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	for _, id := range []string{"e-1", "e-2"} {
 		if _, err := es.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: id, TenantID: "run-tenant", ModelRef: ref, State: "S"}, Data: []byte(`{"n":1}`)}); err != nil {
 			t.Fatalf("seed: %v", err)

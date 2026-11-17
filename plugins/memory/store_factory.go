@@ -86,9 +86,11 @@ type StoreFactory struct {
 	wfMu       sync.RWMutex
 	smAuditMu  sync.RWMutex
 	entityData map[spi.TenantID]map[string][]entityVersion
-	// txIndex maps (tenant, entityID, txID) to the earliest NON-DELETED
-	// version that transaction txID wrote for that entity — the index
-	// GetVersionByTransaction reads. Deletes never enter it (a DELETED
+	// txIndex maps (tenant, entityID, txID) to the NON-DELETED version
+	// that transaction txID wrote for that entity — the index
+	// GetVersionByTransaction reads. A transaction writes one version per
+	// entity, and a write outside a transaction records no transaction id,
+	// so it never enters the index. Deletes never enter it (a DELETED
 	// tombstone never matches GetVersionByTransaction — see its SPI doc
 	// comment). Guarded by entityMu (same mutex as entityData: maintained
 	// inside the same write-lock critical section as every entityData
@@ -305,10 +307,29 @@ func (f *StoreFactory) Close() error {
 	return errors.Join(closeErr, os.RemoveAll(f.blobDir))
 }
 
+// modelKeys reads the unique keys of every model in refs from the tenant's
+// stored models: the keys enforced are the ones the model holds now, never
+// ones a caller passes. The model's state is not checked (the API, not the
+// store, keeps the model rules), and a model not found contributes no keys.
+// Lock order: modelKeys takes modelMu while its callers hold entityMu; model
+// operations never take entityMu, and nothing takes entityMu while holding
+// modelMu.
+func (f *StoreFactory) modelKeys(tid spi.TenantID, refs []spi.ModelRef) map[spi.ModelRef][]spi.UniqueKey {
+	f.modelMu.RLock()
+	defer f.modelMu.RUnlock()
+	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(refs))
+	for _, ref := range refs {
+		if desc, ok := f.modelData[tid][ref]; ok {
+			keys[ref] = desc.UniqueKeys
+		}
+	}
+	return keys
+}
+
 // releaseClaims removes all unique-key claims held by (tenantID, entityID) from
 // the claim maps. Caller must hold entityMu (write lock).
 // tenantID qualifies the lookup so that two tenants with the same entity ID
-// do not cross-contaminate each other's claim entries (ISSUE-2 tenant isolation).
+// do not cross-contaminate each other's claim entries.
 func (f *StoreFactory) releaseClaims(tenantID, entityID string) {
 	etk := entityTenantKey{tenant: tenantID, id: entityID}
 	for _, k := range f.claimsByEntity[etk] {
@@ -333,31 +354,18 @@ func (f *StoreFactory) insertClaims(entityID, tenant, model, version string, cla
 	f.claimsByEntity[etk] = keys
 }
 
-// recordTxIndex records eid's version under txID in the per-tenant
-// tx-index that GetVersionByTransaction reads. Caller must hold entityMu
-// (write lock). No-op for a non-transactional write (empty txID): an
-// empty txID must never match via GetVersionByTransaction (see its SPI
-// doc comment), so it is never indexed.
-//
-// First write wins: the index holds the EARLIEST version recorded for
-// (tenant, entity, txID), so the invariant holds structurally rather than
-// by caller discipline. The transactional path already passes the commit's
-// first version once, but saveUnlocked calls this per non-transactional
-// save with entity.Meta.TransactionID taken verbatim — two such saves
-// sharing a txID would otherwise record the latest version, where the SQL
-// backends' ORDER BY version ASC LIMIT 1 returns the earliest.
+// recordTxIndex records the version that transaction txID committed of
+// entityID in the per-tenant tx-index that GetVersionByTransaction reads.
+// Only a commit calls it, once per entity it writes: a transaction records one
+// version of an entity, and a write outside a transaction records no
+// transaction id, so it is never indexed. Caller must hold entityMu (write
+// lock).
 func (f *StoreFactory) recordTxIndex(tid spi.TenantID, entityID, txID string, version int64) {
-	if txID == "" {
-		return
-	}
 	if f.txIndex[tid] == nil {
 		f.txIndex[tid] = make(map[string]map[string]int64)
 	}
 	if f.txIndex[tid][entityID] == nil {
 		f.txIndex[tid][entityID] = make(map[string]int64)
-	}
-	if existing, ok := f.txIndex[tid][entityID][txID]; ok && existing <= version {
-		return
 	}
 	f.txIndex[tid][entityID][txID] = version
 }

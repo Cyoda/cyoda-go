@@ -1677,6 +1677,49 @@ func (c *Client) LockModelRaw(t *testing.T, name string, version int) (int, []by
 	return resp.StatusCode, raw, nil
 }
 
+// DeleteModelRaw issues DELETE /api/model/{name}/{version} and returns the HTTP
+// status code + raw body without raising on non-2xx.
+func (c *Client) DeleteModelRaw(t *testing.T, name string, version int) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, c.baseURL+path, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// UnlockModelRaw issues PUT /api/model/{name}/{version}/unlock and returns the
+// HTTP status code + raw body without raising on non-2xx.
+func (c *Client) UnlockModelRaw(t *testing.T, name string, version int) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/unlock", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // SetChangeLevelRaw issues POST /api/model/{name}/{version}/changeLevel/{level}
 // and returns status+body for negative-path assertions via errorcontract.Match.
 func (c *Client) SetChangeLevelRaw(t *testing.T, name string, version int, level string) (int, []byte, error) {
@@ -1751,7 +1794,19 @@ func (c *Client) UpdateEntityRaw(t *testing.T, id uuid.UUID, transition, body st
 // UpdateEntityData for the no-precondition path.
 func (c *Client) UpdateEntityDataWithIfMatchRaw(t *testing.T, id uuid.UUID, body, ifMatch string) (int, []byte, error) {
 	t.Helper()
+	return c.UpdateEntityWithIfMatchRaw(t, id, "", body, ifMatch)
+}
+
+// UpdateEntityWithIfMatchRaw issues PUT /api/entity/JSON/{entityId}, or
+// PUT /api/entity/JSON/{entityId}/{transition} when transition is not empty,
+// with an `If-Match` HTTP header carrying ifMatch when it is not empty.
+// Returns status + body for negative-path assertions.
+func (c *Client) UpdateEntityWithIfMatchRaw(t *testing.T, id uuid.UUID, transition, body, ifMatch string) (int, []byte, error) {
+	t.Helper()
 	path := "/api/entity/JSON/" + id.String()
+	if transition != "" {
+		path += "/" + transition
+	}
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(body))
 	if err != nil {
 		return 0, nil, fmt.Errorf("build request: %w", err)

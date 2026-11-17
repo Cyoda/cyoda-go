@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
@@ -173,15 +174,30 @@ func recordScheduledFailure(t *testing.T) (spi.StoreFactory, context.Context, st
 	})
 	entityID := uuid.NewString()
 	ref := spi.ModelRef{EntityName: "fail-model", ModelVersion: "1"}
-	es, err := mem.EntityStore(ctx)
+	spitest.EnsureLockedModel(t, mem, ctx, ref)
+	// Seeded in a transaction of its own: the fire needs the entity's last
+	// committed transaction id as its precondition, and an auto-commit write
+	// records none.
+	seedTM, err := mem.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	seedTxID, seedCtx, err := seedTM.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin seed transaction: %v", err)
+	}
+	es, err := mem.EntityStore(seedCtx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	if _, err := es.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{ID: entityID, TenantID: tenant, State: "OPEN", ModelRef: ref, TransactionID: "seed-tx"},
+	if _, err := es.Save(seedCtx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: entityID, TenantID: tenant, State: "OPEN", ModelRef: ref},
 		Data: []byte(`{}`),
 	}); err != nil {
 		t.Fatalf("save entity: %v", err)
+	}
+	if err := seedTM.Commit(seedCtx, seedTxID); err != nil {
+		t.Fatalf("Commit seed transaction: %v", err)
 	}
 	sts, err := mem.ScheduledTaskStore(ctx)
 	if err != nil {

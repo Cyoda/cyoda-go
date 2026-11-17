@@ -238,17 +238,19 @@ commit. Five invariants hold on every backend:
    tightens the accepted set (e.g., adding a required field) is
    explicitly excluded from the catalog.
 5. **State-machine disjointness.** `Save(desc)` replaces an UNLOCKED
-   model's schema wholesale; `ExtendSchema(ref, delta)` extends only a
-   LOCKED model and returns `spi.ErrModelNotLocked` otherwise, checked
-   under the backend's model lock (`409 MODEL_NOT_LOCKED` to the
-   client). Whether the write may extend at all is the caller's
-   decision, by the model's `ChangeLevel`; a model without one is
-   validated strictly and never extended.
+   model's schema wholesale; `ExtendSchema(ref, delta)` is called for
+   the model of an entity being written, which the model rules below
+   keep LOCKED. The store does
+   not check the state. Whether the write may
+   extend at all is the caller's decision, by the model's
+   `ChangeLevel`; a model without one is validated strictly and never
+   extended.
 
 ### Operator Contract for Unlock
 
 `Unlock` is the caller-facing transition from LOCKED to UNLOCKED, and
-it requires the model to have no committed entities.
+it requires the model to have no committed entities. The model service
+counts them before it unlocks (`409 MODEL_HAS_ENTITIES`).
 
 The extensions committed while the model was LOCKED are part of its
 schema. `Unlock` keeps them: the Postgres and SQLite plugins fold the
@@ -259,39 +261,44 @@ log to fold.
 
 `Unlock` and `ExtendSchema` exclude each other on every backend. On
 Postgres, `Unlock`'s state update takes the `models` row lock that
-every extension takes, so the fold sees every extension committed
-before it, and an extension that reaches the model after it finds the
-model UNLOCKED and is refused with `spi.ErrModelNotLocked`. SQLite runs
-both in write transactions, which it serialises; memory runs both
-under its model mutex. A write still in progress when its model is
-unlocked — possible only while its own entity is uncommitted, for
-example during a compute-node callout — therefore answers
-`409 MODEL_NOT_LOCKED` if it then extends, and never writes to an
-UNLOCKED model's log.
+every extension takes, so no extension commits between the fold and
+the clearing of the log. SQLite runs both in write transactions, which
+it serialises; memory runs both under its model mutex.
 
-`Save` replaces the schema wholesale and `Delete` removes the model, and
-each clears the ref's extension log in the same transaction: a `Get`
-after `Save` returns the saved schema alone, and a model saved under the
-reference of a deleted one starts from its saved schema. Through the
-state machine the log is already empty at that point, so the Postgres
-and SQLite plugins log a `WARN` with the count when either finds rows
-there — a writer bypassed the state machine.
+`Save` replaces the schema wholesale and `Delete` removes the model. Both
+act only on a model that is not LOCKED: the model service refuses a
+LOCKED one (`409 MODEL_ALREADY_LOCKED`). On Postgres and SQLite each
+clears the model's extension log in the same statement or transaction,
+so a `Get` after `Save` returns the saved schema alone, and a model
+imported after `Delete` starts from its imported schema alone.
+
+**The model rules are the API's.** An entity is created only in a LOCKED
+model; a model is unlocked only when it has no entities; a model's
+unique-key definitions (and the rest of its descriptor except the change level and the schema
+extensions) change only while it is UNLOCKED; a LOCKED model is never
+deleted or re-imported. The API keeps these rules with the checks its
+services make before they act: an entity create refuses a model that is
+not LOCKED (`409 MODEL_NOT_LOCKED`), after it reads the model once more
+from storage, so that a read that raced a lock does not refuse (a node's
+model cache holds only LOCKED models); unlock counts the model's entities
+and refuses `409 MODEL_HAS_ENTITIES`; delete, import and the unique-key
+change refuse a LOCKED model (`409 MODEL_ALREADY_LOCKED`). Delete counts
+no entities and never answers `MODEL_HAS_ENTITIES`. Storage adds no
+check of its own: a commit reads the unique-key definitions of its
+entities' stored models without checking their state, and a schema
+extension does not check the model's state. A model's state reaches the
+other nodes eventually, through their model caches.
 
 Model administration — import, lock, unlock, delete, change level,
-unique keys — runs from one place, not concurrently on one model. Two
-administration calls that overlap on one model have no defined order:
-an import or unique-key change reads the model and then saves it whole,
-so a lock or an extension landing between the read and the save can be
-overwritten.
+unique keys — runs from one place, not concurrently on one model, and
+not while writes to the model are in flight; writes to a model stop
+before it is unlocked.
 
-Unlock is not atomic with its entity check either: it counts the
-model's committed entities, then unlocks. An entity write still in
-progress — its transaction not yet committed, or a create that read the
-model as LOCKED just before — is not counted and can commit after the
-unlock, leaving an UNLOCKED model with entities. A write whose
-extension runs after the unlock is refused at that extension (above);
-one that extended while the model was still locked, or does not extend
-at all, is not. Writes to a model stop before it is unlocked.
+Change a model's state or its unique-key definitions (`uniqueKeys`) —
+import, lock, unlock, unique-key change — only while no transaction that
+will write entities of that model is open: deploy a model before
+anything ingests data into it, and change it only while nothing writes
+to it.
 
 ## 3c. In-transaction `Search` is a predicate read
 
@@ -370,7 +377,7 @@ T2 (anchored on order #43):
   commit
 ```
 
-Different anchors, disjoint write-sets on the subordinates, both count
+Different transitioning entities, disjoint write-sets on the subordinates, both count
 results are "3" at their respective snapshot times, both commit
 successfully. Five matching entities now exist although both transactions
 thought there would be four.
@@ -398,7 +405,7 @@ between segments (§10), so a criterion that assumes the cascade ran
 atomically — e.g. "if A and B have both been advanced as a unit" — can be
 falsified by a concurrent reader (or another cascade) acting on the
 intermediate state. Express such cross-segment invariants either at the
-entity level on the cascade-anchor (FCW catches contention via CAS at
+entity level on the entity the cascade runs for (FCW catches contention via CAS at
 segment continuation) or post-cascade as a reconciliation step.
 
 If your business logic requires a count-based invariant, there are three
@@ -439,15 +446,23 @@ All plugins honour the same contract. Implementation strategy varies.
 | **postgres** | `REPEATABLE READ` (snapshot) + row-level tuple locks on entity tables | Entity-keyed read-set validation at commit; `40001` (`could not serialize access`) and `40P01` (`deadlock_detected`) mapped to `spi.ErrConflict` with bounded retry | **SI+FCW** | per-entity (via tuple locks on 1-to-1 `entities` table) |
 | **cassandra** (commercial) | *(proprietary)* | *(plugin-internal)* | **SI+FCW** | per-entity |
 
-**A documented per-plugin difference: version history of a delete followed by
-a re-create in one transaction.** The committed entity is identical on every
-backend, but the recorded history is not. memory and sqlite buffer the
-delete; a later save or compare-and-save in the same transaction cancels it,
-and commit writes one version row (the re-create). postgres applies the
-delete to the database at once, inside the transaction, so its history shows
-a `DELETED` row followed by the re-create's row. Nothing in the engine
-performs this sequence; a processor or callback that does will see the
-history differ by backend. Accepted as a detail, not a contract.
+**One version per entity per transaction.** A transaction records at most
+one version of each entity, on every backend. A `Save`, `CompareAndSave` or
+`Delete` of an entity the transaction already wrote replaces that
+transaction's pending version; the committed version carries the last
+write's content, and is `DELETED` when the last write is a delete. A
+delete followed by a re-create in one transaction is one version. A
+savepoint rollback restores each entity's pending version as it was at the
+savepoint. `GetVersionByTransaction` returns that one version, and reads
+committed versions only, also inside the transaction that wrote it.
+
+**Unique keys are checked at commit.** On every backend a transaction's
+composite-unique-key claims are computed when it commits, from its final
+entities and the unique-key definitions the store reads from its own
+stored model; a save
+inside a transaction does no claim work. Swaps and chains of key values
+between entities of one transaction commit when the final entities are
+unique.
 
 Entity tables on the postgres plugin are keyed by `(tenant_id, entity_id)`
 for `entities` and by `(tenant_id, entity_id, version)` for
@@ -537,8 +552,8 @@ the count to a counter entity the workflow can read/write by ID.
 ### 7.4 Workflow-encoded invariant — safe by design
 
 State-machine transitions naturally funnel the "should I do X?" decision
-through entity-local criteria that evaluate against the anchor entity's
-own state. A transition's criterion is evaluated within the transaction
+through entity-local criteria that evaluate against the transitioning
+entity's own state. A transition's criterion is evaluated within the transaction
 that performs the transition, and the criterion's reads enter the
 transaction's read-set.
 
@@ -663,23 +678,31 @@ A short checklist:
    loopback: a client knows it crashed and owns the retry decision; an
    engine crash mid-cascade leaves the **server** silently holding a
    partially-progressed entity.
-9. **No double-writing the cascade-anchor entity.** A processor with
-   TX-callback access (SYNC, ASYNC_SAME_TX, COMMIT_BEFORE_DISPATCH with
-   `startNewTxOnDispatch=true`) must not save the entity it is
-   processing for via the supplied transaction token **and** also
-   return mutations for that same entity in its result. The engine's
-   apply-result overwrites the processor's intra-TX writes
-   (last-writer-wins inside the transaction buffer). Pick one path:
-   let the engine apply the result, OR have the processor write the
-   entity itself and return no mutations for it. In the second case
-   the engine keeps the write: it takes the written payload and keeps
-   its own state, so the transition still takes effect. A callback read
-   returns what is stored in the transaction, without the mutations an
-   earlier processor returned and the engine has not yet saved, so the
-   processor bases its write on the payload in its request. A write to
-   the entity by any other transaction makes the transition fail with a
-   conflict. Cross-link: `cmd/cyoda/help/content/workflows.md` carries
-   this rule.
+9. **A callout never writes the entity it runs for.** A processor, a
+   function criterion and a schedule function never write or delete the
+   entity the workflow runs for, with or without the transaction token; a
+   processor changes it only through the data it returns, also a change a
+   nested processor (of another entity a callback creates or updates) works
+   out for it, which is passed back up and returned by the processor the
+   entity's transition called, never written to the entity. Callbacks under
+   the token may write other entities, but never an entity whose cascade is
+   running in the same transaction, at any depth: the entity is passing
+   from one state to the next, so the write moves it out from under the
+   running transition, and it would start that entity's workflow again
+   inside its own cascade, which can loop without end. A callback read
+   under the token returns the entity as the workflow has it when the
+   callout is made: before each callout that carries the token, other than a `COMMIT_BEFORE_DISPATCH` processor's, the engine
+   reads the entity in the transaction and writes it into the transaction
+   (not committed) when a read of it in the transaction finds nothing (a create) or the stored
+   data bytes or state differ from the engine's copy. On postgres the
+   transaction holds the entity's row lock from its first write of the
+   entity until the transaction ends (at the end of the operation, or of a
+   `COMMIT_BEFORE_DISPATCH` segment) or until a rollback to a savepoint
+   undoes that write, so another writer of the entity, and another
+   transaction that read it, wait at their write or commit until then. A
+   write to the entity by another transaction makes one of the two fail
+   with a conflict. Cross-link: `cmd/cyoda/help/content/workflows.md`
+   carries this rule.
 10. **Batch operations degrade under `COMMIT_BEFORE_DISPATCH`.** Under
     `UpdateEntityCollection` (or any all-or-nothing batch) where at
     least one item triggers a cascade segmented by

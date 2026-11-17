@@ -7,6 +7,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -29,6 +30,7 @@ func TestBegin_ReservesItsSnapshotTimeAsTheFloor(t *testing.T) {
 
 	ctx := testCtx("tenant-reserve")
 	ref := spi.ModelRef{EntityName: "m-reserve", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

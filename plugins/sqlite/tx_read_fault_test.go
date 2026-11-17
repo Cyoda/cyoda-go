@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // Inside a transaction, a read that fails for any reason other than the
@@ -15,6 +16,7 @@ func TestTxReadFault_IsNotReportedAsNotFound(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-readfault", "u1", spi.PrincipalUser)
 	modelRef := spi.ModelRef{EntityName: "m-readfault", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, modelRef)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

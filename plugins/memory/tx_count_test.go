@@ -11,6 +11,7 @@ import (
 // a delete then Save, a state change, and after DeleteAll.
 func TestTxCount_EveryBufferShape(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-it"), spi.ModelRef{EntityName: "m-cnt", ModelVersion: "1"})
 	ctx := tenantCtx("tenant-it")
 	ref := spi.ModelRef{EntityName: "m-cnt", ModelVersion: "1"}
 	store, _ := f.EntityStore(ctx)

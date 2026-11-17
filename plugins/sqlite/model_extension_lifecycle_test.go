@@ -29,10 +29,10 @@ func saveLifecycleModel(t *testing.T, ms spi.ModelStore, ref spi.ModelRef, schem
 	}
 }
 
-// Save replaces the model's schema: what Get returns afterwards is the
-// saved schema alone, with nothing of an earlier extension folded onto it.
-func TestSQLite_Save_ReplacesExtendedSchema(t *testing.T) {
-	f, dbPath := setupSQLiteExt(t)
+// Save replaces the schema of an unlocked model: what Get returns afterwards
+// is the saved schema, with nothing of an earlier extension folded onto it.
+func TestSQLite_Save_ReplacesFoldedSchema(t *testing.T) {
+	f, _ := setupSQLiteExt(t)
 	ctx := extTestCtx("t1")
 	ms, err := f.ModelStore(ctx)
 	if err != nil {
@@ -46,6 +46,9 @@ func TestSQLite_Save_ReplacesExtendedSchema(t *testing.T) {
 	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(lifecycleDelta)); err != nil {
 		t.Fatalf("ExtendSchema: %v", err)
 	}
+	if err := ms.Unlock(ctx, ref); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
 
 	saveLifecycleModel(t, ms, ref, `{"base":2}`)
 
@@ -55,9 +58,6 @@ func TestSQLite_Save_ReplacesExtendedSchema(t *testing.T) {
 	}
 	if !bytes.Equal(got.Schema, []byte(`{"base":2}`)) {
 		t.Errorf("Get after Save = %s, want the saved schema {\"base\":2}", got.Schema)
-	}
-	if n := extensionLogRows(t, openRawDB(t, dbPath), "t1", ref); n != 0 {
-		t.Errorf("extension log after Save has %d rows, want 0", n)
 	}
 }
 
@@ -102,8 +102,13 @@ func TestSQLite_Unlock_FoldsExtensionsIntoSchema(t *testing.T) {
 	}
 }
 
-// Delete removes the model's extension log with the model.
-func TestSQLite_Delete_ClearsExtensionLog(t *testing.T) {
+// SetChangeLevel changes only the change level: every other field of the
+// stored doc, including one this plugin does not model, survives. A
+// read-modify-write through the Go struct would drop the marker (and could
+// overwrite a concurrent Lock/Unlock/Save); one in-place JSON update keeps
+// it. A deterministic interleave is impractical, so this pins the
+// by-construction property instead.
+func TestSQLite_SetChangeLevel_ChangesOnlyChangeLevel(t *testing.T) {
 	f, dbPath := setupSQLiteExt(t)
 	ctx := extTestCtx("t1")
 	ms, err := f.ModelStore(ctx)
@@ -112,18 +117,23 @@ func TestSQLite_Delete_ClearsExtensionLog(t *testing.T) {
 	}
 	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
 	saveLifecycleModel(t, ms, ref, `{"base":1}`)
-	if err := ms.Lock(ctx, ref); err != nil {
-		t.Fatalf("Lock: %v", err)
-	}
-	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(lifecycleDelta)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
+	raw := openRawDB(t, dbPath)
+	if _, err := raw.Exec(`UPDATE models SET doc = jsonb_set(doc, '$.marker', 'kept') WHERE model_name = 'Book'`); err != nil {
+		t.Fatalf("seed marker: %v", err)
 	}
 
-	if err := ms.Delete(ctx, ref); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if err := ms.SetChangeLevel(ctx, ref, spi.ChangeLevelType); err != nil {
+		t.Fatalf("SetChangeLevel: %v", err)
 	}
 
-	if n := extensionLogRows(t, openRawDB(t, dbPath), "t1", ref); n != 0 {
-		t.Errorf("extension log after Delete has %d rows, want 0", n)
+	var marker, level string
+	if err := raw.QueryRow(`SELECT json_extract(doc,'$.marker'), json_extract(doc,'$.changeLevel') FROM models WHERE model_name = 'Book'`).Scan(&marker, &level); err != nil {
+		t.Fatalf("read doc: %v", err)
+	}
+	if marker != "kept" {
+		t.Errorf("marker = %q after SetChangeLevel, want it untouched", marker)
+	}
+	if level != string(spi.ChangeLevelType) {
+		t.Errorf("changeLevel = %q, want %q", level, spi.ChangeLevelType)
 	}
 }

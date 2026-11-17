@@ -50,6 +50,7 @@ func lostRaceTx(t *testing.T) (*Engine, spi.TransactionManager, context.Context)
 	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
+	lockTestModel(t, factory, ctx, spi.ModelRef{EntityName: "m", ModelVersion: "1"})
 	txID, txCtx, err := txMgr.Begin(ctx)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)

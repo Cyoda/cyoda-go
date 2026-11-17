@@ -11,6 +11,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
@@ -34,6 +35,7 @@ func gsNewStore(t *testing.T) (*sqlite.StoreFactory, spi.EntityStore, context.Co
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
+	spitest.EnsureLockedModel(t, factory, ctx, gsModel)
 	return factory, store, ctx
 }
 

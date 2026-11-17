@@ -27,12 +27,13 @@ workflow processor returns — over HTTP and gRPC.
   Contention is a wait that lasts until the request ends.
 - **Loss-free.** Every extension whose call returned is in the model's
   schema.
-- **Locked models only.** An extension of a model that is not `LOCKED` is
-  refused, answered `409 MODEL_NOT_LOCKED` (an existing code). A write
-  reaches it only when the model is unlocked while the write, or the
-  transaction it joined, is in progress, e.g. during a compute-node callout
-  on an uncommitted entity; an update, collection update or transition does
-  not check the model's state before it extends.
+- **Only a `LOCKED` model is extended.** A client extends a schema only by
+  writing entity data, and the API accepts entity data only into a `LOCKED`
+  model: a create checks the state, and every other write acts on an
+  existing entity, whose model is `LOCKED` because unlock refuses a model
+  with entities and writes to a model stop before it is unlocked (`cyoda help
+  models`, LIFECYCLE). The extension itself
+  does not check the state again and never answers `409 MODEL_NOT_LOCKED`.
 - **Storage failure is retryable.** A storage outage during an extension,
   including one for data a workflow processor returns, answers the retryable
   `503 STORAGE_UNAVAILABLE`.
@@ -86,16 +87,17 @@ refusal is remembered between requests.
 ## Alignment consequence for Cloud
 
 Cloud must never answer a conflict or retry-exhaustion error because of a
-concurrent extension of the same model, must keep an extension when the
-write that made it fails, and must answer `409 MODEL_NOT_LOCKED` for an
-extension of a model that is not locked.
+concurrent extension of the same model, and must keep an extension when the
+write that made it fails. Cloud must not refuse an extension because of the
+model's state: no write answers `409 MODEL_NOT_LOCKED` for its extension
+(CP-3997, which amends CP-3996).
 
 ## Test coverage (cyoda-go)
 
 - SPI conformance (`cyoda-go-spi/spitest/model_extend.go`): visible on
   return, kept when the caller's transaction rolls back, `Get` ignoring the
   caller's transaction, a delta the schema holds writing nothing, concurrent
-  extenders, `ErrModelNotLocked`, a missing model, an empty delta.
+  extenders, a missing model, an empty delta.
 - E2E, PostgreSQL (`internal/e2e`):
   - `model_schema_extensions_test.go` — `TestSchemaExtension_ConcurrentEveryDoor_No409`
     (concurrent creates, updates, collection creates and updates and
@@ -104,12 +106,6 @@ extension of a model that is not locked.
   - `schema_extension_doors_test.go` — `TestSchemaExtension_ConcurrentNestedUnderNewParent`,
     `TestSchemaExtension_CriterionOnFieldAddedInSameRequest`,
     `TestGRPC_ConcurrentExtension_SuccessEnvelope`.
-  - `schema_extension_not_locked_test.go` — `TestSchemaExtension_NotLocked_CreateProcessorOutput`,
-    `_CreateCollection`, `_JoinedUpdate`, `_JoinedCollectionUpdate`,
-    `_JoinedManualTransition` (`409 MODEL_NOT_LOCKED`), and on gRPC
-    `TestGRPC_ModelNotLocked_Envelope`, `_CreateCollection`, `_JoinedUpdate`,
-    `_JoinedCollectionUpdate`, `_JoinedTransition` (`CLIENT_ERROR`, message
-    prefix `MODEL_NOT_LOCKED:`, not retryable).
   - `unique_keys_write_variants_test.go` — `TestUniqueKeys_PartialKeyDoesNotExtendModel`
     (a partial key with a new field: `422 INVALID_UNIQUE_KEY` and no
     extension, on every client write door, and a collection create whose
@@ -117,8 +113,7 @@ extension of a model that is not locked.
     `TestRPC_EntityWrite_PartialKeyDoesNotExtendModel` (`internal/grpc`).
   - `workflow_proc_output_test.go` — `TestWorkflowProcOutput_ExtensionKeptWhenTransitionFails`.
 - Cross-backend parity (memory, sqlite, postgres): `e2e/parity/schema_extension_contract.go`
-  — `SchemaExtension_KeptAfterFailedWrite`, `SchemaExtension_CriterionSameRequest`,
-  `SchemaExtension_NotLocked`.
+  — `SchemaExtension_KeptAfterFailedWrite`, `SchemaExtension_CriterionSameRequest`.
 - Multi-node: `e2e/parity/multinode/schema_extension.go` —
   `SchemaExtension_VisibleOnOtherNode` (a node that cached the model serves
   the new field after another node's write).

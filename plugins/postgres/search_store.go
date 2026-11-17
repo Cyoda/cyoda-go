@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"time"
@@ -178,7 +179,7 @@ func (s *asyncSearchStore) probeFenced(ctx context.Context, q Querier, jobID str
 	var actualEpoch int64
 	err := q.QueryRow(ctx, query, jobID, string(tid)).Scan(&status, &actualEpoch)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 		}
 		return fmt.Errorf("failed to probe search job %s: %w", jobID, err)
@@ -498,7 +499,7 @@ func (s *asyncSearchStore) ClearResults(ctx context.Context, jobID string, epoch
 	var actualEpoch int64
 	err = s.q.QueryRow(ctx, clearResultsQuery, jobID, string(tid), epoch).Scan(&status, &actualEpoch)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 		}
 		return fmt.Errorf("failed to clear results for job %s: %w", jobID, err)
@@ -698,7 +699,7 @@ func scanSearchJobRow(scan func(dest ...any) error) (*spi.SearchJob, error) {
 func scanSearchJob(row pgx.Row) (*spi.SearchJob, error) {
 	job, err := scanSearchJobRow(row.Scan)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("search job not found: %w", spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to scan search job: %w", err)

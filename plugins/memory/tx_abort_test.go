@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // A commit that aborts — on a first-committer-wins conflict or on a unique
@@ -33,9 +34,8 @@ func TestTx_AnAbortedCommitLeavesTheTransactionRolledBack(t *testing.T) {
 			}
 		}},
 		{"unique violation", spi.ErrUniqueViolation, func(t *testing.T, fx taskFixture, store spi.EntityStore, txCtx context.Context) {
-			keyCtx := spi.WithUniqueKeys(txCtx, []spi.UniqueKey{{ID: "email-key", Fields: []string{"$.email"}}})
 			for _, id := range []string{"e1", "e2"} {
-				if _, err := store.Save(keyCtx, &spi.Entity{Meta: spi.EntityMeta{ID: id, ModelRef: ref}, Data: []byte(`{"email":"a@x.com"}`)}); err != nil {
+				if _, err := store.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: id, ModelRef: ref}, Data: []byte(`{"email":"a@x.com"}`)}); err != nil {
 					t.Fatalf("Save %s: %v", id, err)
 				}
 			}
@@ -44,6 +44,8 @@ func TestTx_AnAbortedCommitLeavesTheTransactionRolledBack(t *testing.T) {
 	for _, a := range aborts {
 		t.Run(a.name, func(t *testing.T) {
 			fx := newTaskFixture(t)
+			spitest.EnsureLockedModel(t, fx.f, ctxWithTenant(taskTenantA), ref,
+				spi.UniqueKey{ID: "email-key", Fields: []string{"$.email"}})
 			store, err := fx.f.EntityStore(ctxWithTenant(taskTenantA))
 			if err != nil {
 				t.Fatalf("EntityStore: %v", err)

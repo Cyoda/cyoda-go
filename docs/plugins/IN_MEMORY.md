@@ -73,21 +73,42 @@ type TransactionState struct {
 4. FOR EACH committed_tx where seq > tx's snapshot commitSeq:
      IF committed_tx.writeSet intersects (tx.ReadSet UNION tx.WriteSet):
        ABORT -> ErrConflict
-5. Stamp submitTime = max(now, lastSubmitTime + 1µs); record it as the floor
-6. Flush tx.Buffer to factory.entityData (deep copy)
-7. Apply tx.Deletes (append tombstone versions)
-8. Append to committedLog: {txID, seq, submitTime, writeSet}
-9. Record submitTime in submitTimes map
-10. Remove from active map
-11. Prune committedLog (entries older than oldest active snapshot)
-12. Release entityMu, then tx.OpMu
+5. Check the staged scheduled-task ops: they must not leave two
+   RUNNING tasks on one entity (checkOneRunning; a breach is a
+   defect and panics, before anything is written)
+6. Read the unique-key definitions of the stored model of every
+   buffered entity (modelKeys; no state check, a missing model has no
+   definitions). Compute each buffered entity's claims from its buffered
+   bytes with that model's definitions:
+     partial key -> ABORT -> ErrPartialUniqueKey
+     a value two buffered entities claim, or a committed claim held by
+     an entity the transaction neither wrote nor deleted
+                 -> ABORT -> ErrUniqueViolation
+   (deleted entities need no model)
+7. Stamp submitTime = max(now, lastSubmitTime + 1µs); record it as the floor
+8. Release the claims of every buffered and deleted entity, then
+   flush tx.Buffer to factory.entityData (deep copy) and insert the
+   final entities' claims
+9. Apply tx.Deletes (append tombstone versions)
+10. Apply the staged scheduled-task row writes (applyTaskOps)
+11. Append to committedLog: {txID, seq, submitTime, writeSet}
+12. Record submitTime in submitTimes map
+13. Remove from active map
+14. Prune committedLog (entries older than oldest active snapshot)
+15. Release entityMu, then tx.OpMu
 ```
 
-`tm.mu` is not held across steps 3–12. It is a leaf lock, taken and released
+`tm.mu` is not held across steps 3–15. It is a leaf lock, taken and released
 three times: for the conflict scan (steps 3–4), inside `nextSubmitTime` for the
-stamp (step 5), and for the commit-log append, the submit-time record and the
-prune (steps 8–11). Everything in between runs under `entityMu`, which is what
+stamp (step 7), and for the commit-log append, the submit-time record and the
+prune (steps 11–14). Everything in between runs under `entityMu`, which is what
 makes the flush atomic. Each acquisition still follows the one order below.
+
+Every claim is released before any is inserted, so a swap of key values
+between two entities of one transaction is judged only on its final state. A
+save outside a transaction runs the same definitions read and claim check under
+`entityMu`. The store checks no model state: the API keeps the model rules
+(`cyoda help models`, LIFECYCLE).
 
 This is first-committer-wins: the transaction that reaches step 4
 first wins; any concurrent transaction whose read-set or write-set

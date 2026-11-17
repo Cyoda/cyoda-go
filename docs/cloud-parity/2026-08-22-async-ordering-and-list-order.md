@@ -72,13 +72,13 @@ no O(model) sort.
 completeness (each has its own SPI contract, referenced rather than
 reproduced):
 
-- `GetVersionByTransaction` (earliest version carrying a given transaction
-  ID) has no by-transaction access path in the commercial backend's change
-  table today — the transaction column sits behind the version in the
-  clustering order. Its available options are a scan of the entity's own
-  change partition (bounded by that entity's history; must scan past a
-  match to prove "earliest" since the clustering is version-descending), or
-  a schema addition. Backend maintainers' call.
+- `GetVersionByTransaction` (the one version a given transaction recorded
+  of an entity; a transaction records at most one) has no by-transaction
+  access path in the commercial backend's change table today — the
+  transaction column sits behind the version in the clustering order. Its
+  available options are a scan of the entity's own change partition
+  (bounded by that entity's history; it can stop at the first match), or a
+  schema addition. Backend maintainers' call.
 - `GetVersionMetadata` replaces `GetVersionHistory` (removed, pre-1.0, no
   shim) as the metadata-only history read backing
   `GET /entity/{id}/changes` and the audit-event search's merge. `Deleted`

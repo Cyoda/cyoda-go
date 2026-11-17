@@ -78,6 +78,45 @@ func TestRecordAuthType_RecordsBothPrincipals(t *testing.T) {
 	}
 }
 
+// TestRecordTxIDs_RecordsRequestAndPayloadIDs verifies that record-txids
+// writes the calc request's transactionId and its payload's
+// meta.transactionId into the entity data.
+func TestRecordTxIDs_RecordsRequestAndPayloadIDs(t *testing.T) {
+	d := &dispatcher{cat: newCatalog(nil, nil)}
+	msg, err := newCloudEvent(ceTypeProcessorRequest, map[string]any{
+		"requestId": "r-1", "entityId": "e-1", "processorName": "record-txids", "transactionId": "tx-request",
+		"payload": map[string]any{"data": map[string]any{"name": "x"}, "meta": map[string]any{"transactionId": "tx-payload"}},
+	})
+	if err != nil {
+		t.Fatalf("newCloudEvent: %v", err)
+	}
+	payload, err := extractTextData(msg)
+	if err != nil {
+		t.Fatalf("extractTextData: %v", err)
+	}
+	reply, err := d.answer(context.Background(), msg, payload, "")
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	var body struct {
+		Success bool `json:"success"`
+		Payload struct {
+			Data map[string]any `json:"data"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(reply.GetTextData()), &body); err != nil {
+		t.Fatalf("reply is not JSON: %v", err)
+	}
+	if !body.Success {
+		t.Fatalf("reply success = false: %s", reply.GetTextData())
+	}
+	for field, want := range map[string]string{"requestTxId": "tx-request", "payloadTxId": "tx-payload", "name": "x"} {
+		if got, _ := body.Payload.Data[field].(string); got != want {
+			t.Errorf("%s = %q, want %q", field, got, want)
+		}
+	}
+}
+
 // TestInjectErrorRetryableOnce_FailsOnceThenSucceeds: the first run of the
 // processor fails with the retryable verdict, every later run of the same
 // client succeeds. A scenario uses it for the retry of a joined write.

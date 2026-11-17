@@ -32,6 +32,7 @@ func TestEngineResult_FinalTxID_EntryOnNonSegmentingCascade(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	txMgr, err := factory.TransactionManager(ctx)
 	if err != nil {

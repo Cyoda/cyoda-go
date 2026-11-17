@@ -233,7 +233,10 @@ func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Conte
 // Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001),
 // including one a savepoint rollback has since undone, or when the
 // application-layer first-committer-wins validation detects a stale read or
-// write set.
+// write set. The commit checks unique keys on the transaction's final
+// entities (commitWrittenClaims): spi.ErrPartialUniqueKey for a partial composite
+// key, spi.ErrUniqueViolation for a value already held, and spi.ErrConflict
+// when two commits deadlock claiming values each frees.
 //
 // Tenant isolation: rejects callers whose UserContext
 // tenant does not match the transaction's tenant. RLS protects data-path
@@ -301,12 +304,33 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 	}
 
+	// Unique keys, from the transaction's final entities and the stored
+	// models' unique-key definitions (commitWrittenClaims). Before the
+	// stamp: these statements can wait on a lock, and nothing after
+	// cyoda_stamp may. With an empty read set the claim release is the first
+	// statement Commit issues, so on an aborted transaction it meets the
+	// 25P02.
+	if err := tm.commitWrittenClaims(ctx, pgxTx, state); err != nil {
+		if aborted, ok := abortedCommitError(state, err); ok {
+			tm.cleanupTx(txID)
+			_ = pgxTx.Rollback(context.Background())
+			return aborted
+		}
+		// Classified while the transaction is still registered: 40001 and
+		// 40P01 become spi.ErrConflict, a 23505 on unique_claims_uq
+		// spi.ErrUniqueViolation; spi.ErrPartialUniqueKey passes through.
+		classified := tm.classifyTxError(txID, fmt.Errorf("Commit: unique keys: %w", err))
+		tm.cleanupTx(txID)
+		_ = pgxTx.Rollback(context.Background())
+		return classified
+	}
+
 	// Fix the transaction's instant and stamp it onto every row the
 	// transaction wrote, immediately before COMMIT.
 	//
 	// If the transaction is already in an aborted state (e.g. an earlier Exec
-	// returned 40001 and left the tx aborted) and had no read set to validate,
-	// the first statement of the stamp fails with SQLSTATE 25P02
+	// returned 40001 and left the tx aborted) and had no read set to validate
+	// and no entity written, the first statement of the stamp fails with SQLSTATE 25P02
 	// (in_failed_sql_transaction), which abortedCommitError reads.
 	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, state.markerKey, txID)
 	if tsErr != nil {
@@ -374,6 +398,28 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	return nil
 }
 
+// commitWrittenClaims runs the commit-time unique-key check (commit_claims.go)
+// over the entities the transaction wrote, every step in the transaction:
+// releaseClaims, modelKeys, insertClaims. The unique-key definitions are
+// read in the transaction's snapshot; commit_claims.go says why that is
+// correct and why the commit borrows no second connection for it. A transaction that wrote
+// no entity issues no statement here, and one that wrote only deletes reads
+// no model.
+func (tm *TransactionManager) commitWrittenClaims(ctx context.Context, tx pgx.Tx, state *txState) error {
+	written := state.WrittenEntities()
+	if len(written) == 0 {
+		return nil
+	}
+	if err := releaseClaims(ctx, tx, state.tenantID, writtenIDs(written)); err != nil {
+		return err
+	}
+	keys, err := modelKeys(ctx, tx, state.tenantID, savedModels(written))
+	if err != nil {
+		return err
+	}
+	return insertClaims(ctx, tx, state.tenantID, written, keys)
+}
+
 // stampCommitInstant fixes the transaction's instant and applies it to every
 // row the transaction wrote, immediately before COMMIT.
 //
@@ -430,28 +476,25 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 	}
 	tid := string(tenantID)
 
-	// creation_date is stamped on EVERY row of an entity whose first version
-	// belongs to this transaction — not only on version 1. A transaction that
-	// creates an entity and then updates it carries the creation date forward
-	// by reading inside the transaction, so the later version holds the
-	// provisional value; stamping only version 1 would leave them disagreeing.
+	// creation_date is stamped on the version that creates its entity,
+	// version 1, and on that entity's row, which is then at version 1 too. A
+	// transaction records at most one version of an entity (saveOn, deleteOn),
+	// so an entity this transaction created has no other row here to carry
+	// the provisional creation date.
 	//
-	// The CASE must stay conditional in BOTH directions. By the time this runs,
-	// the version INSERT already sources creation_date by sub-select from the
-	// entity's own entities.creation_date, so a version written by a LATER
-	// transaction correctly inherits the entity's original creation date.
-	// Replacing this CASE with an unconditional SET creation_date = $1 would
-	// restamp every updated entity's creation as that update's instant — which
-	// is exactly the defect found when this column was first projected into
-	// reads: history reporting when a revision was written rather than when the
+	// The CASE must stay conditional. By the time this runs, the version
+	// INSERT already sources creation_date by sub-select from the entity's own
+	// entities.creation_date, so a version written by a LATER transaction
+	// correctly inherits the entity's original creation date. Replacing this
+	// CASE with an unconditional SET creation_date = $1 would restamp every
+	// updated entity's creation as that update's instant — which is exactly
+	// the defect found when this column was first projected into reads:
+	// history reporting when a revision was written rather than when the
 	// entity was created, and diverging from the memory backend, which
 	// preserves the original.
 	if _, err := tx.Exec(ctx,
 		`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,
-		        creation_date = CASE WHEN entity_id IN (
-		            SELECT entity_id FROM entity_versions
-		             WHERE tenant_id = $2 AND transaction_id = $3 AND version = 1
-		        ) THEN $1 ELSE creation_date END
+		        creation_date = CASE WHEN version = 1 THEN $1 ELSE creation_date END
 		  WHERE tenant_id = $2 AND transaction_id = $3`,
 		instant, tid, txID); err != nil {
 		return time.Time{}, fmt.Errorf("stamp entity versions: %w", err)
@@ -459,11 +502,7 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 
 	if _, err := tx.Exec(ctx,
 		`UPDATE entities e SET last_modified = $1,
-		        creation_date = CASE WHEN EXISTS (
-		            SELECT 1 FROM entity_versions v
-		             WHERE v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id
-		               AND v.transaction_id = $3 AND v.version = 1
-		        ) THEN $1 ELSE e.creation_date END
+		        creation_date = CASE WHEN e.version = 1 THEN $1 ELSE e.creation_date END
 		  WHERE e.tenant_id = $2 AND e.entity_id IN (
 		            SELECT entity_id FROM entity_versions
 		             WHERE tenant_id = $2 AND transaction_id = $3)`,

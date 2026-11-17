@@ -13,12 +13,11 @@ import (
 // transaction ID as this call sees it — the transaction's own uncommitted
 // write if it has one, else the committed row's. It must be non-empty. The
 // empty string is not a value any live entity's transaction ID can be trusted
-// to differ from — a write taken outside a transaction stores the caller's
-// supplied ID verbatim, empty included — so accepting it as "expect no
-// entity" made a guard whose job is to fail closed fail open instead, and
-// silently overwrite an entity that was there. It is now rejected as a caller
-// error, and CompareAndSave neither creates an entity nor resurrects a
-// deleted one: Save does that.
+// to differ from — a write taken outside a transaction stores it — so
+// accepting it as "expect no entity" made a guard whose job is to fail closed
+// fail open instead, and silently overwrite an entity that was there. It is
+// now rejected as a caller error, and CompareAndSave neither creates an entity
+// nor resurrects a deleted one: Save does that.
 type casOutcome int
 
 const (
@@ -28,10 +27,12 @@ const (
 )
 
 func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
-	const seedTxID = "tx-seed"
+	// seedTxID stands for the id of the transaction that committed the
+	// seed, which is known only once it has run.
+	const seedTxID = "<seed>"
 	cases := []struct {
 		name         string
-		seed         bool   // an entity is committed under seedTxID first
+		seed         bool   // an entity is committed first, by seedTxID
 		tombstone    bool   // the seeded entity is then deleted, committed, before the CAS
 		expectedTxID string // what the caller claims is current
 		want         casOutcome
@@ -60,21 +61,23 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	for _, tc := range cases {
 		// One entity ID per subtest: the fixture's schema is shared, so a
 		// seeded row must not be visible to the cases that expect none.
 		t.Run(tc.name+"/NoTransaction", func(t *testing.T) {
 			id := "e-lit-" + tc.name + "-notx"
+			seeded := ""
 			if tc.seed {
-				seedLiteral(t, store, ctx, ref, id, seedTxID)
+				seeded = seedLiteral(t, tm, store, ctx, ref, id)
 			}
 			if tc.tombstone {
 				if err := store.Delete(ctx, id); err != nil {
 					t.Fatalf("seed Delete: %v", err)
 				}
 			}
-			_, err := store.CompareAndSave(ctx, literalEntity(ref, id, "tx-writer"), tc.expectedTxID)
+			_, err := store.CompareAndSave(ctx, literalEntity(ref, id, "tx-writer"), expectedID(tc.expectedTxID, seedTxID, seeded))
 			assertCASOutcome(t, err, tc.want)
 			// A rejected call must not have written — the seed is still
 			// the seed byte for byte, and where there was no entity there
@@ -88,8 +91,9 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 
 		t.Run(tc.name+"/InTransaction", func(t *testing.T) {
 			id := "e-lit-" + tc.name + "-tx"
+			seeded := ""
 			if tc.seed {
-				seedLiteral(t, store, ctx, ref, id, seedTxID)
+				seeded = seedLiteral(t, tm, store, ctx, ref, id)
 			}
 			if tc.tombstone {
 				if err := store.Delete(ctx, id); err != nil {
@@ -97,7 +101,7 @@ func TestCompareAndSave_ExpectedIDIsLiteral(t *testing.T) {
 				}
 			}
 			txID, txCtx := beginGuarded(t, tm, ctx)
-			_, err = store.CompareAndSave(txCtx, literalEntity(ref, id, "tx-writer"), tc.expectedTxID)
+			_, err = store.CompareAndSave(txCtx, literalEntity(ref, id, "tx-writer"), expectedID(tc.expectedTxID, seedTxID, seeded))
 			assertCASOutcome(t, err, tc.want)
 			if tc.want == casRejected {
 				// Unchanged in the transaction's own view — a store that
@@ -125,8 +129,9 @@ func TestCompareAndSave_EmptyExpectedAfterSameTxDelete_Rejected(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	const id = "e-lit-same-tx-delete"
-	seedLiteral(t, store, ctx, ref, id, "tx-seed")
+	seedLiteral(t, tm, store, ctx, ref, id)
 
 	txID, txCtx := beginGuarded(t, tm, ctx)
 	if err := store.Delete(txCtx, id); err != nil {
@@ -159,11 +164,12 @@ func TestCompareAndSave_EmptyExpectedOnDeadTransaction_ReportsArgumentError(t *t
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-lit", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	for _, kill := range []string{"Committed", "RolledBack"} {
 		t.Run(kill, func(t *testing.T) {
 			id := "e-lit-dead-tx-" + kill
-			seedLiteral(t, store, ctx, ref, id, "tx-seed")
+			seedLiteral(t, tm, store, ctx, ref, id)
 
 			txID, txCtx := beginGuarded(t, tm, ctx)
 			if kill == "Committed" {
@@ -228,13 +234,22 @@ func literalEntity(ref spi.ModelRef, id, txID string) *spi.Entity {
 	}
 }
 
-func seedLiteral(t *testing.T, store spi.EntityStore, ctx context.Context, ref spi.ModelRef, id, txID string) {
+// seedLiteral commits the seed in a transaction of its own and returns that
+// transaction's id.
+func seedLiteral(t *testing.T, tm spi.TransactionManager, store spi.EntityStore, ctx context.Context, ref spi.ModelRef, id string) string {
 	t.Helper()
-	seed := literalEntity(ref, id, txID)
+	seed := literalEntity(ref, id, "")
 	seed.Data = []byte(seedLiteralData)
-	if _, err := store.Save(ctx, seed); err != nil {
-		t.Fatalf("seed Save: %v", err)
+	return saveCommitted(t, tm, store, ctx, seed)
+}
+
+// expectedID resolves a case's expected transaction id: placeholder stands
+// for the seeding transaction's id, seeded.
+func expectedID(expected, placeholder, seeded string) string {
+	if expected == placeholder {
+		return seeded
 	}
+	return expected
 }
 
 // assertLiteralUnchanged reports that a rejected CompareAndSave left the store

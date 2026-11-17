@@ -235,24 +235,41 @@ func scanVersionEntity(row interface{ Scan(...any) error }) (*spi.Entity, error)
 	return &spi.Entity{Meta: meta, Data: data}, nil
 }
 
-// committedModelRef returns the model reference of entityID's committed row,
-// and whether the row exists. Used to enforce that Save/CompareAndSave never
-// change an entity's model after creation (see spi.ErrEntityModelMismatch);
-// a soft-deleted row still carries its original model — entities rows are
-// never removed, only flagged — so this deliberately does not filter on
-// `deleted`.
-func (s *entityStore) committedModelRef(ctx context.Context, entityID string) (spi.ModelRef, bool, error) {
-	var name, version string
-	err := s.db.QueryRowContext(ctx,
-		"SELECT model_name, model_version FROM entities WHERE tenant_id = ? AND entity_id = ?",
-		string(s.tenantID), entityID).Scan(&name, &version)
-	if errors.Is(err, sql.ErrNoRows) {
-		return spi.ModelRef{}, false, nil
+// pendingBase is the part of a transactional write's pending version that
+// the entity's state before the write decides: its version number, change
+// type and creation date. checkModelImmutableInTx finds it on the reads the
+// model check takes anyway, and pendingVersion applies it.
+type pendingBase struct {
+	version    int64
+	changeType string
+	// creationDate is zero for an entity this transaction creates with this
+	// write: the pending version is then dated at the write.
+	creationDate time.Time
+}
+
+// pendingVersion returns the version a transactional write buffers: a copy of
+// entity carrying the store's metadata for the transaction's one pending
+// version of it, as a read inside the transaction returns it and as the
+// commit (flushToSQLite) records it — never the values the caller left on the
+// entity (the metadata is the store's).
+//
+// The transaction id and tenant are the transaction's; the version number,
+// change type and creation date are base's (see checkModelImmutableInTx).
+// The dates are provisional until the commit stamps them with its instant:
+// the last-modified date is the business clock's reading at this write.
+func (s *entityStore) pendingVersion(tx *spi.TransactionState, entity *spi.Entity, base pendingBase) *spi.Entity {
+	now := microToTime(s.tm.factory.bizClock.Now().UnixMicro())
+	cp := copyEntity(entity)
+	cp.Meta.TenantID = s.tenantID
+	cp.Meta.TransactionID = tx.ID
+	cp.Meta.Version = base.version
+	cp.Meta.ChangeType = base.changeType
+	cp.Meta.LastModifiedDate = now
+	cp.Meta.CreationDate = base.creationDate
+	if cp.Meta.CreationDate.IsZero() {
+		cp.Meta.CreationDate = now
 	}
-	if err != nil {
-		return spi.ModelRef{}, false, fmt.Errorf("check existing model for entity %s: %w", entityID, err)
-	}
-	return spi.ModelRef{EntityName: name, ModelVersion: version}, true, nil
+	return cp
 }
 
 // modelMismatchErr wraps spi.ErrEntityModelMismatch for entity id.
@@ -262,24 +279,56 @@ func modelMismatchErr(id string) error {
 
 // checkModelImmutableInTx enforces that a same-transaction Save/CompareAndSave
 // does not change entity's model reference: against the transaction's own
-// earlier buffered write for this id when one exists, and against committed
-// state otherwise. Mirrors plugins/memory's checkModelImmutable.
-func (s *entityStore) checkModelImmutableInTx(ctx context.Context, tx *spi.TransactionState, entity *spi.Entity) error {
+// earlier buffered write for this id when one exists, then against the
+// buffered entity this transaction deleted (a create-then-delete leaves no
+// committed row to check), and against committed state otherwise. Mirrors
+// plugins/memory's checkModelImmutable.
+//
+// It returns the base of the write's pending version from the same source,
+// so a transactional write reads the entities row at most once. A write that
+// replaces the pending version, or follows the delete of one, keeps that
+// version's number, change type and creation date: they were derived from
+// the committed state when the transaction first wrote the entity. A first
+// write derives them from the committed entities row as the commit does: its
+// version + 1 and its created_at, UPDATED; or version 1, CREATED, when there
+// is no row. The row is read whether or not it is deleted — entities rows are
+// never removed, only flagged, and a soft-deleted row still carries the
+// entity's model, version and creation date.
+func (s *entityStore) checkModelImmutableInTx(ctx context.Context, tx *spi.TransactionState, entity *spi.Entity) (pendingBase, error) {
 	id := entity.Meta.ID
-	if buffered, ok := tx.Buffer[id]; ok {
-		if buffered.Meta.ModelRef != entity.Meta.ModelRef {
-			return modelMismatchErr(id)
+	pending, ok := tx.Buffer[id]
+	if !ok {
+		pending, ok = s.tm.deletedBufferedEntityFor(tx.ID, id)
+	}
+	if ok {
+		if pending.Meta.ModelRef != entity.Meta.ModelRef {
+			return pendingBase{}, modelMismatchErr(id)
 		}
-		return nil
+		return pendingBase{
+			version:      pending.Meta.Version,
+			changeType:   pending.Meta.ChangeType,
+			creationDate: pending.Meta.CreationDate,
+		}, nil
 	}
-	ref, exists, err := s.committedModelRef(ctx, id)
+	var name, modelVersion string
+	var version, createdAt int64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT model_name, model_version, version, created_at FROM entities WHERE tenant_id = ? AND entity_id = ?",
+		string(s.tenantID), id).Scan(&name, &modelVersion, &version, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return pendingBase{version: 1, changeType: deriveChangeType(true)}, nil
+	}
 	if err != nil {
-		return err
+		return pendingBase{}, fmt.Errorf("check existing model for entity %s: %w", id, classifyError(err))
 	}
-	if exists && ref != entity.Meta.ModelRef {
-		return modelMismatchErr(id)
+	if (spi.ModelRef{EntityName: name, ModelVersion: modelVersion}) != entity.Meta.ModelRef {
+		return pendingBase{}, modelMismatchErr(id)
 	}
-	return nil
+	return pendingBase{
+		version:      version + 1,
+		changeType:   deriveChangeType(false),
+		creationDate: microToTime(createdAt),
+	}, nil
 }
 
 func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {
@@ -300,29 +349,21 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		// An entity's model reference is fixed at creation; reject a same-tx
 		// buffered write that would change it BEFORE it is buffered — see
 		// checkModelImmutableInTx.
-		if err := s.checkModelImmutableInTx(ctx, tx, entity); err != nil {
+		base, err := s.checkModelImmutableInTx(ctx, tx, entity)
+		if err != nil {
 			return 0, err
 		}
 		// Transaction mode: write to buffer, not main store.
-		cp := copyEntity(entity)
-		cp.Meta.TenantID = s.tenantID
-		cp.Meta.TransactionID = tx.ID
-		// Stage the value this overwrites (see stageSuperseded's godoc)
-		// BEFORE overwriting tx.Buffer, so a same-tx double-save of the same
-		// entity still produces an earliest-wins-eligible version row at
-		// commit (GetVersionByTransaction's contract). tx.Buffer[id] is nil
-		// on this entity's first Save in the tx — stageSuperseded no-ops.
-		s.tm.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
+		cp := s.pendingVersion(tx, entity, base)
+		// The buffer holds the entity's one pending version; this write
+		// replaces it.
 		tx.Buffer[entity.Meta.ID] = cp
 		tx.WriteSet[entity.Meta.ID] = true
 		// If the entity was previously marked for deletion in this tx, unmark
 		// it (last-write-wins: Save after Delete → present).
 		unstageDelete(tx, entity.Meta.ID)
-		// Capture unique keys at buffer time (last-write-wins, matching tx.Buffer).
-		// flushToSQLite runs once at Commit with a single context, so keys must
-		// be stored per-entity here to support mixed-model batches where each Save
-		// may carry a different key set.
-		s.tm.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
+		// No claim or model work here: the commit checks both on the
+		// transaction's final entities (commitClaims).
 		return 0, nil // actual version assigned at commit
 	}
 
@@ -330,18 +371,16 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 	return s.saveDirectly(ctx, entity)
 }
 
-// deriveChangeType computes the persisted change type from row existence,
-// used by both the non-tx (saveDirectly) and tx-commit write paths so they
-// agree with each other and with the memory/postgres backends. A new entity is
-// always "CREATED" (an incoming value is ignored). For an existing entity a
-// stale "CREATED" (or empty) becomes "UPDATED", while an explicit override set
-// by a caller (e.g. the workflow engine) is preserved.
-func deriveChangeType(caller string, isNew bool) string {
+// deriveChangeType returns the change type of a saved version, used by both
+// the non-tx (saveDirectly) and tx-commit write paths: CREATED for the
+// entity's first version, UPDATED otherwise. It is derived from row existence,
+// never taken from the caller — the change type is the store's, like the rest
+// of the entity's metadata. The entities row outlives a delete, so a re-create
+// after a committed delete is UPDATED, as on memory and postgres. A delete
+// records DELETED on its own path.
+func deriveChangeType(isNew bool) string {
 	if isNew {
 		return "CREATED"
-	}
-	if caller != "" && caller != "CREATED" {
-		return caller
 	}
 	return "UPDATED"
 }
@@ -424,7 +463,12 @@ func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity
 
 	cp.Meta.Version = nextVersion
 	cp.Meta.LastModifiedDate = now
-	cp.Meta.ChangeType = deriveChangeType(cp.Meta.ChangeType, isNew)
+	cp.Meta.ChangeType = deriveChangeType(isNew)
+	// A write outside a transaction is its own transaction and records no
+	// transaction id (see spi.EntityStore.CompareAndSave) — in the meta
+	// document as in the entity_versions column — whatever the caller left on
+	// the entity.
+	cp.Meta.TransactionID = ""
 	if isNew {
 		cp.Meta.CreationDate = now
 	} else {
@@ -441,6 +485,12 @@ func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity
 		return 0, fmt.Errorf("begin tx: %w", err)
 	}
 	defer sqlTx.Rollback()
+
+	// A write outside a transaction is its own commit: the claims run in its
+	// own sqlTx, as the transaction flush runs them.
+	if err := commitClaims(ctx, sqlTx, tid, []*spi.Entity{cp}, []string{cp.Meta.ID}); err != nil {
+		return 0, err
+	}
 
 	_, err = sqlTx.ExecContext(ctx,
 		`INSERT OR REPLACE INTO entities
@@ -464,12 +514,6 @@ func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity
 		return 0, fmt.Errorf("insert version: %w", classifyError(err))
 	}
 
-	// Maintain unique-key claims for the non-transactional (direct) write path.
-	// Keys are read from ctx inline since there is no buffer to pre-capture them.
-	if err := replaceClaims(ctx, sqlTx, tid, cp, spi.UniqueKeysFromContext(ctx)); err != nil {
-		return 0, fmt.Errorf("replace claims: %w", err)
-	}
-
 	if err := sqlTx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit: %w", classifyError(err))
 	}
@@ -479,12 +523,11 @@ func (s *entityStore) saveDirectlyLocked(ctx context.Context, entity *spi.Entity
 // CompareAndSave writes entity only if its stored transaction ID is still
 // expectedTxID. expectedTxID must not be empty: it is compared literally, and
 // the empty string is the transaction ID a missing or deleted entity reports
-// — but also the one a write taken outside a transaction stores verbatim when
-// the caller supplied none, so an empty expected ID cannot tell "no entity"
-// from "an entity written outside a transaction" and would overwrite the
-// latter. It is rejected as a caller error, before any read or write.
-// CompareAndSave therefore never creates an entity and never resurrects a
-// deleted one; Save does that.
+// — but also the one a write taken outside a transaction stores, so an empty
+// expected ID cannot tell "no entity" from "an entity written outside a
+// transaction" and would overwrite the latter. It is rejected as a caller
+// error, before any read or write. CompareAndSave therefore never creates an
+// entity and never resurrects a deleted one; Save does that.
 func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	if expectedTxID == "" {
 		return 0, fmt.Errorf("CompareAndSave: expectedTxID must not be empty")
@@ -510,7 +553,8 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 		}
 		// Same enforcement as Save's tx branch — see checkModelImmutableInTx.
-		if err := s.checkModelImmutableInTx(ctx, tx, entity); err != nil {
+		base, err := s.checkModelImmutableInTx(ctx, tx, entity)
+		if err != nil {
 			return 0, err
 		}
 		// A buffered own-write IS the transaction's current version of this
@@ -526,15 +570,8 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			if buffered.Meta.TransactionID != expectedTxID {
 				return 0, fmt.Errorf("CompareAndSave %s: %w", entity.Meta.ID, spi.ErrConflict)
 			}
-			cp := copyEntity(entity)
-			cp.Meta.TenantID = s.tenantID
-			cp.Meta.TransactionID = tx.ID
-			s.tm.stageSuperseded(tx.ID, entity.Meta.ID, buffered)
-			tx.Buffer[entity.Meta.ID] = cp
+			tx.Buffer[entity.Meta.ID] = s.pendingVersion(tx, entity, base)
 			tx.WriteSet[entity.Meta.ID] = true
-			// Capture unique keys at buffer time, as Save does — see the
-			// comment there for why the flush cannot recover them.
-			s.tm.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 			return 0, nil
 		}
 
@@ -547,17 +584,9 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			return 0, spi.ErrConflict
 		}
 
-		// Write to buffer. Stage the value this overwrites first — see the
-		// matching comment in Save.
-		cp := copyEntity(entity)
-		cp.Meta.TenantID = s.tenantID
-		cp.Meta.TransactionID = tx.ID
-		s.tm.stageSuperseded(tx.ID, entity.Meta.ID, tx.Buffer[entity.Meta.ID])
-		tx.Buffer[entity.Meta.ID] = cp
+		// Write to buffer, replacing any pending version.
+		tx.Buffer[entity.Meta.ID] = s.pendingVersion(tx, entity, base)
 		tx.WriteSet[entity.Meta.ID] = true
-		// Capture unique keys at buffer time, as Save does — see the comment
-		// there for why the flush cannot recover them.
-		s.tm.recordUniqueKeys(tx.ID, entity.Meta.ID, spi.UniqueKeysFromContext(ctx))
 		return 0, nil
 	}
 
@@ -589,9 +618,9 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 // written, or deleted. A deleted entity is no entity, exactly as Get reports
 // it, so its tombstone does not offer up the superseded version's ID for a
 // caller to match against. "" is also what an entity written outside a
-// transaction with no supplied ID stores; the two are indistinguishable
-// here, which is why CompareAndSave rejects an empty expectedTxID rather
-// than letting it match either.
+// transaction stores; the two are indistinguishable here, which is why
+// CompareAndSave rejects an empty expectedTxID rather than letting it match
+// either.
 func (s *entityStore) committedTxID(ctx context.Context, entityID string) (string, error) {
 	var txID sql.NullString
 	err := s.db.QueryRowContext(ctx,
@@ -766,9 +795,8 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		delete(tx.Buffer, entityID)
 		tx.WriteSet[entityID] = true
 		// Capture attribution at STAGE time (this caller), not at commit
-		// time (the eventual committer, possibly a different actor) — see
-		// transactionManager.flushToSQLite's flush, which prefers this
-		// entry over re-deriving attribution from the commit ctx.
+		// time (the eventual committer, possibly a different actor);
+		// transactionManager.flushToSQLite records this entry.
 		a, e := spi.AttributionFor(ctx)
 		tx.DeleteAttribution[entityID] = spi.WriteAttribution{Attributed: a, Executor: e}
 		return nil
@@ -1398,14 +1426,14 @@ const getVersionByTransactionQuery = `SELECT ev.entity_id, ev.model_name, ev.mod
 		 FROM entity_versions ev
 		 WHERE ev.tenant_id = ? AND ev.entity_id = ? AND ev.transaction_id = ?
 		   AND ev.change_type != 'DELETED'
-		 ORDER BY ev.version ASC
 		 LIMIT 1`
 
-// GetVersionByTransaction returns the earliest (lowest-Version) version of
-// entityID written by transaction txID. DELETED tombstones never match — see
-// spi.EntityStore.GetVersionByTransaction's doc comment — and an empty txID
-// never matches, even a stored-empty one from a non-transactional write, so
-// it is rejected pre-query rather than reaching SQL at all.
+// GetVersionByTransaction returns the version of entityID that transaction
+// txID wrote (a transaction records at most one version per entity). DELETED
+// tombstones never match — see spi.EntityStore.GetVersionByTransaction's doc
+// comment — and an empty txID never matches, even a stored-empty one from a
+// non-transactional write, so it is rejected pre-query rather than reaching
+// SQL at all.
 //
 // Reads on the dedicated reader connection (readDB), not the writer db, for
 // the reason GetPage states: entity_versions rows only become visible on

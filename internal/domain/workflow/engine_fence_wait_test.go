@@ -95,6 +95,9 @@ func TestAsyncNewTx_CallbackInProgressAtTheCalloutsEndIsDiscarded(t *testing.T) 
 			"DONE": {},
 		},
 	}})
+	// The engine stores the anchor before the processor's callout; the
+	// commit needs its model locked.
+	lockTestModel(t, factory, base, modelRef)
 
 	txID, txCtx, err := txMgr.Begin(base)
 	if err != nil {

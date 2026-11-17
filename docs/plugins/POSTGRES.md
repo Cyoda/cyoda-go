@@ -83,12 +83,28 @@ Full transaction-lifecycle implementation
   never inside the committing transaction, where an unscoped housekeeping
   `DELETE` could make two unrelated tenants' commits abort each other.
 
-- **Eager deletes:** an in-transaction `Delete` writes its tombstone
-  version row immediately on the transaction's connection. A re-create of
-  the same entity later in that transaction therefore leaves `DELETED` then
-  the re-create in the version history, where memory and sqlite (which
-  buffer and cancel the delete) record only the re-create. Documented
-  difference; see `docs/CONSISTENCY.md` §6.
+- **One version per entity per transaction:** an in-transaction `Save`,
+  `CompareAndSave` or `Delete` writes to the database at once, on the
+  transaction's connection. When the transaction already wrote the entity's
+  current pending version (the `entity_versions` row at `entities.version`
+  carrying this transaction's id), the write updates that row and the
+  `entities` row in place instead of adding a version; the change type comes
+  from whether a version before this transaction exists. A delete followed
+  by a re-create in one transaction is one version, as on memory and sqlite
+  (`docs/CONSISTENCY.md` §6). The transaction holds the entity's row lock
+  from that write until it ends, or until a rollback to a savepoint undoes the
+  write.
+- **Commit-time key check:** a save inside a transaction does no
+  unique-key work; the transaction records each entity it wrote with the
+  bytes of its last write. At commit, after read-set validation and before
+  the commit stamp, it first releases the claims of every entity it wrote.
+  It then reads in one statement the unique-key definitions of the stored
+  model of every entity whose final write is a save (no lock, no state
+  check), in the transaction. The commit borrows no second connection. It
+  then inserts the claims of its final entities, computed with those
+  definitions, in a fixed order. A duplicate fails on `unique_claims_uq`
+  (`spi.ErrUniqueViolation`). A write outside a transaction runs the same
+  steps in its own statements.
 
 The real serialization guarantee is the combination of PostgreSQL's
 `REPEATABLE READ` snapshot + tuple locks + the TM's first-committer
@@ -210,8 +226,7 @@ caller holds. Inside a transaction its connection acquire is bounded by
 pool's connections, at least one; the wait lasts until the caller's context
 ends), then a connection under the acquire timeout, and runs one short
 `READ COMMITTED` transaction: set the tenant, `SELECT … FOR NO KEY UPDATE`
-the model's `models` row, refuse with `spi.ErrModelNotLocked` unless the model
-is `LOCKED`, fold the log in a statement of its own, compare the delta's
+the model's `models` row, fold the log in a statement of its own, compare the delta's
 result with the current schema byte for byte and write nothing when they are
 equal, insert the delta, and insert a savepoint of the folded schema once
 `CYODA_SCHEMA_SAVEPOINT_INTERVAL` of this model's deltas follow its latest
@@ -224,11 +239,13 @@ savepoint holds every delta with a lower `seq`. The transaction takes one row
 lock at `READ COMMITTED`, so it cannot fail with `40001` or `40P01`:
 contention is a wait. A nil `ApplyFunc` is refused.
 
-**Administration.** `Lock` and `SetChangeLevel` are one statement each;
-`Lock` writes no savepoint. `Unlock` updates the state first (taking the row
-lock every extension takes), folds the log into `doc` and clears the log, in
-one transaction. `Save` and `Delete` clear the log in the same statement and
-log a `WARN` with the count when they find rows there.
+**Administration.** `Lock`, `Save`, `Delete` and `SetChangeLevel` are one
+statement each; `Lock` writes no savepoint. `Unlock` updates the state first
+(taking the row lock every extension takes), folds the log into `doc` and
+clears the log, in one transaction. `Save` and `Delete` each clear the
+model's extension log in the same statement, so a saved model's schema is
+the saved one alone and a deleted model leaves no log behind. The store checks no model state and counts no entities: the API
+keeps the model rules (`cyoda help models`, LIFECYCLE).
 
 ## Scheduled tasks and the scheduler pool
 
@@ -386,10 +403,10 @@ CREATE TABLE entity_versions (
 - `transaction_id` — the transaction that committed the row, stamped by
   the store and never taken from the caller; the empty string for a
   non-transactional write. The commit phase finds its own rows by it
-  (`idx_ev_transaction`). `GetVersionByTransaction` deliberately does
-  **not** read this column — it keeps probing the document's
-  `_meta.transaction_id`, because that is where a caller-supplied id
-  lives and the other backends answer from it.
+  (`idx_ev_transaction`), and so does `GetVersionByTransaction`: the
+  column and the document's `_meta.transaction_id` always carry the same
+  id, since a write outside a transaction stores the empty id and ignores
+  the caller's. The read is committed-only and matches at most one row.
 - `creation_date` — the commit instant of the transaction that *created*
   the entity, carried onto every later revision. A later transaction
   never restamps it.
@@ -400,7 +417,7 @@ CREATE TABLE entity_versions (
 **Temporal values live in columns, not in the document.** The documents no
 longer carry `creation_date` / `last_modified_date` copies, and every read
 path projects the columns alongside `doc`. (`_meta.transaction_id` stays in
-the document — the column beside it answers a different question, as above.)
+the document, beside the column that carries the same id.)
 This is
 what makes the commit-phase stamp a narrow-column `UPDATE` rather than a
 rewrite of every JSONB document the transaction touched, which would
@@ -418,10 +435,9 @@ ORDER BY valid_time DESC, transaction_time DESC, version DESC
 LIMIT 1;
 ```
 
-`version DESC` is a required tiebreak, not a defensive one: every row a
-transaction writes shares one `valid_time` and one `transaction_time`, so
-a delete-then-recreate inside one transaction ties on both sort keys and
-the winner would otherwise be whatever the plan happened to produce.
+`version DESC` is the final key, so the order is total. Committed versions
+of one entity do not tie on the two time keys: a transaction writes at most
+one version of each entity, and commit stamps strictly increase.
 
 **A point-in-time read over a model follows entities, not revisions.** The
 base query for `Search`, `Iterate` / grouped statistics and

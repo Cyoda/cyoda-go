@@ -76,7 +76,7 @@ limit.
 Two are carried in the connection startup packet, so every pooled connection is bounded
 from its first statement:
 
-- `CYODA_POSTGRES_STATEMENT_TIMEOUT` — maximum run time for a single SQL statement (default: `5m`)
+- `CYODA_POSTGRES_STATEMENT_TIMEOUT` — maximum run time for a single SQL statement; `0` disables it (default: `5m`)
 - `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` — maximum time a connection may sit idle inside an open transaction (default: `5m`)
 
 The other three each bound one path:

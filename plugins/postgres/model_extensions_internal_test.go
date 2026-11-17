@@ -603,23 +603,6 @@ func TestExtendSchema_NilApplyFuncRefused(t *testing.T) {
 	}
 }
 
-// TestExtendSchema_NotLocked_ErrModelNotLocked — an UNLOCKED model refuses
-// an extension with spi.ErrModelNotLocked and writes nothing.
-func TestExtendSchema_NotLocked_ErrModelNotLocked(t *testing.T) {
-	fx := newPGFixture(t)
-	fx.store.applyFunc = setUnionApplyFunc
-	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
-	fx.saveModel(t, ref, []byte(`[]`), spi.ModelUnlocked)
-
-	err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"f1"`))
-	if !errors.Is(err, spi.ErrModelNotLocked) {
-		t.Fatalf("ExtendSchema on an unlocked model = %v, want spi.ErrModelNotLocked", err)
-	}
-	if n := fx.countRows(t, ref, ""); n != 0 {
-		t.Errorf("extension rows = %d, want 0", n)
-	}
-}
-
 // TestExtendSchema_IntervalCountsModelDeltas — the savepoint interval
 // counts the model's own deltas since its latest savepoint, not distance in
 // the sequence all models share.

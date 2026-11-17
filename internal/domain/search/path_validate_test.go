@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
@@ -143,6 +144,7 @@ func TestSearch_StaleSchema_RefreshesOnceAndSucceeds(t *testing.T) {
 
 	// Save a single entity carrying field "z". The search matches it once
 	// validation accepts the path.
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"z":"hello"}`))
 
 	stale := buildSearchDescriptor(t, ref, "a")

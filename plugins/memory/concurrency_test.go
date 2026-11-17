@@ -22,6 +22,7 @@ func ctxForConcurrency(tid spi.TenantID) context.Context {
 
 func TestConcurrentCrossStoreAccess(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "ConcTest", ModelVersion: "1"})
 	ctx := ctxForConcurrency("tenant-A")
 
 	const goroutinesPerStore = 20

@@ -190,7 +190,7 @@ func TestImportModel_StaleCacheAfterRemoteDelete_ProceedsAfterRefresh(t *testing
 //
 // This test documents the pattern applied to LockModel, UnlockModel,
 // DeleteModel, and SetChangeLevel — all four sites have the same shape
-// and share the getModelFresh helper.
+// and share the modelcache.GetFresh helper.
 func TestLockModel_StaleCacheAfterRemoteDelete_404Not409(t *testing.T) {
 	staleRef := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
 	stale := &spi.ModelDescriptor{

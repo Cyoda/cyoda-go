@@ -34,6 +34,7 @@ func TestEngine_CallerTextHoldingNUL_RefusedBeforeAnyEvent(t *testing.T) {
 			"S_post": {},
 		},
 	}})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	seedTxID, seedCtx, err := txMgr.Begin(ctx)
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 // live row's version + 1 (which would collide with the tombstone).
 func TestSave_AfterCommittedDelete_TakesNextVersion(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-recreate"), spi.ModelRef{EntityName: "m-recreate", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-recreate"))
 	ref := spi.ModelRef{EntityName: "m-recreate", ModelVersion: "1"}
 	es, err := f.EntityStore(ctx)

@@ -34,17 +34,7 @@ func registerExtensibleModel(t *testing.T, ctx context.Context, factory spi.Stor
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw, ChangeLevel: spi.ChangeLevelStructural}); err != nil {
-		t.Fatal(err)
-	}
-	// ExtendSchema refuses an unlocked model.
-	if err := ms.Lock(ctx, ref); err != nil {
-		t.Fatal(err)
-	}
+	saveLockedModel(t, factory, ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw, ChangeLevel: spi.ChangeLevelStructural})
 }
 
 // extendDoubleFactory counts ExtendSchema calls and can fail them.
@@ -141,19 +131,6 @@ func TestProcessorOutput_StoreUnavailable_Is503(t *testing.T) {
 	appErr := common.StorageUnavailable(err)
 	if appErr == nil || appErr.Status != http.StatusServiceUnavailable {
 		t.Errorf("storage-unavailable cause lost: StorageUnavailable(err) = %v", appErr)
-	}
-}
-
-func TestProcessorOutput_ModelNotLocked_Is409(t *testing.T) {
-	engine, double, txMgr, ctx, ref := extendEngine(t, []string{`{"x":1,"p":"a"}`})
-	double.extendErr = spi.ErrModelNotLocked
-	_, err := runProcOutput(t, engine, txMgr, ctx, ref)
-	if err == nil {
-		t.Fatal("want an error")
-	}
-	appErr := common.Internal("processor output check failed", err)
-	if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeModelNotLocked {
-		t.Errorf("classified %d %s; want 409 MODEL_NOT_LOCKED", appErr.Status, appErr.Code)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 
 	"github.com/cyoda-platform/cyoda-go/internal/txcoord/txcoordtest"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -28,6 +29,9 @@ func TestDouble_CompletionIntoTheRootIsAllOrNothing(t *testing.T) {
 	tm, err := f.TransactionManager(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, model := range []string{"m-first", "m-second"} {
+		spitest.EnsureLockedModel(t, f, ctx, spi.ModelRef{EntityName: model, ModelVersion: "1"})
 	}
 	entity := func(id, model string) *spi.Entity {
 		data, _ := json.Marshal(map[string]string{"id": id})

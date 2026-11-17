@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // A non-transactional CompareAndSave must read the current transaction ID and
@@ -26,21 +27,19 @@ func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 
 	ctx := attrInternalCtx("tenant-cas", "alice", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-cas", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
 
-	const seedTxID = "tx-seed"
-	if _, err := store.Save(ctx, &spi.Entity{
+	seedTxID := saveCommitted(t, f.tm, store, ctx, &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-cas", TenantID: "tenant-cas", ModelRef: ref,
-			State: "open", TransactionID: seedTxID,
+			State: "open",
 		},
 		Data: []byte(`{"n":0}`),
-	}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	})
 
 	const racers = 8
 	var wg sync.WaitGroup
@@ -54,7 +53,7 @@ func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 			_, results[i] = store.CompareAndSave(ctx, &spi.Entity{
 				Meta: spi.EntityMeta{
 					ID: "e-cas", TenantID: "tenant-cas", ModelRef: ref,
-					State: "open", TransactionID: "tx-writer",
+					State: "open",
 				},
 				Data: []byte(`{"n":1}`),
 			}, seedTxID)

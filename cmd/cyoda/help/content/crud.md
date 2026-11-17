@@ -141,7 +141,7 @@ When the very first chunk fails (no durable progress), the response is the stand
 
 - `entityId` (path): UUID string
 - `pointInTime` (query, optional): RFC 3339 date-time — load entity state at this instant; must be at or before the consistency time (see POINT-IN-TIME SEMANTICS)
-- `transactionId` (query, optional): UUID — load entity state as of the end of this transaction
+- `transactionId` (query, optional): UUID — load the entity as this transaction left it: the one version the transaction committed. Committed transactions only: a transaction that has not committed (also when the request joins it), never wrote the entity, or deleted it answers `404 ENTITY_NOT_FOUND`
 
 `pointInTime` and `transactionId` are mutually exclusive; supplying both returns `400 BAD_REQUEST`.
 
@@ -362,7 +362,7 @@ Response: `200 OK`, `application/json`, array of entity envelopes (same shape as
 - `entityId` (path): UUID
 - `pointInTime` (query, optional): RFC 3339 — view history as it existed at this time; must be at or before the consistency time. The history lists committed changes only, also when the request joins a transaction
 
-Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first):
+Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first). A transaction records one version of each entity it writes, however often it wrote the entity, so each transaction that changed the entity has one entry:
 
 ```json
 [
@@ -742,7 +742,7 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.ENTITY_NOT_FOUND` — `404` — entity UUID does not exist
 - `errors.ENTITY_MODIFIED` — `412` — `If-Match`-guarded update rejected; supplied transaction ID does not match the entity's current version. Also on every write route when another transaction changed the entity while a `COMMIT_BEFORE_DISPATCH` processor's callout ran
 - `errors.MODEL_NOT_FOUND` — `404` — model referenced during create does not exist
-- `errors.MODEL_NOT_LOCKED` — `409` — model exists but is not in `LOCKED` state; entities cannot be created until the model is locked, and a write whose schema extension finds the model not `LOCKED` is refused (see `cyoda help models`, SCHEMA EXTENSION)
+- `errors.MODEL_NOT_LOCKED` — `409` — model exists but is not in `LOCKED` state; entities cannot be created until the model is locked
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
 - `errors.INCOMPATIBLE_TYPE` — `400` — entity payload's leaf value type is not assignable to the schema's declared DataType for that field; carries `fieldPath`, `expectedType`, `actualType` in `properties`
 - `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable); never caused by a schema extension, which commits on its own

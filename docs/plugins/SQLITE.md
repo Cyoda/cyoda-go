@@ -66,15 +66,29 @@ deltas and savepoints, numbered per model. `Get` reads the doc and folds
 the log in one deferred read transaction on the reader pool, so a read
 racing `Unlock` sees it whole or not at all, and it ignores the caller's
 transaction. `ExtendSchema` runs in a write transaction of its own, never
-the caller's: it refuses a model that is not `LOCKED`
-(`spi.ErrModelNotLocked`), writes nothing for a delta the schema already
-holds, appends the delta, and appends a savepoint once
+the caller's: it writes nothing for a delta the schema already holds,
+appends the delta, and appends a savepoint once
 `CYODA_SCHEMA_SAVEPOINT_INTERVAL` of the model's deltas follow its latest
 savepoint. A `SQLITE_BUSY` the busy timeout did not absorb is retried after a
 short pause until the caller's context ends; there is no retry budget, and
 contention is never reported as a conflict. `Lock` changes the state only
 and writes no savepoint; `Unlock` folds the log into the doc and clears it
-in one transaction.
+in one transaction. `Save` and `Delete` each clear the model's log in the
+same transaction, so a saved model's schema is the saved one alone and a
+deleted model leaves no log behind. `SetChangeLevel` is one in-place update
+of the change level. The store checks no model state and
+counts no entities: the API keeps the model rules (`cyoda help models`,
+LIFECYCLE).
+
+**Commit-time key check.** A save inside a transaction does no unique-key
+work. In the commit flush, `commitClaims` reads the unique-key definitions of
+the stored model of every entity whose final write is a save with the flush's own SQL
+transaction (never through the model store, whose single writer connection
+the flush already holds; no state check), releases the claims of every
+written or deleted entity, then inserts the final entities' claims computed from their buffered
+bytes (`spi.ErrPartialUniqueKey`, `spi.ErrUniqueViolation` on the unique
+index). A save outside a transaction runs the same function in its own write
+transaction.
 
 Migrations via `golang-migrate` with embedded SQL files — same pattern
 as the postgres plugin. Runs automatically on startup when

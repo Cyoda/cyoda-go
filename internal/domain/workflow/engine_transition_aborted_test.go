@@ -54,6 +54,7 @@ func TestManualTransition_StaleEmitsTransitionAborted(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	// Seed the entity in S_pre via TX1.
 	seedTxID, seedCtx, err := txMgr.Begin(ctx)

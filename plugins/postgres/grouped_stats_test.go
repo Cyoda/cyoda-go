@@ -22,6 +22,7 @@ func gsNewStore(t *testing.T) (*postgres.StoreFactory, spi.EntityStore, context.
 	t.Helper()
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("gs-tenant")
+	lockModels(t, factory, ctx, gsModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

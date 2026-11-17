@@ -212,30 +212,7 @@ func TestCallback_ModelAdministration_RefusedUnderToken(t *testing.T) {
 
 	// Nothing the refused requests asked for happened: the target model is
 	// still there, still locked, without a workflow or a unique key.
-	resp = h.DoAuth(t, http.MethodGet, "/api/model/", "", "")
-	models := h.readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/model/: %d %s", resp.StatusCode, models)
-	}
-	var list []struct {
-		ModelName    string `json:"modelName"`
-		CurrentState string `json:"currentState"`
-	}
-	if err := json.Unmarshal([]byte(models), &list); err != nil {
-		t.Fatalf("decode model list: %v", err)
-	}
-	found := false
-	for _, m := range list {
-		if m.ModelName == target {
-			found = true
-			if m.CurrentState != "LOCKED" {
-				t.Errorf("target model state = %q, want LOCKED", m.CurrentState)
-			}
-		}
-	}
-	if !found {
-		t.Errorf("target model %s is gone: a refused delete must not delete", target)
-	}
+	h.requireModelState(t, target, "LOCKED")
 	resp = h.DoAuth(t, http.MethodGet, fmt.Sprintf("/api/model/%s/1/workflow/export", target), "", "")
 	if body := h.readBody(t, resp); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("workflow export of the target: %d %s; want 404, a refused import must not import", resp.StatusCode, body)

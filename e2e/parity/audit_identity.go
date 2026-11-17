@@ -21,8 +21,8 @@ import (
 //
 //  1. Identity: an EntityChange event's identity is (entityId, version); a
 //     StateMachine event's identity is its store-assigned eventId. Two saves
-//     of one entity inside a single transaction produce two distinct
-//     EntityChange events sharing that transaction's id, and every
+//     of one entity inside a single transaction are one version, so they
+//     produce one EntityChange event carrying that transaction's id, and every
 //     StateMachine event in the trail carries a distinct eventId that is
 //     stable across repeated GETs.
 //  2. Order: newest first — by instant, EntityChange before StateMachine at a
@@ -36,10 +36,11 @@ import (
 // Setup reuses the compute-node callback fixture from callback_txjoin.go: a
 // primary entity's SYNC processor (cb-ifmatch-update) creates a secondary
 // entity and then updates it in-place with an If-Match precondition, all
-// inside the primary transition's transaction T. The secondary therefore
-// carries two EntityChange events (CREATE then UPDATE, v1 then v2) sharing
-// one transactionId, plus the StateMachine events from its own auto
-// transition (NONE -> STORED) — an ideal, backend-agnostic trail to prove
+// inside the primary transition's transaction T. An entity has one version
+// per transaction, so the secondary carries one EntityChange event (CREATE,
+// v1, holding the update) of T, plus the StateMachine events from its own
+// auto transition (NONE -> STORED) and from the update's loopback, all at
+// T's commit instant — a backend-agnostic trail of tied events to prove
 // identity, order and cursor pagination against.
 
 // auditOrderKey is the sort key of one decoded audit event, extracted
@@ -199,9 +200,9 @@ func auditSetupJoinedSaves(t *testing.T, c *client.Client, tag string) (primaryI
 
 // RunAuditIdentityJoinedSaves proves audit event identity across two saves
 // of one entity inside a single transaction: the secondary from
-// auditSetupJoinedSaves carries exactly two EntityChange events (create then
-// in-place update) sharing one transactionId with distinct versions, v2
-// before v1 — plus at least one StateMachine event from that same
+// auditSetupJoinedSaves carries exactly one EntityChange event (the create
+// and the in-place update are one version: CREATE, version 1, of the
+// transaction) — plus at least one StateMachine event from that same
 // transaction, each with a distinct, store-assigned eventId. A second GET
 // returns the identical set of identities in the identical order, and every
 // adjacent pair obeys the documented order rule.
@@ -242,23 +243,17 @@ func RunAuditIdentityJoinedSaves(t *testing.T, fixture BackendFixture) {
 		}
 	}
 
-	// Non-vacuity: exactly two EntityChange events (create + in-T update)
-	// sharing one transactionId with distinct versions, v2 before v1 — and
-	// at least one StateMachine event from that same transaction.
-	if len(ecs) != 2 {
-		t.Fatalf("secondary EntityChange event count = %d; want exactly 2 (create + in-T update): %v", len(ecs), auditIdentities(t, resp1.Items))
+	// Non-vacuity: exactly one EntityChange event — the create and the in-T
+	// update are one version of the transaction (CREATE, version 1) — and at
+	// least one StateMachine event from that same transaction.
+	if len(ecs) != 1 {
+		t.Fatalf("secondary EntityChange event count = %d; want exactly 1 (the create and the in-T update are one version): %v", len(ecs), auditIdentities(t, resp1.Items))
 	}
 	if ecs[0].TransactionID == "" {
-		t.Fatalf("EntityChange events have empty transactionId")
+		t.Fatalf("EntityChange event has empty transactionId")
 	}
-	if ecs[0].TransactionID != ecs[1].TransactionID {
-		t.Fatalf("EntityChange events do not share one transactionId: %q vs %q", ecs[0].TransactionID, ecs[1].TransactionID)
-	}
-	if ecs[0].Version == ecs[1].Version {
-		t.Fatalf("EntityChange events have identical version %d; want distinct versions for two saves", ecs[0].Version)
-	}
-	if ecs[0].Version <= ecs[1].Version {
-		t.Fatalf("EntityChange events not ordered v2-before-v1: got version %d before version %d", ecs[0].Version, ecs[1].Version)
+	if ecs[0].Version != 1 || ecs[0].ChangeType != "CREATE" {
+		t.Fatalf("EntityChange event is %s version %d; want CREATE version 1", ecs[0].ChangeType, ecs[0].Version)
 	}
 	if len(smEventIDs) < 1 {
 		t.Fatalf("expected >= 1 StateMachine event in the secondary's transaction, got 0 — the create's auto-transition must have emitted one")
@@ -296,7 +291,7 @@ func RunAuditCursorWalkOverTie(t *testing.T, fixture BackendFixture) {
 		t.Fatalf("unpaged GET (limit=1000) reports hasNext=true — trail is unexpectedly >= 1000 events")
 	}
 	if len(unpaged.Items) < 3 {
-		t.Fatalf("unpaged trail has %d events; want >= 3 (2 EntityChange + >=1 StateMachine) for a non-trivial cursor walk", len(unpaged.Items))
+		t.Fatalf("unpaged trail has %d events; want >= 3 (1 EntityChange + >=2 StateMachine) for a non-trivial cursor walk", len(unpaged.Items))
 	}
 
 	var walked []client.AuditEvent

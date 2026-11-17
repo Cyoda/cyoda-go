@@ -2,9 +2,9 @@ package parity
 
 import "testing"
 
-// allTests holds 267 scenarios in this package: the entries of its literal
+// allTests holds 276 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
-// (callback_txjoin_conflict.go, ifmatch_callback_self_write.go,
+// (callback_txjoin_conflict.go,
 // schema_extension_contract.go).
 // TestParityScenarioCount (registry_count_test.go) checks the number: change
 // it there and here in the change that adds or removes a scenario. The
@@ -43,6 +43,7 @@ var allTests = []NamedTest{
 	{"ModelLockAndUnlock", RunModelLockAndUnlock},
 	{"ModelListModels", RunModelListModels},
 	{"ModelDelete", RunModelDelete},
+	{"UnlockWithEntities", RunUnlockWithEntities},
 	{"WorkflowImportExport", RunWorkflowImportExport},
 	{"WorkflowImportManualRequired", RunWorkflowImportManualRequired},
 	// What import accepts and refuses in a callout's configuration, and that
@@ -105,6 +106,10 @@ var allTests = []NamedTest{
 	// getOneEntity's by-transaction lookup, both now backed by
 	// spi.EntityStore.GetVersionMetadata / GetVersionByTransaction.
 	{"HistoryReadsChangesMetadataAndTransactionLookup", RunHistoryReadsChangesMetadataAndTransactionLookup},
+	// One version per entity per transaction, seen through /changes, and the
+	// by-transaction read: X's final entity once X commits, 404 before,
+	// inside X too.
+	{"HistoryOneVersionPerTransaction", RunHistoryOneVersionPerTransaction},
 
 	// Phase 4a — tenant isolation (Task 4a.5)
 	{"TenantIsolationEntities", RunTenantIsolationEntities},
@@ -238,6 +243,11 @@ var allTests = []NamedTest{
 	{"CallbackTxJoin_CBDPostJoinsTxPost", RunCallback_CBDPostJoinsTxPost},
 	{"CallbackTxJoin_AsyncNewTxDiscardOnFailure", RunCallback_AsyncNewTxDiscardOnFailure},
 	{"CallbackTxJoin_PITCommittedOnly", RunPITCommittedOnlyInJoinedTx},
+	// A callout under the token reads its anchor as the workflow has it.
+	{"CallbackReadCurrent_UpdateSync", RunCallbackReadCurrent_UpdateSync},
+	{"CallbackReadCurrent_CreateSync", RunCallbackReadCurrent_CreateSync},
+	{"CallbackReadCurrent_FunctionCriterion", RunCallbackReadCurrent_FunctionCriterion},
+	{"CallbackPayloadTxID_IdenticalUpdate", RunCallbackPayloadTxID_IdenticalUpdate},
 	{"ConsistencyTime_Endpoint", RunConsistencyTimeEndpoint},
 	{"ConsistencyTime_FenceRefusesLater", RunConsistencyTimeFenceRefuses},
 	{"ConsistencyTime_ReadAtCServed", RunConsistencyTimeReadAtC},
@@ -350,6 +360,13 @@ var allTests = []NamedTest{
 	// Centerpiece: a processor rewrites the key field → enforcement is on the
 	// POST-MERGE value, not the input (two distinct inputs collide → 409).
 	{"UniqueKeys_ProcessorRewritesKeyField", RunUniqueKeys_ProcessorRewritesKeyField},
+	// Keys checked at commit on the transaction's final entities
+	// (unique_keys_commit_time.go).
+	{"UniqueSwapInOneTx", RunUniqueSwapInOneTx},
+	{"UniqueChainOfMoves", RunUniqueChainOfMoves},
+	{"UniqueFreeAfterClaim", RunUniqueFreeAfterClaim},
+	{"UniqueSameValueTwiceInTx", RunUniqueSameValueTwiceInTx},
+	{"UniqueIntermediateDuplicateFixed", RunUniqueIntermediateDuplicateFixed},
 
 	// Search sort — cross-backend sort ordering contract (Task 15).
 	// Each scenario seeds entities, issues a sorted sync search, and asserts

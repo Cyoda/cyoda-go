@@ -85,13 +85,11 @@ type savepointSnapshot struct {
 	// stageAuditEvent).
 	auditOpsLen int
 
-	// supersededLens is the per-entityID length of supersededSaves[txID]
-	// at the moment this savepoint was taken, mirroring
-	// scheduledTaskOpsLen's truncate-back-to-length approach (append-only,
-	// so length is enough to restore). An entityID absent here had no
-	// superseded entries yet at savepoint time; RollbackToSavepoint clears
-	// it entirely rather than truncating to zero explicitly recorded.
-	supersededLens map[string]int
+	// deletedBufferEntities is a copy of TransactionManager.deletedBufferEntities[txID]
+	// at the moment this savepoint was taken; RollbackToSavepoint restores it.
+	// The staged entities are never mutated after staging, so the map is
+	// cloned shallowly.
+	deletedBufferEntities map[string]*spi.Entity
 }
 
 // TransactionManager implements spi.TransactionManager using Snapshot Isolation
@@ -101,19 +99,12 @@ type savepointSnapshot struct {
 type TransactionManager struct {
 	factory      *StoreFactory
 	uuids        spi.UUIDGenerator
-	mu           sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints, txUniqueKeys
+	mu           sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints
 	active       map[string]*spi.TransactionState
 	committedLog []committedTx
 	committing   map[string]bool                // tracks txIDs currently being committed
 	submitTimes  map[string]submitTimeEntry     // txID -> submit time + owning tenant, survives log pruning. Evicted after submitTimeTTL.
 	savepoints   map[string][]savepointSnapshot // txID -> snapshots in creation order, as SQL nests them
-
-	// txUniqueKeys holds per-entity unique keys captured at Save (buffer) time.
-	// Captured when an entity is buffered so that Commit can enforce the correct
-	// keys per entity even in a mixed-model batch where each Save may carry a
-	// different key set in its context. Protected by mu. Cleaned up after commit
-	// or rollback (no leak).
-	txUniqueKeys map[string]map[string][]spi.UniqueKey // txID → entityID → keys
 
 	// commitSeq is a monotonic counter, incremented exactly once per
 	// successful Commit under mu, used as the ordering key of the FCW
@@ -141,41 +132,11 @@ type TransactionManager struct {
 	// at or above — see nextSubmitTime. Read and written under mu only.
 	lastSubmitTime time.Time
 
-	// supersededSaves records, per (txID, entityID), each buffered
-	// *spi.Entity value overwritten by a later same-entity Save/
-	// CompareAndSave within the same open transaction, oldest first.
-	// tx.Buffer (a shared spi.TransactionState field) only ever holds the
-	// FINAL value per entity — read-your-own-writes only needs the latest —
-	// so without this side channel a same-tx double-save would flush as a
-	// single commit row and GetVersionByTransaction's earliest-wins
-	// contract (see its SPI doc comment: "a transaction that saved the
-	// same entity more than once before committing... the earliest is
-	// returned") could never be satisfied for the intermediate value a
-	// later Save in the same tx overwrote. Commit flushes each entityID's
-	// superseded values (in order) followed by the final tx.Buffer value
-	// as consecutive entityVersion rows sharing the transaction's txID.
-	//
-	// Behavior change this introduces: an entity Saved N times inside one
-	// transaction now consumes N version numbers (one entityVersion row
-	// per Save call) instead of 1 (one row for the final state only).
-	// This is a backend-divergence FIX, not a new side effect: postgres
-	// already behaves this way — it writes a row per Save call with no
-	// buffering, since each Save is an immediate DML statement inside the
-	// SQL transaction — so memory's prior single-row-per-commit collapse
-	// was the odd one out. Per the project's "a backend differing on the
-	// same contract is a defect" policy, aligning memory with postgres
-	// here is correct, not merely a means to satisfy the new conformance
-	// test.
-	//
-	// Protected by mu. Savepoint-scoped like tx.Buffer (length recorded at
-	// Savepoint, truncated at RollbackToSavepoint — see
-	// savepointSnapshot.supersededLens). Cleaned up after commit or
-	// rollback (no leak).
-	supersededSaves map[string]map[string][]*spi.Entity // txID -> entityID -> superseded snapshots, oldest first
-
-	// deletedBufferModels records, per (txID, entityID), the model
-	// reference of a buffered create/update Delete evicted from tx.Buffer
-	// within the same open transaction. Delete removes id from tx.Buffer
+	// deletedBufferEntities records, per (txID, entityID), the pending
+	// version of a buffered create/update Delete evicted from tx.Buffer
+	// within the same open transaction: its model, and the version number,
+	// change type and creation date a later same-tx Save keeps (see
+	// EntityStore.checkModelImmutable). Delete removes id from tx.Buffer
 	// unconditionally (Buffer and Deletes are kept mutually exclusive), so
 	// when that id was never committed before this transaction, nothing
 	// else records what model it was buffered under — the tombstone
@@ -186,11 +147,12 @@ type TransactionManager struct {
 	// stale) when a later same-tx Save re-buffers id before commit — that
 	// value is unstaged from tx.Deletes and flows through the normal
 	// buffer-flush path instead. Protected by mu. Cleaned up after commit
-	// or rollback (no leak); not savepoint-scoped like supersededSaves,
-	// because a RollbackToSavepoint that restores id to tx.Buffer also
-	// removes it from tx.Deletes, so a stale entry here is simply never
-	// read again.
-	deletedBufferModels map[string]map[string]spi.ModelRef // txID -> entityID -> evicted model
+	// or rollback (no leak). Savepoint-scoped like tx.Buffer: the in-tx model
+	// check (checkModelImmutable) reads it, so an entry staged after a
+	// savepoint must not outlive RollbackToSavepoint — a create and delete
+	// that rollback undoes leave no model behind to refuse a later Save
+	// under another one.
+	deletedBufferEntities map[string]map[string]*spi.Entity // txID -> entityID -> evicted pending version
 
 	// scheduledTaskOps holds the task-row ops staged while the transaction
 	// is open, as post-images (see scheduledTaskOp). Applied by Commit
@@ -227,21 +189,19 @@ func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *Transacti
 	floor := f.seedLastSubmitTime()
 	f.uuids = uuids
 	tm := &TransactionManager{
-		factory:             f,
-		uuids:               uuids,
-		active:              make(map[string]*spi.TransactionState),
-		committedLog:        nil,
-		committing:          make(map[string]bool),
-		submitTimes:         make(map[string]submitTimeEntry),
-		savepoints:          make(map[string][]savepointSnapshot),
-		txUniqueKeys:        make(map[string]map[string][]spi.UniqueKey),
-		txSnapshotSeq:       make(map[string]int64),
-		supersededSaves:     make(map[string]map[string][]*spi.Entity),
-		deletedBufferModels: make(map[string]map[string]spi.ModelRef),
-		scheduledTaskOps:    make(map[string][]scheduledTaskOp),
-		auditOps:            make(map[string][]stagedAuditEvent),
-		lostDiscardedWrite:  make(map[string]bool),
-		lastSubmitTime:      floor,
+		factory:               f,
+		uuids:                 uuids,
+		active:                make(map[string]*spi.TransactionState),
+		committedLog:          nil,
+		committing:            make(map[string]bool),
+		submitTimes:           make(map[string]submitTimeEntry),
+		savepoints:            make(map[string][]savepointSnapshot),
+		txSnapshotSeq:         make(map[string]int64),
+		deletedBufferEntities: make(map[string]map[string]*spi.Entity),
+		scheduledTaskOps:      make(map[string][]scheduledTaskOp),
+		auditOps:              make(map[string][]stagedAuditEvent),
+		lostDiscardedWrite:    make(map[string]bool),
+		lastSubmitTime:        floor,
 	}
 	f.txManager = tm
 	return tm
@@ -279,45 +239,26 @@ func (f *StoreFactory) seedLastSubmitTime() time.Time {
 	return latest
 }
 
-// recordUniqueKeys stores the unique keys for entityID under txID so that
-// Commit can look them up per entity during the flush. Last-write-wins,
-// matching the semantics of tx.Buffer. Protected by mu.
-func (m *TransactionManager) recordUniqueKeys(txID, entityID string, keys []spi.UniqueKey) {
+// deletedBufferEntity returns the pending version stageDeletedBufferEntity
+// recorded for entityID in txID, if any. Protected by mu.
+func (m *TransactionManager) deletedBufferEntity(txID, entityID string) (*spi.Entity, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.txUniqueKeys[txID] == nil {
-		m.txUniqueKeys[txID] = make(map[string][]spi.UniqueKey)
-	}
-	m.txUniqueKeys[txID][entityID] = keys
+	e, ok := m.deletedBufferEntities[txID][entityID]
+	return e, ok
 }
 
-// stageSuperseded appends prior — the tx.Buffer value a Save/CompareAndSave
-// call is about to overwrite — to txID's superseded list for entityID, in
-// overwrite order. No-op when prior is nil (the entity's first Save in this
-// transaction: nothing superseded yet). See the supersededSaves field
-// godoc for why this exists. Protected by mu.
-func (m *TransactionManager) stageSuperseded(txID, entityID string, prior *spi.Entity) {
-	if prior == nil {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.supersededSaves[txID] == nil {
-		m.supersededSaves[txID] = make(map[string][]*spi.Entity)
-	}
-	m.supersededSaves[txID][entityID] = append(m.supersededSaves[txID][entityID], prior)
-}
-
-// stageDeletedBufferModel records the model reference of a buffered
+// stageDeletedBufferEntity records the pending version of a buffered
 // create/update that Delete is about to evict from tx.Buffer — see
-// deletedBufferModels's field doc for why this is needed.
-func (m *TransactionManager) stageDeletedBufferModel(txID, entityID string, ref spi.ModelRef) {
+// deletedBufferEntities's field doc for why this is needed. The entity is
+// never mutated after staging.
+func (m *TransactionManager) stageDeletedBufferEntity(txID, entityID string, e *spi.Entity) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.deletedBufferModels[txID] == nil {
-		m.deletedBufferModels[txID] = make(map[string]spi.ModelRef)
+	if m.deletedBufferEntities[txID] == nil {
+		m.deletedBufferEntities[txID] = make(map[string]*spi.Entity)
 	}
-	m.deletedBufferModels[txID][entityID] = ref
+	m.deletedBufferEntities[txID][entityID] = e
 }
 
 // stageAuditEvent appends ev to txID's staged audit events. Protected by mu.
@@ -591,10 +532,8 @@ func (m *TransactionManager) forgetLocked(txID string) {
 	delete(m.active, txID)
 	delete(m.committing, txID)
 	delete(m.savepoints, txID)
-	delete(m.txUniqueKeys, txID)
 	delete(m.txSnapshotSeq, txID)
-	delete(m.supersededSaves, txID)
-	delete(m.deletedBufferModels, txID)
+	delete(m.deletedBufferEntities, txID)
 	delete(m.scheduledTaskOps, txID)
 	delete(m.auditOps, txID)
 	delete(m.lostDiscardedWrite, txID)
@@ -810,9 +749,11 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 
 // Commit validates the transaction against the committed log for SI+FCW conflicts,
 // flushes the write buffer and deletes to the entity store, and records the
-// commit in the log.
+// commit in the log. The claims of the unique keys are computed here, from
+// the transaction's final entities and the keys of their stored models; a
+// save inside the transaction does none of that work.
 //
-// A commit that aborts — on a conflict or a unique-key violation — applies
+// A commit that aborts — on a conflict or on a unique-key violation — applies
 // nothing and leaves the transaction rolled back as well as closed, so a
 // later call with its ctx answers spi.ErrTxRolledBack, never
 // spi.ErrTxAlreadyCommitted. Its state is discarded as Rollback discards it,
@@ -858,13 +799,11 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		defer m.factory.entityMu.Unlock()
 
 		// 3. Conflict detection: check committed log for overlapping write sets.
-		// Also snapshot per-entity unique keys and staged scheduled-task ops
-		// captured at Save/Upsert/Delete time so that step 3.5 and step 4.5
-		// can read them without re-acquiring m.mu.
-		var capturedKeys map[string][]spi.UniqueKey
+		// Also snapshot the staged scheduled-task ops, deleted-buffer
+		// entities and audit events captured at Save/Upsert/Delete time so that the
+		// later steps can read them without re-acquiring m.mu.
 		var capturedScheduledTaskOps []scheduledTaskOp
-		var capturedSuperseded map[string][]*spi.Entity
-		var capturedDeletedBufferModels map[string]spi.ModelRef
+		var capturedDeletedBufferEntities map[string]*spi.Entity
 		var capturedAudit []stagedAuditEvent
 		if err := func() error {
 			m.mu.Lock()
@@ -905,11 +844,9 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				m.factory.discardAuditTxIndex(tid, txID)
 				return spi.ErrConflict
 			}
-			capturedKeys = m.txUniqueKeys[txID]                       // safe: tx.OpMu.Lock() prevents new recordUniqueKeys
-			capturedScheduledTaskOps = m.scheduledTaskOps[txID]       // safe: tx.OpMu.Lock() prevents new stageTaskWrite
-			capturedSuperseded = m.supersededSaves[txID]              // safe: tx.OpMu.Lock() prevents new stageSuperseded
-			capturedDeletedBufferModels = m.deletedBufferModels[txID] // safe: tx.OpMu.Lock() prevents new stageDeletedBufferModel
-			capturedAudit = m.auditOps[txID]                          // safe: tx.OpMu.Lock() prevents new stageAuditEvent
+			capturedScheduledTaskOps = m.scheduledTaskOps[txID]           // safe: tx.OpMu.Lock() prevents new stageTaskWrite
+			capturedDeletedBufferEntities = m.deletedBufferEntities[txID] // safe: tx.OpMu.Lock() prevents new stageDeletedBufferEntity
+			capturedAudit = m.auditOps[txID]                              // safe: tx.OpMu.Lock() prevents new stageAuditEvent
 			return nil
 		}(); err != nil {
 			return err
@@ -922,14 +859,21 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// a refused commit flushes no entity version and logs nothing.
 		m.factory.taskClaimIndex.checkOneRunning(m.factory.scheduledTasks, capturedScheduledTaskOps)
 
-		// 3.5. Validate composite unique-key claims inside the entityMu critical section.
+		// 3.5. Read the models and check the unique-key claims, inside the
+		// entityMu critical section, from the transaction's final entities.
 		//
-		// Deterministic order: sort buffered entity IDs so that any intra-batch
-		// collision is detected stably (independent of map iteration order).
+		// The keys enforced are the ones the stored model of each entity
+		// whose final write is a save holds now; its state is not checked.
+		// An entity whose final write is a delete needs no model. The claims
+		// are computed from the buffered bytes.
+		// Every entity the transaction wrote or deleted gives up its committed
+		// claims, so a committed claim held by one of them does not conflict;
+		// pending catches a value two final entities claim. Buffered entity
+		// IDs are sorted so that the answer does not depend on map order.
 		//
-		// abortClaim cleans up m.mu-protected state and returns err.
+		// abort cleans up m.mu-protected state and returns err.
 		// entityMu is released by the enclosing IIFE's defer — no bare Unlock.
-		abortClaim := func(err error) error {
+		abort := func(err error) error {
 			func() {
 				m.mu.Lock()
 				defer m.mu.Unlock()
@@ -941,32 +885,40 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 
 		ids := make([]string, 0, len(tx.Buffer))
-		for id := range tx.Buffer {
+		refs := make([]spi.ModelRef, 0, len(tx.Buffer))
+		for id, entity := range tx.Buffer {
 			ids = append(ids, id)
+			refs = append(refs, entity.Meta.ModelRef)
 		}
 		sort.Strings(ids)
 
-		// ISSUE-3: build release set from tx.Deletes so that a same-tx
-		// delete+reclaim of the same key value is not falsely rejected.
-		toRelease := make(map[string]bool, len(tx.Deletes))
+		modelKeys := m.factory.modelKeys(tid, refs)
+
+		toRelease := make(map[string]bool, len(tx.Buffer)+len(tx.Deletes))
+		for id := range tx.Buffer {
+			toRelease[id] = true
+		}
 		for id := range tx.Deletes {
 			toRelease[id] = true
 		}
 
-		// ISSUE-4: compute claims once during validation; reuse during apply.
+		// Computed once here and inserted by the apply step below. Every
+		// entity's claims are computed before any is checked, so a partly
+		// filled key fails the commit whatever the ids' order, as on postgres
+		// and sqlite.
 		computedClaims := make(map[string][]spi.UniqueClaim, len(ids))
+		for _, entityID := range ids {
+			entity := tx.Buffer[entityID]
+			claims, err := spi.ComputeClaims(modelKeys[entity.Meta.ModelRef], entity.Data)
+			if err != nil {
+				return abort(err)
+			}
+			computedClaims[entityID] = claims
+		}
 		pending := make(map[claimKey]string) // claimKey → entityID within this batch
 		for _, entityID := range ids {
 			entity := tx.Buffer[entityID]
-			keys := capturedKeys[entityID] // nil if entity was buffered without unique keys
-
-			claims, err := spi.ComputeClaims(keys, entity.Data)
-			if err != nil {
-				return abortClaim(err)
-			}
-			computedClaims[entityID] = claims
-
-			for _, c := range claims {
+			for _, c := range computedClaims[entityID] {
 				k := claimKey{
 					tenant:    string(tid),
 					model:     entity.Meta.ModelRef.EntityName,
@@ -974,14 +926,14 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 					keyID:     c.KeyID,
 					signature: c.Signature,
 				}
-				// Intra-batch collision: two buffered entities share a claim.
+				// Two final entities of this transaction claim one value.
 				if pendingHolder, exists := pending[k]; exists && pendingHolder != entityID {
-					return abortClaim(spi.ErrUniqueViolation)
+					return abort(spi.ErrUniqueViolation)
 				}
-				// Collision with a committed claim held by a different entity that
-				// is NOT being released in the same tx (ISSUE-3 same-tx delete+reclaim).
-				if holder, exists := m.factory.uniqueClaims[k]; exists && holder != entityID && !toRelease[holder] {
-					return abortClaim(spi.ErrUniqueViolation)
+				// A committed claim held by an entity this transaction
+				// neither wrote nor deleted.
+				if holder, exists := m.factory.uniqueClaims[k]; exists && !toRelease[holder] {
+					return abort(spi.ErrUniqueViolation)
 				}
 				pending[k] = entityID
 			}
@@ -1009,11 +961,11 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		m.appendStagedAuditEvents(tid, txID, capturedAudit, submitTime)
 		m.factory.stampAuditEventsForTx(tid, txID, submitTime)
 
-		// Pre-release: free claims for all deleted entities BEFORE inserting any
-		// new buffer claims. This ensures a same-tx delete+reclaim of the same
-		// key value (ISSUE-3) does not clobber the freshly-inserted buffer claim.
-		// Buffer and Deletes are mutually exclusive (Delete removes from Buffer).
-		for entityID := range tx.Deletes {
+		// Release the claims of every entity in the release set first, and
+		// only then insert the new ones (in the flush below). Releasing and
+		// inserting one entity at a time loses a claim on a swap: A x→y then
+		// B y→x inserts y→A, and releasing B afterwards deletes y.
+		for entityID := range toRelease {
 			m.factory.releaseClaims(string(tid), entityID)
 		}
 
@@ -1025,119 +977,80 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			versions := m.factory.entityData[tid][entityID]
 			baseVersion := lastVersion(versions)
 			hasPrior := len(versions) > 0
-			// firstNonTombstone, NOT versions[0]: a create and a delete
-			// committed in the same transaction flush a single tombstone
-			// row whose entity is nil (see the tombstone append below, and
-			// firstNonTombstone's doc comment), so an entity whose history
-			// begins with one carries no creation date at versions[0] to
-			// bring forward. Reading it there leaves this zero and the
-			// stamp below then moves the creation date forward on every
-			// later update. entity_store.go's non-transactional path uses
-			// firstNonTombstone for exactly this reason and the two paths
-			// must agree. Pinned by spitest's
+			// The entity's creation date when it has committed history —
+			// including one that begins with the tombstone of a create and
+			// a delete committed in one transaction (see creationDateOf) —
+			// as on the non-transactional path. Pinned by spitest's
 			// Save/UpdateDoesNotRestampCreationDate.
-			var creationDate time.Time
-			if e, ok := firstNonTombstone(versions); ok {
-				creationDate = e.Meta.CreationDate
+			creationDate, _ := creationDateOf(versions)
+
+			// One version per entity per transaction: tx.Buffer holds the
+			// transaction's last write of this entity, and that is the one
+			// row the commit records.
+			nextVersion := baseVersion + 1
+
+			// The change type is derived from the entity's history, as on
+			// the non-tx save path (see deriveChangeType), never taken from
+			// the staged entity.
+			changeType := deriveChangeType(hasPrior)
+
+			saved := copyEntity(entity)
+			saved.Meta.Version = nextVersion
+			saved.Meta.LastModifiedDate = submitTime
+			// Already stamped at write time (entity_store.go), so this
+			// only restates the invariant: a committed version's
+			// transaction ID is the transaction that committed it.
+			saved.Meta.TransactionID = txID
+			saved.Meta.TenantID = tid
+			saved.Meta.ChangeType = changeType
+
+			// Preserve CreationDate from existing versions; otherwise
+			// this transaction created the entity, and its commit
+			// instant IS the creation date.
+			//
+			// A caller-supplied value is IGNORED rather than taken as a
+			// fallback: the date belongs to the store (see
+			// spi.EntityMeta.CreationDate), and the engine stamps one
+			// from its own clock before Begin, so honouring it dated a
+			// created entity at the START of the transaction — processor
+			// callouts included — instead of at its commit, which is the
+			// defect commit-instant stamping exists to remove. Pinned by
+			// spitest's Save/CallerCreationDateIgnored.
+			if !creationDate.IsZero() {
+				saved.Meta.CreationDate = creationDate
+			} else {
+				saved.Meta.CreationDate = submitTime
 			}
 
-			// Flush this entity's superseded intra-tx saves (oldest first),
-			// then the final tx.Buffer value, as consecutive entityVersion
-			// rows sharing txID — see supersededSaves's field godoc: this
-			// is what lets GetVersionByTransaction's earliest-wins contract
-			// hold for a same-tx double-save on memory's buffer-coalescing
-			// transaction model, where tx.Buffer itself only ever holds the
-			// final value.
-			toFlush := append(append([]*spi.Entity{}, capturedSuperseded[entityID]...), entity)
-			var firstVersion int64
-			for i, staged := range toFlush {
-				nextVersion := baseVersion + 1
-				baseVersion = nextVersion
+			m.factory.entityData[tid][entityID] = append(m.factory.entityData[tid][entityID], entityVersion{
+				entity:         saved,
+				version:        nextVersion,
+				transactionID:  txID,
+				submitTime:     submitTime,
+				changeType:     changeType,
+				user:           entity.Meta.ChangeUser,
+				changeUserKind: entity.Meta.ChangeUserKind,
+				executor:       entity.Meta.ChangeExecutor,
+			})
+			m.factory.recordTxIndex(tid, entityID, txID, nextVersion)
 
-				// DERIVE ChangeType from row-existence, like the non-tx save
-				// path (see deriveChangeType) — never trust it verbatim from
-				// the staged entity, which may carry a stale value fetched
-				// before this transaction began (e.g. a scheduled-transition
-				// fire re-saving an already-existing entity read with its
-				// original "CREATED" Meta still attached).
-				changeType := deriveChangeType(staged.Meta.ChangeType, hasPrior)
-				hasPrior = true
-
-				saved := copyEntity(staged)
-				saved.Meta.Version = nextVersion
-				saved.Meta.LastModifiedDate = submitTime
-				// Already stamped at write time (entity_store.go), so this
-				// only restates the invariant: a committed version's
-				// transaction ID is the transaction that committed it.
-				saved.Meta.TransactionID = txID
-				saved.Meta.TenantID = tid
-				saved.Meta.ChangeType = changeType
-
-				// Preserve CreationDate from existing versions; otherwise
-				// this transaction created the entity, and its commit
-				// instant IS the creation date.
-				//
-				// A caller-supplied value is IGNORED rather than taken as a
-				// fallback: the date belongs to the store (see
-				// spi.EntityMeta.CreationDate), and the engine stamps one
-				// from its own clock before Begin, so honouring it dated a
-				// created entity at the START of the transaction — processor
-				// callouts included — instead of at its commit, which is the
-				// defect commit-instant stamping exists to remove. Pinned by
-				// spitest's Save/CallerCreationDateIgnored.
-				if !creationDate.IsZero() {
-					saved.Meta.CreationDate = creationDate
-				} else {
-					saved.Meta.CreationDate = submitTime
-				}
-
-				m.factory.entityData[tid][entityID] = append(m.factory.entityData[tid][entityID], entityVersion{
-					entity:         saved,
-					version:        nextVersion,
-					transactionID:  txID,
-					submitTime:     submitTime,
-					changeType:     changeType,
-					user:           staged.Meta.ChangeUser,
-					changeUserKind: staged.Meta.ChangeUserKind,
-					executor:       staged.Meta.ChangeExecutor,
-				})
-				if i == 0 {
-					firstVersion = nextVersion
-				}
-			}
-			// Earliest-wins: index the FIRST row this commit wrote for
-			// entityID, not the final one — see GetVersionByTransaction's
-			// SPI doc comment.
-			m.factory.recordTxIndex(tid, entityID, txID, firstVersion)
-
-			// Apply unique-key claims: release any prior claims for this entity
-			// (handles the update-moves-key case), then insert the new claim set.
-			// ISSUE-4: reuse computedClaims computed in step 3.5 — no recompute.
-			// ISSUE-2: pass tenantID to releaseClaims for correct tenant isolation.
-			newClaims := computedClaims[entityID]
-			m.factory.releaseClaims(string(tid), entityID)
+			// Insert the claims step 3.5 computed; every entity of the
+			// release set gave up its old claims above.
 			m.factory.insertClaims(entityID, string(tid),
-				entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, newClaims)
+				entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, computedClaims[entityID])
 		}
 
-		// 5. Apply deletes (tombstones). Claims were already released in the
-		// pre-release pass above — do not call releaseClaims again here.
+		// 5. Apply deletes (tombstones). Their claims were released above.
 		//
-		// Attribution: prefer tx.DeleteAttribution[entityID], captured at
-		// stage time (the STAGER's context, under the same OpMu section
-		// that set tx.Deletes[entityID] — see EntityStore.Delete/DeleteAll).
-		// Fall back to spi.AttributionFor(ctx) — this Commit call's own
-		// ctx, i.e. the committer — only when no staged entry exists (a
-		// caller that mutated tx.Deletes directly, bypassing EntityStore).
-		// This is what fixes the prior bug: the committer's identity was
-		// always used, even for deletes staged by a different (possibly
-		// joined) caller earlier in the transaction.
+		// Attribution: tx.DeleteAttribution[entityID], captured at stage
+		// time (the STAGER's context, under the same OpMu section that set
+		// tx.Deletes[entityID] — see EntityStore.Delete/DeleteAll), not the
+		// committer's: a delete may be staged by a different (possibly
+		// joined) caller earlier in the transaction. Every site that stages
+		// a delete records its attribution, and a savepoint rollback
+		// restores both maps together.
 		for entityID := range tx.Deletes {
-			attribution, staged := tx.DeleteAttribution[entityID]
-			if !staged {
-				a, e := spi.AttributionFor(ctx)
-				attribution = spi.WriteAttribution{Attributed: a, Executor: e}
-			}
+			attribution := tx.DeleteAttribution[entityID]
 			if m.factory.entityData[tid] == nil {
 				m.factory.entityData[tid] = make(map[string][]entityVersion)
 			}
@@ -1147,13 +1060,13 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			// has no prior committed version at all: a same-transaction
 			// create-then-delete, whose buffered create Delete evicted from
 			// tx.Buffer without ever separately flushing it (see
-			// deletedBufferModels's field doc) — this tombstone is then the
+			// deletedBufferEntities's field doc) — this tombstone is then the
 			// ONLY committed version, and the sole place left to recover
 			// the model from. When a prior version exists, modelRefOfLocked
 			// already finds the model there, so this field stays zero.
 			var tombstoneModel spi.ModelRef
 			if len(versions) == 0 {
-				tombstoneModel = capturedDeletedBufferModels[entityID]
+				tombstoneModel = capturedDeletedBufferEntities[entityID].Meta.ModelRef
 			}
 			m.factory.entityData[tid][entityID] = append(versions, entityVersion{
 				entity:         nil,
@@ -1402,31 +1315,25 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// supersededLens records each entityID's current supersededSaves[txID]
-	// length, mirroring scheduledTaskOpsLen's approach — see
-	// savepointSnapshot.supersededLens godoc.
-	supersededLens := make(map[string]int, len(m.supersededSaves[txID]))
-	for eid, s := range m.supersededSaves[txID] {
-		supersededLens[eid] = len(s)
-	}
 	m.savepoints[txID] = append(m.savepoints[txID], savepointSnapshot{
-		id:                  spID,
-		buffer:              bufCopy,
-		readSet:             readCopy,
-		writeSet:            writeCopy,
-		deletes:             delCopy,
-		deleteAttribution:   delAttrCopy,
-		scheduledTaskOpsLen: len(m.scheduledTaskOps[txID]),
-		auditOpsLen:         len(m.auditOps[txID]),
-		supersededLens:      supersededLens,
+		id:                    spID,
+		buffer:                bufCopy,
+		readSet:               readCopy,
+		writeSet:              writeCopy,
+		deletes:               delCopy,
+		deleteAttribution:     delAttrCopy,
+		scheduledTaskOpsLen:   len(m.scheduledTaskOps[txID]),
+		auditOpsLen:           len(m.auditOps[txID]),
+		deletedBufferEntities: maps.Clone(m.deletedBufferEntities[txID]),
 	})
 	return spID, nil
 }
 
 // RollbackToSavepoint restores the transaction's buffer maps from the snapshot
 // captured when the savepoint was created, truncates the transaction's staged
-// scheduledTaskOps back to the length recorded at that savepoint, then
-// removes the snapshot.
+// scheduledTaskOps and auditOps back to the lengths recorded at that
+// savepoint. The savepoint itself is kept; savepoints taken after it are
+// destroyed.
 //
 // Locking discipline: RollbackToSavepoint replaces tx.Buffer /
 // tx.ReadSet / tx.WriteSet / tx.Deletes — exclusive against every other
@@ -1522,20 +1429,12 @@ func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 		m.auditOps[txID] = m.auditOps[txID][:n]
 	}
 
-	// Truncate supersededSaves per entityID back to its recorded length —
-	// same append-only truncate-back-to-length approach as
-	// scheduledTaskOps above (see savepointSnapshot.supersededLens godoc).
-	// An entityID with no recorded length had no superseded entries yet at
-	// savepoint time, so any it accumulated since must be discarded
-	// entirely, not merely truncated to zero.
-	if cur, ok := m.supersededSaves[txID]; ok {
-		for eid, entries := range cur {
-			if l, existed := snap.supersededLens[eid]; existed {
-				cur[eid] = entries[:l]
-			} else {
-				delete(cur, eid)
-			}
-		}
+	// Restore the staged deleted-buffer entities to the savepoint's: they are
+	// savepoint-scoped like tx.Buffer.
+	if snap.deletedBufferEntities == nil {
+		delete(m.deletedBufferEntities, txID)
+	} else {
+		m.deletedBufferEntities[txID] = maps.Clone(snap.deletedBufferEntities)
 	}
 
 	// A rollback destroys the savepoints taken after this one and keeps it.

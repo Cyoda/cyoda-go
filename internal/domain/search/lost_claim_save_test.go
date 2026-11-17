@@ -159,6 +159,15 @@ func TestAsyncSearch_CancelDuringEarlyStepsEndsAsALostClaim(t *testing.T) {
 	ctx := tenantCtx("tenant-early-cancel")
 	ref := spi.ModelRef{EntityName: "earlycancel", ModelVersion: "1"}
 	saveMinimalModel(t, ctx, base, ref)
+	// The job needs no entity, so the model is left UNLOCKED: the model
+	// cache keeps only a LOCKED model, so the job's read reaches the store.
+	baseMS, err := base.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := baseMS.Unlock(ctx, ref); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
 	store, _ := base.AsyncSearchStore(context.Background())
 	factory := &blockingModelFactory{StoreFactory: base, entered: make(chan struct{}, 1)}
 	pool := search.NewWorkerPool(1, 4)

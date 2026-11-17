@@ -62,6 +62,7 @@ func runOpVsRollback(
 			txMgr := factory.NewTransactionManager(uuids)
 
 			ctx := ctxWithTenant("tenant-A")
+			lockModels(t, factory, ctx, raceModelRef)
 			store, err := factory.EntityStore(ctx)
 			if err != nil {
 				t.Fatalf("%s: EntityStore failed: %v", name, err)
@@ -250,6 +251,7 @@ func runOpVsCommit(
 			txMgr := factory.NewTransactionManager(uuids)
 
 			ctx := ctxWithTenant("tenant-A")
+			lockModels(t, factory, ctx, raceModelRef)
 			store, err := factory.EntityStore(ctx)
 			if err != nil {
 				t.Fatalf("%s: EntityStore failed: %v", name, err)

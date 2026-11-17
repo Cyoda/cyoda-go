@@ -6,6 +6,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // auditTxIndexSize reports how many transaction entries smAuditTxIndex holds
@@ -32,7 +33,7 @@ func auditOpsLen(tm *TransactionManager) int {
 // entry is dead the moment that stamp has run. Left in place it accumulates
 // one reference per audited event for the life of the process, with nothing
 // that can ever read it again — every sibling map staged per transaction
-// (supersededSaves, deletedBufferModels, scheduledTaskOps) is deleted on this
+// (deletedBufferEntities, scheduledTaskOps) is deleted on this
 // same path.
 //
 // The events themselves must survive the prune: it drops the index, not the
@@ -56,6 +57,7 @@ func TestSMAuditTxIndex_PrunedOnCommit(t *testing.T) {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "audit-prune", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 
 	// A clock no running process would produce, so a surviving unstamped value
 	// is unmistakable.
@@ -253,6 +255,8 @@ func TestSMAudit_ConflictAbortDropsStagedEvents(t *testing.T) {
 	tm := factory.NewTransactionManager(newTestUUIDGenerator())
 	const tenant spi.TenantID = "tenant-audit-conflict-abort"
 	ctx := testCtxWithTenant(tenant)
+	ref := spi.ModelRef{EntityName: "audit-conflict-abort", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	audit, err := factory.StateMachineAuditStore(ctx)
 	if err != nil {
 		t.Fatalf("StateMachineAuditStore: %v", err)
@@ -280,7 +284,7 @@ func TestSMAudit_ConflictAbortDropsStagedEvents(t *testing.T) {
 	tx2 := spi.GetTransaction(tx2Ctx)
 	tx2.WriteSet["entity-E"] = true
 	tx2.Buffer["entity-E"] = &spi.Entity{
-		Meta: spi.EntityMeta{ID: "entity-E", TenantID: tenant, ChangeType: "CREATED"},
+		Meta: spi.EntityMeta{ID: "entity-E", TenantID: tenant, ModelRef: ref, ChangeType: "CREATED"},
 		Data: []byte(`{}`),
 	}
 	if err := tm.Commit(ctx, tx2ID); err != nil {
@@ -315,7 +319,7 @@ func TestSMAudit_UniqueViolationAbortDropsStagedEvents(t *testing.T) {
 		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "audit-unique-abort", ModelVersion: "1"}
-	keys := []spi.UniqueKey{{ID: "email-key", Fields: []string{"$.email"}}}
+	spitest.EnsureLockedModel(t, factory, ctx, ref, spi.UniqueKey{ID: "email-key", Fields: []string{"$.email"}})
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -329,13 +333,12 @@ func TestSMAudit_UniqueViolationAbortDropsStagedEvents(t *testing.T) {
 
 	// Two buffered entities claiming the same key value — mirrors
 	// TestUniqueClaims_IntraBatchDuplicate (unique_claims_test.go).
-	keyCtx := spi.WithUniqueKeys(txCtx, keys)
-	if _, err := store.Save(keyCtx, &spi.Entity{
+	if _, err := store.Save(txCtx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e-dup-1", ModelRef: ref}, Data: []byte(`{"email":"a@x.com"}`),
 	}); err != nil {
 		t.Fatalf("Save e-dup-1: %v", err)
 	}
-	if _, err := store.Save(keyCtx, &spi.Entity{
+	if _, err := store.Save(txCtx, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e-dup-2", ModelRef: ref}, Data: []byte(`{"email":"a@x.com"}`),
 	}); err != nil {
 		t.Fatalf("Save e-dup-2 (buffer): %v", err)

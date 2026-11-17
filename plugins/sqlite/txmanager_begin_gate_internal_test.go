@@ -8,6 +8,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // Commit bumps lastSubmitTime (step 4) before its sqlTx commits, holding
@@ -106,20 +107,20 @@ func TestBegin_SeesConcurrentCommitRows(t *testing.T) {
 	m := f.tm
 	ctx := attrInternalCtx("tenant-gate", "alice", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-gate", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	// A committed row whose transaction ID predates T_A. It carries a real
-	// transaction ID so the compare-and-save at the end of this test names
-	// one: the empty expected ID is a caller error, not a value to compare.
-	if _, err := store.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{ID: "e-seed", TenantID: "tenant-gate", ModelRef: ref, State: "open", TransactionID: "tx-pre"},
+	// A committed row whose transaction ID predates T_A. It is committed by
+	// a transaction of its own, so it carries a real transaction ID for the
+	// compare-and-save at the end of this test to name: the empty expected
+	// ID is a caller error, not a value to compare.
+	saveCommitted(t, m, store, ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e-seed", TenantID: "tenant-gate", ModelRef: ref, State: "open"},
 		Data: []byte(`{"n":0}`),
-	}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	})
 	seed, err := store.Get(ctx, "e-seed")
 	if err != nil {
 		t.Fatalf("seed Get: %v", err)
@@ -250,6 +251,7 @@ func TestDirectSave_ThenBegin_SeesRow(t *testing.T) {
 	m := f.tm
 	ctx := attrInternalCtx("tenant-direct", "alice", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-direct", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 
 	store, err := f.EntityStore(ctx)
 	if err != nil {
@@ -434,6 +436,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 	m := f.tm
 	ctx := attrInternalCtx("tenant-floor", "alice", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-floor", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 
 	store, err := f.EntityStore(ctx)
 	if err != nil {

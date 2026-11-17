@@ -315,6 +315,7 @@ func runSupersedeScenario(t *testing.T, tc supersedeShape, calloutSucceeds bool)
 		Version: "1.1", Name: "WF", InitialState: "INITIAL", Active: true, Criterion: tc.wfCrit,
 		States: map[string]spi.StateDefinition{"INITIAL": {Transitions: []spi.TransitionDefinition{tc.transition}}, "DONE": {}},
 	}})
+	lockTestModel(t, env.factory, env.base, modelRef)
 
 	_, endOuter := env.coord.BeginCallout(env.base, env.txID, "outer")
 	defer endOuter()
@@ -400,6 +401,7 @@ func TestExecuteAsyncNewTx_SupersededDiscardsScope(t *testing.T) {
 					"DONE": {},
 				},
 			}})
+			lockTestModel(t, env.factory, env.base, modelRef)
 			_, endOuter := env.coord.BeginCallout(env.base, env.txID, "outer")
 			defer endOuter()
 			env.coord.Advance("outer", 1)

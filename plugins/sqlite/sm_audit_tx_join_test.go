@@ -7,6 +7,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // auditConflictEntity builds a minimal entity for the abort-path regression
@@ -245,6 +246,7 @@ func TestAudit_StagedEventsAppearAfterCommittedRegardlessOfTimestamp(t *testing.
 func TestAudit_AConflictAbortDropsStagedEvents(t *testing.T) {
 	fx := newTaskFixture(t)
 	ctx := tenantCtx(taskTenantA)
+	spitest.EnsureLockedModel(t, fx.f, ctx, spi.ModelRef{EntityName: "AuditConflictModel", ModelVersion: "1"})
 	as := auditStore(t, fx, ctx)
 
 	aID, aCtx := fx.begin(t, taskTenantA)
@@ -302,14 +304,15 @@ func TestAudit_AUniqueViolationAbortDropsStagedEvents(t *testing.T) {
 	fx := newTaskFixture(t)
 	ctx := tenantCtx(taskTenantA)
 	as := auditStore(t, fx, ctx)
-	keys := []spi.UniqueKey{{ID: "audit-uv-key", Fields: []string{"$.v"}}}
+	spitest.EnsureLockedModel(t, fx.f, ctx, spi.ModelRef{EntityName: "AuditUVModel", ModelVersion: "1"},
+		spi.UniqueKey{ID: "audit-uv-key", Fields: []string{"$.v"}})
 
 	aID, aCtx := fx.begin(t, taskTenantA)
 	esA, err := fx.f.EntityStore(aCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (a): %v", err)
 	}
-	if _, err := esA.Save(spi.WithUniqueKeys(aCtx, keys), auditConflictEntity("e1", "AuditUVModel", []byte(`{"v":"dup"}`))); err != nil {
+	if _, err := esA.Save(aCtx, auditConflictEntity("e1", "AuditUVModel", []byte(`{"v":"dup"}`))); err != nil {
 		t.Fatalf("Save (a): %v", err)
 	}
 	if err := fx.commit(taskTenantA, aID); err != nil {
@@ -321,7 +324,7 @@ func TestAudit_AUniqueViolationAbortDropsStagedEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore (b): %v", err)
 	}
-	if _, err := esB.Save(spi.WithUniqueKeys(bCtx, keys), auditConflictEntity("e2", "AuditUVModel", []byte(`{"v":"dup"}`))); err != nil {
+	if _, err := esB.Save(bCtx, auditConflictEntity("e2", "AuditUVModel", []byte(`{"v":"dup"}`))); err != nil {
 		t.Fatalf("Save (b): %v", err)
 	}
 	if err := as.Record(bCtx, "e2", spi.StateMachineEvent{
@@ -363,6 +366,7 @@ func TestAudit_AUniqueViolationAbortDropsStagedEvents(t *testing.T) {
 func TestAudit_RecordAfterAConflictAbortIsRefusedAsRolledBack(t *testing.T) {
 	fx := newTaskFixture(t)
 	ctx := tenantCtx(taskTenantA)
+	spitest.EnsureLockedModel(t, fx.f, ctx, spi.ModelRef{EntityName: "AuditConflictModel2", ModelVersion: "1"})
 
 	aID, aCtx := fx.begin(t, taskTenantA)
 	bID, bCtx := fx.begin(t, taskTenantA)

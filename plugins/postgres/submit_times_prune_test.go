@@ -45,6 +45,7 @@ func TestPruneSubmitTimes_KeepsAnotherTenantsLiveRow(t *testing.T) {
 	// rate-limited, but lastSubmitTimePruneNano starts at zero, so the first
 	// commit of a fresh manager always takes the window.
 	ctx := ctxWithTenant("prune-tenant-a")
+	lockModels(t, factory, ctx, spi.ModelRef{EntityName: "prune-probe", ModelVersion: "1"})
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

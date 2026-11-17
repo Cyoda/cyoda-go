@@ -51,12 +51,33 @@ func recordedError(err error) (text string, ticket uuid.UUID, warnOnly bool) {
 		// through to the ticket row below, which mints a ticket and lets the
 		// caller log the full cause at ERROR under it.
 	}
+	if text, ok := refusedAtCommit(err); ok {
+		return text, uuid.Nil, true
+	}
 	var appErr *common.AppError
 	if errors.As(err, &appErr) && appErr.Level == common.LevelOperational {
 		return appErr.Message, uuid.Nil, true
 	}
 	ticket = uuid.New()
 	return internalErrorText(ticket), ticket, false
+}
+
+// refusedAtCommit reports whether err is a commit refused on the run's final
+// entities — a duplicate or partial unique key — and returns the text the
+// doors answer for it. That is the answer a client write gets, not a fault of
+// this pnode. The text keeps the store's detail out; the outcome's log line
+// carries it as the cause. An error that
+// common.Internal maps to anything else, a storage outage carrying one of the
+// sentinels among them, is not such a refusal and keeps the ticket.
+func refusedAtCommit(err error) (string, bool) {
+	if !errors.Is(err, spi.ErrUniqueViolation) && !errors.Is(err, spi.ErrPartialUniqueKey) {
+		return "", false
+	}
+	switch appErr := common.Internal("", err); appErr.Code {
+	case common.ErrCodeUniqueViolation, common.ErrCodeInvalidUniqueKey:
+		return appErr.Message, true
+	}
+	return "", false
 }
 
 // sanitiseErrorText makes text storable on every backend: NUL and invalid

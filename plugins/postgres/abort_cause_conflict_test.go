@@ -82,6 +82,40 @@ func TestCommitWithReadSetAfterSerializationFailure_IsAConflict(t *testing.T) {
 	requireConflictCause(t, fx.tm.Commit(ctx, txID), pgerrcode.SerializationFailure)
 }
 
+// TestCommitWithSaveOnAbortedTransaction_IsAConflict: a transaction aborted
+// by a statement no classifier recorded a cause for, that read nothing but
+// saved an entity, has the unique-key check as the first statements of its
+// Commit. The release of the written entities' claims meets the 25P02, and
+// Commit answers the conflict abortedCommitError gives an unrecorded abort.
+func TestCommitWithSaveOnAbortedTransaction_IsAConflict(t *testing.T) {
+	fx := newStatementCeilingFixture(t, 0)
+	ctx := classifyTestCtx()
+
+	txID, txCtx := beginGuarded(t, fx.tm, ctx)
+	state, ok := fx.tm.lookupTxState(txID)
+	if !ok {
+		t.Fatal("no txState for the transaction just begun")
+	}
+	state.RecordSave(uuid.NewString(), spi.ModelRef{EntityName: "abort-cause", ModelVersion: "1"}, []byte(`{}`))
+
+	var n int
+	if err := fx.q.QueryRow(txCtx, "SELECT 1/0").Scan(&n); err == nil {
+		t.Fatal("division by zero succeeded")
+	}
+	if state.AbortCause() != nil {
+		t.Fatalf("the abort has a recorded cause, so Commit would not meet the 25P02: %v", state.AbortCause())
+	}
+
+	commitErr := fx.tm.Commit(ctx, txID)
+	if !errors.Is(commitErr, spi.ErrConflict) {
+		t.Fatalf("the commit of an aborted transaction is not a conflict: %v", commitErr)
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(commitErr, &pgErr) || pgErr.Code != pgerrcode.InFailedSQLTransaction {
+		t.Fatalf("the commit error does not carry the 25P02 the commit met: %v", commitErr)
+	}
+}
+
 // requireConflictCause asserts err is spi.ErrConflict and names the SQLSTATE
 // that aborted the transaction, not only the 25P02 that followed it.
 func requireConflictCause(t *testing.T, err error, code string) {

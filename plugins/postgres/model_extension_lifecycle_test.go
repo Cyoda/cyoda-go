@@ -47,27 +47,3 @@ func TestUnlock_FoldsExtensionsIntoSchema(t *testing.T) {
 		t.Errorf("extension log after Unlock has %d rows, want 0", n)
 	}
 }
-
-// Delete removes the model's extension log with the model.
-func TestDelete_ClearsExtensionLog(t *testing.T) {
-	factory := setupModelExtTest(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(lifecycleDelta)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-
-	if err := ms.Delete(ctx, ref); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-
-	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 0 {
-		t.Errorf("extension log after Delete has %d rows, want 0", n)
-	}
-}

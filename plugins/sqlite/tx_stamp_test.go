@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // TestTx_UnstampedWrite_CarriesTheTransactionID pins the stamping contract a
@@ -20,6 +21,7 @@ func TestTx_UnstampedWrite_CarriesTheTransactionID(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-stamp", "alice", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-stamp", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -70,6 +72,7 @@ func TestTx_ForeignStampIsOverwritten(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-stamp2", "alice", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-stamp2", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

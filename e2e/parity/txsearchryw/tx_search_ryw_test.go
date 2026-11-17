@@ -10,6 +10,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -18,8 +19,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
-// personRef is the model every scenario operates on. No model registration is
-// required at the store layer — Save persists a bare ModelRef + JSON.
+// personRef is the model every scenario operates on. Storage saves an entity
+// only into a LOCKED model, so each backend's open() stores it LOCKED.
 var personRef = spi.ModelRef{EntityName: "txperson", ModelVersion: "1"}
 
 // cityBerlin is the canonical pushable predicate reused across scenarios.
@@ -67,6 +68,14 @@ func backends(t *testing.T) []backend {
 				return f, tenantCtx(uuid.NewString()), func() {}
 			},
 		})
+	}
+	for i := range bs {
+		open := bs[i].open
+		bs[i].open = func(t *testing.T) (spi.StoreFactory, context.Context, func()) {
+			f, ctx, cleanup := open(t)
+			spitest.EnsureLockedModel(t, f, ctx, personRef)
+			return f, ctx, cleanup
+		}
 	}
 	return bs
 }

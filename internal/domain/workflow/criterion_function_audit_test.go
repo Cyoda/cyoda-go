@@ -108,6 +108,7 @@ func auditEnv(t *testing.T, answers map[string]criteriaAnswer, wfs ...spi.Workfl
 	ref := spi.ModelRef{EntityName: "fn-audit-" + name, ModelVersion: "1.0"}
 	registerModelFields(t, ctx, factory, ref, map[string]schema.DataType{"amount": schema.Integer})
 	saveWorkflow(t, factory, ctx, ref, wfs)
+	lockTestModel(t, factory, ctx, ref)
 	return engine, factory, txMgr, rec, ref
 }
 

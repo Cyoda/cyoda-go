@@ -266,6 +266,11 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 		return nil, nil, fmt.Errorf("no external processing service configured for scheduled-transition Function %q", tr.Schedule.Function.Name)
 	}
 
+	// The transaction holds the anchor as it is before the callout,
+	// in the chain's scope, before Pause releases the gate.
+	if err := e.saveAnchorBeforeCallout(ctx, entity, txID); err != nil {
+		return nil, nil, err
+	}
 	resume := txcoord.Pause(ctx)
 	defer resume()
 	callCtx, stop := runCallCtx(ctx)

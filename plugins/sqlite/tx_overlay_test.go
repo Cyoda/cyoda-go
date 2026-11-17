@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 func seedN(t *testing.T, store spi.EntityStore, ctx context.Context, ref spi.ModelRef, n int) []string {
@@ -49,6 +50,7 @@ func TestTxIterate_MergedViewInIDOrder(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-ovl", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, _ := f.EntityStore(ctx)
 	seedN(t, store, ctx, ref, 6) // e00..e05
 
@@ -106,6 +108,7 @@ func TestTxIterate_FilterAppliesToBothStreams(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-ovl-f", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, _ := f.EntityStore(ctx)
 	seedN(t, store, ctx, ref, 4) // e00 open, e01 closed, e02 open, e03 closed
 
@@ -134,6 +137,7 @@ func TestTxIterate_TrackingReadRecordsYieldsOnly(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-ovl-tr", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, _ := f.EntityStore(ctx)
 	seedN(t, store, ctx, ref, 4)
 
@@ -166,6 +170,7 @@ func TestTxIterate_SameTxDeleteWhileOpen_NoDeadlock(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-ovl-dl", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, _ := f.EntityStore(ctx)
 	seedN(t, store, ctx, ref, 5)
 
@@ -204,6 +209,7 @@ func TestTxIterate_RollbackWhileOpen_EndsWithRolledBack(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-ovl-rb", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, _ := f.EntityStore(ctx)
 	seedN(t, store, ctx, ref, 3)
 
@@ -238,6 +244,7 @@ func TestTxIterate_CommitWhileOpen_EndsWithAlreadyCommitted(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-ovl-cm", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, _ := f.EntityStore(ctx)
 	seedN(t, store, ctx, ref, 3)
 

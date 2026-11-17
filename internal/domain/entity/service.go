@@ -15,6 +15,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
@@ -46,9 +47,10 @@ type EntityTransactionResult struct {
 //
 // At most one of PointInTime and TransactionID may be set; the handler
 // rejects requests carrying both with HTTP 400 BAD_REQUEST. When
-// TransactionID is non-empty, GetEntity scans the entity's version
-// history and returns the version whose meta.TransactionID matches; if
-// no version matches, ENTITY_NOT_FOUND (404) is returned.
+// TransactionID is non-empty, GetEntity returns the one version that
+// transaction wrote, once it has committed (getEntityByTransactionID); a
+// transaction that has not committed, never wrote the entity, or deleted it
+// answers ENTITY_NOT_FOUND (404), also to a caller inside that transaction.
 type GetOneEntityInput struct {
 	EntityID      string
 	PointInTime   *time.Time
@@ -200,6 +202,26 @@ func checkUniqueKeys(desc *spi.ModelDescriptor, parsedData any, doc []byte, item
 	return nil
 }
 
+// lockedModel returns the model an entity may be created in: desc when it is
+// LOCKED, else the model read again fresh from storage when that read is
+// LOCKED, else nil. The model cache holds only LOCKED models, so a desc that
+// is not LOCKED came from storage, possibly from a read that raced a lock: the
+// fresh read keeps such a read from refusing the create. A LOCKED desc is not
+// read again; a node learns of an unlock eventually.
+func lockedModel(ctx context.Context, store spi.ModelStore, desc *spi.ModelDescriptor) (*spi.ModelDescriptor, error) {
+	if desc.State == spi.ModelLocked {
+		return desc, nil
+	}
+	fresh, err := modelcache.GetFresh(ctx, store, desc.Ref)
+	if err != nil {
+		return nil, err
+	}
+	if fresh.State != spi.ModelLocked {
+		return nil, nil
+	}
+	return fresh, nil
+}
+
 // CreateEntity creates a single entity with workflow execution and returns
 // the transaction result.
 func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*EntityTransactionResult, error) {
@@ -226,8 +248,14 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		return nil, common.Internal("failed to load model", err)
 	}
 
-	// Reject if model not locked
-	if desc.State != spi.ModelLocked {
+	desc, err = lockedModel(ctx, modelStore, desc)
+	if err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound, "model not found")
+		}
+		return nil, common.Internal("failed to load model", err)
+	}
+	if desc == nil {
 		return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked, "model is not locked")
 	}
 
@@ -266,10 +294,6 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	if _, err := ingest.ValidateOrExtend(ctx, modelStore, desc, parsedData); err != nil {
 		return nil, classifyValidateOrExtendErr(err)
 	}
-
-	// Thread the unique keys onto ctx before Begin, so the keyed ctx propagates
-	// into Begin → txCtx → Execute → FinalCtx → Save.
-	ctx = spi.WithUniqueKeys(ctx, desc.UniqueKeys)
 
 	// Begin a fresh transaction, or PARTICIPATE in a joined tx already on ctx
 	// (a routed compute-node callback). A joined callback does not Begin and
@@ -364,13 +388,16 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	}, nil
 }
 
-// getEntityByTransactionID returns the entity version whose meta.TransactionID
-// matches txID, via the store's purposed by-transaction lookup (earliest
-// matching version; tombstones never match — see GetVersionByTransaction's
-// doc comment). spi.ErrNotFound is returned both when the entity itself is
-// unknown to the store and when no version matches the supplied
-// transactionId — the caller maps both to ENTITY_NOT_FOUND (404), which
-// mirrors Cyoda Cloud's contract (and matches dictionary
+// getEntityByTransactionID returns the entity version transaction txID
+// wrote, via the store's purposed by-transaction lookup. An entity has at
+// most one version per transaction, carrying the transaction's last write,
+// so this is the entity as txID left it. The lookup reads committed versions
+// only, also for a caller inside txID; tombstones never match — see
+// GetVersionByTransaction's doc comment. spi.ErrNotFound is returned when
+// the entity itself is unknown to the store, or when no committed version
+// matches the supplied transactionId (txID has not committed, never wrote
+// the entity, or deleted it) — the caller maps it to ENTITY_NOT_FOUND
+// (404), which mirrors Cyoda Cloud's contract (and matches dictionary
 // scenario 12/neg/05). The caller treats other errors as infrastructure
 // failures (5xx).
 func getEntityByTransactionID(ctx context.Context, store spi.EntityStore, entityID, txID string) (*spi.Entity, error) {
@@ -1940,7 +1967,6 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		ref          spi.ModelRef
 		payloadBytes []byte
 		parsedData   any
-		uniqueKeys   []spi.UniqueKey
 	}
 	// The latest descriptor of each model the batch names. The second pass
 	// replaces an entry with the descriptor an extension returns, so a later
@@ -1966,7 +1992,15 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 				}
 				return nil, common.Internal(fmt.Sprintf("item %d: failed to load model", i), err)
 			}
-			if desc.State != spi.ModelLocked {
+			desc, err = lockedModel(ctx, modelStore, desc)
+			if err != nil {
+				if errors.Is(err, spi.ErrNotFound) {
+					return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+						fmt.Sprintf("item %d: model not found", i))
+				}
+				return nil, common.Internal(fmt.Sprintf("item %d: failed to load model", i), err)
+			}
+			if desc == nil {
 				return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked,
 					fmt.Sprintf("item %d: model is not locked", i))
 			}
@@ -1990,7 +2024,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			return nil, err
 		}
 
-		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes, parsedData: parsedData, uniqueKeys: desc.UniqueKeys})
+		parsed = append(parsed, parsedItem{ref: ref, payloadBytes: payloadBytes, parsedData: parsedData})
 	}
 	for _, it := range parsed {
 		// Validate or extend model schema
@@ -2068,13 +2102,6 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			},
 			Data: item.payloadBytes,
 		}
-
-		// Stamp the current item's unique-key definitions onto the context
-		// BEFORE engine execution. Called unconditionally (even for models with
-		// no keys) so a keyed item never leaks its keys to the next item via the
-		// reused currentCtx. spi.WithUniqueKeys overwrites any previously set
-		// value, so passing nil/empty correctly clears a prior item's keys.
-		currentCtx = spi.WithUniqueKeys(currentCtx, item.uniqueKeys)
 
 		// Run workflow engine within the current segment's transaction
 		// context. Mirrors single CreateEntity's flow so initial-state
@@ -2259,9 +2286,6 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		}
 	}
 
-	// Thread the unique keys onto txCtx so they propagate into Execute and Save.
-	txCtx = spi.WithUniqueKeys(txCtx, desc.UniqueKeys)
-
 	now := h.clock.Now()
 
 	// Computed on txCtx (the tx-carrying context beginOrJoin returned), not
@@ -2295,9 +2319,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	//
 	// If-Match states the version the request starts from: the engine checks
 	// it against existing — E as this transaction read it — before it runs
-	// anything. A later write to E in this transaction (a joined callback's, a
-	// segment's) is the request's own; a write another transaction commits
-	// after the read fails the commit.
+	// anything. A later write to E in this transaction (the engine's save
+	// before a callout, a segment's commit) is the request's own; a write
+	// another transaction commits after the read fails the commit.
 	ifMatch := wfengine.IfMatch{Expected: input.IfMatch, Current: existing.Meta.TransactionID}
 	if input.Transition == "" {
 		res, lbErr := h.engine.Loopback(txCtx, updated, ifMatch)
@@ -2527,11 +2551,6 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		if err := checkUniqueKeys(desc, item.parsedData, item.bodyBytes, fmt.Sprintf("item %d: ", i)); err != nil {
 			return nil, err
 		}
-
-		// Stamp this item's unique-key definitions onto the context before
-		// engine execution. Called unconditionally so a keyed item never leaks
-		// its keys to the next item; spi.WithUniqueKeys overwrites any prior value.
-		currentCtx = spi.WithUniqueKeys(currentCtx, desc.UniqueKeys)
 
 		if _, err := ingest.ValidateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
 			return nil, classifyValidateOrExtendErr(err)
@@ -2780,7 +2799,8 @@ func engineConflictIsTransactionConflict(err error) bool {
 		errors.Is(err, wfengine.ErrProcessorOutputInfra) ||
 		errors.Is(err, txcoord.ErrScopeInfra) ||
 		errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) ||
-		errors.Is(err, wfengine.ErrCriterionTypingInfra)
+		errors.Is(err, wfengine.ErrCriterionTypingInfra) ||
+		errors.Is(err, wfengine.ErrAnchorSaveInfra)
 }
 
 // classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
@@ -2804,6 +2824,9 @@ func engineConflictIsTransactionConflict(err error) bool {
 //     so internal pgx text never leaks to clients via 4xx WORKFLOW_FAILED.
 //   - ErrCriterionTypingInfra (the model store a criterion needs for
 //     type-directed comparison is unavailable) → sanitized 5xx, same reason.
+//   - ErrAnchorSaveInfra (the read or save that makes the transaction hold
+//     the entity before a callout carrying the transaction token failed) →
+//     sanitized 5xx, same reason; a conflict there is a retryable 409.
 //   - ErrScheduledTaskInfra (the scheduled-task store the settle-time
 //     arm/cancel pass writes through failed) → sanitized 5xx, same reason.
 //     Every save of an entity on a scheduled workflow re-arms, so this store
@@ -2863,6 +2886,9 @@ func classifyWorkflowError(err error) *common.AppError {
 	}
 	if errors.Is(err, wfengine.ErrCriterionTypingInfra) {
 		return common.Internal("criterion typing failed", err)
+	}
+	if errors.Is(err, wfengine.ErrAnchorSaveInfra) {
+		return common.Internal("saving the entity before a callout failed", err)
 	}
 	if errors.Is(err, wfengine.ErrCommitBeforeDispatchInfra) {
 		return common.Internal("workflow segment boundary failed", err)

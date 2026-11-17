@@ -10,6 +10,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -91,6 +92,7 @@ func TestSearch_OwnNewField_AfterRacingSearch_Found(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"p":"hello"}`))
 
 	inner := &heldReadModelStore{current: buildSearchDescriptor(t, ref, "a")}

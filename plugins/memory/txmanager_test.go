@@ -11,6 +11,9 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
+// txTestModel is the model of the entities these tests write.
+var txTestModel = spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+
 func newTxManager(t *testing.T) (*memory.StoreFactory, *memory.TransactionManager) {
 	t.Helper()
 	factory := memory.NewStoreFactory()
@@ -67,6 +70,7 @@ func TestBeginRequiresTenant(t *testing.T) {
 func TestCommitFlushesBufferToStore(t *testing.T) {
 	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -79,6 +83,7 @@ func TestCommitFlushesBufferToStore(t *testing.T) {
 		Meta: spi.EntityMeta{
 			ID:         "e-1",
 			TenantID:   "tenant-A",
+			ModelRef:   txTestModel,
 			ChangeType: "CREATED",
 			ChangeUser: "test-user",
 		},
@@ -114,26 +119,25 @@ func TestCommitFlushesBufferToStore(t *testing.T) {
 func TestCommitFlushesDeletes(t *testing.T) {
 	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	// Pre-populate an entity directly in the store.
 	store, _ := factory.EntityStore(ctx)
-	store.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID:         "e-del",
-			TenantID:   "tenant-A",
-			ChangeType: "CREATED",
-		},
+	if _, err := store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e-del", TenantID: "tenant-A", ModelRef: txTestModel},
 		Data: []byte(`{}`),
-	})
+	}); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
 
 	// Begin transaction and stage a delete.
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
 		t.Fatalf("Begin failed: %v", err)
 	}
-	tx := spi.GetTransaction(txCtx)
-	tx.Deletes["e-del"] = true
-	tx.WriteSet["e-del"] = true
+	if err := store.Delete(txCtx, "e-del"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
 
 	if err := tm.Commit(ctx, txID); err != nil {
 		t.Fatalf("Commit with delete failed: %v", err)
@@ -147,8 +151,9 @@ func TestCommitFlushesDeletes(t *testing.T) {
 }
 
 func TestReadWriteConflictDetection(t *testing.T) {
-	_, tm := newTxManager(t)
+	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	// tx1 begins first, reads entity E.
 	_, txCtx1, err := tm.Begin(ctx)
@@ -169,6 +174,7 @@ func TestReadWriteConflictDetection(t *testing.T) {
 		Meta: spi.EntityMeta{
 			ID:         "entity-E",
 			TenantID:   "tenant-A",
+			ModelRef:   txTestModel,
 			ChangeType: "CREATED",
 		},
 		Data: []byte(`{}`),
@@ -192,8 +198,9 @@ func TestReadWriteConflictDetection(t *testing.T) {
 }
 
 func TestWriteWriteConflictDetection(t *testing.T) {
-	_, tm := newTxManager(t)
+	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	// tx1 writes entity E.
 	_, txCtx1, err := tm.Begin(ctx)
@@ -203,7 +210,7 @@ func TestWriteWriteConflictDetection(t *testing.T) {
 	tx1 := spi.GetTransaction(txCtx1)
 	tx1.WriteSet["entity-E"] = true
 	tx1.Buffer["entity-E"] = &spi.Entity{
-		Meta: spi.EntityMeta{ID: "entity-E", TenantID: "tenant-A", ChangeType: "CREATED"},
+		Meta: spi.EntityMeta{ID: "entity-E", TenantID: "tenant-A", ModelRef: txTestModel, ChangeType: "CREATED"},
 		Data: []byte(`{"v":1}`),
 	}
 
@@ -215,7 +222,7 @@ func TestWriteWriteConflictDetection(t *testing.T) {
 	tx2 := spi.GetTransaction(txCtx2)
 	tx2.WriteSet["entity-E"] = true
 	tx2.Buffer["entity-E"] = &spi.Entity{
-		Meta: spi.EntityMeta{ID: "entity-E", TenantID: "tenant-A", ChangeType: "CREATED"},
+		Meta: spi.EntityMeta{ID: "entity-E", TenantID: "tenant-A", ModelRef: txTestModel, ChangeType: "CREATED"},
 		Data: []byte(`{"v":2}`),
 	}
 
@@ -235,8 +242,9 @@ func TestWriteWriteConflictDetection(t *testing.T) {
 }
 
 func TestNoConflictDisjointEntities(t *testing.T) {
-	_, tm := newTxManager(t)
+	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	// tx1 writes entity A.
 	txID1, txCtx1, err := tm.Begin(ctx)
@@ -246,7 +254,7 @@ func TestNoConflictDisjointEntities(t *testing.T) {
 	tx1 := spi.GetTransaction(txCtx1)
 	tx1.WriteSet["entity-A"] = true
 	tx1.Buffer["entity-A"] = &spi.Entity{
-		Meta: spi.EntityMeta{ID: "entity-A", TenantID: "tenant-A", ChangeType: "CREATED"},
+		Meta: spi.EntityMeta{ID: "entity-A", TenantID: "tenant-A", ModelRef: txTestModel, ChangeType: "CREATED"},
 		Data: []byte(`{}`),
 	}
 
@@ -258,7 +266,7 @@ func TestNoConflictDisjointEntities(t *testing.T) {
 	tx2 := spi.GetTransaction(txCtx2)
 	tx2.WriteSet["entity-B"] = true
 	tx2.Buffer["entity-B"] = &spi.Entity{
-		Meta: spi.EntityMeta{ID: "entity-B", TenantID: "tenant-A", ChangeType: "CREATED"},
+		Meta: spi.EntityMeta{ID: "entity-B", TenantID: "tenant-A", ModelRef: txTestModel, ChangeType: "CREATED"},
 		Data: []byte(`{}`),
 	}
 
@@ -351,6 +359,7 @@ func TestCommittedLogPruning(t *testing.T) {
 func TestCommitPreservesCreationDate(t *testing.T) {
 	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	// First commit creates the entity.
 	txID1, txCtx1, err := tm.Begin(ctx)
@@ -359,7 +368,7 @@ func TestCommitPreservesCreationDate(t *testing.T) {
 	}
 	tx1 := spi.GetTransaction(txCtx1)
 	tx1.Buffer["e-1"] = &spi.Entity{
-		Meta: spi.EntityMeta{ID: "e-1", TenantID: "tenant-A", ChangeType: "CREATED"},
+		Meta: spi.EntityMeta{ID: "e-1", TenantID: "tenant-A", ModelRef: txTestModel, ChangeType: "CREATED"},
 		Data: []byte(`{"v":1}`),
 	}
 	tx1.WriteSet["e-1"] = true
@@ -380,7 +389,7 @@ func TestCommitPreservesCreationDate(t *testing.T) {
 	}
 	tx2 := spi.GetTransaction(txCtx2)
 	tx2.Buffer["e-1"] = &spi.Entity{
-		Meta: spi.EntityMeta{ID: "e-1", TenantID: "tenant-A", ChangeType: "UPDATED"},
+		Meta: spi.EntityMeta{ID: "e-1", TenantID: "tenant-A", ModelRef: txTestModel, ChangeType: "UPDATED"},
 		Data: []byte(`{"v":2}`),
 	}
 	tx2.WriteSet["e-1"] = true
@@ -683,6 +692,7 @@ func TestBeginCapturesAmbientOrigin(t *testing.T) {
 // the committer, not the stager.
 func TestCommitDeleteAttribution_StagerNotCommitter(t *testing.T) {
 	factory, tm := newTxManager(t)
+	lockModels(t, factory, ctxWithTenant("tenant-A"), txTestModel)
 	rootCtx := ctxWithUserKind("tenant-A", "root-user", spi.PrincipalUser)
 
 	// Pre-populate the entity to be deleted.
@@ -762,61 +772,6 @@ func TestCommitDeleteAttribution_StagerNotCommitter(t *testing.T) {
 	}
 	if tomb.Executor != wantExecutor {
 		t.Errorf("tombstone Executor = %+v, want stager %+v (not the committer)", tomb.Executor, wantExecutor)
-	}
-}
-
-// TestCommitFlushesDeletes_FallbackAttribution extends
-// TestCommitFlushesDeletes: when a delete is staged directly on tx.Deletes
-// without a corresponding tx.DeleteAttribution entry (simulating a caller
-// that bypassed EntityStore.Delete), Commit's flush must fall back to
-// spi.AttributionFor(ctx) evaluated at commit time.
-func TestCommitFlushesDeletes_FallbackAttribution(t *testing.T) {
-	factory, tm := newTxManager(t)
-	ctx := ctxWithUserKind("tenant-A", "test-user", spi.PrincipalUser)
-
-	store, _ := factory.EntityStore(ctx)
-	if _, err := store.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID:         "e-del-fallback",
-			TenantID:   "tenant-A",
-			ChangeType: "CREATED",
-		},
-		Data: []byte(`{}`),
-	}); err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
-
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin failed: %v", err)
-	}
-	tx := spi.GetTransaction(txCtx)
-	// Stage the delete directly, bypassing EntityStore.Delete — no
-	// DeleteAttribution entry is recorded.
-	tx.Deletes["e-del-fallback"] = true
-	tx.WriteSet["e-del-fallback"] = true
-	if _, ok := tx.DeleteAttribution["e-del-fallback"]; ok {
-		t.Fatal("test setup error: DeleteAttribution must be absent to exercise the fallback path")
-	}
-
-	if err := tm.Commit(ctx, txID); err != nil {
-		t.Fatalf("Commit failed: %v", err)
-	}
-
-	metas, err := store.GetVersionMetadata(ctx, "e-del-fallback", spi.VersionMetadataOptions{})
-	if err != nil {
-		t.Fatalf("GetVersionMetadata failed: %v", err)
-	}
-	tomb := metas[0]
-	if !tomb.Deleted {
-		t.Fatal("expected the newest version to be the DELETE tombstone")
-	}
-	want := spi.Principal{ID: "test-user", Kind: spi.PrincipalUser}
-	if tomb.User != want.ID {
-		t.Errorf("tombstone User = %q, want fallback (commit ctx) user %q", tomb.User, want.ID)
-	}
-	if tomb.Executor != want {
-		t.Errorf("tombstone Executor = %+v, want fallback %+v", tomb.Executor, want)
 	}
 }
 
@@ -970,11 +925,12 @@ func TestCommittedLogPruningKeepsAnOpenTransactionsConflict(t *testing.T) {
 			t.Cleanup(func() { _ = factory.Close() })
 			tm := factory.NewTransactionManager(newTestUUIDGenerator())
 			ctx := ctxWithTenant("tenant-A")
+			lockModels(t, factory, ctx, txTestModel)
 
 			write := func(txCtx context.Context, id string) {
 				tx := spi.GetTransaction(txCtx)
 				tx.WriteSet[id] = true
-				tx.Buffer[id] = &spi.Entity{Meta: spi.EntityMeta{ID: id, TenantID: "tenant-A", ChangeType: "CREATED"}, Data: []byte(`{}`)}
+				tx.Buffer[id] = &spi.Entity{Meta: spi.EntityMeta{ID: id, TenantID: "tenant-A", ModelRef: txTestModel, ChangeType: "CREATED"}, Data: []byte(`{}`)}
 			}
 			commitOne := func(id string) {
 				t.Helper()

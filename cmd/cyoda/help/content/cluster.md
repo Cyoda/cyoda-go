@@ -164,7 +164,7 @@ The receiving node verifies the token's HMAC and routes the callback to the
 transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above),
 or, on a location-independent backend, serves it where it lands.
 Without the echo the callback runs in a standalone transaction and cannot see
-what the cascade's transaction has saved so far. Callback acks are provisional until the
+what the cascade's transaction has written so far (not yet committed). Callback acks are provisional until the
 owning transaction commits.
 
 The owner admits a callback only while the token's callout is in progress and the token belongs to the member that currently has the work. A callback from a member that was replaced, or whose callout has ended, is refused with `410 CALLOUT_SUPERSEDED` while the transaction is open, and with `404 TRANSACTION_NOT_FOUND` afterwards. A callback still in progress when its callout moves on — the work goes to the next member, or the callout ends — runs to its end, and is then discarded and answered `410 CALLOUT_SUPERSEDED`: none of its writes are kept, except a schema extension it made, which stays (`cyoda help models`, SCHEMA EXTENSION). On the in-tree backends the owner waits until every such callback has ended before it gives the work to the next member, and before the workflow carries on after a callout; on a location-independent backend nothing waits, and such a callback is refused completion when it ends.
@@ -182,21 +182,15 @@ semantics (`SYNC`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`).
 
 ## MODEL CACHE
 
-Each node caches its tenants' locked models. Every change to a model — import, lock, unlock, delete, change level, unique keys — and every schema extension an entity write makes evicts the model from the cache of the node that made it, and that node gossip-broadcasts a `model.invalidate` message so every other node evicts it too and reads it again on next use. A node that does not receive the broadcast keeps the older model until its cache lease (`CYODA_MODEL_CACHE_LEASE`, default `5m`) ends.
+Each node caches its tenants' locked models. Every change to a model — import, lock, unlock, delete, change level, unique-key definitions — and every schema extension an entity write makes evicts the model from the cache of the node that made it, and that node gossip-broadcasts a `model.invalidate` message so every other node evicts it too and reads it again on next use. A node that does not receive the broadcast keeps the older model until its cache lease (`CYODA_MODEL_CACHE_LEASE`, default `5m`) ends.
 
 So a schema extension is in use on the node that served the write when the write returns, and on another node when the broadcast arrives. Until then that node uses the older schema; see `cyoda help models` (SCHEMA EXTENSION) for what that means for searches, criteria and writes there. A `changeLevel` change on a locked model takes effect on each node the same way.
 
-## COMPOSITE UNIQUE KEY STALENESS
+## COMPOSITE UNIQUE KEYS
 
-Composite unique keys are part of the model descriptor. They inherit the descriptor's cross-cluster coherence (MODEL CACHE above): when a model is locked or unlocked, the node that performs the operation evicts it from its own model cache and broadcasts `model.invalidate`, so every other node evicts and reloads the descriptor (keys included).
+Composite unique keys are part of the model descriptor, but they are not enforced from a node's model cache. When a transaction commits, its entities are checked against the unique-key definitions of the stored model (`cyoda help models`, LIFECYCLE). A node whose cached model is out of date after an unlock, key change and relock therefore still enforces the stored definitions. The early check of a request body for a partly filled key (`422 INVALID_UNIQUE_KEY`) uses the node's cached model.
 
-**Changing a key on a live multi-node postgres deployment** requires a destructive teardown: unlock the model (requires zero live entities, so all entities must be deleted first), change the key definitions, then relock. This is an inherently disruptive operation. There is a bounded window during which a node that missed both the unlock and relock gossip messages may still enforce the **old** key set. Data written through that node in the window will carry claim rows under the old key IDs.
-
-**Operator guidance:** after changing a composite unique key on a multi-node deployment, pause writes and allow the cluster to settle for at least one cache-lease TTL before resuming. The cache TTL is the backstop that guarantees every node has reloaded the new descriptor.
-
-A relock does not wait for every online node to confirm the eviction before it completes; the cache lease is the bound.
-
-**Scope:** this limitation applies to multi-node postgres only. The memory and sqlite backends are single-process; their cache invalidation is synchronous.
+Changing the unique-key definitions needs the model unlocked, which needs zero live entities: delete the model's entities, unlock, change the unique-key definitions, then relock. Stop writes to the model while you do (`cyoda help models`, LIFECYCLE).
 
 ## SEE ALSO
 

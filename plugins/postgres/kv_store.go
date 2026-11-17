@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -33,7 +34,7 @@ func (s *kvStore) Get(ctx context.Context, namespace string, key string) ([]byte
 		`SELECT value FROM kv_store WHERE tenant_id = $1 AND namespace = $2 AND key = $3`,
 		string(s.tenantID), namespace, key).Scan(&value)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("key %s not found in namespace %s: %w", key, namespace, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get key %s/%s: %w", namespace, key, err)

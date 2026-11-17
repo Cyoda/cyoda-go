@@ -8,8 +8,7 @@ Cloud follows.
 A `COMMIT_BEFORE_DISPATCH` processor commits the write's first segment before
 its callout. The engine then applies the processor's result in a second
 transaction by compare-and-save, against the version the first segment
-committed (or the second transaction's own write, when a callback wrote the
-entity there). With `startNewTxOnDispatch: true` the engine also checks, before
+committed; a callback never writes the entity the processor runs for. With `startNewTxOnDispatch: true` the engine also checks, before
 the dispatch, that the entity is still that version.
 
 If another transaction changed the entity in between, the write fails:

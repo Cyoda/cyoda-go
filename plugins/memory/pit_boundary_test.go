@@ -22,6 +22,7 @@ func twoVersionsSameMillisecond(t *testing.T) (spi.EntityStore, interface{ Now()
 	ctx := ctxWithTenant("tenant-pit")
 	store, _ := factory.EntityStore(ctx)
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	e := &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e-pit", TenantID: "tenant-pit", ModelRef: ref, State: "NEW"},

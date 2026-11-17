@@ -1,11 +1,13 @@
 package postgres_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
@@ -41,6 +43,18 @@ func setupEntityTest(t *testing.T) *postgres.StoreFactory {
 	return postgres.NewStoreFactory(pool)
 }
 
+// lockModels creates each ref LOCKED, without unique keys, for ctx's tenant,
+// as the API saves an entity only into a LOCKED model.
+func lockModels(t *testing.T, f spi.StoreFactory, ctx context.Context, refs ...spi.ModelRef) {
+	t.Helper()
+	for _, ref := range refs {
+		spitest.EnsureLockedModel(t, f, ctx, ref)
+	}
+}
+
+// orderModel is makeEntity's model.
+var orderModel = spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+
 func makeEntity(id string) *spi.Entity {
 	return &spi.Entity{
 		Meta: spi.EntityMeta{
@@ -57,6 +71,7 @@ func makeEntity(id string) *spi.Entity {
 func TestEntityStore_SaveAndGet(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -103,8 +118,8 @@ func TestEntityStore_SaveAndGet(t *testing.T) {
 	if got.Meta.ChangeUser != "user-1" {
 		t.Errorf("ChangeUser = %q, want %q", got.Meta.ChangeUser, "user-1")
 	}
-	if got.Meta.TransactionID != "tx-100" {
-		t.Errorf("TransactionID = %q, want %q", got.Meta.TransactionID, "tx-100")
+	if got.Meta.TransactionID != "" {
+		t.Errorf("TransactionID = %q, want empty: a write outside a transaction records none, whatever the caller supplied", got.Meta.TransactionID)
 	}
 	if got.Meta.TransitionForLatestSave != "create" {
 		t.Errorf("TransitionForLatestSave = %q, want %q", got.Meta.TransitionForLatestSave, "create")
@@ -123,6 +138,7 @@ func TestEntityStore_SaveAndGet(t *testing.T) {
 func TestEntityStore_SaveIncrementsVersion(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	ent := makeEntity("ent-002")
@@ -157,17 +173,16 @@ func TestEntityStore_SaveIncrementsVersion(t *testing.T) {
 }
 
 func TestEntityStore_CompareAndSave_Match(t *testing.T) {
-	factory := setupEntityTest(t)
+	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	ent := makeEntity("ent-cas-1")
-	ent.Meta.TransactionID = "tx-original"
-	store.Save(ctx, ent)
+	originalTxID := saveCommitted(t, tm, store, ctx, ent)
 
 	ent.Meta.State = "UPDATED_STATE"
-	ent.Meta.TransactionID = "tx-new"
-	v, err := store.CompareAndSave(ctx, ent, "tx-original")
+	v, err := store.CompareAndSave(ctx, ent, originalTxID)
 	if err != nil {
 		t.Fatalf("CompareAndSave with matching txID: %v", err)
 	}
@@ -177,15 +192,14 @@ func TestEntityStore_CompareAndSave_Match(t *testing.T) {
 }
 
 func TestEntityStore_CompareAndSave_Mismatch(t *testing.T) {
-	factory := setupEntityTest(t)
+	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	ent := makeEntity("ent-cas-2")
-	ent.Meta.TransactionID = "tx-original"
-	store.Save(ctx, ent)
+	saveCommitted(t, tm, store, ctx, ent)
 
-	ent.Meta.TransactionID = "tx-new"
 	_, err := store.CompareAndSave(ctx, ent, "tx-WRONG")
 	if err == nil {
 		t.Fatal("expected ErrConflict for mismatched txID")
@@ -212,6 +226,7 @@ func TestEntityStore_GetNotFound(t *testing.T) {
 func TestEntityStore_GetAsAt(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	pool := factory.Pool()
@@ -253,6 +268,7 @@ func TestEntityStore_GetAsAt(t *testing.T) {
 func TestEntityStore_Iterate(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel, spi.ModelRef{EntityName: "Invoice", ModelVersion: "1"})
 	store, _ := factory.EntityStore(ctx)
 
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -275,6 +291,7 @@ func TestEntityStore_Iterate(t *testing.T) {
 func TestEntityStore_IterateAsAt(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -308,6 +325,7 @@ func TestEntityStore_IterateAsAt(t *testing.T) {
 func TestEntityStore_Delete(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	ent := makeEntity("ent-del")
@@ -372,6 +390,7 @@ func TestEntityStore_DeleteAll(t *testing.T) {
 func TestEntityStore_Exists(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	exists, err := store.Exists(ctx, "no-such")
@@ -395,6 +414,7 @@ func TestEntityStore_Exists(t *testing.T) {
 func TestEntityStore_Count(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -435,6 +455,7 @@ func TestEntityStore_Count(t *testing.T) {
 func TestEntityStore_GetVersionMetadata(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	ent := makeEntity("ent-hist")
@@ -476,6 +497,7 @@ func TestEntityStore_GetVersionMetadata(t *testing.T) {
 func TestEntityStore_TenantIsolation(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctxA := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctxA, orderModel)
 	ctxB := ctxWithTenant("tenant-B")
 
 	storeA, _ := factory.EntityStore(ctxA)
@@ -531,6 +553,7 @@ func TestEntityStore_TenantIsolation(t *testing.T) {
 func TestEntityStore_DeleteCreatesVersionEntry(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 
 	ent := makeEntity("ent-del-ver")
@@ -562,6 +585,7 @@ func TestEntityStore_DeleteCreatesVersionEntry(t *testing.T) {
 func TestEntityStore_Get_PopulatesReadSet(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("hook-tenant")
+	lockModels(t, factory, ctx, spi.ModelRef{EntityName: "Hook", ModelVersion: "1"})
 
 	// Seed e1 at version 3 (save three times).
 	seedStore, _ := factory.EntityStore(ctx)
@@ -599,6 +623,7 @@ func TestEntityStore_Get_PopulatesReadSet(t *testing.T) {
 func TestEntityStore_Get_NoTxContext_DoesNotRecord(t *testing.T) {
 	factory, _ := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("hook-tenant")
+	lockModels(t, factory, ctx, spi.ModelRef{EntityName: "Hook", ModelVersion: "1"})
 
 	store, _ := factory.EntityStore(ctx)
 	e := makeEntity("e1-notx")
@@ -648,6 +673,7 @@ func TestEntityStore_Save_FreshInsertNotRecorded(t *testing.T) {
 func TestEntityStore_Save_UpdateRecordsPreWriteVersion(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("hook-tenant")
+	lockModels(t, factory, ctx, spi.ModelRef{EntityName: "Hook", ModelVersion: "1"})
 
 	// Seed existing entity at v4.
 	seedStore, _ := factory.EntityStore(ctx)
@@ -682,6 +708,7 @@ func TestEntityStore_Save_UpdateRecordsPreWriteVersion(t *testing.T) {
 func TestEntityStore_Delete_RecordsWriteSet(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("hook-tenant")
+	lockModels(t, factory, ctx, spi.ModelRef{EntityName: "Hook", ModelVersion: "1"})
 
 	// Seed del-e at v6.
 	seedStore, _ := factory.EntityStore(ctx)
@@ -720,6 +747,7 @@ func TestEntityStore_Delete_RecordsWriteSet(t *testing.T) {
 func TestEntityStore_GetPage_RecordsEachReadSet(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("hook-tenant")
+	lockModels(t, factory, ctx, spi.ModelRef{EntityName: "Hook", ModelVersion: "1"})
 
 	ref := spi.ModelRef{EntityName: "Hook", ModelVersion: "1"}
 

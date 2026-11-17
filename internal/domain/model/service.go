@@ -13,6 +13,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/exporter"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
@@ -112,24 +113,20 @@ func parseVersion(v string) int32 {
 	return int32(n)
 }
 
-// getModelFresh reads the model from storage, bypassing the cached entry
-// (it may share a storage read already running on this node). The store must be
-// the model cache's request-scoped store, which offers RefreshAndGet; any other
-// store is a wiring defect and the read fails rather than answering from the
-// cache-less path. The admin operations that
-// gate on the model's state (ImportModel, LockModel, UnlockModel, DeleteModel,
-// SetChangeLevel) use it, so the decision is made on what storage read returns
-// and not on what this node cached; routine display and
-// listing reads (ExportModel, ListModels, ValidateModel) use the cache.
-func getModelFresh(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	type refresher interface {
-		RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error)
+// modelLockedErr is the 409 for a change that needs an UNLOCKED model and found
+// it LOCKED.
+func modelLockedErr(action, entityName string, ver int32) *common.AppError {
+	appErr := common.Operational(
+		http.StatusConflict,
+		common.ErrCodeModelAlreadyLocked,
+		fmt.Sprintf("%s entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", action, entityName, ver))
+	appErr.Props = map[string]any{
+		"entityName":    entityName,
+		"entityVersion": ver,
+		"expectedState": "UNLOCKED",
+		"actualState":   "LOCKED",
 	}
-	r, ok := store.(refresher)
-	if !ok {
-		return nil, fmt.Errorf("model store %T cannot read the model fresh from storage", store)
-	}
-	return r.RefreshAndGet(ctx, ref)
+	return appErr
 }
 
 // ImportModel imports a model from sample data, merging with any existing schema.
@@ -152,7 +149,7 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	// are low-frequency, so one forced round-trip is fine.
 	// Only not-found means no model: a read that fails would otherwise skip the
 	// locked-model refusal below and save over the stored model.
-	existing, err := getModelFresh(ctx, store, ref)
+	existing, err := modelcache.GetFresh(ctx, store, ref)
 	if err != nil && !errors.Is(err, spi.ErrNotFound) {
 		return nil, common.Internal("failed to import model", err)
 	}
@@ -309,8 +306,8 @@ func (h *Handler) LockModel(ctx context.Context, entityName, modelVersion string
 	ref := modelRef(entityName, ver)
 
 	// Admin-path gating read — bypass the per-request cache; see
-	// getModelFresh for the multi-node rationale.
-	desc, err := getModelFresh(ctx, store, ref)
+	// modelcache.GetFresh for the multi-node rationale.
+	desc, err := modelcache.GetFresh(ctx, store, ref)
 	if err != nil {
 		return nil, classifyGetErr("lock model", entityName, ver, err)
 	}
@@ -319,17 +316,7 @@ func (h *Handler) LockModel(ctx context.Context, entityName, modelVersion string
 	}
 
 	if desc.State == spi.ModelLocked {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelAlreadyLocked,
-			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"expectedState": "UNLOCKED",
-			"actualState":   "LOCKED",
-		}
-		return nil, appErr
+		return nil, modelLockedErr("cannot process", entityName, ver)
 	}
 
 	if err := store.Lock(ctx, ref); err != nil {
@@ -353,8 +340,8 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 	ref := modelRef(entityName, ver)
 
 	// Admin-path gating read — bypass the per-request cache; see
-	// getModelFresh for the multi-node rationale.
-	desc, err := getModelFresh(ctx, modelStore, ref)
+	// modelcache.GetFresh for the multi-node rationale.
+	desc, err := modelcache.GetFresh(ctx, modelStore, ref)
 	if err != nil {
 		return nil, classifyGetErr("unlock model", entityName, ver, err)
 	}
@@ -408,7 +395,9 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 	}, nil
 }
 
-// DeleteModel deletes a model. Blocked if model is locked or entities exist.
+// DeleteModel deletes a model. Blocked if the model is locked. It counts no
+// entities: a model with entities is locked, because unlock refuses a model
+// that has entities.
 func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion string) error {
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {
@@ -419,8 +408,8 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 	ref := modelRef(entityName, ver)
 
 	// Admin-path gating read — bypass the per-request cache; see
-	// getModelFresh for the multi-node rationale.
-	desc, err := getModelFresh(ctx, modelStore, ref)
+	// modelcache.GetFresh for the multi-node rationale.
+	desc, err := modelcache.GetFresh(ctx, modelStore, ref)
 	if err != nil {
 		return classifyGetErr("delete model", entityName, ver, err)
 	}
@@ -429,39 +418,7 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 	}
 
 	if desc.State == spi.ModelLocked {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelAlreadyLocked,
-			fmt.Sprintf("cannot delete entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"expectedState": "UNLOCKED",
-			"actualState":   "LOCKED",
-		}
-		return appErr
-	}
-
-	entityStore, err := h.factory.EntityStore(ctx)
-	if err != nil {
-		return common.Internal("failed to access entity store", err)
-	}
-
-	count, err := entityStore.Count(ctx, ref, nil)
-	if err != nil {
-		return common.Internal("failed to count entities", err)
-	}
-	if count > 0 {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelHasEntities,
-			fmt.Sprintf("cannot delete: %d entities exist", count))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"entityCount":   count,
-		}
-		return appErr
+		return modelLockedErr("cannot delete", entityName, ver)
 	}
 
 	if err := modelStore.Delete(ctx, ref); err != nil {
@@ -569,8 +526,8 @@ func (h *Handler) SetChangeLevel(ctx context.Context, entityName, modelVersion, 
 	ref := modelRef(entityName, ver)
 
 	// Admin-path gating read — bypass the per-request cache; see
-	// getModelFresh for the multi-node rationale.
-	desc, err := getModelFresh(ctx, store, ref)
+	// modelcache.GetFresh for the multi-node rationale.
+	desc, err := modelcache.GetFresh(ctx, store, ref)
 	if err != nil {
 		return classifyGetErr("set change level", entityName, ver, err)
 	}
@@ -623,8 +580,8 @@ func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion st
 	ref := modelRef(entityName, ver)
 
 	// Admin-path gating read — bypass the per-request cache; see
-	// getModelFresh for the multi-node rationale.
-	desc, err := getModelFresh(ctx, store, ref)
+	// modelcache.GetFresh for the multi-node rationale.
+	desc, err := modelcache.GetFresh(ctx, store, ref)
 	if err != nil {
 		return nil, classifyGetErr("set unique keys", entityName, ver, err)
 	}
@@ -633,17 +590,7 @@ func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion st
 	}
 
 	if desc.State == spi.ModelLocked {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelAlreadyLocked,
-			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"expectedState": "UNLOCKED",
-			"actualState":   "LOCKED",
-		}
-		return nil, appErr
+		return nil, modelLockedErr("cannot process", entityName, ver)
 	}
 
 	node, err := schema.Unmarshal(desc.Schema)

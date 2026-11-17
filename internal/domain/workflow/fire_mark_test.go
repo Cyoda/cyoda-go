@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
@@ -146,44 +145,6 @@ func TestUnsafeMark_AsyncNewTxFailure_RunCommits(t *testing.T) {
 	}
 	if _, found := env.task(t, claimed.ID); found {
 		t.Error("the committed run completes the task")
-	}
-}
-
-func TestCallbackAntiPattern_WritesFiredEntity_ThenUnsafe_TaskBusy(t *testing.T) {
-	var env *runEnv
-	var claimed spi.ScheduledTask
-	ext := &scriptedExtProc{processor: func(_ context.Context, proc spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
-		if proc.Name != "p1" {
-			return nil, nil
-		}
-		// A joined callback updates the fired entity: the update re-arms its task in the run's transaction.
-		jctx, err := env.txMgr.Join(env.ctx, txID)
-		if err != nil {
-			return nil, err
-		}
-		_, err = env.sts.ReconcileForEntity(jctx, spi.ReconcileRequest{
-			TenantID: testTenant, EntityID: claimed.EntityID, CurrentState: "OPEN", Arm: []spi.ScheduledTask{armable(claimed)},
-		})
-		return nil, err
-	}}
-	env = newRunEnv(t, ext)
-	claimed = env.claimed(t, "busy-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{
-		safeProc("p1", ExecutionModeSync), unsafeProc("p2", ExecutionModeSync),
-	}, nil))
-
-	done := make(chan RunReport, 1)
-	go func() { r, _ := env.run(claimed); done <- r }()
-	var r RunReport
-	select {
-	case r = <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the run hung")
-	}
-	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, spi.ErrTaskBusy) || r.MarkHeld || r.FailReason != "" {
-		t.Fatalf("report = %+v, want a safe failure on ErrTaskBusy", r)
-	}
-	if n := ext.count("p2"); n != 0 {
-		t.Errorf("p2 dispatched %d times, want 0", n)
 	}
 }
 

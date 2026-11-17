@@ -82,6 +82,9 @@ func saveModelWithFields(t *testing.T, ctx context.Context, factory *memory.Stor
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
+	}
 }
 
 // helper: register a model whose schema declares `arrayField` as an array of
@@ -104,6 +107,9 @@ func saveModelWithArrayOfStringField(t *testing.T, ctx context.Context, factory 
 	}
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
+	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
 	}
 }
 
@@ -128,6 +134,9 @@ func saveModelWithValAndItemsArray(t *testing.T, ctx context.Context, factory *m
 	}
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
+	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
 	}
 }
 
@@ -1782,51 +1791,19 @@ func TestSubmitAsync_LimitExceedsMax(t *testing.T) {
 	})
 }
 
-// --- FieldsMap threading (Task 6b) ---
-
-// wrapModelStoreCounter wraps a real spi.ModelStore and counts Get calls, so
-// tests can observe whether a code path actually consults the schema.
-type wrapModelStoreCounter struct {
-	spi.ModelStore
-	getCalls int
-}
-
-func (m *wrapModelStoreCounter) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	m.getCalls++
-	return m.ModelStore.Get(ctx, ref)
-}
-
-// wrapModelStoreCounterFactory wraps a StoreFactory and returns a
-// wrapModelStoreCounter, delegating everything else (notably EntityStore, so
-// the real memory Searcher is still exercised) to the wrapped StoreFactory.
-type wrapModelStoreCounterFactory struct {
-	spi.StoreFactory
-	modelStore *wrapModelStoreCounter
-}
-
-func (f *wrapModelStoreCounterFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
-	return f.modelStore, nil
-}
+// --- FieldsMap threading ---
 
 // TestSearch_ThreadsFieldsMapIntoConditionToFilter verifies that the
 // Searcher pushdown branch of Search loads the model's FieldsMap and
 // threads it into ConditionToFilter, rather than hardcoding nil.
 //
-// The condition addresses one data path ($.name), so the path step of
-// ValidateConditionForModel loads and returns a real FieldsMap (extractFieldPaths
-// is non-empty — see path_validate.go) and its type-soundness step
-// consults the schema too (its own read is gated on exactly the same
-// path-need, per this task's fix to a validation-skip bug — a LIFECYCLE-ONLY
-// condition, by contrast, now makes NO ModelStore.Get call at all, covered
-// separately by TestValidateConditionTypes_LifecycleOnly_NoModelRead in
-// condition_type_validate_gating_test.go). An empty OrderBy makes
-// resolveSortKeys return without touching the store too, so every Get call
-// this test observes comes from the two schema-consulting checks above plus
-// EnsureModelRegistered's own lookup — at least 2, whichever two of those
-// three a given code shape happens to route through.
-//
-// This test proves the wiring itself: the schema is loaded and handed to
-// ConditionToFilter on the pushdown path.
+// The condition is an EQUALS leaf on a declared String path. A nil or empty
+// FieldsMap leaves the leaf with no declared type, and ConditionToFilter turns
+// such a comparison leaf into a non-match, so the one expected result is the
+// proof that the schema reached the filter. The test does not count model
+// reads: the model is LOCKED, so the model cache answers repeat reads, and the
+// cache cannot be bypassed here because loadFieldsMap takes the parsed schema
+// only from the cache's store (path_validate.go loadFieldsMap).
 func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
@@ -1837,16 +1814,9 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 	saveMinimalModel(t, ctx, base, ref)
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
-	baseMS, err := base.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	cms := &wrapModelStoreCounter{ModelStore: baseMS}
-	factory := &wrapModelStoreCounterFactory{StoreFactory: base, modelStore: cms}
-
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
+	svc := search.NewSearchService(cachedFactory(base), uuids, searchStore, newTestConsistency(t, base), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -1864,10 +1834,6 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 	// non-match per spi.ConditionToFilter's own godoc.
 	if len(results) != 1 {
 		t.Fatalf("got %d result(s), want 1: the EQUALS leaf against $.name must match when FieldsMap is threaded correctly", len(results))
-	}
-
-	if cms.getCalls < 2 {
-		t.Errorf("ModelStore.Get calls = %d, want >= 2 (EnsureModelRegistered + at least one real schema-consulting check)", cms.getCalls)
 	}
 }
 

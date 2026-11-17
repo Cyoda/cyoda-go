@@ -37,31 +37,11 @@ var ErrCommitBeforeDispatchInfra = errors.New("commit-before-dispatch infrastruc
 // ENTITY_MODIFIED on every write route — create, update, and an item of a
 // collection create or update. That 412 is right: the apply-result CAS is a
 // precondition on the request's own entity at the segment boundary — the
-// version TX_pre committed, or TX_post's own write — and another writer changed
-// that entity. It never meets an already-aborted TX_post: the anchor re-read
-// before it would fail first, marked ErrCommitBeforeDispatchInfra.
+// version TX_pre committed — and another writer changed that entity. On a
+// TX_post that an earlier conflict already aborted it fails with
+// spi.ErrTxAborted instead, which every door answers first, as the retryable
+// 409 CONFLICT.
 var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
-
-// clientAttributableStoreErr reports whether a store error is an outcome the
-// caller can act on — a stale precondition, a unique-key clash — as opposed to
-// an infrastructure failure that merely surfaced through the same call.
-//
-// It is a deliberate allow-list rather than an "is this pgx?" heuristic,
-// because the consequence of guessing wrong runs one way only: an unrecognised
-// error reaches the entity service's catch-all, which mints a 400
-// WORKFLOW_FAILED whose detail is the raw text — driver wording, table,
-// constraint and index names, a SQLSTATE. The three sentinels below are exactly
-// the ones that classifier (and common.Internal underneath it) maps to a
-// specific status; anything else has no client-facing meaning to preserve.
-//
-// The list is what keeps the apply-result CAS honest: an infrastructure
-// failure there must be marked (unmarked, it reaches that catch-all), while a
-// conflict keeps the ErrPostSegmentConflict chain its callers read.
-func clientAttributableStoreErr(err error) bool {
-	return errors.Is(err, spi.ErrConflict) ||
-		errors.Is(err, spi.ErrUniqueViolation) ||
-		errors.Is(err, spi.ErrPartialUniqueKey)
-}
 
 // executeProcessors runs each processor in the transition's processor pipeline
 // sequentially. Processors are dispatched according to their ExecutionMode:
@@ -159,9 +139,12 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		// scope is discarded with it. A scope that could not be opened or
 		// ended is not that — the transaction is unusable, so it kills the
 		// pipeline like any other mode's failure. Nor is an unsafe processor
-		// a scheduled run refused to dispatch: the run must end there.
+		// a scheduled run refused to dispatch: the run must end there. Nor is
+		// a failed save of the anchor before the dispatch: the transaction
+		// could not be made to hold the anchor.
 		nonFatal := proc.ExecutionMode == ExecutionModeAsyncNewTx &&
-			!errors.Is(procErr, txcoord.ErrScopeInfra) && !errors.Is(procErr, errUnsafeNotDispatched)
+			!errors.Is(procErr, txcoord.ErrScopeInfra) && !errors.Is(procErr, errUnsafeNotDispatched) &&
+			!errors.Is(procErr, ErrAnchorSaveInfra)
 		if procErr != nil && nonFatal {
 			slog.Warn("ASYNC_NEW_TX processor failed, continuing pipeline",
 				"pkg", "workflow", "processor", proc.Name, "error", procErr)
@@ -221,26 +204,16 @@ func memberFailReason(err error) string {
 
 // executeSyncProcessor runs a SYNC or ASYNC_SAME_TX processor inline in the
 // caller's transaction. On success the entity's Data is updated with the
-// processor's returned modifications. A processor that returns none may
-// instead have written the entity through a callback that joined the
-// transaction; that write is kept (adoptCallbackWrite).
+// processor's returned modifications; a processor that returns none leaves the
+// entity as it is.
 func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
 	if e.extProc == nil {
 		return nil
 	}
-	// The anchor as the transaction sees it before the dispatch. Without a
-	// transaction no callback can join one, and there is nothing to observe.
-	tx := spi.GetTransaction(ctx)
-	var es spi.EntityStore
-	var before anchorView
-	if tx != nil {
-		var err error
-		if es, err = e.factory.EntityStore(ctx); err != nil {
-			return fmt.Errorf("failed to get entity store before processor dispatch: %w", errors.Join(ErrProcessorOutputInfra, err))
-		}
-		if before, err = readAnchor(ctx, es, entity.Meta.ID); err != nil {
-			return fmt.Errorf("failed to read entity before processor dispatch: %w", errors.Join(ErrProcessorOutputInfra, err))
-		}
+	// The transaction holds the anchor as it is before the callout
+	// (saveAnchorBeforeCallout).
+	if err := e.saveAnchorBeforeCallout(ctx, entity, txID); err != nil {
+		return err
 	}
 	dispatched, err := beforeDispatch(ctx, proc)
 	if err != nil {
@@ -268,13 +241,6 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 	}
 	if modifiedEntity != nil && modifiedEntity.Data != nil {
 		return e.applyProcessorData(ctx, entity, desc, modifiedEntity.Data)
-	}
-	if tx != nil {
-		after, err := readAnchor(ctx, es, entity.Meta.ID)
-		if err != nil {
-			return fmt.Errorf("failed to re-read entity after processor dispatch: %w", errors.Join(ErrProcessorOutputInfra, err))
-		}
-		adoptCallbackWrite(entity, before, after, tx.ID)
 	}
 	return nil
 }
@@ -328,10 +294,18 @@ func (e *Engine) conflictOverDispatchFailure(ctx context.Context, proc spi.Proce
 //
 // A scope that cannot be opened or ended carries txcoord.ErrScopeInfra and
 // fails the operation: it says the transaction is unusable, not that the
-// processor misbehaved.
+// processor misbehaved. So does a failed save of the anchor before the scope
+// opens (ErrAnchorSaveInfra).
 func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
 	if e.extProc == nil {
 		return nil
+	}
+	// The transaction holds the anchor as it is before the callout
+	// (saveAnchorBeforeCallout). The save is in the chain's scope, before the
+	// processor's scope opens: discarding that scope on the processor's
+	// failure keeps it.
+	if err := e.saveAnchorBeforeCallout(ctx, entity, txID); err != nil {
+		return err
 	}
 
 	scope, pctx, err := e.coord.OpenChild(ctx)
@@ -378,18 +352,13 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 // (txID == T_pre) is committed first; the processor is dispatched with no
 // transaction context (default) or with TX_post's token
 // (startNewTxOnDispatch=true); the result is applied via CompareAndSave
-// against T_pre, or against TX_post when a callback wrote the entity in
-// TX_post. The caller MUST replace its (ctx, txID) with the returned
+// against T_pre. The caller MUST replace its (ctx, txID) with the returned
 // (newCtx, newTxID) to continue the cascade in TX_post.
 //
 // committed reports whether the segment boundary committed T_pre. On a
 // failure it tells the caller where the processor's record can go: while T_pre
 // is uncommitted it is still the operation's transaction, and once T_pre
 // committed the record needs a transaction of its own.
-//
-// Per spec §3, §10.3: in the startNewTxOnDispatch=true branch, processors
-// must not save the cascade-anchor entity themselves AND also return
-// mutations for it (last-writer-wins inside TX_post's buffer).
 func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) (newCtx context.Context, newTxID string, committed bool, err error) {
 	// Both variants below commit txID. A chain that joined its transaction does
 	// not own it, so it is refused here — before the flush, the commit and the
@@ -436,6 +405,9 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		if err != nil {
 			return nil, "", true, err
 		}
+		// TX_post makes the next version: the payload carries its id, the
+		// one the dispatch's token names.
+		entity.Meta.TransactionID = newTxID
 
 		if e.extProc != nil {
 			dispatched, mErr := beforeDispatch(newCtx, proc)
@@ -501,37 +473,27 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		}
 	}
 
-	// Apply the result via CompareAndSave — works in both branches. The
-	// precondition is tPre, unless a callback that joined TX_post wrote the
-	// entity: the engine's result then supersedes that write, as in a
-	// transaction that never segmented. A delete in TX_post, or a write or
-	// delete by another transaction, leaves the precondition at tPre, and the
-	// CompareAndSave conflicts.
+	// Apply the result via CompareAndSave against tPre — works in both
+	// branches. TX_post has not written the anchor before this write: the
+	// engine writes it here first, and a callout never writes the entity it
+	// runs for. A write or delete by another transaction since tPre committed
+	// makes the CompareAndSave conflict.
 	es, casErr := e.factory.EntityStore(newCtx)
 	if casErr != nil {
 		return nil, "", true, fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", errors.Join(ErrCommitBeforeDispatchInfra, casErr))
-	}
-	after, readErr := readAnchor(newCtx, es, entity.Meta.ID)
-	if readErr != nil {
-		return nil, "", true, fmt.Errorf("commit-before-dispatch: re-read entity before apply: %w", errors.Join(ErrCommitBeforeDispatchInfra, readErr))
 	}
 	if pending != nil {
 		if applyErr := e.applyProcessorData(newCtx, entity, desc, pending); applyErr != nil {
 			return nil, "", true, applyErr
 		}
-	} else {
-		// TX_post wrote nothing before the dispatch: with startNewTxOnDispatch
-		// its first entity read found the version tPre committed, and without
-		// it no callback could join TX_post at all. So the anchor as read
-		// before the dispatch is one TX_post had not written.
-		adoptCallbackWrite(entity, anchorView{}, after, newTxID)
 	}
-	applyAgainst := tPre
-	if after.writtenBy(newTxID) {
-		applyAgainst = newTxID
-	}
-	if _, saveErr := es.CompareAndSave(newCtx, entity, applyAgainst); saveErr != nil {
-		if !clientAttributableStoreErr(saveErr) {
+	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
+		// A save inside a transaction does no unique-key work (the commit
+		// does), so a conflict is the only outcome here the caller can act on.
+		// Anything else is the store failing: an unmarked error would reach the
+		// entity service's catch-all, a 400 WORKFLOW_FAILED carrying the raw
+		// store text.
+		if !errors.Is(saveErr, spi.ErrConflict) {
 			// Not a conflict at all — the store failed. Marked infra so the text
 			// takes the sanitized-5xx path instead of the 4xx body below.
 			// ErrPostSegmentConflict is dropped: the marker exists to say "a
@@ -547,6 +509,8 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		// logged text stays one line.
 		return nil, "", true, fmt.Errorf("%w: %w", ErrPostSegmentConflict, saveErr)
 	}
+	// The anchor is stored as TX_post wrote it.
+	entity.Meta.TransactionID = newTxID
 
 	segHandedOff = true
 	return newCtx, newTxID, true, nil
@@ -554,7 +518,8 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 
 // flushAndCommitSegment is the shared primitive for the COMMIT_BEFORE_DISPATCH
 // segment boundary's "flush + commit TX_pre" half. It saves the in-memory
-// entity in txID and commits txID. It returns nil exactly when txID committed.
+// entity in txID, commits txID and stamps the entity with txID, the id the
+// stored anchor carries. It returns nil exactly when txID committed.
 // The caller begins TX_post afterward: before the dispatch with
 // startNewTxOnDispatch (beginNextSegment), after it without.
 //
@@ -649,6 +614,10 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	}); err != nil {
 		return err
 	}
+	// txID committed the anchor. A dispatch without a transaction carries the
+	// id of that committed version; with startNewTxOnDispatch, TX_post's id
+	// replaces it before the dispatch.
+	entity.Meta.TransactionID = txID
 	if partial {
 		g.partialCommitted.Store(true)
 	}
@@ -689,10 +658,11 @@ func (e *Engine) beginNextSegment(ctx context.Context, entity *spi.Entity, txID 
 	}
 	// Before the dispatch, TX_post reads the anchor and requires the version
 	// txID committed. A write or delete that another transaction committed in
-	// between is a conflict: the callback, which joins TX_post, could
-	// otherwise read that write and save over it. The read also puts the
-	// anchor in TX_post's read set, so a later write by another transaction
-	// fails at commit.
+	// between is a conflict, found before the processor is dispatched: its
+	// callbacks, which join TX_post, would otherwise read a version the
+	// dispatch's payload does not carry. The read also puts the anchor in
+	// TX_post's read set, so a later write by another transaction fails at
+	// commit.
 	if err := e.requireAnchorCommittedBy(newCtx, entity.Meta.ID, txID); err != nil {
 		return newTxID, newCtx, err
 	}

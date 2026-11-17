@@ -50,6 +50,14 @@ func TestRecordedError_AllowList(t *testing.T) {
 			"NO_COMPUTE_MEMBER_FOR_TAG: no compute member for tags [billing]", true},
 		{"an Operational AppError, wrapped", fmt.Errorf("fire: %w", badRequest),
 			"WORKFLOW_FAILED: the processor output is not an object", true},
+		// A commit refused on the run's final entities is the answer a client
+		// write gets, never a pnode fault: the doors' text, and no ticket.
+		{"a unique key violation at commit",
+			fmt.Errorf("failed to commit scheduled run: %w", fmt.Errorf("%w: insert unique claims: unique_claims_uq", spi.ErrUniqueViolation)),
+			"UNIQUE_VIOLATION: a composite unique key constraint was violated", true},
+		{"a partial unique key at commit",
+			fmt.Errorf("failed to commit scheduled run: %w", spi.ErrPartialUniqueKey),
+			"INVALID_UNIQUE_KEY: one or more unique key fields are null or invalid", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -66,6 +74,10 @@ func TestRecordedError_AnythingElseIsATicketOnly(t *testing.T) {
 		"a store error": fmt.Errorf("failed to read entity: %w",
 			errors.New("pq: connection refused host=db.internal user=cyoda")),
 		"an Internal AppError": common.Internal("failed to save", errors.New("disk full at /var/lib/pg")),
+		// A storage outage that also carries a commit-refusal sentinel is the
+		// outage: it keeps the ticket, never a warn-only text.
+		"a storage outage carrying a unique key violation": fmt.Errorf("failed to commit scheduled run: %w",
+			errors.Join(storageDown{}, spi.ErrUniqueViolation)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			text, ticket, warnOnly := recordedError(err)

@@ -3,19 +3,21 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
-// ifmatch_callback_self_write_test.go — every door that takes If-Match, with
-// If-Match naming E's current version, runs a processor whose joined callback
-// writes E itself. If-Match states the version the request starts from, so the
-// callback's write does not fail it: the request succeeds and E keeps the
-// callback's write.
+// ifmatch_doors_test.go — every door that takes If-Match. If-Match states the
+// version the request starts from: a stale one is 412 before any processor
+// runs, and a change another client commits after the request read E is a
+// lost race, the retryable 409.
 
 // ifMatchDoor is one door that takes If-Match, run on E with the If-Match
 // eTxID. Its request moves E through the workflow's processors.
@@ -26,16 +28,18 @@ type ifMatchDoor struct {
 
 const ifMatchLoop = `{"name":"e","amount":1,"status":"loop"}`
 
-// ifMatchDoors is every door that takes If-Match. A collection item's
-// precondition failure, reported inside a 200 as failed[], reads as 412.
-func ifMatchDoors() []ifMatchDoor {
-	const loop = ifMatchLoop
+// ifMatchDoors is every door that takes If-Match. loop is the body of the
+// updates without a transition, which sets status loop and so runs the
+// automated "loop" transition; goBody is the body of the manual transition
+// "go". The patches set status loop. A collection item's precondition
+// failure, reported inside a 200 as failed[], reads as 412.
+func ifMatchDoors(loop, goBody string) []ifMatchDoor {
 	return []ifMatchDoor{
 		{name: "Update", request: func(h *callbackHarness, eID, eTxID string) joinedCommitOutcome {
 			return httpJoinedOutcome(h.putIfMatch("/api/entity/JSON/"+eID, eTxID, loop))
 		}},
 		{name: "ManualTransition", request: func(h *callbackHarness, eID, eTxID string) joinedCommitOutcome {
-			return httpJoinedOutcome(h.putIfMatch("/api/entity/JSON/"+eID+"/go", eTxID, `{"name":"e","amount":1,"status":"draft"}`))
+			return httpJoinedOutcome(h.putIfMatch("/api/entity/JSON/"+eID+"/go", eTxID, goBody))
 		}},
 		{name: "Patch", request: func(h *callbackHarness, eID, eTxID string) joinedCommitOutcome {
 			return httpJoinedOutcome(h.joinedPatch(eID, eTxID, `{"status":"loop"}`, ""))
@@ -64,72 +68,43 @@ func ifMatchDoors() []ifMatchDoor {
 	}
 }
 
-func TestIfMatch_OwnEntityCallbackWriteIsKept(t *testing.T) {
-	doors := ifMatchDoors()
-	shapes := []struct {
-		name  string
-		procs []conflictProc
-	}{
-		{name: "SYNC", procs: []conflictProc{{name: "ifm-self-p", mode: "SYNC"}}},
-		{name: "ASYNC_SAME_TX", procs: []conflictProc{{name: "ifm-self-p", mode: "ASYNC_SAME_TX"}}},
-		// The callback's write lands before a COMMIT_BEFORE_DISPATCH segment
-		// commits.
-		{name: "SYNC_ThenCommitBeforeDispatch", procs: []conflictProc{
-			{name: "ifm-self-p", mode: "SYNC"}, {name: "ifm-self-cbd", mode: "COMMIT_BEFORE_DISPATCH"},
-		}},
-	}
-	for _, door := range doors {
-		for _, shape := range shapes {
-			t.Run(door.name+"/"+shape.name, func(t *testing.T) {
-				h := newCalloutHarness(t, nil)
-				model, tag := uniq("ifm-self"), uniq("ifm-self-tag")
-				var calls atomic.Int32
-				callbackStatus := make(chan int, 1)
-				h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: func(_ context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
-					if calls.Add(1) > 1 {
-						return answerOK()
-					}
-					// The joined write of E itself. Its status matches no
-					// transition, so its own loopback leaves E in OPEN.
-					res, err := rc.UpdateEntity(rc.entityID, `{"name":"e","amount":7,"status":"self"}`)
-					if err != nil || res.StatusCode != http.StatusOK {
-						callbackStatus <- res.StatusCode
-						return answerFail("the joined write of E was refused")
-					}
-					return answerOK()
-				}})
-				h.SetupModelWithWorkflow(t, model, conflictDoorWorkflow(model, tag, shape.procs...))
-				eID, eTxID := createWithTx(t, h, model, workflowSampleModel)
+// ifMatchStored is E's data as the 409 test stores it and as every door
+// sends it back: compact, keys in the order PostgreSQL returns them.
+const ifMatchStored = `{"amount":1,"name":"e","status":"loop"}`
 
-				out := door.request(h, eID, eTxID)
-				if out.err != nil {
-					t.Fatalf("request: %v", out.err)
-				}
-				select {
-				case st := <-callbackStatus:
-					t.Fatalf("the joined write of E answered %d", st)
-				default:
-				}
-				if (out.status != 0 && out.status != http.StatusOK) || out.errorCode != "" {
-					t.Fatalf("answered %d %s; want success: %s", out.status, out.errorCode, out.detail)
-				}
-				if st, _ := h.GetEntityState(t, eID); st != "DONE" {
-					t.Fatalf("E is %s; want DONE", st)
-				}
-				if amount := h.GetEntityData(t, eID)["amount"]; amount != float64(7) {
-					t.Fatalf("E has amount %v; want the callback's write (7)", amount)
-				}
-			})
-		}
-	}
+// ifMatchRestWorkflow rests a created entity in OPEN and has no other
+// transition, so E can be stored there with status loop.
+func ifMatchRestWorkflow(name string) string {
+	return fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
+			"states": {
+				"NONE": {"transitions": [{"name": "rest", "next": "OPEN", "manual": false}]},
+				"OPEN": {}
+			}
+		}]
+	}`, name+"-rest-wf")
 }
 
 // TestIfMatch_ChangeAfterReadIs409 — another client commits a change to E
-// after the request read it (the processor makes that write itself, without
-// the transaction token). The request's If-Match held when it started, so
-// this is a lost race, not a failed precondition: a retryable 409 CONFLICT,
-// and E keeps the other client's write. A collection item is not isolated:
-// the transaction the chunk runs in cannot commit.
+// after the request read it. The processor's callout is held while the test
+// makes that write, then released; the processor itself writes nothing. The
+// request's If-Match held when it started, so this is a lost race, not a
+// failed precondition: a retryable 409 CONFLICT, and E keeps the other
+// client's write. A collection item is not isolated: the transaction the
+// chunk runs in cannot commit.
+//
+// Every door sends E's stored data unchanged (ifMatchStored; the patches set
+// the status E already has). Before a callout that carries the transaction
+// token the engine saves E into the transaction when E differs from what the
+// transaction holds, and on PostgreSQL that save holds E's row lock until the
+// transaction ends: a rival write made during the callout would wait for it
+// (anchor_row_lock_test.go). With E unchanged the engine saves nothing before
+// the callout and the rival commits at once. So that an unchanged body still
+// runs the automated "loop" transition, E is stored with status loop under a
+// workflow without it (ifMatchRestWorkflow), and the door workflow is
+// imported after.
 func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 	shapes := []struct {
 		name  string
@@ -142,36 +117,60 @@ func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 			{name: "ifm-rival-p", mode: "SYNC"}, {name: "ifm-rival-cbd", mode: "COMMIT_BEFORE_DISPATCH"},
 		}},
 	}
-	for _, door := range ifMatchDoors() {
+	for _, door := range ifMatchDoors(ifMatchStored, ifMatchStored) {
 		for _, shape := range shapes {
 			t.Run(door.name+"/"+shape.name, func(t *testing.T) {
 				h := newCalloutHarness(t, nil)
 				model, tag := uniq("ifm-rival"), uniq("ifm-rival-tag")
 				var calls atomic.Int32
-				rivalStatus := make(chan int, 1)
-				h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: func(_ context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
+				running, release := make(chan struct{}), make(chan struct{})
+				var releaseOnce sync.Once
+				releaseCallout := func() { releaseOnce.Do(func() { close(release) }) }
+				t.Cleanup(releaseCallout)
+				h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: func(context.Context, receivedCallout, *reqCtx) cnodeReply {
 					if calls.Add(1) > 1 {
 						return answerOK()
 					}
-					// The other client's write: no transaction token, so it
-					// commits at once. Its status matches no transition.
-					res, err := h.callback(http.MethodPut, "/api/entity/JSON/"+rc.entityID, `{"name":"e","amount":5,"status":"rival"}`, "")
-					if err != nil || res.StatusCode != http.StatusOK {
-						rivalStatus <- res.StatusCode
+					close(running)
+					select {
+					case <-release:
+					case <-time.After(20 * time.Second):
 					}
 					return answerOK()
 				}})
-				h.SetupModelWithWorkflow(t, model, conflictDoorWorkflow(model, tag, shape.procs...))
-				eID, eTxID := createWithTx(t, h, model, workflowSampleModel)
+				h.SetupModelWithWorkflow(t, model, ifMatchRestWorkflow(model))
+				eID, eTxID := createWithTx(t, h, model, ifMatchStored)
+				resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/model/%s/1/workflow/import", model), conflictDoorWorkflow(model, tag, shape.procs...), "")
+				if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+					t.Fatalf("import the door workflow: %d %s", resp.StatusCode, body)
+				}
 
-				out := door.request(h, eID, eTxID)
+				done := make(chan joinedCommitOutcome, 1)
+				go func() { done <- door.request(h, eID, eTxID) }()
+				select {
+				case <-running:
+				case out := <-done:
+					t.Fatalf("the request answered %d %s before its processor was called out: %s", out.status, out.errorCode, out.detail)
+				case <-time.After(30 * time.Second):
+					t.Fatal("the processor was never called out")
+				}
+				// The other client's write, while the callout is held: no
+				// transaction token, so it commits at once. Its status matches
+				// no transition.
+				rival, err := h.callback(http.MethodPut, "/api/entity/JSON/"+eID, `{"name":"e","amount":5,"status":"rival"}`, "")
+				releaseCallout()
+				if err != nil || rival.StatusCode != http.StatusOK {
+					t.Fatalf("the other client's write: %v %d %s; want 200", err, rival.StatusCode, rival.Body)
+				}
+
+				var out joinedCommitOutcome
+				select {
+				case out = <-done:
+				case <-time.After(30 * time.Second):
+					t.Fatal("the request did not finish")
+				}
 				if out.err != nil {
 					t.Fatalf("request: %v", out.err)
-				}
-				select {
-				case st := <-rivalStatus:
-					t.Fatalf("the other client's write answered %d", st)
-				default:
 				}
 				if (out.status != 0 && out.status != http.StatusConflict) || out.errorCode != "CONFLICT" || !out.retryable {
 					t.Fatalf("answered %d %s retryable=%v; want a retryable 409 CONFLICT: %s", out.status, out.errorCode, out.retryable, out.detail)
@@ -194,7 +193,7 @@ func TestIfMatch_ChangeAfterReadIs409(t *testing.T) {
 // it: the request's own precondition fails, 412 ENTITY_MODIFIED, and E keeps
 // the other client's write. No processor runs.
 func TestIfMatch_StaleIs412(t *testing.T) {
-	for _, door := range ifMatchDoors() {
+	for _, door := range ifMatchDoors(ifMatchLoop, `{"name":"e","amount":1,"status":"draft"}`) {
 		t.Run(door.name, func(t *testing.T) {
 			h := newCalloutHarness(t, nil)
 			model, tag := uniq("ifm-stale"), uniq("ifm-stale-tag")

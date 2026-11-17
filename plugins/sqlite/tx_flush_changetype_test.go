@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // TestFlushToSQLite_ChangeTypeMatchesStoredValue is the regression test for
@@ -23,6 +24,7 @@ import (
 func TestFlushToSQLite_ChangeTypeMatchesStoredValue(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-repro", "u1", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "m", ModelVersion: "1"})
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -83,18 +85,14 @@ func TestFlushToSQLite_ChangeTypeMatchesStoredValue(t *testing.T) {
 	}
 }
 
-// TestFlushToSQLite_ChangeTypeSameTxDoubleSave covers the supersededSaves
-// interaction called out for this fix: two Save calls to the SAME entity ID
-// inside ONE business transaction (a same-tx double-save) must flush as two
-// consecutive entity_versions rows sharing the transaction's ID — see
-// supersededSaves's field godoc — with the first row CREATED (the entity
-// truly has no prior row before this transaction) and the second row UPDATED
-// (a prior row now exists from the first row flushed just before it, within
-// the same commit). The fix must reset curIsNew to false only AFTER each
-// staged item is processed, not before the loop starts.
+// TestFlushToSQLite_ChangeTypeSameTxDoubleSave: two Save calls to the SAME
+// entity ID inside ONE business transaction record ONE version — the last
+// save's content, CREATED because the entity has no version before this
+// transaction (spec §3.1).
 func TestFlushToSQLite_ChangeTypeSameTxDoubleSave(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-repro-2", "u1", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "m", ModelVersion: "1"})
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -135,21 +133,18 @@ func TestFlushToSQLite_ChangeTypeSameTxDoubleSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVersionMetadata: %v", err)
 	}
-	if len(metas) != 2 {
-		t.Fatalf("expected 2 versions (one per same-tx save), got %d: %+v", len(metas), metas)
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 version (one per transaction), got %d: %+v", len(metas), metas)
 	}
 
-	wantByVersion := map[int64]string{1: "CREATED", 2: "UPDATED"}
-	for _, m := range metas {
-		want, ok := wantByVersion[m.Version]
-		if !ok {
-			t.Fatalf("unexpected version %d in result: %+v", m.Version, metas)
-		}
-		if m.ChangeType != want {
-			t.Errorf("version %d: changeType = %q, want %q", m.Version, m.ChangeType, want)
-		}
-		if m.TransactionID != txID {
-			t.Errorf("version %d: transactionID = %q, want %q (both rows share the one business tx)", m.Version, m.TransactionID, txID)
-		}
+	if m := metas[0]; m.Version != 1 || m.ChangeType != "CREATED" || m.TransactionID != txID {
+		t.Fatalf("version = %d changeType = %q txID = %q, want 1 CREATED %q", m.Version, m.ChangeType, m.TransactionID, txID)
+	}
+	got, err := store.Get(ctx, "e-same-tx-double-save")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got.Data) != `{"v":2}` {
+		t.Fatalf("data = %s, want the last save {\"v\":2}", got.Data)
 	}
 }

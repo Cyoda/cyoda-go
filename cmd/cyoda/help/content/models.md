@@ -49,7 +49,7 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`).
 
 A model is a named, versioned schema registered per tenant. Every entity in the system is an instance of exactly one model. Models are identified by `(entityName, modelVersion)`. The model ID is a deterministic UUID v5 derived from that key: `UUID.newSHA1(NameSpaceURL, "{entityName}.{modelVersion}")`.
 
-Models have two lifecycle states: `UNLOCKED` and `LOCKED`. A `LOCKED` model blocks further imports. An `UNLOCKED` model accepts re-import and schema merging. Entities can only be created against a `LOCKED` model. Deletion is blocked while any entities reference the model.
+Models have two lifecycle states: `UNLOCKED` and `LOCKED`. A `LOCKED` model blocks further imports. An `UNLOCKED` model accepts re-import and schema merging. Entities can only be created against a `LOCKED` model. Deletion requires an `UNLOCKED` model, and a model is unlocked only when it has no entities.
 
 Schema inference is additive: importing sample data against an existing model merges the incoming schema with the stored one. The model's `changeLevel` field controls which structural changes are allowed during entity ingestion on a locked model.
 
@@ -123,9 +123,9 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 **DELETE /api/model/{entityName}/{modelVersion}**
 
-Delete a model. Blocked if the model is `LOCKED` or if any entities reference it (entity count > 0).
+Delete a model. Refused with `409 MODEL_ALREADY_LOCKED` if the model is `LOCKED`: unlock it first, which requires that it has no entities.
 
-Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success. `409 MODEL_ALREADY_LOCKED` if the model is locked; `409 MODEL_HAS_ENTITIES` if entities reference it.
+Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success. `409 MODEL_ALREADY_LOCKED` if the model is locked.
 
 **POST /api/model/{entityName}/{modelVersion}/changeLevel/{changeLevel}**
 
@@ -154,7 +154,7 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 Unlock a model. The model must be `LOCKED` and have zero associated entities. Returns `409 MODEL_HAS_ENTITIES` if entities exist, and `409 MODEL_ALREADY_UNLOCKED` if the model is not locked. The unlocked model keeps every field that entity writes added while it was locked.
 
-Unlock counts the model's committed entities and then unlocks it; the two are not one atomic step. A write to the model that is still in progress when the unlock runs — an entity in a transaction that has not committed, or a create that found the model `LOCKED` just before — can commit after the unlock and leave the model `UNLOCKED` with entities. Stop writes to the model before you unlock it. A model left in that state refuses delete with `409 MODEL_HAS_ENTITIES`: delete its entities first, or lock it again.
+Unlock requires that the model has no entities. Stop writes to the model before you unlock it. See LIFECYCLE.
 
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
@@ -188,7 +188,7 @@ Returns `200 OK` with `EntityModelActionResultDto` on success.
 - `422 COMPOSITE_KEY_UNSUPPORTED` — the active storage backend does not support composite unique keys.
 - `422 INVALID_UNIQUE_KEY_DEFINITION` — a key's `id` is empty or missing or duplicated, its `fields` is empty or missing or names a field twice, or a field path references a non-scalar/unknown/array field.
 
-**Transactional ordering.** When one transaction (e.g. a workflow) both frees a unique-key value — by deleting or re-keying its holder — and claims it on another entity, free it before claiming. Free-then-claim works on every backend; the reverse is rejected on write-time backends (PostgreSQL) and accepted on commit-time ones (in-memory, SQLite), so free-before-claim for portable behavior.
+**Enforcement.** Keys are checked when a transaction commits, on the entities as the transaction leaves them, with the unique-key definitions of the stored model (they change only as LIFECYCLE says). A value an entity frees in the same transaction — by being deleted or re-keyed — is free for another entity of that transaction, in either order: two entities can swap their key values, and a chain of moves commits, as long as the final entities are unique. A value claimed by two entities of one transaction, or held by an entity outside it, refuses the commit with `409 UNIQUE_VIOLATION`; a final entity that fills a key in part refuses it with `422 INVALID_UNIQUE_KEY`. A `COMMIT_BEFORE_DISPATCH` processor commits the transaction it runs in before its callout, and the request goes on in a new one (`cyoda help workflows`); each of these commits is checked on the entities as it leaves them. A request body that fills a key in part is refused with `422` before its workflow runs.
 
 **GET /api/model/{entityName}/{modelVersion}/workflow/export**
 
@@ -343,7 +343,17 @@ Transitions:
 - `UNLOCKED` → `LOCKED` via `PUT /model/{name}/{version}/lock`
 - `LOCKED` → `UNLOCKED` via `PUT /model/{name}/{version}/unlock` (only when entity count is zero)
 
-Model administration — import, lock, unlock, delete, change level, unique keys — is meant to run from one place, such as a deploy step, not concurrently on the same model. Two such calls that overlap on one model have no defined order: an import that overlaps a lock can save the model back as `UNLOCKED`. Register and lock a model once, from one caller, rather than from every replica of an application at start-up.
+The API keeps these rules:
+
+- An entity is created only in a `LOCKED` model: a create refuses a model that is not `LOCKED` with `409 MODEL_NOT_LOCKED`.
+- A model is unlocked only when it has no entities: unlock counts them and refuses `409 MODEL_HAS_ENTITIES`.
+- A `LOCKED` model is never deleted or re-imported, and its unique-key definitions do not change: delete, import and the unique-key change refuse it with `409 MODEL_ALREADY_LOCKED`. While `LOCKED`, a model changes only through its change level and schema extensions.
+
+A model's state reaches the other nodes eventually. Each node keeps only `LOCKED` models in its model cache, which an invalidation broadcast updates (normally within milliseconds) or, if the broadcast is lost, `CYODA_MODEL_CACHE_LEASE` expires. A model a node reads as not `LOCKED` therefore comes from storage, and a create that reads it so reads it once more before it refuses with `409 MODEL_NOT_LOCKED`, so a read that raced the lock does not refuse it.
+
+Run model administration — import, lock, unlock, delete, change level, unique-key definitions — from one place, such as a deploy step, not concurrently on the same model, and not while writes to the model are in flight. Register and lock a model once, from one caller, rather than from every replica of an application at start-up, and stop writes to a model before you unlock it.
+
+Change a model's state or its unique-key definitions (`uniqueKeys`) — import, lock, unlock, unique-key change — only while no transaction that will write entities of that model is open. In practice, deploy a model before anything ingests data into it, and change it only while nothing writes to it.
 
 ## SCHEMA EXTENSION
 
@@ -354,8 +364,6 @@ Entity ingestion here includes data returned by a workflow processor, not just d
 **An extension commits on its own.** It is committed in a short transaction of its own, never in the transaction of the write that brought it. Two writes that extend the same model never conflict over it: neither is answered `409 CONFLICT` because of the other's extension; at most the second waits briefly for the first. An extension the schema already holds writes nothing.
 
 **When it is visible.** When a write that extends returns `2xx`, the node that ran the write has the new schema. (On the in-tree backends a write carrying a transaction token is forwarded to the node that owns the transaction and runs there; see `cyoda help cluster`.) Another node has the new schema when the model cache invalidation broadcast arrives (normally within milliseconds), or, if the broadcast is lost, when `CYODA_MODEL_CACHE_LEASE` ends. Other clients may see the new field earlier, before the write returns.
-
-**The model must stay locked.** An extension changes only a `LOCKED` model. An extension that finds the model not `LOCKED` is refused, and the write answers `409 MODEL_NOT_LOCKED`. Unlock needs zero committed entities, so this happens only when a model is unlocked while a write to it, or the transaction the write joined, is in progress, for example during the compute-node callout of a transition on an entity that is not committed yet. An update, collection update or transition gets this answer whether the model was unlocked before it began or while it ran. The answer is not retryable as is: the write can succeed only once the model is locked again.
 
 What follows from this:
 
@@ -373,8 +381,8 @@ What follows from this:
 - `errors.MODEL_NOT_FOUND` — `404` — model does not exist for the given name and version
 - `errors.MODEL_ALREADY_LOCKED` — `409` — re-import, relock, or delete attempted on a model already in `LOCKED` state
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — unlock attempted on a model already in `UNLOCKED` state
-- `errors.MODEL_HAS_ENTITIES` — `409` — unlock or delete blocked because entities of the model exist (`entityCount` in `properties`)
-- `errors.MODEL_NOT_LOCKED` — `409` — an entity write names a model that is not `LOCKED`, or a write's schema extension found the model not `LOCKED` (see SCHEMA EXTENSION)
+- `errors.MODEL_HAS_ENTITIES` — `409` — unlock refused because entities of the model exist (`entityCount` in `properties`)
+- `errors.MODEL_NOT_LOCKED` — `409` — an entity create names a model that is not `LOCKED`
 - `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — a model-changing operation carries a transaction token; model and workflow administration never runs inside a transaction
 - `errors.INVALID_CHANGE_LEVEL` — `400` — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL` (`entityName`, `entityVersion`, `suppliedValue`, `validValues` in `properties`)
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed (static analysis); sample data that is neither a document nor a collection of documents; a field name that is not addressable

@@ -2,8 +2,10 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -78,34 +80,22 @@ func TestRPC_PostSegmentConflict_IsEntityModified(t *testing.T) {
 			txMgr := inner.GetTransactionManager()
 
 			// Armed only for the call under test, so seeding the entity an
-			// update acts on runs the workflow undisturbed.
-			var armed atomic.Bool
+			// update acts on runs the workflow undisturbed. Armed, the
+			// processor names the entity it runs for and waits; it writes
+			// nothing. Dispatched after TX_pre committed, it is held while the
+			// test commits a rival write to that entity in a transaction of its
+			// own, which the apply-result compare then meets.
+			var armed, held atomic.Bool
+			running := make(chan string, 1)
+			release := make(chan struct{})
 			lp := localproc.New()
 			lp.RegisterProcessor("rival-writer", func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition) (*spi.Entity, error) {
-				if !armed.Load() {
-					return e, nil
-				}
-				// Dispatched after TX_pre committed and outside any
-				// transaction: a rival commits its own write to the entity,
-				// which the apply-result compare then meets.
-				rivalID, rivalCtx, err := txMgr.Begin(ctx)
-				if err != nil {
-					return nil, err
-				}
-				es, err := inner.EntityStore(rivalCtx)
-				if err != nil {
-					return nil, err
-				}
-				current, err := es.Get(rivalCtx, e.Meta.ID)
-				if err != nil {
-					return nil, err
-				}
-				current.Data = []byte(`{"name":"rival","amount":9}`)
-				if _, err := es.Save(rivalCtx, current); err != nil {
-					return nil, err
-				}
-				if err := txMgr.Commit(rivalCtx, rivalID); err != nil {
-					return nil, err
+				if armed.Load() && held.CompareAndSwap(false, true) {
+					running <- e.Meta.ID
+					select {
+					case <-release:
+					case <-time.After(20 * time.Second):
+					}
 				}
 				return e, nil
 			})
@@ -154,7 +144,20 @@ func TestRPC_PostSegmentConflict_IsEntityModified(t *testing.T) {
 			calls := lp.ProcessorCallCount("rival-writer")
 
 			armed.Store(true)
+			rivalDone := make(chan error, 1)
+			go func() {
+				defer close(release)
+				select {
+				case id := <-running:
+					rivalDone <- commitRivalWrite(ctx, txMgr, inner, id)
+				case <-time.After(10 * time.Second):
+					rivalDone <- errors.New("the processor never started")
+				}
+			}()
 			env := door.drive(t, svc, ctx, modelName, entityID)
+			if err := <-rivalDone; err != nil {
+				t.Fatalf("rival write: %v", err)
+			}
 
 			if n := lp.ProcessorCallCount("rival-writer") - calls; n != 1 {
 				t.Fatalf("callout fired %d time(s), want 1; the request must stop at the entity that conflicted", n)
@@ -173,4 +176,25 @@ func TestRPC_PostSegmentConflict_IsEntityModified(t *testing.T) {
 			}
 		})
 	}
+}
+
+// commitRivalWrite writes entity id in a transaction of its own and commits.
+func commitRivalWrite(ctx context.Context, txMgr spi.TransactionManager, factory spi.StoreFactory, id string) error {
+	rivalID, rivalCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	es, err := factory.EntityStore(rivalCtx)
+	if err != nil {
+		return err
+	}
+	current, err := es.Get(rivalCtx, id)
+	if err != nil {
+		return err
+	}
+	current.Data = []byte(`{"name":"rival","amount":9}`)
+	if _, err := es.Save(rivalCtx, current); err != nil {
+		return err
+	}
+	return txMgr.Commit(rivalCtx, rivalID)
 }

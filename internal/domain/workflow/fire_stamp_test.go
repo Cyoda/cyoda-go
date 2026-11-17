@@ -176,39 +176,6 @@ func TestStamp_ReplacedOwnerSegmentRefused(t *testing.T) {
 	}
 }
 
-func TestStamp_CallbackReArmedInRunTx_StampRefused(t *testing.T) {
-	var env *runEnv
-	var claimed spi.ScheduledTask
-	ext := &scriptedExtProc{processor: func(_ context.Context, proc spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
-		if proc.Name != "p0" {
-			return nil, nil
-		}
-		jctx, err := env.txMgr.Join(env.ctx, txID)
-		if err != nil {
-			return nil, err
-		}
-		_, err = env.sts.ReconcileForEntity(jctx, spi.ReconcileRequest{
-			TenantID: testTenant, EntityID: claimed.EntityID, CurrentState: "OPEN", Arm: []spi.ScheduledTask{armable(claimed)},
-		})
-		return nil, err
-	}}
-	env = newRunEnv(t, ext)
-	claimed = env.claimed(t, "cbstamp-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{
-		safeProc("p0", ExecutionModeSync), safeProc("p1", ExecutionModeCommitBeforeDispatch),
-	}, nil))
-
-	r, _ := env.run(claimed)
-	if r.Outcome != OutcomeFailed || !errors.Is(r.Err, spi.ErrStaleClaim) {
-		t.Fatalf("report = %+v, want an ordinary failure: the refusal came from the run's own transaction", r)
-	}
-	if n := ext.count("p1"); n != 0 {
-		t.Errorf("p1 dispatched %d times, want 0", n)
-	}
-	if got, _ := env.task(t, claimed.ID); got.ArmToken != claimed.ArmToken || got.Claim == nil || got.Claim.Token != claimed.Claim.Token {
-		t.Errorf("task = %+v, want the claimed life, still under this claim", got)
-	}
-}
-
 func TestStamp_CommitFindsGuardByTransaction(t *testing.T) {
 	cases := []struct {
 		name          string

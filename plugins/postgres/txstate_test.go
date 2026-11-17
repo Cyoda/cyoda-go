@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -380,5 +381,74 @@ func TestRestoreSavepoint_KeepsAConflictCause(t *testing.T) {
 	}
 	if cause := s.AbortCause(); !errors.Is(cause, conflict) {
 		t.Fatalf("AbortCause = %v, want the conflict kept across the savepoint rollback", cause)
+	}
+}
+
+// TestRecordWrittenEntity_LastWriteAndSavepoints verifies the record of the
+// entities a transaction wrote: it holds each entity's last write — the model
+// and bytes of a save, or a delete — keeps the given bytes without copying
+// them (the caller hands over a copy it owns), and is restored by a savepoint
+// rollback and kept by a release.
+func TestRecordWrittenEntity_LastWriteAndSavepoints(t *testing.T) {
+	s := newTxState("tenant-1", 1)
+	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
+	data := []byte(`{"code":"x"}`)
+	s.RecordSave("a", ref, data)
+	if got := s.WrittenEntities()["a"]; &got.data[0] != &data[0] || got.ref != ref || got.deleted {
+		t.Fatalf("recorded save = %+v, want the given bytes and model, not a delete", got)
+	}
+
+	s.PushSavepoint("sp1")
+	s.RecordSave("a", ref, []byte(`{"code":"y"}`))
+	s.RecordDelete("b")
+	got := s.WrittenEntities()
+	if string(got["a"].data) != `{"code":"y"}` || !got["b"].deleted || len(got) != 2 {
+		t.Fatalf("after the writes: %+v, want a's last save and b's delete", got)
+	}
+	if err := s.RestoreSavepoint("sp1"); err != nil {
+		t.Fatalf("RestoreSavepoint: %v", err)
+	}
+	got = s.WrittenEntities()
+	if _, ok := got["b"]; ok || string(got["a"].data) != `{"code":"x"}` {
+		t.Fatalf("after the rollback: %+v, want only a's write before the savepoint", got)
+	}
+
+	s.PushSavepoint("sp2")
+	s.RecordDelete("c")
+	if err := s.ReleaseSavepoint("sp2"); err != nil {
+		t.Fatalf("ReleaseSavepoint: %v", err)
+	}
+	if !s.WrittenEntities()["c"].deleted {
+		t.Fatal("a released savepoint dropped the write made after it")
+	}
+
+	t.Log("a save of no data is a save, not a delete")
+	s.RecordSave("d", ref, nil)
+	if got := s.WrittenEntities()["d"]; got.deleted || got.ref != ref {
+		t.Fatalf("a save of nil data = %+v, want a save of %s", got, ref)
+	}
+}
+
+// TestRecordWrite_MissingState_Answers verifies the answer to a write recorded
+// for a transaction this manager holds no state for: ErrTxAlreadyCommitted
+// once it committed — as a statement on it answers (deadTxQuerier) — and
+// ErrTxNotFound otherwise.
+func TestRecordWrite_MissingState_Answers(t *testing.T) {
+	tm := &TransactionManager{
+		submitTimes: map[string]submitTimeEntry{"tx-committed": {}},
+		txStates:    map[string]*txState{},
+	}
+	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
+	for txID, want := range map[string]error{
+		"tx-committed": spi.ErrTxAlreadyCommitted,
+		"tx-unknown":   spi.ErrTxNotFound,
+	} {
+		ctx := spi.WithTransaction(context.Background(), &spi.TransactionState{ID: txID})
+		if err := tm.recordSave(ctx, "e1", ref, []byte(`{}`)); !errors.Is(err, want) {
+			t.Errorf("recordSave on %s = %v, want %v", txID, err, want)
+		}
+		if err := tm.recordDelete(ctx, "e1"); !errors.Is(err, want) {
+			t.Errorf("recordDelete on %s = %v, want %v", txID, err, want)
+		}
 	}
 }

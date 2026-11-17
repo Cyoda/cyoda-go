@@ -125,6 +125,7 @@ func mustOpenPluginFactory(t *testing.T, opts ...spi.FactoryOption) spi.StoreFac
 func TestPlugin_NewFactoryPassesClock(t *testing.T) {
 	f := mustOpenPluginFactory(t, spi.WithClock(fixedClock{clockStart}))
 	ctx := ctxWithTenant(ctTenant)
+	lockModels(t, f, ctx, ctModel)
 	near := func(what string, got time.Time) {
 		t.Helper()
 		if d := got.Sub(clockStart); d < -time.Second || d > time.Second {
@@ -199,8 +200,10 @@ func TestPlugin_NewFactoryPassesClock(t *testing.T) {
 }
 
 // Placeholder dates fill a row until the commit stamp replaces them, and a
-// read inside the same transaction sees them. Under a business clock they are
-// that clock's time, not the database's.
+// read inside the same transaction sees them on the entity. Under a business
+// clock they are that clock's time, not the database's. The transaction's
+// version rows carry the same placeholders, but no read sees them before the
+// commit stamp: every read of version history is committed-only.
 func TestClock_PlaceholderDatesInsideTx(t *testing.T) {
 	f := mustOpenClockFactory(t, fixedClock{clockStart})
 	ctx := ctxWithTenant(ctTenant)
@@ -236,15 +239,6 @@ func TestClock_PlaceholderDatesInsideTx(t *testing.T) {
 	}
 	near("CreationDate", got.Meta.CreationDate)
 	near("LastModifiedDate", got.Meta.LastModifiedDate)
-
-	// The version row's transaction_time is its LastModifiedDate.
-	v, err := es.GetVersionByTransaction(txCtx, id, txID)
-	if err != nil {
-		t.Fatalf("GetVersionByTransaction: %v", err)
-	}
-	near("version CreationDate", v.Entity.Meta.CreationDate)
-	near("version LastModifiedDate (transaction_time)", v.Entity.Meta.LastModifiedDate)
-	near("version Timestamp (valid_time)", v.Timestamp)
 }
 
 // Without a clock — production — commit stamps and consistency times come
@@ -252,6 +246,7 @@ func TestClock_PlaceholderDatesInsideTx(t *testing.T) {
 func TestNoClock_StampFunctionsUnchanged(t *testing.T) {
 	f := mustOpenPluginFactory(t)
 	ctx := ctxWithTenant(ctTenant)
+	lockModels(t, f, ctx, ctModel)
 	tm, err := f.TransactionManager(ctx)
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)

@@ -19,6 +19,7 @@ import (
 func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 	clock := memory.NewTestClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	lockModels(t, factory, ctxWithTenant("tenant-floor"), spi.ModelRef{EntityName: "m-floor", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-floor")
 	ref := spi.ModelRef{EntityName: "m-floor", ModelVersion: "1"}
 
@@ -98,6 +99,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 func TestBegin_ReservesItsSnapshotTimeAsTheFloor(t *testing.T) {
 	clock := memory.NewTestClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	lockModels(t, factory, ctxWithTenant("tenant-reserve"), spi.ModelRef{EntityName: "m-reserve", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-reserve")
 	ref := spi.ModelRef{EntityName: "m-reserve", ModelVersion: "1"}
 
@@ -166,6 +168,7 @@ func TestBegin_ReservesItsSnapshotTimeAsTheFloor(t *testing.T) {
 func TestNewTransactionManager_CarriesTheSubmitTimeFloor(t *testing.T) {
 	clock := memory.NewTestClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	lockModels(t, factory, ctxWithTenant("tenant-carry"), spi.ModelRef{EntityName: "m-carry", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-carry")
 	ref := spi.ModelRef{EntityName: "m-carry", ModelVersion: "1"}
 

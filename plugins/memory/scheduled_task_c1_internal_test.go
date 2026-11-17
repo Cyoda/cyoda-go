@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
 )
 
 // A commit that fails on an entity conflict applies none of its staged task
@@ -16,6 +17,8 @@ func TestTasks_AnEntityConflictDiscardsTheStagedTaskOps(t *testing.T) {
 	tm := f.NewTransactionManager(newTestUUIDGenerator())
 	sts := &scheduledTaskStore{f: f}
 	ctx := testCtxWithTenant("tenant-A")
+	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -36,7 +39,7 @@ func TestTasks_AnEntityConflictDiscardsTheStagedTaskOps(t *testing.T) {
 	}
 	other := spi.GetTransaction(otherCtx)
 	other.WriteSet["entity-E"] = true
-	other.Buffer["entity-E"] = &spi.Entity{Meta: spi.EntityMeta{ID: "entity-E", TenantID: "tenant-A", ChangeType: "CREATED"}, Data: []byte(`{}`)}
+	other.Buffer["entity-E"] = &spi.Entity{Meta: spi.EntityMeta{ID: "entity-E", TenantID: "tenant-A", ModelRef: ref, ChangeType: "CREATED"}, Data: []byte(`{}`)}
 	if err := tm.Commit(ctx, otherID); err != nil {
 		t.Fatalf("other Commit: %v", err)
 	}

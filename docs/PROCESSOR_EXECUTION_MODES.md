@@ -72,11 +72,10 @@ which of the two strings was used.
 4. The gRPC call uses `Config.ResponseTimeoutMs` (default 30000ms) as the
    round-trip deadline.
 5. On a successful response, `entity.Data` is replaced with the processor's
-   returned mutations and the pipeline continues to the next processor. When
-   the processor returns no mutations and a callback wrote the entity in `T`
-   during the dispatch, `entity.Data` takes that write instead; the engine
-   keeps its own state and metadata, so the transition still takes effect
-   and later processors see the written payload.
+   returned mutations and the pipeline continues to the next processor. A
+   processor that returns no mutations leaves the entity as it is. A
+   processor never writes or deletes the entity it runs for through a
+   callback; it changes it only through the data it returns.
 6. On any failure the engine returns `processor X failed: …`, wrapping
    whatever error ended the callout: the member's own `400 WORKFLOW_FAILED`
    when it answered `success:false`, or a retryable `5xx`
@@ -103,12 +102,26 @@ When a callback arrives carrying the token, the receiving node verifies the
 HMAC and joins the transaction: if `NodeID` equals self, it calls
 `Join(TxRef)` locally; otherwise it forwards the full request to the owning
 node (HTTP: reverse proxy; gRPC: B→A forward). Inside `T` the callback
-sees the writes stored in `T` — including via search (read-your-own-writes);
-other readers do not. The engine saves the cascade's entity to `T` only when
-the cascade ends and before each `COMMIT_BEFORE_DISPATCH` processor, so until
-then a callback read of it returns the last saved version (on a create: not
-found); the processor's request carries the current payload. See
-`cyoda help workflows`, "What a callback read of the entity returns".
+sees the writes stored in `T` — including via search, count and page
+(read-your-own-writes); other readers do not. Before each callout that
+carries the token — a processor (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has
+just committed the entity), a function criterion, a schedule function — the
+engine reads the cascade's entity in `T` and writes it into `T` (not
+committed) when a read of it in `T` finds nothing (a create), or when the stored data bytes or
+state differ from the engine's copy; a change to the metadata alone does not
+count. On PostgreSQL the stored data is the JSONB rendering of what was
+written, so data the engine took from a request or a processor usually
+differs in its bytes and is written again. A callback read of the entity
+therefore returns it as the cascade has it: on
+a create it is found, during workflow selection on a create it has no state
+yet, and while a transition's processors run it is in the source state with
+the changes earlier processors returned. A later write of the entity in `T`
+replaces the pending version, so `T` records one version of the entity. On
+PostgreSQL `T` holds the entity's row lock from its first write of the entity
+until `T` ends, or until a rollback to a savepoint undoes that write: another writer of the entity waits at its write, and another
+transaction that read it waits at its commit. A `T` that has not written the
+entity holds no row lock on it while a callout runs. See `cyoda help workflows`, "What a
+callback read of the entity returns".
 
 A callback ack is **provisional** — it is not durable until the owning
 transaction commits. If the processor fails or the engine rolls back `T`,
@@ -217,9 +230,10 @@ dispatch in a savepoint `S`: if the processor fails, `RollbackToSavepoint(T, S)`
 undoes all callback entity writes and the pipeline continues, unless one of them had
 already lost a race, which fails the operation with a retryable `409 CONFLICT`; if the processor
 succeeds, `ReleaseSavepoint(T, S)` retains those writes inside `T` (subject
-to `T`'s eventual commit). A callback write to the entity the processor runs
-for is the exception: the engine does not adopt it, and its own write of
-that entity later in `T` replaces it. A savepoint that cannot be created, undone or
+to `T`'s eventual commit). The engine makes its write of the entity the
+processor runs for, when one is due (see above), before it opens the
+savepoint, so undoing the savepoint keeps that write.
+A savepoint that cannot be created, undone or
 released fails the operation instead of continuing the pipeline (a ticketed
 `5xx`); a chain superseded by fencing undoes its savepoint, which undoes only
 its own processor's work: while the processor's callout is out, only that
@@ -301,28 +315,19 @@ rejects this flag for any other execution mode.
 #### `startNewTxOnDispatch = true`
 
 - Engine sequence: `Save → Commit(T_pre) → Begin(T_post) → read the
-  anchor in T_post and require T_pre's version → dispatch with T_post's
+  entity in T_post and require T_pre's version → dispatch with T_post's
   token in context → CompareAndSave → cascade continues in T_post`.
 - The read before the dispatch requires `T_pre`'s version: if another
-  transaction wrote or deleted the anchor after `T_pre` committed, the
+  transaction wrote or deleted the entity after `T_pre` committed, the
   transition fails with a conflict before the processor is dispatched. The
-  read also puts the anchor in `T_post`'s read set, so a later write by
+  read also puts the entity in `T_post`'s read set, so a later write by
   another transaction fails at commit.
-- The processor's CRUD callbacks join `T_post`. It can read/write other
-  entities transactionally, and the cascade-anchor entity too. The
-  `CompareAndSave` compares against `T_post` when a callback wrote the
-  anchor in `T_post`, and against `T_pre` otherwise. When the processor
-  returns no mutations, the callback's write is kept, as in `SYNC`. A
-  callback that deletes the anchor fails the transition, and a write by any
-  other transaction conflicts.
-- **Hazard — last-writer-wins on the cascade-anchor entity.** If the
-  processor writes the cascade-anchor entity through its TX-callback AND
-  returns mutations for the same entity in its result, the engine's
-  `CompareAndSave` overwrites the processor's intra-TX writes (the
-  result is applied last). Pick one path: either let the engine apply the
-  result, or have the processor write the entity itself and return no
-  mutations for it. The same warning applies in `SYNC` /
-  `ASYNC_SAME_TX` when the processor has a TX callback (see workflows help).
+- The processor's CRUD callbacks join `T_post`. They can read the entity
+  the processor runs for, and read or write other entities transactionally
+  except one whose cascade is running in the same transaction; they never
+  write or delete the entity the processor runs for, which the processor
+  changes only through the data it returns. The `CompareAndSave` compares against `T_pre`'s version; a write
+  by any other transaction conflicts.
 
 ### `If-Match` precondition
 
@@ -586,14 +591,11 @@ contract from the engine's point of view.
   caller that queued on the lock does not date its version before the version
   it superseded.
 
-  Whether the loser then **conflicts** is the caller's to determine, not the
-  store's: outside a transaction there is no transaction whose ID to stamp, so
-  the row keeps whatever `Meta.TransactionID` the writer supplied. A racer that
-  writes a new ID is seen by the next racer's re-read and that one conflicts; a
-  racer that echoes back the ID it read leaves the stamp unchanged, and every
-  later check still matches. This is the deliberate asymmetry with the
-  in-transaction path above, where the store owns the stamp because a
-  transaction exists to name. No in-tree caller uses this path — the
+  Outside a transaction there is no transaction whose ID to stamp, so the
+  write stores the empty transaction ID; the caller's `Meta.TransactionID`
+  and `Meta.ChangeType` are never read, as on every backend. The winner's
+  write therefore leaves an ID that no non-empty expected ID matches, and
+  every racer queued behind it conflicts. No in-tree caller uses this path — the
   `startNewTxOnDispatch=false` dispatch opens `TX_post` before its
   compare-and-save, so that call is in-transaction like every other.
 - The row is always there to lock, because `expectedTxID` must be non-empty:
@@ -651,10 +653,10 @@ Is the processor going to take more than ~1 second?
              Does the processor need to read/write OTHER entities
              transactionally as part of its work?
              ├── No  → COMMIT_BEFORE_DISPATCH (startNewTxOnDispatch=false).
-             └── Yes → COMMIT_BEFORE_DISPATCH (startNewTxOnDispatch=true)
-                       AND ensure the processor either writes the
-                       cascade-anchor itself OR returns mutations for it,
-                       never both.
+             └── Yes → COMMIT_BEFORE_DISPATCH (startNewTxOnDispatch=true).
+                       The processor changes the entity it runs for
+                       only through its returned mutations, never
+                       through a callback.
 ```
 
 Avoid `ASYNC_SAME_TX` until/unless its semantics diverge from `SYNC` — it is

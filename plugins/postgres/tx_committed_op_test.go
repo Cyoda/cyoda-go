@@ -22,19 +22,17 @@ func TestTx_OpAfterCommit_WrapsSentinel(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("tenant-op-after-commit")
 	ref := spi.ModelRef{EntityName: "m-op-after-commit", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
 
-	seed := &spi.Entity{
-		Meta: spi.EntityMeta{ID: "e-oac", TenantID: "tenant-op-after-commit", ModelRef: ref, State: "open", TransactionID: "tx-seed", ChangeUser: "user-1"},
+	saveCommitted(t, tm, store, ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e-oac", TenantID: "tenant-op-after-commit", ModelRef: ref, State: "open", ChangeUser: "user-1"},
 		Data: []byte(`{"n":1}`),
-	}
-	if _, err := store.Save(ctx, seed); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	})
 	committed, err := store.Get(ctx, "e-oac")
 	if err != nil {
 		t.Fatalf("seed Get: %v", err)
