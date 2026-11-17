@@ -81,8 +81,8 @@ counts no entities: the API keeps the model rules (`cyoda help models`,
 LIFECYCLE).
 
 **Commit-time key check.** A save inside a transaction does no unique-key
-work. In the commit flush, `commitClaims` reads the unique keys of the stored
-model of every entity whose final write is a save with the flush's own SQL
+work. In the commit flush, `commitClaims` reads the unique-key definitions of
+the stored model of every entity whose final write is a save with the flush's own SQL
 transaction (never through the model store, whose single writer connection
 the flush already holds; no state check), releases the claims of every
 written or deleted entity, then inserts the final entities' claims computed from their buffered

@@ -33,7 +33,7 @@ Every entity update that takes a precondition:
    - Collection `PUT`: the item is listed in `failed[]`, its siblings commit,
      and so do those two events.
 3. A write to the entity later in the same transaction is the update's own and
-   does not break the precondition: the engine's save of the entity before a
+   does not break the precondition: the engine's write of the entity before a
    callout that carries the transaction token, or a `COMMIT_BEFORE_DISPATCH`
    segment's own commit. A processor's callback never writes the entity the
    workflow runs for; a processor changes it only through the data it

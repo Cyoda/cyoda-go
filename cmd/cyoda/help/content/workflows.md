@@ -158,7 +158,7 @@ callbacks of the processors of other entities that callbacks create or
 update in the same transaction. Any change to the entity goes back through
 the data returned by the processor its transition called. That includes a
 change worked out by a nested processor (a processor of another entity that
-a callback creates or updates): the nested processor does not save the
+a callback creates or updates): the nested processor does not write the
 change to the entity, which would launch the entity's workflow from inside
 its own cascade; the change is passed back up and returned by the processor
 the entity's transition called. A processor runs while its entity passes
@@ -173,7 +173,7 @@ the write starts a second cascade of the same entity inside the first one.
 That cascade can reach the same callout, which makes the same write again:
 the cascade re-enters itself and can loop without end. The per-state visit
 and depth limits count within one cascade, so they do not stop it. Whatever
-the inner cascade stores, the outer one then overwrites with its next save.
+the inner cascade writes, the outer one then overwrites with its next write.
 The engine does not detect or refuse such a write. A workflow that seems to
 need one is designed wrong: return the data from the processor; put a change
 that must follow the cascade in a later transition (manual or scheduled); or
@@ -224,32 +224,43 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
 - **What a callback read of the entity returns.** A callback that reads,
   searches, counts or pages under the transaction token sees the entity as
   the workflow has it when the callout is made. Before each callout that
-  carries the token, the engine reads the entity in the open transaction
-  and, if the stored data or state differ from the workflow's, writes the
-  entity into that transaction. The write is not committed: only that
-  transaction and the requests joined to it see it, the operation still
-  commits once, at its end, and the operation's final write of the entity
-  replaces it, so it adds no version. On a create the entity is found; during
+  carries the token, the engine reads the entity in the open transaction.
+  It writes the entity into that transaction when the transaction does not
+  hold it yet, or when the stored data bytes or state differ from the
+  workflow's copy; a change to the metadata alone does not count. On
+  PostgreSQL the stored data is the JSONB rendering of what was written,
+  so data that came from a request or a processor usually differs in its
+  bytes and is written again. The write is not committed: only that
+  transaction and the requests joined to it see it. It commits or rolls
+  back with the transaction, at the end of the operation that began the
+  transaction, or, when a `COMMIT_BEFORE_DISPATCH` processor follows, at
+  that processor's segment boundary. A later write of the entity in the
+  same transaction replaces the pending version, so the transaction
+  records one version of the entity. On a create the entity is found; during
   workflow selection on a create it has no state yet. While a transition's
   processors run, its state is the transition's source state (the state
   advances after the processors) and its data includes the changes earlier
   processors returned. The payload in a processor's or criterion's request
-  is the same entity. Other entities the transaction has saved — for
-  example, through an earlier callback — are returned as saved. These saves
-  are the operation's own: the transaction still records one version of the
-  entity, and they do not break the request's `If-Match`.
-- **On PostgreSQL the saved entity stays locked until the workflow ends.**
-  Once the engine has saved the entity before a callout, the transaction
-  holds the entity's row lock until it commits or rolls back. Another
-  transaction that writes the entity waits at its write, and one that read
-  the entity waits at its commit, until the workflow's transaction ends; if
-  that transaction committed a change to the entity, the waiting write or
-  commit is answered with a retryable `409 CONFLICT`. A wait longer than
-  `CYODA_POSTGRES_STATEMENT_TIMEOUT` (default `5m`) cancels the waiting
-  statement. A compute member that reads the entity in a transaction of its
-  own, without the token, and then commits therefore waits on its own
-  callout until the callout times out: read the entity under the token, or
-  from the request's payload.
+  is the same entity. Other entities the transaction has written — for
+  example, through an earlier callback — are returned as written. These
+  writes are the operation's own: they do not break the request's
+  `If-Match`.
+- **On PostgreSQL a written entity stays locked until the transaction
+  ends.** From its first write of the entity — the engine's write before a
+  callout, or an earlier one — the transaction holds the entity's row lock
+  until it commits or rolls back: at the end of the operation, or at the
+  boundary of the `COMMIT_BEFORE_DISPATCH` segment it belongs to. A
+  transaction that has not written the entity holds no row lock on it
+  while a callout runs; a manual transition that sends no data, for
+  example, has not written it before its first processor's callout. Another transaction that writes a locked entity
+  waits at its write, and one that read it waits at its commit, until the
+  lock holder ends; if that transaction committed a change to the entity,
+  the waiting write or commit is answered with a retryable `409 CONFLICT`.
+  A wait longer than `CYODA_POSTGRES_STATEMENT_TIMEOUT` (default `5m`)
+  cancels the waiting statement. A compute member that reads a locked
+  entity in a transaction of its own, without the token, and then commits
+  therefore waits on its own callout until the callout times out: read the
+  entity under the token, or from the request's payload.
 
 Import-time validation rejects any `executionMode` value not in the list above (and not empty) with `400 VALIDATION_FAILED`. The empty string continues to default to `SYNC` at engine fire.
 

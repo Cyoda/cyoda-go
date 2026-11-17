@@ -395,8 +395,10 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 	}, nil
 }
 
-// DeleteModel deletes a model. Blocked if the model is locked; a model with
-// entities is always locked.
+// DeleteModel deletes a model. Blocked if the model is locked. It counts no
+// entities: while model administration follows the lifecycle rules a model
+// with entities is locked, and if they were broken it deletes an unlocked
+// model that holds entities and leaves those entities behind.
 func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion string) error {
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {

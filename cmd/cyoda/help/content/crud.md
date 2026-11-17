@@ -362,7 +362,7 @@ Response: `200 OK`, `application/json`, array of entity envelopes (same shape as
 - `entityId` (path): UUID
 - `pointInTime` (query, optional): RFC 3339 — view history as it existed at this time; must be at or before the consistency time. The history lists committed changes only, also when the request joins a transaction
 
-Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first). A transaction records one version of each entity it writes, however often it saved the entity, so each transaction that changed the entity has one entry:
+Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first). A transaction records one version of each entity it writes, however often it wrote the entity, so each transaction that changed the entity has one entry:
 
 ```json
 [

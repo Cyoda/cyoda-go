@@ -5,16 +5,26 @@ Cloud follows.
 
 ## Callback reads return the current entity
 
-Before every callout that carries the transaction token, the engine writes the
-entity the workflow runs for into the open transaction, uncommitted. Nothing is
-committed early: the operation commits once, at its end, and that commit
-replaces this pending version (one version per transaction). A callback read
-under the token returns the entity as the workflow has it now: the request's
-data, the state changes so far and the data earlier processors returned. On a
-create the entity is found; during a processor it is in its source state. On
-PostgreSQL the pending write holds the entity's row lock, so another writer of
+Before every callout that carries the transaction token, the engine reads the
+entity the workflow runs for in the open transaction. It writes the entity into
+that transaction (not committed) when the transaction does not hold it yet, or
+when the stored data bytes or state differ from the engine's copy; a change to
+the metadata alone does not count. On PostgreSQL the stored data is the JSONB
+rendering of what was written, so data the engine took from a request or a
+processor usually differs in its bytes and is written again. The write commits
+or rolls back with the transaction: at the end of the operation that began the
+transaction, or, when a `COMMIT_BEFORE_DISPATCH` processor follows, at that processor's
+segment boundary. A later write of the entity in the same transaction replaces
+the pending version, so the transaction records one version of the entity. A
+callback read under the token returns the entity as the workflow has it now:
+the request's data, the state changes so far and the data earlier processors
+returned. On a create the entity is found; during a processor it is in its
+source state. On PostgreSQL the transaction holds the entity's row lock from
+its first write of the entity until the transaction ends, so another writer of
 the entity, and another transaction that read it, wait (at the write or the
-commit) until the workflow's transaction ends.
+commit) until then. A transaction that has not written the entity holds no row
+lock on it while a callout runs: a manual transition that sends no data, for example, has not
+written it before its first processor's callout.
 
 ## A callout never writes the entity it runs for
 
@@ -23,8 +33,8 @@ the entity they run for, with or without the token; a processor changes that
 entity only through the data it returns. That holds also for a change a nested
 processor (of another entity a callback creates or updates) works out for the
 entity: it is passed back up and returned by the processor the entity's
-transition called, never saved to the entity. Writing other entities through the token stays supported,
-except an entity whose cascade is running in the same transaction, at any
+transition called, never written to the entity. Writing other entities through
+the token stays supported, except an entity whose cascade is running in the same transaction, at any
 depth: the entity is passing from one state to the next, so such a write moves
 it out from under the running transition, and it starts that entity's workflow
 again inside its own cascade, which can loop without end. The engine does not
@@ -53,8 +63,9 @@ detect a breach and no longer adopts such a write.
 
 ## Unique keys are checked at commit
 
-At commit the store reads the unique keys of each saved entity's model (its own
-stored copy, never keys a caller passes; the model's state is not checked),
+At commit the store reads the unique-key definitions of the model of each
+entity whose last write in the transaction is not a delete (its own stored copy, never definitions a caller passes; the model's
+state is not checked),
 releases the claims of every entity the transaction
 wrote, computes the claims of the final entities and inserts them. Swaps,
 chains of moves and free-after-claim commit. A value claimed twice, or held by
@@ -68,15 +79,18 @@ key fails at commit like any run; the entity is unchanged.
 
 ## The model rules are the API's
 
-Entities exist only in a `LOCKED` model; a model is unlocked only when it has
-no entities; a `LOCKED` model is never deleted, re-imported or given new
-unique keys. The services check these when a request starts: an entity create
+An entity is created only in a `LOCKED` model; a model is unlocked only when it
+has no entities; a `LOCKED` model is never deleted, re-imported or given new
+unique-key definitions. The services check these when a request starts: an entity create
 answers `409 MODEL_NOT_LOCKED`, unlock counts the entities and answers `409
 MODEL_HAS_ENTITIES`, and import, unique-key change and delete answer `409
 MODEL_ALREADY_LOCKED`. Storage adds no check of its own. The rules hold when
 model administration runs from one place and not while writes to the model are
-in flight. `DELETE /model/...` no longer answers `MODEL_HAS_ENTITIES`: a model
-with entities is `LOCKED`.
+in flight; a model that has entities is then `LOCKED`. `DELETE /model/...`
+counts no entities and no longer answers `MODEL_HAS_ENTITIES`. Two cases leave
+an `UNLOCKED` model with entities: a write in progress when an unlock runs, and
+a create accepted by a node that has not yet learned of the unlock. Delete then
+removes the model and leaves its entities behind, without a model.
 
 ## Scheduled fire
 
@@ -88,6 +102,7 @@ task's `lastError`; it is logged at warn level only and mints no ticket.
 ## What Cloud changes
 
 Everything above, on every storage path: one version per entity per
-transaction, commit-time unique-key checks reading the stored model's keys,
+transaction, commit-time unique-key checks reading the stored model's
+unique-key definitions,
 delete no longer answering `MODEL_HAS_ENTITIES`, and the no-self-write rule
 for compute nodes.

@@ -7,13 +7,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 ### Breaking
 
 - **A callback read returns the entity as the workflow has it, and a callout
-  never writes the entity it runs for.** The engine saves the entity into the
-  transaction before every callout that carries the transaction token, so a
-  callback read (get, search, count) returns the current data, including the
-  changes earlier processors returned; on a create it is found, and during a
-  processor it is in its source state. On PostgreSQL the callout holds the
-  entity's row lock, so another writer of the entity, and another transaction
-  that read it, wait until the workflow ends. A processor, a function
+  never writes the entity it runs for.** Before every callout that carries
+  the transaction token, the engine reads the entity in the transaction and
+  writes it into the transaction (not committed) when the transaction does
+  not hold it yet or the stored data or state differ from the engine's copy,
+  so a callback read (get, search, count) returns the current data,
+  including the changes earlier processors returned; on a create it is
+  found, and during a processor it is in its source state. On PostgreSQL a
+  transaction that has written the entity holds its row lock until the
+  transaction ends, so during a callout another writer of the entity, and
+  another transaction that read it, wait until then. A processor, a function
   criterion and a schedule function never write or delete the entity they run
   for, with or without the token; a processor changes it only through the data
   it returns, and the engine no longer adopts such a write. Writing other
@@ -22,7 +25,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   of an entity the transaction already wrote replaces its pending version.
   `GET /entity/{id}?transactionId=X` returns X's final entity and reads
   committed versions only (`404 ENTITY_NOT_FOUND` inside X, where PostgreSQL
-  returned X's first uncommitted save); `/entity/{id}/changes` and the audit
+  returned X's first uncommitted write); `/entity/{id}/changes` and the audit
   history carry one entry per transaction. Delete then recreate in one
   transaction is one version on PostgreSQL too. A savepoint rollback restores
   the pending version, and a rollback of a create frees the id's model. An
@@ -31,11 +34,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   caller supplies, and a pending read in a transaction carries store-assigned
   metadata.
 - **Unique keys are checked at commit, on the final entities.** The store
-  reads the keys from its own stored model; `spi.WithUniqueKeys` and
-  `spi.UniqueKeysFromContext` are removed. Two entities that swap key values,
+  reads the unique-key definitions from its own stored model;
+  `spi.WithUniqueKeys` and `spi.UniqueKeysFromContext` are removed. Two entities that swap key values,
   a chain of moves, and a value freed and claimed in one transaction now
   commit on every backend (memory and sqlite answered `409`, PostgreSQL `409`
-  unless the saves freed first). A key a joined callback's write breaks, or a
+  unless the writes freed first). A key a joined callback's write breaks, or a
   partial key its processors' returned data leaves, is now found at the
   owner's commit on PostgreSQL (`409 UNIQUE_VIOLATION`, `422
   INVALID_UNIQUE_KEY`), not on the callback request, as on memory and sqlite.
@@ -43,11 +46,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`40P01`) answer a retryable `409 CONFLICT`. A scheduled fire follows the
   final entity's keys (memory dropped them, the others kept stale claims) and
   a fire that breaks a key fails at commit.
-- **`DELETE /model/...` no longer answers `MODEL_HAS_ENTITIES`.** A model with
-  entities is `LOCKED` (unlock refuses a model with entities), so delete
-  answers `MODEL_ALREADY_LOCKED`. The model rules are the API's checks, and
-  hold when model administration runs from one place, not while writes to the
-  model are in flight (`cyoda help models`, LIFECYCLE). Change a model's state
+- **`DELETE /model/...` no longer answers `MODEL_HAS_ENTITIES`.** Delete
+  counts no entities. While model administration runs from one place, not
+  while writes to the model are in flight (`cyoda help models`, LIFECYCLE), a
+  model with entities is `LOCKED`, and delete answers `MODEL_ALREADY_LOCKED`.
+  If those rules were broken and an `UNLOCKED` model holds entities, delete
+  removes the model and leaves its entities behind, without a model. The
+  model rules are the API's checks. Change a model's state
   or its unique-key definitions only while no transaction that will write
   entities of that model is open; such a transaction's commit may check the
   unique-key definitions as they were when it began.

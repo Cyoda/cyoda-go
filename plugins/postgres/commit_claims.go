@@ -16,8 +16,8 @@ import (
 //  1. Release the claims of every entity written (releaseClaims).
 //  2. Read the unique-key definitions (uniqueKeys) of the model of every
 //     entity whose last write is a save, in one statement, from the models
-//     rows (modelKeys). The model's state is not checked (the caller saves
-//     entities only into a LOCKED model), and a model the read does not
+//     rows (modelKeys). The model's state is not checked (the API, not the
+//     store, keeps the model rules), and a model the read does not
 //     find contributes no unique-key definitions. An entity whose last
 //     write is a delete needs no model.
 //  3. Compute the claims of every entity whose last write is a save, from the

@@ -19,7 +19,7 @@ import (
 //
 //  1. Read the unique keys of the stored model of every entity in saves,
 //     one read per distinct model. The model's state is not checked (the
-//     caller saves entities only into a LOCKED model), and a model not found
+//     API, not the store, keeps the model rules), and a model not found
 //     contributes no keys. A delete needs no model.
 //  2. Release the claims of every entity in released.
 //  3. Compute the claims of every entity in saves from the bytes it was

@@ -76,10 +76,10 @@ type TransactionState struct {
 5. Check the staged scheduled-task ops: they must not leave two
    RUNNING tasks on one entity (checkOneRunning; a breach is a
    defect and panics, before anything is written)
-6. Read the unique keys of the stored model of every buffered entity
-   (modelKeys; no state check, a missing model has no keys).
-   Compute each buffered entity's claims from its buffered bytes with
-   that model's keys:
+6. Read the unique-key definitions of the stored model of every
+   buffered entity (modelKeys; no state check, a missing model has no
+   definitions). Compute each buffered entity's claims from its buffered
+   bytes with that model's definitions:
      partial key -> ABORT -> ErrPartialUniqueKey
      a value two buffered entities claim, or a committed claim held by
      an entity the transaction neither wrote nor deleted
@@ -106,7 +106,7 @@ makes the flush atomic. Each acquisition still follows the one order below.
 
 Every claim is released before any is inserted, so a swap of key values
 between two entities of one transaction is judged only on its final state. A
-save outside a transaction runs the same keys read and claim check under
+save outside a transaction runs the same definitions read and claim check under
 `entityMu`. The store checks no model state: the API keeps the model rules
 (`cyoda help models`, LIFECYCLE).
 

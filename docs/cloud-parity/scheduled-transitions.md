@@ -185,8 +185,10 @@ A compute member's callback during a run joins the run's transaction, as it
 joins a client request's.
 
 - A callback read under the token sees the fired entity as the run has it
-  when the callout is made: the engine saves it to the transaction before
-  each callout that carries the token, so the read includes the mutations
+  when the callout is made: before each callout that carries the token,
+  the engine reads the entity in the transaction and writes it into the
+  transaction (not committed) when the transaction does not hold it yet or
+  its stored data or state differ, so the read includes the mutations
   earlier processors returned. The callbacks of a `schedule.function` the
   run calls to arm the state it reaches are admitted like any other.
 - A processor, a function criterion and a schedule function never write or

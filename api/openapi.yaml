@@ -5340,7 +5340,7 @@ paths:
         "409":
           description: |
             Model cannot be deleted:
-            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before deleting. A model with entities is always `LOCKED`, so delete never answers `MODEL_HAS_ENTITIES`.
+            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before deleting. Delete counts no entities and never answers `MODEL_HAS_ENTITIES`. While model administration follows the model lifecycle rules (`cyoda help models`, LIFECYCLE), a model with entities is `LOCKED`; if those rules were broken and an `UNLOCKED` model holds entities, delete removes the model and leaves its entities behind, without a model.
           content:
             application/problem+json:
               schema:
@@ -5769,7 +5769,7 @@ paths:
 
         - A duplicate value-set is rejected with 409 UNIQUE_VIOLATION (non-retryable).
 
-        - Keys are checked when a transaction commits, on the entities as the transaction leaves them, with the keys the stored model holds. A value freed in the same transaction (its holder deleted or re-keyed) is free for another entity of it, in either order: swaps and chains of moves commit when the final entities are unique.
+        - Keys are checked when a transaction commits, on the entities as the transaction leaves them, with the unique-key definitions the stored model holds. A value freed in the same transaction (its holder deleted or re-keyed) is free for another entity of it, in either order: swaps and chains of moves commit when the final entities are unique.
 
         \        "
       operationId: setEntityModelUniqueKeys
@@ -13207,11 +13207,16 @@ components:
         extension attribute `cyodatxtoken`); echoing it here runs this request
         inside the open transaction the token names, so the request sees what
         that transaction has saved so far and its own writes commit with it.
-        Before the callout, the engine writes the entity the callout runs for
-        into that open transaction, uncommitted (the operation still commits
-        once, at its end), so a read of it returns the entity as the workflow
-        has it: found on a create, with the changes earlier processors
-        returned, in the transition's source state while its processors run.
+        Before the callout, the engine reads the entity the callout runs for
+        in that open transaction and writes it there (not committed) when the
+        transaction does not hold it yet or the stored data or state differ
+        from the engine's copy. The write commits or rolls back with the
+        transaction, and a later write of the entity in the same transaction
+        replaces it, so the transaction records one version of the entity. A
+        read of the entity under the token therefore returns it as the
+        workflow has it: found on a create, with the changes earlier
+        processors returned, in the transition's source state while its
+        processors run.
         A callout never writes or deletes the entity it runs for; a processor
         changes it only through the data it returns (see `cyoda help
         workflows`).
