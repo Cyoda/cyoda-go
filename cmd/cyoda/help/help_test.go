@@ -424,7 +424,7 @@ var topLevelTopicsV061 = []string{
 	"cli", "config", "errors", "crud", "search", "analytics",
 	"models", "workflows", "run", "helm", "telemetry",
 	"openapi", "grpc", "quickstart", "admin", "cluster",
-	"scheduled-tasks",
+	"scheduled-tasks", "install",
 }
 
 // TestAllTopLevelTopicsPresent guards against accidental deletion of a

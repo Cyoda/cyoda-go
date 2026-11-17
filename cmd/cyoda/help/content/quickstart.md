@@ -3,6 +3,7 @@ topic: quickstart
 title: "cyoda quickstart — minimum invocations"
 stability: stable
 see_also:
+  - install
   - cli
   - cli.init
   - config
@@ -220,6 +221,7 @@ The bundled `compose.yaml` at `deploy/docker/compose.yaml` uses `CYODA_STORAGE_B
 
 ## SEE ALSO
 
+- install
 - cli
 - cli.init
 - config
