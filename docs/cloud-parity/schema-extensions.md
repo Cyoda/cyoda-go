@@ -27,12 +27,11 @@ workflow processor returns — over HTTP and gRPC.
   Contention is a wait that lasts until the request ends.
 - **Loss-free.** Every extension whose call returned is in the model's
   schema.
-- **The model's state is not checked.** An entity is created only in a
-  `LOCKED` model, and while model administration follows the lifecycle rules
-  (`cyoda help models`, LIFECYCLE) a model that has entities stays `LOCKED`,
-  so an extension reaches a `LOCKED` model. An extension is not refused
-  because of the model's state, also when a broken rule has left the model
-  `UNLOCKED`: no write answers `409 MODEL_NOT_LOCKED` for its extension.
+- **Only a `LOCKED` model is extended.** A client extends a schema only by
+  writing entity data, and the API accepts entity data only into a `LOCKED`
+  model: a create checks the state, and every other write acts on an
+  existing entity, whose model unlock keeps `LOCKED`. The extension itself
+  does not check the state again and never answers `409 MODEL_NOT_LOCKED`.
 - **Storage failure is retryable.** A storage outage during an extension,
   including one for data a workflow processor returns, answers the retryable
   `503 STORAGE_UNAVAILABLE`.

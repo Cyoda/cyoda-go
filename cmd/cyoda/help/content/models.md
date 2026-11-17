@@ -367,8 +367,6 @@ Entity ingestion here includes data returned by a workflow processor, not just d
 
 **When it is visible.** When a write that extends returns `2xx`, the node that ran the write has the new schema. (On the in-tree backends a write carrying a transaction token is forwarded to the node that owns the transaction and runs there; see `cyoda help cluster`.) Another node has the new schema when the model cache invalidation broadcast arrives (normally within milliseconds), or, if the broadcast is lost, when `CYODA_MODEL_CACHE_LEASE` ends. Other clients may see the new field earlier, before the write returns.
 
-**The model's state is not checked.** A write extends the model of the entity it writes. While model administration follows LIFECYCLE, that model is `LOCKED`. An extension is not refused because of the model's state, also when the cases in LIFECYCLE have left the model `UNLOCKED`.
-
 What follows from this:
 
 - A new field can be visible to other clients — in the model export, in search path validation, in criteria — before the write that brought it commits. A query on that field finds nothing from that write until it commits.

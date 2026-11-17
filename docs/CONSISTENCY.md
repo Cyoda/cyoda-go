@@ -320,9 +320,8 @@ Unlock is not atomic with its entity check either: it counts the
 model's committed entities, then unlocks. An entity write still in
 progress — its transaction not yet committed, or a create that read the
 model as LOCKED just before — is not counted and can commit after the
-unlock, leaving an UNLOCKED model with entities. Nothing refuses such
-a write later: a schema extension it makes after the unlock is not
-refused either. Writes to a model stop before it is unlocked.
+unlock, leaving an UNLOCKED model with entities. Writes to a model stop
+before it is unlocked.
 
 ## 3c. In-transaction `Search` is a predicate read
 
