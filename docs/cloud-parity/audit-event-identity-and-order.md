@@ -129,9 +129,9 @@ where in the stack it is minted.
 ## 6. The finished-event endpoint's tie-break
 
 A transaction can carry more than one `STATE_MACHINE_FINISH` event for the
-same entity: a joined callback's loopback save emits its own START/FINISH
-pair when it updates an entity whose workflow already ran earlier in the
-same transaction. `GET
+same entity: a compute node's callback that writes, inside the same
+transaction, an entity whose workflow already ran earlier in it runs that
+workflow again, which records its own START/FINISH pair. `GET
 /audit/entity/{entityId}/workflow/{transactionId}/finished` picks among
 them the one that sorts first under the §2 order — normally the last one
 recorded, but not promised to be, since §2 does not promise recording order

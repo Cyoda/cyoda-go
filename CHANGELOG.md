@@ -25,10 +25,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   of an entity the transaction already wrote replaces its pending version.
   `GET /entity/{id}?transactionId=X` returns X's final entity and reads
   committed versions only (`404 ENTITY_NOT_FOUND` inside X, where PostgreSQL
-  returned X's first uncommitted write); `/entity/{id}/changes` and the audit
-  history carry one entry per transaction. Delete then recreate in one
-  transaction is one version on PostgreSQL too. A savepoint rollback restores
-  the pending version, and a rollback of a create frees the id's model. An
+  returned X's first uncommitted write); `/entity/{id}/changes` and the
+  `EntityChange` audit events carry one entry per transaction. Delete then
+  recreate in one transaction is one version on PostgreSQL too. A savepoint
+  rollback restores the pending version, and a rollback of a create frees the id's model. An
   entity's model stays fixed within a transaction after a same-transaction
   delete. An auto-commit write ignores a transaction id and change type the
   caller supplies, and a pending read in a transaction carries store-assigned

@@ -166,14 +166,14 @@ No state-machine event holds the character U+0000: PostgreSQL cannot store it, w
 
 Retrieves the `STATE_MACHINE_FINISH` audit event for a specific entity and transaction. Provides direct access to the workflow outcome without scanning all audit events.
 
-A transaction can carry more than one `STATE_MACHINE_FINISH` event for the entity — a compute node's callback that saves, inside the same transaction, an entity whose workflow already ran earlier in it (a processor writing its entity back) runs that workflow again and records its own START/FINISH pair. When that happens, this endpoint returns the one that sorts first in the audit order (see Order above; normally the last one recorded).
+A transaction can carry more than one `STATE_MACHINE_FINISH` event for the entity. A compute node's callback can write, inside the same transaction, an entity whose workflow already ran to its end earlier in it. That write runs the entity's workflow again, which records its own START/FINISH pair. When that happens, this endpoint returns the one that sorts first in the audit order (see Order above; normally the last one recorded).
 
 - `entityId` (path): UUID
 - `transactionId` (path): UUID
 
 Response: `200 OK`, `application/json` — `StateMachineAuditEventDto` (the finish event for the transaction), carrying the same `eventId` a search response returns for the same event.
 
-Returns `404` with `ProblemDetail` (`application/problem+json`) when the entity or finished event is not found. A scheduled transition's fire records no `STATE_MACHINE_START` and no `STATE_MACHINE_FINISH` (its last event is `SCHEDULED_TRANSITION_FIRE`), so this endpoint answers `404 ENTITY_NOT_FOUND` for a fire's transaction — unless a compute node's callback saved the entity inside that transaction, which runs its workflow and records its own pair, as described above.
+Returns `404` with `ProblemDetail` (`application/problem+json`) when the entity or finished event is not found. A scheduled transition's fire records no `STATE_MACHINE_START` and no `STATE_MACHINE_FINISH` (its last event is `SCHEDULED_TRANSITION_FIRE`), so this endpoint answers `404 ENTITY_NOT_FOUND` for a fire's transaction.
 
 ## ERRORS
 

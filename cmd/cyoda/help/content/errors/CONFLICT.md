@@ -27,7 +27,7 @@ When a write commits, the server checks that nothing it wrote was changed by ano
 
 Both are normal outcomes under concurrent load.
 
-On PostgreSQL two transactions that commit at the same time can meet PostgreSQL's deadlock detection when one of them claims a unique-key value that the other frees in the same commit. One of them is answered this retryable 409; the other commits, or is answered `409 UNIQUE_VIOLATION` if a value it claims is still held. A retry is checked against the committed claims. Commits that only claim the same values, and free none of them, do not deadlock: claims are inserted in a fixed order, so the later commit waits for the earlier one.
+On PostgreSQL two transactions that commit at the same time can meet PostgreSQL's deadlock detection when each of them claims a unique-key value that the other frees in the same commit. One of them is answered this retryable 409; the other commits, or is answered `409 UNIQUE_VIOLATION` if a value it claims is still held. A retry is checked against the committed claims. Commits that only claim the same values, and free none of them, do not deadlock: claims are inserted in a fixed order, so the later commit waits for the earlier one.
 
 A schema extension never causes this answer. Two writes that extend the same model both succeed: each extension commits on its own and never conflicts with another (`cyoda help models`, SCHEMA EXTENSION).
 

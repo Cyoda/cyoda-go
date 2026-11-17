@@ -47,7 +47,7 @@ A workflow definition is a named finite state machine attached to an entity mode
 
 The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. Manual transitions are triggered by the client via `PUT /entity/{format}/{entityId}/{transition}`.
 
-The engine enforces a per-state visit limit of 10 by default (configurable via `WithMaxStateVisits`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time. Both limits count within one cascade; they do not stop a workflow whose callouts write the entity they run for (PROCESSORS, *Design rule*).
+The engine enforces a per-state visit limit of 10 by default (configurable via `WithMaxStateVisits`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time. Both limits count within one cascade. A callout never writes the entity its workflow runs for (PROCESSORS, *Design rule*).
 
 ## WORKFLOW SCHEMA
 
@@ -255,8 +255,11 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
   callout, or an earlier one — the transaction holds the entity's row lock
   until it commits or rolls back: at the end of the operation, or at the
   boundary of the `COMMIT_BEFORE_DISPATCH` segment it belongs to. A rollback
-  to a savepoint that undoes the write (a failed callback, or a failed
-  `ASYNC_NEW_TX` processor) releases the lock with it. A
+  to a savepoint releases the locks of the writes it undoes: the writes of a
+  failed callback, or those of the callbacks of a failed `ASYNC_NEW_TX`
+  processor. The engine's write before an `ASYNC_NEW_TX` processor's
+  callout is made before that processor's savepoint opens, so the
+  processor's failure keeps that write and its lock. A
   transaction that has not written the entity holds no row lock on it
   while a callout runs; a manual transition that sends no data, for
   example, has not written it before its first processor's callout. Another transaction that writes a locked entity

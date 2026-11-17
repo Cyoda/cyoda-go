@@ -601,11 +601,11 @@ paths:
 
 
         A transaction can carry more than one STATE_MACHINE_FINISH event for
-        the entity — a joined callback's loopback save emits its own
-        START/FINISH pair when it updates an entity whose workflow already
-        ran earlier in the same transaction. When that happens, this endpoint
-        returns the one that sorts first in the audit order (normally the
-        last one recorded).
+        the entity — a compute node's callback that writes, inside the same
+        transaction, an entity whose workflow already ran earlier in it runs
+        that workflow again, which records its own START/FINISH pair. When
+        that happens, this endpoint returns the one that sorts first in the
+        audit order (normally the last one recorded).
       operationId: getStateMachineFinishedEvent
       parameters:
         - name: entityId

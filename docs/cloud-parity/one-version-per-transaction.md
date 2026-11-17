@@ -56,7 +56,8 @@ adopts such a write.
   id's model.
 - `GET /entity/{id}?transactionId=X` returns X's final entity and reads
   committed versions only: `404 ENTITY_NOT_FOUND` before X commits, also inside
-  X. `/changes` and the audit history carry one entry per transaction.
+  X. `/changes` and the `EntityChange` audit events carry one entry per
+  transaction.
 - An auto-commit write is its own transaction and version. It ignores a
   caller-supplied transaction id and change type. A read of a pending version
   in the transaction carries the store-assigned metadata.
