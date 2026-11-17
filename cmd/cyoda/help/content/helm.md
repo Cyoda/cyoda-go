@@ -367,17 +367,15 @@ Without `--version`, Helm upgrades to the newest chart; add `--version <chart ve
 helm uninstall cyoda --namespace cyoda
 ```
 
-Uninstall does not delete PersistentVolumeClaims, Secrets not managed by the chart, or the namespace. Delete chart-managed Secrets manually if desired:
+Uninstall deletes the release's objects, including the HMAC and metrics bearer Secrets the chart generated. It does not delete the Secrets you created (`cyoda-pg`, `cyoda-jwt`, and any you named in an `existingSecret`), the namespace, or the database.
+
+**Dry-run (template rendering without cluster access):** the chart cannot generate the HMAC and metrics bearer Secrets without cluster access, so create them first and name them. The HMAC secret is 32 random bytes written as 64 hex characters (see GENERATING SECRETS); the pods do not start with a shorter one.
 
 ```
-kubectl delete secret cyoda-hmac cyoda-metrics-bearer -n cyoda
-```
-
-**Dry-run (template rendering without cluster access — HMAC/metrics secret must be pre-created):**
-
-```
-kubectl create secret generic cyoda-hmac -n cyoda --from-literal=secret=placeholder
-kubectl create secret generic cyoda-metrics-bearer -n cyoda --from-literal=bearer=placeholder
+(umask 077; openssl rand -hex 32 | tr -d '\n' > hmac-secret; openssl rand -hex 32 | tr -d '\n' > metrics-bearer)
+kubectl create secret generic cyoda-hmac -n cyoda --from-file=secret=hmac-secret
+kubectl create secret generic cyoda-metrics-bearer -n cyoda --from-file=bearer=metrics-bearer
+rm hmac-secret metrics-bearer
 helm template cyoda cyoda/cyoda \
   --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
@@ -429,12 +427,12 @@ helm install cyoda cyoda/cyoda \
   --set jwt.existingSecret=cyoda-jwt \
   --set "gateway.parentRefs[0].name=prod-gateway" \
   --set "gateway.parentRefs[0].namespace=gateway-system" \
-  --set extraEnv[0].name=CYODA_OTEL_ENABLED \
-  --set-string extraEnv[0].value=true \
-  --set extraEnv[1].name=OTEL_EXPORTER_OTLP_ENDPOINT \
-  --set extraEnv[1].value=http://otel-collector.monitoring.svc.cluster.local:4318 \
-  --set extraEnv[2].name=OTEL_SERVICE_NAME \
-  --set extraEnv[2].value=cyoda
+  --set "extraEnv[0].name=CYODA_OTEL_ENABLED" \
+  --set-string "extraEnv[0].value=true" \
+  --set "extraEnv[1].name=OTEL_EXPORTER_OTLP_ENDPOINT" \
+  --set "extraEnv[1].value=http://otel-collector.monitoring.svc.cluster.local:4318" \
+  --set "extraEnv[2].name=OTEL_SERVICE_NAME" \
+  --set "extraEnv[2].value=cyoda"
 ```
 
 An environment value must be a string. `--set` reads `true`, `false` and numbers as YAML scalars of those types, which the chart's schema refuses for `extraEnv[].value`; pass such values with `--set-string`, or quote them in a values file (`value: "true"`).
@@ -446,10 +444,10 @@ The chart has no dedicated values for the IAM feature flags. Every replica gets 
 ```
 helm upgrade cyoda cyoda/cyoda \
   --namespace cyoda --reset-then-reuse-values \
-  --set extraEnv[0].name=CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED \
-  --set-string extraEnv[0].value=true \
-  --set extraEnv[1].name=CYODA_IAM_M2M_ADMIN_ROLE_ENABLED \
-  --set-string extraEnv[1].value=true
+  --set "extraEnv[0].name=CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED" \
+  --set-string "extraEnv[0].value=true" \
+  --set "extraEnv[1].name=CYODA_IAM_M2M_ADMIN_ROLE_ENABLED" \
+  --set-string "extraEnv[1].value=true"
 ```
 
 With `--reset-then-reuse-values`, `extraEnv[0]` and `extraEnv[1]` replace whatever entries already sit at those positions; list every `extraEnv` entry you keep.

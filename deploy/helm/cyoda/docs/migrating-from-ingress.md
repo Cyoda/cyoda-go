@@ -101,9 +101,25 @@ Inspect `/tmp/cyoda-routes.yaml`. You'll see two route resources:
 - A `GRPCRoute` (translated from the `backend-protocol: GRPC`
   annotation) for the gRPC service.
 
-Compare against `helm template cyoda cyoda/cyoda --set
-gateway.enabled=true --show-only templates/httproute.yaml` to see the
-chart's canonical shape. Differences are usually:
+Compare against the routes the chart renders, to see its canonical shape.
+`helm template` reads no Secret, but the chart's schema needs the Secret
+names set, so any name will do here; use your own Gateway and hostnames:
+
+```bash
+helm template cyoda cyoda/cyoda -n cyoda \
+  --set postgres.existingSecret=any \
+  --set jwt.existingSecret=any \
+  --set cluster.hmacSecret.existingSecret=any \
+  --set monitoring.metricsBearer.existingSecret=any \
+  --set 'gateway.parentRefs[0].name=platform-gateway' \
+  --set 'gateway.parentRefs[0].namespace=gateway-system' \
+  --set 'gateway.http.hostnames[0]=cyoda.example.com' \
+  --set 'gateway.grpc.hostnames[0]=grpc.cyoda.example.com' \
+  --show-only templates/gateway-httproute.yaml \
+  --show-only templates/gateway-grpcroute.yaml
+```
+
+Differences are usually:
 
 - The chart attaches via `parentRefs` you supply via values — adjust
   `gateway.parentRefs[]` to match your `Gateway` name and namespace.
@@ -121,8 +137,8 @@ helm upgrade cyoda cyoda/cyoda -n cyoda --reset-then-reuse-values \
   --set gateway.enabled=true \
   --set 'gateway.parentRefs[0].name=platform-gateway' \
   --set 'gateway.parentRefs[0].namespace=gateway-system' \
-  --set gateway.http.hostnames[0]=cyoda.example.com \
-  --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com
+  --set 'gateway.http.hostnames[0]=cyoda.example.com' \
+  --set 'gateway.grpc.hostnames[0]=grpc.cyoda.example.com'
 ```
 
 The chart now renders `HTTPRoute` and `GRPCRoute` resources that

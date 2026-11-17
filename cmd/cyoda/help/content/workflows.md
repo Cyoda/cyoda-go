@@ -602,7 +602,7 @@ For the criterion above, on an entity with `"priority": "normal"` and `"override
 
 For a function condition that is the whole criterion, ` at <path>` is left out. The example above gives `manual-override at /conditions/1: pre-check did not match, not called; credit-check at /conditions/2: answered false: score below 600`. Every callout made is listed with its answer, and none is singled out as the cause: under `NOT`, a `true` answer can refuse a transition.
 
-A transition a client named and its criterion refused answers `400 WORKFLOW_FAILED` with the message `transition "<name>" criterion not matched`, followed by `: <reason>` when the reason is not `criterion did not match`. The manual transition rolls back, so its audit event is not kept; the message is where the caller learns why.
+A transition a client named and its criterion refused answers `400 WORKFLOW_FAILED` with the message `transition "<name>" criterion not matched`, followed by `: <reason>` when the reason is not `criterion did not match`. The named transition rolls back, so its audit event is not kept; the message is where the caller learns why.
 
 ### Workflow-level selection
 

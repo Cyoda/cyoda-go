@@ -2298,8 +2298,10 @@ paths:
         - Entity Management
       summary: Get available transitions for an entity
       description: >
-        Returns the names of workflow transitions available from the entity's
-        current state at the given point in time.
+        Returns the names of the transitions a client can name on a save from
+        the entity's current state at the given point in time: every transition
+        of that state that is not disabled and has no `schedule`, whether its
+        `manual` is true or false.
 
 
         Exactly one of `pointInTime` or `transactionId` may be supplied;
@@ -7395,8 +7397,9 @@ paths:
         - Entity Management
       summary: Fetch available transitions (platform-library format)
       description: >
-        Returns the names of workflow transitions available for an entity,
-        using the platform-library query format (`entityClass=Name.Version`).
+        Returns the names of the transitions a client can name on a save from
+        the entity's current state (not disabled, no `schedule`), using the
+        platform-library query format (`entityClass=Name.Version`).
 
 
         This endpoint mirrors `GET /entity/{entityId}/transitions` but accepts
@@ -10989,9 +10992,11 @@ components:
           type: boolean
           description: >-
             Whether the engine fires this transition on its own: `false` means
-            the engine evaluates it after every write, `true` means it fires
-            only when a client names it on a save. A client can name a
-            transition either way. Required, with no default; an import whose
+            the engine evaluates it after every write (unless it has a
+            `schedule`, which fires it instead), `true` means it fires only when
+            a client names it on a save. A client can name any transition that
+            is not disabled and has no `schedule`, whatever its `manual`.
+            Required, with no default; an import whose
             transition omits it or sends `null` is rejected with 400
             VALIDATION_FAILED.
         disabled:

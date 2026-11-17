@@ -42,7 +42,9 @@ func (e *Engine) GetAvailableTransitions(ctx context.Context, entityID string, m
 	return e.GetAvailableTransitionsForEntity(ctx, entity)
 }
 
-// GetAvailableTransitionsForEntity returns transition names for a pre-fetched entity.
+// GetAvailableTransitionsForEntity returns the names of the transitions a
+// client can name on a save from the pre-fetched entity's current state: those
+// that are not disabled and have no schedule.
 // Use this when the caller already has the entity to avoid a redundant store lookup.
 //
 // Resolution goes through the engine's single selection path, so the answer
@@ -68,9 +70,14 @@ func (e *Engine) GetAvailableTransitionsForEntity(ctx context.Context, entity *s
 		return []string{}, nil
 	}
 
-	names := make([]string, len(stateDef.Transitions))
-	for i, t := range stateDef.Transitions {
-		names[i] = t.Name
+	// The transitions a client can name: ManualTransition refuses a disabled
+	// or a scheduled one, so neither is available. `manual` does not matter.
+	names := make([]string, 0, len(stateDef.Transitions))
+	for _, t := range stateDef.Transitions {
+		if t.Disabled || t.Schedule != nil {
+			continue
+		}
+		names = append(names, t.Name)
 	}
 	return names, nil
 }

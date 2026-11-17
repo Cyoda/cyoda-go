@@ -28,8 +28,17 @@ func TestHelmHelp_DocumentsEveryValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read helm.md: %v", err)
 	}
+	text := string(doc)
+	start := strings.Index(text, "\n## VALUES\n")
+	if start < 0 {
+		t.Fatal("helm.md has no VALUES section")
+	}
+	section := text[start+1:]
+	if end := strings.Index(section[len("## VALUES\n"):], "\n## "); end >= 0 {
+		section = section[:len("## VALUES\n")+end]
+	}
 	documented := map[string]bool{}
-	for _, m := range regexp.MustCompile("\\*\\*`([A-Za-z0-9_.]+)`\\*\\*").FindAllStringSubmatch(string(doc), -1) {
+	for _, m := range regexp.MustCompile("\\*\\*`([A-Za-z0-9_.]+)`\\*\\*").FindAllStringSubmatch(section, -1) {
 		documented[m[1]] = true
 	}
 

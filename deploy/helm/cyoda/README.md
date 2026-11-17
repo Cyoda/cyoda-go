@@ -46,10 +46,10 @@ helm repo update
 helm install cyoda cyoda/cyoda -n cyoda \
   --set postgres.existingSecret=cyoda-dsn \
   --set jwt.existingSecret=cyoda-jwt \
-  --set gateway.parentRefs[0].name=platform-gateway \
-  --set gateway.parentRefs[0].namespace=gateway-system \
-  --set gateway.http.hostnames[0]=cyoda.example.com \
-  --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com
+  --set "gateway.parentRefs[0].name=platform-gateway" \
+  --set "gateway.parentRefs[0].namespace=gateway-system" \
+  --set "gateway.http.hostnames[0]=cyoda.example.com" \
+  --set "gateway.grpc.hostnames[0]=grpc.cyoda.example.com"
 ```
 
 ### First admin token

@@ -402,7 +402,7 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
 
 The submit time a `transactionId` resolves to is the transaction's commit instant, recorded durably: **any node** can resolve it, including after a restart, not only the node that ran the transaction. It is retained for one hour after the commit; an id older than that is no longer resolvable and answers `400 BAD_REQUEST`.
 
-Response: `200 OK`, `application/json`, array of available transition names (as returned by the workflow engine).
+Response: `200 OK`, `application/json`, array of the names of the transitions a client can name on a save from the entity's current state: every transition of that state that is not `disabled` and has no `schedule`, whatever its `manual`, in declaration order. A state with none answers `[]`.
 
 The names come from the workflow the entity's criterion selects — the same definition a subsequent transition will run (see `cyoda help workflows`, *Workflow-level selection*). Because selection is evaluated here, this read makes the callouts that the workflow criteria need — one per function condition evaluation reaches — and carries the same failure modes as a write: `400 WORKFLOW_FAILED` when a criterion cannot be evaluated or a compute member answers `success: false`, and the callout's own `503` when a callout fails (`NO_COMPUTE_MEMBER_FOR_TAG` when no compute member is connected for a function condition's tags). The request fails rather than answering from a different workflow. The read records no audit events.
 

@@ -2064,6 +2064,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **The available-transitions list holds only transitions a client can
+  name.** `GET /entity/{entityId}/transitions` and
+  `GET /platform-api/entity/fetch/transitions` listed every transition of the
+  current state, disabled and scheduled ones included, though naming either
+  on a save is refused with `TRANSITION_NOT_FOUND`. They now list the
+  transitions that are not disabled and have no schedule, whatever their
+  `manual`, as Cyoda Cloud does.
 - **Help and deploy guidance that did not match the server.** The Helm chart
   is published (`cyoda/cyoda` from `https://cyoda.github.io/cyoda-go`); the
   install examples in `cyoda help helm` and `cyoda help run` render, and a
