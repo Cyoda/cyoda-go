@@ -1,13 +1,13 @@
 # One version per entity per transaction; commit-time unique keys; callback reads
 
 cyoda-go is the authoritative implementation. This file is the contract Cyoda
-Cloud follows.
+Cloud follows. Cloud ticket: CP-3997.
 
 ## Callback reads return the current entity
 
 Before every callout that carries the transaction token, the engine reads the
 entity the workflow runs for in the open transaction. It writes the entity into
-that transaction (not committed) when the transaction does not hold it yet, or
+that transaction (not committed) when a read of it in the transaction finds nothing (a create), or
 when the stored data bytes or state differ from the engine's copy; a change to
 the metadata alone does not count. On PostgreSQL the stored data is the JSONB
 rendering of what was written, so data the engine took from a request or a
@@ -87,9 +87,8 @@ has no entities; a `LOCKED` model is never deleted, re-imported or given new
 unique-key definitions. The services check these when a request starts: an entity create
 answers `409 MODEL_NOT_LOCKED`, unlock counts the entities and answers `409
 MODEL_HAS_ENTITIES`, and import, unique-key change and delete answer `409
-MODEL_ALREADY_LOCKED`. Storage adds no check of its own. The rules hold when
-model administration runs from one place and not while writes to the model are
-in flight; a model that has entities is then `LOCKED`. `DELETE /model/...` no
+MODEL_ALREADY_LOCKED`. Storage adds no check of its own. Model administration
+runs from one place, not while writes to the model are in flight. `DELETE /model/...` no
 longer answers `MODEL_HAS_ENTITIES`: a model with entities is `LOCKED`, and
 delete answers `MODEL_ALREADY_LOCKED`.
 

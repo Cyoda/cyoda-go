@@ -240,7 +240,7 @@ commit. Five invariants hold on every backend:
 5. **State-machine disjointness.** `Save(desc)` replaces an UNLOCKED
    model's schema wholesale; `ExtendSchema(ref, delta)` is called for
    the model of an entity being written, which the model rules below
-   keep LOCKED while model administration follows them. The store does
+   keep LOCKED. The store does
    not check the state. Whether the write may
    extend at all is the caller's decision, by the model's
    `ChangeLevel`; a model without one is validated strictly and never
@@ -287,9 +287,7 @@ no entities and never answers `MODEL_HAS_ENTITIES`. Storage adds no
 check of its own: a commit reads the unique-key definitions of its
 entities' stored models without checking their state, and a schema
 extension does not check the model's state. A model's state reaches the
-other nodes eventually, through their model caches: after an unlock,
-another node can accept a create into the model until it learns the new
-state.
+other nodes eventually, through their model caches.
 
 Model administration — import, lock, unlock, delete, change level,
 unique keys — runs from one place, not concurrently on one model, and
@@ -379,7 +377,7 @@ T2 (anchored on order #43):
   commit
 ```
 
-Different anchors, disjoint write-sets on the subordinates, both count
+Different transitioning entities, disjoint write-sets on the subordinates, both count
 results are "3" at their respective snapshot times, both commit
 successfully. Five matching entities now exist although both transactions
 thought there would be four.
@@ -695,7 +693,7 @@ A short checklist:
    under the token returns the entity as the workflow has it when the
    callout is made: before each callout that carries the token, the engine
    reads the entity in the transaction and writes it into the transaction
-   (not committed) when the transaction does not hold it yet or the stored
+   (not committed) when a read of it in the transaction finds nothing (a create) or the stored
    data bytes or state differ from the engine's copy. On postgres the
    transaction holds the entity's row lock from its first write of the
    entity until the transaction ends (at the end of the operation, or of a

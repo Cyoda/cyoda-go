@@ -666,7 +666,7 @@ Endpoints whose observable behaviour changes. Codes not listed are unchanged.
 | Create: SYNC processor reads anchor → found, current | engine unit | yes | yes | yes |
 | Function criterion (cascade) reads anchor → current state/data | engine unit | yes | yes | — |
 | Workflow-selection criterion on create reads anchor → found, empty state | engine unit | yes | — | — |
-| ASYNC_NEW_TX processor reads anchor → current; failure keeps the pre-dispatch save | engine unit | yes | — | — |
+| ASYNC_NEW_TX processor reads anchor → current; failure keeps the pre-dispatch save | engine unit | the read: yes; the failure half waived: no client can observe it, because the operation's final write of the entity replaces the pre-dispatch write | — | — |
 | Schedule function reads anchor → current, on a client door and in a scheduled fire (the fire is `410` today, §2.6) | engine unit | yes | — | — |
 | Callback search under token finds anchor by its current data | — | yes | yes | yes |
 | Callback count and page under token count/list the anchor by its current data | — | yes | yes | yes |

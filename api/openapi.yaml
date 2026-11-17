@@ -13203,10 +13203,10 @@ components:
         receives one with its request (gRPC metadata key `tx-token`, CloudEvent
         extension attribute `cyodatxtoken`); echoing it here runs this request
         inside the open transaction the token names, so the request sees what
-        that transaction has saved so far and its own writes commit with it.
+        that transaction has written so far and its own writes commit with it.
         Before the callout, the engine reads the entity the callout runs for
-        in that open transaction and writes it there (not committed) when the
-        transaction does not hold it yet or the stored data or state differ
+        in that open transaction and writes it there (not committed) when a read of it in the
+        transaction finds nothing (a create) or the stored data or state differ
         from the engine's copy. The write commits or rolls back with the
         transaction, and a later write of the entity in the same transaction
         replaces it, so the transaction records one version of the entity. A

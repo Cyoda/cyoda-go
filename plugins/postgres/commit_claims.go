@@ -118,8 +118,10 @@ func insertClaims(ctx context.Context, q Querier, tenantID spi.TenantID, written
 			c.ref.EntityName, c.ref.ModelVersion, c.keyID, c.signature, c.entityID
 	}
 	// The rows are inserted in the order of the arrays, which is the sorted
-	// order above: two commits inserting overlapping values meet in the same
-	// order and wait instead of deadlocking.
+	// order above: two commits that only insert overlapping values meet in
+	// the same order and wait instead of deadlocking. A commit that claims a
+	// value another commit frees (releaseClaims) can still deadlock with it;
+	// PostgreSQL then fails one with 40P01, a retryable conflict.
 	if _, err := q.Exec(ctx,
 		`INSERT INTO unique_claims (tenant_id, model_name, model_version, key_id, signature, entity_id)
 		 SELECT $1, c.model_name, c.model_version, c.key_id, c.signature, c.entity_id

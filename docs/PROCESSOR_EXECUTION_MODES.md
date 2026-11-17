@@ -106,7 +106,7 @@ sees the writes stored in `T` — including via search, count and page
 (read-your-own-writes); other readers do not. Before each callout that
 carries the token — a processor, a function criterion, a schedule function —
 the engine reads the cascade's entity in `T` and writes it into `T` (not
-committed) when `T` does not hold it yet, or when the stored data bytes or
+committed) when a read of it in `T` finds nothing (a create), or when the stored data bytes or
 state differ from the engine's copy; a change to the metadata alone does not
 count. On PostgreSQL the stored data is the JSONB rendering of what was
 written, so data the engine took from a request or a processor usually

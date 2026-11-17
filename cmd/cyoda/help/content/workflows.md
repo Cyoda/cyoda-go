@@ -224,8 +224,8 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
   searches, counts or pages under the transaction token sees the entity as
   the workflow has it when the callout is made. Before each callout that
   carries the token, the engine reads the entity in the open transaction.
-  It writes the entity into that transaction when the transaction does not
-  hold it yet, or when the stored data bytes or state differ from the
+  It writes the entity into that transaction when that read finds nothing
+  (a create), or when the stored data bytes or state differ from the
   workflow's copy; a change to the metadata alone does not count. On
   PostgreSQL the stored data is the JSONB rendering of what was written,
   so data that came from a request or a processor usually differs in its
