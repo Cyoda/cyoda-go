@@ -69,8 +69,8 @@ no machinery whose only purpose is to adopt or survive such a write.
 - The cassandra plugin (out of tree). An issue is filed in
   `cyoda-go-cassandra` describing the contract change.
 - Cloud alignment beyond the `docs/cloud-parity/` entry Gate 7 requires.
-- Any change to what a callout's request payload carries. It already carries
-  the current anchor.
+- Any change to what a callout's request payload carries, other than its
+  `meta.transactionId` (§2.5). It already carries the current anchor.
 
 ### Anti-goals
 
@@ -201,9 +201,11 @@ reach the anchor only through its returned data.
   dispatch). A callout that carries a `transactionId` therefore carries the
   same id in its payload, and a `lifecycle` criterion on `transactionId` sees
   it, on every backend, whether or not the §2.2 step wrote. A callout without
-  a `transactionId` (`COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch:
-  false`, a function criterion on a read path) carries the id of the entity's
-  last committed version. A callback read under the token returns the stored
+  a `transactionId` carries the `transactionId` of the stored version it
+  describes: the version `TX_pre` committed (`COMMIT_BEFORE_DISPATCH` with
+  `startNewTxOnDispatch: false`), or the version a read path loaded (a
+  function criterion evaluated for `GET /entity/{id}/transitions`, at the
+  request's point in time when it gives one). A callback read under the token returns the stored
   entity, so before the transaction has written it the read's
   `meta.transactionId` is the last committed version's.
 - **Scheduled fire precondition.** The fire's `expectedTxID` (the precondition
@@ -233,7 +235,7 @@ The fire's end becomes, in order:
    the final `CompareAndSave` names this transaction's id;
 5. the final `CompareAndSave` and the commit (unchanged).
 
-
+## 3. Storage: one version per entity per transaction (SPI contract)
 
 ### 3.1 The rule
 
@@ -780,7 +782,7 @@ showing the old outcome) on the unfixed code, or it is dropped.
   `GetVersionByTransaction` §3.2) and the SPI CHANGELOG. SPI PR into SPI `main`;
   cyoda-go and the three plugins pseudo-pin it (`make repin-plugins`).
 - `COMPATIBILITY.md`, `CHANGELOG.md` `### Breaking`.
-- `docs/cloud-parity/617-one-version-per-transaction.md`: the contract (§3, §4,
+- `docs/cloud-parity/one-version-per-transaction.md`: the contract (§3, §4,
   §5) in a few lines.
 - Issue in `cyoda-go-cassandra`: the contract change, the cases its current code
   does not meet (save-then-delete, delete-then-save, savepoints), the

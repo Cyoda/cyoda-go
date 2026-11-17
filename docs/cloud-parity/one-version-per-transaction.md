@@ -37,8 +37,9 @@ carries the same id in `payload.meta.transactionId`, whether or not the
 transaction has written the entity yet, and a `lifecycle` criterion on
 `transactionId` sees that id. A callout without a `transactionId` (a
 `COMMIT_BEFORE_DISPATCH` processor with `startNewTxOnDispatch: false`, or a
-function criterion evaluated for a read) carries the id of the entity's last
-committed version. A callback read under the token returns the stored entity,
+function criterion evaluated for a read) carries the `transactionId` of the
+stored version it describes: the version committed before the callout, or the
+version the read returned. A callback read under the token returns the stored entity,
 so before the transaction has written the entity its `meta.transactionId` is
 the last committed version's.
 

@@ -351,7 +351,7 @@ The API keeps these rules:
 
 A model's state reaches the other nodes eventually. Each node keeps only `LOCKED` models in its model cache, which an invalidation broadcast updates (normally within milliseconds) or, if the broadcast is lost, `CYODA_MODEL_CACHE_LEASE` expires. A model a node reads as not `LOCKED` therefore comes from storage, and a create that reads it so reads it once more before it refuses with `409 MODEL_NOT_LOCKED`, so a read that raced the lock does not refuse it.
 
-Run model administration — import, lock, unlock, delete, change level, unique keys — from one place, such as a deploy step, not concurrently on the same model, and not while writes to the model are in flight. Register and lock a model once, from one caller, rather than from every replica of an application at start-up, and stop writes to a model before you unlock it.
+Run model administration — import, lock, unlock, delete, change level, unique-key definitions — from one place, such as a deploy step, not concurrently on the same model, and not while writes to the model are in flight. Register and lock a model once, from one caller, rather than from every replica of an application at start-up, and stop writes to a model before you unlock it.
 
 Change a model's state or its unique-key definitions (`uniqueKeys`) — import, lock, unlock, unique-key change — only while no transaction that will write entities of that model is open. In practice, deploy a model before anything ingests data into it, and change it only while nothing writes to it.
 

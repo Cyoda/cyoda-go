@@ -182,7 +182,7 @@ semantics (`SYNC`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`).
 
 ## MODEL CACHE
 
-Each node caches its tenants' locked models. Every change to a model — import, lock, unlock, delete, change level, unique keys — and every schema extension an entity write makes evicts the model from the cache of the node that made it, and that node gossip-broadcasts a `model.invalidate` message so every other node evicts it too and reads it again on next use. A node that does not receive the broadcast keeps the older model until its cache lease (`CYODA_MODEL_CACHE_LEASE`, default `5m`) ends.
+Each node caches its tenants' locked models. Every change to a model — import, lock, unlock, delete, change level, unique-key definitions — and every schema extension an entity write makes evicts the model from the cache of the node that made it, and that node gossip-broadcasts a `model.invalidate` message so every other node evicts it too and reads it again on next use. A node that does not receive the broadcast keeps the older model until its cache lease (`CYODA_MODEL_CACHE_LEASE`, default `5m`) ends.
 
 So a schema extension is in use on the node that served the write when the write returns, and on another node when the broadcast arrives. Until then that node uses the older schema; see `cyoda help models` (SCHEMA EXTENSION) for what that means for searches, criteria and writes there. A `changeLevel` change on a locked model takes effect on each node the same way.
 
@@ -190,7 +190,7 @@ So a schema extension is in use on the node that served the write when the write
 
 Composite unique keys are part of the model descriptor, but they are not enforced from a node's model cache. When a transaction commits, its entities are checked against the unique-key definitions of the stored model (`cyoda help models`, LIFECYCLE). A node whose cached model is out of date after an unlock, key change and relock therefore still enforces the stored definitions. The early check of a request body for a partly filled key (`422 INVALID_UNIQUE_KEY`) uses the node's cached model.
 
-Changing a key needs the model unlocked, which needs zero live entities: delete the model's entities, unlock, change the key definitions, then relock. Stop writes to the model while you do (`cyoda help models`, LIFECYCLE).
+Changing the unique-key definitions needs the model unlocked, which needs zero live entities: delete the model's entities, unlock, change the unique-key definitions, then relock. Stop writes to the model while you do (`cyoda help models`, LIFECYCLE).
 
 ## SEE ALSO
 

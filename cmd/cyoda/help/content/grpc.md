@@ -278,7 +278,7 @@ Server sends `EntityProcessorCalculationRequest` when a workflow transition invo
 
 `payload` is omitted when `attachEntity=false` in the processor config.
 
-A callout request that carries a `transactionId` carries the same id in `payload.meta.transactionId`: the entity in the payload is the version that transaction is making, whether or not the transaction has written it yet. A callout request without a `transactionId` — a `COMMIT_BEFORE_DISPATCH` processor with `startNewTxOnDispatch: false`, or a function criterion evaluated for a read such as `GET /entity/{entityId}/transitions` — carries the id of the entity's last committed version. A callback read under the token returns the stored entity, so before the transaction has written the entity its `meta.transactionId` is the last committed version's.
+A callout request that carries a `transactionId` carries the same id in `payload.meta.transactionId`: the entity in the payload is the version that transaction is making, whether or not the transaction has written it yet. A callout request without a `transactionId` carries the `transactionId` of the stored version it describes: for a `COMMIT_BEFORE_DISPATCH` processor with `startNewTxOnDispatch: false`, the version committed before its callout; for a function criterion evaluated for a read such as `GET /entity/{entityId}/transitions`, the version that read returned. A callback read under the token returns the stored entity, so before the transaction has written the entity its `meta.transactionId` is the last committed version's.
 
 Client responds with `EntityProcessorCalculationResponse`:
 

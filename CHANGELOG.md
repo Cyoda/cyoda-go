@@ -11,7 +11,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the transaction token, other than a `COMMIT_BEFORE_DISPATCH` processor's, the engine reads the entity in the
   transaction and writes it into the transaction (not committed) when that
   read finds nothing (a create) or the stored data or state differ from the engine's copy,
-  so a callback read (get, search, count) returns the current data,
+  so a callback read (get, search, count, page) returns the current data,
   including the changes earlier processors returned; on a create it is
   found, and during a processor it is in its source state. On PostgreSQL a
   transaction that has written the entity holds its row lock until the
@@ -29,7 +29,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   committed version until a write, and a `COMMIT_BEFORE_DISPATCH` processor
   with `startNewTxOnDispatch: true` carried the id of the transaction that
   committed before its callout. A callout without a `transactionId` carries
-  the id of the entity's last committed version.
+  the `transactionId` of the stored version it describes.
 - **One version per entity per transaction, on every backend.** A later write
   of an entity the transaction already wrote replaces its pending version.
   `GET /entity/{id}?transactionId=X` returns X's final entity and reads
