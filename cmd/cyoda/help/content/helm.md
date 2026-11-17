@@ -115,7 +115,7 @@ Arbitrary additional env vars injected into the StatefulSet container. Each entr
 Kubernetes Service type for the main Service (ports 8080, 9090, 9091). Accepted values: `ClusterIP`, `NodePort`, `LoadBalancer`.
 
 **`gateway.enabled`** — boolean — default `true`
-Enable Gateway API routing. Renders `HTTPRoute` (port 8080) and `GRPCRoute` (port 9090). Mutually exclusive with `ingress.enabled`; both enabled triggers a `fail`. When `true`, `gateway.parentRefs` MUST be set to a non-empty list of operator-provided Gateway references; the chart's schema refuses an empty list, so the install fails. On a cluster without a Gateway, set `gateway.enabled=false` (and use Ingress, or the `Service` directly).
+Enable Gateway API routing. Renders `HTTPRoute` (port 8080) and `GRPCRoute` (port 9090). Mutually exclusive with `ingress.enabled`; both enabled triggers a `fail`. When `true`, `gateway.parentRefs` MUST be set to a non-empty list of operator-provided Gateway references; the chart's schema refuses an empty, null or missing list, so the install fails. On a cluster without a Gateway, set `gateway.enabled=false` (and use Ingress, or the `Service` directly).
 
 **`gateway.parentRefs`** — list — default `[]` — **REQUIRED when `gateway.enabled=true`**
 List of Gateway API parent references (operator-provided Gateway). The chart does not render the Gateway itself.

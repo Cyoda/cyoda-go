@@ -72,6 +72,32 @@ jobs:
           fi
           echo "PASS: schema rejected empty gateway.parentRefs."
 
+      - name: helm template — schema rejects a null gateway.parentRefs
+        run: |
+          # `--set gateway.parentRefs=null` (or a bare `parentRefs:` in a values
+          # file) removes the key; the routes would render with no parent.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs=null \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "FAIL: expected schema rejection of a null gateway.parentRefs; got success."
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "parentRefs"; then
+            echo "FAIL: expected the error to name parentRefs; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected a null gateway.parentRefs."
+
       - name: helm template — gateway.enabled=false needs no parentRefs
         run: |
           helm template cyoda deploy/helm/cyoda \

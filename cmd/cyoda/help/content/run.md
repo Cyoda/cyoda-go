@@ -404,8 +404,10 @@ curl -s http://localhost:9091/readyz
 
 ```
 ./bin/cyoda health
-echo $?   # 0 = ready, 1 = not ready or error
+echo $?
 ```
+
+`0` means ready; `1` means not ready, or an error.
 
 **Docker Compose — production JWT (file-mount):**
 

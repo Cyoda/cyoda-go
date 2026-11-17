@@ -360,7 +360,8 @@ Mock mode has no client store: `POST /api/tenants/{tenant}/oauth/token` issues n
 openssl genrsa -out signing.pem 2048
 export CYODA_IAM_MODE=jwt CYODA_JWT_SIGNING_KEY_FILE=$PWD/signing.pem \
   CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true
-cyoda &    # Docker Compose: set the same variables on the service
+# Docker Compose: set the same variables on the service
+cyoda &
 B=http://localhost:8080/api
 
 # Operator token for tenant acme; with ROLE_M2M it can also reach data.
@@ -399,7 +400,8 @@ user = "$OBO_ID:$OBO_SECRET"
 data = "subject_token=$HDR.$PAY.$SIG"
 EOF
 )
-curl -s "$B/account" -H @- <<<"Authorization: Bearer $OBO_TOKEN"   # userId "alice"
+# answers with userId "alice"
+curl -s "$B/account" -H @- <<<"Authorization: Bearer $OBO_TOKEN"
 ```
 
 In a cluster, `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` goes on every node. The recipe runs on the default memory backend, which keeps nothing across a restart: clients and trusted keys are gone after one, and you create them again. Use `CYODA_STORAGE_BACKEND=sqlite` (or postgres) to keep them.

@@ -44,7 +44,7 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints requ
 
 ## DESCRIPTION
 
-A workflow definition is a named finite state machine attached to an entity model. Workflows are stored per model reference `(entityName, modelVersion)`. A model may have multiple workflow definitions; the engine selects the matching one per entity using the workflow-level `criterion` field evaluated at entity creation time. When no `criterion` matches, the engine uses the default built-in workflow.
+A workflow definition is a named finite state machine attached to an entity model. Workflows are stored per model reference `(entityName, modelVersion)`. A model may have multiple workflow definitions; the engine selects the matching one per entity using the workflow-level `criterion` field, on every operation that runs the entity's workflow (see *Workflow-level selection*). When no `criterion` matches, the engine uses the default built-in workflow.
 
 The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. A client fires a transition by naming it on a save: `PUT` or `PATCH /entity/{format}/{entityId}/{transition}`, an item's `transition` in a collection update (`cyoda help crud`), or gRPC `EntityTransitionRequest` (`cyoda help grpc`).
 

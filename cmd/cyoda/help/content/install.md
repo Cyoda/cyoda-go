@@ -20,7 +20,6 @@ install — ways to install the `cyoda` binary, and how to upgrade it.
 ```
 brew install cyoda/cyoda-go/cyoda
 curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
-docker pull ghcr.io/cyoda/cyoda:<version>
 go install github.com/cyoda-platform/cyoda-go/cmd/cyoda@latest
 ```
 
@@ -57,7 +56,7 @@ The script downloads the archive for the host's OS and architecture, checks it a
 - `CYODA_INSTALL_DIR` — the directory to install into; default `~/.local/bin`.
 - `CYODA_COSIGN_VERIFY=required` — stop if `cosign` is not on `PATH`, instead of checking `SHA256SUMS` only.
 
-Without `CYODA_COSIGN_VERIFY=required`, a release that has no signature file is checked against `SHA256SUMS` only. For a production host, set `CYODA_COSIGN_VERIFY=required`. Any other value of `CYODA_COSIGN_VERIFY` stops the script. Releases before v0.7.0 are not signed; v0.7.0 and v0.7.1 were signed under the GitHub organization's earlier name and do not verify, so with `cosign` on `PATH` the script refuses them.
+Without `CYODA_COSIGN_VERIFY=required`, a release that has no signature file is checked against `SHA256SUMS` only. For a production host, set `CYODA_COSIGN_VERIFY=required`. `CYODA_COSIGN_VERIFY` takes `auto` (the default: verify when `cosign` is on `PATH`), `required`, or `false` (also `0` or `no`: skip the signature check); any other value stops the script. Releases before v0.7.0 are not signed; v0.7.0 and v0.7.1 were signed under the GitHub organization's earlier name and do not verify, so with `cosign` on `PATH` the script refuses them.
 
 **Debian, Ubuntu (`.deb`) and Fedora, RHEL (`.rpm`):**
 
@@ -96,7 +95,7 @@ OUT=$(cosign verify "ghcr.io/cyoda/cyoda:$V" \
 
 For running the image, see `cyoda help run` (Docker, Docker Compose).
 
-**Windows:** download the `windows` `.zip` archive for your architecture from the release page and put `cyoda.exe` on `PATH`.
+**Windows:** download the `windows` `.zip` archive for your architecture (`cyoda_<version>_windows_amd64.zip`) from the release page, with `SHA256SUMS`, `SHA256SUMS.sig` and `SHA256SUMS.pem`. Check `SHA256SUMS` with the same `cosign verify-blob` command as for the packages above, then compare the archive's hash (`certutil -hashfile <archive> SHA256`) with its line in `SHA256SUMS`. Use the archive only when both match; then put `cyoda.exe` on `PATH`.
 
 **From source** (needs the Go version in `go.mod`):
 
@@ -110,8 +109,8 @@ Install the newer release by the same route:
 
 - Homebrew: `brew upgrade cyoda`.
 - Install script: run it again; with `CYODA_VERSION` it installs that release.
-- `.deb`/`.rpm`: install the newer package (`sudo dpkg -i …`, `sudo rpm -U …`).
-- Container image: pull the newer tag and restart the container.
+- `.deb`/`.rpm`: verify the newer package as above, then install it (`sudo dpkg -i …`, `sudo rpm -U …`).
+- Container image: verify the newer release's image and pull it by digest, as above, then restart the container with that digest.
 - From source: `go install …@latest` again.
 
 Read the release notes before an upgrade. A storage backend's schema migrates when the new binary starts (sqlite and postgres auto-migrate by default; see `cyoda help cli migrate`).

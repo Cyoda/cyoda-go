@@ -102,6 +102,7 @@
       },
       "if": {"properties": {"enabled": {"const": true}}},
       "then": {
+        "required": ["parentRefs"],
         "properties": {
           "parentRefs": {"minItems": 1}
         }

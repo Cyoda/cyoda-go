@@ -72,6 +72,21 @@ cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
 
 For Fedora or RHEL, download `cyoda_linux_amd64.rpm` instead and end with `sudo rpm -i cyoda_linux_amd64.rpm`. Replace `amd64` with `arm64` for ARM hosts. Both packages drop `/usr/bin/cyoda` and `/etc/cyoda/cyoda.env` (sqlite as the system-wide default, preserved across upgrades).
 
+### Container image
+
+`ghcr.io/cyoda/cyoda`, tagged with the version without the `v`. The release workflow signs it; a tag can be moved, so check the signature for the release you want and pull by the digest the check printed (needs `cosign` and `jq`):
+
+```bash
+V=0.8.4
+OUT=$(cosign verify "ghcr.io/cyoda/cyoda:$V" \
+  --certificate-identity "https://github.com/Cyoda/cyoda-go/.github/workflows/release.yml@refs/tags/v$V" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-trigger push \
+  --certificate-github-workflow-ref "refs/tags/v$V") \
+  && D=$(printf '%s' "$OUT" | jq -r '.[0].critical.image."docker-manifest-digest"') \
+  && docker pull "ghcr.io/cyoda/cyoda@$D"
+```
+
 ### From source
 
 Requires **Go 1.27.4+**.

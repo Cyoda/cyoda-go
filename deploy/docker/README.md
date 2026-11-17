@@ -17,10 +17,12 @@ docker compose up
 Then:
 
 ```bash
-curl http://127.0.0.1:8080/api/health    # API on port 8080
-curl http://127.0.0.1:9091/livez         # admin liveness
-curl http://127.0.0.1:9091/metrics       # Prometheus scrape
+curl http://127.0.0.1:8080/api/health
+curl http://127.0.0.1:9091/livez
+curl http://127.0.0.1:9091/metrics
 ```
+
+The API's health on port 8080, then the admin port's liveness probe and its Prometheus scrape.
 
 Data persists in the named volume `cyoda-data`. `docker compose down` stops
 cyoda; `docker compose down -v` wipes the data.

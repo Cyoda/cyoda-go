@@ -7,8 +7,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 ### Breaking
 
 - **Helm chart: Gateway API routing needs a Gateway.** With
-  `gateway.enabled=true`, the default, the chart's schema refuses an empty
-  `gateway.parentRefs`, so the install fails. Before, it rendered an
+  `gateway.enabled=true`, the default, the chart's schema refuses an empty,
+  null or missing `gateway.parentRefs`, so the install fails. Before, it rendered an
   `HTTPRoute` and a `GRPCRoute` attached to no Gateway and the install
   succeeded unrouted. Set `gateway.parentRefs`, or `gateway.enabled=false`.
 
