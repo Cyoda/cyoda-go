@@ -534,10 +534,12 @@ Per-release procedure:
      ```
    - The binary release is still GitHub's "Latest" release, not the chart
      release (`release-chart.yml` sets `mark_as_latest: false`):
+     `vX.Y.Z` must carry "Latest" in the first list, and the second
+     command must print `200`:
      ```bash
-     gh release list --limit 3        # vX.Y.Z must carry "Latest"
+     gh release list --limit 3
      curl -sIL -o /dev/null -w '%{http_code}\n' \
-       https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh   # 200
+       https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh
      ```
      If the chart release took the mark, `install.sh` and every
      `/releases/latest/download/` URL answer 404; restore it with

@@ -539,7 +539,7 @@ Criteria on workflows and transitions use the same `Condition` DSL as search —
 
 `lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search. While a workflow runs, the entity's `transactionId` is the id of the transaction it runs in: the request's, a scheduled fire's, or after a `COMMIT_BEFORE_DISPATCH` boundary the new transaction's.
 
-A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
+A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always matches: an automated one fires when the cascade reaches it, and a named one fires when a client names it. When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
 
 ### Function conditions
 

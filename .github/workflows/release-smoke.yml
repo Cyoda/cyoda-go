@@ -3,6 +3,7 @@ name: Release smoke
 on:
   pull_request:
     paths:
+      - 'scripts/install.sh'
       - '.goreleaser.yaml'
       - 'deploy/docker/Dockerfile'
       - 'cmd/cyoda/**'
@@ -10,6 +11,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'scripts/install.sh'
       - '.goreleaser.yaml'
       - 'deploy/docker/Dockerfile'
       - 'cmd/cyoda/**'
@@ -19,6 +21,25 @@ permissions:
   contents: read
 
 jobs:
+  install-script:
+    # The documented install route with signatures required, against a
+    # pinned signed release: download, SHA256SUMS, and cosign verification
+    # of the archive and SHA256SUMS against the release workflow's identity.
+    name: install.sh installs a signed release with cosign required
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: sigstore/cosign-installer@v3
+      - name: Install v0.8.4 with CYODA_COSIGN_VERIFY=required
+        env:
+          CYODA_VERSION: v0.8.4
+          CYODA_COSIGN_VERIFY: required
+          CYODA_INSTALL_DIR: ${{ runner.temp }}/bin
+        run: |
+          sh scripts/install.sh | tee "$RUNNER_TEMP/install.log"
+          grep -q 'Signatures verified (cosign)' "$RUNNER_TEMP/install.log"
+          "$CYODA_INSTALL_DIR/cyoda" --version | grep -q 'cyoda version 0.8.4'
+
   smoke:
     runs-on: ubuntu-latest
     steps:

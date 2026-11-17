@@ -61,19 +61,22 @@ Without `CYODA_COSIGN_VERIFY=required`, a release that has no signature file is 
 
 **Debian, Ubuntu (`.deb`) and Fedora, RHEL (`.rpm`):**
 
-```
-curl -fsSLO https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
-curl -fsSLO https://github.com/cyoda/cyoda-go/releases/latest/download/SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
-sudo dpkg -i cyoda_linux_amd64.deb
+Download the package and the release's `SHA256SUMS` with its signature, check that the release workflow signed `SHA256SUMS` from a release tag (with `cosign`, as the install script does; the owner is spelt `Cyoda`, as in the certificate), then check the package against it:
 
-curl -fsSLO https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.rpm
-curl -fsSLO https://github.com/cyoda/cyoda-go/releases/latest/download/SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
-sudo rpm -i cyoda_linux_amd64.rpm
+```
+R=https://github.com/cyoda/cyoda-go/releases/latest/download
+curl -fsSLO "$R/cyoda_linux_amd64.deb"
+curl -fsSLO "$R/SHA256SUMS" -O "$R/SHA256SUMS.sig" -O "$R/SHA256SUMS.pem"
+cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
+  --certificate-identity-regexp '^https://github\.com/Cyoda/cyoda-go/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-trigger push \
+  SHA256SUMS \
+  && sha256sum --ignore-missing -c SHA256SUMS \
+  && sudo dpkg -i cyoda_linux_amd64.deb
 ```
 
-Install the package only when `sha256sum` reports it `OK`. Use `arm64` in place of `amd64` on ARM hosts. The package installs `/usr/bin/cyoda` and the system config `/etc/cyoda/cyoda.env`, which selects sqlite. An upgrade keeps a changed `/etc/cyoda/cyoda.env`.
+For Fedora or RHEL, download `cyoda_linux_amd64.rpm` instead and end with `sudo rpm -i cyoda_linux_amd64.rpm`. Each step runs only when the one before it succeeded. Use `arm64` in place of `amd64` on ARM hosts. The package installs `/usr/bin/cyoda` and the system config `/etc/cyoda/cyoda.env`, which selects sqlite. An upgrade keeps a changed `/etc/cyoda/cyoda.env`.
 
 **Container image:**
 
@@ -81,7 +84,13 @@ Install the package only when `sha256sum` reports it `OK`. Use `arm64` in place 
 docker pull ghcr.io/cyoda/cyoda:<version>
 ```
 
-Each release is tagged with its version without the `v` (for example `0.9.0`); `latest` is the newest release that is not a pre-release. For running the image, see `cyoda help run` (Docker, Docker Compose).
+Each release is tagged with its version without the `v` (for example `0.9.0`); `latest` is the newest release that is not a pre-release. The release workflow signs the image; check it before you run it:
+
+```
+cosign verify ghcr.io/cyoda/cyoda:<version> \
+  --certificate-identity-regexp '^https://github\.com/Cyoda/cyoda-go/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+``` For running the image, see `cyoda help run` (Docker, Docker Compose).
 
 **Windows:** download the `windows` `.zip` archive for your architecture from the release page and put `cyoda.exe` on `PATH`.
 

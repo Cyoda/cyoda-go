@@ -65,8 +65,8 @@ Key elements to copy:
   `CYODA_REQUIRE_JWT=true` AND provide the signing key as a file: mount it
   read-only and set `CYODA_JWT_SIGNING_KEY_FILE` (the commented lines in
   `compose.yaml` do this). Do not pass the PEM inline in the environment:
-  it would show in `docker inspect`. The file must be readable by the
-  container's user, UID 65532, and by no one else, for example
+  it would show in `docker inspect`. On a Linux host the file must be
+  readable by the container's user, UID 65532, and by no one else, for example
   `sudo chown 65532:65532 secrets/signing.pem && sudo chmod 0400 secrets/signing.pem`. A startup banner warns when running in mock
   mode; `CYODA_SUPPRESS_BANNER=true` silences it (CI only — not
   production). Once the container is up in jwt mode, get a first admin

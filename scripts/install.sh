@@ -46,16 +46,19 @@ INSTALL_DIR="${CYODA_INSTALL_DIR:-$HOME/.local/bin}"
 # only workflow with `id-token: write`, and we additionally pin to the
 # `refs/tags/v*` ref-suffix so a future branch-based dispatch (even
 # from main with proper protection) can't mint a cert that this
-# verifier accepts.
+# verifier accepts. The owner is spelt as GitHub writes it in the
+# certificate, `Cyoda`; the match is case-sensitive.
 COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
-COSIGN_IDENTITY_REGEX="^https://github\.com/cyoda/cyoda-go/\.github/workflows/release\.yml@refs/tags/v"
+COSIGN_IDENTITY_REGEX="^https://github\.com/Cyoda/cyoda-go/\.github/workflows/release\.yml@refs/tags/v"
 # Bind to push-triggered runs from a tag ref. release.yml's `on:`
 # allows both `push: tags` and `workflow_dispatch`; only the former
 # can produce signed release artifacts that consumers should trust,
 # since workflow_dispatch can be triggered from any branch by anyone
 # with write access.
 COSIGN_GH_WORKFLOW_TRIGGER="push"
-COSIGN_GH_WORKFLOW_REF_REGEX="^refs/tags/v"
+# The workflow ref is pinned to the exact tag being installed
+# (--certificate-github-workflow-ref, in cosign_verify): a signature from
+# another release does not verify this one.
 
 err() { printf 'install.sh: error: %s\n' "$*" >&2; }
 warn() { printf 'install.sh: warning: %s\n' "$*" >&2; }
@@ -117,11 +120,12 @@ resolve_version() {
 
 # cosign_fetch downloads a release asset and prints its HTTP status to
 # stdout (so callers can distinguish 200, 404, and other failures).
-# Unlike curl -fsSL, a 404 here does NOT terminate the script.
+# Unlike curl -fsSL, a 404 here does NOT terminate the script. Redirects are
+# followed: GitHub answers a release download with a 302 to its storage.
 cosign_fetch() {
     cf_url=$1
     cf_dest=$2
-    curl -sS -o "$cf_dest" -w "%{http_code}" "$cf_url" 2>/dev/null || printf '000'
+    curl -sSL -o "$cf_dest" -w "%{http_code}" "$cf_url" 2>/dev/null || printf '000'
 }
 
 # cosign_verify runs keyless Sigstore verification of the archive and
@@ -186,7 +190,7 @@ cosign_verify() {
             --certificate-identity-regexp="$COSIGN_IDENTITY_REGEX" \
             --certificate-oidc-issuer="$COSIGN_OIDC_ISSUER" \
             --certificate-github-workflow-trigger="$COSIGN_GH_WORKFLOW_TRIGGER" \
-            --certificate-github-workflow-ref-regexp="$COSIGN_GH_WORKFLOW_REF_REGEX" \
+            --certificate-github-workflow-ref="refs/tags/$cv_version" \
             "$cv_tmp/$cv_target" >"$cv_log" 2>&1; then
             err "cosign verification FAILED for $cv_target — refusing to install."
             err "cosign output (last 5 lines):"
@@ -195,6 +199,7 @@ cosign_verify() {
             exit 1
         fi
     done
+    info "Signatures verified (cosign)"
 }
 
 main() {
