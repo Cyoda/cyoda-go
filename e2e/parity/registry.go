@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 275 scenarios in this package: the entries of its literal
+// allTests holds 276 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go,
 // schema_extension_contract.go).
@@ -247,6 +247,7 @@ var allTests = []NamedTest{
 	{"CallbackReadCurrent_UpdateSync", RunCallbackReadCurrent_UpdateSync},
 	{"CallbackReadCurrent_CreateSync", RunCallbackReadCurrent_CreateSync},
 	{"CallbackReadCurrent_FunctionCriterion", RunCallbackReadCurrent_FunctionCriterion},
+	{"CallbackPayloadTxID_IdenticalUpdate", RunCallbackPayloadTxID_IdenticalUpdate},
 	{"ConsistencyTime_Endpoint", RunConsistencyTimeEndpoint},
 	{"ConsistencyTime_FenceRefusesLater", RunConsistencyTimeFenceRefuses},
 	{"ConsistencyTime_ReadAtCServed", RunConsistencyTimeReadAtC},

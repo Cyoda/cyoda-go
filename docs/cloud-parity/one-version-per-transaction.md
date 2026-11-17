@@ -28,6 +28,20 @@ commit) until then. A transaction that has not written the entity holds no row
 lock on it while a callout runs: a manual transition that sends no data, for example, has not
 written it before its first processor's callout.
 
+## A callout payload carries the callout's transaction id
+
+While a workflow runs, the entity carries the id of the transaction it runs
+in: the request's, a scheduled fire's, or after a `COMMIT_BEFORE_DISPATCH`
+boundary the new transaction's. A callout that carries a `transactionId`
+carries the same id in `payload.meta.transactionId`, whether or not the
+transaction has written the entity yet, and a `lifecycle` criterion on
+`transactionId` sees that id. A callout without a `transactionId` (a
+`COMMIT_BEFORE_DISPATCH` processor with `startNewTxOnDispatch: false`, or a
+function criterion evaluated for a read) carries the id of the entity's last
+committed version. A callback read under the token returns the stored entity,
+so before the transaction has written the entity its `meta.transactionId` is
+the last committed version's.
+
 ## A callout never writes the entity it runs for
 
 A processor, a function criterion and a schedule function never write or delete
@@ -103,7 +117,8 @@ task's `lastError`; it is logged at warn level only and mints no ticket.
 
 ## What Cloud changes
 
-Everything above, on every storage path: one version per entity per
+Everything above, on every storage path: the callout payload's
+`meta.transactionId` rule, one version per entity per
 transaction, commit-time unique-key checks reading the stored model's
 unique-key definitions,
 delete no longer answering `MODEL_HAS_ENTITIES`, and the no-self-write rule

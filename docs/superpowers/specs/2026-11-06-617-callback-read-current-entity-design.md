@@ -192,17 +192,20 @@ reach the anchor only through its returned data.
   anchor at that moment. Its state is the transition's source state while that
   transition's processors run (the state advances after processors,
   `fireTransition`); its data includes earlier processors' changes.
-- **The payload's `meta.transactionId` equals the `transactionId` a callback
-  read of the anchor under the token returns at dispatch.** After the §2.2 step
-  the engine sets `entity.Meta.TransactionID` to the transaction id of the
-  stored anchor: the transaction's own id after a save (the id the store stamps; equal to the dispatch's id on every write path), the id the read
-  returned otherwise. The same assignment follows every other engine write of
-  the anchor: the `COMMIT_BEFORE_DISPATCH` TX_pre flush
-  (`flushAndCommitSegment`, `engine_processors.go` ~:594) and the post-dispatch
-  apply `CompareAndSave` (~:533), with `COMMIT_BEFORE_DISPATCH` and
-  `startNewTxOnDispatch: true` included (the payload carries the id TX_post
-  reads). The builder audits every engine reader of `entity.Meta.TransactionID`
-  for a dependency on the old value.
+- **The payload's `meta.transactionId` is the callout's `transactionId`.**
+  While a workflow runs, `entity.Meta.TransactionID` is the id of the
+  transaction it runs in: the handler stamps the request's, a scheduled fire
+  stamps its own right after taking `expectedTxID`, the §2.2 step stamps the
+  transaction's id whether or not it wrote, and a `COMMIT_BEFORE_DISPATCH`
+  boundary stamps the next transaction's (TX_post's when it opens before the
+  dispatch). A callout that carries a `transactionId` therefore carries the
+  same id in its payload, and a `lifecycle` criterion on `transactionId` sees
+  it, on every backend, whether or not the §2.2 step wrote. A callout without
+  a `transactionId` (`COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch:
+  false`, a function criterion on a read path) carries the id of the entity's
+  last committed version. A callback read under the token returns the stored
+  entity, so before the transaction has written it the read's
+  `meta.transactionId` is the last committed version's.
 - **Scheduled fire precondition.** The fire's `expectedTxID` (the precondition
   of its final persist, `fire_scheduled.go` ~:273) and the attribution stamp
   (~:267-269) move before `resolveWorkflow` (~:239), so they are taken from the

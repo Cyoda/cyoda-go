@@ -405,6 +405,9 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		if err != nil {
 			return nil, "", true, err
 		}
+		// TX_post makes the next version: the payload carries its id, the
+		// one the dispatch's token names.
+		entity.Meta.TransactionID = newTxID
 
 		if e.extProc != nil {
 			dispatched, mErr := beforeDispatch(newCtx, proc)
@@ -611,8 +614,9 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	}); err != nil {
 		return err
 	}
-	// The anchor is stored as txID committed it: the id TX_post reads, and
-	// the one a dispatch without a transaction finds.
+	// txID committed the anchor. A dispatch without a transaction carries the
+	// id of that committed version; with startNewTxOnDispatch, TX_post's id
+	// replaces it before the dispatch.
 	entity.Meta.TransactionID = txID
 	if partial {
 		g.partialCommitted.Store(true)

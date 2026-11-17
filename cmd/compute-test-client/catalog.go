@@ -39,6 +39,12 @@ type Entity struct {
 	AuthID       string `json:"-"`
 	AuthExecType string `json:"-"`
 	AuthExecID   string `json:"-"`
+
+	// RequestTxID is the calc request's transactionId and PayloadTxID its
+	// payload's meta.transactionId, set by the dispatcher like the auth
+	// fields.
+	RequestTxID string `json:"-"`
+	PayloadTxID string `json:"-"`
 }
 
 // processorFunc is the signature of a registered processor.
@@ -200,6 +206,24 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 				data["observedAuthID"] = entity.AuthID
 				data["observedAuthExecType"] = entity.AuthExecType
 				data["observedAuthExecID"] = entity.AuthExecID
+				out, err := json.Marshal(data)
+				if err != nil {
+					return nil, err
+				}
+				return &Entity{ID: entity.ID, State: entity.State, Data: out}, nil
+			},
+			// record-txids writes the calc request's transactionId and its
+			// payload's meta.transactionId into the entity data, as
+			// requestTxId and payloadTxId.
+			"record-txids": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
+				data := map[string]any{}
+				if len(entity.Data) > 0 {
+					if err := json.Unmarshal(entity.Data, &data); err != nil {
+						return nil, err
+					}
+				}
+				data["requestTxId"] = entity.RequestTxID
+				data["payloadTxId"] = entity.PayloadTxID
 				out, err := json.Marshal(data)
 				if err != nil {
 					return nil, err

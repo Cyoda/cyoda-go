@@ -61,6 +61,7 @@ import (
 // (uncommitted) primary-entity snapshot the engine shipped with the calc request.
 type reqCtx struct {
 	token      string         // cyodatxtoken from the calc request; echoed as X-Tx-Token
+	txID       string         // the calc request's transactionId
 	requestID  string         // calc request id (echoed on the response)
 	entityID   string         // primary (cascade-anchor) entity id
 	entityData map[string]any // attached primary data (uncommitted, from the dispatch payload)
@@ -665,6 +666,7 @@ func (h *callbackHarness) parseCalcRequest(evtType string, ce *cepb.CloudEvent, 
 		RequestID     string `json:"requestId"`
 		ID            string `json:"id"`
 		EntityID      string `json:"entityId"`
+		TransactionID string `json:"transactionId"`
 		ProcessorName string `json:"processorName"`
 		ProcessorID   string `json:"processorId"`
 		CriteriaName  string `json:"criteriaName"`
@@ -693,6 +695,7 @@ func (h *callbackHarness) parseCalcRequest(evtType string, ce *cepb.CloudEvent, 
 	}
 	req.rc = &reqCtx{
 		token:     internalgrpc.TxTokenFromCloudEvent(ce),
+		txID:      body.TransactionID,
 		requestID: req.replyID,
 		entityID:  body.EntityID,
 		attrs:     map[string]string{},

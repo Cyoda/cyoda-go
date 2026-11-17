@@ -36,6 +36,8 @@ type anchorSeen struct {
 	// PayloadTxID is the meta.transactionId the callout's own payload
 	// carried (empty when the callout attached no entity).
 	PayloadTxID string
+	// RequestTxID is the callout request's own transactionId.
+	RequestTxID string
 }
 
 // readAnchorJoined GETs the callout's anchor under the callout's token.
@@ -55,6 +57,7 @@ func readAnchorJoined(rc *reqCtx) anchorSeen {
 		seen.Marker, _ = env.Data["status"].(string)
 	}
 	seen.PayloadTxID, _ = rc.entityMeta["transactionId"].(string)
+	seen.RequestTxID = rc.txID
 	return seen
 }
 
@@ -335,8 +338,8 @@ func TestCallbackReadCurrent(t *testing.T) {
 
 		got := seen.anchor(t, "upd-sync/get")
 		requireCurrentAnchor(t, "SYNC processor, HTTP GET", got, "READY", "new")
-		if got.TxID == "" || got.TxID != got.PayloadTxID {
-			t.Errorf("payload meta.transactionId = %q, joined read's = %q; want them equal", got.PayloadTxID, got.TxID)
+		if got.RequestTxID == "" || got.PayloadTxID != got.RequestTxID {
+			t.Errorf("payload meta.transactionId = %q, want the request's transactionId %q", got.PayloadTxID, got.RequestTxID)
 		}
 		for key, want := range map[string]string{
 			"upd-sync/grpc-get":    "found=true status=new err=<nil>",
@@ -428,6 +431,44 @@ func TestCallbackReadCurrent(t *testing.T) {
 		}
 		// Workflow selection runs before the anchor has a state.
 		requireCurrentAnchor(t, "workflow selection criterion", seen.anchor(t, "select/get"), "", "new")
+	})
+
+	// A transition that sends no data has not written the entity before its
+	// first processor's callout, so a joined read returns the version the
+	// create committed. The payload still carries the transition's own
+	// transaction id: it is the version the transition makes.
+	t.Run("TransitionWithoutData_PayloadCarriesTheRequestTransaction", func(t *testing.T) {
+		const model = "cbrc-nodata-sync"
+		h.RegisterProc("cbrc-nodata", func(rc *reqCtx) (map[string]any, error) {
+			seen.put("nodata/get", readAnchorJoined(rc))
+			return nil, nil
+		})
+		h.SetupModelWithWorkflow(t, model, workflowDocJSON(model+"-wf", readyGo(map[string]any{
+			"name": "go", "next": "DONE", "manual": true,
+			"processors": []any{map[string]any{"type": "externalized", "name": "cbrc-nodata", "executionMode": "SYNC", "config": anyNode}},
+		}, nil)))
+		id, status, body := h.CreateEntity(t, model, 1, oldData)
+		if status != http.StatusOK {
+			t.Fatalf("create: %d %s", status, body)
+		}
+		env, err := h.joinedManageGRPC(internalgrpc.EntityTransitionRequest, map[string]any{
+			"id": "nodata-transition", "entityId": id, "transition": "go",
+		}, "")
+		if err != nil || !env.Success {
+			t.Fatalf("transition: err=%v envelope=%+v", err, env)
+		}
+
+		got := seen.anchor(t, "nodata/get")
+		requireCurrentAnchor(t, "transition without data, SYNC processor", got, "READY", "old")
+		if got.RequestTxID == "" {
+			t.Fatal("the callout request carried no transactionId")
+		}
+		if got.TxID == got.RequestTxID {
+			t.Fatalf("joined read's transactionId = the request's %q; want the create's: the case needs a callout before any write", got.TxID)
+		}
+		if got.PayloadTxID != got.RequestTxID {
+			t.Errorf("payload meta.transactionId = %q, want the request's transactionId %q", got.PayloadTxID, got.RequestTxID)
+		}
 	})
 
 	t.Run("AsyncNewTxProcessor", func(t *testing.T) {

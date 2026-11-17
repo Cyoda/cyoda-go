@@ -234,10 +234,12 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	}
 
 	// expectedTxID is the entity's last committed transaction id as read in
-	// this transaction: the precondition of the final persist. It is taken
-	// before any callout, because the save before a callout stamps the
-	// entity with the id of the anchor the transaction then holds.
+	// this transaction: the precondition of the final persist. From here on
+	// the entity carries the fire's transaction id, as an entity does on the
+	// client doors: it is the version the fire makes, and workflow selection,
+	// criteria and callout payloads all see that id.
 	expectedTxID := entity.Meta.TransactionID
+	entity.Meta.TransactionID = txID
 	// Anchor stamp, before any callout can save the entity: attributed to
 	// the arming principal, executed by the system. Both arm sites set
 	// ArmedBy from spi.AttributionFor on the arming write's context.

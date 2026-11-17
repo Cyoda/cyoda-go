@@ -134,3 +134,41 @@ func RunCallbackReadCurrent_FunctionCriterion(t *testing.T, fixture BackendFixtu
 		t.Fatalf("state = %q; want DONE — the criterion's joined read did not see the request's data", got.Meta.State)
 	}
 }
+
+// RunCallbackPayloadTxID_IdenticalUpdate: an update whose data equals the
+// stored data names a manual transition whose SYNC processor records the
+// callout's transactionId and its payload's meta.transactionId. They are
+// equal on every backend, whether or not the transaction wrote the entity
+// before the callout.
+func RunCallbackPayloadTxID_IdenticalUpdate(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+	const model = "crc-payload-txid"
+	const body = `{"name":"anchor","amount":1,"status":"same"}`
+	cbSetupModel(t, c, model, `{"name":"Test","amount":10,"status":"new","requestTxId":"","payloadTxId":""}`,
+		cbWorkflowDoc("crc-payload-txid-wf", map[string]any{
+			"NONE":  map[string]any{"transitions": []any{map[string]any{"name": "init", "next": "READY", "manual": false}}},
+			"READY": map[string]any{"transitions": []any{map[string]any{"name": "go", "next": "DONE", "manual": true, "processors": []any{cbProc("record-txids", "SYNC", "", nil)}}}},
+			"DONE":  map[string]any{},
+		}))
+
+	id, err := c.CreateEntity(t, model, 1, body)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := c.UpdateEntity(t, id, "go", body); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, err := c.GetEntity(t, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	requestTxID, _ := got.Data["requestTxId"].(string)
+	payloadTxID, _ := got.Data["payloadTxId"].(string)
+	if requestTxID == "" {
+		t.Fatalf("the processor saw no request transactionId: data=%+v", got.Data)
+	}
+	if payloadTxID != requestTxID {
+		t.Errorf("payload meta.transactionId = %q, want the callout's transactionId %q", payloadTxID, requestTxID)
+	}
+}

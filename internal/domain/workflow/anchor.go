@@ -42,8 +42,9 @@ func (v anchorView) writtenBy(txID string) bool { return v.found && v.txID == tx
 var ErrAnchorSaveInfra = errors.New("saving the entity before a callout failed")
 
 // saveAnchorBeforeCallout makes the transaction hold the in-memory anchor
-// as it is before the callout and sets entity.Meta.TransactionID to the stored
-// anchor's id. No-op unless txID != "" and a transaction is in ctx: with an id
+// as it is before the callout and sets entity.Meta.TransactionID to the
+// transaction's id: the anchor, and the payload made from it, are the version
+// the operation makes, whether or not this step wrote it. No-op unless txID != "" and a transaction is in ctx: with an id
 // and no transaction a save would be a write of its own, and a dispatch with no
 // id sends no token.
 //
@@ -51,8 +52,6 @@ var ErrAnchorSaveInfra = errors.New("saving the entity before a callout failed")
 // when its Data bytes or Meta.State differ from the read; meta-only changes do
 // not count. An anchor the transaction does not hold is a create's that is not
 // stored yet, and is saved: a callout never deletes the entity it runs for.
-// After a save the entity takes the transaction's id, the one the store
-// stamps; otherwise it takes the id of the version the read returned.
 //
 // It never acquires the txcoord gate. The caller runs it in the chain's scope,
 // before beforeDispatch and before txcoord.Pause: a failure has dispatched
@@ -70,12 +69,10 @@ func (e *Engine) saveAnchorBeforeCallout(ctx context.Context, entity *spi.Entity
 	if err != nil {
 		return fmt.Errorf("failed to read entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
 	}
-	if cur.found && bytes.Equal(cur.data, entity.Data) && cur.state == entity.Meta.State {
-		entity.Meta.TransactionID = cur.txID
-		return nil
-	}
-	if _, err := es.Save(ctx, entity); err != nil {
-		return fmt.Errorf("failed to save entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
+	if !cur.found || !bytes.Equal(cur.data, entity.Data) || cur.state != entity.Meta.State {
+		if _, err := es.Save(ctx, entity); err != nil {
+			return fmt.Errorf("failed to save entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
+		}
 	}
 	entity.Meta.TransactionID = tx.ID
 	return nil

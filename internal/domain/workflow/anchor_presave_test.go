@@ -198,7 +198,9 @@ func TestPreCalloutSave_SecondProcessorSeesFirstProcessorsData(t *testing.T) {
 }
 
 // An anchor the transaction already holds as it is gets no save: the read
-// still returns the committed version, and the payload carries its id.
+// still returns the committed version. The payload, and the entity the
+// workflow goes on with, carry the running transaction's id: they are the
+// version the operation makes.
 func TestPreCalloutSave_NoChange_NoSave(t *testing.T) {
 	var env *cbdCallbackEnv
 	var seen *spi.Entity
@@ -210,7 +212,7 @@ func TestPreCalloutSave_NoChange_NoSave(t *testing.T) {
 			seen, err = readUnderToken(ctx, env.factory, entity.Meta.ID)
 			return nil, err
 		})
-	committedTxID, _, _, _, err := manualWithData(t, env, "pcn-1", nil)
+	committedTxID, runningTxID, entity, _, err := manualWithData(t, env, "pcn-1", nil)
 	if err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
@@ -220,8 +222,11 @@ func TestPreCalloutSave_NoChange_NoSave(t *testing.T) {
 	if seen.Meta.TransactionID != committedTxID {
 		t.Errorf("read transactionId = %q, want the committed %q: nothing was to be saved", seen.Meta.TransactionID, committedTxID)
 	}
-	if payloadTxID != committedTxID {
-		t.Errorf("payload transactionId = %q, want the read's %q", payloadTxID, committedTxID)
+	if payloadTxID != runningTxID {
+		t.Errorf("payload transactionId = %q, want the running transaction's %q", payloadTxID, runningTxID)
+	}
+	if entity.Meta.TransactionID != runningTxID {
+		t.Errorf("entity transactionId after the callout = %q, want the running transaction's %q", entity.Meta.TransactionID, runningTxID)
 	}
 }
 
@@ -395,11 +400,11 @@ func TestPreCalloutSave_SaveFails_IsInfra(t *testing.T) {
 	}
 }
 
-// The step stamps the entity with the id of the anchor the transaction holds
-// after it: the committed version's when nothing differs, the transaction's
-// after a save, whatever id the dispatch carries. An anchor the transaction
-// does not hold is a create's that is not stored yet, and is saved.
-func TestPreCalloutSave_StampsStoredTransactionID(t *testing.T) {
+// The step stamps the entity with the transaction's id, whatever id the
+// dispatch carries, whether or not it saved. It saves only when the anchor
+// differs from the one the transaction holds; an anchor the transaction does
+// not hold is a create's that is not stored yet, and is saved.
+func TestPreCalloutSave_StampsTransactionID(t *testing.T) {
 	env := newCallbackEnv(t, nil, nil)
 	seeded := seedFireEntity(t, env.factory, env.ctx, "pcv-1", env.model, "S_pre", true, map[string]any{"x": 0})
 	txID, txCtx, err := env.txMgr.Begin(env.ctx)
@@ -416,8 +421,8 @@ func TestPreCalloutSave_StampsStoredTransactionID(t *testing.T) {
 		if err := env.engine.saveAnchorBeforeCallout(txCtx, entity, "minted-id"); err != nil {
 			t.Fatalf("saveAnchorBeforeCallout: %v", err)
 		}
-		if entity.Meta.TransactionID != seeded.Meta.TransactionID {
-			t.Errorf("entity transactionId = %q, want the committed %q", entity.Meta.TransactionID, seeded.Meta.TransactionID)
+		if entity.Meta.TransactionID != txID {
+			t.Errorf("entity transactionId = %q, want the transaction's %q", entity.Meta.TransactionID, txID)
 		}
 		stored, err := readUnderToken(txCtx, env.factory, "pcv-1")
 		if err != nil {
@@ -875,12 +880,22 @@ func cbdSameCtxProc(name string) spi.ProcessorDefinition {
 	return spi.ProcessorDefinition{Type: ProcessorTypeExternalized, Name: name, ExecutionMode: ExecutionModeCommitBeforeDispatch}
 }
 
-// On the update path every processor's payload carries the transactionId a
-// callback read of the anchor returns at that dispatch: under the token when
-// the dispatch carries one, the committed anchor when it does not. A segment
-// boundary writes the anchor, so the next dispatch's id is the one that write
-// stored.
-func TestPayloadTxID_MatchesCallbackRead_UpdatePath(t *testing.T) {
+// wantPayloadTxID is the payload transactionId rule: the dispatch's
+// transaction id when the dispatch carries one, the id of the entity's last
+// committed version (what a callback read without a token returns) when it
+// does not.
+func wantPayloadTxID(dispatchTxID string, s *calloutSight) string {
+	if dispatchTxID != "" {
+		return dispatchTxID
+	}
+	return s.read.Meta.TransactionID
+}
+
+// On the update path every processor's payload carries the transaction id of
+// its dispatch, and a dispatch without one (COMMIT_BEFORE_DISPATCH without
+// startNewTxOnDispatch) carries the id of the version the segment boundary
+// committed.
+func TestPayloadTxID_IsTheDispatchTransaction_UpdatePath(t *testing.T) {
 	cases := []struct {
 		name  string
 		procs []spi.ProcessorDefinition
@@ -892,10 +907,12 @@ func TestPayloadTxID_MatchesCallbackRead_UpdatePath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var env *cbdCallbackEnv
 			seen := map[string]*calloutSight{}
+			dispatchTx := map[string]string{}
 			env = newCallbackEnv(t, tc.procs,
-				func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+				func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
 					s := lookUnderToken(ctx, env.factory, entity)
 					seen[proc.Name] = &s
+					dispatchTx[proc.Name] = txID
 					return nil, nil
 				})
 			_, _, entity, result, err := manualWithData(t, env, "ptx-"+tc.name, []byte(`{"x":5,"by":"request"}`))
@@ -910,8 +927,8 @@ func TestPayloadTxID_MatchesCallbackRead_UpdatePath(t *testing.T) {
 				if s.readErr != nil {
 					t.Fatalf("%s: callback read: %v", p.Name, s.readErr)
 				}
-				if s.payloadTx != s.read.Meta.TransactionID {
-					t.Errorf("%s: payload transactionId = %q, want the callback read's %q", p.Name, s.payloadTx, s.read.Meta.TransactionID)
+				if want := wantPayloadTxID(dispatchTx[p.Name], s); s.payloadTx != want {
+					t.Errorf("%s: payload transactionId = %q, want %q", p.Name, s.payloadTx, want)
 				}
 			}
 			stored, err := readUnderToken(result.FinalCtx, env.factory, entity.Meta.ID)
@@ -925,19 +942,20 @@ func TestPayloadTxID_MatchesCallbackRead_UpdatePath(t *testing.T) {
 	}
 }
 
-// A COMMIT_BEFORE_DISPATCH processor with startNewTxOnDispatch: the payload
-// carries the id TX_post reads, which is the id of the version TX_pre
-// committed. On a scheduled fire the entity arrives with the committed id
-// of an earlier transaction; the TX_pre flush writes the anchor in the fire's
-// own transaction. After the post-dispatch apply, the engine's entity carries
-// TX_post's id.
-func TestPayloadTxID_MatchesCallbackRead_CommitBeforeDispatch(t *testing.T) {
+// A COMMIT_BEFORE_DISPATCH processor with startNewTxOnDispatch is dispatched
+// with TX_post's token, and its payload carries TX_post's id: TX_post makes
+// the next version. On a scheduled fire too, though the entity arrived with
+// the committed id of an earlier transaction. After the post-dispatch apply,
+// the engine's entity carries TX_post's id.
+func TestPayloadTxID_IsTheDispatchTransaction_CommitBeforeDispatch(t *testing.T) {
 	t.Run("scheduled fire", func(t *testing.T) {
 		var env *runEnv
 		var seen *calloutSight
-		probe := &calloutProbe{processor: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+		var dispatchTx string
+		probe := &calloutProbe{processor: func(ctx context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
 			s := lookUnderToken(ctx, env.factory, entity)
 			seen = &s
+			dispatchTx = txID
 			return nil, nil
 		}}
 		env = newRunEnv(t, probe)
@@ -949,8 +967,11 @@ func TestPayloadTxID_MatchesCallbackRead_CommitBeforeDispatch(t *testing.T) {
 		if seen.readErr != nil {
 			t.Fatalf("callback read: %v", seen.readErr)
 		}
-		if seen.payloadTx != seen.read.Meta.TransactionID {
-			t.Errorf("payload transactionId = %q, want the id TX_post reads, %q", seen.payloadTx, seen.read.Meta.TransactionID)
+		if dispatchTx == "" {
+			t.Fatal("dispatched without a transaction id")
+		}
+		if seen.payloadTx != dispatchTx {
+			t.Errorf("payload transactionId = %q, want TX_post's %q", seen.payloadTx, dispatchTx)
 		}
 		if r.Outcome != OutcomeFired {
 			t.Fatalf("report = %+v, want fired", r)
@@ -963,10 +984,12 @@ func TestPayloadTxID_MatchesCallbackRead_CommitBeforeDispatch(t *testing.T) {
 	t.Run("two segments", func(t *testing.T) {
 		var env *cbdCallbackEnv
 		seen := map[string]*calloutSight{}
+		dispatchTx := map[string]string{}
 		env = newCallbackEnv(t, []spi.ProcessorDefinition{cbdNewTxProc("c1"), cbdNewTxProc("c2")},
-			func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+			func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
 				s := lookUnderToken(ctx, env.factory, entity)
 				seen[proc.Name] = &s
+				dispatchTx[proc.Name] = txID
 				return &spi.Entity{Data: []byte(`{"x":42,"by":"engine"}`)}, nil
 			})
 		_, entity, result, err := env.transition(t, "ptx-cbd-two")
@@ -982,8 +1005,11 @@ func TestPayloadTxID_MatchesCallbackRead_CommitBeforeDispatch(t *testing.T) {
 			if s.readErr != nil {
 				t.Fatalf("%s: callback read: %v", name, s.readErr)
 			}
-			if s.payloadTx != s.read.Meta.TransactionID {
-				t.Errorf("%s: payload transactionId = %q, want the id TX_post reads, %q", name, s.payloadTx, s.read.Meta.TransactionID)
+			if dispatchTx[name] == "" {
+				t.Fatalf("%s: dispatched without a transaction id", name)
+			}
+			if s.payloadTx != dispatchTx[name] {
+				t.Errorf("%s: payload transactionId = %q, want TX_post's %q", name, s.payloadTx, dispatchTx[name])
 			}
 		}
 		if entity.Meta.TransactionID != result.FinalTxID {

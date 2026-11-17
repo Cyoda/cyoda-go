@@ -21,6 +21,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   for, with or without the token; a processor changes it only through the data
   it returns, and the engine no longer adopts such a write. Writing other
   entities through the token is unchanged.
+- **A callout payload's `meta.transactionId` is the callout's
+  `transactionId`.** While a workflow runs, the entity carries the id of the
+  transaction it runs in, so a callout that carries a `transactionId` carries
+  the same id in its payload, and a `lifecycle` criterion on `transactionId`
+  sees it. Before, a scheduled fire's entity carried the id of its last
+  committed version until a write, and a `COMMIT_BEFORE_DISPATCH` processor
+  with `startNewTxOnDispatch: true` carried the id of the transaction that
+  committed before its callout. A callout without a `transactionId` carries
+  the id of the entity's last committed version.
 - **One version per entity per transaction, on every backend.** A later write
   of an entity the transaction already wrote replaces its pending version.
   `GET /entity/{id}?transactionId=X` returns X's final entity and reads
