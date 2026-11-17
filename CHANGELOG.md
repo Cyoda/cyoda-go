@@ -15,7 +15,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   including the changes earlier processors returned; on a create it is
   found, and during a processor it is in its source state. On PostgreSQL a
   transaction that has written the entity holds its row lock until the
-  transaction ends, so during a callout another writer of the entity, and
+  transaction ends (or until a rollback to a savepoint undoes the write), so during a callout another writer of the entity, and
   another transaction that read it, wait until then. A processor, a function
   criterion and a schedule function never write or delete the entity they run
   for, with or without the token; a processor changes it only through the data

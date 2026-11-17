@@ -117,7 +117,7 @@ yet, and while a transition's processors run it is in the source state with
 the changes earlier processors returned. A later write of the entity in `T`
 replaces the pending version, so `T` records one version of the entity. On
 PostgreSQL `T` holds the entity's row lock from its first write of the entity
-until `T` ends: another writer of the entity waits at its write, and another
+until `T` ends, or until a rollback to a savepoint undoes that write: another writer of the entity waits at its write, and another
 transaction that read it waits at its commit. A `T` that has not written the
 entity holds no row lock on it while a callout runs. See `cyoda help workflows`, "What a
 callback read of the entity returns".
@@ -314,12 +314,12 @@ rejects this flag for any other execution mode.
 #### `startNewTxOnDispatch = true`
 
 - Engine sequence: `Save → Commit(T_pre) → Begin(T_post) → read the
-  anchor in T_post and require T_pre's version → dispatch with T_post's
+  entity in T_post and require T_pre's version → dispatch with T_post's
   token in context → CompareAndSave → cascade continues in T_post`.
 - The read before the dispatch requires `T_pre`'s version: if another
-  transaction wrote or deleted the anchor after `T_pre` committed, the
+  transaction wrote or deleted the entity after `T_pre` committed, the
   transition fails with a conflict before the processor is dispatched. The
-  read also puts the anchor in `T_post`'s read set, so a later write by
+  read also puts the entity in `T_post`'s read set, so a later write by
   another transaction fails at commit.
 - The processor's CRUD callbacks join `T_post`. They can read the entity
   the processor runs for, and read or write other entities transactionally

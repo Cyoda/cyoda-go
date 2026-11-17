@@ -91,8 +91,9 @@ Full transaction-lifecycle implementation
   `entities` row in place instead of adding a version; the change type comes
   from whether a version before this transaction exists. A delete followed
   by a re-create in one transaction is one version, as on memory and sqlite
-  (`docs/CONSISTENCY.md` §6). The written row holds the entity's row lock
-  until the transaction ends.
+  (`docs/CONSISTENCY.md` §6). The transaction holds the entity's row lock
+  from that write until it ends, or until a rollback to a savepoint undoes the
+  write.
 - **Commit-time key check:** a save inside a transaction does no
   unique-key work; the transaction records each entity it wrote with the
   bytes of its last write. At commit, after read-set validation and before

@@ -30,7 +30,9 @@ workflow processor returns — over HTTP and gRPC.
 - **Only a `LOCKED` model is extended.** A client extends a schema only by
   writing entity data, and the API accepts entity data only into a `LOCKED`
   model: a create checks the state, and every other write acts on an
-  existing entity, whose model unlock keeps `LOCKED`. The extension itself
+  existing entity, whose model is `LOCKED` because unlock refuses a model
+  with entities and writes to a model stop before it is unlocked (`cyoda help
+  models`, LIFECYCLE). The extension itself
   does not check the state again and never answers `409 MODEL_NOT_LOCKED`.
 - **Storage failure is retryable.** A storage outage during an extension,
   including one for data a workflow processor returns, answers the retryable

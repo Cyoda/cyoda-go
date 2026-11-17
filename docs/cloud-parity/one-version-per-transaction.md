@@ -20,7 +20,8 @@ callback read under the token returns the entity as the workflow has it now:
 the request's data, the state changes so far and the data earlier processors
 returned. On a create the entity is found; during a processor it is in its
 source state. On PostgreSQL the transaction holds the entity's row lock from
-its first write of the entity until the transaction ends, so another writer of
+its first write of the entity until the transaction ends, or until a rollback
+to a savepoint undoes that write, so another writer of
 the entity, and another transaction that read it, wait (at the write or the
 commit) until then. A transaction that has not written the entity holds no row
 lock on it while a callout runs: a manual transition that sends no data, for example, has not
@@ -75,7 +76,9 @@ partial key (from its processors' returned data) is found at the owner's
 commit, not on the callback request; a partial key in the callback's own body
 stays `422` at the callback. On PostgreSQL a deadlock (`40P01`) between two
 crossing commits is a retryable `409 CONFLICT`. A scheduled fire that breaks a
-key fails at commit like any run; the entity is unchanged.
+key fails at commit like any run: nothing the refused transaction wrote is kept,
+and a segment an earlier `COMMIT_BEFORE_DISPATCH` boundary committed stays
+committed.
 
 ## The model rules are the API's
 

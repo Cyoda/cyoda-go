@@ -220,7 +220,8 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
   read or write any other entity whose cascade is not running in the same
   transaction. A write to the entity by
   another transaction while the workflow runs fails one of the two with a
-  conflict (see the next item).
+  conflict (see *On PostgreSQL a written entity stays locked until the
+  transaction ends* below).
 - **What a callback read of the entity returns.** A callback that reads,
   searches, counts or pages under the transaction token sees the entity as
   the workflow has it when the callout is made. Before each callout that
@@ -249,7 +250,9 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
   ends.** From its first write of the entity — the engine's write before a
   callout, or an earlier one — the transaction holds the entity's row lock
   until it commits or rolls back: at the end of the operation, or at the
-  boundary of the `COMMIT_BEFORE_DISPATCH` segment it belongs to. A
+  boundary of the `COMMIT_BEFORE_DISPATCH` segment it belongs to. A rollback
+  to a savepoint that undoes the write (a failed callback, or a failed
+  `ASYNC_NEW_TX` processor) releases the lock with it. A
   transaction that has not written the entity holds no row lock on it
   while a callout runs; a manual transition that sends no data, for
   example, has not written it before its first processor's callout. Another transaction that writes a locked entity
@@ -466,7 +469,7 @@ otherwise `UNSAFE_WORK_NOT_COMPLETED`.
 - **Explicitly firing a scheduled transition by name returns** HTTP 400 `TRANSITION_NOT_FOUND`, with the message `transition "X" in state "Y" is scheduled and fires automatically; it is not manually fireable`. Same code returned when a transition is `disabled: true` — same semantic: "the transition exists but is not currently dispatchable from the caller's POV." The entity remains in the source state. To allow early firing, give the state an ordinary manual transition alongside the scheduled one.
 - **Audit trail.** Arming, firing, expiry, cancellation and failure each emit a dedicated event: `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE` (alongside the ordinary `TRANSITION_MAKE`), `SCHEDULED_TRANSITION_EXPIRE`, `SCHEDULED_TRANSITION_CANCEL`, `SCHEDULED_TRANSITION_FAIL`. `FAIL` carries the transition, the source state, the reason, the attempts and the lost owners; `cyoda help audit`, *Event data*, lists the data of each. A loopback that re-arms the same state emits only `ARM`, not `CANCEL`. `CANCEL` is recorded at a write, when some other task of the entity is no longer armed from the entity's new current state (see *Workflow-level selection*); or when the task itself comes due and the workflow now selected for the entity does not schedule it from that state, even though the entity never left it. A task whose entity carries no transaction id to guard the fire is also cancelled, and logged at ERROR. At fire time, an entity that is already gone, or has otherwise left the source state, is removed instead with no audit event. A task past its deadline on its first attempt records `EXPIRE`, not `CANCEL`, even when it is obsolete too: lateness is decided from the stored task and the clock before the workflow is consulted. A safe failure records no audit event; it shows in the task's attempts and last error, in the log at WARN, and at ERROR with a ticket when its cause is an internal error.
 - **Callbacks in a scheduled run.** A processor's callbacks join the run's transaction, as in any transition, and so do the callbacks of a `schedule.function` the run calls to arm the state it reaches. None of them writes or deletes the entity being fired (see **A callout never writes the entity it runs for** above).
-- **A run refused at commit.** A run's commit checks its final entities like any write's: a duplicate or partly filled composite unique key refuses the commit, and nothing of the attempt is kept. That is a failed run under the rules above. Its last error is the text a client write gets for the same refusal (`UNIQUE_VIOLATION: …` or `INVALID_UNIQUE_KEY: …`), with no ticket.
+- **A run refused at commit.** A run's commit checks its final entities like any write's: a duplicate or partly filled composite unique key refuses the commit, and nothing the refused transaction wrote is kept. A segment that an earlier `COMMIT_BEFORE_DISPATCH` boundary of the run committed stays committed. That is a failed run under the rules above. Its last error is the text a client write gets for the same refusal (`UNIQUE_VIOLATION: …` or `INVALID_UNIQUE_KEY: …`), with no ticket.
 - **Criteria and functions must not trigger unsafe work.** A criterion and a `schedule.function` are treated as safe to repeat and are not marked. One whose callbacks trigger a processor that is not `idempotent` is not supported: that processor can run twice.
 - **Shutdown.** A node that shuts down stops claiming. From then on none of its runs begins a new unsafe dispatch. It waits `CYODA_SCHEDULER_SHUTDOWN_DRAIN` (default `20s`) for its runs, then cuts every other run and hands back the ones that sent nothing unsafe and made no partial commit: another node claims them at once, and the attempt is not counted. A cut run that already sent unsafe work or partially committed ends `FAILED` (`UNSAFE_WORK_NOT_COMPLETED` or `STOPPED_AFTER_PARTIAL_COMMIT`) instead. A run with a non-idempotent processor callout in flight is not cut, and is allowed to finish. If a run has not ended by the time the shutdown wait runs out, the node stops with its claim still held, and another node takes the task over after `CYODA_SCHEDULER_STALE_AFTER`. See `cyoda help run` (SHUTDOWN TIMING).
 

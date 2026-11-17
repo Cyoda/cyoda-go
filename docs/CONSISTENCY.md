@@ -428,7 +428,7 @@ between segments (§10), so a criterion that assumes the cascade ran
 atomically — e.g. "if A and B have both been advanced as a unit" — can be
 falsified by a concurrent reader (or another cascade) acting on the
 intermediate state. Express such cross-segment invariants either at the
-entity level on the cascade-anchor (FCW catches contention via CAS at
+entity level on the entity the cascade runs for (FCW catches contention via CAS at
 segment continuation) or post-cascade as a reconciliation step.
 
 If your business logic requires a count-based invariant, there are three
@@ -575,8 +575,8 @@ the count to a counter entity the workflow can read/write by ID.
 ### 7.4 Workflow-encoded invariant — safe by design
 
 State-machine transitions naturally funnel the "should I do X?" decision
-through entity-local criteria that evaluate against the anchor entity's
-own state. A transition's criterion is evaluated within the transaction
+through entity-local criteria that evaluate against the transitioning
+entity's own state. A transition's criterion is evaluated within the transaction
 that performs the transition, and the criterion's reads enter the
 transaction's read-set.
 
@@ -720,7 +720,8 @@ A short checklist:
    does not hold it yet or the stored data bytes or state differ from the
    engine's copy. On postgres the transaction holds the entity's row lock
    from its first write of the entity until the transaction ends (at the
-   end of the operation, or of a `COMMIT_BEFORE_DISPATCH` segment), so
+   end of the operation, or of a `COMMIT_BEFORE_DISPATCH` segment) or
+   until a rollback to a savepoint undoes that write, so
    another writer of the entity, and another transaction that read it,
    wait at their write or commit until then. A write to the entity by another
    transaction makes one of the two fail with a conflict. Cross-link:
