@@ -104,8 +104,9 @@ HMAC and joins the transaction: if `NodeID` equals self, it calls
 node (HTTP: reverse proxy; gRPC: B→A forward). Inside `T` the callback
 sees the writes stored in `T` — including via search, count and page
 (read-your-own-writes); other readers do not. Before each callout that
-carries the token — a processor, a function criterion, a schedule function —
-the engine reads the cascade's entity in `T` and writes it into `T` (not
+carries the token — a processor (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has
+just committed the entity), a function criterion, a schedule function — the
+engine reads the cascade's entity in `T` and writes it into `T` (not
 committed) when a read of it in `T` finds nothing (a create), or when the stored data bytes or
 state differ from the engine's copy; a change to the metadata alone does not
 count. On PostgreSQL the stored data is the JSONB rendering of what was

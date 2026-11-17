@@ -5,7 +5,8 @@ Cloud follows. Cloud ticket: CP-3997.
 
 ## Callback reads return the current entity
 
-Before every callout that carries the transaction token, the engine reads the
+Before every callout that carries the transaction token, other than a `COMMIT_BEFORE_DISPATCH` processor's
+(its first segment has just committed the entity), the engine reads the
 entity the workflow runs for in the open transaction. It writes the entity into
 that transaction (not committed) when a read of it in the transaction finds nothing (a create), or
 when the stored data bytes or state differ from the engine's copy; a change to

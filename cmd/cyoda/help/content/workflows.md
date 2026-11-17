@@ -223,27 +223,33 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
 - **What a callback read of the entity returns.** A callback that reads,
   searches, counts or pages under the transaction token sees the entity as
   the workflow has it when the callout is made. Before each callout that
-  carries the token, the engine reads the entity in the open transaction.
-  It writes the entity into that transaction when that read finds nothing
-  (a create), or when the stored data bytes or state differ from the
-  workflow's copy; a change to the metadata alone does not count. On
-  PostgreSQL the stored data is the JSONB rendering of what was written,
-  so data that came from a request or a processor usually differs in its
-  bytes and is written again. The write is not committed: only that
-  transaction and the requests joined to it see it. It commits or rolls
-  back with the transaction, at the end of the operation that began the
-  transaction, or, when a `COMMIT_BEFORE_DISPATCH` processor follows, at
-  that processor's segment boundary. A later write of the entity in the
-  same transaction replaces the pending version, so the transaction
-  records one version of the entity. On a create the entity is found; during
-  workflow selection on a create it has no state yet. While a transition's
-  processors run, its state is the transition's source state (the state
-  advances after the processors) and its data includes the changes earlier
-  processors returned. The payload in a processor's or criterion's request
-  is the same entity. Other entities the transaction has written — for
-  example, through an earlier callback — are returned as written. These
-  writes are the operation's own: they do not break the request's
-  `If-Match`.
+  carries the token, other than a `COMMIT_BEFORE_DISPATCH` processor's,
+  the engine reads the entity in the open transaction. It writes the
+  entity into that transaction when that read finds nothing (a create), or
+  when the stored data bytes or state differ from the workflow's copy; a
+  change to the metadata alone does not count. On PostgreSQL the stored
+  data is the JSONB rendering of what was written, so data that came from
+  a request or a processor usually differs in its bytes and is written
+  again. The write is not committed: only that transaction and the
+  requests joined to it see it. It commits or rolls back with the
+  transaction, at the end of the operation that began the transaction, or,
+  when a `COMMIT_BEFORE_DISPATCH` processor follows, at that processor's
+  segment boundary. A later write of the entity in the same transaction
+  replaces the pending version, so the transaction records one version of
+  the entity. A `COMMIT_BEFORE_DISPATCH` processor's first segment commits
+  the entity before the callout. With `startNewTxOnDispatch: true` the
+  transaction its callbacks join reads that committed version before the
+  dispatch, so they see the current entity too; that transaction has not
+  written the entity and holds no row lock on it during the callout. With
+  `false` the callout carries no token. On a create the entity is found;
+  during workflow selection on a create it has no state yet. While a
+  transition's processors run, its state is the transition's source state
+  (the state advances after the processors) and its data includes the
+  changes earlier processors returned. The payload in a processor's or
+  criterion's request is the same entity. Other entities the transaction
+  has written — for example, through an earlier callback — are returned as
+  written. These writes are the operation's own: they do not break the
+  request's `If-Match`.
 - **On PostgreSQL a written entity stays locked until the transaction
   ends.** From its first write of the entity — the engine's write before a
   callout, or an earlier one — the transaction holds the entity's row lock

@@ -13204,7 +13204,8 @@ components:
         extension attribute `cyodatxtoken`); echoing it here runs this request
         inside the open transaction the token names, so the request sees what
         that transaction has written so far and its own writes commit with it.
-        Before the callout, the engine reads the entity the callout runs for
+        Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just
+        committed the entity), the engine reads the entity the callout runs for
         in that open transaction and writes it there (not committed) when a read of it in the
         transaction finds nothing (a create) or the stored data or state differ
         from the engine's copy. The write commits or rolls back with the

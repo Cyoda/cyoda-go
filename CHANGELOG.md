@@ -8,9 +8,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **A callback read returns the entity as the workflow has it, and a callout
   never writes the entity it runs for.** Before every callout that carries
-  the transaction token, the engine reads the entity in the transaction and
-  writes it into the transaction (not committed) when the transaction does
-  not hold it yet or the stored data or state differ from the engine's copy,
+  the transaction token, other than a `COMMIT_BEFORE_DISPATCH` processor's, the engine reads the entity in the
+  transaction and writes it into the transaction (not committed) when that
+  read finds nothing (a create) or the stored data or state differ from the engine's copy,
   so a callback read (get, search, count) returns the current data,
   including the changes earlier processors returned; on a create it is
   found, and during a processor it is in its source state. On PostgreSQL a

@@ -691,7 +691,7 @@ A short checklist:
    running transition, and it would start that entity's workflow again
    inside its own cascade, which can loop without end. A callback read
    under the token returns the entity as the workflow has it when the
-   callout is made: before each callout that carries the token, the engine
+   callout is made: before each callout that carries the token, other than a `COMMIT_BEFORE_DISPATCH` processor's, the engine
    reads the entity in the transaction and writes it into the transaction
    (not committed) when a read of it in the transaction finds nothing (a create) or the stored
    data bytes or state differ from the engine's copy. On postgres the
