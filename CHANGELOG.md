@@ -36,8 +36,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **Unique keys are checked at commit, on the final entities.** The store
   reads the unique-key definitions from its own stored model;
   `spi.WithUniqueKeys` and `spi.UniqueKeysFromContext` are removed. Two entities that swap key values,
-  a chain of moves, and a value freed and claimed in one transaction now
-  commit on every backend (memory and sqlite answered `409`, PostgreSQL `409`
+  a chain of moves, and a value freed by re-keying and claimed in one
+  transaction now commit on every backend (memory answered `409` on a swap
+  or a re-key; sqlite `409` or a commit, by map order; PostgreSQL `409`
   unless the writes freed first). A key a joined callback's write breaks, or a
   partial key its processors' returned data leaves, is now found at the
   owner's commit on PostgreSQL (`409 UNIQUE_VIOLATION`, `422
