@@ -99,6 +99,12 @@
             "hostnames": {"type": "array", "items": {"type": "string"}}
           }
         }
+      },
+      "if": {"properties": {"enabled": {"const": true}}},
+      "then": {
+        "properties": {
+          "parentRefs": {"minItems": 1}
+        }
       }
     },
     "ingress": {

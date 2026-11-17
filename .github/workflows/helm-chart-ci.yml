@@ -6,12 +6,10 @@ on:
     paths:
       - 'deploy/helm/**'
       - '.github/workflows/helm-chart-ci.yml'
-      - '.github/ct.yaml'
   pull_request:
     paths:
       - 'deploy/helm/**'
       - '.github/workflows/helm-chart-ci.yml'
-      - '.github/ct.yaml'
 
 # Default to read-only token for all jobs. Individual jobs may opt-in to
 # additional scopes if they need them; none currently do.
@@ -39,14 +37,55 @@ jobs:
 
       - name: helm lint
         # Chart requires operator-provided existingSecret values (no sensible
-        # defaults for Secret names); lint with placeholders that satisfy the
-        # schema's minLength:1 constraint.
+        # defaults for Secret names, nor for the Gateway the routes attach to);
+        # lint with placeholders that satisfy the schema.
         run: |
           helm lint deploy/helm/cyoda \
             --set postgres.existingSecret=lint-placeholder \
             --set jwt.existingSecret=lint-placeholder \
             --set cluster.hmacSecret.existingSecret=lint-placeholder \
-            --set monitoring.metricsBearer.existingSecret=lint-placeholder
+            --set monitoring.metricsBearer.existingSecret=lint-placeholder \
+            --set gateway.parentRefs[0].name=lint-placeholder
+
+      - name: helm template — schema rejects Gateway API routing with no parentRefs
+        run: |
+          # gateway.enabled defaults to true, and a route with no parent
+          # attaches to nothing: the install must fail, not succeed unrouted.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "FAIL: expected schema rejection of empty gateway.parentRefs; got success."
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "/gateway/parentRefs"; then
+            echo "FAIL: expected error to name /gateway/parentRefs; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected empty gateway.parentRefs."
+
+      - name: helm template — gateway.enabled=false needs no parentRefs
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.enabled=false \
+            > /tmp/no-gateway.yaml
+          if grep -q "kind: HTTPRoute\|kind: GRPCRoute" /tmp/no-gateway.yaml; then
+            echo "FAIL: gateway.enabled=false still rendered a route."
+            exit 1
+          fi
+          echo "PASS: no routes rendered with gateway.enabled=false."
 
       - name: helm template — default (Gateway API, replicas=1)
         run: |
