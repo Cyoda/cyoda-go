@@ -12,7 +12,27 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
+
+// syncProcWorkflow is a NONE -> DONE workflow whose automated transition runs
+// the member's processor proc, SYNC.
+func syncProcWorkflow(proc string) string {
+	return chainWorkflowJSON(proc+"-wf", procSpec{name: proc, mode: "SYNC", config: map[string]any{"calculationNodesTags": ""}})
+}
+
+// awaitOutcome waits for the processor's record of what it did.
+func awaitOutcome[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout: the processor did not run")
+	}
+	var zero T
+	return zero
+}
 
 // ukctKeyedModel imports model from workflowSampleModel, declares keysJSON on
 // it, locks it and imports workflow wf.

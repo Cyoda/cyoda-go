@@ -68,8 +68,8 @@ func (e *Engine) applyProcessorData(ctx context.Context, entity *spi.Entity, des
 	extended, err := ingest.ValidateOrExtend(ctx, modelStore, resolved, parsed)
 	if err != nil {
 		if errors.Is(err, ingest.ErrInternalSchema) {
-			// Kept with %w: the store's own classification (storage
-			// unavailable, model not locked) must reach the handler's answer.
+			// Kept with %w: the store's own classification (such as
+			// storage unavailable) must reach the handler's answer.
 			return fmt.Errorf("%w: %w", ErrProcessorOutputInfra, err)
 		}
 		return fmt.Errorf("%w: %s", ErrProcessorOutputRejected, err)

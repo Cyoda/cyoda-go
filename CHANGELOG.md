@@ -89,16 +89,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   undeclared field answers `422 INVALID_UNIQUE_KEY`, not `400
   VALIDATION_FAILED`. Every door's `422 INVALID_UNIQUE_KEY` now carries the
   message the store uses, "one or more unique key fields are null or
-  invalid" (prefixed with the item's index in a collection). An extension that
-  finds its model not locked (unlocked while a write to it, or the
-  transaction the write joined, is in progress) is refused with
-  `409 MODEL_NOT_LOCKED` on every backend; before, PostgreSQL appended it to the unlocked model's log. A
+  invalid" (prefixed with the item's index in a collection). A
   storage failure while extending for processor-returned data answers the
   retryable `503 STORAGE_UNAVAILABLE`, not `500`. A `changeLevel` change on
   a locked model takes effect on each node as its model cache picks it up.
   The SPI's `ModelStore.ExtendSchema` and `ModelStore.Get` contracts change
-  to match (`ExtendSchema` never joins the caller's transaction and returns
-  the new `ErrModelNotLocked`; `Get` ignores the caller's transaction), and
+  to match (`ExtendSchema` never joins the caller's transaction, and the
+  caller extends only a `LOCKED` model; `Get` ignores the caller's
+  transaction), and
   an out-of-tree storage plugin must follow them. A storage factory must
   also offer `SetApplyFunc` taking a list of deltas
   (`func(base []byte, deltas []SchemaDelta) ([]byte, error)`; the SPI

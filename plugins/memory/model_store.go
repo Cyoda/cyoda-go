@@ -108,7 +108,8 @@ func (s *ModelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, 
 
 // ExtendSchema applies the delta to the current schema via the
 // injected ApplyFunc. Memory is single-writer so apply-in-place
-// under the factory's model mutex is correct.
+// under the factory's model mutex is correct. The caller extends only a
+// LOCKED model; the store does not check this.
 func (s *ModelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
 	if len(delta) == 0 {
 		return nil
@@ -122,9 +123,6 @@ func (s *ModelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	entry, ok := s.factory.modelData[s.tenant][ref]
 	if !ok {
 		return fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
-	}
-	if entry.State != spi.ModelLocked {
-		return fmt.Errorf("model %s is not locked: %w", ref, spi.ErrModelNotLocked)
 	}
 	newSchema, err := s.factory.applyFunc(entry.Schema, []spi.SchemaDelta{delta})
 	if err != nil {

@@ -49,14 +49,26 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 		return fmt.Errorf("failed to marshal model descriptor: %w", err)
 	}
 
-	// Save replaces the descriptor of a model that is not LOCKED, whose
-	// extension log is empty (Unlock folds it into the schema and clears
-	// it), so there is no log to clear.
-	if _, err := s.db.ExecContext(ctx,
+	// Save replaces the model's schema wholesale, so the extension log of
+	// the ref goes with it, in the same transaction: a Get after Save
+	// returns the saved schema alone.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return classifyError(fmt.Errorf("begin save tx for %s: %w", desc.Ref, err))
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT OR REPLACE INTO models (tenant_id, model_name, model_version, doc)
 		 VALUES (?, ?, ?, jsonb(?))`,
 		string(s.tenantID), desc.Ref.EntityName, desc.Ref.ModelVersion, raw); err != nil {
 		return fmt.Errorf("failed to save model %s: %w", desc.Ref, classifyError(err))
+	}
+	if err := clearExtensionLog(ctx, tx, s.tenantID, desc.Ref); err != nil {
+		return fmt.Errorf("Save: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return classifyError(fmt.Errorf("commit save of %s: %w", desc.Ref, err))
 	}
 	return nil
 }
@@ -130,11 +142,17 @@ func (s *modelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 	return refs, nil
 }
 
-// Delete removes an UNLOCKED model. The extension log of a model that is
-// not LOCKED is empty (Unlock folds it into the schema and clears it), so
-// there is no log to remove.
+// Delete removes the model and, in the same transaction, its extension log:
+// a model imported later under the same reference starts from its imported
+// schema alone.
 func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return classifyError(fmt.Errorf("begin delete tx for %s: %w", modelRef, err))
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
 		`DELETE FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
 	if err != nil {
@@ -146,6 +164,12 @@ func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	}
 	if n == 0 {
 		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
+	}
+	if err := clearExtensionLog(ctx, tx, s.tenantID, modelRef); err != nil {
+		return fmt.Errorf("Delete: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return classifyError(fmt.Errorf("commit delete of %s: %w", modelRef, err))
 	}
 	return nil
 }
@@ -318,9 +342,9 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 	}, nil
 }
 
-// ExtendSchema appends a 'delta' row to model_schema_extensions, on a LOCKED
-// model only (spi.ErrModelNotLocked otherwise, spi.ErrNotFound when absent).
-// While the model is LOCKED the schema stored in models.doc does not change;
+// ExtendSchema appends a 'delta' row to model_schema_extensions
+// (spi.ErrNotFound when the model is absent). The caller extends only a
+// LOCKED model; the store does not check this. While the model is LOCKED the schema stored in models.doc does not change;
 // Get folds the log on top of it via the injected ApplyFunc. Unlock rewrites
 // it with the folded schema and clears the log.
 //
@@ -378,9 +402,6 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 	doc, err := s.modelDocInTx(ctx, tx, ref)
 	if err != nil {
 		return err
-	}
-	if doc.State != spi.ModelLocked {
-		return fmt.Errorf("model %s is not locked: %w", ref, spi.ErrModelNotLocked)
 	}
 	base := doc.Schema
 

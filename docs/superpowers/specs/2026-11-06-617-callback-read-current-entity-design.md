@@ -49,11 +49,9 @@ restate it.
 A schema extension commits in a short `READ COMMITTED` transaction of its
 own, never the entity transaction's. On postgres it runs on the model pool and
 takes the `models` row with `SELECT … FOR NO KEY UPDATE`, which writes no row
-version (`plugins/postgres/model_store.go` `ExtendSchema`/`extend`, ~:321-407).
-Under that lock it refuses a model that is not `LOCKED` with
-`spi.ErrModelNotLocked`, which `common.Internal` answers `409
-MODEL_NOT_LOCKED` (`internal/common/errors.go` ~:279). So no entity
-transaction writes or locks a `models` row.
+version (`plugins/postgres/model_store.go` `ExtendSchema`/`extend`). It does
+not check the model's state: the caller extends only a `LOCKED` model. So no
+entity transaction writes or locks a `models` row.
 
 ### A callout never writes the entity it runs for
 

@@ -63,11 +63,14 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 		return fmt.Errorf("failed to marshal model descriptor: %w", err)
 	}
 
-	// Save creates a model, or replaces one that is not LOCKED, whose
-	// extension log is empty — an extension is written only to a LOCKED
-	// model, and Unlock folds and clears the log — so the saved schema is
-	// the whole schema a Get returns.
+	// Save replaces the model's schema wholesale, so the extension log of
+	// the ref goes with it, in the same statement: a Get after Save returns
+	// the saved schema alone.
 	if _, err := s.q.Exec(ctx, `
+		WITH ext AS (
+			DELETE FROM model_schema_extensions
+			WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
+		)
 		INSERT INTO models (tenant_id, model_name, model_version, doc)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (tenant_id, model_name, model_version) DO UPDATE SET doc = EXCLUDED.doc`,
@@ -110,25 +113,34 @@ func (s *modelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 	return refs, nil
 }
 
-// Delete removes an UNLOCKED model. Its extension log is empty — an
-// extension is written only to a LOCKED model, and Unlock folds and clears
-// the log — so there is no log to remove.
+// Delete removes the model and, in the same statement, its extension log: a
+// model imported later under the same reference starts from its imported
+// schema alone.
 func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
-	tag, err := s.q.Exec(ctx,
-		`DELETE FROM models
-		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
+	var deleted int64
+	err := s.q.QueryRow(ctx, `
+		WITH m AS (
+			DELETE FROM models
+			WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
+			RETURNING 1
+		), ext AS (
+			DELETE FROM model_schema_extensions
+			WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
+			  AND EXISTS (SELECT 1 FROM m)
+		)
+		SELECT COUNT(*) FROM m`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&deleted)
 	if err != nil {
 		return fmt.Errorf("failed to delete model %s: %w", modelRef, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if deleted == 0 {
 		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
 	return nil
 }
 
 // Lock transitions the model to the LOCKED state. It is the state update
-// alone: the extension log of a model that is not LOCKED is empty, so there
+// alone: a Get folds the extension log whatever the model's state, so there
 // is nothing to fold.
 func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 	return updateStateField(ctx, s.q, s.tenantID, modelRef, spi.ModelLocked, "lock")
@@ -141,8 +153,8 @@ func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 // the model's schema; Unlock compacts them, it does not discard them.
 //
 // The state update runs first: it takes the model row's lock, which every
-// extension takes too, so the fold sees every extension committed before it
-// and no extension commits after it.
+// extension takes too, so no extension commits between the fold and the
+// clearing of the log. The fold holds every delta the clearing removes.
 func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 	return s.inModelTx(ctx, fmt.Sprintf("Unlock(%s)", modelRef), func(q Querier) error {
 		if err := updateStateField(ctx, q, s.tenantID, modelRef, spi.ModelUnlocked, "unlock"); err != nil {
@@ -266,10 +278,10 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 // The transaction takes the model row's lock (SELECT ... FOR NO KEY UPDATE).
 // The lock writes no row version; it serialises the extenders of one model and
 // conflicts with the UPDATE of Lock, Unlock, SetChangeLevel and Save and with
-// Delete. Under the lock the model must be LOCKED (else
-// spi.ErrModelNotLocked), and every later statement sees every earlier
-// extension's commit, so seq order is commit order and a savepoint folded
-// under the lock holds every delta with a lower seq. The fold is a statement
+// Delete. The caller extends only a LOCKED model; the store does not check
+// this. Under the lock every later statement sees every earlier extension's
+// commit, so seq order is commit order and a savepoint folded under the lock
+// holds every delta with a lower seq. The fold is a statement
 // of its own after the lock statement: under READ COMMITTED a statement that
 // waited for a lock re-checks only the locked row, so a fold merged into it
 // would use the snapshot from before the wait.
@@ -323,20 +335,17 @@ func (s *modelStore) extend(ctx context.Context, q Querier, ref spi.ModelRef, de
 		return fmt.Errorf("failed to set tenant for the extension of %s: %w", ref, err)
 	}
 
-	var state string
+	var one int
 	err := q.QueryRow(ctx,
-		`SELECT doc->>'state' FROM models
+		`SELECT 1 FROM models
 		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3
 		 FOR NO KEY UPDATE`,
-		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&state)
+		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to lock model %s for extension: %w", ref, err)
-	}
-	if state != string(spi.ModelLocked) {
-		return fmt.Errorf("model %s is not locked: %w", ref, spi.ErrModelNotLocked)
 	}
 
 	// Two apply calls under the lock, however long the log: the fold (in the

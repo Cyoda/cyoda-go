@@ -1,6 +1,6 @@
 ---
 topic: errors.MODEL_NOT_LOCKED
-title: "MODEL_NOT_LOCKED — model must be locked before writing entities or extending its schema"
+title: "MODEL_NOT_LOCKED — model must be locked before entities are created in it"
 stability: stable
 see_also:
   - errors
@@ -13,7 +13,7 @@ see_also:
 
 ## NAME
 
-MODEL_NOT_LOCKED — the entity model exists but is not `LOCKED`, which is required before entities of that type can be written or the model's schema extended.
+MODEL_NOT_LOCKED — the entity model exists but is not `LOCKED`, which is required before entities of that type can be created.
 
 ## SYNOPSIS
 
@@ -21,14 +21,11 @@ HTTP: `409` `Conflict`. Retryable: `no`.
 
 ## DESCRIPTION
 
-A model is `UNLOCKED` or `LOCKED`. Entities are written only against a `LOCKED` model, and only a `LOCKED` model is extended. Two cases answer this code:
+A model is `UNLOCKED` or `LOCKED`, and an entity is created only in a `LOCKED` model. An entity create or collection create, over HTTP or gRPC, whose model is not `LOCKED` is refused with this code before anything is written. In a collection create, one item whose model is not `LOCKED` refuses the whole request.
 
-- **The write names an unlocked model.** An entity create or collection create whose model is `UNLOCKED` is refused before anything is written.
-- **The extension finds the model not locked.** A write that extends the model's schema (its `changeLevel` permits a field the model does not have) commits the extension before its own entity changes, and an extension changes only a `LOCKED` model. If the extension finds the model not `LOCKED`, it is refused and the write answers this code. None of the write's entity changes is kept; an extension the same write made earlier (for example, by an earlier processor of its transition) stays, as every extension does. Unlocking needs zero committed entities, so this happens only when a model is unlocked while a write to it, or the transaction the write joined, is in progress — for example during the compute-node callout of a transition on an entity that is not committed yet. An update, collection update or transition does not check the model's state before it extends, so it gets this answer whether the model was unlocked before it began or while it ran. It applies to every write that can extend: entity create and update, collection create and update, and data a workflow processor returns, over HTTP and gRPC.
+A node that reads the model as not `LOCKED` reads it again from storage before it answers this code, so a model locked a moment ago is not refused because the node has not yet seen the lock. See `cyoda help models` (LIFECYCLE).
 
-This is a model-lifecycle conflict, not a conflict between writes: two writes that extend the same model never answer it, nor `409 CONFLICT`. See `cyoda help models` (SCHEMA EXTENSION).
-
-Not retryable as is: lock the model (`PUT /api/model/{entityName}/{modelVersion}/lock`) and send the write again.
+Not retryable as is: lock the model (`PUT /api/model/{entityName}/{modelVersion}/lock`) and send the create again.
 
 ## SEE ALSO
 

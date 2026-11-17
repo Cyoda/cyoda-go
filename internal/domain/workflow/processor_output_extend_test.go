@@ -134,19 +134,6 @@ func TestProcessorOutput_StoreUnavailable_Is503(t *testing.T) {
 	}
 }
 
-func TestProcessorOutput_ModelNotLocked_Is409(t *testing.T) {
-	engine, double, txMgr, ctx, ref := extendEngine(t, []string{`{"x":1,"p":"a"}`})
-	double.extendErr = spi.ErrModelNotLocked
-	_, err := runProcOutput(t, engine, txMgr, ctx, ref)
-	if err == nil {
-		t.Fatal("want an error")
-	}
-	appErr := common.Internal("processor output check failed", err)
-	if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeModelNotLocked {
-		t.Errorf("classified %d %s; want 409 MODEL_NOT_LOCKED", appErr.Status, appErr.Code)
-	}
-}
-
 // TestEngine_CriterionOnFieldAddedBySameRequest: a processor adds field p; the
 // next automated transition's criterion on p evaluates against the extended
 // schema (through the model cache) and matches. Regression guard.

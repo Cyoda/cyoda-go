@@ -12,16 +12,13 @@ import (
 // schema_extension_contract.go — what a request that extends a LOCKED model
 // leaves behind, the same on every backend:
 //   - the field stays when the write that brought it fails afterwards;
-//   - a criterion in the same request can read the field just added;
-//   - an extension of a model unlocked mid-request is refused 409
-//     MODEL_NOT_LOCKED and the model is unchanged.
+//   - a criterion in the same request can read the field just added.
 // Races are isolated e2e; every scenario here is sequential.
 
 func init() {
 	Register(
 		NamedTest{Name: "SchemaExtension_KeptAfterFailedWrite", Fn: RunSchemaExtension_KeptAfterFailedWrite},
 		NamedTest{Name: "SchemaExtension_CriterionSameRequest", Fn: RunSchemaExtension_CriterionSameRequest},
-		NamedTest{Name: "SchemaExtension_NotLocked", Fn: RunSchemaExtension_NotLocked},
 	)
 }
 
@@ -116,36 +113,6 @@ func RunSchemaExtension_CriterionSameRequest(t *testing.T, fixture BackendFixtur
 		t.Fatalf("entity is %s with tag %v; want CHECKED with tag foo", e.Meta.State, e.Data["tag"])
 	}
 	requireSimpleView(t, c, model, "LOCKED", map[string]string{"name": "seed"}, map[string]string{"name": "a", "tag": "foo"})
-}
-
-// RunSchemaExtension_NotLocked: the compute node's processor unlocks the
-// model (an unjoined call; the owner's entity is uncommitted, so the model
-// has no committed entity) and returns a field the model does not hold. The
-// extension finds the model UNLOCKED: the create is 409 MODEL_NOT_LOCKED and
-// the model is unchanged.
-func RunSchemaExtension_NotLocked(t *testing.T, fixture BackendFixture) {
-	tenant := fixture.ComputeTenant(t)
-	c := client.NewClient(fixture.BaseURL(), tenant.Token)
-	const model = "ext-not-locked"
-
-	schemaExtLockedModel(t, c, model, cbWorkflowDoc(model+"-wf", map[string]any{
-		"NONE": map[string]any{"transitions": []any{map[string]any{
-			"name": "init", "next": "DONE", "manual": false,
-			"processors": []any{cbProc("cb-unlock-then-tag", "SYNC",
-				`{"secondaryModel":"`+model+`","secondaryVersion":1}`, nil)},
-		}}},
-		"DONE": map[string]any{},
-	}))
-
-	status, body, err := c.CreateEntityRaw(t, model, 1, `{"name":"a"}`)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if code := problemErrorCode(body); status != http.StatusConflict || code != "MODEL_NOT_LOCKED" {
-		t.Fatalf("create answered %d %q; want 409 MODEL_NOT_LOCKED: %s", status, code, body)
-	}
-
-	requireSimpleView(t, c, model, "UNLOCKED", map[string]string{"name": "seed"})
 }
 
 // problemErrorCode returns the errorCode property of a problem-details body,

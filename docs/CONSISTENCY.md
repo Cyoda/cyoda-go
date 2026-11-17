@@ -238,12 +238,12 @@ commit. Five invariants hold on every backend:
    tightens the accepted set (e.g., adding a required field) is
    explicitly excluded from the catalog.
 5. **State-machine disjointness.** `Save(desc)` replaces an UNLOCKED
-   model's schema wholesale; `ExtendSchema(ref, delta)` extends only a
-   LOCKED model and returns `spi.ErrModelNotLocked` otherwise, checked
-   under the backend's model lock (`409 MODEL_NOT_LOCKED` to the
-   client). Whether the write may extend at all is the caller's
-   decision, by the model's `ChangeLevel`; a model without one is
-   validated strictly and never extended.
+   model's schema wholesale; `ExtendSchema(ref, delta)` is called only
+   for a LOCKED model, because an entity is saved only into a LOCKED
+   model. The store does not check the state. Whether the write may
+   extend at all is the caller's decision, by the model's
+   `ChangeLevel`; a model without one is validated strictly and never
+   extended.
 
 ### Operator Contract for Unlock
 
@@ -260,22 +260,16 @@ log to fold.
 
 `Unlock` and `ExtendSchema` exclude each other on every backend. On
 Postgres, `Unlock`'s state update takes the `models` row lock that
-every extension takes, so the fold sees every extension committed
-before it, and an extension that reaches the model after it finds the
-model UNLOCKED and is refused with `spi.ErrModelNotLocked`. SQLite runs
-both in write transactions, which it serialises; memory runs both
-under its model mutex. A write still in progress when its model is
-unlocked — possible only while its own entity is uncommitted, for
-example during a compute-node callout — therefore answers
-`409 MODEL_NOT_LOCKED` if it then extends, and never writes to an
-UNLOCKED model's log.
+every extension takes, so no extension commits between the fold and
+the clearing of the log. SQLite runs both in write transactions, which
+it serialises; memory runs both under its model mutex.
 
 `Save` replaces the schema wholesale and `Delete` removes the model. Both
 act only on a model that is not LOCKED: the model service refuses a
-LOCKED one (`409 MODEL_ALREADY_LOCKED`). The extension log of a model
-that is not LOCKED is empty — an extension is written only to a LOCKED
-model, and `Unlock` folds and clears the log — so neither has a log to
-clear: a `Get` after `Save` returns the saved schema alone.
+LOCKED one (`409 MODEL_ALREADY_LOCKED`). On Postgres and SQLite each
+clears the model's extension log in the same statement or transaction,
+so a `Get` after `Save` returns the saved schema alone, and a model
+imported after `Delete` starts from its imported schema alone.
 
 **The model rules are the API's.** Entities exist only in a LOCKED model;
 a model is unlocked only when it has no entities; a model's unique keys
@@ -283,13 +277,18 @@ a model is unlocked only when it has no entities; a model's unique keys
 extensions) change only while it is UNLOCKED; a LOCKED model is never
 deleted or re-imported. The API keeps these rules with the checks its
 services make before they act: an entity create refuses a model that is
-not LOCKED (`409 MODEL_NOT_LOCKED`); unlock counts the model's entities
+not LOCKED (`409 MODEL_NOT_LOCKED`), after it reads the model again from
+storage, past the node's model cache, so that a node that has not yet
+seen a lock does not refuse; unlock counts the model's entities
 and refuses `409 MODEL_HAS_ENTITIES`; delete, import and the unique-key
 change refuse a LOCKED model (`409 MODEL_ALREADY_LOCKED`). Because an
 UNLOCKED model has no entities, delete counts none and never answers
 `MODEL_HAS_ENTITIES`. Storage adds no check of its own: a commit reads
 the unique keys of its entities' stored models without checking their
-state.
+state, and a schema extension does not check the model's state. A
+model's state reaches the other nodes eventually, through their model
+caches: after an unlock, another node can accept a create into the
+model until it learns the new state.
 
 Model administration — import, lock, unlock, delete, change level,
 unique keys — runs from one place, not concurrently on one model, and

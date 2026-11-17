@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 276 scenarios in this package: the entries of its literal
+// allTests holds 275 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go,
 // schema_extension_contract.go).

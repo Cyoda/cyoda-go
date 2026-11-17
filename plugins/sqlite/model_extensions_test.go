@@ -181,9 +181,6 @@ func TestSQLite_ExtendSchema_MissingApplyFunc_Errors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when ApplyFunc not wired")
 	}
-	if errors.Is(err, spi.ErrModelNotLocked) {
-		t.Fatalf("model is locked, error must be the wiring error, got %v", err)
-	}
 }
 
 func TestSQLite_ExtendSchema_ModelNotFound(t *testing.T) {

@@ -171,9 +171,8 @@ func classifyBeginErr(err error) *common.AppError {
 //     FoundIncompatibleTypeWithEntityModelException equivalent
 //   - ingest.ErrInternalSchema       → common.Internal: a 5xx with a logged
 //     ticket for a codec, diff or store failure, except for the store errors
-//     common.Internal routes itself: a storage outage is 503
-//     STORAGE_UNAVAILABLE, and an extension of a model that is not locked is
-//     409 MODEL_NOT_LOCKED
+//     common.Internal routes itself, such as a storage outage, which is 503
+//     STORAGE_UNAVAILABLE
 //   - anything else           → 4xx VALIDATION_FAILED (change-level violation,
 //     other validation failure, malformed walk input)
 //

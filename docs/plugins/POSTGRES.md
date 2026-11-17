@@ -230,8 +230,7 @@ caller holds. Inside a transaction its connection acquire is bounded by
 pool's connections, at least one; the wait lasts until the caller's context
 ends), then a connection under the acquire timeout, and runs one short
 `READ COMMITTED` transaction: set the tenant, `SELECT … FOR NO KEY UPDATE`
-the model's `models` row, refuse with `spi.ErrModelNotLocked` unless the model
-is `LOCKED`, fold the log in a statement of its own, compare the delta's
+the model's `models` row, fold the log in a statement of its own, compare the delta's
 result with the current schema byte for byte and write nothing when they are
 equal, insert the delta, and insert a savepoint of the folded schema once
 `CYODA_SCHEMA_SAVEPOINT_INTERVAL` of this model's deltas follow its latest
@@ -247,9 +246,9 @@ contention is a wait. A nil `ApplyFunc` is refused.
 **Administration.** `Lock`, `Save`, `Delete` and `SetChangeLevel` are one
 statement each; `Lock` writes no savepoint. `Unlock` updates the state first
 (taking the row lock every extension takes), folds the log into `doc` and
-clears the log, in one transaction. `Save` and `Delete` act only on a model
-that is not `LOCKED`, whose extension log is empty, so they have no log to
-clear. The store checks no model state and counts no entities: the API
+clears the log, in one transaction. `Save` and `Delete` each clear the
+model's extension log in the same statement, so a saved model's schema is
+the saved one alone and a deleted model leaves no log behind. The store checks no model state and counts no entities: the API
 keeps the model rules (`cyoda help models`, LIFECYCLE).
 
 ## Scheduled tasks and the scheduler pool
