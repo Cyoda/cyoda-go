@@ -5263,8 +5263,8 @@ paths:
         Deletes an entity model if it meets deletion criteria.
 
         Requirements for deletion:
-        - Model must be in UNLOCKED state
-        - No entities can reference this model in the database
+        - Model must be in UNLOCKED state (a model is unlocked only when it
+          has no entities)
 
         Path Parameters:
         - entityName: The name of the entity model to delete
