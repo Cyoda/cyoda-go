@@ -46,7 +46,7 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints requ
 
 A workflow definition is a named finite state machine attached to an entity model. Workflows are stored per model reference `(entityName, modelVersion)`. A model may have multiple workflow definitions; the engine selects the matching one per entity using the workflow-level `criterion` field evaluated at entity creation time. When no `criterion` matches, the engine uses the default built-in workflow.
 
-The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. A client fires a transition by naming it on a save: `PUT` or `PATCH /entity/{format}/{entityId}/{transition}`.
+The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. A client fires a transition by naming it on a save: `PUT` or `PATCH /entity/{format}/{entityId}/{transition}`, an item's `transition` in a collection update (`cyoda help crud`), or gRPC `EntityTransitionRequest` (`cyoda help grpc`).
 
 The engine enforces a per-state visit limit of 10 by default (set by `CYODA_MAX_STATE_VISITS`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time. Both limits count within one cascade. A callout never writes the entity its workflow runs for (PROCESSORS, *Design rule*).
 
@@ -136,7 +136,7 @@ The engine enforces a per-state visit limit of 10 by default (set by `CYODA_MAX_
 
 **TransitionDefinition fields:**
 
-- `name` — string — transition name; a client names it in `PUT` or `PATCH /entity/{format}/{entityId}/{name}`
+- `name` — string — transition name; a client names it on a save (see DESCRIPTION)
 - `next` — string — target state; must exist in `states`
 - `manual` — boolean, required — whether the engine fires the transition on its own. `false`: the engine evaluates it in the cascade after every write. `true`: the engine never fires it; it fires only when a client names it. `manual` does not limit what a client can name: a save can name any transition of the current state that is not `disabled` and has no `schedule`, a `manual: false` one included. There is no default: an import whose transition omits `manual` or sends `null` is rejected (`400 VALIDATION_FAILED`)
 - `disabled` — boolean — when `true`, the engine skips this transition entirely
@@ -262,7 +262,7 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
   callout is made before that processor's savepoint opens, so the
   processor's failure keeps that write and its lock. A
   transaction that has not written the entity holds no row lock on it
-  while a callout runs; a manual transition that sends no data, for
+  while a callout runs; a named transition that sends no data, for
   example, has not written it before its first processor's callout. Another transaction that writes a locked entity
   waits at its write, and one that read it waits at its commit, until the
   lock holder ends; if that transaction committed a change to the entity,
@@ -602,7 +602,7 @@ For the criterion above, on an entity with `"priority": "normal"` and `"override
 
 For a function condition that is the whole criterion, ` at <path>` is left out. The example above gives `manual-override at /conditions/1: pre-check did not match, not called; credit-check at /conditions/2: answered false: score below 600`. Every callout made is listed with its answer, and none is singled out as the cause: under `NOT`, a `true` answer can refuse a transition.
 
-A manual transition refused by its criterion answers `400 WORKFLOW_FAILED` with the message `transition "<name>" criterion not matched`, followed by `: <reason>` when the reason is not `criterion did not match`. The manual transition rolls back, so its audit event is not kept; the message is where the caller learns why.
+A transition a client named and its criterion refused answers `400 WORKFLOW_FAILED` with the message `transition "<name>" criterion not matched`, followed by `: <reason>` when the reason is not `criterion did not match`. The manual transition rolls back, so its audit event is not kept; the message is where the caller learns why.
 
 ### Workflow-level selection
 

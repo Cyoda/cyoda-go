@@ -147,7 +147,7 @@ re-read automatically within one scrape interval.
 
 ```bash
 helm upgrade cyoda cyoda/cyoda -n cyoda \
-  --reuse-values \
+  --reset-then-reuse-values \
   --set replicas=3
 ```
 

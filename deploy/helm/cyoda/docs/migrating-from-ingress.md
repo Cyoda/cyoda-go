@@ -26,12 +26,10 @@ Before starting, you need:
 ## Step 1 — Render the existing Ingress objects
 
 If you're already running cyoda with `ingress.enabled=true`, dump the
-rendered `Ingress` objects so Ingress2Gateway can convert them:
+release's `Ingress` objects so Ingress2Gateway can convert them:
 
 ```bash
-helm template cyoda cyoda/cyoda -n cyoda --reuse-values \
-  --show-only templates/ingress.yaml \
-  --show-only templates/ingress-grpc.yaml \
+kubectl get ingress -n cyoda -l app.kubernetes.io/instance=cyoda -o yaml \
   > /tmp/cyoda-ingress.yaml
 ```
 
@@ -118,7 +116,7 @@ With the Gateway in place, switch the chart from `ingress` to
 `gateway`:
 
 ```bash
-helm upgrade cyoda cyoda/cyoda -n cyoda --reuse-values \
+helm upgrade cyoda cyoda/cyoda -n cyoda --reset-then-reuse-values \
   --set ingress.enabled=false \
   --set gateway.enabled=true \
   --set 'gateway.parentRefs[0].name=platform-gateway' \

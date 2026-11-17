@@ -2064,17 +2064,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
-- **Help text that did not match the server.** The Helm chart is published
-  (`cyoda/cyoda` from `https://cyoda.github.io/cyoda-go`), and every install
-  example now renders. A `PUT` with an empty body is refused with `400`; use
-  `PATCH` with `{}` to fire a transition without changing data. A save can
-  name any transition that is not disabled and has no schedule, whatever its
-  `manual`. A workflow export posted back unchanged is refused; re-import its
-  `workflows`. A replayed `COMMIT_BEFORE_DISPATCH` processor carries a new
-  `requestId`. `$.items.0` in a `groupBy` names a field called `0`. The
-  `migrate.postgres.*` chart values are documented. The compose and
-  `docker run` production examples read the signing key and the Postgres DSN
-  from files.
+- **Help and deploy guidance that did not match the server.** The Helm chart
+  is published (`cyoda/cyoda` from `https://cyoda.github.io/cyoda-go`); the
+  install examples in `cyoda help helm` and `cyoda help run` render, and a
+  chart upgrade uses `--reset-then-reuse-values`, which takes a newer chart's
+  defaults for values you did not set (`--reuse-values` dropped them). The
+  Ingress-to-Gateway migration guide reads the live Ingress objects
+  (`helm template` has no `--reuse-values`). A `PUT` with an empty body is
+  refused with `400`; use `PATCH` with `{}` to fire a transition without
+  changing data. A save can name any transition that is not disabled and has
+  no schedule, whatever its `manual`. A workflow export posted back unchanged
+  is refused; re-import its `workflows`. A replayed `COMMIT_BEFORE_DISPATCH`
+  processor carries a new `requestId`. `$.items.0` in a `groupBy` names a
+  field called `0`. The `migrate.postgres.*` chart values are documented.
+  The compose file's production hint and `deploy/docker/README.md` mount the
+  signing key as a file, and the production-shaped `docker run` reads the
+  key and the Postgres DSN from files. The install script's settings go on
+  `sh`, after the pipe (`curl … | CYODA_VERSION=v0.9.0 sh`): written before
+  `curl`, as the README showed, they never reached the script.
 
 - **gRPC: a snapshot the caller does not have, or results of one that has
   not finished, is the caller's error,** as it is on HTTP. A

@@ -7,18 +7,21 @@
 # Usage:
 #   curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
 #
+# The settings below are read by this script, so they go on `sh`, after
+# the pipe (a variable set before `curl` reaches curl only):
+#
 # Pin a version:
-#   CYODA_VERSION=v0.2.0 curl -fsSL ... | sh
+#   curl -fsSL ... | CYODA_VERSION=v0.2.0 sh
 #
 # Pin a different install directory:
-#   CYODA_INSTALL_DIR=~/bin curl -fsSL ... | sh
+#   curl -fsSL ... | CYODA_INSTALL_DIR=~/bin sh
 #
-# Cosign verification (issue #47):
+# Cosign verification:
 #   - Auto-on when `cosign` is on PATH. Verifies the archive and
 #     SHA256SUMS against keyless Sigstore signatures issued by the
 #     cyoda/cyoda-go release.yml workflow on a tag push.
-#   - Disable explicitly: CYODA_COSIGN_VERIFY=false curl ... | sh
-#   - Force-fail-without-cosign: CYODA_COSIGN_VERIFY=required curl ... | sh
+#   - Disable explicitly: curl ... | CYODA_COSIGN_VERIFY=false sh
+#   - Force-fail-without-cosign: curl ... | CYODA_COSIGN_VERIFY=required sh
 #     (Aborts if cosign is missing rather than falling back to SHA256-only.)
 #
 # Auto-mode trade-off (security note): cosign signing was added in
@@ -122,8 +125,8 @@ cosign_fetch() {
 }
 
 # cosign_verify runs keyless Sigstore verification of the archive and
-# SHA256SUMS using sibling .sig + .pem assets published by GoReleaser
-# (issue #47). Default behaviour:
+# SHA256SUMS using sibling .sig + .pem assets published by GoReleaser.
+# Default behaviour:
 #   - cosign on PATH AND CYODA_COSIGN_VERIFY != "false" → verify; abort on
 #     verification failure or transient infrastructure errors. A 404 on
 #     the sibling .sig (release predates cosign signing in v0.7.0) is a

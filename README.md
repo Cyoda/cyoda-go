@@ -49,7 +49,7 @@ brew install cyoda/cyoda-go/cyoda
 curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
 ```
 
-Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Pin a version with `CYODA_VERSION=v0.7.1 curl ... | sh`. The installer SHA256-verifies the archive and, if [`cosign`](https://docs.sigstore.dev/cosign/installation/) is on `PATH`, also verifies a Sigstore keyless signature from the cyoda-go release workflow.
+Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Pin a version with `curl ... | CYODA_VERSION=v0.7.1 sh` (the variable goes on `sh`, after the pipe). The installer SHA256-verifies the archive and, if [`cosign`](https://docs.sigstore.dev/cosign/installation/) is on `PATH`, also verifies a Sigstore keyless signature from the cyoda-go release workflow.
 
 ### Debian / Ubuntu / Fedora / RHEL
 

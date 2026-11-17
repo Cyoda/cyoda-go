@@ -263,7 +263,7 @@ TOKEN=$(kubectl exec -n cyoda cyoda-0 -- /cyoda token --tenant acme)
 
 ```
 helm repo update
-helm upgrade cyoda cyoda/cyoda --namespace cyoda --reuse-values
+helm upgrade cyoda cyoda/cyoda --namespace cyoda --reset-then-reuse-values
 ```
 
 ### Development Scripts

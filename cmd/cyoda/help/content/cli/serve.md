@@ -83,7 +83,7 @@ CYODA_STORAGE_BACKEND=sqlite CYODA_LOG_LEVEL=debug cyoda
 
 # PostgreSQL backend, JWT auth, loaded via profiles
 CYODA_PROFILES=postgres,jwt \
-  CYODA_JWT_SIGNING_KEY="$(cat signing.pem)" \
+  CYODA_JWT_SIGNING_KEY_FILE=signing.pem \
   cyoda
 
 # Suppress startup banner (useful in CI)

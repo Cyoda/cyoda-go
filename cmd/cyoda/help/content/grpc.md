@@ -412,12 +412,12 @@ business explanation, not a diagnostic, so it keeps a wider allowance than the
 rest of a member's free text: it is kept to its first 2048 characters, marked
 with `…` when it was cut, and the stored or reflected reason is capped well
 above that so this second cap is never what bites. It surfaces in two
-places: the manual-transition `400 WORKFLOW_FAILED` body
+places: the `400 WORKFLOW_FAILED` body of a transition the client named
 (`detail: transition "<name>" criterion not matched: <reason>` — the
-guaranteed, backend-independent delivery for a manual rejection), and the
+guaranteed, backend-independent delivery for such a refusal), and the
 `TRANSITION_NOT_MATCH_CRITERION` / `WORKFLOW_SKIP` state-machine audit events'
 `data.reason` — durable there only for the automated-cascade and
-workflow-selection paths, since a manual rejection rolls its transaction back.
+workflow-selection paths, since a refused named transition rolls its transaction back.
 An omitted `reason` defaults to `"criterion did not match"` in the audit and
 is left out of the 400 detail (bare `criterion not matched`). This is the rule
 for a function condition that is the whole criterion. When a function condition

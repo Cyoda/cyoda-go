@@ -45,7 +45,13 @@ cyoda init
 curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
 ```
 
-The script downloads the archive for the host's OS and architecture, checks it against `SHA256SUMS`, installs `cyoda` to `~/.local/bin`, and runs `cyoda init`. When `cosign` is on `PATH`, it also verifies the signatures of the archive and of `SHA256SUMS`. Settings, as environment variables of `sh`:
+A pinned release, with the signature check required:
+
+```
+curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | CYODA_VERSION=v0.9.0 CYODA_COSIGN_VERIFY=required sh
+```
+
+The script downloads the archive for the host's OS and architecture, checks it against `SHA256SUMS`, installs `cyoda` to `~/.local/bin`, and runs `cyoda init`. When `cosign` is on `PATH`, it also verifies the signatures of the archive and of `SHA256SUMS`. The settings are environment variables of `sh`, so they go after the pipe, as above; a variable set before `curl` reaches `curl` only:
 
 - `CYODA_VERSION` — the release tag to install, for example `v0.9.0`; default the latest release.
 - `CYODA_INSTALL_DIR` — the directory to install into; default `~/.local/bin`.

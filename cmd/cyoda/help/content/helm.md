@@ -331,27 +331,7 @@ The migration Job mounts only the Postgres DSN Secret (principle of least privil
 
 **Install (pre-create secrets, then install):**
 
-```
-# Secrets go through private files, not kubectl's command line. printf is
-# a shell builtin, so the DSN is on no process's command line either.
-(umask 077; printf '%s' 'postgres://cyoda:secret@pg-host:5432/cyoda?sslmode=require' > pg-dsn)
-kubectl create secret generic cyoda-pg --from-file=dsn=pg-dsn
-rm pg-dsn
-kubectl create secret generic cyoda-jwt --from-file=signing-key.pem=signing.pem
-
-helm install cyoda cyoda/cyoda \
-  --namespace cyoda \
-  --create-namespace \
-  --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt \
-  --set cluster.hmacSecret.existingSecret=cyoda-hmac \
-  --set "gateway.parentRefs[0].name=prod-gateway" \
-  --set "gateway.parentRefs[0].namespace=gateway-system"
-```
-
-The chart attaches its routes to an existing Gateway (`gateway.parentRefs`, required while `gateway.enabled` is `true`, the default). On a cluster without one, replace the two `gateway.parentRefs` lines with `--set gateway.enabled=false`; see *Bare-cluster install* under EXAMPLES.
-
-Note: `--create-namespace` triggers the GitOps safety guard (namespace does not yet exist when Helm renders). Pre-create the namespace first:
+Create the namespace first: with `--create-namespace` the namespace does not exist yet when Helm renders, which trips the GitOps safety guard (see SECRETS PROVISIONING). Secrets go through private files, not kubectl's command line; `printf` is a shell builtin, so the DSN is on no process's command line either.
 
 ```
 kubectl create namespace cyoda
@@ -368,17 +348,18 @@ helm install cyoda cyoda/cyoda \
   --set "gateway.parentRefs[0].namespace=gateway-system"
 ```
 
+The chart attaches its routes to an existing Gateway (`gateway.parentRefs`, required while `gateway.enabled` is `true`, the default). On a cluster without one, replace the two `gateway.parentRefs` lines with `--set gateway.enabled=false`; see *Bare-cluster install* under EXAMPLES.
+
 **Upgrade:**
 
 ```
-helm upgrade --install cyoda cyoda/cyoda \
+helm repo update
+helm upgrade cyoda cyoda/cyoda \
   --namespace cyoda \
-  --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt \
-  --reuse-values
+  --reset-then-reuse-values
 ```
 
-Run `helm repo update` first to see newer chart versions; add `--version <chart version>` to pin one.
+Without `--version`, Helm upgrades to the newest chart; add `--version <chart version>` to pin one. `--reset-then-reuse-values` keeps the values you set and takes the new chart's defaults for the rest. `--reuse-values` does not: it reuses the old release's whole value set, so a value that a newer chart adds would be missing. Add `--set` for any value you change.
 
 **Uninstall:**
 
@@ -464,14 +445,14 @@ The chart has no dedicated values for the IAM feature flags. Every replica gets 
 
 ```
 helm upgrade cyoda cyoda/cyoda \
-  --namespace cyoda --reuse-values \
+  --namespace cyoda --reset-then-reuse-values \
   --set extraEnv[0].name=CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED \
   --set-string extraEnv[0].value=true \
   --set extraEnv[1].name=CYODA_IAM_M2M_ADMIN_ROLE_ENABLED \
   --set-string extraEnv[1].value=true
 ```
 
-With `--reuse-values`, `extraEnv[0]` and `extraEnv[1]` replace whatever entries already sit at those positions; list every `extraEnv` entry you keep.
+With `--reset-then-reuse-values`, `extraEnv[0]` and `extraEnv[1]` replace whatever entries already sit at those positions; list every `extraEnv` entry you keep.
 
 **With ServiceMonitor for Prometheus Operator:**
 
