@@ -28,7 +28,7 @@ path    = "$." segment ( "." segment )*
 segment = 1*( ALPHA / DIGIT / "_" / "-" )
 ```
 
-Rejected here: a missing leader (`country` — write `$.country`), bracket-quoted property access (`$['country']`, `$.['country']`), array projections and subscripts (`$.items[*]`, `$.items[0]` — address a position as an ordinary segment, `$.items.0`), recursive descent (`$..name`), filter expressions, empty, leading, trailing or doubled dots, whitespace, quotes, and non-ASCII characters.
+Rejected here: a missing leader (`country` — write `$.country`), bracket-quoted property access (`$['country']`, `$.['country']`), array projections and subscripts (`$.items[*]`, `$.items[0]`; an array position cannot be grouped on at all — `$.items.0` is accepted but names a field called `0` inside `items`, not element 0), recursive descent (`$..name`), filter expressions, empty, leading, trailing or doubled dots, whitespace, quotes, and non-ASCII characters.
 
 Array subscripts are rejected even though a `condition` `jsonPath` accepts them: a group-by dimension must resolve to one scalar, and a projection has no such value. The check runs at the API boundary before any storage backend, so a request is rejected identically whichever execution path would have served it. The message names the offending entry and the reason.
 
