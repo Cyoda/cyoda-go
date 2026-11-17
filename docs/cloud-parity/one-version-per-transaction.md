@@ -89,11 +89,9 @@ answers `409 MODEL_NOT_LOCKED`, unlock counts the entities and answers `409
 MODEL_HAS_ENTITIES`, and import, unique-key change and delete answer `409
 MODEL_ALREADY_LOCKED`. Storage adds no check of its own. The rules hold when
 model administration runs from one place and not while writes to the model are
-in flight; a model that has entities is then `LOCKED`. `DELETE /model/...`
-counts no entities and no longer answers `MODEL_HAS_ENTITIES`. Two cases leave
-an `UNLOCKED` model with entities: a write in progress when an unlock runs, and
-a create accepted by a node that has not yet learned of the unlock. Delete then
-removes the model and leaves its entities behind, without a model.
+in flight; a model that has entities is then `LOCKED`. `DELETE /model/...` no
+longer answers `MODEL_HAS_ENTITIES`: a model with entities is `LOCKED`, and
+delete answers `MODEL_ALREADY_LOCKED`.
 
 ## Scheduled fire
 

@@ -5340,7 +5340,7 @@ paths:
         "409":
           description: |
             Model cannot be deleted:
-            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before deleting. Delete counts no entities and never answers `MODEL_HAS_ENTITIES`. While model administration follows the model lifecycle rules (`cyoda help models`, LIFECYCLE), a model with entities is `LOCKED`; if those rules were broken and an `UNLOCKED` model holds entities, delete removes the model and leaves its entities behind, without a model.
+            - `MODEL_ALREADY_LOCKED` — model is in `LOCKED` state; unlock before deleting.
           content:
             application/problem+json:
               schema:

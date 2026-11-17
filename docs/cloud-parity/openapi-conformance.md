@@ -165,14 +165,10 @@ Per-finding contract decisions from the entity-model & workflow reconciliation s
 
 - **M1 — `deleteEntityModel` enforces UNLOCKED (runtime change).** Deleting a
   LOCKED model now returns `409 MODEL_ALREADY_LOCKED` (reuses the locked-refusal
-  code, delete-specific message). Delete counts no entities and never answers
-  `409 MODEL_HAS_ENTITIES`: a model with entities is LOCKED, because unlock
+  code, delete-specific message). Delete never answers `409
+  MODEL_HAS_ENTITIES`: a model with entities is LOCKED, because unlock
   refuses a model with entities and an entity create refuses a model that is
-  not LOCKED. These are the API's checks, made when a request starts: they
-  hold when model administration does not overlap writes to the model. If it
-  does, an UNLOCKED model can hold entities, and delete removes the model and
-  leaves its entities behind, without a model. Direction: server-gap
-  (closed).
+  not LOCKED. Direction: server-gap (closed).
   Cloud MUST refuse deletion of a locked model.
 - **M2 — documented error-code clarifications.** Previously-undocumented codes now
   in the contract are clarifications Cloud must match: unlock `MODEL_HAS_ENTITIES`

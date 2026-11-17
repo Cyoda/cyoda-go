@@ -123,7 +123,7 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 **DELETE /api/model/{entityName}/{modelVersion}**
 
-Delete a model. Blocked if the model is `LOCKED`. Delete does not count the model's entities, and never answers `MODEL_HAS_ENTITIES`. While model administration follows LIFECYCLE, a model with entities is `LOCKED`, so delete refuses it. If those rules were broken and an `UNLOCKED` model holds entities, delete removes the model and leaves its entities behind, without a model.
+Delete a model. Refused with `409 MODEL_ALREADY_LOCKED` if the model is `LOCKED`: unlock it first, which requires that it has no entities.
 
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success. `409 MODEL_ALREADY_LOCKED` if the model is locked.
 
@@ -350,8 +350,6 @@ The API keeps these rules:
 - A `LOCKED` model is never deleted or re-imported, and its unique-key definitions do not change: delete, import and the unique-key change refuse it with `409 MODEL_ALREADY_LOCKED`. While `LOCKED`, a model changes only through its change level and schema extensions.
 
 A model's state reaches the other nodes eventually. Each node keeps only `LOCKED` models in its model cache, which an invalidation broadcast updates (normally within milliseconds) or, if the broadcast is lost, `CYODA_MODEL_CACHE_LEASE` expires. A model a node reads as not `LOCKED` therefore comes from storage, and a create that reads it so reads it once more before it refuses with `409 MODEL_NOT_LOCKED`, so a read that raced the lock does not refuse it. After an unlock, a node that still holds the model as `LOCKED` accepts creates into it until it learns of the unlock.
-
-Storage adds no check of its own. Together the first two rules keep a model that has entities `LOCKED`, but only while model administration follows this section. Two cases break that: a write still in progress when the unlock runs (see the unlock operation), and a create accepted by a node that has not yet learned of the unlock (above). The model is then `UNLOCKED` and holds entities. Delete does not count entities: it removes such a model and leaves its entities behind, without a model.
 
 The rules hold when model administration — import, lock, unlock, delete, change level, unique keys — runs from one place, such as a deploy step, not concurrently on the same model, and not while writes to the model are in flight. Two such calls that overlap on one model have no defined order: an import that overlaps a lock can save the model back as `UNLOCKED`. Register and lock a model once, from one caller, rather than from every replica of an application at start-up, and stop writes to a model before you unlock it.
 

@@ -291,13 +291,6 @@ other nodes eventually, through their model caches: after an unlock,
 another node can accept a create into the model until it learns the new
 state.
 
-Together the first two rules keep a model that has entities LOCKED
-only while model administration follows the rules below. Two cases
-leave an UNLOCKED model with entities: a create accepted by a node that
-has not yet learned of an unlock (above), and a write in progress when
-the unlock runs (below). Delete then removes the model and leaves its
-entities behind, without a model.
-
 Model administration — import, lock, unlock, delete, change level,
 unique keys — runs from one place, not concurrently on one model, and
 not while writes to the model are in flight. Two administration calls

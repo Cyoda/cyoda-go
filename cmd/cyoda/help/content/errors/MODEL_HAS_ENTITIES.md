@@ -21,7 +21,7 @@ HTTP: `409` `Conflict`. Retryable: `no`.
 
 ## DESCRIPTION
 
-`PUT /model/{name}/{version}/unlock` requires zero entities of the target model. The check guards against silent loss of data and against schema drift on a model whose lifecycle is presumed frozen. `DELETE /model/{name}/{version}` never answers this code: it does not count entities. Delete refuses a `LOCKED` model with `MODEL_ALREADY_LOCKED`, and while model administration follows `cyoda help models` (LIFECYCLE), a model with entities is `LOCKED`. If those rules were broken and an `UNLOCKED` model holds entities, delete removes the model and leaves its entities behind, without a model.
+`PUT /model/{name}/{version}/unlock` requires zero entities of the target model. The check guards against silent loss of data and against schema drift on a model whose lifecycle is presumed frozen. `DELETE /model/{name}/{version}` does not answer this code: a model with entities is `LOCKED`, and delete refuses it with `MODEL_ALREADY_LOCKED`.
 
 The `entityCount` property in the problem-detail body reports how many entities currently exist for the model on the responding tenant.
 

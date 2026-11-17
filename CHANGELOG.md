@@ -46,12 +46,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`40P01`) answer a retryable `409 CONFLICT`. A scheduled fire follows the
   final entity's keys (memory dropped them, the others kept stale claims) and
   a fire that breaks a key fails at commit.
-- **`DELETE /model/...` no longer answers `MODEL_HAS_ENTITIES`.** Delete
-  counts no entities. While model administration runs from one place, not
-  while writes to the model are in flight (`cyoda help models`, LIFECYCLE), a
-  model with entities is `LOCKED`, and delete answers `MODEL_ALREADY_LOCKED`.
-  If those rules were broken and an `UNLOCKED` model holds entities, delete
-  removes the model and leaves its entities behind, without a model. The
+- **`DELETE /model/...` no longer answers `MODEL_HAS_ENTITIES`.** A model
+  with entities is `LOCKED`, and delete answers `MODEL_ALREADY_LOCKED`. The
   model rules are the API's checks. Change a model's state
   or its unique-key definitions only while no transaction that will write
   entities of that model is open; such a transaction's commit may check the
