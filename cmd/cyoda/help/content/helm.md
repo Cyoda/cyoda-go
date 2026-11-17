@@ -15,21 +15,21 @@ see_also:
 
 ## NAME
 
-helm — the `deploy/helm/cyoda` Helm chart: values, Kubernetes objects, secrets provisioning, and install/upgrade commands.
+helm — the cyoda Helm chart (`cyoda/cyoda` from `https://cyoda.github.io/cyoda-go`; source `deploy/helm/cyoda`): values, Kubernetes objects, secrets provisioning, and install/upgrade commands.
 
 ## SYNOPSIS
 
 ```
-helm install cyoda ./deploy/helm/cyoda \
+helm repo add cyoda https://cyoda.github.io/cyoda-go
+helm install cyoda cyoda/cyoda \
   --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt
+  --set jwt.existingSecret=cyoda-jwt \
+  --set "gateway.parentRefs[0].name=prod-gateway"
 ```
 
 ## DESCRIPTION
 
-The chart at `deploy/helm/cyoda` deploys cyoda-go on Kubernetes as a StatefulSet backed by an external PostgreSQL database. The chart requires Kubernetes `>=1.31.0`. The chart version and app version are in `deploy/helm/cyoda/Chart.yaml`; the app version is synchronized to the binary by the `bump-chart-appversion.yml` CI workflow.
-
-The chart is not published to a Helm repository. Install directly from a local checkout or from the GitHub repository source tree. The canonical install form is `helm install cyoda ./deploy/helm/cyoda`.
+The chart deploys cyoda-go on Kubernetes as a StatefulSet backed by an external PostgreSQL database. The chart requires Kubernetes `>=1.31.0`. It is published to the Helm repository `https://cyoda.github.io/cyoda-go` as `cyoda/cyoda`; its source is `deploy/helm/cyoda` (see CHART REPOSITORY).
 
 Cyoda-go pods are stateless: all persistent state is in PostgreSQL. The chart renders a StatefulSet (not a Deployment) to give each pod a stable DNS identity for gossip peer discovery. Pod management policy is `Parallel` — pods start simultaneously rather than sequentially. Cluster mode is always enabled at the chart level; at `replicas=1` the binary runs as a cluster of one.
 
@@ -37,22 +37,22 @@ Credentials (Postgres DSN, JWT signing key, HMAC secret, metrics bearer token) a
 
 ## CHART REPOSITORY
 
-The chart is not yet published to an OCI registry or a tgz repository. Install from a local path:
+The chart is published to the Helm repository `https://cyoda.github.io/cyoda-go`:
 
 ```
-helm install cyoda ./deploy/helm/cyoda [--set ...]
+helm repo add cyoda https://cyoda.github.io/cyoda-go
+helm repo update
+helm search repo cyoda/cyoda --versions
+helm install cyoda cyoda/cyoda --version <chart version> [--set ...]
 ```
 
-For a GitOps workflow, package the chart manually:
+The chart version and the cyoda version are separate numbers. `helm search repo cyoda/cyoda --versions` lists each chart version with its app version, the cyoda image the chart runs unless `image.tag` is set. Without `--version`, Helm installs the newest chart.
 
-```
-helm package ./deploy/helm/cyoda
-helm install cyoda cyoda-0.1.0.tgz [--set ...]
-```
+To install from a checkout of the source tree, name the chart directory instead: `helm install cyoda ./deploy/helm/cyoda [--set ...]`. The examples below use the published chart, `cyoda/cyoda`.
 
 ## VALUES
 
-All top-level keys in `deploy/helm/cyoda/values.yaml`, with type, default, and purpose.
+Every key of the chart's `values.yaml`, with type, default, and purpose.
 
 **`replicas`** — integer — default `1`
 Number of cyoda pods. Scale up for multi-node cluster. At `replicas=1` the binary runs as a "cluster of one". When `autoscaling.enabled=true`, the HPA owns the replica count and the `replicas` value becomes the initial scale only.
@@ -115,7 +115,7 @@ Arbitrary additional env vars injected into the StatefulSet container. Each entr
 Kubernetes Service type for the main Service (ports 8080, 9090, 9091). Accepted values: `ClusterIP`, `NodePort`, `LoadBalancer`.
 
 **`gateway.enabled`** — boolean — default `true`
-Enable Gateway API routing. Renders `HTTPRoute` (port 8080) and `GRPCRoute` (port 9090). Mutually exclusive with `ingress.enabled`; both enabled triggers a `fail`. When `true`, `gateway.parentRefs` MUST be set to a non-empty list of operator-provided Gateway references; an empty list causes install to fail.
+Enable Gateway API routing. Renders `HTTPRoute` (port 8080) and `GRPCRoute` (port 9090). Mutually exclusive with `ingress.enabled`; both enabled triggers a `fail`. When `true`, `gateway.parentRefs` MUST be set to a non-empty list of operator-provided Gateway references; the chart's schema refuses an empty list, so the install fails. On a cluster without a Gateway, set `gateway.enabled=false` (and use Ingress, or the `Service` directly).
 
 **`gateway.parentRefs`** — list — default `[]` — **REQUIRED when `gateway.enabled=true`**
 List of Gateway API parent references (operator-provided Gateway). The chart does not render the Gateway itself.
@@ -196,6 +196,12 @@ HPA memory utilization target. Uncomment in `values.yaml` to enable memory-based
 
 **`autoscaling.behavior`** — map — default `{}`
 HPA `behavior` block for stabilization windows and scale-up/scale-down policies (`autoscaling/v2` schema).
+
+**`migrate.postgres.existingSecret`** — string — default `""`
+Name of a Kubernetes Secret with a separate Postgres DSN for the migration Job: in a two-role database, the role that owns the schema and may run DDL, while `postgres.existingSecret` holds the runtime role. When empty, the migration Job uses `postgres.existingSecret` and `postgres.existingSecretKey`.
+
+**`migrate.postgres.existingSecretKey`** — string — default `dsn`
+Key within `migrate.postgres.existingSecret` whose value is the migration DSN. Used only when `migrate.postgres.existingSecret` is set.
 
 **`migrate.activeDeadlineSeconds`** — integer — default `600`
 `activeDeadlineSeconds` for the pre-upgrade migration Job.
@@ -333,13 +339,17 @@ kubectl create secret generic cyoda-pg --from-file=dsn=pg-dsn
 rm pg-dsn
 kubectl create secret generic cyoda-jwt --from-file=signing-key.pem=signing.pem
 
-helm install cyoda ./deploy/helm/cyoda \
+helm install cyoda cyoda/cyoda \
   --namespace cyoda \
   --create-namespace \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt \
-  --set cluster.hmacSecret.existingSecret=cyoda-hmac
+  --set cluster.hmacSecret.existingSecret=cyoda-hmac \
+  --set "gateway.parentRefs[0].name=prod-gateway" \
+  --set "gateway.parentRefs[0].namespace=gateway-system"
 ```
+
+The chart attaches its routes to an existing Gateway (`gateway.parentRefs`, required while `gateway.enabled` is `true`, the default). On a cluster without one, replace the two `gateway.parentRefs` lines with `--set gateway.enabled=false`; see *Bare-cluster install* under EXAMPLES.
 
 Note: `--create-namespace` triggers the GitOps safety guard (namespace does not yet exist when Helm renders). Pre-create the namespace first:
 
@@ -350,21 +360,25 @@ kubectl create secret generic cyoda-pg -n cyoda --from-file=dsn=pg-dsn
 rm pg-dsn
 kubectl create secret generic cyoda-jwt -n cyoda --from-file=signing-key.pem=signing.pem
 
-helm install cyoda ./deploy/helm/cyoda \
+helm install cyoda cyoda/cyoda \
   --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt
+  --set jwt.existingSecret=cyoda-jwt \
+  --set "gateway.parentRefs[0].name=prod-gateway" \
+  --set "gateway.parentRefs[0].namespace=gateway-system"
 ```
 
 **Upgrade:**
 
 ```
-helm upgrade --install cyoda ./deploy/helm/cyoda \
+helm upgrade --install cyoda cyoda/cyoda \
   --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt \
   --reuse-values
 ```
+
+Run `helm repo update` first to see newer chart versions; add `--version <chart version>` to pin one.
 
 **Uninstall:**
 
@@ -383,17 +397,16 @@ kubectl delete secret cyoda-hmac cyoda-metrics-bearer -n cyoda
 ```
 kubectl create secret generic cyoda-hmac -n cyoda --from-literal=secret=placeholder
 kubectl create secret generic cyoda-metrics-bearer -n cyoda --from-literal=bearer=placeholder
-helm template cyoda ./deploy/helm/cyoda \
+helm template cyoda cyoda/cyoda \
   --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt \
   --set cluster.hmacSecret.existingSecret=cyoda-hmac \
-  --set monitoring.metricsBearer.existingSecret=cyoda-metrics-bearer
+  --set monitoring.metricsBearer.existingSecret=cyoda-metrics-bearer \
+  --set "gateway.parentRefs[0].name=prod-gateway"
 ```
 
 ## EXAMPLES
-
-**Minimal install (pre-created postgres + jwt secrets):**
 
 **Bare-cluster install** — `gateway.enabled=false` disables the Gateway API route objects. Use this form on clusters without Gateway API CRDs (kind, minikube, most vanilla clusters). The chart falls back to the built-in `Service` for traffic ingress.
 
@@ -404,7 +417,7 @@ kubectl create secret generic cyoda-pg -n cyoda --from-file=dsn=pg-dsn
 rm pg-dsn
 kubectl create secret generic cyoda-jwt -n cyoda --from-file=signing-key.pem=signing.pem
 
-helm install cyoda ./deploy/helm/cyoda \
+helm install cyoda cyoda/cyoda \
   --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt \
@@ -414,10 +427,12 @@ helm install cyoda ./deploy/helm/cyoda \
 **Multi-replica cluster with HPA:**
 
 ```
-helm install cyoda ./deploy/helm/cyoda \
+helm install cyoda cyoda/cyoda \
   --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt \
+  --set "gateway.parentRefs[0].name=prod-gateway" \
+  --set "gateway.parentRefs[0].namespace=gateway-system" \
   --set replicas=3 \
   --set autoscaling.enabled=true \
   --set autoscaling.minReplicas=3 \
@@ -427,10 +442,12 @@ helm install cyoda ./deploy/helm/cyoda \
 **With OTel tracing (via extraEnv):**
 
 ```
-helm install cyoda ./deploy/helm/cyoda \
+helm install cyoda cyoda/cyoda \
   --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt \
+  --set "gateway.parentRefs[0].name=prod-gateway" \
+  --set "gateway.parentRefs[0].namespace=gateway-system" \
   --set extraEnv[0].name=CYODA_OTEL_ENABLED \
   --set-string extraEnv[0].value=true \
   --set extraEnv[1].name=OTEL_EXPORTER_OTLP_ENDPOINT \
@@ -446,7 +463,7 @@ An environment value must be a string. `--set` reads `true`, `false` and numbers
 The chart has no dedicated values for the IAM feature flags. Every replica gets the same value, and changing it rolls the pods, which the flags need because each node reads them at startup (see `cyoda help auth integration`).
 
 ```
-helm upgrade cyoda ./deploy/helm/cyoda \
+helm upgrade cyoda cyoda/cyoda \
   --namespace cyoda --reuse-values \
   --set extraEnv[0].name=CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED \
   --set-string extraEnv[0].value=true \
@@ -459,10 +476,12 @@ With `--reuse-values`, `extraEnv[0]` and `extraEnv[1]` replace whatever entries 
 **With ServiceMonitor for Prometheus Operator:**
 
 ```
-helm install cyoda ./deploy/helm/cyoda \
+helm install cyoda cyoda/cyoda \
   --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt \
+  --set "gateway.parentRefs[0].name=prod-gateway" \
+  --set "gateway.parentRefs[0].namespace=gateway-system" \
   --set monitoring.serviceMonitor.enabled=true \
   --set monitoring.serviceMonitor.labels.release=prometheus
 ```
@@ -480,7 +499,7 @@ Use it to create the M2M clients that applications and compute nodes use (`POST 
 **With Gateway API (requires operator-provided Gateway):**
 
 ```
-helm install cyoda ./deploy/helm/cyoda \
+helm install cyoda cyoda/cyoda \
   --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt \
