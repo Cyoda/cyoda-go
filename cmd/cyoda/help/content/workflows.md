@@ -260,8 +260,10 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
   A wait longer than `CYODA_POSTGRES_STATEMENT_TIMEOUT` (default `5m`)
   cancels the waiting statement. A compute member that reads a locked
   entity in a transaction of its own, without the token, and then commits
-  therefore waits on its own callout until the callout times out: read the
-  entity under the token, or from the request's payload.
+  therefore waits on its own callout: the callout times out, or, if its
+  response timeout is longer than `CYODA_POSTGRES_STATEMENT_TIMEOUT`, the
+  member's waiting statement is cancelled first. Read the entity under the
+  token, or from the request's payload.
 
 Import-time validation rejects any `executionMode` value not in the list above (and not empty) with `400 VALIDATION_FAILED`. The empty string continues to default to `SYNC` at engine fire.
 

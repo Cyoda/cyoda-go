@@ -310,9 +310,10 @@ func (f *StoreFactory) Close() error {
 // modelKeys reads the unique keys of every model in refs from the tenant's
 // stored models: the keys enforced are the ones the model holds now, never
 // ones a caller passes. The model's state is not checked (the API, not the
-// store, keeps the model rules), and a model not found contributes no keys. Lock order: modelKeys takes modelMu while its callers hold entityMu;
-// model operations never take entityMu, and nothing takes entityMu while
-// holding modelMu.
+// store, keeps the model rules), and a model not found contributes no keys.
+// Lock order: modelKeys takes modelMu while its callers hold entityMu; model
+// operations never take entityMu, and nothing takes entityMu while holding
+// modelMu.
 func (f *StoreFactory) modelKeys(tid spi.TenantID, refs []spi.ModelRef) map[spi.ModelRef][]spi.UniqueKey {
 	f.modelMu.RLock()
 	defer f.modelMu.RUnlock()

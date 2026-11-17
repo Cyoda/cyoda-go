@@ -435,9 +435,9 @@ ORDER BY valid_time DESC, transaction_time DESC, version DESC
 LIMIT 1;
 ```
 
-`version DESC` keeps the order total when two versions of one entity
-share both instants; a transaction writes at most one version of each
-entity, so the rows of one transaction never tie with each other.
+`version DESC` is the final key, so the order is total. Committed versions
+of one entity do not tie on the two time keys: a transaction writes at most
+one version of each entity, and commit stamps strictly increase.
 
 **A point-in-time read over a model follows entities, not revisions.** The
 base query for `Search`, `Iterate` / grouped statistics and

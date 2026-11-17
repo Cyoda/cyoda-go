@@ -2018,12 +2018,10 @@ Entity deletes remove the entity's tasks in the same transaction; a workflow
 import removes the model's tasks that no workflow schedules, after saving the
 workflows. A client write that conflicts with the scheduler on a task row gets
 a retryable `409`; a delete or an import that owns its transaction retries on
-the server first, up to three more times. A processor of a run may write the
-fired entity through a joined callback and answer with no data
-(`{"data":null}`): as in any transition, under `SYNC`, `ASYNC_SAME_TX` and
-`COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch`, the engine then takes the
-written payload, keeps its own state, and persists over that write
-(`cmd/cyoda/help/content/workflows.md`).
+the server first, up to three more times. As in any transition, a processor of
+a run changes the fired entity only through the data it returns, and never
+writes it, with or without the transaction token (`cyoda help workflows`,
+PROCESSORS, *Design rule*).
 
 **Shutdown.** The node is `DRAINING` (§4.1) from the signal on, so `/readyz`
 fails at once. Before the servers drain the scheduler stops claiming, waits

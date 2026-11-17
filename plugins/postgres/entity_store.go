@@ -1044,9 +1044,9 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// Outside a caller's transaction, release the entity's unique-key claims
 	// in this delete's own transaction. Inside one, record the delete: the
 	// transaction's Commit releases the claims of every entity it wrote
-	// (TransactionManager.commitWrittenClaims). Released here, an uncommitted delete would make another
-	// transaction's commit of the value wait for this one, where the value is
-	// still held by a committed entity.
+	// (TransactionManager.commitWrittenClaims). Released here, an uncommitted
+	// delete would make another transaction's commit of the value wait for
+	// this one, where the value is still held by a committed entity.
 	if spi.GetTransaction(ctx) == nil {
 		if err := releaseClaims(ctx, s.q, s.tenantID, []string{entityID}); err != nil {
 			return err
