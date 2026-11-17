@@ -47,7 +47,7 @@ A workflow definition is a named finite state machine attached to an entity mode
 
 The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. Manual transitions are triggered by the client via `PUT /entity/{format}/{entityId}/{transition}`.
 
-The engine enforces a per-state visit limit of 10 by default (configurable via `WithMaxStateVisits`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time.
+The engine enforces a per-state visit limit of 10 by default (configurable via `WithMaxStateVisits`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time. Both limits count within one cascade; they do not stop a workflow whose callouts write the entity they run for (PROCESSORS, *Design rule*).
 
 ## WORKFLOW SCHEMA
 
@@ -148,6 +148,24 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 A processor may return modified entity data. That data is governed by the model exactly as a client's write is: it must be storable, and it must satisfy the schema. Introducing a field the model does not declare requires the model's `changeLevel` to permit it; otherwise the transition fails with `WORKFLOW_FAILED` and rolls back, and the refused data changes neither the entity nor the model. Where the level permits it, the returned data extends the model exactly as a client write does, with the same side effects: the extension commits on its own before the transition commits, and stays even if the transition fails afterwards (`cyoda help models`, SCHEMA EXTENSION).
 
+**Design rule: a callout never writes the entity it runs for.** A processor,
+a function criterion and a schedule function change the entity they run for
+in one way only: a processor returns new data, and the engine applies it.
+None of them writes or deletes that entity through the API, with or without
+the transaction token. The same holds at every depth: while an entity's
+cascade is running, no callback writes or deletes that entity, including
+callbacks of the processors of other entities that callbacks create or
+update in the same transaction. Every entity write runs the entity's
+workflow, so such a write starts a second cascade of the same entity inside
+the first one. That cascade can reach the same callout, which makes the same
+write again: the cascade re-enters itself and can loop without end. The
+per-state visit and depth limits count within one cascade, so they do not
+stop it. Whatever the inner cascade stores, the outer one then overwrites
+with its next save. The engine does not detect or refuse such a write. A
+workflow that seems to need one is designed wrong: return the data from the
+processor; put a change that must follow the cascade in a later transition
+(manual or scheduled); or keep the changing part in an entity of its own.
+
 A processor must not change a model or a workflow through the API while it
 runs; that is not supported. An EdgeMessage a processor saves is outside the
 entity transaction: make the save idempotent and attach the message id to the
@@ -184,17 +202,10 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
 - **Visibility of segment-boundary states.** States on a segment boundary (the pre-callout state of a `COMMIT_BEFORE_DISPATCH` processor) are **publicly observable** to readers between segments. A concurrent transaction's `Get`/`GetPage`/`Iterate`/`Search`/`Count` will see the entity in the pre-callout state, and a second cascade may decide to fire criteria-driven transitions based on that observed state. Workflow authors using `COMMIT_BEFORE_DISPATCH` must treat segment-boundary states as committed states — design state-machine criteria, transition guards, and external monitoring accordingly. If invisibility of an intermediate state is required, model it as a workflow-level `DRAFT` parent state with sub-stages in payload, or do not expose the entity until a designated terminal state.
 - **Attribution handover with `startNewTxOnDispatch=false`.** With no transaction context supplied, the dispatched processor's callback writes are ordinary independent requests — the platform tracks no causal chain for them. Each is recorded as the identity it presents. With the compute node's own client token, that is the compute node's client, as both attributed principal and executor. A compute node never receives a user's token: a callout carries the user only as attributes (`authid`/`authtype`, the executor in `authexecid`/`authexectype`). To record a callback write for that user, the compute node must hold the credentials of an on-behalf-of client of the tenant and the private half of an active trusted key of the tenant (see `cyoda help auth integration`); it must not reuse the backend's on-behalf-of client, and a key of its own is recommended, so that each can be revoked without touching the backend's (see *WHEN ANOTHER PART ACTS FOR A USER* there); a segregation-of-duties check never lists this client among the ids it accepts as "the user approved", sign an assertion for `authid` when `authtype` is `user`, and make the write with the exchanged token; it is then recorded for the user, executed by that on-behalf-of client. Inside a scheduled fire, this processor's callout carries the principal that armed the timer in `authid`/`authtype` and `system` as the executor, as every callout of the fire does, although it is dispatched outside a transaction. The platform supplies no other carrier for this mode.
 - **A write made under a transaction token that reaches one is refused.** A compute member's callback — a request carrying a transaction token — runs in the transaction it joined, and only the operation that began a transaction commits it. A `COMMIT_BEFORE_DISPATCH` processor commits the transaction it runs in, so a callback whose write reaches one is refused with `409` `COMMIT_IN_JOINED_TRANSACTION` at that processor: it is not dispatched, the joined transaction is neither flushed nor committed, and nothing the refused write did is kept but a schema extension it made (`cyoda help models`, SCHEMA EXTENSION). As a failed write it makes the joined transaction rollback-only: its owner fails with `409` `TRANSACTION_ROLLBACK_ONLY` (under an `ASYNC_NEW_TX` processor, that processor fails instead). Both values of `startNewTxOnDispatch` are refused. A compute member that needs such a write from inside a processor makes it as an independent request, without the transaction token. The refusal is deterministic, so a test of the path finds it. Whether a workflow is reached from a callback is decided at run time, not at import, so the import does not reject the combination.
-- **A callout never writes the entity it runs for.** A processor, a
-  function criterion and a schedule function never write or delete the
-  entity the workflow runs for, with or without the transaction token. A
-  processor changes that entity in one way only: through the data it
-  returns. Under the token its callbacks may read that entity, and read or
-  write any other entity except one whose workflow is running in the same
-  transaction: no callback, at any depth (a callback's own processors and
-  their callbacks included), writes or deletes the entity of a callout that
-  has not ended. Such a write is not refused; the workflow's next save
-  replaces it, so it is lost. This is the contract of workflow processing; the
-  engine does not detect or guard against a breach. A write to the entity by
+- **A callout never writes the entity it runs for** (PROCESSORS, *Design
+  rule*). Under the token a callout's callbacks may read that entity, and
+  read or write any other entity whose cascade is not running in the same
+  transaction. A write to the entity by
   another transaction while the workflow runs fails one of the two with a
   conflict (see the next item).
 - **What a callback read of the entity returns.** A callback that reads,
