@@ -308,7 +308,7 @@ git tag v0.0.0
 # Run snapshot (no publish, no signing — just artifact generation):
 goreleaser release --snapshot --clean --skip=publish --skip=sign
 
-# Verify docker_signs' selector 'artifacts: manifests' will resolve:
+# Verify the docker_signs selector "artifacts: manifests" will resolve:
 python3 -c "
 import json
 artifacts = json.load(open('dist/artifacts.json'))
@@ -669,7 +669,7 @@ Fix before running `goreleaser release --snapshot`:
 cd /path/to/temp/clone
 git remote set-url origin https://github.com/cyoda/cyoda-go.git
 # Also disable push from this temp clone so an absent-minded `git push`
-# doesn't accidentally shove a local branch to the real upstream:
+# does not accidentally shove a local branch to the real upstream:
 git remote set-url --push origin NO_PUSH
 ```
 

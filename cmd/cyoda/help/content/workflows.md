@@ -572,7 +572,7 @@ For example, in this transition criterion `manual-override` is called only for a
 }
 ```
 
-**Audit.** When a criterion holds a function condition, the state-machine audit events of its evaluation carry a `functions` list in their `data`: one entry per function condition that evaluation reached, in evaluation order. A function condition that evaluation did not reach has no entry, so the list is empty when evaluation reached none. `WORKFLOW_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_NOT_MATCH_CRITERION` and `TRANSITION_MAKE` (manual, automated and scheduled) carry `functions` beside their other data fields when the criterion holds a function condition, and leave it out otherwise (see `cyoda help audit`, *Event data*). An entry has these fields:
+**Audit.** When a criterion holds a function condition, the state-machine audit events of its evaluation carry a `functions` list in their `data`: one entry per function condition that evaluation reached, in evaluation order. A function condition that evaluation did not reach has no entry, so the list is empty when evaluation reached none. `WORKFLOW_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_NOT_MATCH_CRITERION` and `TRANSITION_MAKE` (named, automated and scheduled) carry `functions` beside their other data fields when the criterion holds a function condition, and leave it out otherwise (see `cyoda help audit`, *Event data*). An entry has these fields:
 
 - `path` — always — the JSON Pointer of the function condition in the criterion (`/conditions/2`, `/conditions/0/conditions/1`); `""` for a function condition that is the whole criterion.
 - `name` — always — `function.name`.

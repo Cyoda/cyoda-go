@@ -13,7 +13,7 @@ before:
     - bash -c 'mkdir -p .release-extras && tar -czf ".release-extras/cyoda_help_{{ .Version }}.tar.gz" -C cmd/cyoda/help content'
     # `go run` does not apply the `builds:` ldflags, so stamp main.version
     # explicitly — otherwise the emitted JSON ships with main.version="dev"
-    # instead of the tagged version (issue #101).
+    # instead of the tagged version.
     - bash -c 'go run -ldflags="-X main.version={{ .Version }}" ./cmd/cyoda help --format=json > ".release-extras/cyoda_help_{{ .Version }}.json"'
 
 builds:
@@ -88,7 +88,7 @@ brews:
     # No post_install: Homebrew sandboxes post_install and denies writes to
     # $HOME, so `cyoda init` always failed on macOS and emitted a warning on
     # every install. The caveats block below already tells users how to run
-    # init when they want to (issue #96).
+    # init when they want to.
     caveats: |
       ==============================================================
       cyoda is installed but not yet initialised. Run:
@@ -163,7 +163,7 @@ docker_signs:
       - "${artifact}"
 
 signs:
-  # Issue #47 — keyless cosign signatures on archive and checksum
+  # Keyless cosign signatures on archive and checksum
   # artifacts. Uses Sigstore + GitHub Actions OIDC; release.yml already
   # sets `id-token: write` and installs cosign. Produces sibling .sig
   # and .pem files alongside each archive and SHA256SUMS so consumers
@@ -204,5 +204,5 @@ release:
     - glob: ./.release-extras/cyoda_help_*.json
     # Publish install.sh as a release asset so the canonical install URL
     # is `/releases/latest/download/install.sh` — pinned per-release rather
-    # than tracking `main` (issue #49).
+    # than tracking `main`.
     - glob: ./scripts/install.sh

@@ -301,7 +301,7 @@ This key is also the root secret for issued signing key pairs; see `config.auth`
 **HMAC secret** — generate 32 bytes of entropy (64 hex chars) and load into a Kubernetes Secret:
 
 ```
-# The secret goes through a private file, not kubectl's command line,
+# The secret goes through a private file, not the kubectl command line,
 # which other local users can see.
 (umask 077; openssl rand -hex 32 | tr -d '\n' > hmac-secret)
 kubectl create secret generic cyoda-hmac -n cyoda --from-file=secret=hmac-secret
@@ -347,6 +347,8 @@ helm install cyoda cyoda/cyoda \
   --set "gateway.parentRefs[0].name=prod-gateway" \
   --set "gateway.parentRefs[0].namespace=gateway-system"
 ```
+
+**Pin the image by digest.** The chart runs `image.repository:image.tag`, and the tag defaults to the chart's app version. A tag can be moved, so for production check the signature of the release you run and give the chart its digest: set `image.tag` to `<version>@<digest>`, for example `--set image.tag="0.9.0@$D"`, where `$D` is the digest the check printed (`cyoda help install`, *Container image*).
 
 The chart attaches its routes to an existing Gateway (`gateway.parentRefs`, required while `gateway.enabled` is `true`, the default). On a cluster without one, replace the two `gateway.parentRefs` lines with `--set gateway.enabled=false`; see *Bare-cluster install* under EXAMPLES.
 

@@ -95,7 +95,7 @@ OUT=$(cosign verify "ghcr.io/cyoda/cyoda:$V" \
 
 For running the image, see `cyoda help run` (Docker, Docker Compose).
 
-**Windows:** download the `windows` `.zip` archive for your architecture (`cyoda_<version>_windows_amd64.zip`) from the release page, with `SHA256SUMS`, `SHA256SUMS.sig` and `SHA256SUMS.pem`. Check `SHA256SUMS` with the same `cosign verify-blob` command as for the packages above, then compare the archive's hash (`certutil -hashfile <archive> SHA256`) with its line in `SHA256SUMS`. Use the archive only when both match; then put `cyoda.exe` on `PATH`.
+**Windows:** download the `windows` `.zip` archive for your architecture (`cyoda_<version>_windows_amd64.zip`) from the release page, with `SHA256SUMS`, `SHA256SUMS.sig` and `SHA256SUMS.pem`. Check `SHA256SUMS` with `cosign` (one line, any shell; put your release in both places): `cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig --certificate-identity https://github.com/Cyoda/cyoda-go/.github/workflows/release.yml@refs/tags/v0.9.0 --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-github-workflow-trigger push --certificate-github-workflow-ref refs/tags/v0.9.0 SHA256SUMS`. Then compare the archive's hash (`certutil -hashfile <archive> SHA256`) with its line in `SHA256SUMS`. Use the archive only when both match; then put `cyoda.exe` on `PATH`.
 
 **From source** (needs the Go version in `go.mod`):
 

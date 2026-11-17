@@ -156,10 +156,10 @@ docker run --rm \
   -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
-  ghcr.io/cyoda/cyoda:latest
+  "ghcr.io/cyoda/cyoda@$D"
 ```
 
-Credentials go in files, not in `-e`: a value passed with `-e` shows in `docker inspect` and in shell history. The file `postgres-url` holds the DSN (`postgres://user:pass@host:5432/db?sslmode=require`). The container runs as UID 65532, so on a Linux host each mounted file must be readable by that user, for example `sudo chown 65532:65532 signing.pem postgres-url && sudo chmod 0400 signing.pem postgres-url`.
+`$D` is the digest of the image you verified: a tag can be moved, so check the signature of the release you run and run it by digest (`cyoda help install`, *Container image*). Credentials go in files, not in `-e`: a value passed with `-e` shows in `docker inspect` and in shell history. The file `postgres-url` holds the DSN (`postgres://user:pass@host:5432/db?sslmode=require`). The container runs as UID 65532, so on a Linux host each mounted file must be readable by that user, for example `sudo chown 65532:65532 signing.pem postgres-url && sudo chmod 0400 signing.pem postgres-url`.
 
 First admin token: `docker exec <container> /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
@@ -211,7 +211,7 @@ docker compose -f deploy/docker/compose.yaml up
 # 2. docker-compose.yaml snippet (add to the cyoda service):
 #      volumes:
 #        - ./secrets/signing.pem:/run/secrets/signing.pem:ro
-#        (the file must be readable by the container's UID 65532; see Docker above)
+#        (the file must be readable by UID 65532, the container user; see Docker above)
 #      environment:
 #        CYODA_IAM_MODE: jwt
 #        CYODA_REQUIRE_JWT: "true"

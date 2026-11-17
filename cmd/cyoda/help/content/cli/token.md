@@ -102,7 +102,7 @@ fi
 # Consider setting CYODA_IAM_M2M_ADMIN_ROLE_ENABLED back to false: it applies
 # to every tenant, and turning it off does not affect existing clients.
 
-# Kubernetes (the image's binary is /cyoda; the pod already holds the key)
+# Kubernetes (the binary in the image is /cyoda; the pod already holds the key)
 TOKEN=$(kubectl exec <pod> -- /cyoda token --tenant acme)
 
 # Docker Compose

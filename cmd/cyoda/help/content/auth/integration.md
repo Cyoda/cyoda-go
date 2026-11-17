@@ -86,7 +86,7 @@ cyoda has no tenant registry. A tenant exists as soon as a token names it, and o
 #   (-T: no TTY, so the token carries no trailing carriage return)
 ADMIN_TOKEN=$(cyoda token --tenant acme)
 
-# Create the tenant's first admin client. The node that takes the call
+# Create the first admin client of the tenant. The node that takes the call
 # must run with CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true.
 curl -X POST "https://cyoda.example.com/api/clients?withAdminRole=true" \
   -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
@@ -99,13 +99,13 @@ The answer carries `client_id` and `client_secret`. The secret is shown once. Ha
 Who: the tenant admin, with an admin client token.
 
 ```bash
-# The tenant admin's own token.
+# A token for the tenant admin.
 curl -X POST https://cyoda.example.com/api/tenants/acme/oauth/token \
   -K- <<<"user = \"${ADMIN_CLIENT_ID}:${ADMIN_CLIENT_SECRET}\"" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials"
 
-# The backend's on-behalf-of client.
+# The on-behalf-of client of the backend.
 curl -X POST "https://cyoda.example.com/api/clients?onBehalfOf=true" \
   -H @- <<<"Authorization: Bearer ${TENANT_ADMIN_TOKEN}"
 
@@ -370,11 +370,11 @@ B=http://localhost:8080/api
 umask 077
 printf 'Authorization: Bearer %s\n' "$(cyoda token --tenant acme --roles ROLE_ADMIN,ROLE_M2M)" > admin.hdr
 
-# The backend's OBO client.
+# The OBO client of the backend.
 curl -s -X POST "$B/clients?onBehalfOf=true" -H @admin.hdr > obo.json
 OBO_ID=$(jq -r .client_id obo.json); OBO_SECRET=$(jq -r .client_secret obo.json)
 
-# The application's key, registered as a trusted key.
+# The key of the application, registered as a trusted key.
 openssl genrsa -out app-key.pem 2048
 N=$(openssl rsa -in app-key.pem -noout -modulus | cut -d= -f2 \
     | xxd -r -p | openssl base64 -A | tr '+/' '-_' | tr -d '=')

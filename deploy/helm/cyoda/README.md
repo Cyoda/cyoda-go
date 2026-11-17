@@ -27,7 +27,7 @@ binary release by `bump-chart-appversion.yml`.
 ```bash
 kubectl create namespace cyoda
 
-# Secrets go through private files, not kubectl's command line, which
+# Secrets go through private files, not the kubectl command line, which
 # other local users can see. printf is a shell builtin.
 (umask 077; printf '%s' 'postgres://cyoda:REDACTED@pg.example.com:5432/cyoda?sslmode=require' > dsn)
 kubectl -n cyoda create secret generic cyoda-dsn --from-file=dsn=dsn

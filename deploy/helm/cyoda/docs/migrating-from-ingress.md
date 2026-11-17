@@ -154,7 +154,7 @@ curl -fsSL https://cyoda.example.com/api/health
 
 # gRPC (via grpcurl)
 grpcurl -insecure grpc.cyoda.example.com:443 list
-# expected: cyoda's gRPC services listed
+# expected: the cyoda gRPC services listed
 ```
 
 If either fails, check:
