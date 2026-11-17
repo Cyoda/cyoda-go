@@ -2070,7 +2070,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   an error, passed `cosign` a flag it does not have, and expected the owner
   `cyoda` where the certificate says `Cyoda`. It now follows the redirect,
   pins the exact tag being installed, and matches the certificate. A
-  release-smoke job installs a signed release with signatures required.
+  release-smoke job installs a signed release with signatures required. An
+  unknown `CYODA_COSIGN_VERIFY` value now stops the script instead of
+  falling back to auto mode. v0.7.0 and v0.7.1, signed under the GitHub
+  organization's earlier name, do not verify. The README and
+  `cyoda help install` verify a `.deb`/`.rpm` package and the container
+  image against the signature of the exact release.
 - **A chart release no longer becomes GitHub's "Latest" release.** The
   chart workflow marked its release (`cyoda-X.Y.Z`, which holds only the
   chart archive) as latest, so after a chart release `install.sh` resolved

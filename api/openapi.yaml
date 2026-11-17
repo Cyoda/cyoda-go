@@ -3711,8 +3711,9 @@ paths:
           example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
         - name: transition
           in: path
-          description: The transition state to apply to the entity (e.g., 'UPDATE',
-            'PUBLISH')
+          description: The name of a transition of the entity's current state
+            to fire (e.g., 'UPDATE', 'PUBLISH'). Any transition that is not
+            disabled and has no `schedule` can be named, whatever its `manual`.
           required: true
           schema:
             type: string
@@ -3897,8 +3898,9 @@ paths:
             format: uuid
         - name: transition
           in: path
-          description: The transition state to apply to the entity (e.g., 'UPDATE',
-            'PUBLISH')
+          description: The name of a transition of the entity's current state
+            to fire (e.g., 'UPDATE', 'PUBLISH'). Any transition that is not
+            disabled and has no `schedule` can be named, whatever its `manual`.
           required: true
           schema:
             type: string

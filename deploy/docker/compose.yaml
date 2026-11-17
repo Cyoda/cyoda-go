@@ -19,7 +19,8 @@ services:
       # inline in the environment would show in `docker inspect`. On a Linux
       # host the file must be readable by the container's user, UID 65532, and
       # no one else:
-      # `sudo chown 65532:65532 secrets/signing.pem && sudo chmod 0400 secrets/signing.pem`.
+      # `sudo chown 65532:65532 deploy/docker/secrets/signing.pem && sudo chmod 0400 deploy/docker/secrets/signing.pem`
+      # (the mount below is relative to this file's directory).
       # First admin
       # token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`.
       # See `cyoda help run` (Docker Compose) and `cyoda help config auth`.

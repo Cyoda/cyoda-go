@@ -216,7 +216,8 @@ mental model simple:
 
 ```bash
 # In cyoda-go (main branch, at the commit to be released):
-V=v0.6.0   # pick per release
+# pick per release
+V=v0.6.0
 for p in memory postgres sqlite; do
   git tag -s -a "plugins/$p/$V" -m "Release plugins/$p/$V"
 done
@@ -234,11 +235,13 @@ window it pins them to a **pseudo-version of the in-dev HEAD** (set with
 to the tags you cut in step 1:
 
 ```bash
-V=v0.6.0   # the root release version
+# the root release version
+V=v0.6.0
 for p in memory postgres sqlite; do
   go mod edit -require="github.com/cyoda-platform/cyoda-go/plugins/$p@$V"
 done
-GOWORK=off go mod download   # refresh go.sum against the tagged modules
+# refresh go.sum against the tagged modules
+GOWORK=off go mod download
 ```
 
 Review the diff — the `require` block should pin each plugin at the release
@@ -349,7 +352,8 @@ one server-side, and that tag is **lightweight and unsigned**. That is how
 committed to signing every tag.
 
 ```bash
-V=v0.6.0   # or whatever this release is
+# or whatever this release is
+V=v0.6.0
 
 # 1. The tag. Signed and annotated, at the exact verified commit.
 git tag -s -a "$V" -m "Release $V" <sha>
@@ -517,7 +521,8 @@ Per-release procedure:
 2. **Merge** the PR.
 3. **Tag the chart** at the merge commit on `main`:
    ```bash
-   V=v0.6.3   # the binary tag you just released
+   # the binary tag you just released
+   V=v0.6.3
    CHART_V=${V#v}
    git tag -s -a "cyoda-$CHART_V" -m "Release chart cyoda-$CHART_V"
    git push origin "cyoda-$CHART_V"
@@ -594,7 +599,8 @@ The `target-branch` edit from gate 0 is now on `main`, naming a branch that
 does not exist yet. Create it from the merge commit, immediately:
 
 ```bash
-V_NEXT=v0.9.0   # the next milestone
+# the next milestone
+V_NEXT=v0.9.0
 git fetch origin
 git branch "release/${V_NEXT}" origin/main
 git push origin "release/${V_NEXT}"

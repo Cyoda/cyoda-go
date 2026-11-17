@@ -729,6 +729,9 @@ Returns `404 WORKFLOW_NOT_FOUND` when no workflows have been imported for the mo
 curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1/workflow/export" \
   | jq '{importMode: "REPLACE", workflows}' > workflows.json
+curl -s -X POST -H @- <<<"Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" --data-binary @workflows.json \
+  "http://localhost:8080/api/model/nobel-prize/1/workflow/import"
 ```
 
 **Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty. `annotations` (on the workflow, any state, any transition, or any processor) and `criterionAnnotations` (on the workflow or any transition) are omitted when absent, and re-serialised in compacted form when present.

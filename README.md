@@ -49,21 +49,28 @@ brew install cyoda/cyoda-go/cyoda
 curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
 ```
 
-Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Pin a version with `curl ... | CYODA_VERSION=v0.7.1 sh` (the variable goes on `sh`, after the pipe). The installer SHA256-verifies the archive and, if [`cosign`](https://docs.sigstore.dev/cosign/installation/) is on `PATH`, also verifies a Sigstore keyless signature from the cyoda-go release workflow.
+Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Pin a version with `curl ... | CYODA_VERSION=v0.8.4 sh` (the variable goes on `sh`, after the pipe); add `CYODA_COSIGN_VERIFY=required` to refuse an install that cosign cannot verify. The installer SHA256-verifies the archive and, if [`cosign`](https://docs.sigstore.dev/cosign/installation/) is on `PATH`, also verifies a Sigstore keyless signature from the cyoda-go release workflow.
 
 ### Debian / Ubuntu / Fedora / RHEL
 
-```bash
-# Debian / Ubuntu
-wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
-sudo dpkg -i cyoda_linux_amd64.deb
+Set `V` to the release you install. The commands check with `cosign` that the release workflow signed `SHA256SUMS` from that tag, then check the package against it, and install it only if both checks pass:
 
-# Fedora / RHEL
-wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.rpm
-sudo rpm -i cyoda_linux_amd64.rpm
+```bash
+V=v0.8.4
+R=https://github.com/cyoda/cyoda-go/releases/download/$V
+curl -fsSLO "$R/cyoda_linux_amd64.deb"
+curl -fsSLO "$R/SHA256SUMS" -O "$R/SHA256SUMS.sig" -O "$R/SHA256SUMS.pem"
+cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
+  --certificate-identity "https://github.com/Cyoda/cyoda-go/.github/workflows/release.yml@refs/tags/$V" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-trigger push \
+  --certificate-github-workflow-ref "refs/tags/$V" \
+  SHA256SUMS \
+  && sha256sum --ignore-missing -c SHA256SUMS \
+  && sudo dpkg -i cyoda_linux_amd64.deb
 ```
 
-Replace `amd64` with `arm64` for ARM hosts. Both packages drop `/usr/bin/cyoda` and `/etc/cyoda/cyoda.env` (sqlite as the system-wide default, preserved across upgrades).
+For Fedora or RHEL, download `cyoda_linux_amd64.rpm` instead and end with `sudo rpm -i cyoda_linux_amd64.rpm`. Replace `amd64` with `arm64` for ARM hosts. Both packages drop `/usr/bin/cyoda` and `/etc/cyoda/cyoda.env` (sqlite as the system-wide default, preserved across upgrades).
 
 ### From source
 

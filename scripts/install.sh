@@ -25,7 +25,11 @@
 #     (Aborts if cosign is missing rather than falling back to SHA256-only.)
 #
 # Auto-mode trade-off (security note): cosign signing was added in
-# v0.7.0; older releases have no .sig files. To preserve backward
+# v0.7.0; older releases have no .sig files. v0.7.0 and v0.7.1 were
+# signed before the GitHub org was renamed: their certificates name
+# `Cyoda-platform`, which this script does not trust (the old name is no
+# longer the org's and could be claimed), so with cosign on PATH they are
+# refused. Install v0.7.4 or later. To preserve backward
 # compat with the curl-pipe-to-sh UX for users without cosign, auto
 # mode treats a 404 on the .sig as "release predates cosign signing"
 # and falls back to SHA256-only. This means an attacker who controls
@@ -147,6 +151,13 @@ cosign_verify() {
     cv_mode="${CYODA_COSIGN_VERIFY:-auto}"
     case "$cv_mode" in
         false|0|no) info "Skipping cosign verification (CYODA_COSIGN_VERIFY=$cv_mode)"; return 0 ;;
+        auto|required) : ;;
+        *)
+            # An unknown value must not fall back to auto mode: an operator
+            # who wrote `true` or `REQUIRED` expected enforcement.
+            err "CYODA_COSIGN_VERIFY=$cv_mode is not one of auto, required, false."
+            exit 1
+            ;;
     esac
 
     if ! command -v cosign >/dev/null 2>&1; then
@@ -251,9 +262,9 @@ main() {
         *)
             warn "$INSTALL_DIR is not on your PATH."
             warn "Add it by running (for bash):"
-            warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
+            warn "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
             warn "or (for zsh):"
-            warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+            warn "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
             ;;
     esac
 
