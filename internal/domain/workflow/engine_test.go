@@ -329,6 +329,40 @@ func TestManualTransition(t *testing.T) {
 	}
 }
 
+// TestManualTransition_NamesAutomatedTransition: `manual` decides only whether
+// the engine fires a transition on its own. A save that names a `manual:
+// false` transition fires that one, ahead of the automated transition the
+// cascade would have picked by declaration order.
+func TestManualTransition_NamesAutomatedTransition(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "manual-names-auto", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "NamesAutoWF", InitialState: "INITIAL", Active: true,
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
+				{Name: "TO_A", Next: "A", Manual: false, Criterion: simpleCriterion("$.amount", "GREATER_THAN", 100)},
+				{Name: "TO_B", Next: "B", Manual: false, Criterion: simpleCriterion("$.amount", "GREATER_THAN", 50)},
+			}},
+			"A": {Transitions: []spi.TransitionDefinition{}},
+			"B": {Transitions: []spi.TransitionDefinition{}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"amount": schema.Integer})
+
+	entity := makeEntity("e9b", modelRef, map[string]any{"amount": 500})
+	entity.Meta.State = "INITIAL"
+
+	if _, err := engine.ManualTransition(ctx, entity, "TO_B", IfMatch{}); err != nil {
+		t.Fatalf("naming a manual:false transition: unexpected error: %v", err)
+	}
+	if entity.Meta.State != "B" {
+		t.Fatalf("expected state B (the named transition), got %s", entity.Meta.State)
+	}
+}
+
 func TestProcessorStubSuccess(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)

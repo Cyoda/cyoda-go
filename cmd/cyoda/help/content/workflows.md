@@ -45,9 +45,9 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints requ
 
 A workflow definition is a named finite state machine attached to an entity model. Workflows are stored per model reference `(entityName, modelVersion)`. A model may have multiple workflow definitions; the engine selects the matching one per entity using the workflow-level `criterion` field evaluated at entity creation time. When no `criterion` matches, the engine uses the default built-in workflow.
 
-The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. Manual transitions are triggered by the client via `PUT /entity/{format}/{entityId}/{transition}`.
+The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. A client fires a transition by naming it on a save: `PUT` or `PATCH /entity/{format}/{entityId}/{transition}`.
 
-The engine enforces a per-state visit limit of 10 by default (configurable via `WithMaxStateVisits`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time. Both limits count within one cascade. A callout never writes the entity its workflow runs for (PROCESSORS, *Design rule*).
+The engine enforces a per-state visit limit of 10 by default (set by `CYODA_MAX_STATE_VISITS`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time. Both limits count within one cascade. A callout never writes the entity its workflow runs for (PROCESSORS, *Design rule*).
 
 ## WORKFLOW SCHEMA
 
@@ -135,9 +135,9 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 **TransitionDefinition fields:**
 
-- `name` — string — transition name; used by the client in `PUT /entity/{format}/{entityId}/{name}` and in engine cascade
+- `name` — string — transition name; a client names it in `PUT` or `PATCH /entity/{format}/{entityId}/{name}`
 - `next` — string — target state; must exist in `states`
-- `manual` — boolean, required — `true` means the transition requires an explicit client request; `false` means the engine evaluates it automatically in cascade. There is no default: an import whose transition omits `manual` or sends `null` is rejected (`400 VALIDATION_FAILED`)
+- `manual` — boolean, required — whether the engine fires the transition on its own. `false`: the engine evaluates it in the cascade after every write. `true`: the engine never fires it; it fires only when a client names it. `manual` does not limit what a client can name: a save can name any transition of the current state that is not `disabled` and has no `schedule`, a `manual: false` one included. There is no default: an import whose transition omits `manual` or sends `null` is rejected (`400 VALIDATION_FAILED`)
 - `disabled` — boolean — when `true`, the engine skips this transition entirely
 - `criterion` — `Condition` JSON or `null` — evaluated before executing the transition; `null` means always matches; the same Condition DSL as search (see `search` topic)
 - `criterionAnnotations` — object or absent — optional client-owned metadata attached to this transition's `criterion` as a whole (see WorkflowDefinition `annotations`); sibling field, engine-opaque
@@ -729,7 +729,7 @@ The workflow engine runs synchronously within the entity write transaction. The 
 2. Evaluate each workflow's `criterion` against the entity; select the first match. If none match (or if no workflows have been imported for the model), use the built-in default workflow. The substitution emits both a `slog.Warn` line (fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `entityId`, `reason=no_workflows_imported`|`no_criterion_matched`) and an `AddWarning` entry surfaced in the response body, so operators can detect models silently running on the default.
 3. Set `entity.Meta.State = workflow.initialState`.
 4. If a named transition was requested (by the client), execute it: evaluate `criterion`, invoke processors, set `entity.Meta.State = transition.next`.
-5. Cascade: repeatedly scan the current state's transitions; for each automated (`manual=false`) non-disabled transition, evaluate `criterion`; if it matches, invoke processors and advance the state. Stop when no automated transition matches or the state has no automated transitions.
+5. Cascade: repeatedly scan the current state's transitions; for each automated (`manual=false`) transition that is not disabled and has no `schedule`, evaluate `criterion`; if it matches, invoke processors and advance the state. Stop when no automated transition matches or the state has no automated transitions.
 6. The engine records `StateMachineEvent` entries to the audit log under the entity's `transactionId`.
 
 Per-state visit limit (default 10) and total cascade depth limit (100) are enforced to prevent infinite loops.
@@ -796,7 +796,7 @@ curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1/workflow/export"
 ```
 
-**Trigger a manual transition:**
+**Fire a transition by name:**
 
 ```
 curl -s -X PUT \
