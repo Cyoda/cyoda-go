@@ -299,6 +299,16 @@ unique-key change reads the model and then saves it whole, so a lock or
 a change-level change landing between the read and the save is
 overwritten.
 
+Change a model's state or its unique-key definitions (`uniqueKeys`) —
+import, lock, unlock, unique-key change — only while no transaction that
+will write entities of that model is open: deploy a model before
+anything ingests data into it, and change it only while nothing writes
+to it. A commit may read the unique-key definitions of its entities'
+models inside its own transaction (postgres reads them in the
+transaction's snapshot), so if this is broken, the commit of a
+transaction that was open during the change may check the unique-key
+definitions as they were when the transaction began.
+
 Unlock is not atomic with its entity check either: it counts the
 model's committed entities, then unlocks. An entity write still in
 progress — its transaction not yet committed, or a create that read the
@@ -688,7 +698,10 @@ A short checklist:
 9. **A callout never writes the entity it runs for.** A processor, a
    function criterion and a schedule function never write or delete the
    entity the workflow runs for, with or without the transaction token; a
-   processor changes it only through the data it returns. Callbacks under
+   processor changes it only through the data it returns, also a change a
+   nested processor (of another entity a callback creates or updates) works
+   out for it, which is passed back up and returned by the processor the
+   entity's transition called, never saved to the entity. Callbacks under
    the token may write other entities, but never an entity whose cascade is
    running in the same transaction, at any depth: the entity is passing
    from one state to the next, so the write moves it out from under the

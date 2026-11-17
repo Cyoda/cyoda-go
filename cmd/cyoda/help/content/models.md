@@ -351,6 +351,8 @@ The API keeps these rules:
 
 Storage adds no check of its own. The rules hold when model administration — import, lock, unlock, delete, change level, unique keys — runs from one place, such as a deploy step, not concurrently on the same model, and not while writes to the model are in flight. Two such calls that overlap on one model have no defined order: an import that overlaps a lock can save the model back as `UNLOCKED`. Register and lock a model once, from one caller, rather than from every replica of an application at start-up, and stop writes to a model before you unlock it.
 
+Change a model's state or its unique-key definitions (`uniqueKeys`) — import, lock, unlock, unique-key change — only while no transaction that will write entities of that model is open. In practice, deploy a model before anything ingests data into it, and change it only while nothing writes to it. If this is broken, the commit of a transaction that was open during the change may check the unique-key definitions as they were when the transaction began: it can commit a value the current definitions refuse, or refuse one only the earlier definitions forbid.
+
 ## SCHEMA EXTENSION
 
 The `changeLevel` field controls schema evolution on locked models. When it is set and an entity write brings structure the model does not have and the level permits, the write extends the model: it computes an additive change and commits it to the model before the write's own entity changes commit. A write whose data fits the schema extends nothing and does no extra work.

@@ -18,13 +18,15 @@ until the workflow ends.
 
 A processor, a function criterion and a schedule function never write or delete
 the anchor, with or without the token; a processor changes the anchor only
-through the data it returns. Writing other entities through the token stays
-supported, except an entity whose cascade is running in the same
-transaction, at any depth: the entity is passing from one state to the
-next, so such a write moves it out from under the running transition, and it
-starts that entity's workflow again inside its own cascade, which can loop
-without end. The engine does not detect a
-breach and no longer adopts such a write.
+through the data it returns, also a change a nested processor (of another
+entity a callback creates or updates) works out for the anchor: it is passed
+back up and returned by the processor the anchor's transition called, never
+saved to the anchor. Writing other entities through the token stays supported,
+except an entity whose cascade is running in the same transaction, at any
+depth: the entity is passing from one state to the next, so such a write moves
+it out from under the running transition, and it starts that entity's workflow
+again inside its own cascade, which can loop without end. The engine does not
+detect a breach and no longer adopts such a write.
 
 ## One version per entity per transaction
 

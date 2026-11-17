@@ -376,19 +376,22 @@ by each model store). It has two failure modes:
 
 At commit, a transaction's claims are computed from its final entities:
 
-1. Read the unique keys of the model of every entity whose final write in
-   the transaction is a save (one read per distinct model), as the model
-   store holds them at commit, never from the transaction's snapshot: a model
-   locked or re-keyed after the transaction began is enforced with its
-   current keys. The model's state is not checked: the API guarantees that
-   an entity is saved only into a `LOCKED` model (§4.5). An entity whose final
-   write is a delete needs no model read.
+1. Read the unique-key definitions (`uniqueKeys`) of the model of every
+   entity whose final write in the transaction is a save (one read per
+   distinct model), from the stored model. A store may read them inside the
+   committing transaction (postgres does, in its snapshot). That is the model
+   as it is at commit under the documented constraint (§4.5): a model's state
+   and its unique-key definitions change only while no transaction that will
+   write entities of that model is open. If the constraint is broken, the
+   commit may check the unique-key definitions as they were when the
+   transaction began. The model's state is not checked: the API
+   guarantees that an entity is saved only into a `LOCKED` model (§4.5). An
+   entity whose final write is a delete needs no model read.
 2. Release the claims of every entity the transaction wrote or deleted.
-   Steps 1 and 2 are independent; postgres runs 2 first, so a transaction
-   already aborted answers its abort before it borrows a model connection.
+   Steps 1 and 2 are independent; postgres runs 2 first.
 3. Compute the claims of every entity whose final write is a save, from the
    bytes that final write was given (never a re-read of stored data), with
-   its model's unique keys as read in step 1. A partial composite
+   its model's unique-key definitions as read in step 1. A partial composite
    key fails the commit with `spi.ErrPartialUniqueKey`.
 4. Insert those claims. A value claimed twice inside the transaction, or held
    by an entity outside the transaction's writes (committed, or claimed by a
@@ -464,27 +467,22 @@ longer passes anything to storage.
   commit, after read-set validation and **before** `stampCommitInstant` (its
   rule: nothing after `cyoda_stamp` waits on a lock,
   `transaction_manager.go` ~:417-420, relied on by `ConsistencyTime`,
-  `consistency_time.go` ~:186-191), run steps 1-4: step 1 as one plain,
-  lock-free read of the `models` rows' unique keys at commit, outside the
-  transaction's snapshot, on the model pool; steps 2-4 as `DELETE` and
-  `INSERT` statements in the transaction, inserting in a deterministic order
-  (by model, key id, signature). Step 1 must not read in the snapshot: the
-  REPEATABLE READ snapshot is older than the commit, so a model created and
-  locked after it has no row there, and a model re-keyed after it (unlocked
-  while empty, given new keys, locked again) has its old keys there. Both are
-  `LOCKED` models the API lets the transaction write into, and memory and
-  sqlite enforce the current keys. It reads on the model pool, not the main
-  pool: the commit already holds a main-pool connection, and a second acquire
-  from that pool could wait forever on a saturated pool. The non-transactional
-  path does the same inside `replaceClaims`, before `stampOwnCommitInstant`.
+  `consistency_time.go` ~:186-191), run steps 1-4 in the transaction: step 1
+  as one plain, lock-free read of the `models` rows' unique-key definitions,
+  in the transaction's REPEATABLE READ snapshot; steps 2-4 as `DELETE` and `INSERT`
+  statements, inserting in a deterministic order (by model, key id,
+  signature). Under the constraint of §4.5 the snapshot holds the model as it
+  is at commit. The commit uses no model-pool connection: a read there would
+  buy nothing under the constraint, and would make every commit with a save
+  wait on a second pool while it holds a main-pool connection. The
+  non-transactional path does the same inside `replaceClaims`, on its own
+  READ COMMITTED transaction, before `stampOwnCommitInstant`.
 
   **Errors.** The step 2-4 statements can now be the first statements
   `Commit` issues in the transaction (when the read set is empty), so their
   errors go through `abortedCommitError` (`transaction_manager.go` ~:283-288)
   and then `classifyTxError`, as read-set validation's do, mapping `40001`,
-  `40P01` and `23505` on `unique_claims_uq`. Step 1 runs on the model pool
-  and gives its connection back before step 2; an acquire that times out
-  there is a retryable storage-unavailable error (`503`).
+  `40P01` and `23505` on `unique_claims_uq`.
 
   *What the record holds.* For each entity the transaction wrote, the bytes
   of its last write (none for a delete); step 3 computes claims from these.
@@ -579,8 +577,15 @@ unique-key change refuse a `LOCKED` model `409 MODEL_ALREADY_LOCKED`
 (`internal/domain/model/service.go`). Storage adds no check of its own and no
 machinery for a model changing while entities of it are being written: that
 does not occur when model administration runs as documented (from one place,
-not while writes to the model are in flight). The rules and that operating
-assumption are documented in `cyoda help models`.
+not while writes to the model are in flight). In particular, a model's state
+and its unique-key definitions (import, lock, unlock, unique-key change)
+change only while no transaction that will write entities of that model is
+open: deploy a model before anything ingests data into it, and change it only
+while nothing writes to it. If that is broken, a transaction's commit may
+check the unique-key definitions as they were when it began (postgres reads
+them in the transaction's snapshot, §4.2).
+The rules and that operating assumption are documented in `cyoda help models`
+and `docs/CONSISTENCY.md`.
 
 Because an `UNLOCKED` model has no entities, delete needs no entity count, and
 the extension log of a model that import or delete acts on is always empty

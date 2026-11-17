@@ -97,15 +97,18 @@ Full transaction-lifecycle implementation
   unique-key work; the transaction records each entity it wrote with the
   bytes of its last write. At commit, after read-set validation and before
   the commit stamp, it first releases the claims of every entity it wrote.
-  It then reads in one statement the unique keys of the stored model of
-  every entity whose final write is a save (no lock, no state check). It
-  reads them on the model pool, outside the transaction's snapshot, so a
-  model locked or re-keyed after the transaction began is enforced with the
-  keys it holds at commit, and gives the model connection back before it
-  goes on. It then inserts the claims of its final entities, computed with
-  those keys, in a fixed order.
-  A duplicate fails on `unique_claims_uq` (`spi.ErrUniqueViolation`). A
-  write outside a transaction runs the same steps in its own statements.
+  It then reads in one statement the unique-key definitions of the stored
+  model of every entity whose final write is a save (no lock, no state
+  check), in the transaction, so it sees the models as they were when the
+  transaction began. That is correct while a model's state and unique-key
+  definitions change only when no transaction that writes entities of that
+  model is open (`docs/CONSISTENCY.md`, model administration); if that is
+  broken, the commit may check the unique-key definitions as they were
+  when the transaction began. The commit borrows no second connection. It
+  then inserts the claims of its final entities, computed with those
+  definitions, in a fixed order. A duplicate fails on `unique_claims_uq`
+  (`spi.ErrUniqueViolation`). A write outside a transaction runs the same
+  steps in its own statements.
 
 The real serialization guarantee is the combination of PostgreSQL's
 `REPEATABLE READ` snapshot + tuple locks + the TM's first-committer
@@ -561,7 +564,7 @@ are rendered in the binary's `--help`.
 | `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` | `5m` | Idle connection reap threshold (Go duration syntax). |
 | `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run embedded SQL migrations on startup. When `false`, the binary refuses to start if the database schema is older than the code. |
 | `CYODA_POSTGRES_SCHEDULER_CONNS` | `10` | Size of the scheduler pool (see "Scheduled tasks and the scheduler pool"). At least `2`; an invalid value fails startup. The scheduler heartbeat has one more connection of its own. |
-| `CYODA_POSTGRES_MODEL_CONNS` | `8` | Size of the model pool (see "Model store and the model pool"): model reads, schema extensions and model administration. Every transactional commit that saves entities also borrows one model connection briefly, to read the unique keys of the entities' models. Extensions hold at most half of it. At least `2`; an invalid value fails startup. |
+| `CYODA_POSTGRES_MODEL_CONNS` | `8` | Size of the model pool (see "Model store and the model pool"): model reads, schema extensions and model administration. Extensions hold at most half of it. At least `2`; an invalid value fails startup. |
 | `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | A model's deltas per savepoint of its extension log; bounds how many deltas a read folds. Minimum `1`; a value below it falls back to the default. Shared with the sqlite plugin — not plugin-namespaced. |
 | `CYODA_POSTGRES_STATEMENT_TIMEOUT` | `5m` | Maximum run time for a single SQL statement. Server-side, carried in the connection startup packet. |
 | `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` | `5m` | Maximum time a connection may sit idle inside an open transaction. Server-side, carried in the connection startup packet. Must clear the longest legitimate idle gap — a compute-node callout bounded by `responseTimeoutMs` (default `30s`). |

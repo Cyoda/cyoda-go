@@ -155,24 +155,29 @@ None of them writes or deletes that entity through the API, with or without
 the transaction token. The same holds at every depth: while an entity's
 cascade is running, no callback writes or deletes that entity, including
 callbacks of the processors of other entities that callbacks create or
-update in the same transaction. A processor runs while its entity passes
-from one state to the next: the engine moves the entity to the
-transition's target state only after the processor returns, and the
-processor's result is for the entity in the state and version the
-transition started from. A write to the entity during the callout starts
-another state change from a state the entity is only passing through, so
-when the processor returns, the entity is no longer in that state or
-version, and the transition's result no longer applies to it. Every entity
-write also runs the entity's workflow, so the write starts a second cascade
-of the same entity inside the first one. That cascade can reach the same
-callout, which makes the same write again: the cascade re-enters itself and
-can loop without end. The per-state visit and depth limits count within one
-cascade, so they do not stop it. Whatever the inner cascade stores, the
-outer one then overwrites with its next save. The engine does not detect or
-refuse such a write. A
-workflow that seems to need one is designed wrong: return the data from the
-processor; put a change that must follow the cascade in a later transition
-(manual or scheduled); or keep the changing part in an entity of its own.
+update in the same transaction. Any change to the entity goes back through
+the data returned by the processor its transition called. That includes a
+change worked out by a nested processor (a processor of another entity that
+a callback creates or updates): the nested processor does not save the
+change to the entity, which would launch the entity's workflow from inside
+its own cascade; the change is passed back up and returned by the processor
+the entity's transition called. A processor runs while its entity passes
+from one state to the next: the engine moves the entity to the transition's
+target state only after the processor returns, and the processor's result is
+for the entity in the state and version the transition started from. A write
+to the entity during the callout starts another state change from a state
+the entity is only passing through, so when the processor returns, the
+entity is no longer in that state or version, and the transition's result no
+longer applies to it. Every entity write also runs the entity's workflow, so
+the write starts a second cascade of the same entity inside the first one.
+That cascade can reach the same callout, which makes the same write again:
+the cascade re-enters itself and can loop without end. The per-state visit
+and depth limits count within one cascade, so they do not stop it. Whatever
+the inner cascade stores, the outer one then overwrites with its next save.
+The engine does not detect or refuse such a write. A workflow that seems to
+need one is designed wrong: return the data from the processor; put a change
+that must follow the cascade in a later transition (manual or scheduled); or
+keep the changing part in an entity of its own.
 
 A processor must not change a model or a workflow through the API while it
 runs; that is not supported. An EdgeMessage a processor saves is outside the
