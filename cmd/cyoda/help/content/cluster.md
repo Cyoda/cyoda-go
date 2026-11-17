@@ -188,7 +188,7 @@ So a schema extension is in use on the node that served the write when the write
 
 ## COMPOSITE UNIQUE KEYS
 
-Composite unique keys are part of the model descriptor, but they are not enforced from a node's model cache. When a transaction commits, the store reads from storage the unique-key definitions of the model of each entity whose last write in the transaction is not a delete, as the committing transaction sees them, and checks the entities against them (`cyoda help models`, LIFECYCLE). A node whose cached model is out of date after an unlock, key change and relock therefore still enforces the stored definitions. The early check of a request body for a partly filled key (`422 INVALID_UNIQUE_KEY`) uses the node's cached model.
+Composite unique keys are part of the model descriptor, but they are not enforced from a node's model cache. When a transaction commits, its entities are checked against the unique-key definitions of the stored model (`cyoda help models`, LIFECYCLE). A node whose cached model is out of date after an unlock, key change and relock therefore still enforces the stored definitions. The early check of a request body for a partly filled key (`422 INVALID_UNIQUE_KEY`) uses the node's cached model.
 
 Changing a key needs the model unlocked, which needs zero live entities: delete the model's entities, unlock, change the key definitions, then relock. Stop writes to the model while you do (`cyoda help models`, LIFECYCLE).
 

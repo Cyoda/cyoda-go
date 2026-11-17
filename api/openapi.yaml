@@ -5766,7 +5766,7 @@ paths:
 
         - A duplicate value-set is rejected with 409 UNIQUE_VIOLATION (non-retryable).
 
-        - Keys are checked when a transaction commits, on the entities as the transaction leaves them, with the unique-key definitions the stored model holds. A value freed in the same transaction (its holder deleted or re-keyed) is free for another entity of it, in either order: swaps and chains of moves commit when the final entities are unique.
+        - Keys are checked when a transaction commits, on the entities as the transaction leaves them, with the unique-key definitions the stored model holds. A COMMIT_BEFORE_DISPATCH processor commits the transaction it runs in before its callout, and that commit is checked too. A value freed in the same transaction (its holder deleted or re-keyed) is free for another entity of it, in either order: swaps and chains of moves commit when the final entities are unique.
 
         \        "
       operationId: setEntityModelUniqueKeys
