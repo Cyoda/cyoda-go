@@ -902,9 +902,11 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 			toRelease[id] = true
 		}
 
-		// Computed once here and inserted by the apply step below.
+		// Computed once here and inserted by the apply step below. Every
+		// entity's claims are computed before any is checked, so a partly
+		// filled key fails the commit whatever the ids' order, as on postgres
+		// and sqlite.
 		computedClaims := make(map[string][]spi.UniqueClaim, len(ids))
-		pending := make(map[claimKey]string) // claimKey → entityID within this batch
 		for _, entityID := range ids {
 			entity := tx.Buffer[entityID]
 			claims, err := spi.ComputeClaims(modelKeys[entity.Meta.ModelRef], entity.Data)
@@ -912,8 +914,11 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				return abort(err)
 			}
 			computedClaims[entityID] = claims
-
-			for _, c := range claims {
+		}
+		pending := make(map[claimKey]string) // claimKey → entityID within this batch
+		for _, entityID := range ids {
+			entity := tx.Buffer[entityID]
+			for _, c := range computedClaims[entityID] {
 				k := claimKey{
 					tenant:    string(tid),
 					model:     entity.Meta.ModelRef.EntityName,

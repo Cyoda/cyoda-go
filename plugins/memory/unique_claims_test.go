@@ -479,3 +479,47 @@ func TestUniqueClaims_ModelMismatchAnswersBeforeKeyClash(t *testing.T) {
 		t.Fatalf("Save of an entity under another model, clashing on a key: got %v, want ErrEntityModelMismatch", err)
 	}
 }
+
+// TestUniqueClaims_PartialKeyAnswersBeforeDuplicate — a commit whose final
+// entities include both a duplicate key value and a partly filled composite
+// key answers ErrPartialUniqueKey, whatever the entity ids' order, as on
+// postgres and sqlite, which compute every entity's claims before they check
+// any of them. The duplicate's id sorts first here.
+func TestUniqueClaims_PartialKeyAnswersBeforeDuplicate(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { _ = factory.Close() })
+	baseCtx := ctxWithTenant("uc-tenant")
+	pair := spi.ModelRef{EntityName: "UCPair", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, baseCtx, pair,
+		spi.UniqueKey{ID: "ab", Fields: []string{"$.a", "$.b"}})
+	store, err := factory.EntityStore(baseCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	entity := func(id, data string) *spi.Entity {
+		return &spi.Entity{Meta: spi.EntityMeta{ID: id, ModelRef: pair}, Data: []byte(data)}
+	}
+	if _, err := store.Save(baseCtx, entity("holder", `{"a":1,"b":1}`)); err != nil {
+		t.Fatalf("Save holder: %v", err)
+	}
+
+	tm, err := factory.TransactionManager(baseCtx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := tm.Begin(baseCtx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := store.Save(txCtx, entity("a-duplicate", `{"a":1,"b":1}`)); err != nil {
+		t.Fatalf("Save a-duplicate: %v", err)
+	}
+	if _, err := store.Save(txCtx, entity("b-partial", `{"a":2}`)); err != nil {
+		t.Fatalf("Save b-partial: %v", err)
+	}
+
+	err = tm.Commit(txCtx, txID)
+	if !errors.Is(err, spi.ErrPartialUniqueKey) {
+		t.Fatalf("commit: expected ErrPartialUniqueKey, got %v", err)
+	}
+}
