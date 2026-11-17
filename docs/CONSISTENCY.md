@@ -293,28 +293,14 @@ state.
 
 Model administration — import, lock, unlock, delete, change level,
 unique keys — runs from one place, not concurrently on one model, and
-not while writes to the model are in flight. Two administration calls
-that overlap on one model have no defined order: an import or
-unique-key change reads the model and then saves it whole, so a lock or
-a change-level change landing between the read and the save is
-overwritten.
+not while writes to the model are in flight; writes to a model stop
+before it is unlocked.
 
 Change a model's state or its unique-key definitions (`uniqueKeys`) —
 import, lock, unlock, unique-key change — only while no transaction that
 will write entities of that model is open: deploy a model before
 anything ingests data into it, and change it only while nothing writes
-to it. A commit may read the unique-key definitions of its entities'
-models inside its own transaction (postgres reads them in the
-transaction's snapshot), so if this is broken, the commit of a
-transaction that was open during the change may check the unique-key
-definitions as they were when the transaction began.
-
-Unlock is not atomic with its entity check either: it counts the
-model's committed entities, then unlocks. An entity write still in
-progress — its transaction not yet committed, or a create that read the
-model as LOCKED just before — is not counted and can commit after the
-unlock, leaving an UNLOCKED model with entities. Writes to a model stop
-before it is unlocked.
+to it.
 
 ## 3c. In-transaction `Search` is a predicate read
 
@@ -705,20 +691,20 @@ A short checklist:
    running in the same transaction, at any depth: the entity is passing
    from one state to the next, so the write moves it out from under the
    running transition, and it would start that entity's workflow again
-   inside its own cascade, which can loop without end; the engine does not
-   refuse it. A callback read under the token returns the entity as the
-   workflow has it when the callout is made: before each callout that
-   carries the token, the engine reads the entity in the transaction and
-   writes it into the transaction (not committed) when the transaction
-   does not hold it yet or the stored data bytes or state differ from the
-   engine's copy. On postgres the transaction holds the entity's row lock
-   from its first write of the entity until the transaction ends (at the
-   end of the operation, or of a `COMMIT_BEFORE_DISPATCH` segment) or
-   until a rollback to a savepoint undoes that write, so
-   another writer of the entity, and another transaction that read it,
-   wait at their write or commit until then. A write to the entity by another
-   transaction makes one of the two fail with a conflict. Cross-link:
-   `cmd/cyoda/help/content/workflows.md` carries this rule.
+   inside its own cascade, which can loop without end. A callback read
+   under the token returns the entity as the workflow has it when the
+   callout is made: before each callout that carries the token, the engine
+   reads the entity in the transaction and writes it into the transaction
+   (not committed) when the transaction does not hold it yet or the stored
+   data bytes or state differ from the engine's copy. On postgres the
+   transaction holds the entity's row lock from its first write of the
+   entity until the transaction ends (at the end of the operation, or of a
+   `COMMIT_BEFORE_DISPATCH` segment) or until a rollback to a savepoint
+   undoes that write, so another writer of the entity, and another
+   transaction that read it, wait at their write or commit until then. A
+   write to the entity by another transaction makes one of the two fail
+   with a conflict. Cross-link: `cmd/cyoda/help/content/workflows.md`
+   carries this rule.
 10. **Batch operations degrade under `COMMIT_BEFORE_DISPATCH`.** Under
     `UpdateEntityCollection` (or any all-or-nothing batch) where at
     least one item triggers a cascade segmented by

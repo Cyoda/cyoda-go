@@ -27,7 +27,7 @@ The `entityCount` property in the problem-detail body reports how many entities 
 
 Not retryable in the protocol sense. The caller must remove the offending entities (e.g. via condition-delete on the entity surface) and re-issue the lifecycle request.
 
-The check counts committed entities, and it is not one step with the unlock: a write still in progress when the unlock runs is not seen, and nothing refuses it later. Stop writes to a model before you unlock it (see `cyoda help models`, LIFECYCLE).
+Stop writes to a model before you unlock it (see `cyoda help models`, LIFECYCLE).
 
 ## SEE ALSO
 

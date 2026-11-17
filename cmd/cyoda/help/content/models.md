@@ -154,7 +154,7 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 Unlock a model. The model must be `LOCKED` and have zero associated entities. Returns `409 MODEL_HAS_ENTITIES` if entities exist, and `409 MODEL_ALREADY_UNLOCKED` if the model is not locked. The unlocked model keeps every field that entity writes added while it was locked.
 
-Unlock counts the model's committed entities and then unlocks it; the two are not one step, and no later check stops a write the unlock did not see. Stop writes to the model before you unlock it: a write still in progress when the unlock runs — an entity in a transaction that has not committed, or a create that found the model `LOCKED` just before — would otherwise commit after the unlock and leave the model `UNLOCKED` with entities. See LIFECYCLE.
+Unlock requires that the model has no entities. Stop writes to the model before you unlock it. See LIFECYCLE.
 
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
@@ -351,9 +351,9 @@ The API keeps these rules:
 
 A model's state reaches the other nodes eventually. Each node keeps only `LOCKED` models in its model cache, which an invalidation broadcast updates (normally within milliseconds) or, if the broadcast is lost, `CYODA_MODEL_CACHE_LEASE` expires. A model a node reads as not `LOCKED` therefore comes from storage, and a create that reads it so reads it once more before it refuses with `409 MODEL_NOT_LOCKED`, so a read that raced the lock does not refuse it. After an unlock, a node that still holds the model as `LOCKED` accepts creates into it until it learns of the unlock.
 
-The rules hold when model administration — import, lock, unlock, delete, change level, unique keys — runs from one place, such as a deploy step, not concurrently on the same model, and not while writes to the model are in flight. Two such calls that overlap on one model have no defined order: an import that overlaps a lock can save the model back as `UNLOCKED`. Register and lock a model once, from one caller, rather than from every replica of an application at start-up, and stop writes to a model before you unlock it.
+The rules hold when model administration — import, lock, unlock, delete, change level, unique keys — runs from one place, such as a deploy step, not concurrently on the same model, and not while writes to the model are in flight. Register and lock a model once, from one caller, rather than from every replica of an application at start-up, and stop writes to a model before you unlock it.
 
-Change a model's state or its unique-key definitions (`uniqueKeys`) — import, lock, unlock, unique-key change — only while no transaction that will write entities of that model is open. In practice, deploy a model before anything ingests data into it, and change it only while nothing writes to it. If this is broken, the commit of a transaction that was open during the change may check the unique-key definitions as they were when the transaction began: it can commit a value the current definitions refuse, or refuse one only the earlier definitions forbid.
+Change a model's state or its unique-key definitions (`uniqueKeys`) — import, lock, unlock, unique-key change — only while no transaction that will write entities of that model is open. In practice, deploy a model before anything ingests data into it, and change it only while nothing writes to it.
 
 ## SCHEMA EXTENSION
 

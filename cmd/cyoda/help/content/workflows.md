@@ -172,9 +172,7 @@ longer applies to it. Every entity write also runs the entity's workflow, so
 the write starts a second cascade of the same entity inside the first one.
 That cascade can reach the same callout, which makes the same write again:
 the cascade re-enters itself and can loop without end. The per-state visit
-and depth limits count within one cascade, so they do not stop it. Whatever
-the inner cascade writes, the outer one then overwrites with its next write.
-The engine does not detect or refuse such a write. A workflow that seems to
+and depth limits count within one cascade, so they do not stop it. A workflow that seems to
 need one is designed wrong: return the data from the processor; put a change
 that must follow the cascade in a later transition (manual or scheduled); or
 keep the changing part in an entity of its own.

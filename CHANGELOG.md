@@ -50,8 +50,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   with entities is `LOCKED`, and delete answers `MODEL_ALREADY_LOCKED`. The
   model rules are the API's checks. Change a model's state
   or its unique-key definitions only while no transaction that will write
-  entities of that model is open; such a transaction's commit may check the
-  unique-key definitions as they were when it began.
+  entities of that model is open.
 - **A scheduled fire seals after its schedule functions.** Their callbacks are
   admitted; before, every one was refused `410`. A fire refused at commit on
   a unique key records the doors' text (for example `UNIQUE_VIOLATION:

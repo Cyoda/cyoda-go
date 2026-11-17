@@ -100,12 +100,7 @@ Full transaction-lifecycle implementation
   the commit stamp, it first releases the claims of every entity it wrote.
   It then reads in one statement the unique-key definitions of the stored
   model of every entity whose final write is a save (no lock, no state
-  check), in the transaction, so it sees the models as they were when the
-  transaction began. That is correct while a model's state and unique-key
-  definitions change only when no transaction that writes entities of that
-  model is open (`docs/CONSISTENCY.md`, model administration); if that is
-  broken, the commit may check the unique-key definitions as they were
-  when the transaction began. The commit borrows no second connection. It
+  check), in the transaction. The commit borrows no second connection. It
   then inserts the claims of its final entities, computed with those
   definitions, in a fixed order. A duplicate fails on `unique_claims_uq`
   (`spi.ErrUniqueViolation`). A write outside a transaction runs the same
