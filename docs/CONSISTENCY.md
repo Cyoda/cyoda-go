@@ -690,17 +690,18 @@ A short checklist:
    entity the workflow runs for, with or without the transaction token; a
    processor changes it only through the data it returns. Callbacks under
    the token may write other entities, but never an entity whose cascade is
-   running in the same transaction, at any depth: the write would start
-   that entity's workflow again inside its own cascade, which can loop
-   without end; the engine does not refuse it. A callback read under the
-   token returns the entity as the workflow has it when the callout is
-   made: the engine saves it to the transaction before each callout that
-   carries the token. On postgres that save takes the entity's row lock, so
-   another writer of the entity, and another transaction that read it, wait
-   at their write or commit until the workflow's transaction ends. A write
-   to the entity by another transaction makes one of the two fail with a
-   conflict. Cross-link: `cmd/cyoda/help/content/workflows.md` carries this
-   rule.
+   running in the same transaction, at any depth: the entity is passing
+   from one state to the next, so the write moves it out from under the
+   running transition, and it would start that entity's workflow again
+   inside its own cascade, which can loop without end; the engine does not
+   refuse it. A callback read under the token returns the entity as the
+   workflow has it when the callout is made: the engine saves it to the
+   transaction before each callout that carries the token. On postgres that
+   save takes the entity's row lock, so another writer of the entity, and
+   another transaction that read it, wait at their write or commit until
+   the workflow's transaction ends. A write to the entity by another
+   transaction makes one of the two fail with a conflict. Cross-link:
+   `cmd/cyoda/help/content/workflows.md` carries this rule.
 10. **Batch operations degrade under `COMMIT_BEFORE_DISPATCH`.** Under
     `UpdateEntityCollection` (or any all-or-nothing batch) where at
     least one item triggers a cascade segmented by
