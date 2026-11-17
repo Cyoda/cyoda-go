@@ -46,7 +46,7 @@ helm search repo cyoda/cyoda --versions
 helm install cyoda cyoda/cyoda --version <chart version> [--set ...]
 ```
 
-The chart version and the cyoda version are separate numbers. `helm search repo cyoda/cyoda --versions` lists each chart version with its app version, the cyoda image the chart runs unless `image.tag` is set. Without `--version`, Helm installs the newest chart.
+A chart release normally carries the version of the cyoda release it runs. `helm search repo cyoda/cyoda --versions` lists each chart version with its app version, the cyoda image the chart runs unless `image.tag` is set. Without `--version`, Helm installs the newest chart.
 
 To install from a checkout of the source tree, name the chart directory instead: `helm install cyoda ./deploy/helm/cyoda [--set ...]`. The examples below use the published chart, `cyoda/cyoda`.
 
@@ -367,9 +367,9 @@ Without `--version`, Helm upgrades to the newest chart; add `--version <chart ve
 helm uninstall cyoda --namespace cyoda
 ```
 
-Uninstall deletes the release's objects, including the HMAC and metrics bearer Secrets the chart generated. It does not delete the Secrets you created (`cyoda-pg`, `cyoda-jwt`, and any you named in an `existingSecret`), the namespace, or the database.
+Uninstall deletes the release's objects, including the HMAC and metrics bearer Secrets the chart generated. It does not delete the ConfigMap `cyoda-env` and the ServiceAccount, which the chart creates as install hooks (delete them with `kubectl delete configmap,serviceaccount -n cyoda -l app.kubernetes.io/instance=cyoda`), the Secrets you created (`cyoda-pg`, `cyoda-jwt`, and any you named in an `existingSecret`), the namespace, or the database.
 
-**Dry-run (template rendering without cluster access):** the chart cannot generate the HMAC and metrics bearer Secrets without cluster access, so create them first and name them. The HMAC secret is 32 random bytes written as 64 hex characters (see GENERATING SECRETS); the pods do not start with a shorter one.
+**Dry-run (template rendering without cluster access):** without cluster access the chart cannot generate the HMAC and metrics bearer Secrets, so it needs their names. `helm template` reads no Secret; create them before you apply the rendered manifests. The HMAC secret is 32 random bytes written as 64 hex characters (see GENERATING SECRETS); the pods do not start with a shorter one.
 
 ```
 (umask 077; openssl rand -hex 32 | tr -d '\n' > hmac-secret; openssl rand -hex 32 | tr -d '\n' > metrics-bearer)
@@ -450,7 +450,7 @@ helm upgrade cyoda cyoda/cyoda \
   --set-string "extraEnv[1].value=true"
 ```
 
-With `--reset-then-reuse-values`, `extraEnv[0]` and `extraEnv[1]` replace whatever entries already sit at those positions; list every `extraEnv` entry you keep.
+Helm does not merge lists: the `extraEnv` list given with `--set` replaces the release's whole `extraEnv` list. List every entry you keep.
 
 **With ServiceMonitor for Prometheus Operator:**
 

@@ -95,6 +95,10 @@ jobs:
         with:
           charts_dir: deploy/helm
           skip_existing: false
-          mark_as_latest: true
+          # The chart's GitHub release must never be "Latest": install.sh and
+          # every /releases/latest/download/ URL (install.sh, .deb, .rpm,
+          # SHA256SUMS) resolve through that mark, and the chart release
+          # holds only the chart archive.
+          mark_as_latest: false
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"

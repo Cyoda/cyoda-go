@@ -17,7 +17,9 @@ services:
       # For production (jwt auth): uncomment the three lines below and the
       # signing-key mount under volumes. The key stays in a file; a key set
       # inline in the environment would show in `docker inspect`. The file must
-      # be readable by the container's user, UID 65532. First admin
+      # be readable by the container's user, UID 65532, and no one else:
+      # `sudo chown 65532:65532 secrets/signing.pem && sudo chmod 0400 secrets/signing.pem`.
+      # First admin
       # token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`.
       # See `cyoda help run` (Docker Compose) and `cyoda help config auth`.
       # CYODA_IAM_MODE: jwt

@@ -63,13 +63,17 @@ Without `CYODA_COSIGN_VERIFY=required`, a release that has no signature file is 
 
 ```
 curl -fsSLO https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
+curl -fsSLO https://github.com/cyoda/cyoda-go/releases/latest/download/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
 sudo dpkg -i cyoda_linux_amd64.deb
 
 curl -fsSLO https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.rpm
+curl -fsSLO https://github.com/cyoda/cyoda-go/releases/latest/download/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
 sudo rpm -i cyoda_linux_amd64.rpm
 ```
 
-Use `arm64` in place of `amd64` on ARM hosts. The package installs `/usr/bin/cyoda` and the system config `/etc/cyoda/cyoda.env`, which selects sqlite. An upgrade keeps a changed `/etc/cyoda/cyoda.env`.
+Install the package only when `sha256sum` reports it `OK`. Use `arm64` in place of `amd64` on ARM hosts. The package installs `/usr/bin/cyoda` and the system config `/etc/cyoda/cyoda.env`, which selects sqlite. An upgrade keeps a changed `/etc/cyoda/cyoda.env`.
 
 **Container image:**
 

@@ -532,6 +532,16 @@ Per-release procedure:
      helm repo update
      helm search repo cyoda --versions | head
      ```
+   - The binary release is still GitHub's "Latest" release, not the chart
+     release (`release-chart.yml` sets `mark_as_latest: false`):
+     ```bash
+     gh release list --limit 3        # vX.Y.Z must carry "Latest"
+     curl -sIL -o /dev/null -w '%{http_code}\n' \
+       https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh   # 200
+     ```
+     If the chart release took the mark, `install.sh` and every
+     `/releases/latest/download/` URL answer 404; restore it with
+     `gh release edit vX.Y.Z --latest`.
 
 #### When NOT to bump chart `version:`
 

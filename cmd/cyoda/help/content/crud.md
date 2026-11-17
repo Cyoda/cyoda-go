@@ -411,7 +411,7 @@ The names come from the workflow the entity's criterion selects — the same def
 - `entityClass` (query, required): string in `Name.Version` format, e.g., `Offer.1`
 - `entityId` (query, required): UUID string
 
-Response: `200 OK`, `application/json`, array of available transition names.
+Response: `200 OK`, `application/json`, the same list as `GET /api/entity/{entityId}/transitions`: the names of the transitions a client can name on a save from the entity's current state.
 
 **GET /api/entity/consistency-time** — The current consistency time
 

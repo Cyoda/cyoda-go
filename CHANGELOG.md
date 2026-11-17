@@ -2064,6 +2064,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A chart release no longer becomes GitHub's "Latest" release.** The
+  chart workflow marked its release (`cyoda-X.Y.Z`, which holds only the
+  chart archive) as latest, so after a chart release `install.sh` resolved
+  the chart's tag and every `/releases/latest/download/` URL — `install.sh`,
+  the `.deb` and `.rpm` packages, `SHA256SUMS` — answered 404. The binary
+  release keeps the mark.
 - **The available-transitions list holds only transitions a client can
   name.** `GET /entity/{entityId}/transitions` and
   `GET /platform-api/entity/fetch/transitions` listed every transition of the

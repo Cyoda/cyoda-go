@@ -23,7 +23,7 @@ Before starting, you need:
   go install sigs.k8s.io/ingress2gateway/cmd/ingress2gateway@latest
   ```
 
-## Step 1 — Render the existing Ingress objects
+## Step 1 — Export the existing Ingress objects
 
 If you're already running cyoda with `ingress.enabled=true`, dump the
 release's `Ingress` objects so Ingress2Gateway can convert them:
@@ -102,8 +102,8 @@ Inspect `/tmp/cyoda-routes.yaml`. You'll see two route resources:
   annotation) for the gRPC service.
 
 Compare against the routes the chart renders, to see its canonical shape.
-`helm template` reads no Secret, but the chart's schema needs the Secret
-names set, so any name will do here; use your own Gateway and hostnames:
+`helm template` reads no Secret, but the chart needs the Secret names set,
+so any name will do here; use your own Gateway and hostnames:
 
 ```bash
 helm template cyoda cyoda/cyoda -n cyoda \
