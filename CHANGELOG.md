@@ -17,9 +17,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `require` lines and its versions in one change; `go install
   github.com/cyoda/cyoda-go/cmd/cyoda@latest` installs the binary. Versions
   published under the old paths are unchanged. `GOPRIVATE` needs only
-  `github.com/cyoda/cyoda-go-cassandra`, the one private module. Remove
-  `github.com/Cyoda-platform/*`, which earlier versions of `CONTRIBUTING.md`
-  told you to set: it turns off the checksum check for the old paths. The
+  `github.com/cyoda/cyoda-go-cassandra`, the one private module. Remove a
+  lower-case `github.com/cyoda-platform/*` entry if you have one: it fetches
+  the old paths directly, without the proxy and the checksum check. The
+  capitalised `github.com/Cyoda-platform/*` that earlier versions of
+  `CONTRIBUTING.md` gave matches no module path (Go compares module paths
+  case-sensitively) and can be removed too. The
   OpenTelemetry instrumentation scope names change with the paths
   (`github.com/cyoda/cyoda-go`, `github.com/cyoda/cyoda-go/workflow`,
   `github.com/cyoda/cyoda-go/plugins/postgres`): a dashboard or alert that

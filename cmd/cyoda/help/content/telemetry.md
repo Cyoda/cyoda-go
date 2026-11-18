@@ -45,7 +45,10 @@ Which application metrics appear:
   enabled with full observability).
 - Go runtime and process metrics are always present.
 
-The instrumentation name is `github.com/cyoda/cyoda-go`.
+The instrumentation scope names are `github.com/cyoda/cyoda-go` (the
+server's spans and metrics), `github.com/cyoda/cyoda-go/workflow` (the
+workflow engine's spans) and `github.com/cyoda/cyoda-go/plugins/postgres`
+(the postgres storage plugin's pool metrics).
 
 ## ENV VARS
 
