@@ -49,21 +49,43 @@ brew install cyoda/cyoda-go/cyoda
 curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
 ```
 
-Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Pin a version with `CYODA_VERSION=v0.7.1 curl ... | sh`. The installer SHA256-verifies the archive and, if [`cosign`](https://docs.sigstore.dev/cosign/installation/) is on `PATH`, also verifies a Sigstore keyless signature from the cyoda-go release workflow.
+Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Pin a version with `curl ... | CYODA_VERSION=v0.8.4 sh` (the variable goes on `sh`, after the pipe); add `CYODA_COSIGN_VERIFY=required` to refuse an install that cosign cannot verify. The installer SHA256-verifies the archive and, if [`cosign`](https://docs.sigstore.dev/cosign/installation/) is on `PATH`, also verifies a Sigstore keyless signature from the cyoda-go release workflow.
 
 ### Debian / Ubuntu / Fedora / RHEL
 
-```bash
-# Debian / Ubuntu
-wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
-sudo dpkg -i cyoda_linux_amd64.deb
+Set `V` to the release you install. The commands check with `cosign` that the release workflow signed `SHA256SUMS` from that tag, then check the package against it, and install it only if both checks pass:
 
-# Fedora / RHEL
-wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.rpm
-sudo rpm -i cyoda_linux_amd64.rpm
+```bash
+V=v0.8.4
+R=https://github.com/cyoda/cyoda-go/releases/download/$V
+curl -fsSLO "$R/cyoda_linux_amd64.deb"
+curl -fsSLO "$R/SHA256SUMS" -O "$R/SHA256SUMS.sig" -O "$R/SHA256SUMS.pem"
+cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
+  --certificate-identity "https://github.com/Cyoda/cyoda-go/.github/workflows/release.yml@refs/tags/$V" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-trigger push \
+  --certificate-github-workflow-ref "refs/tags/$V" \
+  SHA256SUMS \
+  && sha256sum --ignore-missing -c SHA256SUMS \
+  && sudo dpkg -i cyoda_linux_amd64.deb
 ```
 
-Replace `amd64` with `arm64` for ARM hosts. Both packages drop `/usr/bin/cyoda` and `/etc/cyoda/cyoda.env` (sqlite as the system-wide default, preserved across upgrades).
+For Fedora or RHEL, download `cyoda_linux_amd64.rpm` instead and end with `sudo rpm -i cyoda_linux_amd64.rpm`. Replace `amd64` with `arm64` for ARM hosts. Both packages drop `/usr/bin/cyoda` and `/etc/cyoda/cyoda.env` (sqlite as the system-wide default, preserved across upgrades).
+
+### Container image
+
+`ghcr.io/cyoda/cyoda`, tagged with the version without the `v`. The release workflow signs it; a tag can be moved, so check the signature for the release you want and pull by the digest the check printed (needs `cosign` and `jq`):
+
+```bash
+V=0.8.4
+OUT=$(cosign verify "ghcr.io/cyoda/cyoda:$V" \
+  --certificate-identity "https://github.com/Cyoda/cyoda-go/.github/workflows/release.yml@refs/tags/v$V" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-trigger push \
+  --certificate-github-workflow-ref "refs/tags/v$V") \
+  && D=$(printf '%s' "$OUT" | jq -r '.[0].critical.image."docker-manifest-digest"') \
+  && docker pull "ghcr.io/cyoda/cyoda@$D"
+```
 
 ### From source
 
@@ -80,7 +102,7 @@ This binary uses the in-memory backend by default. Run `cyoda init` for sqlite p
 The 30-second example uses mock auth. To exercise the real auth chain end-to-end with sqlite + jwt, use the project's profile pattern. The only credential is the JWT signing key; `cyoda token` signs the first admin token with it, offline:
 
 ```bash
-# Generate a JWT signing key (openssl writes it 0600 by default; make it explicit)
+# Generate a JWT signing key. openssl writes it 0600 by default, and chmod makes it explicit.
 openssl genrsa -out /tmp/jwt.key 2048
 chmod 600 /tmp/jwt.key
 

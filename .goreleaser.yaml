@@ -13,7 +13,7 @@ before:
     - bash -c 'mkdir -p .release-extras && tar -czf ".release-extras/cyoda_help_{{ .Version }}.tar.gz" -C cmd/cyoda/help content'
     # `go run` does not apply the `builds:` ldflags, so stamp main.version
     # explicitly — otherwise the emitted JSON ships with main.version="dev"
-    # instead of the tagged version (issue #101).
+    # instead of the tagged version.
     - bash -c 'go run -ldflags="-X main.version={{ .Version }}" ./cmd/cyoda help --format=json > ".release-extras/cyoda_help_{{ .Version }}.json"'
 
 builds:
@@ -88,7 +88,7 @@ brews:
     # No post_install: Homebrew sandboxes post_install and denies writes to
     # $HOME, so `cyoda init` always failed on macOS and emitted a warning on
     # every install. The caveats block below already tells users how to run
-    # init when they want to (issue #96).
+    # init when they want to.
     caveats: |
       ==============================================================
       cyoda is installed but not yet initialised. Run:
@@ -109,6 +109,10 @@ checksum:
   extra_files:
     - glob: ./.release-extras/cyoda_help_*.tar.gz
     - glob: ./.release-extras/cyoda_help_*.json
+    # install.sh is a release asset too (release.extra_files below): listing
+    # it here puts it under the signed SHA256SUMS, so a user can check the
+    # script before running it.
+    - glob: ./scripts/install.sh
 
 dockers_v2:
   - id: cyoda
@@ -152,9 +156,10 @@ docker_signs:
   # platform — linux/amd64, linux/arm64, ...). There is no separate
   # `docker_manifests:` block and the v2 publish path assembles the
   # multi-arch manifest list transparently from those per-arch images.
-  # Sign the images themselves: cosign signs each per-arch digest,
-  # multi-arch pulls resolve to a signed image, and the snapshot smoke
-  # can verify the signer's selector resolves non-empty.
+  # Selecting the images signs each published tag: the signature lands on
+  # the tag's multi-platform index digest (v0.8.4: index signed, per-arch
+  # manifests not), which is what a pull by tag or by that digest
+  # resolves. The snapshot smoke verifies the selector resolves non-empty.
   - artifacts: images
     cmd: cosign
     args:
@@ -163,7 +168,7 @@ docker_signs:
       - "${artifact}"
 
 signs:
-  # Issue #47 — keyless cosign signatures on archive and checksum
+  # Keyless cosign signatures on archive and checksum
   # artifacts. Uses Sigstore + GitHub Actions OIDC; release.yml already
   # sets `id-token: write` and installs cosign. Produces sibling .sig
   # and .pem files alongside each archive and SHA256SUMS so consumers
@@ -204,5 +209,5 @@ release:
     - glob: ./.release-extras/cyoda_help_*.json
     # Publish install.sh as a release asset so the canonical install URL
     # is `/releases/latest/download/install.sh` — pinned per-release rather
-    # than tracking `main` (issue #49).
+    # than tracking `main`.
     - glob: ./scripts/install.sh

@@ -6,6 +6,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Helm chart: Gateway API routing needs a Gateway.** With
+  `gateway.enabled=true`, the default, the chart's schema refuses an empty,
+  null or missing `gateway.parentRefs`, and an entry with no `name` or an
+  empty one, so the install fails. Before, it rendered an
+  `HTTPRoute` and a `GRPCRoute` attached to no Gateway and the install
+  succeeded unrouted. Set `gateway.parentRefs`, or `gateway.enabled=false`.
+
 - **A callback read returns the entity as the workflow has it, and a callout
   never writes the entity it runs for.** Before every callout that carries
   the transaction token, other than a `COMMIT_BEFORE_DISPATCH` processor's, the engine reads the entity in the
@@ -1506,6 +1513,26 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **Every release is installed the way users install it, after it is
+  published.** The `Verify release` workflow runs after the release and the
+  chart release, and weekly. For every release: `install.sh` with
+  signatures required, the `.deb` and `.rpm` in clean containers, the signed
+  image by digest, the help asset's version. For the newest stable release
+  also: GitHub's Latest mark, `/releases/latest/download/` `SHA256SUMS` and
+  `install.sh`, the unpinned `install.sh`, the image tag `latest` and
+  Homebrew. For a chart release: the Helm repository serves the chart with
+  its appVersion, and the chart downloads and renders. Every run also checks
+  that GitHub's Latest mark is on the newest stable release.
+  `scripts/verify-release.sh` runs the same checks by hand, except Homebrew
+  and the Latest-mark check for a tag other than the newest.
+  `SHA256SUMS` now lists `install.sh`, so the signature covers the
+  installer too.
+- **`cyoda help install` and `cyoda help design`.** `install` gives every
+  way to install and upgrade the binary (Homebrew, the install script and its
+  settings, `.deb`/`.rpm`, the container image, `go install`). `design` gives
+  practices for entity models and workflows, each pointing to the reference
+  topic that states the rule.
+
 - **`CYODA_POSTGRES_MODEL_CONNS` (default `8`, at least `2`).** The
   PostgreSQL model store — model reads, schema extensions and model
   administration — runs on a pool of its own, apart from the main pool, so
@@ -2051,6 +2078,55 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **`install.sh` verifies signatures again.** With `cosign` on `PATH` the
+  script refused every install, and with `CYODA_COSIGN_VERIFY=required` no
+  install could succeed: it treated GitHub's redirect for the `.sig` file as
+  an error, passed `cosign` a flag it does not have, and expected the owner
+  `cyoda` where the certificate says `Cyoda`. It now follows the redirect,
+  pins the exact tag being installed, and matches the certificate. Without
+  `CYODA_VERSION` it finds the Latest release through
+  `github.com/.../releases/latest` instead of the GitHub API, which allows
+  only 60 unauthenticated calls an hour per address. A
+  release-smoke job installs a signed release with signatures required. An
+  unknown `CYODA_COSIGN_VERIFY` value now stops the script instead of
+  falling back to auto mode. v0.7.0 and v0.7.1, signed under the GitHub
+  organization's earlier name, do not verify. The README and
+  `cyoda help install` verify a `.deb`/`.rpm` package and the container
+  image against the signature of the exact release.
+- **A chart release no longer becomes GitHub's "Latest" release.** The
+  chart workflow marked its release (`cyoda-X.Y.Z`, which holds only the
+  chart archive) as latest, so after a chart release `install.sh` resolved
+  the chart's tag and every `/releases/latest/download/` URL — `install.sh`,
+  the `.deb` and `.rpm` packages, `SHA256SUMS` — answered 404. The binary
+  release keeps the mark.
+- **The available-transitions list holds only transitions a client can
+  name.** `GET /entity/{entityId}/transitions` and
+  `GET /platform-api/entity/fetch/transitions` listed every transition of the
+  current state, disabled and scheduled ones included, though naming either
+  on a save is refused with `TRANSITION_NOT_FOUND`. They now list the
+  transitions that are not disabled and have no schedule, whatever their
+  `manual`, as Cyoda Cloud does.
+- **Help and deploy guidance that did not match the server.** The Helm chart
+  is published (`cyoda/cyoda` from `https://cyoda.github.io/cyoda-go`); the
+  install examples in `cyoda help helm` and `cyoda help run` render, and a
+  chart upgrade uses `--reset-then-reuse-values`, which takes a newer chart's
+  defaults for values you did not set (`--reuse-values` dropped them). The
+  Ingress-to-Gateway migration guide reads the live Ingress objects
+  (`helm template` has no `--reuse-values`). A `PUT` with an empty body is
+  refused with `400`; use `PATCH` with `{}` to fire a transition without
+  changing data. A save can name any transition that is not disabled and has
+  no schedule, whatever its `manual`. A workflow export posted back unchanged
+  is refused; re-import its `workflows`. A replayed `COMMIT_BEFORE_DISPATCH`
+  processor carries a new `requestId`. `$.items.0` in a `groupBy` names a
+  field called `0`. The `migrate.postgres.*` chart values are documented.
+  The compose file's production hint and `deploy/docker/README.md` mount the
+  signing key as a file, and the production-shaped `docker run` reads the
+  key and the Postgres DSN from files. The install script's settings go on
+  `sh`, after the pipe (`curl … | CYODA_VERSION=v0.9.0 sh`): written before
+  `curl`, as the README showed, they never reached the script. Shell
+  examples paste into interactive zsh as written: no comment line runs a
+  command, opens a quote or redirects, and no comment follows a command.
 
 - **gRPC: a snapshot the caller does not have, or results of one that has
   not finished, is the caller's error,** as it is on HTTP. A

@@ -9,6 +9,7 @@ see_also:
   - cli.init
   - cli.health
   - quickstart
+  - install
   - helm
   - config
   - config.database
@@ -37,9 +38,11 @@ docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:
 docker compose -f deploy/docker/compose.yaml up
 
 # Helm (Kubernetes)
-helm install cyoda ./deploy/helm/cyoda \
+helm repo add cyoda https://cyoda.github.io/cyoda-go
+helm install cyoda cyoda/cyoda \
   --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt
+  --set jwt.existingSecret=cyoda-jwt \
+  --set "gateway.parentRefs[0].name=prod-gateway"
 
 # Dev script (local profile: .env.local, copied from .env.local.example)
 ./scripts/dev/run-local.sh
@@ -57,7 +60,7 @@ No systemd unit files ship in the repository. Process supervision (systemd, runi
 
 ### Binary
 
-The prebuilt binary is the canonical artifact. Build from source or download from the GitHub release page.
+The prebuilt binary is the canonical artifact. To install it (Homebrew, install script, `.deb`/`.rpm`, container image, `go install`), see `cyoda help install`.
 
 **Build from source:**
 
@@ -144,7 +147,8 @@ docker run --rm \
   -p 127.0.0.1:9090:9090 \
   -p 127.0.0.1:9091:9091 \
   -e CYODA_STORAGE_BACKEND=postgres \
-  -e CYODA_POSTGRES_URL=postgres://cyoda:secret@db:5432/cyoda \
+  -e CYODA_POSTGRES_URL_FILE=/run/secrets/postgres-url \
+  -v /path/to/postgres-url:/run/secrets/postgres-url:ro \
   -e CYODA_IAM_MODE=jwt \
   -e CYODA_REQUIRE_JWT=true \
   -e CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem \
@@ -152,8 +156,10 @@ docker run --rm \
   -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
-  ghcr.io/cyoda/cyoda:latest
+  "ghcr.io/cyoda/cyoda@$D"
 ```
+
+`$D` is the digest of the image you verified: a tag can be moved, so check the signature of the release you run and run it by digest (`cyoda help install`, *Container image*). Credentials go in files, not in `-e`: a value passed with `-e` shows in `docker inspect` and in shell history. The file `postgres-url` holds the DSN (`postgres://user:pass@host:5432/db?sslmode=require`). The container runs as UID 65532, so on a Linux host each mounted file must be readable by that user, for example `sudo chown 65532:65532 signing.pem postgres-url && sudo chmod 0400 signing.pem postgres-url`.
 
 First admin token: `docker exec <container> /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
@@ -205,14 +211,15 @@ docker compose -f deploy/docker/compose.yaml up
 # 2. docker-compose.yaml snippet (add to the cyoda service):
 #      volumes:
 #        - ./secrets/signing.pem:/run/secrets/signing.pem:ro
+#        (the file must be readable by UID 65532, the container user. See Docker above.)
 #      environment:
 #        CYODA_IAM_MODE: jwt
 #        CYODA_REQUIRE_JWT: "true"
 #        CYODA_JWT_SIGNING_KEY_FILE: /run/secrets/signing.pem
 #        CYODA_JWT_ISSUER: https://cyoda.example.com
 #        CYODA_JWT_AUDIENCE: cyoda-api
-# 3. Launch:
-docker compose up
+# 3. Launch the image you verified, by digest (cyoda help install, Container image):
+CYODA_IMAGE="ghcr.io/cyoda/cyoda@$D" docker compose up
 ```
 
 First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
@@ -230,24 +237,33 @@ The compose file reads `${CYODA_IMAGE:-ghcr.io/cyoda/cyoda:latest}` for the imag
 
 ### Kubernetes (Helm)
 
-cyoda-go ships a Helm chart at `deploy/helm/cyoda/`. The chart renders a StatefulSet (with Parallel pod management policy), ClusterIP Service, headless Service for gossip, ConfigMap for non-sensitive env vars, projected-volume Secrets for credentials, and optional Gateway API routes, Ingress, HorizontalPodAutoscaler, PodDisruptionBudget, NetworkPolicy, ServiceAccount, ServiceMonitor, and a pre-upgrade migration Job.
+cyoda-go ships a Helm chart, published to the Helm repository `https://cyoda.github.io/cyoda-go` as `cyoda/cyoda` (source: `deploy/helm/cyoda/`). The chart renders a StatefulSet (with Parallel pod management policy), ClusterIP Service, headless Service for gossip, ConfigMap for non-sensitive env vars, projected-volume Secrets for credentials, and optional Gateway API routes, Ingress, HorizontalPodAutoscaler, PodDisruptionBudget, NetworkPolicy, ServiceAccount, ServiceMonitor, and a pre-upgrade migration Job.
 
-The chart is not yet published to a Helm repository. Install directly from the local path or from a cloned repository. See `helm` for the complete Helm reference.
+See `cyoda help helm` for the complete Helm reference: values, creating the Secrets, and more examples.
 
-**Minimal install:**
+**Minimal install** (the Secrets `cyoda-pg` and `cyoda-jwt` exist; the routes attach to the Gateway `prod-gateway` — on a cluster without a Gateway, use `--set gateway.enabled=false` instead of the two `gateway.parentRefs` lines):
 
 ```
-helm install cyoda ./deploy/helm/cyoda \
+helm repo add cyoda https://cyoda.github.io/cyoda-go
+helm install cyoda cyoda/cyoda \
+  --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt
+  --set jwt.existingSecret=cyoda-jwt \
+  --set "gateway.parentRefs[0].name=prod-gateway" \
+  --set "gateway.parentRefs[0].namespace=gateway-system"
+```
+
+**First admin token** — the pods hold the signing key, so `cyoda token` in a pod signs it (see `cyoda help cli token`). Use it to create the M2M clients that applications and compute nodes use:
+
+```
+TOKEN=$(kubectl exec -n cyoda cyoda-0 -- /cyoda token --tenant acme)
 ```
 
 **Upgrade:**
 
 ```
-helm upgrade --install cyoda ./deploy/helm/cyoda \
-  --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt
+helm repo update
+helm upgrade cyoda cyoda/cyoda --namespace cyoda --reset-then-reuse-values
 ```
 
 ### Development Scripts
@@ -388,8 +404,10 @@ curl -s http://localhost:9091/readyz
 
 ```
 ./bin/cyoda health
-echo $?   # 0 = ready, 1 = not ready or error
+echo $?
 ```
+
+`0` means ready; `1` means not ready, or an error.
 
 **Docker Compose — production JWT (file-mount):**
 
@@ -398,7 +416,7 @@ echo $?   # 0 = ready, 1 = not ready or error
 # Do not export CYODA_JWT_SIGNING_KEY inline — multi-line PEM does not
 # survive shell → docker-compose env interpolation reliably.
 # See the Docker Compose section above for the full snippet.
-docker compose up
+CYODA_IMAGE="ghcr.io/cyoda/cyoda@$D" docker compose up
 ```
 
 First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
@@ -411,6 +429,7 @@ First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`
 - cli.init
 - cli.health
 - quickstart
+- install
 - helm
 - config
 - config.database

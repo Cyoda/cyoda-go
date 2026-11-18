@@ -3,6 +3,7 @@ topic: workflows
 title: "workflows — state machine definitions"
 stability: stable
 see_also:
+  - design
   - models
   - crud
   - grpc
@@ -43,11 +44,11 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints requ
 
 ## DESCRIPTION
 
-A workflow definition is a named finite state machine attached to an entity model. Workflows are stored per model reference `(entityName, modelVersion)`. A model may have multiple workflow definitions; the engine selects the matching one per entity using the workflow-level `criterion` field evaluated at entity creation time. When no `criterion` matches, the engine uses the default built-in workflow.
+A workflow definition is a named finite state machine attached to an entity model. Workflows are stored per model reference `(entityName, modelVersion)`. A model may have multiple workflow definitions; the engine selects the matching one per entity using the workflow-level `criterion` field, on every operation that runs the entity's workflow (see *Workflow-level selection*). When no `criterion` matches, the engine uses the default built-in workflow.
 
-The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. Manual transitions are triggered by the client via `PUT /entity/{format}/{entityId}/{transition}`.
+The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. A client fires a transition by naming it on a save: `PUT` or `PATCH /entity/{format}/{entityId}/{transition}`, an item's `transition` in a collection update (`cyoda help crud`), or gRPC `EntityTransitionRequest` (`cyoda help grpc`).
 
-The engine enforces a per-state visit limit of 10 by default (configurable via `WithMaxStateVisits`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time. Both limits count within one cascade. A callout never writes the entity its workflow runs for (PROCESSORS, *Design rule*).
+The engine enforces a per-state visit limit of 10 by default (set by `CYODA_MAX_STATE_VISITS`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time. Both limits count within one cascade. A callout never writes the entity its workflow runs for (PROCESSORS, *Design rule*).
 
 ## WORKFLOW SCHEMA
 
@@ -135,9 +136,9 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 **TransitionDefinition fields:**
 
-- `name` — string — transition name; used by the client in `PUT /entity/{format}/{entityId}/{name}` and in engine cascade
+- `name` — string — transition name; a client names it on a save (see DESCRIPTION)
 - `next` — string — target state; must exist in `states`
-- `manual` — boolean, required — `true` means the transition requires an explicit client request; `false` means the engine evaluates it automatically in cascade. There is no default: an import whose transition omits `manual` or sends `null` is rejected (`400 VALIDATION_FAILED`)
+- `manual` — boolean, required — whether the engine fires the transition on its own. `false`: the engine evaluates it in the cascade after every write, unless it has a `schedule`, which fires it instead (see SCHEDULED TRANSITIONS). `true`: the engine never fires it; it fires only when a client names it. `manual` does not limit what a client can name: a save can name any transition of the current state that is not `disabled` and has no `schedule`, a `manual: false` one included. There is no default: an import whose transition omits `manual` or sends `null` is rejected (`400 VALIDATION_FAILED`)
 - `disabled` — boolean — when `true`, the engine skips this transition entirely
 - `criterion` — `Condition` JSON or `null` — evaluated before executing the transition; `null` means always matches; the same Condition DSL as search (see `search` topic)
 - `criterionAnnotations` — object or absent — optional client-owned metadata attached to this transition's `criterion` as a whole (see WorkflowDefinition `annotations`); sibling field, engine-opaque
@@ -209,7 +210,7 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
 
 **`COMMIT_BEFORE_DISPATCH` workflow-author requirements:**
 
-- **Idempotency.** A `COMMIT_BEFORE_DISPATCH` processor must be **idempotent or have an external mechanism for detecting prior completion** (e.g., a write-once external resource ID). Replays can fire from two distinct places: (a) CAS conflict during continuation — the caller's retry of the same API call restarts the cascade and re-dispatches the processor; (b) engine crash between segments — the entity is durable in the pre-callout state, the in-flight orchestration is gone, the caller retries, the cascade re-fires from the beginning, the processor is re-dispatched. The engine cannot deduplicate replays; idempotency is the workflow author's responsibility. Setting `idempotent: true` on the processor is the matching declaration for a *repeat within one callout*; it does not replace the requirement here, which is about the *client* running the operation again.
+- **Idempotency.** A `COMMIT_BEFORE_DISPATCH` processor must be **idempotent or have an external mechanism for detecting prior completion** (e.g., a write-once external resource ID). Replays can fire from two distinct places: (a) CAS conflict during continuation — the caller's retry of the same API call restarts the cascade and re-dispatches the processor; (b) engine crash between segments — the entity is durable in the pre-callout state, the in-flight orchestration is gone, the caller retries, the cascade re-fires from the beginning, the processor is re-dispatched. The engine cannot deduplicate replays; idempotency is the workflow author's responsibility. A replay is a new callout and carries a new `requestId`: a member cannot recognise it by `requestId`, which is shared only by the tries of one callout (see **Tries, waiting and time** below). Recognise it by a key of your own that the replay repeats, such as the write-once external id above. Setting `idempotent: true` on the processor is the matching declaration for a *repeat within one callout*; it does not replace the requirement here, which is about the *client* running the operation again.
 - **Visibility of segment-boundary states.** States on a segment boundary (the pre-callout state of a `COMMIT_BEFORE_DISPATCH` processor) are **publicly observable** to readers between segments. A concurrent transaction's `Get`/`GetPage`/`Iterate`/`Search`/`Count` will see the entity in the pre-callout state, and a second cascade may decide to fire criteria-driven transitions based on that observed state. Workflow authors using `COMMIT_BEFORE_DISPATCH` must treat segment-boundary states as committed states — design state-machine criteria, transition guards, and external monitoring accordingly. If invisibility of an intermediate state is required, model it as a workflow-level `DRAFT` parent state with sub-stages in payload, or do not expose the entity until a designated terminal state.
 - **Attribution handover with `startNewTxOnDispatch=false`.** With no transaction context supplied, the dispatched processor's callback writes are ordinary independent requests — the platform tracks no causal chain for them. Each is recorded as the identity it presents. With the compute node's own client token, that is the compute node's client, as both attributed principal and executor. A compute node never receives a user's token: a callout carries the user only as attributes (`authid`/`authtype`, the executor in `authexecid`/`authexectype`). To record a callback write for that user, the compute node must hold the credentials of an on-behalf-of client of the tenant and the private half of an active trusted key of the tenant (see `cyoda help auth integration`); it must not reuse the backend's on-behalf-of client, and a key of its own is recommended, so that each can be revoked without touching the backend's (see *WHEN ANOTHER PART ACTS FOR A USER* there); a segregation-of-duties check never lists this client among the ids it accepts as "the user approved", sign an assertion for `authid` when `authtype` is `user`, and make the write with the exchanged token; it is then recorded for the user, executed by that on-behalf-of client. Inside a scheduled fire, this processor's callout carries the principal that armed the timer in `authid`/`authtype` and `system` as the executor, as every callout of the fire does, although it is dispatched outside a transaction. The platform supplies no other carrier for this mode.
 - **A write made under a transaction token that reaches one is refused.** A compute member's callback — a request carrying a transaction token — runs in the transaction it joined, and only the operation that began a transaction commits it. A `COMMIT_BEFORE_DISPATCH` processor commits the transaction it runs in, so a callback whose write reaches one is refused with `409` `COMMIT_IN_JOINED_TRANSACTION` at that processor: it is not dispatched, the joined transaction is neither flushed nor committed, and nothing the refused write did is kept but a schema extension it made (`cyoda help models`, SCHEMA EXTENSION). As a failed write it makes the joined transaction rollback-only: its owner fails with `409` `TRANSACTION_ROLLBACK_ONLY` (under an `ASYNC_NEW_TX` processor, that processor fails instead). Both values of `startNewTxOnDispatch` are refused. A compute member that needs such a write from inside a processor makes it as an independent request, without the transaction token. The refusal is deterministic, so a test of the path finds it. Whether a workflow is reached from a callback is decided at run time, not at import, so the import does not reject the combination.
@@ -261,7 +262,7 @@ Import accepts `"externalized"` only. An omitted or empty `type` is stored, and 
   callout is made before that processor's savepoint opens, so the
   processor's failure keeps that write and its lock. A
   transaction that has not written the entity holds no row lock on it
-  while a callout runs; a manual transition that sends no data, for
+  while a callout runs; a named transition that sends no data, for
   example, has not written it before its first processor's callout. Another transaction that writes a locked entity
   waits at its write, and one that read it waits at its commit, until the
   lock holder ends; if that transaction committed a change to the entity,
@@ -538,7 +539,7 @@ Criteria on workflows and transitions use the same `Condition` DSL as search —
 
 `lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search. While a workflow runs, the entity's `transactionId` is the id of the transaction it runs in: the request's, a scheduled fire's, or after a `COMMIT_BEFORE_DISPATCH` boundary the new transaction's.
 
-A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
+A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always matches: an automated one fires when the cascade reaches it, and a named one fires when a client names it. When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
 
 ### Function conditions
 
@@ -571,7 +572,7 @@ For example, in this transition criterion `manual-override` is called only for a
 }
 ```
 
-**Audit.** When a criterion holds a function condition, the state-machine audit events of its evaluation carry a `functions` list in their `data`: one entry per function condition that evaluation reached, in evaluation order. A function condition that evaluation did not reach has no entry, so the list is empty when evaluation reached none. `WORKFLOW_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_NOT_MATCH_CRITERION` and `TRANSITION_MAKE` (manual, automated and scheduled) carry `functions` beside their other data fields when the criterion holds a function condition, and leave it out otherwise (see `cyoda help audit`, *Event data*). An entry has these fields:
+**Audit.** When a criterion holds a function condition, the state-machine audit events of its evaluation carry a `functions` list in their `data`: one entry per function condition that evaluation reached, in evaluation order. A function condition that evaluation did not reach has no entry, so the list is empty when evaluation reached none. `WORKFLOW_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_NOT_MATCH_CRITERION` and `TRANSITION_MAKE` (named, automated and scheduled) carry `functions` beside their other data fields when the criterion holds a function condition, and leave it out otherwise (see `cyoda help audit`, *Event data*). An entry has these fields:
 
 - `path` — always — the JSON Pointer of the function condition in the criterion (`/conditions/2`, `/conditions/0/conditions/1`); `""` for a function condition that is the whole criterion.
 - `name` — always — `function.name`.
@@ -601,7 +602,7 @@ For the criterion above, on an entity with `"priority": "normal"` and `"override
 
 For a function condition that is the whole criterion, ` at <path>` is left out. The example above gives `manual-override at /conditions/1: pre-check did not match, not called; credit-check at /conditions/2: answered false: score below 600`. Every callout made is listed with its answer, and none is singled out as the cause: under `NOT`, a `true` answer can refuse a transition.
 
-A manual transition refused by its criterion answers `400 WORKFLOW_FAILED` with the message `transition "<name>" criterion not matched`, followed by `: <reason>` when the reason is not `criterion did not match`. The manual transition rolls back, so its audit event is not kept; the message is where the caller learns why.
+A transition a client named and its criterion refused answers `400 WORKFLOW_FAILED` with the message `transition "<name>" criterion not matched`, followed by `: <reason>` when the reason is not `criterion did not match`. The named transition rolls back, so its audit event is not kept; the message is where the caller learns why.
 
 ### Workflow-level selection
 
@@ -650,6 +651,9 @@ Request body (`application/json`):
 
 - `importMode` — `"MERGE"` (default): incoming workflows overwrite existing ones by name; existing workflows not in the import are preserved. `"REPLACE"`: all existing workflows are discarded; only the incoming set is stored. `"ACTIVATE"`: incoming workflows replace same-named existing ones; existing workflows not in the import set are kept but flipped `active=false`. `REPLACE` / `ACTIVATE` reject an empty `workflows` array (or a missing `workflows` key) with `400 VALIDATION_FAILED` — once a model has imported workflows it always carries ≥1; the built-in default workflow is only used when no workflow has ever been imported. `MERGE` with an empty `workflows` array is allowed as a no-op. The field defaults to `MERGE` when omitted or empty. Parsing is **case-insensitive**: `"merge"`, `"Merge"`, and `"MERGE"` are equivalent. Any value outside the documented enum (after case-folding) is rejected with `400 BAD_REQUEST`.
 - `workflows` — array of `WorkflowDefinition`. The `active` flag on each incoming workflow is preserved as supplied; the server never overrides it. If the field is absent (or explicitly `null`), it defaults to `true`. Controlling which workflows are active is entirely up to the importer.
+- `allowCycles` — boolean, optional, default `false` — `true` skips the cycle check (the first rule in the list below); see SCHEDULED TRANSITIONS for when a cycle is wanted.
+
+**The body is read strictly**, as every request body is (see `cyoda help openapi`). A member that the request does not declare — at the top level, or in a workflow, state, transition, processor or schedule — is refused with `400 BAD_REQUEST`, and the detail names the member and where it is. So is a member name in another letter case, a member written twice, and anything after the request object. A misspelt member such as `transitionn` therefore fails the import instead of importing a workflow with no transitions. `annotations` and `criterionAnnotations` hold any members you choose. The export response is not an import body: see EXPORT RESPONSE.
 
 A request body holding text no storage backend can keep — U+0000, an unpaired surrogate, or bytes that are not valid UTF-8 — is refused with `400 BAD_REQUEST`, naming the field, before anything else is checked, as an entity payload is: a workflow's names reach the state-machine audit trail, which cannot hold U+0000 on PostgreSQL.
 
@@ -719,6 +723,19 @@ Response: `200 OK`, `application/json`:
 
 Returns `404 WORKFLOW_NOT_FOUND` when no workflows have been imported for the model.
 
+**Re-importing an export.** The import refuses members it does not declare, and `entityName` and `modelVersion` are not import members, so posting an export back unchanged fails with `400 BAD_REQUEST`. Keep `workflows` and choose the `importMode`:
+
+```
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/model/nobel-prize/1/workflow/export" \
+  | jq '{importMode: "REPLACE", workflows}' > workflows.json
+curl -s -X POST -H @- <<<"Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" --data-binary @workflows.json \
+  "http://localhost:8080/api/model/nobel-prize/1/workflow/import"
+```
+
+`allowCycles` is part of the request, not of the stored workflows, so an export does not carry it. If the original import needed `allowCycles: true`, add it to the body (`jq '{importMode: "REPLACE", allowCycles: true, workflows}'`); every import checks for cycles again.
+
 **Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty. `annotations` (on the workflow, any state, any transition, or any processor) and `criterionAnnotations` (on the workflow or any transition) are omitted when absent, and re-serialised in compacted form when present.
 
 ## ENGINE EXECUTION
@@ -729,7 +746,7 @@ The workflow engine runs synchronously within the entity write transaction. The 
 2. Evaluate each workflow's `criterion` against the entity; select the first match. If none match (or if no workflows have been imported for the model), use the built-in default workflow. The substitution emits both a `slog.Warn` line (fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `entityId`, `reason=no_workflows_imported`|`no_criterion_matched`) and an `AddWarning` entry surfaced in the response body, so operators can detect models silently running on the default.
 3. Set `entity.Meta.State = workflow.initialState`.
 4. If a named transition was requested (by the client), execute it: evaluate `criterion`, invoke processors, set `entity.Meta.State = transition.next`.
-5. Cascade: repeatedly scan the current state's transitions; for each automated (`manual=false`) non-disabled transition, evaluate `criterion`; if it matches, invoke processors and advance the state. Stop when no automated transition matches or the state has no automated transitions.
+5. Cascade: repeatedly scan the current state's transitions; for each automated (`manual=false`) transition that is not disabled and has no `schedule`, evaluate `criterion`; if it matches, invoke processors and advance the state. Stop when no automated transition matches or the state has no automated transitions.
 6. The engine records `StateMachineEvent` entries to the audit log under the entity's `transactionId`.
 
 Per-state visit limit (default 10) and total cascade depth limit (100) are enforced to prevent infinite loops.
@@ -796,7 +813,7 @@ curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1/workflow/export"
 ```
 
-**Trigger a manual transition:**
+**Fire a transition by name:**
 
 ```
 curl -s -X PUT \
@@ -831,6 +848,7 @@ curl -s -X POST \
 
 ## SEE ALSO
 
+- design
 - models
 - crud
 - grpc

@@ -7,22 +7,29 @@
 # Usage:
 #   curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
 #
+# The settings below are read by this script, so they go on `sh`, after
+# the pipe (a variable set before `curl` reaches curl only):
+#
 # Pin a version:
-#   CYODA_VERSION=v0.2.0 curl -fsSL ... | sh
+#   curl -fsSL ... | CYODA_VERSION=v0.2.0 sh
 #
 # Pin a different install directory:
-#   CYODA_INSTALL_DIR=~/bin curl -fsSL ... | sh
+#   curl -fsSL ... | CYODA_INSTALL_DIR=~/bin sh
 #
-# Cosign verification (issue #47):
+# Cosign verification:
 #   - Auto-on when `cosign` is on PATH. Verifies the archive and
 #     SHA256SUMS against keyless Sigstore signatures issued by the
 #     cyoda/cyoda-go release.yml workflow on a tag push.
-#   - Disable explicitly: CYODA_COSIGN_VERIFY=false curl ... | sh
-#   - Force-fail-without-cosign: CYODA_COSIGN_VERIFY=required curl ... | sh
+#   - Disable explicitly: curl ... | CYODA_COSIGN_VERIFY=false sh
+#   - Force-fail-without-cosign: curl ... | CYODA_COSIGN_VERIFY=required sh
 #     (Aborts if cosign is missing rather than falling back to SHA256-only.)
 #
 # Auto-mode trade-off (security note): cosign signing was added in
-# v0.7.0; older releases have no .sig files. To preserve backward
+# v0.7.0; older releases have no .sig files. v0.7.0 and v0.7.1 were
+# signed before the GitHub org was renamed: their certificates name
+# `Cyoda-platform`, which this script does not trust (the old name is no
+# longer the org's and could be claimed), so with cosign on PATH they are
+# refused. Install v0.7.4 or later. To preserve backward
 # compat with the curl-pipe-to-sh UX for users without cosign, auto
 # mode treats a 404 on the .sig as "release predates cosign signing"
 # and falls back to SHA256-only. This means an attacker who controls
@@ -43,16 +50,19 @@ INSTALL_DIR="${CYODA_INSTALL_DIR:-$HOME/.local/bin}"
 # only workflow with `id-token: write`, and we additionally pin to the
 # `refs/tags/v*` ref-suffix so a future branch-based dispatch (even
 # from main with proper protection) can't mint a cert that this
-# verifier accepts.
+# verifier accepts. The owner is spelt as GitHub writes it in the
+# certificate, `Cyoda`; the match is case-sensitive.
 COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
-COSIGN_IDENTITY_REGEX="^https://github\.com/cyoda/cyoda-go/\.github/workflows/release\.yml@refs/tags/v"
+COSIGN_IDENTITY_REGEX="^https://github\.com/Cyoda/cyoda-go/\.github/workflows/release\.yml@refs/tags/v"
 # Bind to push-triggered runs from a tag ref. release.yml's `on:`
 # allows both `push: tags` and `workflow_dispatch`; only the former
 # can produce signed release artifacts that consumers should trust,
 # since workflow_dispatch can be triggered from any branch by anyone
 # with write access.
 COSIGN_GH_WORKFLOW_TRIGGER="push"
-COSIGN_GH_WORKFLOW_REF_REGEX="^refs/tags/v"
+# The workflow ref is pinned to the exact tag being installed
+# (--certificate-github-workflow-ref, in cosign_verify): a signature from
+# another release does not verify this one.
 
 err() { printf 'install.sh: error: %s\n' "$*" >&2; }
 warn() { printf 'install.sh: warning: %s\n' "$*" >&2; }
@@ -107,23 +117,29 @@ resolve_version() {
         printf '%s' "$CYODA_VERSION"
         return
     fi
-    curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
-        | head -n1
+    # github.com/<repo>/releases/latest redirects to the Latest release's tag
+    # page. No API call: the API's per-address rate limit does not apply.
+    rv_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") || return 0
+    # Only a binary release (vX.Y.Z) can be installed; a chart release
+    # (cyoda-X.Y.Z) holding the mark gives no version.
+    case "$rv_url" in
+        */releases/tag/v[0-9]*) printf '%s' "${rv_url##*/}" ;;
+    esac
 }
 
 # cosign_fetch downloads a release asset and prints its HTTP status to
 # stdout (so callers can distinguish 200, 404, and other failures).
-# Unlike curl -fsSL, a 404 here does NOT terminate the script.
+# Unlike curl -fsSL, a 404 here does NOT terminate the script. Redirects are
+# followed: GitHub answers a release download with a 302 to its storage.
 cosign_fetch() {
     cf_url=$1
     cf_dest=$2
-    curl -sS -o "$cf_dest" -w "%{http_code}" "$cf_url" 2>/dev/null || printf '000'
+    curl -sSL -o "$cf_dest" -w "%{http_code}" "$cf_url" 2>/dev/null || printf '000'
 }
 
 # cosign_verify runs keyless Sigstore verification of the archive and
-# SHA256SUMS using sibling .sig + .pem assets published by GoReleaser
-# (issue #47). Default behaviour:
+# SHA256SUMS using sibling .sig + .pem assets published by GoReleaser.
+# Default behaviour:
 #   - cosign on PATH AND CYODA_COSIGN_VERIFY != "false" → verify; abort on
 #     verification failure or transient infrastructure errors. A 404 on
 #     the sibling .sig (release predates cosign signing in v0.7.0) is a
@@ -183,7 +199,7 @@ cosign_verify() {
             --certificate-identity-regexp="$COSIGN_IDENTITY_REGEX" \
             --certificate-oidc-issuer="$COSIGN_OIDC_ISSUER" \
             --certificate-github-workflow-trigger="$COSIGN_GH_WORKFLOW_TRIGGER" \
-            --certificate-github-workflow-ref-regexp="$COSIGN_GH_WORKFLOW_REF_REGEX" \
+            --certificate-github-workflow-ref="refs/tags/$cv_version" \
             "$cv_tmp/$cv_target" >"$cv_log" 2>&1; then
             err "cosign verification FAILED for $cv_target — refusing to install."
             err "cosign output (last 5 lines):"
@@ -192,14 +208,29 @@ cosign_verify() {
             exit 1
         fi
     done
+    info "Signatures verified (cosign)"
+}
+
+# check_cosign_mode refuses an unknown CYODA_COSIGN_VERIFY before anything is
+# downloaded. An unknown value must not fall back to auto mode: an operator
+# who wrote `true` or `REQUIRED` expected enforcement.
+check_cosign_mode() {
+    case "${CYODA_COSIGN_VERIFY:-auto}" in
+        auto|required|false|0|no) : ;;
+        *)
+            err "CYODA_COSIGN_VERIFY=$CYODA_COSIGN_VERIFY is not one of auto, required, false, 0, no."
+            exit 1
+            ;;
+    esac
 }
 
 main() {
+    check_cosign_mode
     os=$(detect_os)
     arch=$(detect_arch)
     version=$(resolve_version)
     if [ -z "$version" ]; then
-        err "could not resolve latest version from GitHub API"
+        err "could not find the latest cyoda release on github.com (unreachable, or the Latest release is not a binary release); set CYODA_VERSION=vX.Y.Z"
         exit 1
     fi
     version_bare="${version#v}"
@@ -243,9 +274,9 @@ main() {
         *)
             warn "$INSTALL_DIR is not on your PATH."
             warn "Add it by running (for bash):"
-            warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
+            warn "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
             warn "or (for zsh):"
-            warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+            warn "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
             ;;
     esac
 

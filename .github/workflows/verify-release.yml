@@ -1,0 +1,120 @@
+name: Verify release
+
+# Installs the published release the way users do — install.sh with
+# signatures required, the .deb and .rpm, the signed image by digest,
+# Homebrew, the Helm repository — and, for the newest stable release, checks
+# that GitHub's Latest release and the unpinned routes give it. A release can
+# pass every build-time check and still be broken where users meet it; this
+# is where that shows.
+on:
+  workflow_run:
+    workflows: ["Release", "Release chart"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (vX.Y.Z). Empty: the newest stable release."
+        required: false
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    # A release run that failed after publishing still left a release users
+    # can install: verify unless the run was cancelled or skipped.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion != 'cancelled' &&
+       github.event.workflow_run.conclusion != 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      flags: ${{ steps.r.outputs.flags }}
+      newest: ${{ steps.r.outputs.newest }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          RUN_REF: ${{ github.event.workflow_run.head_branch }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # The newest stable binary release: the one GitHub's Latest must be.
+          newest=$(gh api "repos/$REPO/releases?per_page=100" --jq \
+            '[.[] | select(.prerelease | not) | select(.draft | not) | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
+             | sort_by(.tag_name | ltrimstr("v") | split(".") | map(tonumber)) | last | .tag_name')
+          case "$EVENT" in
+            workflow_run)
+              case "$RUN_NAME" in
+                Release) tag="$RUN_REF"; flags="" ;;
+                "Release chart")
+                  # The chart version is the tag's; the binary it runs is its
+                  # appVersion, which need not be the same number.
+                  chart="${RUN_REF#cyoda-}"
+                  app=$(gh api "repos/$REPO/contents/deploy/helm/cyoda/Chart.yaml?ref=$RUN_SHA" --jq .content \
+                    | base64 -d | sed -n 's/^appVersion: *"\{0,1\}\([^" #]*\)"\{0,1\}.*/\1/p')
+                  tag="v$app"; flags="--chart $chart" ;;
+                *) echo "unexpected workflow '$RUN_NAME'"; exit 1 ;;
+              esac ;;
+            *) tag="${INPUT_TAG:-$newest}"; flags="--chart-if-published" ;;
+          esac
+          case "$tag" in v[0-9]*.[0-9]*.[0-9]*) : ;; *) echo "not a release tag: '$tag'"; exit 1 ;; esac
+          # Only the newest stable release must be GitHub's Latest and be what
+          # the unpinned routes give; an older or pre-release tag gets the
+          # pinned checks.
+          [ "$tag" = "$newest" ] && flags="$flags --latest"
+          # Whatever the tag, GitHub's Latest must be the newest stable
+          # release: a release on an older line must not take it.
+          latest=$(gh api "repos/$REPO/releases/latest" --jq .tag_name)
+          if [ "$latest" != "$newest" ]; then
+            echo "GitHub's Latest release is '$latest', not the newest stable release $newest; restore it with 'gh release edit $newest --repo $REPO --latest', then re-run this workflow"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+          echo "newest=$newest" >> "$GITHUB_OUTPUT"
+          echo "Verifying $tag with: ${flags:-(pinned checks only)}"
+
+  linux:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@v3
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.1.4
+      - name: verify-release.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          FLAGS: ${{ needs.resolve.outputs.flags }}
+        run: scripts/verify-release.sh "$TAG" $FLAGS
+
+  homebrew:
+    needs: resolve
+    # The tap carries the newest stable release only.
+    if: needs.resolve.outputs.tag == needs.resolve.outputs.newest
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: brew install from the tap gives the release
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          brew install cyoda/cyoda-go/cyoda
+          cyoda --version
+          cyoda --version | grep -q "^cyoda version ${TAG#v} "

@@ -27,7 +27,7 @@ binary release by `bump-chart-appversion.yml`.
 ```bash
 kubectl create namespace cyoda
 
-# Secrets go through private files, not kubectl's command line, which
+# Secrets go through private files, not the kubectl command line, which
 # other local users can see. printf is a shell builtin.
 (umask 077; printf '%s' 'postgres://cyoda:REDACTED@pg.example.com:5432/cyoda?sslmode=require' > dsn)
 kubectl -n cyoda create secret generic cyoda-dsn --from-file=dsn=dsn
@@ -46,10 +46,10 @@ helm repo update
 helm install cyoda cyoda/cyoda -n cyoda \
   --set postgres.existingSecret=cyoda-dsn \
   --set jwt.existingSecret=cyoda-jwt \
-  --set gateway.parentRefs[0].name=platform-gateway \
-  --set gateway.parentRefs[0].namespace=gateway-system \
-  --set gateway.http.hostnames[0]=cyoda.example.com \
-  --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com
+  --set "gateway.parentRefs[0].name=platform-gateway" \
+  --set "gateway.parentRefs[0].namespace=gateway-system" \
+  --set "gateway.http.hostnames[0]=cyoda.example.com" \
+  --set "gateway.grpc.hostnames[0]=grpc.cyoda.example.com"
 ```
 
 ### First admin token
@@ -57,7 +57,7 @@ helm install cyoda cyoda/cyoda -n cyoda \
 The pod holds the signing key, so it can mint the first admin token:
 
 ```bash
-kubectl exec -n cyoda cyoda-0 -- /cyoda token --tenant <tenant>
+kubectl exec -n cyoda cyoda-0 -- /cyoda token --tenant TENANT
 ```
 
 Use it to create M2M clients: `POST /api/clients`.
@@ -147,7 +147,7 @@ re-read automatically within one scrape interval.
 
 ```bash
 helm upgrade cyoda cyoda/cyoda -n cyoda \
-  --reuse-values \
+  --reset-then-reuse-values \
   --set replicas=3
 ```
 

@@ -1926,7 +1926,7 @@ type TransitionDefinitionDto struct {
 	// Disabled Flag indicating if the transition is disabled
 	Disabled *bool `json:"disabled,omitempty"`
 
-	// Manual Whether this transition requires manual triggering: `true` means a client request triggers it, `false` means the engine runs it automatically. Required, with no default; an import whose transition omits it or sends `null` is rejected with 400 VALIDATION_FAILED.
+	// Manual Whether the engine fires this transition on its own: `false` means the engine evaluates it after every write (unless it has a `schedule`, which fires it instead), `true` means it fires only when a client names it on a save. A client can name any transition that is not disabled and has no `schedule`, whatever its `manual`. Required, with no default; an import whose transition omits it or sends `null` is rejected with 400 VALIDATION_FAILED.
 	Manual bool `json:"manual"`
 
 	// Name Name of the transition

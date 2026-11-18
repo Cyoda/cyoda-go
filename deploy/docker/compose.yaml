@@ -14,14 +14,23 @@ services:
       CYODA_HTTP_BIND_ADDRESS: 0.0.0.0
       CYODA_GRPC_BIND_ADDRESS: 0.0.0.0
       CYODA_ADMIN_BIND_ADDRESS: 0.0.0.0
-      # For production: uncomment the three lines below and set
-      # CYODA_JWT_SIGNING_KEY in your shell before `docker compose up`.
-      # Multi-line PEM: `export CYODA_JWT_SIGNING_KEY="$(cat key.pem)"`
+      # For production (jwt auth): uncomment the three lines below and the
+      # signing-key mount under volumes. The key stays in a file; a key set
+      # inline in the environment would show in `docker inspect`. On a Linux
+      # host the file must be readable by the container's user, UID 65532;
+      # keep it unreadable to anyone else:
+      # `sudo chown 65532:65532 deploy/docker/secrets/signing.pem && sudo chmod 0400 deploy/docker/secrets/signing.pem`
+      # (the mount below is relative to this file's directory).
+      # Run the image you verified, by digest: CYODA_IMAGE=ghcr.io/cyoda/cyoda@<digest>
+      # (see `cyoda help install`, Container image); `latest` is a tag that can move.
+      # First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`.
+      # See `cyoda help run` (Docker Compose) and `cyoda help config auth`.
       # CYODA_IAM_MODE: jwt
       # CYODA_REQUIRE_JWT: "true"
-      # CYODA_JWT_SIGNING_KEY: ${CYODA_JWT_SIGNING_KEY:?set CYODA_JWT_SIGNING_KEY before compose up}
+      # CYODA_JWT_SIGNING_KEY_FILE: /run/secrets/signing.pem
     volumes:
       - cyoda-data:/var/lib/cyoda
+      # - ./secrets/signing.pem:/run/secrets/signing.pem:ro
     # Adjust start_period for slower environments (Postgres migrations, cluster
     # mode). All parameters visible here rather than baked into the Dockerfile.
     healthcheck:

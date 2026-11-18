@@ -216,7 +216,8 @@ mental model simple:
 
 ```bash
 # In cyoda-go (main branch, at the commit to be released):
-V=v0.6.0   # pick per release
+# pick per release
+V=v0.6.0
 for p in memory postgres sqlite; do
   git tag -s -a "plugins/$p/$V" -m "Release plugins/$p/$V"
 done
@@ -234,11 +235,13 @@ window it pins them to a **pseudo-version of the in-dev HEAD** (set with
 to the tags you cut in step 1:
 
 ```bash
-V=v0.6.0   # the root release version
+# the root release version
+V=v0.6.0
 for p in memory postgres sqlite; do
   go mod edit -require="github.com/cyoda-platform/cyoda-go/plugins/$p@$V"
 done
-GOWORK=off go mod download   # refresh go.sum against the tagged modules
+# refresh go.sum against the tagged modules
+GOWORK=off go mod download
 ```
 
 Review the diff — the `require` block should pin each plugin at the release
@@ -283,52 +286,15 @@ Push a commit to `main` (or open a small PR) and confirm both the
 `test` and `per-module-hygiene` CI jobs pass. Don't push the release
 tag if CI is red.
 
-### 6. Verify GoReleaser signing (one-time, before first release)
+### 6. Image signing
 
-The `dockers_v2` migration in `.goreleaser.yaml` changed the Docker-artifact
-pipeline. The `docker_signs: artifacts: manifests` selector was expected to
-still resolve against the new artifact types, but this was NOT empirically
-verified at migration time (Docker subshells were unavailable in the
-authoring environment). Before the first `v*` tag push, confirm the
-selector actually resolves:
-
-```bash
-# Clone to a scratch dir per the snapshot-testing gotcha section:
-tmp=$(mktemp -d) && git clone --local . "$tmp/cyoda-go"
-cd "$tmp/cyoda-go"
-git remote set-url origin https://github.com/cyoda/cyoda-go.git
-git remote set-url --push origin NO_PUSH
-
-# Tag a non-prerelease snapshot:
-git tag v0.0.0
-
-# Run snapshot (no publish, no signing — just artifact generation):
-goreleaser release --snapshot --clean --skip=publish --skip=sign
-
-# Verify docker_signs' selector 'artifacts: manifests' will resolve:
-python3 -c "
-import json
-artifacts = json.load(open('dist/artifacts.json'))
-manifest_types = {'Docker Manifest', 'Published Docker Manifest', 'Docker Image V2', 'Docker Manifest List'}
-matching = [a for a in artifacts if a.get('type') in manifest_types]
-if not matching:
-    print('FAIL: docker_signs selector will resolve to empty.')
-    print('Artifact types produced:')
-    for a in artifacts:
-        print(f'  - {a.get(\"type\", \"?\"):30s} {a.get(\"name\", \"?\")}')
-    raise SystemExit(1)
-print(f'OK: {len(matching)} manifest artifact(s) — docker_signs will sign')
-"
-```
-
-If the assertion fails, the `docker_signs.artifacts:` selector needs to
-match one of the actual type names printed in the FAIL output. Update
-`.goreleaser.yaml`'s `docker_signs:` block with the correct selector
-(likely `Docker Manifest` or `all`) before pushing the release tag.
-
-The CI smoke-test job `release-smoke.yml` runs this check automatically
-on every PR touching `.goreleaser.yaml` or the Dockerfile — but this
-manual step stays in the checklist as a final pre-release confirmation.
+`docker_signs` in `.goreleaser.yaml` (`artifacts: images`) signs each
+tag's multi-platform image: the signature is on the index digest a tag
+names, not on the per-arch manifests, so verify a tag or its index digest. The
+`release-smoke.yml` job checks on every PR touching `.goreleaser.yaml` or
+the Dockerfile that this selector resolves to at least one artifact, so
+there is no manual step before the tag. After the release, step 9
+verifies the published image.
 
 ### 6.5. Update COMPATIBILITY.md
 
@@ -349,7 +315,8 @@ one server-side, and that tag is **lightweight and unsigned**. That is how
 committed to signing every tag.
 
 ```bash
-V=v0.6.0   # or whatever this release is
+# or whatever this release is
+V=v0.6.0
 
 # 1. The tag. Signed and annotated, at the exact verified commit.
 git tag -s -a "$V" -m "Release $V" <sha>
@@ -517,7 +484,8 @@ Per-release procedure:
 2. **Merge** the PR.
 3. **Tag the chart** at the merge commit on `main`:
    ```bash
-   V=v0.6.3   # the binary tag you just released
+   # the binary tag you just released
+   V=v0.6.3
    CHART_V=${V#v}
    git tag -s -a "cyoda-$CHART_V" -m "Release chart cyoda-$CHART_V"
    git push origin "cyoda-$CHART_V"
@@ -532,6 +500,9 @@ Per-release procedure:
      helm repo update
      helm search repo cyoda --versions | head
      ```
+   - The `Verify release` run that follows the chart release is green
+     (step 9): it checks the chart, and that the binary release still
+     holds GitHub's Latest mark.
 
 #### When NOT to bump chart `version:`
 
@@ -561,20 +532,50 @@ release and does not need to pre-exist. `release-chart.yml` verifies
 Pages is configured via `gh api repos/:owner/:repo/pages` and fails
 fast with an actionable error if not.
 
-### 9. (Optional) Smoke-test each install path
+### 9. Verify the published release (gate)
+
+The release is not done until it installs the way users install it. The
+`Verify release` workflow (`.github/workflows/verify-release.yml`) runs
+`scripts/verify-release.sh` after the `Release` run and after the
+`Release chart` run. For every release it checks:
+
+- `SHA256SUMS` is signed by `release.yml` for exactly this tag, and lists
+  every asset it checks (`install.sh` from v0.9.0 on);
+- the release's `install.sh`, with `CYODA_COSIGN_VERIFY=required`,
+  installs this version;
+- the `.deb` and `.rpm` install in clean containers;
+- the image verifies with `cosign` and runs by digest;
+- the help asset carries the version.
+
+For the newest stable release (`--latest`) it also checks that GitHub's
+Latest release is this tag, that `/releases/latest/download/SHA256SUMS` and
+`install.sh` are this release's, that `install.sh` without `CYODA_VERSION`
+installs it, and that the image tag `latest` is signed by this release run;
+the workflow also installs it with Homebrew on macOS. A pre-release, or an
+older release checked by hand, gets the pinned checks only. Every workflow
+run, whatever the tag, first checks that GitHub's Latest mark is on the
+newest stable release; if it is not, the run stops there.
+
+The `Release chart` run checks the chart it published: the chart version
+from its tag (`cyoda-C.D.E`) is served, downloads and renders, and its
+appVersion's binary release passes the checks above. A chart version need
+not equal the binary version.
+
+Every verification run of the release must be green (two when a chart
+release follows the binary release, one when it does not). If one fails,
+fix it before announcing the release. A wrong Latest mark is fixed with
+`gh release edit vX.Y.Z --repo cyoda/cyoda-go --latest` (the failure message
+gives the command); then re-run the workflow. Anything else usually needs a
+patch release. To run the checks by hand (needs `curl`, `cosign`, `docker`,
+`jq`, `helm`):
 
 ```bash
-# Homebrew (macOS or Linux):
-brew install cyoda/cyoda-go/cyoda
-cyoda --help
-
-# curl | sh (any Unix):
-curl -fsSL https://raw.githubusercontent.com/cyoda/cyoda-go/main/scripts/install.sh | sh
-
-# Debian:
-wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
-sudo dpkg -i cyoda_linux_amd64.deb
+scripts/verify-release.sh vX.Y.Z --latest --chart C.D.E
 ```
+
+The workflow also runs weekly against the newest stable release (and any
+chart for it), so drift (the Latest mark moving, an asset replaced) shows up
+without a release.
 
 ### 10. Open the next release branch
 
@@ -582,7 +583,8 @@ The `target-branch` edit from gate 0 is now on `main`, naming a branch that
 does not exist yet. Create it from the merge commit, immediately:
 
 ```bash
-V_NEXT=v0.9.0   # the next milestone
+# the next milestone
+V_NEXT=v0.9.0
 git fetch origin
 git branch "release/${V_NEXT}" origin/main
 git push origin "release/${V_NEXT}"
@@ -610,20 +612,20 @@ git push origin v0.6.0-rc.1
 ```
 
 This fires the full release workflow, producing a prerelease GitHub
-Release, images tagged `:v0.1.0-rc.1` (but NOT `:latest`), cosign
+Release, images tagged `:0.6.0-rc.1` (but NOT `:latest`), cosign
 signatures, and SBOMs. The Homebrew tap, chart appVersion bump, and
 `install.sh` / `.deb` / `.rpm` user-facing paths are all unaffected
 because:
 
 - `brews:` has `skip_upload: auto` — prereleases don't commit to the tap.
-- `:latest` manifest has `skip_push: '{{ .Prerelease }}'` — doesn't move.
+- the `latest` image has `disable: "{{ .Prerelease }}"` — doesn't move.
 - `bump-chart-appversion.yml` filters out tags containing `-`.
-- `install.sh` uses the GitHub `/releases/latest` API which hides prereleases.
+- `install.sh` follows `github.com/.../releases/latest`, which never names a prerelease.
 
 Delete the rc release afterwards if desired:
 
 ```bash
-gh release delete v0.1.0-rc.1 --cleanup-tag --yes
+gh release delete v0.6.0-rc.1 --cleanup-tag --yes
 ```
 
 ## Maintenance of older release lines
@@ -650,8 +652,8 @@ Fix before running `goreleaser release --snapshot`:
 ```bash
 cd /path/to/temp/clone
 git remote set-url origin https://github.com/cyoda/cyoda-go.git
-# Also disable push from this temp clone so an absent-minded `git push`
-# doesn't accidentally shove a local branch to the real upstream:
+# Also disable push from this temp clone so an absent-minded "git push"
+# does not accidentally shove a local branch to the real upstream:
 git remote set-url --push origin NO_PUSH
 ```
 

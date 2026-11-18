@@ -86,7 +86,7 @@
       "type": "object",
       "properties": {
         "enabled": {"type": "boolean"},
-        "parentRefs": {"type": "array"},
+        "parentRefs": {"type": "array", "items": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}}}},
         "http": {
           "type": "object",
           "properties": {
@@ -98,6 +98,13 @@
           "properties": {
             "hostnames": {"type": "array", "items": {"type": "string"}}
           }
+        }
+      },
+      "if": {"properties": {"enabled": {"const": true}}},
+      "then": {
+        "required": ["parentRefs"],
+        "properties": {
+          "parentRefs": {"minItems": 1}
         }
       }
     },

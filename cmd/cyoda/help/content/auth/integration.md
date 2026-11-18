@@ -81,12 +81,12 @@ cyoda has no tenant registry. A tenant exists as soon as a token names it, and o
 
 ```bash
 # On a host or container that holds CYODA_JWT_SIGNING_KEY (or _FILE).
-# Kubernetes: kubectl exec <pod> -- /cyoda token ...
-# Docker Compose: docker compose exec -T <service> /cyoda token ...
+# Kubernetes: kubectl exec POD -- /cyoda token ...
+# Docker Compose: docker compose exec -T SERVICE /cyoda token ...
 #   (-T: no TTY, so the token carries no trailing carriage return)
 ADMIN_TOKEN=$(cyoda token --tenant acme)
 
-# Create the tenant's first admin client. The node that takes the call
+# Create the first admin client of the tenant. The node that takes the call
 # must run with CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true.
 curl -X POST "https://cyoda.example.com/api/clients?withAdminRole=true" \
   -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
@@ -99,13 +99,13 @@ The answer carries `client_id` and `client_secret`. The secret is shown once. Ha
 Who: the tenant admin, with an admin client token.
 
 ```bash
-# The tenant admin's own token.
+# A token for the tenant admin.
 curl -X POST https://cyoda.example.com/api/tenants/acme/oauth/token \
   -K- <<<"user = \"${ADMIN_CLIENT_ID}:${ADMIN_CLIENT_SECRET}\"" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials"
 
-# The backend's on-behalf-of client.
+# The on-behalf-of client of the backend.
 curl -X POST "https://cyoda.example.com/api/clients?onBehalfOf=true" \
   -H @- <<<"Authorization: Bearer ${TENANT_ADMIN_TOKEN}"
 
@@ -342,7 +342,7 @@ Afterwards, review what the credentials did: entity changes and audit events who
 
 ## CLUSTER NOTES
 
-`CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` and `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` are read by each node at startup, and the node that takes a request decides by its own value. Behind a load balancer, give every node the same value, or management calls fail at random with `404 FEATURE_DISABLED`. Neither flag affects tokens: an exchange works with every trusted key registered while registration was on, on every node, whatever that node's flag; an admin client keeps `ROLE_ADMIN` after its flag is turned off. The Helm chart has no value for either flag: set them with `extraEnv`, for example `--set extraEnv[0].name=CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED --set-string extraEnv[0].value=true`. Use `--set-string` (or a values file with `value: "true"`): with `--set`, Helm reads `true` as a boolean and the chart's schema refuses it, because an environment value must be a string. Every replica of the StatefulSet then gets the same value, and the change rolls the pods, which is needed because the flags are read at startup. Clients and trusted keys live in the shared store: a create, reset, delete, registration or invalidation is in force on every node when the call returns.
+`CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` and `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` are read by each node at startup, and the node that takes a request decides by its own value. Behind a load balancer, give every node the same value, or management calls fail at random with `404 FEATURE_DISABLED`. Neither flag affects tokens: an exchange works with every trusted key registered while registration was on, on every node, whatever that node's flag; an admin client keeps `ROLE_ADMIN` after its flag is turned off. The Helm chart has no value for either flag: set them with `extraEnv`, for example `--set "extraEnv[0].name=CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED" --set-string "extraEnv[0].value=true"`. Use `--set-string` (or a values file with `value: "true"`): with `--set`, Helm reads `true` as a boolean and the chart's schema refuses it, because an environment value must be a string. Every replica of the StatefulSet then gets the same value, and the change rolls the pods, which is needed because the flags are read at startup. Clients and trusted keys live in the shared store: a create, reset, delete, registration or invalidation is in force on every node when the call returns.
 
 ## RUNNING IT LOCALLY
 
@@ -360,20 +360,21 @@ Mock mode has no client store: `POST /api/tenants/{tenant}/oauth/token` issues n
 openssl genrsa -out signing.pem 2048
 export CYODA_IAM_MODE=jwt CYODA_JWT_SIGNING_KEY_FILE=$PWD/signing.pem \
   CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true
-cyoda &    # Docker Compose: set the same variables on the service
+# Docker Compose: set the same variables on the service
+cyoda &
 B=http://localhost:8080/api
 
-# Operator token for tenant acme; with ROLE_M2M it can also reach data.
+# Operator token for tenant acme. With ROLE_M2M it can also reach data.
 # Kept in a file only you can read, and sent with -H @file, so it never
 # appears on a command line.
 umask 077
 printf 'Authorization: Bearer %s\n' "$(cyoda token --tenant acme --roles ROLE_ADMIN,ROLE_M2M)" > admin.hdr
 
-# The backend's OBO client.
+# The OBO client of the backend.
 curl -s -X POST "$B/clients?onBehalfOf=true" -H @admin.hdr > obo.json
 OBO_ID=$(jq -r .client_id obo.json); OBO_SECRET=$(jq -r .client_secret obo.json)
 
-# The application's key, registered as a trusted key.
+# The key of the application, registered as a trusted key.
 openssl genrsa -out app-key.pem 2048
 N=$(openssl rsa -in app-key.pem -noout -modulus | cut -d= -f2 \
     | xxd -r -p | openssl base64 -A | tr '+/' '-_' | tr -d '=')
@@ -399,7 +400,8 @@ user = "$OBO_ID:$OBO_SECRET"
 data = "subject_token=$HDR.$PAY.$SIG"
 EOF
 )
-curl -s "$B/account" -H @- <<<"Authorization: Bearer $OBO_TOKEN"   # userId "alice"
+# answers with userId "alice"
+curl -s "$B/account" -H @- <<<"Authorization: Bearer $OBO_TOKEN"
 ```
 
 In a cluster, `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` goes on every node. The recipe runs on the default memory backend, which keeps nothing across a restart: clients and trusted keys are gone after one, and you create them again. Use `CYODA_STORAGE_BACKEND=sqlite` (or postgres) to keep them.

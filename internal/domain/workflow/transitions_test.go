@@ -185,3 +185,41 @@ func TestGetAvailableTransitions_CustomWorkflowTakesPrecedence(t *testing.T) {
 		t.Fatalf("expected [submit, cancel], got %v", names)
 	}
 }
+
+// TestGetAvailableTransitions_OnlyNameable: the list holds the transitions a
+// client can name on a save — every transition of the current state that is
+// not disabled and has no schedule, whatever its `manual`. A disabled or a
+// scheduled transition is refused when named, so listing it as available
+// would invite a request that fails.
+func TestGetAvailableTransitions_OnlyNameable(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "order", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "OrderWF", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "approve", Next: "DONE", Manual: true},
+				{Name: "off", Next: "DONE", Manual: true, Disabled: true},
+				{Name: "expire", Next: "DONE", Schedule: &spi.TransitionSchedule{DelayMs: 60000}},
+				{Name: "auto", Next: "DONE", Manual: false},
+			}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
+
+	entity := makeEntity("e-trans-nameable", modelRef, map[string]any{})
+	entity.Meta.State = "OPEN"
+	entity.Meta.TenantID = testTenant
+
+	names, err := engine.GetAvailableTransitionsForEntity(ctx, entity)
+	if err != nil {
+		t.Fatalf("GetAvailableTransitionsForEntity failed: %v", err)
+	}
+	if len(names) != 2 || names[0] != "approve" || names[1] != "auto" {
+		t.Fatalf("expected [approve auto] (not disabled, not scheduled), got %v", names)
+	}
+}

@@ -412,12 +412,12 @@ business explanation, not a diagnostic, so it keeps a wider allowance than the
 rest of a member's free text: it is kept to its first 2048 characters, marked
 with `…` when it was cut, and the stored or reflected reason is capped well
 above that so this second cap is never what bites. It surfaces in two
-places: the manual-transition `400 WORKFLOW_FAILED` body
+places: the `400 WORKFLOW_FAILED` body of a transition the client named
 (`detail: transition "<name>" criterion not matched: <reason>` — the
-guaranteed, backend-independent delivery for a manual rejection), and the
+guaranteed, backend-independent delivery for such a refusal), and the
 `TRANSITION_NOT_MATCH_CRITERION` / `WORKFLOW_SKIP` state-machine audit events'
 `data.reason` — durable there only for the automated-cascade and
-workflow-selection paths, since a manual rejection rolls its transaction back.
+workflow-selection paths, since a refused named transition rolls its transaction back.
 An omitted `reason` defaults to `"criterion did not match"` in the audit and
 is left out of the 400 detail (bare `criterion not matched`). This is the rule
 for a function condition that is the whole criterion. When a function condition
@@ -624,7 +624,7 @@ A compute member declares its tags in `CalculationMemberJoinEvent.tags` as a str
 
 Among the members of the authenticated tenant whose tags match, the server picks **round robin**: the member that was picked longest ago goes next, and a member that has just joined has never been picked and goes first. Tag matching uses intersection: the member must declare at least one tag that appears in the callout's `calculationNodesTags`. A member of another tenant is never chosen, whatever its tags. Clients that need one particular member to receive a callout must give that member a tag of its own.
 
-A callout may be tried on more than one member. **Every try carries the same `requestId`** (and the same `id`) in its payload, and the same `transactionId`. A member that de-duplicates on `requestId` will therefore treat a second delivery of the same callout — to itself after a reconnect, or seen by a shared de-duplication store behind several members — as a repeat, which is the intent. Criteria and functions must have no effects: they may be given to another member whenever one does not answer. A processor is given to another member after it was handed the work only if its configuration declares it `idempotent`.
+A callout may be tried on more than one member. **Every try carries the same `requestId`** (and the same `id`) in its payload, and the same `transactionId`. A member that de-duplicates on `requestId` will therefore treat a second delivery of the same callout — to itself after a reconnect, or seen by a shared de-duplication store behind several members — as a repeat, which is the intent. A new callout carries a new `requestId`, even when it does the same work again: the client repeating the operation, the scheduler retrying a scheduled run, or a `COMMIT_BEFORE_DISPATCH` processor dispatched again after its operation was repeated (see `cyoda help workflows`, PROCESSORS). Criteria and functions must have no effects: they may be given to another member whenever one does not answer. A processor is given to another member after it was handed the work only if its configuration declares it `idempotent`.
 
 When `calculationNodesTags` is empty, every member of the authenticated tenant matches, and the same round robin applies.
 

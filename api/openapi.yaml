@@ -2298,8 +2298,10 @@ paths:
         - Entity Management
       summary: Get available transitions for an entity
       description: >
-        Returns the names of workflow transitions available from the entity's
-        current state at the given point in time.
+        Returns the names of the transitions a client can name on a save from
+        the entity's current state at the given point in time: every transition
+        of that state that is not disabled and has no `schedule`, whether its
+        `manual` is true or false.
 
 
         Exactly one of `pointInTime` or `transactionId` may be supplied;
@@ -3709,8 +3711,9 @@ paths:
           example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
         - name: transition
           in: path
-          description: The transition state to apply to the entity (e.g., 'UPDATE',
-            'PUBLISH')
+          description: The name of a transition of the entity's current state
+            to fire (e.g., 'UPDATE', 'PUBLISH'). Any transition that is not
+            disabled and has no `schedule` can be named, whatever its `manual`.
           required: true
           schema:
             type: string
@@ -3895,8 +3898,9 @@ paths:
             format: uuid
         - name: transition
           in: path
-          description: The transition state to apply to the entity (e.g., 'UPDATE',
-            'PUBLISH')
+          description: The name of a transition of the entity's current state
+            to fire (e.g., 'UPDATE', 'PUBLISH'). Any transition that is not
+            disabled and has no `schedule` can be named, whatever its `manual`.
           required: true
           schema:
             type: string
@@ -5986,7 +5990,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowImportSuccessDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed JSON, unknown importMode, or text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8); VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, a transition without manual, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          description: "Bad request — BAD_REQUEST: malformed JSON, a member the request does not declare (at any level, named in the detail), a member in another letter case or written twice, content after the request object, unknown importMode, or text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8); VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, a transition without manual, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
           content:
             application/problem+json:
               schema:
@@ -7395,8 +7399,9 @@ paths:
         - Entity Management
       summary: Fetch available transitions (platform-library format)
       description: >
-        Returns the names of workflow transitions available for an entity,
-        using the platform-library query format (`entityClass=Name.Version`).
+        Returns the names of the transitions a client can name on a save from
+        the entity's current state (not disabled, no `schedule`), using the
+        platform-library query format (`entityClass=Name.Version`).
 
 
         This endpoint mirrors `GET /entity/{entityId}/transitions` but accepts
@@ -10988,9 +10993,12 @@ components:
         manual:
           type: boolean
           description: >-
-            Whether this transition requires manual triggering: `true` means a
-            client request triggers it, `false` means the engine runs it
-            automatically. Required, with no default; an import whose
+            Whether the engine fires this transition on its own: `false` means
+            the engine evaluates it after every write (unless it has a
+            `schedule`, which fires it instead), `true` means it fires only when
+            a client names it on a save. A client can name any transition that
+            is not disabled and has no `schedule`, whatever its `manual`.
+            Required, with no default; an import whose
             transition omits it or sends `null` is rejected with 400
             VALIDATION_FAILED.
         disabled:

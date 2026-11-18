@@ -17,10 +17,12 @@ docker compose up
 Then:
 
 ```bash
-curl http://127.0.0.1:8080/api/health    # API on port 8080
-curl http://127.0.0.1:9091/livez         # admin liveness
-curl http://127.0.0.1:9091/metrics       # Prometheus scrape
+curl http://127.0.0.1:8080/api/health
+curl http://127.0.0.1:9091/livez
+curl http://127.0.0.1:9091/metrics
 ```
+
+The API's health on port 8080, then the admin port's liveness probe and its Prometheus scrape.
 
 Data persists in the named volume `cyoda-data`. `docker compose down` stops
 cyoda; `docker compose down -v` wipes the data.
@@ -62,15 +64,23 @@ Key elements to copy:
   network can still reach both ports. cyoda logs a WARN at startup
   when mock IAM listens on an address other than loopback, which this
   compose does by design. For production, set `CYODA_IAM_MODE=jwt` and
-  `CYODA_REQUIRE_JWT=true` AND provide `CYODA_JWT_SIGNING_KEY` (multi-line PEM:
-  `export CYODA_JWT_SIGNING_KEY="$(cat key.pem)"` before
-  `docker compose up`). A startup banner warns when running in mock
+  `CYODA_REQUIRE_JWT=true` AND provide the signing key as a file: mount it
+  read-only and set `CYODA_JWT_SIGNING_KEY_FILE` (the commented lines in
+  `compose.yaml` do this). Do not pass the PEM inline in the environment:
+  it would show in `docker inspect`. On a Linux host the file must be
+  readable by the container's user, UID 65532; keep it unreadable to anyone
+  else. For the key at `secrets/signing.pem` next to `compose.yaml`:
+  `sudo chown 65532:65532 secrets/signing.pem && sudo chmod 0400 secrets/signing.pem`.
+  Run the image you verified, by digest:
+  `CYODA_IMAGE=ghcr.io/cyoda/cyoda@<digest> docker compose up` (see
+  `cyoda help install`, Container image); the default `latest` is a tag
+  that can move. A startup banner warns when running in mock
   mode; `CYODA_SUPPRESS_BANNER=true` silences it (CI only — not
   production). Once the container is up in jwt mode, get a first admin
   token — the container already holds the key — and use it to create
   M2M clients:
   ```bash
-  docker compose exec cyoda /cyoda token --tenant <tenant>
+  docker compose exec -T cyoda /cyoda token --tenant TENANT
   ```
   `POST /api/clients` with that token.
 

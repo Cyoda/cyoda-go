@@ -170,7 +170,7 @@ Response: `200 OK`, `application/json`:
 - `If-Match` (header, optional): transaction ID of last read — optimistic concurrency; if the entity was modified since, returns `412 Precondition Failed`
 - `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
-Request body: updated entity JSON/XML payload.
+Request body: the entity's new JSON/XML payload, which replaces the stored data. The body is required: an empty body is refused with `400 BAD_REQUEST` and nothing is committed. To run the loopback, or fire a transition, without changing the data, send `PATCH` with the empty patch `{}`.
 
 Response: `200 OK`, `application/json`:
 
@@ -185,9 +185,11 @@ Response: `200 OK`, `application/json`:
 
 - `format` (path): `JSON` or `XML`
 - `entityId` (path): UUID
-- `transition` (path): string — transition name defined in the model's workflow
+- `transition` (path): string — the name of a transition of the entity's current state. Any transition that is not `disabled` and has no `schedule` can be named, whether its `manual` is `true` or `false`: `manual` decides only whether the engine fires the transition on its own (see `cyoda help workflows`, TRANSITIONS)
 - `If-Match` (header, optional): transaction ID
 - `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
+
+Request body: the entity's new JSON/XML payload, required as on the loopback update above.
 
 Response: `200 OK`, same shape as loopback update.
 
@@ -263,7 +265,7 @@ Request body: a sparse JSON object (the patch document). The patch is applied to
 - A key whose value is itself an object merges recursively.
 - A key present in the patch with an explicit `null` value deletes that key from the stored payload.
 - Arrays are replaced wholesale — there are no element-level operations.
-- The empty patch `{}` is a valid no-op merge: the data is unchanged, but the request still commits a new transaction and fires the loopback transition (consistent with PUT-with-empty-body).
+- The empty patch `{}` is a valid no-op merge: the data is unchanged, but the request still commits a new transaction and runs the loopback. On the named-transition route it fires that transition. This is how to fire a transition without changing the data; `PUT` refuses an empty body.
 
 **If-Match precondition (required).** Unlike `PUT`, where omitting `If-Match` means unconditional replace, PATCH requires `If-Match` to be present in some form, because the merge is applied relative to a base the caller read; silently patching a stale base risks lost updates. The token is the `meta.transactionId` from the caller's last `GET` of this entity — the same field the existing `PUT` `If-Match` uses.
 
@@ -279,7 +281,7 @@ Response: `200 OK`, same shape as the single-item PUT update.
 
 - `format` (path): `JSON` only
 - `entityId` (path): UUID
-- `transition` (path): string — transition name defined in the model's workflow
+- `transition` (path): string — the name of a transition of the entity's current state, under the same rule as the named-transition `PUT`: any transition that is not `disabled` and has no `schedule`, whatever its `manual`
 - `Content-Type` (header, required): same two-value list as the loopback form
 - `If-Match` (header, required in some form): same three-state list as the loopback form
 - `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
@@ -400,7 +402,7 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
 
 The submit time a `transactionId` resolves to is the transaction's commit instant, recorded durably: **any node** can resolve it, including after a restart, not only the node that ran the transaction. It is retained for one hour after the commit; an id older than that is no longer resolvable and answers `400 BAD_REQUEST`.
 
-Response: `200 OK`, `application/json`, array of available transition names (as returned by the workflow engine).
+Response: `200 OK`, `application/json`, array of the names of the transitions a client can name on a save from the entity's current state: every transition of that state that is not `disabled` and has no `schedule`, whatever its `manual`, in declaration order. A state with none answers `[]`.
 
 The names come from the workflow the entity's criterion selects — the same definition a subsequent transition will run (see `cyoda help workflows`, *Workflow-level selection*). Because selection is evaluated here, this read makes the callouts that the workflow criteria need — one per function condition evaluation reaches — and carries the same failure modes as a write: `400 WORKFLOW_FAILED` when a criterion cannot be evaluated or a compute member answers `success: false`, and the callout's own `503` when a callout fails (`NO_COMPUTE_MEMBER_FOR_TAG` when no compute member is connected for a function condition's tags). The request fails rather than answering from a different workflow. The read records no audit events.
 
@@ -409,7 +411,7 @@ The names come from the workflow the entity's criterion selects — the same def
 - `entityClass` (query, required): string in `Name.Version` format, e.g., `Offer.1`
 - `entityId` (query, required): UUID string
 
-Response: `200 OK`, `application/json`, array of available transition names.
+Response: `200 OK`, `application/json`, the same list as `GET /api/entity/{entityId}/transitions`: the names of the transitions a client can name on a save from the entity's current state.
 
 **GET /api/entity/consistency-time** — The current consistency time
 
