@@ -20,10 +20,11 @@
 #                         may ship without a chart).
 #
 # Needs curl, jq, cosign, docker (or $DOCKER), sha256sum or shasum, and helm
-# for the chart checks. Everything it writes goes to a temporary directory:
+# for the chart checks. Every file it writes goes to a temporary directory:
 # HOME, the XDG directories, cosign's cache, Docker's client config and
-# Helm's directories all point there. GH_TOKEN, when set, is sent to
-# api.github.com only. INSTALL_SH, when set, is a local install.sh to run
+# Helm's directories all point there (the images it pulls go to the Docker
+# daemon's storage). GH_TOKEN, when set, is sent to api.github.com only and
+# is not passed to anything the script runs. INSTALL_SH, when set, is a local install.sh to run
 # instead of the release's own: for testing an install.sh change against a
 # published release.
 set -euo pipefail
@@ -62,6 +63,11 @@ if [ -z "${DOCKER_HOST:-}" ]; then
     [ -n "$DOCKER_HOST" ] && export DOCKER_HOST
 fi
 
+# Keep the token for api.github.com, out of the environment of everything
+# the script runs (install.sh, the installed binary, cosign, helm).
+API_TOKEN="${GH_TOKEN:-}"
+unset GH_TOKEN GITHUB_TOKEN
+
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 export HOME="$WORK/home" TUF_ROOT="$WORK/tuf" DOCKER_CONFIG="$WORK/docker" \
@@ -80,8 +86,8 @@ ISSUER="https://token.actions.githubusercontent.com"
 
 fetch() { curl -fsSL -o "$2" "$1" || die "download failed: $1"; }
 github_api() {
-    if [ -n "${GH_TOKEN:-}" ]; then
-        curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/$1"
+    if [ -n "$API_TOKEN" ]; then
+        curl -fsSL -H "Authorization: Bearer $API_TOKEN" "https://api.github.com/repos/$REPO/$1"
     else
         curl -fsSL "https://api.github.com/repos/$REPO/$1"
     fi
@@ -124,7 +130,7 @@ ok "SHA256SUMS verified"
 step "the help asset carries version $V"
 fetch "$DL/cyoda_help_$V.json" "$WORK/dl/cyoda_help_$V.json"
 check_sum "$WORK/dl/cyoda_help_$V.json"
-got=$(jq -r .version "$WORK/dl/cyoda_help_$V.json")
+got=$(jq -r .version "$WORK/dl/cyoda_help_$V.json") || die "cyoda_help_$V.json is not JSON"
 [ "$got" = "$V" ] || die "cyoda_help_$V.json says version '$got'"
 ok "cyoda_help_$V.json version $got"
 
@@ -197,6 +203,16 @@ fi
 if [ -n "$CHART" ] || [ "$CHART_IF_PUBLISHED" = 1 ]; then
     helm repo add cyoda-verify https://cyoda.github.io/cyoda-go >/dev/null || die "helm repo add failed"
 fi
+# pull_chart C: the chart C downloads from the repository and renders.
+pull_chart() {
+    mkdir -p "$WORK/chart-$1"
+    helm pull cyoda-verify/cyoda --version "$1" -d "$WORK/chart-$1" >/dev/null 2>&1 \
+        || die "chart $1 is listed but does not download"
+    helm template cyoda "$WORK/chart-$1"/cyoda-"$1".tgz --set postgres.existingSecret=x \
+        --set jwt.existingSecret=x --set cluster.hmacSecret.existingSecret=x \
+        --set monitoring.metricsBearer.existingSecret=x --set gateway.enabled=false >/dev/null 2>&1 \
+        || die "chart $1 does not render"
+}
 if [ -n "$CHART" ]; then
     step "the Helm repository serves chart $CHART with appVersion $V"
     # GitHub Pages can serve the new index a few minutes after the chart
@@ -210,12 +226,18 @@ if [ -n "$CHART" ]; then
     done
     [ -n "$app" ] || die "chart $CHART is not served after five minutes"
     [ "$app" = "$V" ] || die "chart $CHART has appVersion '$app', not $V"
-    ok "chart $CHART, appVersion $app"
+    pull_chart "$CHART"
+    ok "chart $CHART, appVersion $app, downloads and renders"
 elif [ "$CHART_IF_PUBLISHED" = 1 ]; then
-    step "every chart with appVersion $V is served"
+    step "every chart with appVersion $V downloads and renders"
     charts=$(helm search repo cyoda-verify/cyoda --versions -o json | jq -r --arg v "$V" '[.[] | select(.app_version == $v) | .version] | join(" ")') \
         || die "helm search failed"
-    if [ -n "$charts" ]; then ok "chart(s) $charts with appVersion $V"; else ok "no chart with appVersion $V (a release may ship without one)"; fi
+    if [ -n "$charts" ]; then
+        for c in $charts; do pull_chart "$c"; done
+        ok "chart(s) $charts with appVersion $V download and render"
+    else
+        ok "no chart has appVersion $V (a release may ship without one)"
+    fi
 fi
 
 printf '\nverify-release: %s passed every check.\n' "$TAG"

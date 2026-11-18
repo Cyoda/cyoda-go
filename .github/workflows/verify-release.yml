@@ -49,7 +49,8 @@ jobs:
           set -euo pipefail
           # The newest stable binary release: the one GitHub's Latest must be.
           newest=$(gh api "repos/$REPO/releases?per_page=100" --jq \
-            '[.[] | select(.prerelease | not) | select(.draft | not) | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | .[0].tag_name')
+            '[.[] | select(.prerelease | not) | select(.draft | not) | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
+             | sort_by(.tag_name | ltrimstr("v") | split(".") | map(tonumber)) | last | .tag_name')
           case "$EVENT" in
             workflow_run)
               case "$RUN_NAME" in

@@ -70,11 +70,11 @@ jobs:
       - uses: azure/setup-helm@v5.0.1
         with:
           version: v4.1.4
-      - name: verify-release.sh v0.8.4 --chart
+      - name: verify-release.sh v0.8.4 --chart 0.8.4
         env:
           GH_TOKEN: ${{ github.token }}
           INSTALL_SH: ${{ github.workspace }}/scripts/install.sh
-        run: scripts/verify-release.sh v0.8.4 --chart
+        run: scripts/verify-release.sh v0.8.4 --chart 0.8.4
 
   smoke:
     runs-on: ubuntu-latest

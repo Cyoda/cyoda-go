@@ -547,7 +547,7 @@ fast with an actionable error if not.
 The release is not done until it installs the way users install it. The
 `Verify release` workflow (`.github/workflows/verify-release.yml`) runs
 `scripts/verify-release.sh` after the `Release` run and after the
-`Release chart` run, plus Homebrew on macOS. For every release it checks:
+`Release chart` run. For every release it checks:
 
 - `SHA256SUMS` is signed by `release.yml` for exactly this tag, and lists
   every asset it checks (`install.sh` from v0.9.0 on);
@@ -560,19 +560,21 @@ The release is not done until it installs the way users install it. The
 For the newest stable release (`--latest`) it also checks that GitHub's
 Latest release is this tag, that `/releases/latest/download/SHA256SUMS` and
 `install.sh` are this release's, that `install.sh` without `CYODA_VERSION`
-installs it, that the image tag `latest` is signed by this release run, and
-Homebrew. A pre-release, or an older release checked by hand, gets the
-pinned checks only.
+installs it, and that the image tag `latest` is signed by this release run;
+the workflow also installs it with Homebrew on macOS. A pre-release, or an
+older release checked by hand, gets the pinned checks only.
 
 The `Release chart` run checks the chart it published: the chart version
-from its tag (`cyoda-C.D.E`) is served, and its appVersion's binary release
-passes the checks above. A chart version need not equal the binary version.
+from its tag (`cyoda-C.D.E`) is served, downloads and renders, and its
+appVersion's binary release passes the checks above. A chart version need not equal the binary version.
 
-Both runs must be green. If one fails, fix it before announcing the
+Every verification run of the release must be green (two when a chart
+release follows the binary release, one when it does not). If one fails,
+fix it before announcing the
 release: a wrong Latest mark is fixed with
 `gh release edit vX.Y.Z --repo cyoda/cyoda-go --latest` (the failure message
 gives the command); anything else usually needs a patch release. To run it
-by hand (needs `cosign`, `docker`, `jq`, `helm`):
+by hand (needs `curl`, `cosign`, `docker`, `jq`, `helm`):
 
 ```bash
 scripts/verify-release.sh vX.Y.Z --latest --chart C.D.E

@@ -120,8 +120,10 @@ resolve_version() {
     # github.com/<repo>/releases/latest redirects to the Latest release's tag
     # page. No API call: the API's per-address rate limit does not apply.
     rv_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") || return 0
+    # Only a binary release (vX.Y.Z) can be installed; a chart release
+    # (cyoda-X.Y.Z) holding the mark gives no version.
     case "$rv_url" in
-        */releases/tag/*) printf '%s' "${rv_url##*/}" ;;
+        */releases/tag/v[0-9]*) printf '%s' "${rv_url##*/}" ;;
     esac
 }
 
@@ -228,7 +230,7 @@ main() {
     arch=$(detect_arch)
     version=$(resolve_version)
     if [ -z "$version" ]; then
-        err "could not resolve latest version from GitHub API"
+        err "could not find the latest cyoda release on github.com (unreachable, or the Latest release is not a binary release); set CYODA_VERSION=vX.Y.Z"
         exit 1
     fi
     version_bare="${version#v}"
