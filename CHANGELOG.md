@@ -2077,6 +2077,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   organization's earlier name, do not verify. The README and
   `cyoda help install` verify a `.deb`/`.rpm` package and the container
   image against the signature of the exact release.
+- **Every release is installed the way users install it, after it is
+  published.** The `Verify release` workflow runs after the release and the
+  chart release, and weekly: install.sh with signatures required (pinned and
+  unpinned), the `.deb` and `.rpm` in clean containers, the signed image by
+  digest, Homebrew, the Helm repository, GitHub's Latest mark and every
+  `/releases/latest/download/` URL. `scripts/verify-release.sh` runs the same
+  checks by hand. `SHA256SUMS` now lists `install.sh`, so the signature
+  covers the installer too.
 - **A chart release no longer becomes GitHub's "Latest" release.** The
   chart workflow marked its release (`cyoda-X.Y.Z`, which holds only the
   chart archive) as latest, so after a chart release `install.sh` resolved

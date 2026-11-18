@@ -542,27 +542,38 @@ release and does not need to pre-exist. `release-chart.yml` verifies
 Pages is configured via `gh api repos/:owner/:repo/pages` and fails
 fast with an actionable error if not.
 
-### 9. (Optional) Smoke-test each install path
+### 9. Verify the published release (gate)
 
-Smoke-test the routes users take, with verification on, for the release
-you just cut. Homebrew:
+The release is not done until it installs the way users install it. The
+`Verify release` workflow (`.github/workflows/verify-release.yml`) runs
+`scripts/verify-release.sh` after the `Release` run (binary routes) and
+again after the `Release chart` run (adds the Helm repository), plus Homebrew
+on macOS. It checks:
+
+- `SHA256SUMS` is signed by `release.yml` for exactly this tag, and lists
+  every asset it checks;
+- the release's `install.sh`, with `CYODA_COSIGN_VERIFY=required`,
+  installs this version, pinned and unpinned;
+- the `.deb` and `.rpm` install in clean containers;
+- the image verifies with `cosign` and runs by digest, and `latest` is
+  signed by this release run;
+- GitHub's Latest release is this tag, and `/releases/latest/download/`
+  serves its files;
+- the Helm repository serves chart `X.Y.Z` with appVersion `X.Y.Z`;
+- the help asset carries the version.
+
+Both runs must be green. If one fails, fix it before announcing the
+release: a wrong Latest mark is fixed with
+`gh release edit vX.Y.Z --repo cyoda/cyoda-go --latest`; anything else
+usually needs a patch release. To run it by hand (needs `cosign`, `docker`,
+`jq`, `helm`):
 
 ```bash
-brew install cyoda/cyoda-go/cyoda
-cyoda --help
+scripts/verify-release.sh vX.Y.Z --latest --chart
 ```
 
-The install script from the release (not from `main`), with signatures
-required:
-
-```bash
-V=vX.Y.Z
-curl -fsSL "https://github.com/cyoda/cyoda-go/releases/download/$V/install.sh" | CYODA_VERSION=$V CYODA_COSIGN_VERIFY=required sh
-```
-
-The `.deb`/`.rpm` package and the container image: follow the verified
-steps in README.md (Install) with `V` set to this release. Each installs
-only after the `cosign` check passes and, for a package, the checksum too.
+The workflow also runs weekly against the Latest release, so drift (the
+Latest mark moving, an asset replaced) shows up without a release.
 
 ### 10. Open the next release branch
 

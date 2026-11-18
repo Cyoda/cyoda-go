@@ -109,6 +109,10 @@ checksum:
   extra_files:
     - glob: ./.release-extras/cyoda_help_*.tar.gz
     - glob: ./.release-extras/cyoda_help_*.json
+    # install.sh is a release asset too (release.extra_files below): listing
+    # it here puts it under the signed SHA256SUMS, so a user can check the
+    # script before running it.
+    - glob: ./scripts/install.sh
 
 dockers_v2:
   - id: cyoda

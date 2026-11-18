@@ -3,6 +3,8 @@ name: Release smoke
 on:
   pull_request:
     paths:
+      - 'scripts/verify-release.sh'
+      - '.github/workflows/verify-release.yml'
       - 'scripts/install.sh'
       - '.goreleaser.yaml'
       - 'deploy/docker/Dockerfile'
@@ -11,6 +13,8 @@ on:
   push:
     branches: [main]
     paths:
+      - 'scripts/verify-release.sh'
+      - '.github/workflows/verify-release.yml'
       - 'scripts/install.sh'
       - '.goreleaser.yaml'
       - 'deploy/docker/Dockerfile'
@@ -53,6 +57,24 @@ jobs:
             echo "FAIL: the mode was checked only after a download"; exit 1
           fi
           test ! -e "$CYODA_INSTALL_DIR/cyoda"
+
+  verify-release-script:
+    # scripts/verify-release.sh runs after every release (verify-release.yml);
+    # here it runs on a change, against the last signed release, with this
+    # branch's install.sh (the published one predates its fixes).
+    name: verify-release.sh passes against v0.8.4
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: sigstore/cosign-installer@v3
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.1.4
+      - name: verify-release.sh v0.8.4 --chart
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INSTALL_SH: ${{ github.workspace }}/scripts/install.sh
+        run: scripts/verify-release.sh v0.8.4 --chart
 
   smoke:
     runs-on: ubuntu-latest
