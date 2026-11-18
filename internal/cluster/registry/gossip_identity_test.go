@@ -341,8 +341,10 @@ func TestGossipRegistry_DuplicateFoundByInboundExchangeRefusesToStart(t *testing
 		impostorDone <- impostor.Register(impostorCtx, "inbound-dup", "http://inbound-dup.test:8080")
 	}()
 
-	// The joiner has run its merge delegate on that inbound exchange.
-	eventually(t, 5*time.Second, "the joiner refuses the inbound exchange", func() bool {
+	// The impostor has made its first try and been refused (the line is its
+	// own: claimedBy is the node that writes it). That fixes when its next
+	// tries come; the joiner's first attempt forgets this one.
+	eventually(t, 5*time.Second, "the impostor's first try is refused", func() bool {
 		return countLines(logged.String(), refusalBy(addrOf(impostor))...) == 1
 	})
 
