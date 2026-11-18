@@ -23,10 +23,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   capitalised `github.com/Cyoda-platform/*` that earlier versions of
   `CONTRIBUTING.md` gave matches no module path (Go compares module paths
   case-sensitively) and can be removed too. The
-  OpenTelemetry instrumentation scope names change with the paths
-  (`github.com/cyoda/cyoda-go`, `github.com/cyoda/cyoda-go/workflow`,
+  OpenTelemetry instrumentation scope names of cyoda's own instrumentation
+  change with the paths (`github.com/cyoda/cyoda-go`,
+  `github.com/cyoda/cyoda-go/workflow`,
   `github.com/cyoda/cyoda-go/plugins/postgres`): a dashboard or alert that
-  filters on `otel_scope_name` or the trace scope needs the new names.
+  filters OTLP-pushed traces or metrics (`CYODA_OTEL_ENABLED=true`) by scope
+  needs the new names. The `:9091/metrics` scrape carries no scope label.
 
 - **Helm chart: Gateway API routing needs a Gateway.** With
   `gateway.enabled=true`, the default, the chart's schema refuses an empty,

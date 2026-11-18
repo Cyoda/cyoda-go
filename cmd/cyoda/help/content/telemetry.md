@@ -45,10 +45,13 @@ Which application metrics appear:
   enabled with full observability).
 - Go runtime and process metrics are always present.
 
-The instrumentation scope names are `github.com/cyoda/cyoda-go` (the
-server's spans and metrics), `github.com/cyoda/cyoda-go/workflow` (the
+cyoda's own instrumentation scope names are `github.com/cyoda/cyoda-go`
+(the server's spans and metrics), `github.com/cyoda/cyoda-go/workflow` (the
 workflow engine's spans) and `github.com/cyoda/cyoda-go/plugins/postgres`
-(the postgres storage plugin's pool metrics).
+(the postgres storage plugin's pool metrics); the HTTP and gRPC
+instrumentation that `CYODA_OTEL_ENABLED=true` adds has scopes of its own.
+The scope appears on OTLP-pushed traces and metrics only: the
+`:9091/metrics` scrape carries no scope label.
 
 ## ENV VARS
 
