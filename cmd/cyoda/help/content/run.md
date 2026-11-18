@@ -416,7 +416,7 @@ echo $?
 # Do not export CYODA_JWT_SIGNING_KEY inline — multi-line PEM does not
 # survive shell → docker-compose env interpolation reliably.
 # See the Docker Compose section above for the full snippet.
-docker compose up
+CYODA_IMAGE="ghcr.io/cyoda/cyoda@$D" docker compose up
 ```
 
 First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
