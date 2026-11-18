@@ -3,6 +3,7 @@ package help
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -349,8 +350,8 @@ body
 	if strings.Contains(s, "body-y") || strings.Contains(s, "body-z") {
 		t.Errorf("body-level see_also must be stripped, but appeared:\n%s", s)
 	}
-	// Front-matter's see_also must appear.
-	if !strings.Contains(s, "y") {
+	// Front-matter's see_also must appear, as its own entry line.
+	if !regexp.MustCompile(`(?m)^\s*•\s+y\s*$`).MatchString(s) {
 		t.Errorf("front-matter see_also ('y') missing:\n%s", s)
 	}
 }

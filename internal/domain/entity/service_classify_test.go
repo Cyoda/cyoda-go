@@ -467,7 +467,8 @@ func TestDeleteError_SanitizesStorageDetail(t *testing.T) {
 	if !strings.Contains(msg, "ticket") {
 		t.Errorf("per-id error carries no ticket, so the logged detail cannot be correlated: %s", msg)
 	}
-	if logged := buf.String(); !strings.Contains(withoutUUIDs(logged), "57014") {
+	// "SQLSTATE 57014": no ticket or timestamp in the log can contain it by chance.
+	if logged := buf.String(); !strings.Contains(logged, "SQLSTATE 57014") {
 		t.Errorf("the detail was sanitized out of the response but never logged, so it is lost: %s", logged)
 	}
 }
