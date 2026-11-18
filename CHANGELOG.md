@@ -12,8 +12,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   earlier name, which no account owns any more: GitHub only redirects it, and
   whoever registered it would serve new versions of those paths. They are now
   `github.com/cyoda/cyoda-go`, `github.com/cyoda/cyoda-go/plugins/...` and
-  `github.com/cyoda/cyoda-go-spi`. Only v0.9.0 and later exist under the new
-  paths, so a storage plugin or any other importer changes its imports, its
+  `github.com/cyoda/cyoda-go-spi`. No release before v0.9.0 exists under the
+  new paths, so a storage plugin or any other importer changes its imports, its
   `require` lines and its versions in one change; `go install
   github.com/cyoda/cyoda-go/cmd/cyoda@latest` installs the binary. Versions
   published under the old paths are unchanged. `GOPRIVATE` needs only
