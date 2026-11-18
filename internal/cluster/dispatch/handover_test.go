@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -810,7 +811,7 @@ func TestProvedBeforeConnecting_NothingRendersThePeerAddress(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	common.WriteError(rec, httptest.NewRequest(http.MethodPost, "/entity", nil), appErr)
-	if body := rec.Body.String(); strings.Contains(body, "169.254") || strings.Contains(body, "8080") {
+	if body := withoutUUIDs(rec.Body.String()); strings.Contains(body, "169.254") || strings.Contains(body, "8080") {
 		t.Errorf("the rendered error names the peer address: %s", body)
 	}
 	// The cause stays inspectable for the caller that logs it.
@@ -854,3 +855,10 @@ func TestReadAnswer_MemberTextHoldingNULIsNotBelieved(t *testing.T) {
 		}, 3))
 	})
 }
+
+// uuidText matches a UUID, such as an error's ticket.
+var uuidText = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// withoutUUIDs removes every UUID from s. A leak check removes them first: a
+// random ticket can contain a short marker such as a port number by chance.
+func withoutUUIDs(s string) string { return uuidText.ReplaceAllString(s, "") }

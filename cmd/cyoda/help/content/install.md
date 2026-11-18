@@ -113,7 +113,7 @@ Install the newer release by the same route:
 - Install script: run it again; with `CYODA_VERSION` it installs that release.
 - `.deb`/`.rpm`: verify the newer package as above, then install it (`sudo dpkg -i …`, `sudo rpm -U …`).
 - Container image: verify the newer release's image and pull it by digest, as above, then restart the container with that digest.
-- From source: `go install …@latest` again.
+- From source: `go install github.com/cyoda/cyoda-go/cmd/cyoda@latest` again. Use this path even if you installed from the earlier `github.com/cyoda-platform/cyoda-go` path: that path gets no new releases.
 
 Read the release notes before an upgrade. A storage backend's schema migrates when the new binary starts (sqlite and postgres auto-migrate by default; see `cyoda help cli migrate`).
 

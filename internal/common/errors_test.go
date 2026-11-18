@@ -263,7 +263,7 @@ func TestReportError_IsSanitizedInVerboseMode(t *testing.T) {
 	t.Cleanup(func() { common.SetErrorResponseMode("sanitized") })
 	captureSlog(t)
 	got := common.ReportError(context.Background(), common.Internal("entity delete failed", errors.New("pg: connection to host db-1 refused")))
-	if strings.Contains(got, "db-1") || !strings.HasPrefix(got, "SERVER_ERROR: internal error [ticket: ") {
+	if strings.Contains(withoutUUIDs(got), "db-1") || !strings.HasPrefix(got, "SERVER_ERROR: internal error [ticket: ") {
 		t.Errorf("client text = %q, want the generic ticketed text", got)
 	}
 }
@@ -330,14 +330,15 @@ func TestWriteErrorSanitizedDoesNotLeakSecrets(t *testing.T) {
 	common.WriteError(w, r, appErr)
 
 	body := w.Body.String()
+	clean := withoutUUIDs(body)
 	// The response body must NOT contain the connection string.
-	if strings.Contains(body, "admin@host") {
+	if strings.Contains(clean, "admin@host") {
 		t.Error("sanitized response leaked connection string")
 	}
-	if strings.Contains(body, "5432") {
+	if strings.Contains(clean, "5432") {
 		t.Error("sanitized response leaked port number")
 	}
-	if strings.Contains(body, "sslmode") {
+	if strings.Contains(clean, "sslmode") {
 		t.Error("sanitized response leaked connection parameter")
 	}
 	// Should contain the ticket-based generic message.
@@ -860,3 +861,10 @@ func TestInternal_EpochMismatchIsARetryable409(t *testing.T) {
 		t.Fatalf("the client-facing message leaked the store's wording: %q", e.Message)
 	}
 }
+
+// uuidText matches a UUID, such as an error's ticket.
+var uuidText = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// withoutUUIDs removes every UUID from s. A leak check removes them first: a
+// random ticket can contain a short marker such as a port number by chance.
+func withoutUUIDs(s string) string { return uuidText.ReplaceAllString(s, "") }

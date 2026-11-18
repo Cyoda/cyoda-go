@@ -74,10 +74,13 @@ func TestOwner_OneInfoLine_ForACalloutThatNeededMoreThanOneTry(t *testing.T) {
 	if _, ok := line["elapsedMs"]; !ok {
 		t.Errorf("line = %v, want elapsedMs", line)
 	}
-	for key, value := range line {
-		if s, ok := value.(string); ok && strings.Contains(s, "QUOKKAZEBRA") {
-			t.Errorf("field %s repeats the cnode's own failure text, which is tenant content: %q", key, s)
-		}
+	// The whole line, nested attributes included, must not repeat it.
+	raw, err := json.Marshal(line)
+	if err != nil {
+		t.Fatalf("marshal line: %v", err)
+	}
+	if strings.Contains(string(raw), "QUOKKAZEBRA") {
+		t.Errorf("the line repeats the cnode's own failure text, which is tenant content: %s", raw)
 	}
 }
 
