@@ -81,8 +81,8 @@ cyoda has no tenant registry. A tenant exists as soon as a token names it, and o
 
 ```bash
 # On a host or container that holds CYODA_JWT_SIGNING_KEY (or _FILE).
-# Kubernetes: kubectl exec <pod> -- /cyoda token ...
-# Docker Compose: docker compose exec -T <service> /cyoda token ...
+# Kubernetes: kubectl exec POD -- /cyoda token ...
+# Docker Compose: docker compose exec -T SERVICE /cyoda token ...
 #   (-T: no TTY, so the token carries no trailing carriage return)
 ADMIN_TOKEN=$(cyoda token --tenant acme)
 
@@ -364,7 +364,7 @@ export CYODA_IAM_MODE=jwt CYODA_JWT_SIGNING_KEY_FILE=$PWD/signing.pem \
 cyoda &
 B=http://localhost:8080/api
 
-# Operator token for tenant acme; with ROLE_M2M it can also reach data.
+# Operator token for tenant acme. With ROLE_M2M it can also reach data.
 # Kept in a file only you can read, and sent with -H @file, so it never
 # appears on a command line.
 umask 077

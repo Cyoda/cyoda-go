@@ -387,7 +387,7 @@ jobs:
           echo "PASS: schema rejected gateway+ingress both-enabled."
 
   helm-install-smoke:
-    name: ct install on kind
+    name: helm install on kind
     needs: helm-lint-and-validate
     runs-on: ubuntu-latest
     steps:

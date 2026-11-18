@@ -86,7 +86,7 @@ curl -X POST -H @- \
   http://localhost:8080/api/admin/trace-sampler \
   <<<"Authorization: Bearer $TOKEN"
 
-# Disable local sampling (still honors upstream-sampled traceparent; set parent_based:false to override)
+# Disable local sampling. It still honors an upstream-sampled traceparent: set parent_based:false to override.
 curl -X POST -H @- \
   -H "Content-Type: application/json" \
   -d '{"sampler":"never"}' \

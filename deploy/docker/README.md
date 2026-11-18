@@ -70,7 +70,11 @@ Key elements to copy:
   it would show in `docker inspect`. On a Linux host the file must be
   readable by the container's user, UID 65532; keep it unreadable to anyone
   else. For the key at `secrets/signing.pem` next to `compose.yaml`:
-  `sudo chown 65532:65532 secrets/signing.pem && sudo chmod 0400 secrets/signing.pem`. A startup banner warns when running in mock
+  `sudo chown 65532:65532 secrets/signing.pem && sudo chmod 0400 secrets/signing.pem`.
+  Run the image you verified, by digest:
+  `CYODA_IMAGE=ghcr.io/cyoda/cyoda@<digest> docker compose up` (see
+  `cyoda help install`, Container image); the default `latest` is a tag
+  that can move. A startup banner warns when running in mock
   mode; `CYODA_SUPPRESS_BANNER=true` silences it (CI only — not
   production). Once the container is up in jwt mode, get a first admin
   token — the container already holds the key — and use it to create

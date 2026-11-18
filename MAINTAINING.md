@@ -580,18 +580,25 @@ fast with an actionable error if not.
 
 ### 9. (Optional) Smoke-test each install path
 
+Smoke-test the routes users take, with verification on, for the release
+you just cut. Homebrew:
+
 ```bash
-# Homebrew (macOS or Linux):
 brew install cyoda/cyoda-go/cyoda
 cyoda --help
-
-# curl | sh (any Unix):
-curl -fsSL https://raw.githubusercontent.com/cyoda/cyoda-go/main/scripts/install.sh | sh
-
-# Debian:
-wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
-sudo dpkg -i cyoda_linux_amd64.deb
 ```
+
+The install script from the release (not from `main`), with signatures
+required:
+
+```bash
+V=vX.Y.Z
+curl -fsSL "https://github.com/cyoda/cyoda-go/releases/download/$V/install.sh" | CYODA_VERSION=$V CYODA_COSIGN_VERIFY=required sh
+```
+
+The `.deb`/`.rpm` package and the container image: follow the verified
+steps in README.md (Install) with `V` set to this release. Each runs the
+install only after `cosign` and the checksum pass.
 
 ### 10. Open the next release branch
 

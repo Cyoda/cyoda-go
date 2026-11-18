@@ -2,8 +2,16 @@ package help
 
 import (
 	"io/fs"
+	"regexp"
 	"strings"
 	"testing"
+)
+
+// quotedText and trailingComment find a ` #` comment after a command, outside
+// any quoted text.
+var (
+	quotedText      = regexp.MustCompile(`'[^']*'|"[^"]*"`)
+	trailingComment = regexp.MustCompile(`\s#(\s|$)`)
 )
 
 // TestHelpContent_FencesClose: every code fence in a help topic is closed by
@@ -52,7 +60,9 @@ func TestHelpContent_FencesClose(t *testing.T) {
 // as a comment unless INTERACTIVE_COMMENTS is set, so an apostrophe there
 // ("kubectl's") opens a quote that never closes, and the pasted block stops
 // at the `quote>` prompt without running the commands after it; and a
-// backtick or `$(` in a comment line runs the command it names.
+// backtick or `$(` in a comment line runs the command it names, a `;`, `|`
+// or `&` runs the words after it, and `<` or `>` redirects. A comment after a
+// command is passed to the command as arguments.
 func TestHelpContent_ShellCommentsPasteInZsh(t *testing.T) {
 	shellLang := map[string]bool{"": true, "bash": true, "sh": true, "shell": true, "zsh": true, "console": true}
 	err := fs.WalkDir(embeddedContent, "content", func(path string, d fs.DirEntry, err error) error {
@@ -77,8 +87,17 @@ func TestHelpContent_ShellCommentsPasteInZsh(t *testing.T) {
 				}
 				continue
 			}
-			if !inBlock || !shell || !strings.HasPrefix(trimmed, "#") {
+			if !inBlock || !shell {
 				continue
+			}
+			if !strings.HasPrefix(trimmed, "#") {
+				if trailingComment.MatchString(quotedText.ReplaceAllString(trimmed, "")) {
+					t.Errorf("%s:%d: a comment after a command is passed to that command as arguments in interactive zsh: %q", path, i+1, trimmed)
+				}
+				continue
+			}
+			if strings.ContainsAny(trimmed, ";|&<>") {
+				t.Errorf("%s:%d: a comment line with ; | & < or > runs or redirects when pasted into interactive zsh: %q", path, i+1, trimmed)
 			}
 			if strings.Count(trimmed, "'")%2 == 1 || strings.Count(trimmed, `"`)%2 == 1 {
 				t.Errorf("%s:%d: a comment line with an unbalanced quote breaks a paste into interactive zsh: %q", path, i+1, trimmed)

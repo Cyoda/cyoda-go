@@ -2107,7 +2107,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   signing key as a file, and the production-shaped `docker run` reads the
   key and the Postgres DSN from files. The install script's settings go on
   `sh`, after the pipe (`curl … | CYODA_VERSION=v0.9.0 sh`): written before
-  `curl`, as the README showed, they never reached the script.
+  `curl`, as the README showed, they never reached the script. Shell
+  examples paste into interactive zsh as written: no comment line runs a
+  command, opens a quote or redirects, and no comment follows a command.
 
 - **gRPC: a snapshot the caller does not have, or results of one that has
   not finished, is the caller's error,** as it is on HTTP. A

@@ -96,7 +96,7 @@ Returns the tenant's keys with status (active / invalidated) and validity window
 curl -X POST https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID}/invalidate \
   -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 
-# Re-enable. validTo is required; validFrom defaults to now.
+# Re-enable. validTo is required, validFrom defaults to now.
 curl -X POST https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID}/reactivate \
   -H @- \
   -H "Content-Type: application/json" \

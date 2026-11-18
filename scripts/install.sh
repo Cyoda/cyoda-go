@@ -155,7 +155,7 @@ cosign_verify() {
         *)
             # An unknown value must not fall back to auto mode: an operator
             # who wrote `true` or `REQUIRED` expected enforcement.
-            err "CYODA_COSIGN_VERIFY=$cv_mode is not one of auto, required, false."
+            err "CYODA_COSIGN_VERIFY=$cv_mode is not one of auto, required, false, 0, no."
             exit 1
             ;;
     esac

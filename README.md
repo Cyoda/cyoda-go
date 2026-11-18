@@ -102,7 +102,7 @@ This binary uses the in-memory backend by default. Run `cyoda init` for sqlite p
 The 30-second example uses mock auth. To exercise the real auth chain end-to-end with sqlite + jwt, use the project's profile pattern. The only credential is the JWT signing key; `cyoda token` signs the first admin token with it, offline:
 
 ```bash
-# Generate a JWT signing key (openssl writes it 0600 by default; make it explicit)
+# Generate a JWT signing key. openssl writes it 0600 by default, and chmod makes it explicit.
 openssl genrsa -out /tmp/jwt.key 2048
 chmod 600 /tmp/jwt.key
 

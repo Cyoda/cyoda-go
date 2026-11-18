@@ -21,6 +21,8 @@ services:
       # keep it unreadable to anyone else:
       # `sudo chown 65532:65532 deploy/docker/secrets/signing.pem && sudo chmod 0400 deploy/docker/secrets/signing.pem`
       # (the mount below is relative to this file's directory).
+      # Run the image you verified, by digest: CYODA_IMAGE=ghcr.io/cyoda/cyoda@<digest>
+      # (see `cyoda help install`, Container image); `latest` is a tag that can move.
       # First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`.
       # See `cyoda help run` (Docker Compose) and `cyoda help config auth`.
       # CYODA_IAM_MODE: jwt

@@ -211,15 +211,15 @@ docker compose -f deploy/docker/compose.yaml up
 # 2. docker-compose.yaml snippet (add to the cyoda service):
 #      volumes:
 #        - ./secrets/signing.pem:/run/secrets/signing.pem:ro
-#        (the file must be readable by UID 65532, the container user; see Docker above)
+#        (the file must be readable by UID 65532, the container user. See Docker above.)
 #      environment:
 #        CYODA_IAM_MODE: jwt
 #        CYODA_REQUIRE_JWT: "true"
 #        CYODA_JWT_SIGNING_KEY_FILE: /run/secrets/signing.pem
 #        CYODA_JWT_ISSUER: https://cyoda.example.com
 #        CYODA_JWT_AUDIENCE: cyoda-api
-# 3. Launch:
-docker compose up
+# 3. Launch the image you verified, by digest (cyoda help install, Container image):
+CYODA_IMAGE="ghcr.io/cyoda/cyoda@$D" docker compose up
 ```
 
 First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.

@@ -20,9 +20,11 @@ cloudevents — JSON Schemas for every CloudEvent payload exchanged over the gRP
 ## SYNOPSIS
 
 ```
-cyoda help cloudevents            # narrative (this page)
-cyoda help cloudevents json       # full schemas tree as a single JSON document
+cyoda help cloudevents
+cyoda help cloudevents json
 ```
+
+The first prints this page; the second prints the full schemas tree as a single JSON document.
 
 ## DESCRIPTION
 

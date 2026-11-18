@@ -46,12 +46,10 @@ Every feature must have tests at the appropriate level before it can be merged.
 
 **Reconciliation tests** (`test/recon/`, build tag `cyoda_recon`) compare Cyoda-Go responses against Cyoda Cloud to verify API-level compatibility. These are optional and require Cloud credentials.
 
-```bash
-make test        # iteration tier: unit + cross-backend parity (~115s cold, ~85s warm)
-make test-full   # everything, root + all three plugin submodules (~15 min)
-make race        # race detector (CI-parity scope) — CI runs it on every PR push
-go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Cloud)
-```
+- `make test` — the iteration tier: unit + cross-backend parity (~115s cold, ~85s warm).
+- `make test-full` — everything: the root module and all three plugin submodules (~15 min).
+- `make race` — the race detector (CI-parity scope); CI runs it on every PR push.
+- `go test -tags cyoda_recon ./test/recon/` — reconciliation (optional, needs Cloud).
 
 Both tiers require Docker and there is no Docker-free alternative: if Docker
 cannot serve the suites, `make preflight` fails with what to fix. The
