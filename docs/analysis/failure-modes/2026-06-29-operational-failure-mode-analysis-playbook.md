@@ -13,7 +13,7 @@ Companion to [`2026-06-29-operational-failure-mode-analysis.md`](./2026-06-29-op
 ## 2. Scope & sources (re‑confirm each run)
 
 - **Target:** `cyoda-go` core + `plugins/postgres`. Check out the release branch under analysis (last run: `release/v0.8.2`).
-- **SPI contract:** the pinned `github.com/cyoda-platform/cyoda-go-spi` module — read its source from `$(go env GOMODCACHE)/github.com/cyoda-platform/cyoda-go-spi@<version>` (last run: `v0.8.1`). The `spi` module version moves independently of the binary — re‑resolve it from `plugins/postgres/go.mod`.
+- **SPI contract:** the pinned `github.com/cyoda/cyoda-go-spi` module — read its source from `$(go env GOMODCACHE)/github.com/cyoda/cyoda-go-spi@<version>` (last run: `v0.8.1`, then under the earlier path `github.com/cyoda-platform/cyoda-go-spi`; the path moved in v0.9.0). The `spi` module version moves independently of the binary — re‑resolve it from `plugins/postgres/go.mod`.
 - **Out of scope:** the Cassandra plugin / `cyoda-go-cassandra`; `memory`/`sqlite` plugins except where they expose a shared‑contract issue.
 - **Lens:** operational failure only — *unavailability, inconsistency, data corruption/loss, uncontrolled breakdown (panic/fatal/leak)*. Not throughput. Calibrate severity to **moderate volume**: tens of concurrent requests, 2–3 nodes, an occasionally slow/dead compute node, clients that disconnect.
 

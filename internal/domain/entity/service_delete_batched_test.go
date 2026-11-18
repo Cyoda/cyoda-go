@@ -494,7 +494,7 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchIsTicketed(t *testing.T) {
 	}
 
 	logged := buf.String()
-	if !strings.Contains(logged, "commit boom") || !strings.Contains(logged, "57014") {
+	if !strings.Contains(logged, "commit boom") || !strings.Contains(withoutUUIDs(logged), "57014") {
 		t.Errorf("the commit cause was sanitized out of the response but never logged, so it is lost: %s", logged)
 	}
 

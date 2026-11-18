@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -559,7 +560,7 @@ func TestE2E_StatementTimeout_ScheduledReArm_GRPCEnvelope(t *testing.T) {
 		t.Errorf("Error.Message = %q, want the generic ticket message", env.Error.Message)
 	}
 	for _, leak := range []string{"sqlstate", "57014", "canceling statement", "statement_timeout", "scheduled_tasks", "pgx"} {
-		if strings.Contains(strings.ToLower(env.Error.Message), leak) {
+		if strings.Contains(strings.ToLower(withoutUUIDs(env.Error.Message)), leak) {
 			t.Errorf("gRPC envelope leaks internal detail (%q): %s", leak, env.Error.Message)
 		}
 	}
@@ -1003,3 +1004,10 @@ func TestE2E_SearchCeiling_DoesNotLeakOntoInteractiveStatements(t *testing.T) {
 		t.Fatalf("an interactive search failed with %d after the scan ran; the search ceiling leaked onto the interactive path. body: %s", resp.StatusCode, body)
 	}
 }
+
+// uuidText matches a UUID, such as an error's ticket.
+var uuidText = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// withoutUUIDs removes every UUID from s. A leak check removes them first: a
+// random ticket can contain a short marker such as a SQLSTATE by chance.
+func withoutUUIDs(s string) string { return uuidText.ReplaceAllString(s, "") }
