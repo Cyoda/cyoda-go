@@ -293,9 +293,8 @@ tag's multi-platform image: the signature is on the index digest a tag
 names, not on the per-arch manifests, so verify a tag or its index digest. The
 `release-smoke.yml` job checks on every PR touching `.goreleaser.yaml` or
 the Dockerfile that this selector resolves to at least one artifact, so
-there is no manual step before the tag. After the release, check the
-published image with `cosign verify`, pinned to the new tag, as README.md
-(Install, Container image) shows.
+there is no manual step before the tag. After the release, step 9
+verifies the published image.
 
 ### 6.5. Update COMPATIBILITY.md
 
@@ -501,18 +500,9 @@ Per-release procedure:
      helm repo update
      helm search repo cyoda --versions | head
      ```
-   - The binary release is still GitHub's "Latest" release, not the chart
-     release (`release-chart.yml` sets `mark_as_latest: false`):
-     `vX.Y.Z` must carry "Latest" in the first list, and the second
-     command must print `200`:
-     ```bash
-     gh release list --limit 3
-     curl -sIL -o /dev/null -w '%{http_code}\n' \
-       https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh
-     ```
-     If the chart release took the mark, `install.sh` and every
-     `/releases/latest/download/` URL answer 404; restore it with
-     `gh release edit vX.Y.Z --latest`.
+   - The `Verify release` run that follows the chart release is green
+     (step 9): it checks the chart, and that the binary release still
+     holds GitHub's Latest mark.
 
 #### When NOT to bump chart `version:`
 

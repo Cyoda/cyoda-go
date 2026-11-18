@@ -1520,8 +1520,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   image by digest, the help asset's version. For the newest stable release
   also: GitHub's Latest mark, `/releases/latest/download/` `SHA256SUMS` and
   `install.sh`, the unpinned `install.sh`, the image tag `latest` and
-  Homebrew. For a chart release: the Helm repository serves the chart, with
-  its appVersion. `scripts/verify-release.sh` runs the same checks by hand.
+  Homebrew. For a chart release: the Helm repository serves the chart with
+  its appVersion, and the chart downloads and renders. Every run also checks
+  that GitHub's Latest mark is on the newest stable release.
+  `scripts/verify-release.sh` runs the same checks by hand, except Homebrew.
   `SHA256SUMS` now lists `install.sh`, so the signature covers the
   installer too.
 - **`cyoda help install` and `cyoda help design`.** `install` gives every

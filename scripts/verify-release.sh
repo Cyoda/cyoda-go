@@ -13,9 +13,10 @@
 #             (/releases/latest/download/SHA256SUMS and install.sh, install.sh
 #             without CYODA_VERSION, the image tag `latest`) give this release.
 #             Use it only for the newest stable release.
-#   --chart C.D.E         the Helm repository serves chart C.D.E, and its
-#                         appVersion is this release's version.
-#   --chart-if-published  the same for every chart whose appVersion is this
+#   --chart C.D.E         the Helm repository serves chart C.D.E, its
+#                         appVersion is this release's version, and it
+#                         downloads and renders.
+#   --chart-if-published  download and render every chart whose appVersion is this
 #                         release's version; none is not a failure (a release
 #                         may ship without a chart).
 #
@@ -56,17 +57,17 @@ done
 for c in curl jq cosign; do command -v "$c" >/dev/null || die "$c is not on PATH"; done
 if [ -n "$CHART" ] || [ "$CHART_IF_PUBLISHED" = 1 ]; then command -v helm >/dev/null || die "helm is not on PATH"; fi
 
+# Keep the token for api.github.com, out of the environment of everything
+# the script runs (docker, install.sh, the installed binary, cosign, helm).
+API_TOKEN="${GH_TOKEN:-}"
+unset GH_TOKEN GITHUB_TOKEN
+
 # Keep the caller's Docker endpoint (a context other than the default socket)
 # before HOME and DOCKER_CONFIG move to the temporary directory.
 if [ -z "${DOCKER_HOST:-}" ]; then
     DOCKER_HOST=$("$DOCKER" context inspect -f '{{.Endpoints.docker.Host}}' 2>/dev/null || true)
     [ -n "$DOCKER_HOST" ] && export DOCKER_HOST
 fi
-
-# Keep the token for api.github.com, out of the environment of everything
-# the script runs (install.sh, the installed binary, cosign, helm).
-API_TOKEN="${GH_TOKEN:-}"
-unset GH_TOKEN GITHUB_TOKEN
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -84,7 +85,7 @@ DL="https://github.com/$REPO/releases/download/$TAG"
 ID="https://github.com/Cyoda/cyoda-go/.github/workflows/release.yml@refs/tags/$TAG"
 ISSUER="https://token.actions.githubusercontent.com"
 
-fetch() { curl -fsSL -o "$2" "$1" || die "download failed: $1"; }
+fetch() { curl -fsSL --retry 3 --retry-connrefused -o "$2" "$1" || die "download failed: $1"; }
 github_api() {
     if [ -n "$API_TOKEN" ]; then
         curl -fsSL -H "Authorization: Bearer $API_TOKEN" "https://api.github.com/repos/$REPO/$1"
@@ -206,12 +207,12 @@ fi
 # pull_chart C: the chart C downloads from the repository and renders.
 pull_chart() {
     mkdir -p "$WORK/chart-$1"
-    helm pull cyoda-verify/cyoda --version "$1" -d "$WORK/chart-$1" >/dev/null 2>&1 \
-        || die "chart $1 is listed but does not download"
+    helm pull cyoda-verify/cyoda --version "$1" -d "$WORK/chart-$1" > /dev/null 2> "$WORK/helm.log" \
+        || { tail -n 5 "$WORK/helm.log" >&2; die "chart $1 is listed but does not download"; }
     helm template cyoda "$WORK/chart-$1"/cyoda-"$1".tgz --set postgres.existingSecret=x \
         --set jwt.existingSecret=x --set cluster.hmacSecret.existingSecret=x \
-        --set monitoring.metricsBearer.existingSecret=x --set gateway.enabled=false >/dev/null 2>&1 \
-        || die "chart $1 does not render"
+        --set monitoring.metricsBearer.existingSecret=x --set gateway.enabled=false > /dev/null 2> "$WORK/helm.log" \
+        || { tail -n 5 "$WORK/helm.log" >&2; die "chart $1 does not render"; }
 }
 if [ -n "$CHART" ]; then
     step "the Helm repository serves chart $CHART with appVersion $V"

@@ -43,6 +43,18 @@ jobs:
           sh scripts/install.sh | tee "$RUNNER_TEMP/install.log"
           grep -q 'Signatures verified (cosign)' "$RUNNER_TEMP/install.log"
           "$CYODA_INSTALL_DIR/cyoda" --version | grep -q 'cyoda version 0.8.4'
+      - name: Without CYODA_VERSION it installs the Latest release
+        # The unpinned route: the version comes from the github.com redirect
+        # of /releases/latest. No version is asserted, so this keeps passing
+        # as releases come.
+        env:
+          CYODA_COSIGN_VERIFY: required
+          CYODA_INSTALL_DIR: ${{ runner.temp }}/bin-latest
+        run: |
+          sh scripts/install.sh | tee "$RUNNER_TEMP/install-latest.log"
+          grep -Eq '^Installing cyoda v[0-9]+\.[0-9]+\.[0-9]+ ' "$RUNNER_TEMP/install-latest.log"
+          grep -q 'Signatures verified (cosign)' "$RUNNER_TEMP/install-latest.log"
+          "$CYODA_INSTALL_DIR/cyoda" --version
       - name: An unknown CYODA_COSIGN_VERIFY value stops the script
         env:
           CYODA_VERSION: v0.8.4
@@ -64,8 +76,11 @@ jobs:
     # branch's install.sh (the published one predates its fixes).
     name: verify-release.sh passes against v0.8.4
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: sigstore/cosign-installer@v3
       - uses: azure/setup-helm@v5.0.1
         with:

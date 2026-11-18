@@ -31,6 +31,7 @@ jobs:
        github.event.workflow_run.conclusion != 'cancelled' &&
        github.event.workflow_run.conclusion != 'skipped')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       tag: ${{ steps.r.outputs.tag }}
       flags: ${{ steps.r.outputs.flags }}
@@ -71,6 +72,13 @@ jobs:
           # the unpinned routes give; an older or pre-release tag gets the
           # pinned checks.
           [ "$tag" = "$newest" ] && flags="$flags --latest"
+          # Whatever the tag, GitHub's Latest must be the newest stable
+          # release: a release on an older line must not take it.
+          latest=$(gh api "repos/$REPO/releases/latest" --jq .tag_name)
+          if [ "$latest" != "$newest" ]; then
+            echo "GitHub's Latest release is '$latest', not the newest stable release $newest; restore it: gh release edit $newest --repo $REPO --latest"
+            exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "flags=$flags" >> "$GITHUB_OUTPUT"
           echo "newest=$newest" >> "$GITHUB_OUTPUT"
@@ -79,8 +87,11 @@ jobs:
   linux:
     needs: resolve
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: sigstore/cosign-installer@v3
       - uses: azure/setup-helm@v5.0.1
         with:
@@ -97,6 +108,7 @@ jobs:
     # The tap carries the newest stable release only.
     if: needs.resolve.outputs.tag == needs.resolve.outputs.newest
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - name: brew install from the tap gives the release
         env:
