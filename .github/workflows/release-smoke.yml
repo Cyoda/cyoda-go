@@ -91,9 +91,10 @@ jobs:
           with open('dist/artifacts.json') as f:
               artifacts = json.load(f)
 
-          # `docker_signs: artifacts: images` in .goreleaser.yaml matches
-          # the per-arch "Docker Image" artifacts that dockers_v2 produces
-          # (one per platform). We expect at least two (amd64 + arm64) per
+          # `docker_signs: artifacts: images` in .goreleaser.yaml selects
+          # the "Docker Image" artifacts that dockers_v2 produces (one per
+          # platform); the published signature is on each tag's
+          # multi-platform index digest. We expect at least two (amd64 + arm64) per
           # cyoda image id — so 4 total across the two ids (cyoda, cyoda-latest).
           signable = [a for a in artifacts if a.get('type') == 'Docker Image']
 

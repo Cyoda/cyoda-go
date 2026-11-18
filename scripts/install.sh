@@ -151,13 +151,6 @@ cosign_verify() {
     cv_mode="${CYODA_COSIGN_VERIFY:-auto}"
     case "$cv_mode" in
         false|0|no) info "Skipping cosign verification (CYODA_COSIGN_VERIFY=$cv_mode)"; return 0 ;;
-        auto|required) : ;;
-        *)
-            # An unknown value must not fall back to auto mode: an operator
-            # who wrote `true` or `REQUIRED` expected enforcement.
-            err "CYODA_COSIGN_VERIFY=$cv_mode is not one of auto, required, false, 0, no."
-            exit 1
-            ;;
     esac
 
     if ! command -v cosign >/dev/null 2>&1; then
@@ -213,7 +206,21 @@ cosign_verify() {
     info "Signatures verified (cosign)"
 }
 
+# check_cosign_mode refuses an unknown CYODA_COSIGN_VERIFY before anything is
+# downloaded. An unknown value must not fall back to auto mode: an operator
+# who wrote `true` or `REQUIRED` expected enforcement.
+check_cosign_mode() {
+    case "${CYODA_COSIGN_VERIFY:-auto}" in
+        auto|required|false|0|no) : ;;
+        *)
+            err "CYODA_COSIGN_VERIFY=$CYODA_COSIGN_VERIFY is not one of auto, required, false, 0, no."
+            exit 1
+            ;;
+    esac
+}
+
 main() {
+    check_cosign_mode
     os=$(detect_os)
     arch=$(detect_arch)
     version=$(resolve_version)

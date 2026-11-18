@@ -152,9 +152,10 @@ docker_signs:
   # platform — linux/amd64, linux/arm64, ...). There is no separate
   # `docker_manifests:` block and the v2 publish path assembles the
   # multi-arch manifest list transparently from those per-arch images.
-  # Sign the images themselves: cosign signs each per-arch digest,
-  # multi-arch pulls resolve to a signed image, and the snapshot smoke
-  # can verify the signer's selector resolves non-empty.
+  # Selecting the images signs each published tag: the signature lands on
+  # the tag's multi-platform index digest (v0.8.4: index signed, per-arch
+  # manifests not), which is what a pull by tag or by that digest
+  # resolves. The snapshot smoke verifies the selector resolves non-empty.
   - artifacts: images
     cmd: cosign
     args:

@@ -288,8 +288,9 @@ tag if CI is red.
 
 ### 6. Image signing
 
-`docker_signs` in `.goreleaser.yaml` signs the per-arch `Docker Image`
-artifacts that `dockers_v2` produces (`artifacts: images`). The
+`docker_signs` in `.goreleaser.yaml` (`artifacts: images`) signs each
+tag's multi-platform image: the signature is on the index digest a tag
+names, not on the per-arch manifests, so verify a tag or its index digest. The
 `release-smoke.yml` job checks on every PR touching `.goreleaser.yaml` or
 the Dockerfile that this selector resolves to at least one artifact, so
 there is no manual step before the tag. After the release, check the
