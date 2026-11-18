@@ -49,6 +49,9 @@ jobs:
             echo "FAIL: CYODA_COSIGN_VERIFY=true was accepted"; cat "$RUNNER_TEMP/unknown.log"; exit 1
           fi
           grep -q 'CYODA_COSIGN_VERIFY=true is not one of' "$RUNNER_TEMP/unknown.log"
+          if grep -q 'Downloading' "$RUNNER_TEMP/unknown.log"; then
+            echo "FAIL: the mode was checked only after a download"; exit 1
+          fi
           test ! -e "$CYODA_INSTALL_DIR/cyoda"
 
   smoke:

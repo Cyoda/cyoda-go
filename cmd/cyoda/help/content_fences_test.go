@@ -96,6 +96,9 @@ func TestHelpContent_ShellCommentsPasteInZsh(t *testing.T) {
 				}
 				continue
 			}
+			if strings.HasSuffix(trimmed, "\\") {
+				t.Errorf("%s:%d: a comment line ending in a backslash swallows the next command when pasted into interactive zsh: %q", path, i+1, trimmed)
+			}
 			if strings.ContainsAny(trimmed, ";|&<>") {
 				t.Errorf("%s:%d: a comment line with ; | & < or > runs or redirects when pasted into interactive zsh: %q", path, i+1, trimmed)
 			}

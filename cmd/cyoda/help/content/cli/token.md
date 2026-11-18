@@ -103,8 +103,8 @@ fi
 # to every tenant, and turning it off does not affect existing clients.
 
 # Kubernetes: the binary in the image is /cyoda, and the pod already holds the key
-TOKEN=$(kubectl exec <pod> -- /cyoda token --tenant acme)
+TOKEN=$(kubectl exec POD -- /cyoda token --tenant acme)
 
 # Docker Compose
-TOKEN=$(docker compose exec -T <service> /cyoda token --tenant acme)
+TOKEN=$(docker compose exec -T SERVICE /cyoda token --tenant acme)
 ```

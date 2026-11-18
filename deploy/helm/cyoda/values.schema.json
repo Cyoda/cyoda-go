@@ -86,7 +86,7 @@
       "type": "object",
       "properties": {
         "enabled": {"type": "boolean"},
-        "parentRefs": {"type": "array", "items": {"type": "object", "required": ["name"]}},
+        "parentRefs": {"type": "array", "items": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}}}},
         "http": {
           "type": "object",
           "properties": {
