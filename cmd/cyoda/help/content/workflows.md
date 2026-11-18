@@ -734,6 +734,8 @@ curl -s -X POST -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1/workflow/import"
 ```
 
+`allowCycles` is part of the request, not of the stored workflows, so an export does not carry it. If the original import needed `allowCycles: true`, add it to the body (`jq '{importMode: "REPLACE", allowCycles: true, workflows}'`); every import checks for cycles again.
+
 **Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty. `annotations` (on the workflow, any state, any transition, or any processor) and `criterionAnnotations` (on the workflow or any transition) are omitted when absent, and re-serialised in compacted form when present.
 
 ## ENGINE EXECUTION

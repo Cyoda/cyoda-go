@@ -43,7 +43,7 @@ The chart is published to the Helm repository `https://cyoda.github.io/cyoda-go`
 helm repo add cyoda https://cyoda.github.io/cyoda-go
 helm repo update
 helm search repo cyoda/cyoda --versions
-helm install cyoda cyoda/cyoda --version <chart version> [--set ...]
+helm install cyoda cyoda/cyoda --version CHART_VERSION
 ```
 
 A chart release normally carries the version of the cyoda release it runs. `helm search repo cyoda/cyoda --versions` lists each chart version with its app version, the cyoda image the chart runs unless `image.tag` is set. Without `--version`, Helm installs the newest chart.

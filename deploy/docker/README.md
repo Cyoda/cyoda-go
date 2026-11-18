@@ -80,7 +80,7 @@ Key elements to copy:
   token — the container already holds the key — and use it to create
   M2M clients:
   ```bash
-  docker compose exec -T cyoda /cyoda token --tenant <tenant>
+  docker compose exec -T cyoda /cyoda token --tenant TENANT
   ```
   `POST /api/clients` with that token.
 

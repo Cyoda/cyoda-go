@@ -561,8 +561,8 @@ curl -fsSL "https://github.com/cyoda/cyoda-go/releases/download/$V/install.sh" |
 ```
 
 The `.deb`/`.rpm` package and the container image: follow the verified
-steps in README.md (Install) with `V` set to this release. Each runs the
-install only after `cosign` and the checksum pass.
+steps in README.md (Install) with `V` set to this release. Each installs
+only after the `cosign` check passes and, for a package, the checksum too.
 
 ### 10. Open the next release branch
 

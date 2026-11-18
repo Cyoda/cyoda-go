@@ -57,7 +57,7 @@ helm install cyoda cyoda/cyoda -n cyoda \
 The pod holds the signing key, so it can mint the first admin token:
 
 ```bash
-kubectl exec -n cyoda cyoda-0 -- /cyoda token --tenant <tenant>
+kubectl exec -n cyoda cyoda-0 -- /cyoda token --tenant TENANT
 ```
 
 Use it to create M2M clients: `POST /api/clients`.
