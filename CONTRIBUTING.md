@@ -156,7 +156,7 @@ A sample is one JSON file in `api/clientprobe/samples/`:
 No external web frameworks. No DI frameworks. No ORM.
 
 - When bumping `cyoda-go-spi` in the root `go.mod`, bump it identically in every `plugins/*/go.mod` in the same PR. The `check-spi-pin-sync` CI gate enforces this. See [`MAINTAINING.md`](MAINTAINING.md#bumping-cyoda-go-spi) for the full procedure.
-- **Set `GOPRIVATE=github.com/cyoda/cyoda-go-cassandra`** in your shell environment if you build the commercial Cassandra plugin. It is private, so the Go toolchain must fetch it from GitHub directly instead of through `proxy.golang.org` and `sum.golang.org`. Name only that module: the public cyoda modules are fetched through the proxy and checked against the checksum database. Add the `export` to your shell profile. This repo's CI does not set it: every module it resolves is public.
+- **Set `GOPRIVATE=github.com/cyoda/cyoda-go-cassandra`** in your shell environment if you build the commercial Cassandra plugin. It is private, so the Go toolchain must fetch it from GitHub directly instead of through `proxy.golang.org` and `sum.golang.org`. Name only that module: the public cyoda modules are fetched through the proxy and checked against the checksum database. Add the `export` to your shell profile. If your `GOPRIVATE` still lists `github.com/Cyoda-platform/*` (earlier versions of this guide said to set it), remove it: it turns off the checksum check for the old module paths, whose GitHub organization name nobody owns. This repo's CI does not set it: every module it resolves is public.
 
 | Dependency | Purpose |
 |------------|---------|

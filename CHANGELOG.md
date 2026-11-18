@@ -12,11 +12,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   earlier name, which no account owns any more: GitHub only redirects it, and
   whoever registered it would serve new versions of those paths. They are now
   `github.com/cyoda/cyoda-go`, `github.com/cyoda/cyoda-go/plugins/...` and
-  `github.com/cyoda/cyoda-go-spi`. A storage plugin or any other importer
-  changes its imports and `require` lines; `go install
+  `github.com/cyoda/cyoda-go-spi`. Only v0.9.0 and later exist under the new
+  paths, so a storage plugin or any other importer changes its imports, its
+  `require` lines and its versions in one change; `go install
   github.com/cyoda/cyoda-go/cmd/cyoda@latest` installs the binary. Versions
   published under the old paths are unchanged. `GOPRIVATE` needs only
-  `github.com/cyoda/cyoda-go-cassandra`, the one private module. The
+  `github.com/cyoda/cyoda-go-cassandra`, the one private module. Remove
+  `github.com/Cyoda-platform/*`, which earlier versions of `CONTRIBUTING.md`
+  told you to set: it turns off the checksum check for the old paths. The
   OpenTelemetry instrumentation scope names change with the paths
   (`github.com/cyoda/cyoda-go`, `github.com/cyoda/cyoda-go/workflow`,
   `github.com/cyoda/cyoda-go/plugins/postgres`): a dashboard or alert that
@@ -3831,7 +3834,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`transactionTimeoutMs` on the equivalent CloudEvent requests) honors the
   same semantics, returning a `CLIENT_ERROR` envelope prefixed
   `TRANSACTION_TIMEOUT: …`. `cyoda help errors TRANSACTION_TIMEOUT`.
-  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+  ([#379](https://github.com/cyoda/cyoda-go/issues/379))
 
 - **`transactionSize` is now honored on `deleteEntities` and `deleteMessages`.**
   Set, matching ids/messages are deleted in independent batches of that size
@@ -3846,7 +3849,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `EntityDeleteAllRequest.transactionSize` mirror is honored the same way when
   explicitly sent, and its response's `errorsById` is now populated with
   per-id batch failures.
-  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+  ([#379](https://github.com/cyoda/cyoda-go/issues/379))
 
 - **`searchEntities` regains `timeoutMillis` and `408 SEARCH_TIMEOUT`,**
   completing the intent recorded when the previous, unenforced version of this
@@ -3855,7 +3858,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   partial results returned; rejected with **400** on a request that joins an
   open transaction. Enforced uniformly across memory, sqlite and postgres.
   `cyoda help errors SEARCH_TIMEOUT`.
-  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+  ([#379](https://github.com/cyoda/cyoda-go/issues/379))
 
 - **`POST /api/search/async/{entityName}/{modelVersion}` now runs on a
   bounded worker pool instead of one goroutine per submission**, with a
@@ -4088,7 +4091,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   model's `changeLevel` set, or the field declared in the model. This applies to
   every ingress that runs a cascade, including scheduled transitions and
   peer-forwarded dispatch.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **The sqlite plugin now numbers a new entity's first version 1, matching
   memory and postgres.** It previously started at 0, which was
@@ -4633,7 +4636,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   request: the criterion is evaluated against the payload of the request being served,
   so where definitions differ in what they permit, the selection field is a security
   control.
-  ([#465](https://github.com/Cyoda-platform/cyoda-go/issues/465))
+  ([#465](https://github.com/cyoda/cyoda-go/issues/465))
 
 - **`GET /entity/{entityId}/transitions` no longer answers from the wrong workflow when
   a selection criterion cannot be evaluated, and no longer writes to the audit trail.**
@@ -4644,7 +4647,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   empty transaction id, despite intending not to; it now records nothing. A criterion
   that merely does not *match* still resolves to the default workflow, which is
   selection working as documented.
-  ([#465](https://github.com/Cyoda-platform/cyoda-go/issues/465))
+  ([#465](https://github.com/cyoda/cyoda-go/issues/465))
 
 - **A payload that repeats a name within one object is now rejected with 400.**
   A duplicated name was read as the *last* occurrence by schema validation, the `GET`
@@ -4656,7 +4659,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   criterion runs against the request bytes before any store normalisation. Names
   repeated in sibling objects, across array elements or at different depths are
   ordinary JSON and remain accepted. RFC 8259 permits rejecting duplicate names.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **A number outside PostgreSQL's `numeric` range is now rejected with 400 instead of
   failing inside the store.** Beyond 131072 digits before the decimal point or 16383
@@ -4666,7 +4669,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   having one fraction digit and an in-range exponent, while `0.0001e131075` is accepted
   because leading zeros are not significant. It is purely lexical — deciding that
   `1e1000000` is too large never builds a million-digit value.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **A processor returning `{"data":null}` no longer panics and leaks a database
   connection.** The literal `null` is non-empty, so it passed the empty-payload check
@@ -4676,7 +4679,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   nor rolled back and its pooled connection was never returned. Repeated, that exhausts
   the pool and the node stops serving. The plugin now returns a clean error, so the
   normal error path runs and the transaction is released.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **An empty entity payload no longer makes the entity — and its whole model's
   listing — permanently unreadable on PostgreSQL.** `{}` was accepted with 200 and
@@ -4688,7 +4691,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   remained, leaving no data to decode. An empty payload now round-trips as `{}`, while
   a DELETED version — which legitimately carries no domain data — still reports none.
   The memory and sqlite stores were unaffected, so this was also a backend divergence.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **Unpaired UTF-16 surrogates and invalid UTF-8 in an HTTP entity payload are now
   rejected with 400 on every backend.** Both are accepted by Go's JSON parser and
@@ -4705,8 +4708,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   client never sent — and collapsed duplicate keys instead of rejecting them. All
   five gRPC entity write events (create, update, patch, create-collection,
   update-collection) now enforce the full guard set, matching HTTP.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25),
-  [#468](https://github.com/Cyoda-platform/cyoda-go/issues/468))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25),
+  [#468](https://github.com/cyoda/cyoda-go/issues/468))
 
 - **An entity payload containing a NUL (U+0000) is now rejected with 400 on every
   backend.** `{"name":"a\u0000b"}` is valid JSON and passes schema validation, but
@@ -4717,7 +4720,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   paths (create, batch-array create, collection create, update, collection update)
   now reject it at the boundary with 400 `BAD_REQUEST`, naming the offending field
   path. (NUL survives the gRPC ingress's decode, so it is caught there too.) Covered by a cross-backend parity scenario.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **A request body with trailing content after a valid JSON value now returns
   400, not 500.** `POST /entity/{format}/{name}/{version}` accepted a body such as
@@ -4726,7 +4729,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   malformed — bytes went on to be persisted, surfacing the client's input error as
   a storage failure with a support ticket. Entity payload decoding now requires the
   body to hold exactly one JSON value, matching `json.Unmarshal`.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **Point-in-time tests no longer compare two clocks.** `TestParity/GetAllEntitiesAsAt`
   flaked on postgres: it built its `pointInTime` from the test process's clock and
@@ -4737,7 +4740,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   parity suite, `internal/e2e`, the postgres plugin's own as-at tests (which had 2 ms,
   10 ms and zero-margin variants), and the SPI conformance harness, whose `Harness.Now`
   now reads the database clock.
-  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
+  ([#460](https://github.com/cyoda/cyoda-go/issues/460))
 
 - **`GET /entity/{id}/transitions` no longer 404s an existing entity when the
   database clock runs ahead of the application.** With no `pointInTime` supplied, the
@@ -4747,7 +4750,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   missing, so a request for the current state got **404 ENTITY_NOT_FOUND** for an
   entity that exists. A request with no point in time now reads the current version.
   Same fix in `GetAvailableTransitions`, behind `/platform-api/entity/fetch/transitions`.
-  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
+  ([#460](https://github.com/cyoda/cyoda-go/issues/460))
 
 - **Scheduled-transition e2e tests no longer race an HTTP round-trip against the
   timer.** `TestE2E_ScheduledTransition_FiresThroughHTTPStack` and `_LoopbackDefersTimer`
@@ -4756,7 +4759,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   assert from the server's audit trail: the transition was *armed* with its delay applied,
   and the fire did not precede the armed time. `getSMAuditEvents` gained an explicit page
   size — the default 20-item page silently truncated the history one of them reasons about.
-  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
+  ([#460](https://github.com/cyoda/cyoda-go/issues/460))
 
 - **A late compute-node reply no longer leaves a dangling gRPC dispatch
   entry.** `internal/grpc/dispatch.go` removed a pending request from its
@@ -4765,7 +4768,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   failure all abandoned their request without cleaning up its map entry — a
   bounded per-request leak, hottest on a reachable write deadline. All three
   paths now run through one deferred cleanup.
-  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+  ([#379](https://github.com/cyoda/cyoda-go/issues/379))
 
 - **SQLite's message batch-delete no longer fails outright on a large id
   list.** `MessageStore.DeleteBatch` built one `IN (?,…)` clause for the
@@ -4774,7 +4777,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   size well under that limit; message delete was already documented as
   non-transactional, so the chunking is not user-visible beyond no longer
   failing.
-  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+  ([#379](https://github.com/cyoda/cyoda-go/issues/379))
 
 - **An async search job whose owning node crashed no longer stays `RUNNING`
   forever with stale partial results.** Nothing previously reclaimed an
@@ -4922,7 +4925,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `CYODA_SCHEDULER_BATCH_SIZE`, `CYODA_SCHEDULER_DISTRIBUTION`,
   `CYODA_SCHEDULER_COORDINATOR`, `CYODA_SCHEDULER_REDISPATCH_BACKOFF`,
   `CYODA_SCHEDULER_EXPIRY_GRACE`.
-  ([#251](https://github.com/Cyoda-platform/cyoda-go/issues/251))
+  ([#251](https://github.com/cyoda/cyoda-go/issues/251))
 
   **Per-entity firing time via a `schedule.function` compute-node callout.**
   A scheduled transition's `schedule` may now carry `function` instead of a
@@ -4949,7 +4952,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   1.3+ schedule (a pre-1.3 exported workflow always has it). This is an
   intentional, schema-version-gated contract change, allowlisted in the
   oasdiff breaking-change gate.
-  ([#419](https://github.com/Cyoda-platform/cyoda-go/issues/419))
+  ([#419](https://github.com/cyoda/cyoda-go/issues/419))
 
   **Uniform compute-infra `503`s across processor/criterion/function
   callouts.** `NO_COMPUTE_MEMBER_FOR_TAG`, `DISPATCH_TIMEOUT`,
@@ -4958,7 +4961,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   kinds triggered the dispatch — previously some of these paths
   (e.g. no matching compute member) fell through to a misleading
   `400 WORKFLOW_FAILED`. No new error codes.
-  ([#251](https://github.com/Cyoda-platform/cyoda-go/issues/251))
+  ([#251](https://github.com/cyoda/cyoda-go/issues/251))
 
 - **Follow-on workflow actions are attributed to the originating principal.**
   A cascaded write (a processor reacting to a user's transition and writing
@@ -4979,7 +4982,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   New compute-node SDK helper `api/grpc/authctx` exposes `Type`/`ID`/`Roles`
   plus `Require(ce, role)`, a fail-closed role gate. See the `authtype` wire
   change under **Changed**.
-  ([#430](https://github.com/Cyoda-platform/cyoda-go/issues/430))
+  ([#430](https://github.com/cyoda/cyoda-go/issues/430))
 
 - **Bounded-search failures now surface as `400`, not `500`** — a storage backend
   (`Searcher` or grouped-stats aggregator) that detects a matched result set
@@ -4989,7 +4992,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   ticket on every transport. sqlite raises `SCAN_BUDGET_EXHAUSTED` on direct
   search today; the commercial backend's index-driven searcher is expected to
   raise `SEARCH_RESULT_LIMIT`. New error code: `SCAN_BUDGET_EXHAUSTED` (400).
-  ([#433](https://github.com/Cyoda-platform/cyoda-go/issues/433))
+  ([#433](https://github.com/cyoda/cyoda-go/issues/433))
 
 - **Tx-aware search pushdown + `trackingRead`** — an in-transaction search no
   longer falls back to a full `GetAll` scan plus in-memory filtering; the
@@ -5008,7 +5011,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   footprint than before. See `docs/CONSISTENCY.md` §3c for the updated fence
   guidance. Async search does not expose the flag (it runs detached, outside
   any transaction). No new error codes.
-  ([#420](https://github.com/Cyoda-platform/cyoda-go/issues/420))
+  ([#420](https://github.com/cyoda/cyoda-go/issues/420))
 
 - **Criterion stoppage reason** — a criteria compute node's `EntityCriteriaCalculationResponse`
   may now carry an optional `reason` string on `matches: false`, explaining why a passage was
@@ -5020,7 +5023,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and `WORKFLOW_SKIP`'s carries `{workflowName, reason}`. A manual rejection's own audit event is
   not forced durable (it rolls back with the no-op transaction, same as before). Reason is capped
   at 2 KiB; an omitted reason defaults to `"criterion did not match"`. No new error codes.
-  ([#413](https://github.com/Cyoda-platform/cyoda-go/issues/413))
+  ([#413](https://github.com/cyoda/cyoda-go/issues/413))
 
 - **Polymorphic temporal type detection** — the schema classifier now recognises
   `LOCAL_DATE`, `LOCAL_DATE_TIME`, `LOCAL_TIME`, `ZONED_DATE_TIME`, `YEAR`, and
@@ -5028,7 +5031,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   simple-view exporter reports them. Beyond classification fidelity this is what
   lets a backend build range indexes on temporal fields. Ships as part of the
   shared type-directed kernel (see **Changed**).
-  ([#137](https://github.com/Cyoda-platform/cyoda-go/issues/137))
+  ([#137](https://github.com/cyoda/cyoda-go/issues/137))
 
 - **Storage plugins can contribute `cyoda help` topics.** `help.RegisterOverlay(fs.FS)`
   lets a plugin hand its embedded `content/` tree to the help loader from `init()`,
@@ -5037,7 +5040,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   fresh paths are added; collisions follow the loader's existing "later wins" plus
   `see_also` union semantics, and front-matter validation applies identically to
   overlay content. OSS-only behaviour is unchanged when no overlay is registered.
-  ([#439](https://github.com/Cyoda-platform/cyoda-go/issues/439))
+  ([#439](https://github.com/cyoda/cyoda-go/issues/439))
 
 - **`cyoda help config all` and two new config subtopics.** `config all` prints
   every `CYODA_*` variable as a table (`--format=json` for the machine-consumable
@@ -5049,7 +5052,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   of prose in the parent topic. A completeness test asserts the registry covers
   every `CYODA_*` variable scanned from the root and in-tree plugin sources, and a
   default-drift test binds each registry default to `DefaultConfig()`.
-  ([#395](https://github.com/Cyoda-platform/cyoda-go/issues/395))
+  ([#395](https://github.com/cyoda/cyoda-go/issues/395))
 
 - **gRPC entity PATCH documented, with an event-type parity guard** — the `grpc`
   help topic's entity-management event-type catalogue was missing
@@ -5058,7 +5061,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   making them invisible to every downstream consumer of the help artefacts. Both
   are now documented, and a parity test pins the catalogue against the registered
   event-type constants so it cannot drift again. Documentation only — no runtime
-  change. ([#401](https://github.com/Cyoda-platform/cyoda-go/issues/401))
+  change. ([#401](https://github.com/cyoda/cyoda-go/issues/401))
 
 ### Changed
 
@@ -5076,7 +5079,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `Searcher.Search` must fail rather than truncate, `MergePage` is renamed
   `MergeBounded` (drops its `offset` parameter), and `SearchOptions.Offset` is
   removed outright. See `docs/cloud-parity/direct-search-bounded-or-fail.md`.
-  ([#437](https://github.com/Cyoda-platform/cyoda-go/issues/437))
+  ([#437](https://github.com/cyoda/cyoda-go/issues/437))
 
 - **Search/criteria predicate evaluation is now type-directed and same-type
   only**, aligning cyoda-go with Cyoda Cloud's evaluation model (see
@@ -5113,7 +5116,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `spi.MatchFilter`) now delegate to one shared kernel in the SPI, so the
   fallback and pushdown paths cannot drift; the SQL planners mirror it and stay
   guarded by the cross-backend parity suite.
-  ([#431](https://github.com/Cyoda-platform/cyoda-go/issues/431))
+  ([#431](https://github.com/cyoda/cyoda-go/issues/431))
 
 - **Processor `config.attachEntity` now defaults to `true`.** A processor whose
   `config` omits `attachEntity` is imported with `attachEntity: true`, so the
@@ -5123,7 +5126,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   workflows that omit the field and re-import (e.g. export → import) will start
   attaching the entity payload; compute nodes that ignore the payload are
   unaffected.
-  ([#421](https://github.com/Cyoda-platform/cyoda-go/issues/421))
+  ([#421](https://github.com/cyoda/cyoda-go/issues/421))
 
 - **CloudEvent `authtype` values are now `user`/`service`/`system` (breaking).**
   The Auth Context extension attribute previously emitted `user` or
@@ -5132,13 +5135,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   attribute is always present and faithful — an unset or unrecognized kind fails
   the callout dispatch rather than emitting a normalized value. Compute nodes
   switching on the old string must be updated.
-  ([#430](https://github.com/Cyoda-platform/cyoda-go/issues/430))
+  ([#430](https://github.com/cyoda/cyoda-go/issues/430))
 
 ### Fixed
 
 - **Conditional delete forwards a classified 4xx from its delete-selection
   search** instead of surfacing an opaque `500`.
-  ([#437](https://github.com/Cyoda-platform/cyoda-go/issues/437))
+  ([#437](https://github.com/cyoda/cyoda-go/issues/437))
 
 - **Direct search now applies the documented default limit** — omitting `limit`
   on `POST /api/search/direct/{entityName}/{modelVersion}` (and the gRPC
@@ -5147,7 +5150,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `GetAll`+match fallback branch, while the `Searcher` pushdown branch used by
   all three OSS backends (memory/sqlite/postgres) treated an omitted limit as
   unbounded, returning the entire matched set.
-  ([#432](https://github.com/Cyoda-platform/cyoda-go/issues/432))
+  ([#432](https://github.com/cyoda/cyoda-go/issues/432))
 
 - **`creationDate`/`lastUpdateTime` meta filters now compare chronologically, not
   lexically** — search conditions and workflow criteria on these fields compare
@@ -5160,7 +5163,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `400 CONDITION_TYPE_MISMATCH`, and an unknown meta filter field is rejected
   `400 INVALID_FIELD_PATH`. (The offset-mandatory rule was subsequently relaxed
   by the type-directed kernel — see **Changed**.)
-  ([#423](https://github.com/Cyoda-platform/cyoda-go/issues/423))
+  ([#423](https://github.com/cyoda/cyoda-go/issues/423))
 
 - **Depth-2 nested joined cascade no longer deadlocks the transaction** — when a
   joined compute-node callback ran a transition whose own SYNC processor drove a
@@ -5178,7 +5181,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   local buffer and is the one place a descendant callback can re-enter, so the
   release is safe for concurrent same-tx siblings. Covers both HTTP and gRPC entry
   points (both funnel through the same entity handler).
-  ([#410](https://github.com/Cyoda-platform/cyoda-go/issues/410))
+  ([#410](https://github.com/cyoda/cyoda-go/issues/410))
 
 - **Compute-node callback transaction-join now covers the gRPC search RPCs** — a
   processor/criteria callback that presented a valid `tx-token` on `EntitySearch` /
@@ -5195,7 +5198,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   envelope (`EntityResponse`, `Success=false`) rather than a raw gRPC status, and
   a token-less search is unchanged (no join). The HTTP entity API already joined
   reads (route-agnostic `X-Tx-Token` middleware) and was unaffected.
-  ([#402](https://github.com/Cyoda-platform/cyoda-go/issues/402))
+  ([#402](https://github.com/cyoda/cyoda-go/issues/402))
 
 - **gRPC server no longer echoes member keep-alives** — the streaming receive loop
   replied with a keep-alive to every inbound member keep-alive while also sending
@@ -5203,7 +5206,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   delay-free feedback loop that pinned both the server and the compute node at
   ~100% CPU indefinitely, with no INFO-level log output. An inbound keep-alive is
   now liveness-only (`UpdateLastSeen`), removing the storm class regardless of
-  client behaviour. ([#417](https://github.com/Cyoda-platform/cyoda-go/issues/417))
+  client behaviour. ([#417](https://github.com/cyoda/cyoda-go/issues/417))
 
 - **Malformed criterion regexes are rejected at workflow import** — a
   `MATCHES_PATTERN` criterion carrying a non-compiling pattern (e.g. `"["`)
@@ -5212,7 +5215,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   uses, so the failure surfaces at registration as `400 VALIDATION_FAILED`
   instead of at runtime. No schema-version bump: a non-compiling regex was never
   a working criterion, so no valid config is newly rejected. Eval-time behaviour
-  is untouched. ([#425](https://github.com/Cyoda-platform/cyoda-go/issues/425))
+  is untouched. ([#425](https://github.com/cyoda/cyoda-go/issues/425))
 
 - **Boolean search conditions on postgres no longer 500** — a `simple` search
   condition comparing a JSON path to a boolean (`{"operatorType":"EQUALS","value":true}`)
@@ -5222,7 +5225,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   operand is now rendered as its text form (`"true"`/`"false"`), matching the lexicographic
   text comparison already used for strings and the memory/sqlite backends. Affected normal
   searches and grouped-stats queries alike (shared query planner); memory and sqlite were
-  never affected. ([#399](https://github.com/Cyoda-platform/cyoda-go/issues/399))
+  never affected. ([#399](https://github.com/cyoda/cyoda-go/issues/399))
 
 ### Security
 
@@ -5248,8 +5251,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `.github/codeql-config.yml` with a test pinning the rationale: `slog`'s
   `TextHandler` quotes injected newlines, so the protection is a property of the
   handler rather than of each call site.
-  ([#449](https://github.com/Cyoda-platform/cyoda-go/issues/449),
-  [#450](https://github.com/Cyoda-platform/cyoda-go/issues/450))
+  ([#449](https://github.com/cyoda/cyoda-go/issues/449),
+  [#450](https://github.com/cyoda/cyoda-go/issues/450))
 
 ## [0.8.2] — 2026-07-08
 
@@ -5266,7 +5269,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   even in an extend-permitting mode. Under a named transition the merge is applied first, then the
   transition's processors run on the merged state. New error codes: `PRECONDITION_REQUIRED` (428),
   `UNSUPPORTED_MEDIA_TYPE` (415).
-  ([#341](https://github.com/Cyoda-platform/cyoda-go/issues/341))
+  ([#341](https://github.com/cyoda/cyoda-go/issues/341))
 
 - **Renderer annotations on processors & criteria** — the engine-ignored `annotations` bag now
   extends to the two workflow elements that lacked it: processors carry an embedded `annotations`
@@ -5278,7 +5281,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   never interpreted by the engine; processor annotations are stripped before dispatch and never
   reach compute members. Additive schema change: the workflow schema moves to **1.2** and every
   existing 1.1 payload remains valid (dual-shape). No new error codes.
-  ([#384](https://github.com/Cyoda-platform/cyoda-go/issues/384))
+  ([#384](https://github.com/cyoda/cyoda-go/issues/384))
 
 - **Composite unique keys** — entity models can declare one or more composite unique keys via
   `PUT /model/{entityName}/{modelVersion}/unique-keys` (UNLOCKED models only). Each key is an
@@ -5376,7 +5379,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   pagination done in the database — not a JSON-path-index speedup; adding
   indexes on queried paths remains a separate operational step. SQLite already
   did this; the memory backend keeps filtering in memory by design.
-  ([#37](https://github.com/Cyoda-platform/cyoda-go/issues/37))
+  ([#37](https://github.com/cyoda/cyoda-go/issues/37))
 
 - **Unknown model → `404 MODEL_NOT_FOUND` (uniform)** — all model-scoped read
   operations (`getAllEntities`, `getEntityStatisticsForModel`,
@@ -5404,7 +5407,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the rest of the API's JSON naming. The former kebab-case `meta-data` key is no longer honored;
   its contents are ignored. Breaking input change, shipped in a patch because edge messages have
   no known consumers. A new `cyoda help messages` topic documents the full edge-message API.
-  ([#386](https://github.com/Cyoda-platform/cyoda-go/issues/386))
+  ([#386](https://github.com/cyoda/cyoda-go/issues/386))
 
 ### Removed
 
@@ -5447,7 +5450,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   time up to the next millisecond (over-including later same-millisecond
   versions), and sqlite used a strict `<` bound — so different backends, and
   different read paths within one backend, could disagree at sub-millisecond
-  boundaries. ([#349](https://github.com/Cyoda-platform/cyoda-go/issues/349))
+  boundaries. ([#349](https://github.com/cyoda/cyoda-go/issues/349))
 
 ### Security
 
@@ -5476,14 +5479,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - New help topic `workflows.schema-version` documenting the wire-format contract.
 - New help action `cyoda help workflows schema-version versions` emitting the supported-version manifest as JSON.
 - HTTP help-action mirror: `GET /help/<topic>/<action>` now reachable for every registered action (`grpc proto/json`, `openapi json/yaml/tags`, `cloudevents json`, `workflows.schema-version versions`) with declared `Content-Type`.
-- OIDC provider per-tenant registry with 7 REST endpoints under `/oauth/oidc/providers` (register, list, get, update, invalidate, reactivate, delete, reload). Closes [#284](https://github.com/Cyoda-platform/cyoda-go/issues/284).
+- OIDC provider per-tenant registry with 7 REST endpoints under `/oauth/oidc/providers` (register, list, get, update, invalidate, reactivate, delete, reload). Closes [#284](https://github.com/cyoda/cyoda-go/issues/284).
 - Chained multi-issuer JWT validator: `JWKSValidator` (local issuer) first, `OIDCValidator` (registered OIDC providers) second — per ADR 0002 decision D3.
 - Per-provider configurable fields: `issuers` (accepted `iss` values), `expectedAudiences`, `rolesClaim` (overrides the global default per-provider).
 - Cluster broadcast for OIDC cache eviction: when a provider record is mutated or reloaded, a fire-and-forget message on `oidc-providers.invalidate` evicts the JWKS cache on every peer node — consistent with the model-cache invalidation pattern (single topic, no ACK required per ADR 0002 D7).
 - 6 new env vars: `CYODA_OIDC_REQUIRE_HTTPS`, `CYODA_OIDC_CONNECT_TIMEOUT_MS`, `CYODA_OIDC_SOCKET_TIMEOUT_MS`, `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS`, `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS`, `CYODA_OIDC_ROLES_CLAIM`.
 - 4 new error codes: `OIDC_PROVIDER_DUPLICATE`, `OIDC_PROVIDER_NOT_FOUND`, `OIDC_PROVIDER_INACTIVE`, `OIDC_SSRF_BLOCKED`. (5 additional error codes are wire-stubbed for future bearer-auth translation.)
 - ADR 0002 — Federated Identity Provider Architecture (`docs/adr/0002-federated-identity-provider-architecture.md`).
-- `/oauth/keys/keypair/*` and `/oauth/keys/trusted/*` — 10 admin endpoints now conform to the OpenAPI surface via chi-routed adapters in `internal/domain/account/`. ([#281](https://github.com/Cyoda-platform/cyoda-go/issues/281), sub-issue of [#194](https://github.com/Cyoda-platform/cyoda-go/issues/194))
+- `/oauth/keys/keypair/*` and `/oauth/keys/trusted/*` — 10 admin endpoints now conform to the OpenAPI surface via chi-routed adapters in `internal/domain/account/`. ([#281](https://github.com/cyoda/cyoda-go/issues/281), sub-issue of [#194](https://github.com/cyoda/cyoda-go/issues/194))
 - `/clients` OpenAPI surface — `GET /clients`, `POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret`. M2M client management is now reachable at the spec-conformant paths with the spec-conformant DTOs.
 - 6 new error codes: `FEATURE_DISABLED`, `KEY_OWNED_BY_DIFFERENT_TENANT`, `KEYPAIR_NOT_FOUND`, `TRUSTED_KEY_CAP_REACHED`, `UNSUPPORTED_ALGORITHM`, `UNSUPPORTED_KEY_TYPE`.
 - Error code `M2M_CLIENT_NOT_FOUND` (HTTP 404) emitted by the `/clients` admin operations on unknown or cross-tenant `clientId`.
@@ -5492,8 +5495,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
-- **Cross-tenant OIDC routing is now deterministic and safe.** When two tenants register the same `wellKnownConfigUri` (same physical IdP), tokens are no longer routed non-deterministically via Go's randomized map iteration. Resolution now uses a two-layer disambiguation: (1) audience-based routing — if the JWT's `aud` claim uniquely matches one tenant's `ExpectedAudiences`, that provider is selected; (2) if no unique audience match exists (both providers have empty or overlapping `ExpectedAudiences`), the token is rejected with `401 UNAUTHORIZED` (`ErrAmbiguousProvider`). Operators sharing an IdP across tenants MUST set distinct `expectedAudiences` on each registration. A `WARN` log (`oidc.cross_tenant_audience_overlap`) is emitted at Register-time when audience overlap is detected. ([#284](https://github.com/Cyoda-platform/cyoda-go/issues/284))
-- **OIDC pinned `issuers` are now enforced at discovery-fetch time.** When a provider's `issuers` list is non-empty, the discovery document's `issuer` field must match one of the pinned values; a mismatch refuses to install the provider source (logged at `WARN` with SHA-256 hashes of the issuer values, never raw strings) and the provider remains in the Phase-2-pending state until the admin reconciles. This is defence-in-depth: the runtime `issMatches` already enforces the pin at token-resolution time, but enforcing it at fetch time prevents the registry from caching an attacker-controlled `discoveryDoc.Issuer` value that could be silently trusted by future diagnostics or metrics code. ([#284](https://github.com/Cyoda-platform/cyoda-go/issues/284))
+- **Cross-tenant OIDC routing is now deterministic and safe.** When two tenants register the same `wellKnownConfigUri` (same physical IdP), tokens are no longer routed non-deterministically via Go's randomized map iteration. Resolution now uses a two-layer disambiguation: (1) audience-based routing — if the JWT's `aud` claim uniquely matches one tenant's `ExpectedAudiences`, that provider is selected; (2) if no unique audience match exists (both providers have empty or overlapping `ExpectedAudiences`), the token is rejected with `401 UNAUTHORIZED` (`ErrAmbiguousProvider`). Operators sharing an IdP across tenants MUST set distinct `expectedAudiences` on each registration. A `WARN` log (`oidc.cross_tenant_audience_overlap`) is emitted at Register-time when audience overlap is detected. ([#284](https://github.com/cyoda/cyoda-go/issues/284))
+- **OIDC pinned `issuers` are now enforced at discovery-fetch time.** When a provider's `issuers` list is non-empty, the discovery document's `issuer` field must match one of the pinned values; a mismatch refuses to install the provider source (logged at `WARN` with SHA-256 hashes of the issuer values, never raw strings) and the provider remains in the Phase-2-pending state until the admin reconciles. This is defence-in-depth: the runtime `issMatches` already enforces the pin at token-resolution time, but enforcing it at fetch time prevents the registry from caching an attacker-controlled `discoveryDoc.Issuer` value that could be silently trusted by future diagnostics or metrics code. ([#284](https://github.com/cyoda/cyoda-go/issues/284))
 - OIDC provider registration now requires the calling tenant to be UUID-shaped.
   Bootstrap deployments using the literal `default-tenant` string for
   `CYODA_BOOTSTRAP_TENANT_ID` must migrate to a real tenant UUID before
@@ -5506,10 +5509,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - Trusted-key per-tenant cap counts only currently-valid keys (matches Cyoda Cloud).
 - `withAdminRole` query parameter on `POST /clients` tightened from `string` to `boolean` in `api/openapi.yaml`. This is a deliberate divergence from the upstream Cyoda Cloud OpenAPI declaration.
 - `auth.M2MClient.TenantID` promoted from `string` to `spi.TenantID`. `M2MClient` now carries `CreatedAt` and `UpdatedAt` timestamps.
-- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now rejects structurally broken workflows with `400 VALIDATION_FAILED` instead of accepting them and degrading silently at runtime. New rules: empty workflow name, duplicate workflow names within a single request, empty `initialState`, `initialState` not declared in `states`, empty state-map key, transition `next` not declared in `states`, empty or duplicate transition names within a state, empty processor name, workflow / state / transition / processor name length > 256 chars, and unknown `executionMode` values. OpenAPI schema updated with matching `minLength: 1` + `maxLength: 256` on identifier fields and `propertyNames` on the `states` map. See ⚠️ Breaking changes below. ([#255](https://github.com/Cyoda-platform/cyoda-go/issues/255))
-- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now honours an explicit `"active": false` on each incoming `WorkflowDefinition`. The handler previously force-overrode every incoming `active` to `true`; it now defaults to `true` only when the field is absent (or explicitly `null`) and passes explicit `true` / `false` through unchanged. This restores export → REPLACE re-import idempotency and lets operators stage inactive workflows. See ⚠️ Breaking changes below. ([#256](https://github.com/Cyoda-platform/cyoda-go/issues/256))
-- Workflow engine: substitution of the embedded default workflow now emits a `slog.Warn` line in addition to the existing response-body warning. Log fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `entityId`, `reason` ∈ {`no_workflows_imported`, `no_criterion_matched`}. The body warning text is corrected per cause — `"no workflows imported for model — using default workflow"` for the cold paths in `Execute` / `ManualTransition` / `Loopback`, `"no imported workflow matched entity — using default workflow"` for `selectWorkflow`. Operators driving large fleets can now detect models silently running on the embedded default. ([#256](https://github.com/Cyoda-platform/cyoda-go/issues/256))
-- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now decodes the request body with `DisallowUnknownFields`. Unknown fields — at the top level *or* nested in the workflow / state / transition / processor sub-shapes — are rejected with `400 BAD_REQUEST` and the offending field name surfaced in the response detail (Go's decoder emits `json: unknown field "X"`). Typos like `"transitionn"` for `"transitions"` no longer silently import as a no-op. See ⚠️ Breaking changes below. The broader `DisallowUnknownFields` sweep across entity / cluster / auth boundaries remains in [#145](https://github.com/Cyoda-platform/cyoda-go/issues/145). ([#264](https://github.com/Cyoda-platform/cyoda-go/issues/264))
+- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now rejects structurally broken workflows with `400 VALIDATION_FAILED` instead of accepting them and degrading silently at runtime. New rules: empty workflow name, duplicate workflow names within a single request, empty `initialState`, `initialState` not declared in `states`, empty state-map key, transition `next` not declared in `states`, empty or duplicate transition names within a state, empty processor name, workflow / state / transition / processor name length > 256 chars, and unknown `executionMode` values. OpenAPI schema updated with matching `minLength: 1` + `maxLength: 256` on identifier fields and `propertyNames` on the `states` map. See ⚠️ Breaking changes below. ([#255](https://github.com/cyoda/cyoda-go/issues/255))
+- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now honours an explicit `"active": false` on each incoming `WorkflowDefinition`. The handler previously force-overrode every incoming `active` to `true`; it now defaults to `true` only when the field is absent (or explicitly `null`) and passes explicit `true` / `false` through unchanged. This restores export → REPLACE re-import idempotency and lets operators stage inactive workflows. See ⚠️ Breaking changes below. ([#256](https://github.com/cyoda/cyoda-go/issues/256))
+- Workflow engine: substitution of the embedded default workflow now emits a `slog.Warn` line in addition to the existing response-body warning. Log fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `entityId`, `reason` ∈ {`no_workflows_imported`, `no_criterion_matched`}. The body warning text is corrected per cause — `"no workflows imported for model — using default workflow"` for the cold paths in `Execute` / `ManualTransition` / `Loopback`, `"no imported workflow matched entity — using default workflow"` for `selectWorkflow`. Operators driving large fleets can now detect models silently running on the embedded default. ([#256](https://github.com/cyoda/cyoda-go/issues/256))
+- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now decodes the request body with `DisallowUnknownFields`. Unknown fields — at the top level *or* nested in the workflow / state / transition / processor sub-shapes — are rejected with `400 BAD_REQUEST` and the offending field name surfaced in the response detail (Go's decoder emits `json: unknown field "X"`). Typos like `"transitionn"` for `"transitions"` no longer silently import as a no-op. See ⚠️ Breaking changes below. The broader `DisallowUnknownFields` sweep across entity / cluster / auth boundaries remains in [#145](https://github.com/cyoda/cyoda-go/issues/145). ([#264](https://github.com/cyoda/cyoda-go/issues/264))
 
 ### Removed
 
@@ -5518,20 +5521,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### ⚠️ Breaking changes
 
-- **Reactivate semantics changed.** `POST /oauth/keys/keypair/{keyId}/reactivate` and `POST /oauth/keys/trusted/{keyId}/reactivate` now require a `ReactivateKeyRequestDto` body with `validTo > now` (and `> validFrom` if supplied). Previously these endpoints had no request body. Cyoda Cloud's behaviour of clearing `validTo` to nil (zombie key) is intentionally not adopted; see [#281](https://github.com/Cyoda-platform/cyoda-go/issues/281) spec for rationale.
+- **Reactivate semantics changed.** `POST /oauth/keys/keypair/{keyId}/reactivate` and `POST /oauth/keys/trusted/{keyId}/reactivate` now require a `ReactivateKeyRequestDto` body with `validTo > now` (and `> validFrom` if supplied). Previously these endpoints had no request body. Cyoda Cloud's behaviour of clearing `validTo` to nil (zombie key) is intentionally not adopted; see [#281](https://github.com/cyoda/cyoda-go/issues/281) spec for rationale.
 - **Trusted-key registration is disabled by default.** Set `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` to enable. Customers using `/oauth/keys/trusted/*` through the legacy mux must opt in.
 - **Bootstrap signing key now has finite validity.** Defaults to 365 days (configurable via `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS`). Long-running deployments must rotate before expiry; the startup banner emits a `WARN` if the active key expires within 30 days.
 - **Algorithm scope.** cyoda-go v0.8.0 signs and verifies `RS256` only. The OpenAPI declares the full enum (`RS*`, `PS*`, `ES*`, `EdDSA`); non-`RS256` values are rejected with `400 UNSUPPORTED_ALGORITHM`. Trusted-key registration accepts only `kty=RSA` JWKs (`kty=EC`/`OKP` rejected with `400 UNSUPPORTED_KEY_TYPE`). v0.8.1 follow-up tracks multi-algorithm + non-RSA `kty` support.
-- **Workflow-import structural validation tightened.** Imports that previously succeeded with structurally broken shapes (typo'd `executionMode`, empty/dangling `initialState`, transitions pointing at undeclared states, duplicate workflow names within a request, duplicate transition names within a state, empty workflow / state / transition / processor names, identifiers longer than 256 characters) now fail with `400 VALIDATION_FAILED`. These new H4/H6 structural rules apply to the **incoming request only** — existing stored workflows are not retroactively re-validated against them, so an in-place upgrade does not invalidate previously-imported configurations. The pre-existing cycle-detection and `startNewTxOnDispatch` flag-coherence checks continue to run against the merged result and so still catch regressions in stored workflows, preserving pre-v0.8.0 semantics for those specific invariants. ([#255](https://github.com/Cyoda-platform/cyoda-go/issues/255))
-- **Workflow-import `active` field is no longer force-overridden.** Previously, every incoming workflow's `active` was unconditionally set to `true`, so a client sending `"active": false` was silently re-activated. The handler now passes explicit `true` / `false` through unchanged and only defaults to `true` when the field is absent. Clients that were relying on the force-override (knowingly or not) to coerce inactive workflows to active on import must update their payloads to send `"active": true` explicitly (or omit the field). ([#256](https://github.com/Cyoda-platform/cyoda-go/issues/256))
-- **Workflow-import `workflows: []` is rejected in `REPLACE` / `ACTIVATE` modes.** Previously these modes accepted an empty workflows array, silently wiping or deactivating all stored workflows for the model and falling back to the embedded default at runtime — HTTP 200 hid the destruction. Both modes now return `400 VALIDATION_FAILED` with detail `"empty workflows array not allowed in REPLACE/ACTIVATE mode — use MERGE if you intended a no-op"`. The `workflows` key being absent entirely is equivalent to `[]` under JSON unmarshal semantics and is rejected the same way. `MERGE` with an empty array remains a legitimate no-op. ([#256](https://github.com/Cyoda-platform/cyoda-go/issues/256))
-- **Workflow-import body is strict-decoded.** The `POST /model/{entityName}/{modelVersion}/workflow/import` handler now rejects any unknown JSON field anywhere in the import-request body — at the top level, on a workflow, on a state, on a transition, on a processor, or on a processor's `config` — with `400 BAD_REQUEST`. The handler also rejects trailing JSON content after the request object (a body like `{...valid request...}{junk}`), which `json.Decoder.Decode` would otherwise silently drop. Clients that previously relied on the silent-drop behaviour (e.g. sending forward-compat extras intended for a future cyoda-cloud version, or with typo'd field names) must clean their payloads before upgrading. The trade-off is intentional: typos like `"transitionn"` for `"transitions"` used to import as a no-op workflow with zero transitions, hiding the configuration error from operators. The response detail names the offending field verbatim so the fix is trivial. ([#264](https://github.com/Cyoda-platform/cyoda-go/issues/264))
+- **Workflow-import structural validation tightened.** Imports that previously succeeded with structurally broken shapes (typo'd `executionMode`, empty/dangling `initialState`, transitions pointing at undeclared states, duplicate workflow names within a request, duplicate transition names within a state, empty workflow / state / transition / processor names, identifiers longer than 256 characters) now fail with `400 VALIDATION_FAILED`. These new H4/H6 structural rules apply to the **incoming request only** — existing stored workflows are not retroactively re-validated against them, so an in-place upgrade does not invalidate previously-imported configurations. The pre-existing cycle-detection and `startNewTxOnDispatch` flag-coherence checks continue to run against the merged result and so still catch regressions in stored workflows, preserving pre-v0.8.0 semantics for those specific invariants. ([#255](https://github.com/cyoda/cyoda-go/issues/255))
+- **Workflow-import `active` field is no longer force-overridden.** Previously, every incoming workflow's `active` was unconditionally set to `true`, so a client sending `"active": false` was silently re-activated. The handler now passes explicit `true` / `false` through unchanged and only defaults to `true` when the field is absent. Clients that were relying on the force-override (knowingly or not) to coerce inactive workflows to active on import must update their payloads to send `"active": true` explicitly (or omit the field). ([#256](https://github.com/cyoda/cyoda-go/issues/256))
+- **Workflow-import `workflows: []` is rejected in `REPLACE` / `ACTIVATE` modes.** Previously these modes accepted an empty workflows array, silently wiping or deactivating all stored workflows for the model and falling back to the embedded default at runtime — HTTP 200 hid the destruction. Both modes now return `400 VALIDATION_FAILED` with detail `"empty workflows array not allowed in REPLACE/ACTIVATE mode — use MERGE if you intended a no-op"`. The `workflows` key being absent entirely is equivalent to `[]` under JSON unmarshal semantics and is rejected the same way. `MERGE` with an empty array remains a legitimate no-op. ([#256](https://github.com/cyoda/cyoda-go/issues/256))
+- **Workflow-import body is strict-decoded.** The `POST /model/{entityName}/{modelVersion}/workflow/import` handler now rejects any unknown JSON field anywhere in the import-request body — at the top level, on a workflow, on a state, on a transition, on a processor, or on a processor's `config` — with `400 BAD_REQUEST`. The handler also rejects trailing JSON content after the request object (a body like `{...valid request...}{junk}`), which `json.Decoder.Decode` would otherwise silently drop. Clients that previously relied on the silent-drop behaviour (e.g. sending forward-compat extras intended for a future cyoda-cloud version, or with typo'd field names) must clean their payloads before upgrading. The trade-off is intentional: typos like `"transitionn"` for `"transitions"` used to import as a no-op workflow with zero transitions, hiding the configuration error from operators. The response detail names the offending field verbatim so the fix is trivial. ([#264](https://github.com/cyoda/cyoda-go/issues/264))
 - **Workflow-import `version` field is now strictly validated** as semver `MAJOR.MINOR`, and v0.8.0 bumps the supported set from `1.0` to `1.1`. Previously accepted values like `"1"` are rejected with `400 WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`. `"1.0"` (the schema shipped on `release/v0.7.x`) is also rejected — v0.8.0's import surface adds enough strictness (structural validation #255, active semantics #256, asyncResult/crossover rejection #261, retryPolicy enum #262, strict-decoder #264, scheduled-transition shape) that staying on `1.0` would conflate two distinct contracts. v0.7.x clients must regenerate workflow payloads against `"1.1"`. Authoritative supported set: `GET /help/workflows/schema-version/versions` or `cyoda help workflows schema-version versions`. Bump rules and per-version notes: `docs/workflow-schema-versioning.md`.
 
 ### Fixed
 
-- **Workflow audit-log `desc` preview is rune-aware.** The `truncateForLog` helper used by the workflow-import audit logger previously measured byte length and sliced byte offsets, splitting multi-byte UTF-8 characters (CJK, emoji, accented Latin) mid-codepoint and emitting invalid UTF-8 into the audit log. The helper now counts runes and cuts on rune boundaries, matching its documented contract. The cap is renamed `descLogPreviewRunes` to remove the bytes-vs-runes ambiguity. Surfaced by the [#264](https://github.com/Cyoda-platform/cyoda-go/issues/264) security review.
-- **Workflow cycle-detection error reporting is deterministic.** `validateWorkflowLoops` previously iterated `wf.States` in Go map order, so a workflow with two or more disjoint unguarded automated cycles reported a different cycle path per run. The detector now sorts state names before iteration so the lexicographically-first cycle is reported. Surfaced by the [#264](https://github.com/Cyoda-platform/cyoda-go/issues/264) security review.
+- **Workflow audit-log `desc` preview is rune-aware.** The `truncateForLog` helper used by the workflow-import audit logger previously measured byte length and sliced byte offsets, splitting multi-byte UTF-8 characters (CJK, emoji, accented Latin) mid-codepoint and emitting invalid UTF-8 into the audit log. The helper now counts runes and cuts on rune boundaries, matching its documented contract. The cap is renamed `descLogPreviewRunes` to remove the bytes-vs-runes ambiguity. Surfaced by the [#264](https://github.com/cyoda/cyoda-go/issues/264) security review.
+- **Workflow cycle-detection error reporting is deterministic.** `validateWorkflowLoops` previously iterated `wf.States` in Go map order, so a workflow with two or more disjoint unguarded automated cycles reported a different cycle path per run. The detector now sorts state names before iteration so the lexicographically-first cycle is reported. Surfaced by the [#264](https://github.com/cyoda/cyoda-go/issues/264) security review.
 
 ### Known limitations
 
@@ -5580,10 +5583,10 @@ The OpenAPI spec at `api/openapi.yaml` has been reconciled with the actual serve
 ### Added
 
 #### API + observability
-- **`COMMIT_BEFORE_DISPATCH` processor execution mode** ([#27](https://github.com/Cyoda-platform/cyoda-go/issues/27)) — per-processor saga semantics for long-running cascades. Marking a processor with `executionMode: COMMIT_BEFORE_DISPATCH` (CBD) tells the engine to commit `TX_pre` before the processor runs and start `TX_post` for follow-on work, breaking the all-or-nothing dependency between the cascade-entry transaction and external dispatch. Engine surface gains `EngineResult.FinalCtx` / `FinalTxID` / `Segmented` so callers can commit the engine's final segment instead of the original (already-committed for CBD) entry transaction. New engine entry-points `ManualTransitionWithIfMatch` / `LoopbackWithIfMatch` plumb the caller's `If-Match` expected-txID via a single-shot context slot and apply `CompareAndSave` instead of `Save` at the FIRST CBD segment-flush, so a stale precondition aborts BEFORE any external dispatch fires (spec §4.1).
-- **Per-item `ifMatch` on `PUT /api/entity/{format}` (bulk update)** ([#228](https://github.com/Cyoda-platform/cyoda-go/issues/228)) — same cross-request optimistic-concurrency precondition the single-item PUT endpoints support via `If-Match`, scoped per item on the bulk endpoint. Routing mirrors single `UpdateEntity`'s post-#27 flow: for CBD cascades the engine consumes the precondition at the first segment-flush; for non-segmenting cascades the handler applies `CompareAndSave` post-engine. Per-item `ENTITY_MODIFIED` conflicts are isolated to a new optional per-chunk `failed[]` array — the chunk still commits its remaining successful items rather than rolling everything back. Other per-item failures (missing entity, validation, non-conflict engine errors) continue to roll the chunk back, matching the pre-#228 [#92](https://github.com/Cyoda-platform/cyoda-go/issues/92) contract. When every item in a chunk fails its precondition, the chunk still commits as a zero-write transaction so the surfaced `transactionId` remains meaningful for audit correlation. Wire-format additions on `EntityTransactionResponse`: optional `failed[]` with `{entityId, error: {code, message, itemIndex}}`. `failed` uses JSON `omitempty` — fully-successful chunks keep the pre-#228 shape unchanged.
-- **`TRANSITION_ABORTED` audit event** ([#228](https://github.com/Cyoda-platform/cyoda-go/issues/228) reviewer S1) — whenever a stale `ifMatch` precondition rejects an in-flight transition (engine CBD first-segment flush or handler-side post-engine `CompareAndSave`), the engine emits a paired `TRANSITION_ABORTED` event into the state-machine audit log alongside the entry-side `STATE_MACHINE_START` so consumers see a self-consistent entry+abort sequence. Payload carries `{reason: "ENTITY_MODIFIED", transitionName, expectedTxId, actualTxId}`. Applies to single `UpdateEntity` stale-`If-Match` and to the new `UpdateEntityCollection` per-item-isolated path. New constant added to `StateMachineAuditEventDto.eventType` enum.
-- **API-wide CORS support** ([#196](https://github.com/Cyoda-platform/cyoda-go/issues/196)). New CORS middleware at `internal/api/middleware/cors.go` wraps the entire handler chain. Loopback-by-default mode (`http(s)://localhost`, `127.0.0.1`, `[::1]` on any port) — zero-config dev ergonomics, secure-by-default in production. Wildcard requires explicit `CYODA_CORS_ALLOWED_ORIGINS=*` (with startup WARN). Allowlist mode for production. Master switch `CYODA_CORS_ENABLED`. `/_internal/*` excluded from CORS; cluster proxy strips `Origin` and `Access-Control-Request-*` headers on outbound peer-to-peer requests (defence-in-depth).
+- **`COMMIT_BEFORE_DISPATCH` processor execution mode** ([#27](https://github.com/cyoda/cyoda-go/issues/27)) — per-processor saga semantics for long-running cascades. Marking a processor with `executionMode: COMMIT_BEFORE_DISPATCH` (CBD) tells the engine to commit `TX_pre` before the processor runs and start `TX_post` for follow-on work, breaking the all-or-nothing dependency between the cascade-entry transaction and external dispatch. Engine surface gains `EngineResult.FinalCtx` / `FinalTxID` / `Segmented` so callers can commit the engine's final segment instead of the original (already-committed for CBD) entry transaction. New engine entry-points `ManualTransitionWithIfMatch` / `LoopbackWithIfMatch` plumb the caller's `If-Match` expected-txID via a single-shot context slot and apply `CompareAndSave` instead of `Save` at the FIRST CBD segment-flush, so a stale precondition aborts BEFORE any external dispatch fires (spec §4.1).
+- **Per-item `ifMatch` on `PUT /api/entity/{format}` (bulk update)** ([#228](https://github.com/cyoda/cyoda-go/issues/228)) — same cross-request optimistic-concurrency precondition the single-item PUT endpoints support via `If-Match`, scoped per item on the bulk endpoint. Routing mirrors single `UpdateEntity`'s post-#27 flow: for CBD cascades the engine consumes the precondition at the first segment-flush; for non-segmenting cascades the handler applies `CompareAndSave` post-engine. Per-item `ENTITY_MODIFIED` conflicts are isolated to a new optional per-chunk `failed[]` array — the chunk still commits its remaining successful items rather than rolling everything back. Other per-item failures (missing entity, validation, non-conflict engine errors) continue to roll the chunk back, matching the pre-#228 [#92](https://github.com/cyoda/cyoda-go/issues/92) contract. When every item in a chunk fails its precondition, the chunk still commits as a zero-write transaction so the surfaced `transactionId` remains meaningful for audit correlation. Wire-format additions on `EntityTransactionResponse`: optional `failed[]` with `{entityId, error: {code, message, itemIndex}}`. `failed` uses JSON `omitempty` — fully-successful chunks keep the pre-#228 shape unchanged.
+- **`TRANSITION_ABORTED` audit event** ([#228](https://github.com/cyoda/cyoda-go/issues/228) reviewer S1) — whenever a stale `ifMatch` precondition rejects an in-flight transition (engine CBD first-segment flush or handler-side post-engine `CompareAndSave`), the engine emits a paired `TRANSITION_ABORTED` event into the state-machine audit log alongside the entry-side `STATE_MACHINE_START` so consumers see a self-consistent entry+abort sequence. Payload carries `{reason: "ENTITY_MODIFIED", transitionName, expectedTxId, actualTxId}`. Applies to single `UpdateEntity` stale-`If-Match` and to the new `UpdateEntityCollection` per-item-isolated path. New constant added to `StateMachineAuditEventDto.eventType` enum.
+- **API-wide CORS support** ([#196](https://github.com/cyoda/cyoda-go/issues/196)). New CORS middleware at `internal/api/middleware/cors.go` wraps the entire handler chain. Loopback-by-default mode (`http(s)://localhost`, `127.0.0.1`, `[::1]` on any port) — zero-config dev ergonomics, secure-by-default in production. Wildcard requires explicit `CYODA_CORS_ALLOWED_ORIGINS=*` (with startup WARN). Allowlist mode for production. Master switch `CYODA_CORS_ENABLED`. `/_internal/*` excluded from CORS; cluster proxy strips `Origin` and `Access-Control-Request-*` headers on outbound peer-to-peer requests (defence-in-depth).
 - **OpenAPI runtime conformance validator** (`internal/e2e/openapivalidator/`) — every E2E response is matched against the spec via `kin-openapi`. Drift fails the build. Documented in [ADR 0001](./docs/adr/0001-openapi-server-spec-conformance.md).
 - **2 previously-undocumented customer endpoints declared in the spec:**
   - `getEntityTransitions` (GET `/entity/{entityId}/transitions`)
@@ -5592,42 +5595,42 @@ The OpenAPI spec at `api/openapi.yaml` has been reconciled with the actual serve
 - **4 shared response fragments** in `components/responses/`: `Unauthorized`, `Forbidden`, `InternalServerError`, `NotImplemented`.
 
 #### Supply chain
-- **Cosign keyless signatures** on release archives and `SHA256SUMS` ([#47](https://github.com/Cyoda-platform/cyoda-go/issues/47)). Sigstore + GitHub Actions OIDC; signing identity bound to `release.yml@refs/tags/v…` (push-trigger only). `scripts/install.sh` auto-verifies when `cosign` is on PATH; opt-out via `CYODA_COSIGN_VERIFY=false`; force-fail-without-cosign via `CYODA_COSIGN_VERIFY=required`.
-- **`install.sh` published as a release asset at a stable URL** ([#49](https://github.com/Cyoda-platform/cyoda-go/issues/49)). The canonical install URL is now `https://github.com/cyoda-platform/cyoda-go/releases/latest/download/install.sh` — pinned per release, not a moving target on `main`.
+- **Cosign keyless signatures** on release archives and `SHA256SUMS` ([#47](https://github.com/cyoda/cyoda-go/issues/47)). Sigstore + GitHub Actions OIDC; signing identity bound to `release.yml@refs/tags/v…` (push-trigger only). `scripts/install.sh` auto-verifies when `cosign` is on PATH; opt-out via `CYODA_COSIGN_VERIFY=false`; force-fail-without-cosign via `CYODA_COSIGN_VERIFY=required`.
+- **`install.sh` published as a release asset at a stable URL** ([#49](https://github.com/cyoda/cyoda-go/issues/49)). The canonical install URL is now `https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh` — pinned per release, not a moving target on `main`.
 
 #### SPI + cluster
-- **`modelcache.CachingModelStore.SubscribeLocal`** ([#174](https://github.com/Cyoda-platform/cyoda-go/issues/174)) — in-process invalidation hook that fires for every model invalidation regardless of cluster topology. The path-validation cache wires through this so single-node and multi-node deployments alike react to schema changes immediately.
-- **`fixtureutil.LaunchCyodaClusterAndComputeWithBinaries`** ([#157](https://github.com/Cyoda-platform/cyoda-go/issues/157)) — caller-supplied-binary variant of the cluster launcher, mirroring the single-node `…WithBinaries` symmetry. Out-of-tree backend plugins (e.g. `cyoda-go-cassandra`) can now drive the shared parity scenario suite against their own `cmd/cyoda` binary.
-- **`AsRetryable()` fluent helper on `*AppError`** ([#140](https://github.com/Cyoda-platform/cyoda-go/issues/140)) — separates the (status, code, retryable) axes that were previously bundled into specialised `Conflict` / `RetryableConflict` constructors. Permits retryable 4xx with a specific dictionary code (previously unreachable). The deprecated constructors are removed; all callers migrated.
+- **`modelcache.CachingModelStore.SubscribeLocal`** ([#174](https://github.com/cyoda/cyoda-go/issues/174)) — in-process invalidation hook that fires for every model invalidation regardless of cluster topology. The path-validation cache wires through this so single-node and multi-node deployments alike react to schema changes immediately.
+- **`fixtureutil.LaunchCyodaClusterAndComputeWithBinaries`** ([#157](https://github.com/cyoda/cyoda-go/issues/157)) — caller-supplied-binary variant of the cluster launcher, mirroring the single-node `…WithBinaries` symmetry. Out-of-tree backend plugins (e.g. `cyoda-go-cassandra`) can now drive the shared parity scenario suite against their own `cmd/cyoda` binary.
+- **`AsRetryable()` fluent helper on `*AppError`** ([#140](https://github.com/cyoda/cyoda-go/issues/140)) — separates the (status, code, retryable) axes that were previously bundled into specialised `Conflict` / `RetryableConflict` constructors. Permits retryable 4xx with a specific dictionary code (previously unreachable). The deprecated constructors are removed; all callers migrated.
 
 #### Documentation
-- **Chart docs**: `deploy/helm/cyoda/docs/migrating-from-ingress.md` ([#57](https://github.com/Cyoda-platform/cyoda-go/issues/57)) — six-step Ingress2Gateway 1.0 walkthrough; `deploy/helm/cyoda/docs/gateway-api-policies.md` ([#58](https://github.com/Cyoda-platform/cyoda-go/issues/58)) — concrete `BackendTrafficPolicy` (rate limiting) and `SecurityPolicy` (JWT, CORS) YAML for Envoy Gateway, plus Cilium and Contour reference patterns.
-- **Concurrency model** at `docs/CONCURRENCY.md` ([#199](https://github.com/Cyoda-platform/cyoda-go/issues/199) PR-C3) — per-node lock and state inventory, the SPI tx-state locking contract, cluster-routing failure modes; complements `docs/CONSISTENCY.md` (isolation contract) and `docs/ARCHITECTURE.md` (cluster routing).
+- **Chart docs**: `deploy/helm/cyoda/docs/migrating-from-ingress.md` ([#57](https://github.com/cyoda/cyoda-go/issues/57)) — six-step Ingress2Gateway 1.0 walkthrough; `deploy/helm/cyoda/docs/gateway-api-policies.md` ([#58](https://github.com/cyoda/cyoda-go/issues/58)) — concrete `BackendTrafficPolicy` (rate limiting) and `SecurityPolicy` (JWT, CORS) YAML for Envoy Gateway, plus Cilium and Contour reference patterns.
+- **Concurrency model** at `docs/CONCURRENCY.md` ([#199](https://github.com/cyoda/cyoda-go/issues/199) PR-C3) — per-node lock and state inventory, the SPI tx-state locking contract, cluster-routing failure modes; complements `docs/CONSISTENCY.md` (isolation contract) and `docs/ARCHITECTURE.md` (cluster routing).
 
 ### Fixed
 
 #### API correctness
-- **Collection endpoints now match the documented `transactionWindow` chunking + engine-routing contract** ([#227](https://github.com/Cyoda-platform/cyoda-go/issues/227)) — four pieces:
+- **Collection endpoints now match the documented `transactionWindow` chunking + engine-routing contract** ([#227](https://github.com/cyoda/cyoda-go/issues/227)) — four pieces:
   - `CreateEntityCollection` now routes every item through the workflow engine. Pre-fix the handler hard-coded `State="CREATED"` and called `entityStore.SaveAll` directly, so the workflow's `initialState` was ignored, automated cascade transitions never fired during create, and no `STATE_MACHINE_*` audit events were emitted for collection-created entities. Now mirrors single `CreateEntity`'s engine flow per item.
   - `CreateCollection` and `UpdateCollection` handlers honor `transactionWindow` and chunk per the documented contract (default 100, max 1000, validated to (0, 1000]). Pre-fix `CreateCollection` ignored the param entirely and `UpdateCollection` rejected oversize batches with 400. Both now split the batch into chunks of size `window`, commit each chunk in its own transaction in commit order, and emit one `EntityTransactionResponse` element per committed chunk. Each chunk remains all-or-nothing internally, and chunks committed before any later failure stay durable.
   - Single-create endpoint `POST /api/entity/{format}/{entityName}/{modelVersion}` array-body path now chunks too. The handler auto-detects a JSON-array body and previously delegated the whole batch to `CreateEntityCollection` in one transaction, silently ignoring the advertised `transactionWindow` query param. It now applies the same chunking + per-chunk-array response shape as `CreateCollection`. Single-object (non-array) body behaviour is unchanged. Shared chunking primitive `Handler.runChunkedCreate` extracted so the wire contract lives in one place.
   - Wire format on partial-success: HTTP 200 with the per-chunk array, where the failed chunk appears as an `error` element carrying `{code, message, chunkIndex}` instead of `{transactionId, entityIds}`. The first-chunk-fail case (no durable progress) keeps the existing 4xx `application/problem+json` envelope. The `EntityTransactionResponse` schema is relaxed accordingly: `entityIds` is no longer required, and the optional `error` sub-object is declared.
-- **`transactionTimeoutMillis` and `waitForConsistencyAfter` documented as Cloud-parity gaps** ([#227](https://github.com/Cyoda-platform/cyoda-go/issues/227)) — these query params on all five entity-mutation endpoints (single create, single update, single update-loopback, collection create, collection update) are advertised by the spec but not honored by the cyoda-go open-source storage plugins. Param descriptions now carry the same vendor-neutral "storage-engine-plugin dependent" caveat established in [#223](https://github.com/Cyoda-platform/cyoda-go/issues/223) for `asyncResult`/`crossoverToAsyncMs`. No Go code change; the params are still parsed-and-ignored.
-- `GetOneEntity` now propagates the `transactionId` query parameter ([#150](https://github.com/Cyoda-platform/cyoda-go/issues/150)) — previously silently dropped, returning the latest entity instead of the at-tx snapshot. Bogus `transactionId` returns `ENTITY_NOT_FOUND@404` matching the dictionary contract (parity scenario `12_05` unblocked).
-- `GetEntityChangesMetadata` now propagates `pointInTime` ([#152](https://github.com/Cyoda-platform/cyoda-go/issues/152)) — previously dropped; full history truncated to `timeOfChange ≤ pointInTime` as the dictionary requires.
-- `messaging.GetMessage` content field — JSON-in-string defect (the original [#21](https://github.com/Cyoda-platform/cyoda-go/issues/21) confirmed defect for messaging).
+- **`transactionTimeoutMillis` and `waitForConsistencyAfter` documented as Cloud-parity gaps** ([#227](https://github.com/cyoda/cyoda-go/issues/227)) — these query params on all five entity-mutation endpoints (single create, single update, single update-loopback, collection create, collection update) are advertised by the spec but not honored by the cyoda-go open-source storage plugins. Param descriptions now carry the same vendor-neutral "storage-engine-plugin dependent" caveat established in [#223](https://github.com/cyoda/cyoda-go/issues/223) for `asyncResult`/`crossoverToAsyncMs`. No Go code change; the params are still parsed-and-ignored.
+- `GetOneEntity` now propagates the `transactionId` query parameter ([#150](https://github.com/cyoda/cyoda-go/issues/150)) — previously silently dropped, returning the latest entity instead of the at-tx snapshot. Bogus `transactionId` returns `ENTITY_NOT_FOUND@404` matching the dictionary contract (parity scenario `12_05` unblocked).
+- `GetEntityChangesMetadata` now propagates `pointInTime` ([#152](https://github.com/cyoda/cyoda-go/issues/152)) — previously dropped; full history truncated to `timeOfChange ≤ pointInTime` as the dictionary requires.
+- `messaging.GetMessage` content field — JSON-in-string defect (the original [#21](https://github.com/cyoda/cyoda-go/issues/21) confirmed defect for messaging).
 - `messaging.NewMessage` — dead-code branch in `json.Compact` fallback removed; replaced with explicit invariant-broken 500.
 - `audit.GetStateMachineFinishedEvent` — missing `microsTime` field added.
 - `search.cancelAsyncSearch` 400 path — uses `WriteError` (proper Content-Type) instead of raw `WriteJSON`.
 - `account` stub handlers — error code corrected to `NOT_IMPLEMENTED`.
 
 #### Concurrency + tenant isolation
-- **`tx.OpMu` locking discipline rolled out across `plugins/memory`** ([#176](https://github.com/Cyoda-platform/cyoda-go/issues/176)) — `Get`, `GetAll`, `Delete`, `DeleteAll`, `Exists`, `Count` now follow the `tx.OpMu.RLock()` + `defer tx.OpMu.RUnlock()` pattern that PR #153 established for `Save`/`CompareAndSave`. Six new race-conditional regression tests (one per method) green under `-race`.
-- **`tx.OpMu` coverage gap on Savepoint/RollbackToSavepoint/Join** closed across the memory and sqlite plugins ([#199](https://github.com/Cyoda-platform/cyoda-go/issues/199) PR-A, PR-C1) and SPI v0.6.1 formalises the contract godoc + `.claude/rules/tx-state-locking.md` (PR-B).
-- **Tenant-isolation hardening across plugin transaction-manager surfaces** ([#199](https://github.com/Cyoda-platform/cyoda-go/issues/199) PR-A, PR-C1, PR-C2) — every TM lifecycle method (`Commit`, `Rollback`, `Join`, `Savepoint`, `RollbackToSavepoint`, `ReleaseSavepoint`) on memory, sqlite, and postgres now verifies `uc.Tenant.ID == txState.tenantID` before any state mutation. Postgres was uniquely missing these checks despite RLS — RLS is row-level by design and does not extend to transaction-lifecycle commands.
-- **Path-validation cache: single-node invalidation lost on schema-change** ([#174](https://github.com/Cyoda-platform/cyoda-go/issues/174)) — pre-fix the cache subscribed to the cluster broadcaster directly, so single-node deployments (where the broadcaster is nil) never received invalidations. Now wired through `modelcache.SubscribeLocal` so local mutations and gossip events alike reach the cache.
-- **Path-validation cache: cross-tenant noisy-neighbor eviction** ([#175](https://github.com/Cyoda-platform/cyoda-go/issues/175)) — pre-fix a single global otter cache (10000 entries) allowed a flooding tenant to S3-FIFO-evict another tenant's entries. Restructured into per-`(tenant, ref)` bucket map of bounded otter caches. Cross-tenant flooding is contained to the attacker's own bucket.
-- **Path-validation cache: bucket-map size cap with LRU eviction** ([#218](https://github.com/Cyoda-platform/cyoda-go/issues/218)) — bucket map now caps at 10000 buckets total with LRU eviction. Bounds memory under adversarial workloads (a tenant with model-creation privilege at scale).
+- **`tx.OpMu` locking discipline rolled out across `plugins/memory`** ([#176](https://github.com/cyoda/cyoda-go/issues/176)) — `Get`, `GetAll`, `Delete`, `DeleteAll`, `Exists`, `Count` now follow the `tx.OpMu.RLock()` + `defer tx.OpMu.RUnlock()` pattern that PR #153 established for `Save`/`CompareAndSave`. Six new race-conditional regression tests (one per method) green under `-race`.
+- **`tx.OpMu` coverage gap on Savepoint/RollbackToSavepoint/Join** closed across the memory and sqlite plugins ([#199](https://github.com/cyoda/cyoda-go/issues/199) PR-A, PR-C1) and SPI v0.6.1 formalises the contract godoc + `.claude/rules/tx-state-locking.md` (PR-B).
+- **Tenant-isolation hardening across plugin transaction-manager surfaces** ([#199](https://github.com/cyoda/cyoda-go/issues/199) PR-A, PR-C1, PR-C2) — every TM lifecycle method (`Commit`, `Rollback`, `Join`, `Savepoint`, `RollbackToSavepoint`, `ReleaseSavepoint`) on memory, sqlite, and postgres now verifies `uc.Tenant.ID == txState.tenantID` before any state mutation. Postgres was uniquely missing these checks despite RLS — RLS is row-level by design and does not extend to transaction-lifecycle commands.
+- **Path-validation cache: single-node invalidation lost on schema-change** ([#174](https://github.com/cyoda/cyoda-go/issues/174)) — pre-fix the cache subscribed to the cluster broadcaster directly, so single-node deployments (where the broadcaster is nil) never received invalidations. Now wired through `modelcache.SubscribeLocal` so local mutations and gossip events alike reach the cache.
+- **Path-validation cache: cross-tenant noisy-neighbor eviction** ([#175](https://github.com/cyoda/cyoda-go/issues/175)) — pre-fix a single global otter cache (10000 entries) allowed a flooding tenant to S3-FIFO-evict another tenant's entries. Restructured into per-`(tenant, ref)` bucket map of bounded otter caches. Cross-tenant flooding is contained to the attacker's own bucket.
+- **Path-validation cache: bucket-map size cap with LRU eviction** ([#218](https://github.com/cyoda/cyoda-go/issues/218)) — bucket map now caps at 10000 buckets total with LRU eviction. Bounds memory under adversarial workloads (a tenant with model-creation privilege at scale).
 
 #### Internal hygiene
 - Pre-existing tag-list test stale entry (`CQL Execution Statistics` removed).
@@ -5635,15 +5638,15 @@ The OpenAPI spec at `api/openapi.yaml` has been reconciled with the actual serve
 
 ### Refactored
 
-- **`AppError` 4xx constructors** ([#140](https://github.com/Cyoda-platform/cyoda-go/issues/140)) — `Conflict()` and `RetryableConflict()` removed; replaced by `Operational(status, code, msg).AsRetryable()` chain. Wire shape unchanged at every existing call site; the change is purely API ergonomics.
+- **`AppError` 4xx constructors** ([#140](https://github.com/cyoda/cyoda-go/issues/140)) — `Conflict()` and `RetryableConflict()` removed; replaced by `Operational(status, code, msg).AsRetryable()` chain. Wire shape unchanged at every existing call site; the change is purely API ergonomics.
 
 ### Process / Documentation
 
 - ADR 0001 added: chose runtime validation via `kin-openapi` over compile-time strict typing (oapi-codegen strict-server, ogen, goa all evaluated).
 - Conformance audit table at `docs/superpowers/audits/2026-04-29-openapi-conformance-audit.md` — one row per operationId, dispositioned with commit SHA. Carried forward as the starting point for future external-spec reconciliation work.
 - Per-plugin tx-locking audit docs landed at `docs/audits/2026-05-{memory,sqlite,postgres}-plugin-tx-locking.md`.
-- Issue [#194](https://github.com/Cyoda-platform/cyoda-go/issues/194) filed for the 22 stub-implemented IAM/OAuth/OIDC/account endpoints (deferred per the A+C policy of the OpenAPI conformance ADR).
-- Issue [#200](https://github.com/Cyoda-platform/cyoda-go/issues/200) filed for SPI sentinel error types (rolled-back / closed / commit-in-progress) — deferred to v0.8.0.
+- Issue [#194](https://github.com/cyoda/cyoda-go/issues/194) filed for the 22 stub-implemented IAM/OAuth/OIDC/account endpoints (deferred per the A+C policy of the OpenAPI conformance ADR).
+- Issue [#200](https://github.com/cyoda/cyoda-go/issues/200) filed for SPI sentinel error types (rolled-back / closed / commit-in-progress) — deferred to v0.8.0.
 
 ### Versioning policy
 
@@ -5653,4 +5656,4 @@ The OpenAPI spec at `api/openapi.yaml` has been reconciled with the actual serve
 
 ## [0.6.3] — 2026-04-28 and earlier
 
-For releases prior to 0.7.0, see the [Releases page](https://github.com/Cyoda-platform/cyoda-go/releases) and the git history. This is the first release with a maintained CHANGELOG.
+For releases prior to 0.7.0, see the [Releases page](https://github.com/cyoda/cyoda-go/releases) and the git history. This is the first release with a maintained CHANGELOG.

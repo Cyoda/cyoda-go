@@ -137,7 +137,7 @@ Each plugin submodule is tagged at the umbrella version, every release — the p
 For `v0.9.0` the plugin also moves to the new Go module paths: every import and
 `require` of `github.com/cyoda-platform/cyoda-go` and `github.com/cyoda-platform/cyoda-go-spi`
 becomes `github.com/cyoda/...`, and its own module path becomes
-`github.com/cyoda/cyoda-go-cassandra` ([cyoda-go-cassandra#108](https://github.com/Cyoda/cyoda-go-cassandra/issues/108)).
+`github.com/cyoda/cyoda-go-cassandra` (see the module-path comment on [cyoda-go-cassandra#108](https://github.com/Cyoda/cyoda-go-cassandra/issues/108)).
 cyoda-go `v0.9.0` and its SPI exist only under the new paths.
 
 The backend adopts a new SPI surface on its own cadence, and the parity registry
