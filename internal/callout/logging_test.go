@@ -58,7 +58,9 @@ func TestOwner_OneInfoLine_ForACalloutThatNeededMoreThanOneTry(t *testing.T) {
 	yes := true
 	e := newEnv(t, Config{FixedNumRetries: 3})
 	e.attach(t, "m-1", tenantA, "x", detaches())
-	e.attach(t, "m-2", tenantA, "x", fails("card 4111-1111 declined", &yes))
+	// The marker is letters only, so no timestamp, number or id in the line can
+	// contain it by chance.
+	e.attach(t, "m-2", tenantA, "x", fails("card of holder QUOKKAZEBRA declined", &yes))
 
 	lines := ownerInfoLines(t, func() { _, _ = e.dispatchFunction(userCtx(tenantA), "x", "") })
 
@@ -73,7 +75,7 @@ func TestOwner_OneInfoLine_ForACalloutThatNeededMoreThanOneTry(t *testing.T) {
 		t.Errorf("line = %v, want elapsedMs", line)
 	}
 	for key, value := range line {
-		if s, ok := value.(string); ok && strings.Contains(s, "4111") {
+		if s, ok := value.(string); ok && strings.Contains(s, "QUOKKAZEBRA") {
 			t.Errorf("field %s repeats the cnode's own failure text, which is tenant content: %q", key, s)
 		}
 	}
