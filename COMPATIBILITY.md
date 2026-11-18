@@ -134,6 +134,12 @@ Each plugin submodule is tagged at the umbrella version, every release — the p
 |---|---|---|---|---|
 | `cyoda-go-cassandra` | `v0.1.1` (tag) / `main` (unreleased) | tag: `v0.6.3-0.20260427233530-f7bc7ee68c60`; `main`: `v0.8.3` | tag: `v0.6.0`; `main`: `v0.8.3` | `main` has adopted the v0.8.3 surface and is several releases ahead of the last tag. The v0.8.4 and v0.9.0 obligations are listed in the matrix rows above; the `ScheduledTaskStore` replacement is tracked in [cyoda-go-cassandra#68](https://github.com/Cyoda/cyoda-go-cassandra/issues/68). |
 
+For `v0.9.0` the plugin also moves to the new Go module paths: every import and
+`require` of `github.com/cyoda-platform/cyoda-go` and `github.com/cyoda-platform/cyoda-go-spi`
+becomes `github.com/cyoda/...`, and its own module path becomes
+`github.com/cyoda/cyoda-go-cassandra` ([cyoda-go-cassandra#108](https://github.com/Cyoda/cyoda-go-cassandra/issues/108)).
+cyoda-go `v0.9.0` and its SPI exist only under the new paths.
+
 The backend adopts a new SPI surface on its own cadence, and the parity registry
 (`e2e/parity/registry.go`) means every scenario added in-tree runs against it on
 its next dependency bump. Outstanding obligations for the `v0.8.4` surface — the

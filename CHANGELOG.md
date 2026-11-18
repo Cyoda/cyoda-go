@@ -16,7 +16,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   changes its imports and `require` lines; `go install
   github.com/cyoda/cyoda-go/cmd/cyoda@latest` installs the binary. Versions
   published under the old paths are unchanged. `GOPRIVATE` needs only
-  `github.com/cyoda/cyoda-go-cassandra`, the one private module.
+  `github.com/cyoda/cyoda-go-cassandra`, the one private module. The
+  OpenTelemetry instrumentation scope names change with the paths
+  (`github.com/cyoda/cyoda-go`, `github.com/cyoda/cyoda-go/workflow`,
+  `github.com/cyoda/cyoda-go/plugins/postgres`): a dashboard or alert that
+  filters on `otel_scope_name` or the trace scope needs the new names.
 
 - **Helm chart: Gateway API routing needs a Gateway.** With
   `gateway.enabled=true`, the default, the chart's schema refuses an empty,
