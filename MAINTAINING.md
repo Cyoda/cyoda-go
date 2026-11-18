@@ -552,19 +552,22 @@ Latest release is this tag, that `/releases/latest/download/SHA256SUMS` and
 `install.sh` are this release's, that `install.sh` without `CYODA_VERSION`
 installs it, and that the image tag `latest` is signed by this release run;
 the workflow also installs it with Homebrew on macOS. A pre-release, or an
-older release checked by hand, gets the pinned checks only.
+older release checked by hand, gets the pinned checks only. Every workflow
+run, whatever the tag, first checks that GitHub's Latest mark is on the
+newest stable release; if it is not, the run stops there.
 
 The `Release chart` run checks the chart it published: the chart version
 from its tag (`cyoda-C.D.E`) is served, downloads and renders, and its
-appVersion's binary release passes the checks above. A chart version need not equal the binary version.
+appVersion's binary release passes the checks above. A chart version need
+not equal the binary version.
 
 Every verification run of the release must be green (two when a chart
 release follows the binary release, one when it does not). If one fails,
-fix it before announcing the
-release: a wrong Latest mark is fixed with
+fix it before announcing the release. A wrong Latest mark is fixed with
 `gh release edit vX.Y.Z --repo cyoda/cyoda-go --latest` (the failure message
-gives the command); anything else usually needs a patch release. To run it
-by hand (needs `curl`, `cosign`, `docker`, `jq`, `helm`):
+gives the command); then re-run the workflow. Anything else usually needs a
+patch release. To run the checks by hand (needs `curl`, `cosign`, `docker`,
+`jq`, `helm`):
 
 ```bash
 scripts/verify-release.sh vX.Y.Z --latest --chart C.D.E

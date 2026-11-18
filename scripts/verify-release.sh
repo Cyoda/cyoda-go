@@ -25,9 +25,11 @@
 # HOME, the XDG directories, cosign's cache, Docker's client config and
 # Helm's directories all point there (the images it pulls go to the Docker
 # daemon's storage). GH_TOKEN, when set, is sent to api.github.com only and
-# is not passed to anything the script runs. INSTALL_SH, when set, is a local install.sh to run
-# instead of the release's own: for testing an install.sh change against a
-# published release.
+# is not passed to anything the script runs.
+#
+# INSTALL_SH, when set, is a local install.sh to run instead of the
+# release's own: for testing an install.sh change against a published
+# release.
 set -euo pipefail
 
 REPO="cyoda/cyoda-go"

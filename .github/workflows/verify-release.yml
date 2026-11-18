@@ -76,7 +76,7 @@ jobs:
           # release: a release on an older line must not take it.
           latest=$(gh api "repos/$REPO/releases/latest" --jq .tag_name)
           if [ "$latest" != "$newest" ]; then
-            echo "GitHub's Latest release is '$latest', not the newest stable release $newest; restore it: gh release edit $newest --repo $REPO --latest"
+            echo "GitHub's Latest release is '$latest', not the newest stable release $newest; restore it with 'gh release edit $newest --repo $REPO --latest', then re-run this workflow"
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"

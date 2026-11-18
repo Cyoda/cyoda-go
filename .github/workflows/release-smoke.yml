@@ -31,8 +31,11 @@ jobs:
     # of the archive and SHA256SUMS against the release workflow's identity.
     name: install.sh installs a signed release with cosign required
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: sigstore/cosign-installer@v3
       - name: Install v0.8.4 with CYODA_COSIGN_VERIFY=required
         env:
@@ -93,9 +96,11 @@ jobs:
 
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           fetch-depth: 0   # GoReleaser needs full history to derive version metadata
 
       - uses: actions/setup-go@v7
