@@ -117,7 +117,8 @@ verify_image() {
 }
 # run_version IMAGE@DIGEST: the image runs and reports version V.
 run_version() {
-    out=$("$DOCKER" run --rm "$1" --version 2>&1) || die "$1 does not run: $out"
+    out=$("$DOCKER" run --rm "$1" --version 2> "$WORK/docker.log") \
+        || { tail -n 5 "$WORK/docker.log" >&2; die "$1 does not run"; }
     case "$out" in "cyoda version $V "*) printf '%s' "$out" ;; *) die "$1 reports: $out" ;; esac
 }
 
@@ -160,13 +161,15 @@ for p in deb rpm; do
     fetch "$DL/cyoda_linux_${ARCH}.$p" "$WORK/pkg/cyoda_linux_${ARCH}.$p"
     check_sum "$WORK/pkg/cyoda_linux_${ARCH}.$p"
 done
+# stdout is the command's output; Docker's own messages (an image pull) go
+# to stderr, which is shown only on failure.
 out=$("$DOCKER" run --rm -v "$WORK/pkg:/pkg:ro" "$DEB_IMAGE" sh -c \
-    "dpkg -i /pkg/cyoda_linux_${ARCH}.deb >/dev/null && grep -q '^CYODA_STORAGE_BACKEND=sqlite' /etc/cyoda/cyoda.env && cyoda --version" 2>&1) \
-    || die ".deb did not install in $DEB_IMAGE: $out"
+    "dpkg -i /pkg/cyoda_linux_${ARCH}.deb >/dev/null && grep -q '^CYODA_STORAGE_BACKEND=sqlite' /etc/cyoda/cyoda.env && cyoda --version" 2> "$WORK/docker.log") \
+    || { tail -n 5 "$WORK/docker.log" >&2; die ".deb did not install in $DEB_IMAGE"; }
 case "$out" in "cyoda version $V "*) ok ".deb: $out" ;; *) die ".deb installed: $out" ;; esac
 out=$("$DOCKER" run --rm -v "$WORK/pkg:/pkg:ro" "$RPM_IMAGE" sh -c \
-    "rpm -i /pkg/cyoda_linux_${ARCH}.rpm && grep -q '^CYODA_STORAGE_BACKEND=sqlite' /etc/cyoda/cyoda.env && cyoda --version" 2>&1) \
-    || die ".rpm did not install in $RPM_IMAGE: $out"
+    "rpm -i /pkg/cyoda_linux_${ARCH}.rpm && grep -q '^CYODA_STORAGE_BACKEND=sqlite' /etc/cyoda/cyoda.env && cyoda --version" 2> "$WORK/docker.log") \
+    || { tail -n 5 "$WORK/docker.log" >&2; die ".rpm did not install in $RPM_IMAGE"; }
 case "$out" in "cyoda version $V "*) ok ".rpm: $out" ;; *) die ".rpm installed: $out" ;; esac
 
 step "the image $IMAGE:$V verifies and runs by its digest"
@@ -211,7 +214,7 @@ pull_chart() {
     mkdir -p "$WORK/chart-$1"
     helm pull cyoda-verify/cyoda --version "$1" -d "$WORK/chart-$1" > /dev/null 2> "$WORK/helm.log" \
         || { tail -n 5 "$WORK/helm.log" >&2; die "chart $1 is listed but does not download"; }
-    helm template cyoda "$WORK/chart-$1"/cyoda-"$1".tgz --set postgres.existingSecret=x \
+    helm template cyoda "$WORK/chart-$1/cyoda-$1.tgz" --set postgres.existingSecret=x \
         --set jwt.existingSecret=x --set cluster.hmacSecret.existingSecret=x \
         --set monitoring.metricsBearer.existingSecret=x --set gateway.enabled=false > /dev/null 2> "$WORK/helm.log" \
         || { tail -n 5 "$WORK/helm.log" >&2; die "chart $1 does not render"; }
