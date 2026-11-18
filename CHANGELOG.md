@@ -1513,6 +1513,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **Every release is installed the way users install it, after it is
+  published.** The `Verify release` workflow runs after the release and the
+  chart release, and weekly. For every release: `install.sh` with
+  signatures required, the `.deb` and `.rpm` in clean containers, the signed
+  image by digest, the help asset's version. For the newest stable release
+  also: GitHub's Latest mark, `/releases/latest/download/` `SHA256SUMS` and
+  `install.sh`, the unpinned `install.sh`, the image tag `latest` and
+  Homebrew. For a chart release: the Helm repository serves the chart, with
+  its appVersion. `scripts/verify-release.sh` runs the same checks by hand.
+  `SHA256SUMS` now lists `install.sh`, so the signature covers the
+  installer too.
 - **`cyoda help install` and `cyoda help design`.** `install` gives every
   way to install and upgrade the binary (Homebrew, the install script and its
   settings, `.deb`/`.rpm`, the container image, `go install`). `design` gives
@@ -2070,21 +2081,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   install could succeed: it treated GitHub's redirect for the `.sig` file as
   an error, passed `cosign` a flag it does not have, and expected the owner
   `cyoda` where the certificate says `Cyoda`. It now follows the redirect,
-  pins the exact tag being installed, and matches the certificate. A
+  pins the exact tag being installed, and matches the certificate. Without
+  `CYODA_VERSION` it finds the Latest release through
+  `github.com/.../releases/latest` instead of the GitHub API, which allows
+  only 60 unauthenticated calls an hour per address. A
   release-smoke job installs a signed release with signatures required. An
   unknown `CYODA_COSIGN_VERIFY` value now stops the script instead of
   falling back to auto mode. v0.7.0 and v0.7.1, signed under the GitHub
   organization's earlier name, do not verify. The README and
   `cyoda help install` verify a `.deb`/`.rpm` package and the container
   image against the signature of the exact release.
-- **Every release is installed the way users install it, after it is
-  published.** The `Verify release` workflow runs after the release and the
-  chart release, and weekly: install.sh with signatures required (pinned and
-  unpinned), the `.deb` and `.rpm` in clean containers, the signed image by
-  digest, Homebrew, the Helm repository, GitHub's Latest mark and every
-  `/releases/latest/download/` URL. `scripts/verify-release.sh` runs the same
-  checks by hand. `SHA256SUMS` now lists `install.sh`, so the signature
-  covers the installer too.
 - **A chart release no longer becomes GitHub's "Latest" release.** The
   chart workflow marked its release (`cyoda-X.Y.Z`, which holds only the
   chart archive) as latest, so after a chart release `install.sh` resolved

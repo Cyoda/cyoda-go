@@ -202,5 +202,9 @@ jobs:
             || { echo "FAIL: SHA256SUMS missing entry for $tar_basename"; exit 1; }
           grep -q "$json_basename" dist/SHA256SUMS \
             || { echo "FAIL: SHA256SUMS missing entry for $json_basename"; exit 1; }
+          # install.sh is under the signed SHA256SUMS, so a user can check
+          # the script before running it.
+          grep -q ' install\.sh$' dist/SHA256SUMS \
+            || { echo "FAIL: SHA256SUMS missing entry for install.sh"; exit 1; }
 
           echo "OK: help assets generated and checksummed."

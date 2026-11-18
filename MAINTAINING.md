@@ -546,34 +546,41 @@ fast with an actionable error if not.
 
 The release is not done until it installs the way users install it. The
 `Verify release` workflow (`.github/workflows/verify-release.yml`) runs
-`scripts/verify-release.sh` after the `Release` run (binary routes) and
-again after the `Release chart` run (adds the Helm repository), plus Homebrew
-on macOS. It checks:
+`scripts/verify-release.sh` after the `Release` run and after the
+`Release chart` run, plus Homebrew on macOS. For every release it checks:
 
 - `SHA256SUMS` is signed by `release.yml` for exactly this tag, and lists
-  every asset it checks;
+  every asset it checks (`install.sh` from v0.9.0 on);
 - the release's `install.sh`, with `CYODA_COSIGN_VERIFY=required`,
-  installs this version, pinned and unpinned;
+  installs this version;
 - the `.deb` and `.rpm` install in clean containers;
-- the image verifies with `cosign` and runs by digest, and `latest` is
-  signed by this release run;
-- GitHub's Latest release is this tag, and `/releases/latest/download/`
-  serves its files;
-- the Helm repository serves chart `X.Y.Z` with appVersion `X.Y.Z`;
+- the image verifies with `cosign` and runs by digest;
 - the help asset carries the version.
+
+For the newest stable release (`--latest`) it also checks that GitHub's
+Latest release is this tag, that `/releases/latest/download/SHA256SUMS` and
+`install.sh` are this release's, that `install.sh` without `CYODA_VERSION`
+installs it, that the image tag `latest` is signed by this release run, and
+Homebrew. A pre-release, or an older release checked by hand, gets the
+pinned checks only.
+
+The `Release chart` run checks the chart it published: the chart version
+from its tag (`cyoda-C.D.E`) is served, and its appVersion's binary release
+passes the checks above. A chart version need not equal the binary version.
 
 Both runs must be green. If one fails, fix it before announcing the
 release: a wrong Latest mark is fixed with
-`gh release edit vX.Y.Z --repo cyoda/cyoda-go --latest`; anything else
-usually needs a patch release. To run it by hand (needs `cosign`, `docker`,
-`jq`, `helm`):
+`gh release edit vX.Y.Z --repo cyoda/cyoda-go --latest` (the failure message
+gives the command); anything else usually needs a patch release. To run it
+by hand (needs `cosign`, `docker`, `jq`, `helm`):
 
 ```bash
-scripts/verify-release.sh vX.Y.Z --latest --chart
+scripts/verify-release.sh vX.Y.Z --latest --chart C.D.E
 ```
 
-The workflow also runs weekly against the Latest release, so drift (the
-Latest mark moving, an asset replaced) shows up without a release.
+The workflow also runs weekly against the newest stable release (and any
+chart for it), so drift (the Latest mark moving, an asset replaced) shows up
+without a release.
 
 ### 10. Open the next release branch
 
@@ -610,20 +617,20 @@ git push origin v0.6.0-rc.1
 ```
 
 This fires the full release workflow, producing a prerelease GitHub
-Release, images tagged `:v0.1.0-rc.1` (but NOT `:latest`), cosign
+Release, images tagged `:0.6.0-rc.1` (but NOT `:latest`), cosign
 signatures, and SBOMs. The Homebrew tap, chart appVersion bump, and
 `install.sh` / `.deb` / `.rpm` user-facing paths are all unaffected
 because:
 
 - `brews:` has `skip_upload: auto` — prereleases don't commit to the tap.
-- `:latest` manifest has `skip_push: '{{ .Prerelease }}'` — doesn't move.
+- the `latest` image has `disable: "{{ .Prerelease }}"` — doesn't move.
 - `bump-chart-appversion.yml` filters out tags containing `-`.
-- `install.sh` uses the GitHub `/releases/latest` API which hides prereleases.
+- `install.sh` follows `github.com/.../releases/latest`, which never names a prerelease.
 
 Delete the rc release afterwards if desired:
 
 ```bash
-gh release delete v0.1.0-rc.1 --cleanup-tag --yes
+gh release delete v0.6.0-rc.1 --cleanup-tag --yes
 ```
 
 ## Maintenance of older release lines

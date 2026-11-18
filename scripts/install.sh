@@ -117,9 +117,12 @@ resolve_version() {
         printf '%s' "$CYODA_VERSION"
         return
     fi
-    curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
-        | head -n1
+    # github.com/<repo>/releases/latest redirects to the Latest release's tag
+    # page. No API call: the API's per-address rate limit does not apply.
+    rv_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") || return 0
+    case "$rv_url" in
+        */releases/tag/*) printf '%s' "${rv_url##*/}" ;;
+    esac
 }
 
 # cosign_fetch downloads a release asset and prints its HTTP status to
