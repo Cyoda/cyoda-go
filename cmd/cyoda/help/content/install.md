@@ -20,7 +20,7 @@ install — ways to install the `cyoda` binary, and how to upgrade it.
 ```
 brew install cyoda/cyoda-go/cyoda
 curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
-go install github.com/cyoda-platform/cyoda-go/cmd/cyoda@latest
+go install github.com/cyoda/cyoda-go/cmd/cyoda@latest
 ```
 
 ## DESCRIPTION
@@ -102,7 +102,7 @@ For running the image, see `cyoda help run` (Docker, Docker Compose).
 **From source** (needs the Go version in `go.mod`):
 
 ```
-go install github.com/cyoda-platform/cyoda-go/cmd/cyoda@latest
+go install github.com/cyoda/cyoda-go/cmd/cyoda@latest
 ```
 
 ## UPGRADE
