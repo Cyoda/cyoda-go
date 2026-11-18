@@ -8,8 +8,8 @@ import (
 
 	"github.com/tidwall/gjson"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // prepared.go is the prepare/execute split of the predicate-tree evaluator.

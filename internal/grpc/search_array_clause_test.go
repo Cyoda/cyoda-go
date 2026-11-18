@@ -9,8 +9,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 func scoresEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {

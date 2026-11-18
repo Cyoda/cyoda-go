@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
+	"github.com/cyoda/cyoda-go/internal/logging"
 )
 
 // TestHandlerNeutralisesLogInjection pins the invariant that makes the

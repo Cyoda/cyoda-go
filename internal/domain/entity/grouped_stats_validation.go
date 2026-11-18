@@ -5,10 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 // GroupedStatsValidationError is returned by ValidateGroupedStatsRequest.

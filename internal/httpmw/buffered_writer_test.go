@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
 )
 
 // A joined response is held in memory while the transaction's gate is held, so

@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/testing/fakeclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 var clockTestEpoch = time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)

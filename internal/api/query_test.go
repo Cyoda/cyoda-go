@@ -12,8 +12,8 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"gopkg.in/yaml.v3"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
+	spi "github.com/cyoda/cyoda-go-spi"
+	genapi "github.com/cyoda/cyoda-go/api"
 )
 
 // newGeneratedHandler serves every generated route through ChiMux, as app.go

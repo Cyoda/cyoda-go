@@ -14,9 +14,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // TagChangeFunc is called when the set of connected members changes, with the

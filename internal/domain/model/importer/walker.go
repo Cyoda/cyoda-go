@@ -1,7 +1,7 @@
 package importer
 
 import (
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // rootPath is the canonical path of the document root — the same "$" prefix

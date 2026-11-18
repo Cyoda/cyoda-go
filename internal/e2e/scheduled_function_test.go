@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // scheduled_function_test.go is Task 9.1's E2E layer for the scheduled-

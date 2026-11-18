@@ -15,15 +15,15 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
-var tracer = otel.Tracer("github.com/cyoda-platform/cyoda-go/workflow")
+var tracer = otel.Tracer("github.com/cyoda/cyoda-go/workflow")
 
 //go:embed default_workflow.json
 var defaultWorkflowJSON []byte

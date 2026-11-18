@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // TestSlowConfigurable_SleepsForSleepMS verifies the slow-configurable

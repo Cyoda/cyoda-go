@@ -7,7 +7,7 @@ import (
 	"os"
 	"sync"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // idempotentCloser wraps an io.ReadCloser so that Close() is a no-op after the

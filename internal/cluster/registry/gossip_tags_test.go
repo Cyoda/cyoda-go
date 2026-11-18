@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
 )
 
 // TestGossipRegistry_ManyTenantsStayVisible reproduces the membership defect.

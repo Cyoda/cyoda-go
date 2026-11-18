@@ -9,7 +9,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
+	genapi "github.com/cyoda/cyoda-go/api"
 )
 
 // TestSlugifyTag pins the tag-name → slug normalization for the 11

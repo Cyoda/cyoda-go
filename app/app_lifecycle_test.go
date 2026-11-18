@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
 )
 
 func lifecycleTestApp(t *testing.T) *App {

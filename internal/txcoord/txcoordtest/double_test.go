@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
 
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord/txcoordtest"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	"github.com/cyoda/cyoda-go/internal/txcoord/txcoordtest"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // TestDouble_CompletionIntoTheRootIsAllOrNothing: a completion whose writes

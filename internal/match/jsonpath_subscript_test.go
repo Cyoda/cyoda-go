@@ -3,8 +3,8 @@ package match
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // A numeric array subscript ("$.arr[0]") is valid JSON Path, is ACCEPTED by

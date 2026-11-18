@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 	"github.com/getkin/kin-openapi/openapi3"
 )
 

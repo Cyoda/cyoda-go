@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	cyodaschemas "github.com/cyoda-platform/cyoda-go/docs/cyoda/schema"
+	cyodaschemas "github.com/cyoda/cyoda-go/docs/cyoda/schema"
 )
 
 // envelope matches the documented output shape for `cyoda help cloudevents json`.

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // anchor_row_lock_test.go — on postgres the save before a callout writes the

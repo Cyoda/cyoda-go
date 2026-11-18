@@ -16,9 +16,9 @@ import (
 
 	"github.com/google/uuid"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // requestAs issues a request to serverURL+"/api"+path with token as bearer.

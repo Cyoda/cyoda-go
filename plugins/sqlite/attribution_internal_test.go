@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 func attrInternalCtx(tenant, userID string, kind spi.PrincipalKind) context.Context {

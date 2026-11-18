@@ -9,7 +9,7 @@ import (
 	"io"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 type messageStore struct {

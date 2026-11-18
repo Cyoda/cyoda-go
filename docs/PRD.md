@@ -823,10 +823,10 @@ details and sizing guidance.
 
 ### Writing a Third-Party Plugin
 
-Plugin authors depend only on `github.com/cyoda-platform/cyoda-go-spi` (stdlib-only Go interfaces). A plugin implements the `Plugin` interface and registers itself from `init()`:
+Plugin authors depend only on `github.com/cyoda/cyoda-go-spi` (stdlib-only Go interfaces). A plugin implements the `Plugin` interface and registers itself from `init()`:
 
 ```go
-import spi "github.com/cyoda-platform/cyoda-go-spi"
+import spi "github.com/cyoda/cyoda-go-spi"
 
 func init() { spi.Register(&myPlugin{}) }
 ```
@@ -835,9 +835,9 @@ Users compose a custom binary by blank-importing plugins alongside `cyoda-go`:
 
 ```go
 import (
-    _ "github.com/cyoda-platform/cyoda-go/plugins/memory"
-    _ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
-    _ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+    _ "github.com/cyoda/cyoda-go/plugins/memory"
+    _ "github.com/cyoda/cyoda-go/plugins/sqlite"
+    _ "github.com/cyoda/cyoda-go/plugins/postgres"
     _ "example.com/my-redis-plugin"
 )
 ```
@@ -945,5 +945,5 @@ See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) Section 14 for detailed technical 
 - **Per-plugin documentation:** [`docs/plugins/`](plugins/)
 - **Architecture Decision Records:** [`docs/adr/`](adr/)
 - **OpenAPI Specification:** `api/openapi.yaml`
-- **Storage Plugin SPI module:** [github.com/cyoda-platform/cyoda-go-spi](https://github.com/cyoda/cyoda-go-spi)
+- **Storage Plugin SPI module:** [github.com/cyoda/cyoda-go-spi](https://github.com/cyoda/cyoda-go-spi)
 - **Commercial Cassandra plugin:** contact Cyoda via [cyoda.com](https://www.cyoda.com)

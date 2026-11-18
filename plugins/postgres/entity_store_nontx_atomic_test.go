@@ -6,9 +6,9 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // TestNonTxSave_IsAtomic proves a non-transactional Save leaves no partial

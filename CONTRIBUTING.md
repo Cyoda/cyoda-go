@@ -156,7 +156,7 @@ A sample is one JSON file in `api/clientprobe/samples/`:
 No external web frameworks. No DI frameworks. No ORM.
 
 - When bumping `cyoda-go-spi` in the root `go.mod`, bump it identically in every `plugins/*/go.mod` in the same PR. The `check-spi-pin-sync` CI gate enforces this. See [`MAINTAINING.md`](MAINTAINING.md#bumping-cyoda-go-spi) for the full procedure.
-- **Set `GOPRIVATE=github.com/Cyoda-platform/*`** in your shell environment. This tells the Go toolchain to bypass `proxy.golang.org` and `sum.golang.org` for cyoda-platform modules — required to fetch the commercial `cyoda-go-cassandra` plugin, which is private. Add `export GOPRIVATE=github.com/Cyoda-platform/*` to your shell profile. This repo's CI does not set it: every module it resolves is public.
+- **Set `GOPRIVATE=github.com/cyoda/cyoda-go-cassandra`** in your shell environment if you build the commercial Cassandra plugin. It is private, so the Go toolchain must fetch it from GitHub directly instead of through `proxy.golang.org` and `sum.golang.org`. Name only that module: the public cyoda modules are fetched through the proxy and checked against the checksum database. Add the `export` to your shell profile. This repo's CI does not set it: every module it resolves is public.
 
 | Dependency | Purpose |
 |------------|---------|

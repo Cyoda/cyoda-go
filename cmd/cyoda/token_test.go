@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 func tokenTestKey(t *testing.T) (*rsa.PrivateKey, string) {

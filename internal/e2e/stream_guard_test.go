@@ -27,8 +27,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // streamCloseWithin bounds how long a test waits for the re-check to close a

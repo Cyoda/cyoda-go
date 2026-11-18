@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // Peer is another node of the cluster. An empty Addr means the node has no

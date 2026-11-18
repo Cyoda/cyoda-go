@@ -12,7 +12,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help/renderer"
 )
 
 func TestParseFrontMatter_ValidMinimal(t *testing.T) {

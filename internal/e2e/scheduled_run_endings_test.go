@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
 )
 
 // scheduled_run_endings_test.go — every ending of a scheduled run through the

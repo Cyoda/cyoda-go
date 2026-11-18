@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/tenantroute"
+	"github.com/cyoda/cyoda-go/internal/tenantroute"
 )
 
 // mount builds an outer mux that strips /api, as app.go does, and returns

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help/renderer"
 )
 
 func helpTestServer(t *testing.T, contextPath string) *httptest.Server {

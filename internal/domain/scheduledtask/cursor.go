@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
 )
 
 // cursorBody is the decoded form of a page cursor: the (scheduledTime, id)

@@ -17,12 +17,12 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/health"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // Firer runs one claimed task. *workflow.Engine satisfies it.

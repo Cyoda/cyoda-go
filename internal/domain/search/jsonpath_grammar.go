@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // jsonPathLeader is the mandatory prefix of a wire jsonPath.

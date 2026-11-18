@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestSortEntitiesByOrder_CtxExpiredAbortsBeforeSorting is a clean,

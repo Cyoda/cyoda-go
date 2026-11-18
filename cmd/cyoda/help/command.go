@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help/renderer"
 )
 
 // RunHelp dispatches `cyoda help [args...]`. Returns the intended exit

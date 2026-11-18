@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // Unlock of a model that holds entities is refused over gRPC as over HTTP: the

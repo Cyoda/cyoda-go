@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // scripted_cnode_test.go lets a test attach SEVERAL cnodes to one callout

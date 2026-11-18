@@ -5,9 +5,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/health"
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
 )
 
 // countingStoreFactory records the number of Close() invocations. The other

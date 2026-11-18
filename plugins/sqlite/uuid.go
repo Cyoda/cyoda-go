@@ -3,7 +3,7 @@ package sqlite
 import (
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // defaultUUIDGenerator produces time-based (version 1) UUIDs, as the SPI's

@@ -24,10 +24,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 	"github.com/tidwall/gjson"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // admissionMatrixCase is one row of the type × value matrix: a declared

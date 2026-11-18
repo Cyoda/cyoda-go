@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // TestEnded_CoordinationFailureIsNotTheCallerLeaving: a callout stopped

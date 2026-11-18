@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // callback_joined_window_test.go — a request that joined an open transaction

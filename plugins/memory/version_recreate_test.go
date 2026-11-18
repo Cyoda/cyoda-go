@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestSave_AfterCommittedDelete_TakesNextVersion pins the rule that a memory

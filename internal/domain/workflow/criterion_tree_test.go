@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 func mustParse(t *testing.T, s string) predicate.Condition {

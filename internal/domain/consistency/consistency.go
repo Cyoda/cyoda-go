@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // storeCallDeadline bounds one store call: the store's own wait budget (10 s)

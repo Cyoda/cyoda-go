@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // emptyIDs is an iter.Seq[string] that yields nothing — the ordinary outcome

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/testing/fakeclock"
 )
 
 func TestModelUpdateDateFromClock(t *testing.T) {

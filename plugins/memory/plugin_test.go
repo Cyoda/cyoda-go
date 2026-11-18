@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func TestPluginRegistered(t *testing.T) {

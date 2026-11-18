@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
-	parityclient "github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
+	parityclient "github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // fakeServer accepts any request and returns a generic success body.

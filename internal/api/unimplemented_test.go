@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	genapi "github.com/cyoda/cyoda-go/api"
+	internalapi "github.com/cyoda/cyoda-go/internal/api"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // Compile-time check: Unimplemented must satisfy ServerInterface.

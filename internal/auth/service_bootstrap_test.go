@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // TestBootstrapKey_HasNoWindow: the bootstrap signing key comes from

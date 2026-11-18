@@ -3,7 +3,7 @@ package registry
 import (
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
 )
 
 // LocalAddr exposes the address memberlist derived for this node, for tests

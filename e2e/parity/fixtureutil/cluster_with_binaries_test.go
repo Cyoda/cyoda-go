@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/childproc"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/internal/testing/childproc"
 )
 
 // TestLaunchCyodaClusterAndComputeWithBinaries.

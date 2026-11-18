@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // finishOf returns the single FINISH event and checks its state and success.

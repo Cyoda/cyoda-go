@@ -8,7 +8,7 @@ import (
 	"crypto/sha256"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 func TestRSASigner_SignsPKCS1v15SHA256(t *testing.T) {

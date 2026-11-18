@@ -5,9 +5,9 @@ import (
 	"errors"
 	"strings"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 const nilUUID = "00000000-0000-0000-0000-000000000000"

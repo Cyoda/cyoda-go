@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
+	"github.com/cyoda/cyoda-go/internal/cluster/peeraddr"
 )
 
 // ErrForbiddenPeerAddress is the sentinel returned when an address is rejected

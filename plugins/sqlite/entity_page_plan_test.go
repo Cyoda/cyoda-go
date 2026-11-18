@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // explainQueryPlan runs "EXPLAIN QUERY PLAN <query>" and returns every

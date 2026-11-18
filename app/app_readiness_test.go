@@ -15,8 +15,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health/grpc_health_v1"
 
-	"github.com/cyoda-platform/cyoda-go/internal/admin"
-	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
+	"github.com/cyoda/cyoda-go/internal/admin"
+	"github.com/cyoda/cyoda-go/internal/api/middleware"
 )
 
 // readinessTestApp builds a fully wired app on the default (memory) backend —

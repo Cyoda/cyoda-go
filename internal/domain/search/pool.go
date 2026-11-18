@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // ErrQueueFull is returned by WorkerPool.Submit when the pool's queue is at

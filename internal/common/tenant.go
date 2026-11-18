@@ -3,7 +3,7 @@ package common
 import (
 	"context"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TenantFromContext returns the bound tenant ID from the request's

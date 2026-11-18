@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/health"
 )
 
 func rank(s State) int {

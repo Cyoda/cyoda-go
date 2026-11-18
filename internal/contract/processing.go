@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ErrNoMatchingMember is returned by ExternalProcessingService implementations

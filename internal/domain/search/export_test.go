@@ -3,7 +3,7 @@ package search
 import (
 	"context"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Test-only accessors. The build tag `*_test.go` keeps these out of

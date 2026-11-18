@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // UniqueKeyDefError is returned by ValidateUniqueKeys when one or more keys

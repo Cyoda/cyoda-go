@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
 )
 
 // lockedBuffer collects log output written from memberlist's goroutines while

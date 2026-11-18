@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/errorcodematrix"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/e2e/errorcodematrix"
+	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
 )
 
 func hasTriple(observed []openapivalidator.ErrorTriple, op string, c errorcodematrix.Cell) bool {

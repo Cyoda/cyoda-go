@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 func TestResolveGRPCAddr_AdvertisedWins(t *testing.T) {

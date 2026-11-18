@@ -9,9 +9,9 @@ import (
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // GetEntityTransitions returns available transitions for an entity at a given point in time.

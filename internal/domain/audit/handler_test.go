@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
 
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // --- helpers ---

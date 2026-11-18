@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // resolveSchedule parses the raw JSON value of a scheduled-transition

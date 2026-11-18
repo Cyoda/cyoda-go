@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/app"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // --- Test cases for the /clients OpenAPI surface ---

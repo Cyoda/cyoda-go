@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // A required member whose schema states its type cannot be null, so a null

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // commitClaims reads the models' keys and writes the unique-key claims of one

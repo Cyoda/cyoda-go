@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // ---------------------------------------------------------------------------

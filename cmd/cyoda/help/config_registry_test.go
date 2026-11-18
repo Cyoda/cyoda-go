@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
-	_ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
-	_ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
+	_ "github.com/cyoda/cyoda-go/plugins/postgres"
+	_ "github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // TestRegistry_NoBootstrapClientVariables verifies that no variable with the

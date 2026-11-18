@@ -8,10 +8,10 @@ import (
 	"slices"
 	"sync"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/fence"
+	"github.com/cyoda/cyoda-go/internal/txgate"
 )
 
 // New returns the in-process coordination over txMgr. It builds its own fence

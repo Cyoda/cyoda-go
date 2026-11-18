@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 func requestAsMap(t *testing.T, call Callout, requestID string) map[string]any {

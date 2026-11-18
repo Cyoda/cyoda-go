@@ -3,7 +3,7 @@ package memory
 import (
 	"context"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 func init() { spi.Register(&plugin{}) }

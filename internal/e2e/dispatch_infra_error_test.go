@@ -31,7 +31,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // newDispatchInfraErrorServer builds a standalone in-process stack with the

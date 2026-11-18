@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 func serve(t *testing.T, h http.Handler, cfg app.HTTPConfig) string {

@@ -3,7 +3,7 @@ package memory_test
 import (
 	"errors"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // isToleratedClosedTxErr reports whether err is a benign "tx already

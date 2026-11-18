@@ -1,7 +1,7 @@
 // release-preflight validates that the repository is in a releasable
 // state before a v* tag is built. It performs two checks:
 //
-//  1. No cyoda-platform/* module resolves to a pseudo-version. Upstream
+//  1. No github.com/cyoda/* module resolves to a pseudo-version. Upstream
 //     pseudo-versions (normal Go ecosystem artifacts) are tolerated.
 //
 //  2. No `replace` directive in go.mod diverts to an external module
@@ -11,7 +11,7 @@
 //
 // Usage:
 //
-//	release-preflight --go-mod go.mod --org github.com/cyoda-platform/
+//	release-preflight --go-mod go.mod --org github.com/cyoda/
 //
 // Exits 0 on clean pre-flight, 1 on violations (with a human-readable
 // report on stderr).
@@ -26,7 +26,7 @@ import (
 
 func main() {
 	goModPath := flag.String("go-mod", "go.mod", "path to go.mod")
-	orgPrefix := flag.String("org", "github.com/cyoda-platform/", "module path prefix to enforce pseudo-version check against; empty disables the filter")
+	orgPrefix := flag.String("org", "github.com/cyoda/", "module path prefix to enforce pseudo-version check against; empty disables the filter")
 	flag.Parse()
 
 	goModBytes, err := os.ReadFile(*goModPath)

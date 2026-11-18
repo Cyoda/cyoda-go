@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	"github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // The whole-model DeleteAll fast path is taken only when the request needs

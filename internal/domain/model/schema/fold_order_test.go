@@ -3,7 +3,7 @@ package schema
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Two deltas diffed from the SAME model version, folded in both orders.

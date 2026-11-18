@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/api/middleware"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/health"
 )
 
 func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {

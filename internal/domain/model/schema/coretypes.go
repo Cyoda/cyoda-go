@@ -1,6 +1,6 @@
 package schema
 
-import spi "github.com/cyoda-platform/cyoda-go-spi"
+import spi "github.com/cyoda/cyoda-go-spi"
 
 // The precise type-comparison core (DataType, Decimal, numeric classifiers,
 // TypeSet, assignability) now lives in the SPI so the search leaf-comparison

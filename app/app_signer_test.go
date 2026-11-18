@@ -3,7 +3,7 @@ package app
 import (
 	"testing"
 
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func TestSigner_AlwaysPresentSingleNode(t *testing.T) {

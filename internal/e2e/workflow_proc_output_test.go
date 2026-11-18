@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // procOutputWorkflow is a workflow whose single automatic transition runs one

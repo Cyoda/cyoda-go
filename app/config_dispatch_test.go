@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster"
+	"github.com/cyoda/cyoda-go/internal/cluster"
 )
 
 func validDispatchConfig() cluster.Config {

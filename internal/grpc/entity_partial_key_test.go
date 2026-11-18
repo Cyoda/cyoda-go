@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	spi "github.com/cyoda/cyoda-go-spi"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // TestRPC_EntityWrite_PartialKeyDoesNotExtendModel: on every gRPC door that

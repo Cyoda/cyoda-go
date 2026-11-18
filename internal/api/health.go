@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/health"
 )
 
 // RegisterHealthRoutes registers GET /health on the API listener.

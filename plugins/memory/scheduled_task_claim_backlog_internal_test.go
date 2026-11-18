@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // One tenant's due backlog of 200,000 tasks, each on its own entity, does not

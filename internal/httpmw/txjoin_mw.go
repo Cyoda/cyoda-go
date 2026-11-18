@@ -9,10 +9,10 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/adminroute"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
+	"github.com/cyoda/cyoda-go/internal/adminroute"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/txjoin"
 )
 
 // maxJoinedBodySize is the largest body any handler behind this middleware

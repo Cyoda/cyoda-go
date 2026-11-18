@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 func TestRoundRobinSelector_AlternatesAndANewMemberGoesFirst(t *testing.T) {

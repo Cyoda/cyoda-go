@@ -5,7 +5,7 @@ package lifecycle
 import (
 	"sync"
 
-	"github.com/cyoda-platform/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/health"
 )
 
 // State is a node's lifecycle state.

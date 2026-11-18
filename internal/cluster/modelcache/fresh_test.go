@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/cluster/modelcache"
 )
 
 // getOnlyStore answers Get from a stale descriptor and offers no way to read

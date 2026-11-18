@@ -13,8 +13,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/api/grpc/authctx"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda/cyoda-go/api/grpc/authctx"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // callback.go — callback-capable processors/criteria for the

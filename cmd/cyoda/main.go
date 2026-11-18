@@ -14,16 +14,16 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help"
+	"github.com/cyoda/cyoda-go/internal/logging"
+	"github.com/cyoda/cyoda-go/internal/observability"
 
 	// Stock storage plugins — blank-imported so their init() runs
 	// and they register themselves with the spi registry.
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
-	_ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
-	_ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
+	_ "github.com/cyoda/cyoda-go/plugins/postgres"
+	_ "github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 var (

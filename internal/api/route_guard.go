@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"sort"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // allowList names the authenticated operations a caller may reach without

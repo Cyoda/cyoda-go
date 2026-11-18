@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ClassifyErrorForTest exposes classifyError for unit tests.

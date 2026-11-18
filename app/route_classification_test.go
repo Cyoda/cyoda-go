@@ -12,8 +12,8 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"gopkg.in/yaml.v3"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
+	genapi "github.com/cyoda/cyoda-go/api"
+	internalapi "github.com/cyoda/cyoda-go/internal/api"
 )
 
 // routeClassificationAllowList is a literal copy of the design's allow-list:

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 // decodeJSON parses src the way every ingress does (json.Number preserved) so

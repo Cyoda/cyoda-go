@@ -11,8 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 func claimDue(t *testing.T, sts spi.ScheduledTaskStore, owner uuid.UUID, allowLost bool) []spi.ScheduledTask {

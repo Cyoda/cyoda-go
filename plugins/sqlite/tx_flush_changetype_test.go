@@ -3,8 +3,8 @@ package sqlite_test
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // TestFlushToSQLite_ChangeTypeMatchesStoredValue is the regression test for

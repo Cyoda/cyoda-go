@@ -8,7 +8,7 @@ import (
 
 	"github.com/hashicorp/memberlist"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // topicTags carries one pnode's complete tag list to a peer, and

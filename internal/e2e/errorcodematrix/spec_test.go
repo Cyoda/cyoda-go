@@ -6,7 +6,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	"github.com/cyoda-platform/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/api"
 )
 
 // TestEveryCellIsNamedInTheSpec checks that for every cell of

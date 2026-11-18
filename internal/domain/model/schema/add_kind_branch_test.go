@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // assertRoundTripsTo checks the delta from old to extended replays to exactly

@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
+	genapi "github.com/cyoda/cyoda-go/api"
 )
 
 const sampleUUID = "1d1e1b10-1155-11f0-bcd5-ae468cd3ed16"

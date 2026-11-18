@@ -10,7 +10,7 @@ import (
 )
 
 // meterName is the instrumentation scope for this plugin's instruments.
-const meterName = "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+const meterName = "github.com/cyoda/cyoda-go/plugins/postgres"
 
 // registerPoolMetrics exports pgxpool.Stat on every scrape as observable
 // instruments. Pool saturation is the dominant outage mode of this design;

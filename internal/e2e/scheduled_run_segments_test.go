@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
 )
 
 // scheduled_run_segments_test.go — runs that commit in segments

@@ -11,11 +11,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 	sqlite3 "github.com/ncruces/go-sqlite3"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // ucFixture is a fresh StoreFactory with UCModel created and LOCKED in

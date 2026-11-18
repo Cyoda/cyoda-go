@@ -3,7 +3,7 @@ package grpc
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 func TestNewServer_NilConsistencyPanics(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
 )
 
 // cluster_admin_refused_test.go — in a cluster, a request for model or

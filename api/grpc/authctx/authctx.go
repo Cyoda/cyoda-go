@@ -22,8 +22,8 @@ import (
 	"slices"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // Type returns the authtype extension attribute — the attributed principal's

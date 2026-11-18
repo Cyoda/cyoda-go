@@ -6,6 +6,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **The Go module paths are `github.com/cyoda/...`.** `github.com/cyoda-platform/cyoda-go`
+  (and its `plugins/memory`, `plugins/postgres`, `plugins/sqlite`) and
+  `github.com/cyoda-platform/cyoda-go-spi` named the GitHub organization's
+  earlier name, which no account owns any more: GitHub only redirects it, and
+  whoever registered it would serve new versions of those paths. They are now
+  `github.com/cyoda/cyoda-go`, `github.com/cyoda/cyoda-go/plugins/...` and
+  `github.com/cyoda/cyoda-go-spi`. A storage plugin or any other importer
+  changes its imports and `require` lines; `go install
+  github.com/cyoda/cyoda-go/cmd/cyoda@latest` installs the binary. Versions
+  published under the old paths are unchanged. `GOPRIVATE` needs only
+  `github.com/cyoda/cyoda-go-cassandra`, the one private module.
+
 - **Helm chart: Gateway API routing needs a Gateway.** With
   `gateway.enabled=true`, the default, the chart's schema refuses an empty,
   null or missing `gateway.parentRefs`, and an entry with no `name` or an

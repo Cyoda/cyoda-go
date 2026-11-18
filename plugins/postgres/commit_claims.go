@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"slices"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Unique keys are checked when a write commits, from the transaction's final

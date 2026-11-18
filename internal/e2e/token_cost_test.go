@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
+	genapi "github.com/cyoda/cyoda-go/api"
 )
 
 // tokenRequestsPerMinute is the shared server's per-client limit: the

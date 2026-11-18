@@ -287,7 +287,7 @@ func repoRoot(t *testing.T) string {
 			return d
 		}
 		if b, err := os.ReadFile(filepath.Join(d, "go.mod")); err == nil &&
-			strings.HasPrefix(strings.TrimSpace(string(b)), "module github.com/cyoda-platform/cyoda-go\n") {
+			strings.HasPrefix(strings.TrimSpace(string(b)), "module github.com/cyoda/cyoda-go\n") {
 			return d
 		}
 		if filepath.Dir(d) == d {

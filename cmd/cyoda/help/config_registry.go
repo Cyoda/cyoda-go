@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ConfigVar documents one CYODA_* configuration variable for the

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/api"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/api"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/logging"
+	"github.com/cyoda/cyoda-go/internal/observability"
 )
 
 // operatorContext returns a request with a platform-operator UserContext

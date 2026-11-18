@@ -5,7 +5,7 @@ import (
 	"maps"
 	"slices"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Diff returns a SchemaDelta such that ApplyMany(old, [Diff(old, new)]) ≡ new,

@@ -7,7 +7,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
+	genapi "github.com/cyoda/cyoda-go/api"
 )
 
 func RegisterDiscoveryRoutes(mux *http.ServeMux, contextPath string) {

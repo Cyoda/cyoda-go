@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 	sqlite3 "github.com/ncruces/go-sqlite3"
 )
 

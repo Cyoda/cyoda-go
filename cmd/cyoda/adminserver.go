@@ -3,9 +3,9 @@ package main
 import (
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/admin"
-	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/admin"
+	"github.com/cyoda/cyoda-go/internal/api/middleware"
+	"github.com/cyoda/cyoda-go/internal/observability"
 )
 
 // newAdminHandler assembles the admin surface (/livez, /readyz, /metrics)

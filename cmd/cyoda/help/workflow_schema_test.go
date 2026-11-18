@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
 )
 
 func TestEmitWorkflowSchemaVersions_StructuredJSON(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // ErrAuthenticationFailed is the generic client-facing auth failure sentinel.

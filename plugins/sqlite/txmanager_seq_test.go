@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 func seqEntity(id string) *spi.Entity {

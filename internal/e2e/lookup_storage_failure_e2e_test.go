@@ -35,7 +35,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 const lookupFailureSample = `{"name":"Alice","amount":1,"status":"new"}`

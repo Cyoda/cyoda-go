@@ -3,7 +3,7 @@ package fixtureutil
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 func TestMintPlatformOperatorJWT_IsAPlatformAdminPersonToken(t *testing.T) {

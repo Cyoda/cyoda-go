@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/health"
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
 )
 
 type fakePinger struct {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ApplyMany is the apply function the composition root wires into the

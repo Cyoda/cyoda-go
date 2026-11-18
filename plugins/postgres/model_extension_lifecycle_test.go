@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 const lifecycleDelta = `[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`

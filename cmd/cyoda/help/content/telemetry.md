@@ -45,7 +45,7 @@ Which application metrics appear:
   enabled with full observability).
 - Go runtime and process metrics are always present.
 
-The instrumentation name is `github.com/cyoda-platform/cyoda-go`.
+The instrumentation name is `github.com/cyoda/cyoda-go`.
 
 ## ENV VARS
 

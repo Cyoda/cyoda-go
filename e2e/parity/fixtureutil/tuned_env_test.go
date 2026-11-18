@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
 )
 
 func envValue(t *testing.T, env []string, key string) string {

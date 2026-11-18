@@ -3,7 +3,7 @@ package postgres
 import (
 	"context"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // replaceClaims refreshes the unique-key claims of e, a save outside any

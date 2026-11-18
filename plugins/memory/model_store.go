@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ModelStore is a tenant-scoped, in-memory implementation of spi.ModelStore.

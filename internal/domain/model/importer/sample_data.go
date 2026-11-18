@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // SampleDataImporter imports sample data by parsing it according to the given

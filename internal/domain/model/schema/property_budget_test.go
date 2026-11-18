@@ -20,7 +20,7 @@ func TestPropertyBudget(t *testing.T) {
 	start := time.Now()
 	cmd := exec.Command("go", "test", "-short",
 		"-run", "TestRoundtrip|TestCommutativity|TestMonotonicity|TestIdempotence|TestPermutation",
-		"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema")
+		"github.com/cyoda/cyoda-go/internal/domain/model/schema")
 	out, err := cmd.CombinedOutput()
 	elapsed := time.Since(start)
 	if err != nil {

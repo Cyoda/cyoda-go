@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // `success` is declared `"type": "boolean"` with `"default": true`, so the

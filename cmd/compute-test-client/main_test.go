@@ -12,7 +12,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // TestCatalog_NoopReturnsEntityUnchanged verifies the noop processor

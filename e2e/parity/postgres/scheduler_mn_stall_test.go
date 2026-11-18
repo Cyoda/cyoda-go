@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
 )
 
 // TestSchedulerMN_LostOwnerAfterSurvivorStall: pnodes 0 and 1 claim, pnode 2

@@ -8,9 +8,9 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 func TestGRPCExtractToken_Present(t *testing.T) {

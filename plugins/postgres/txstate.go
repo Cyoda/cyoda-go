@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // txState holds per-transaction bookkeeping for first-committer-wins

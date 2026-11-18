@@ -1,7 +1,7 @@
 package postgres_test
 
 import (
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // beginGuarded is the in-package guard (tx_guard_test.go), reached through the

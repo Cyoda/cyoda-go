@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/cluster/dispatch"
 )
 
 // testSecret is a 32-byte shared secret used across AEAD tests. Not the

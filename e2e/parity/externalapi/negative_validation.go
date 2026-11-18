@@ -7,9 +7,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/errorcontract"
+	"github.com/cyoda/cyoda-go/e2e/parity"
 )
 
 func init() {

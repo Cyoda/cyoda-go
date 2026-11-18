@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/clusterstatus"
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/clusterstatus"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
 )
 
 type fakeStatusSource struct {

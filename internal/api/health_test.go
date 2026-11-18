@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
-	"github.com/cyoda-platform/cyoda-go/internal/health"
+	internalapi "github.com/cyoda/cyoda-go/internal/api"
+	"github.com/cyoda/cyoda-go/internal/health"
 )
 
 func TestHealthEndpointUp(t *testing.T) {

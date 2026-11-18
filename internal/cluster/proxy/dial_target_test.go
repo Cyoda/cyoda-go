@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
+	"github.com/cyoda/cyoda-go/internal/cluster/peeraddr"
 )
 
 // TestDialTarget_AcceptsHostPort pins the legitimate forms: each is dialled

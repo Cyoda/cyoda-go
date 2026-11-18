@@ -1,6 +1,6 @@
 package events
 
-import "github.com/cyoda-platform/cyoda-go-spi/strictjson"
+import "github.com/cyoda/cyoda-go-spi/strictjson"
 
 // decodeWithUseNumber decodes a CloudEvent's data, or one member of it, with
 // strictjson: a member name spells a schema property exactly, once, and

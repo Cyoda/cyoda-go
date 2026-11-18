@@ -30,7 +30,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ukProcWorkflowOneStep builds a NONE -init(processor)-> CREATED workflow whose

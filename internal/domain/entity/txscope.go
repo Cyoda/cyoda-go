@@ -5,8 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // txScope owns the lifecycle of the transaction an entity write flow runs in.

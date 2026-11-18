@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

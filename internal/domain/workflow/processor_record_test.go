@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // processorRecords drives one manual transition whose pipeline is procs, each

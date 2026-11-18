@@ -5,10 +5,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	_ "github.com/cyoda-platform/cyoda-go/e2e/parity/externalapi"         // register ExternalAPI scenario suite
-	_ "github.com/cyoda-platform/cyoda-go/e2e/parity/scheduledfunction"   // register scheduled-transition Function scenario suite
-	_ "github.com/cyoda-platform/cyoda-go/e2e/parity/scheduledtransition" // register scheduled-transition scenario suite
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	_ "github.com/cyoda/cyoda-go/e2e/parity/externalapi"         // register ExternalAPI scenario suite
+	_ "github.com/cyoda/cyoda-go/e2e/parity/scheduledfunction"   // register scheduled-transition Function scenario suite
+	_ "github.com/cyoda/cyoda-go/e2e/parity/scheduledtransition" // register scheduled-transition scenario suite
 )
 
 var sharedFixture *postgresFixture

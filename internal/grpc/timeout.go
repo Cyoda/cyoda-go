@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // resolveEventTimeout applies spec D6/D10 for CloudEvent writes and searches:

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // callback_scope_owner_test.go — the owner's operations on a rollback-only

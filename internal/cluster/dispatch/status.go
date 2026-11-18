@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/clusterstatus"
+	"github.com/cyoda/cyoda-go/internal/clusterstatus"
 )
 
 // StatusPath is the sealed peer route a node's own status is asked on.

@@ -14,12 +14,12 @@ import (
 	descriptorpb "google.golang.org/protobuf/types/descriptorpb"
 	"gopkg.in/yaml.v3"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	protos "github.com/cyoda-platform/cyoda-go/proto"
+	genapi "github.com/cyoda/cyoda-go/api"
+	protos "github.com/cyoda/cyoda-go/proto"
 
 	// Blank imports to register the proto files in the global registry.
-	_ "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	_ "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	_ "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	_ "github.com/cyoda/cyoda-go/api/grpc/cyoda"
 )
 
 // ActionFunc is the signature for a topic-scoped action handler. It

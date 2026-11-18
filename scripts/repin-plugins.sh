@@ -18,9 +18,9 @@
 # Compatible with bash 3.2+ (macOS system bash).
 set -euo pipefail
 
-MODULE_BASE="github.com/cyoda-platform/cyoda-go/plugins"
+MODULE_BASE="github.com/cyoda/cyoda-go/plugins"
 PLUGINS=(memory sqlite postgres)
-export GOPRIVATE="${GOPRIVATE:-github.com/cyoda-platform/*}"
+export GOPRIVATE="${GOPRIVATE:-github.com/cyoda/*}"
 
 SHA="$(git rev-parse HEAD)"
 echo "Pinning plugins to a pseudo-version of HEAD ${SHA:0:12} (must be pushed to origin)..."

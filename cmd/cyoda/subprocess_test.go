@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/testing/childproc"
+	"github.com/cyoda/cyoda-go/internal/testing/childproc"
 )
 
 // childOutput collects the child's combined stdout and stderr. exec writes to

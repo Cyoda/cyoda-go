@@ -5,7 +5,7 @@
 // Backend test packages (memory, sqlite, postgres) must blank-import this
 // package to trigger the side effect:
 //
-//	import _ "github.com/cyoda-platform/cyoda-go/e2e/parity/externalapi"
+//	import _ "github.com/cyoda/cyoda-go/e2e/parity/externalapi"
 //
 // This avoids the import cycle that would result from parity/registry.go
 // importing this package (which itself imports parity for BackendFixture).
@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/errorcontract"
+	"github.com/cyoda/cyoda-go/e2e/parity"
 )
 
 func init() {

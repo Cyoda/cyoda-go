@@ -10,8 +10,8 @@ import (
 func eventStream(lines ...string) string { return strings.Join(lines, "\n") + "\n" }
 
 const (
-	pkgParity = "github.com/cyoda-platform/cyoda-go/e2e/parity/memory"
-	pkgSearch = "github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	pkgParity = "github.com/cyoda/cyoda-go/e2e/parity/memory"
+	pkgSearch = "github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 func runEvent(pkg, test string) string {
@@ -215,7 +215,7 @@ func TestRequiredPackageAbsentFromStream_IsAFailure(t *testing.T) {
 // as anomalies buries the ones that matter, which is the same noise problem
 // that made -v output unreadable.
 func TestTestFreePackages_AreNotListedUnlessRequired(t *testing.T) {
-	const pkgProto = "github.com/cyoda-platform/cyoda-go/proto"
+	const pkgProto = "github.com/cyoda/cyoda-go/proto"
 	stream := eventStream(
 		pkgEvent("pass", pkgProto, 0),
 		runEvent(pkgSearch, "TestThing"),
@@ -363,7 +363,7 @@ func TestOnlyFailingTests_AppearInTheFailureReport(t *testing.T) {
 // the string as a path prefix does not satisfy it: internal/e2e/goroutinesafety
 // running is not internal/e2e running, and both exist in this repo.
 func TestMustRun_IsNotSatisfiedByASubpackage(t *testing.T) {
-	const sub = "github.com/cyoda-platform/cyoda-go/internal/e2e/goroutinesafety"
+	const sub = "github.com/cyoda/cyoda-go/internal/e2e/goroutinesafety"
 	stream := eventStream(
 		runEvent(sub, "TestThing"),
 		testEvent("pass", sub, "TestThing"),
@@ -381,7 +381,7 @@ func TestMustRun_IsNotSatisfiedByASubpackage(t *testing.T) {
 
 // The exact package still satisfies its own requirement.
 func TestMustRun_IsSatisfiedByTheExactPackage(t *testing.T) {
-	const pkg = "github.com/cyoda-platform/cyoda-go/internal/e2e"
+	const pkg = "github.com/cyoda/cyoda-go/internal/e2e"
 	stream := eventStream(
 		runEvent(pkg, "TestThing"),
 		testEvent("pass", pkg, "TestThing"),

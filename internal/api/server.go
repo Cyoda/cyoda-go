@@ -5,17 +5,17 @@ import (
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/clusterstatus"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/scheduledtask"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/clusterstatus"
+	"github.com/cyoda/cyoda-go/internal/domain/account"
+	"github.com/cyoda/cyoda-go/internal/domain/audit"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/messaging"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/scheduledtask"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 // Server composes domain handlers with an Unimplemented fallback for any

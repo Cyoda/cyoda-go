@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // testSecretLimit is the secret-check bound of the stores these tests build.

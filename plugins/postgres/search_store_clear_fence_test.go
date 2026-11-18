@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestPGSearchStore_ClearResults_FenceAndDeleteAreAtomic: a clear from epoch 1

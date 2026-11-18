@@ -18,7 +18,7 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // nilVersionEntityStore embeds a nil spi.EntityStore and overrides only

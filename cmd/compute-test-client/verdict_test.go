@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // replyBody is the part of a calculation response these tests read.

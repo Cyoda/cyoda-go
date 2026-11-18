@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Compile-time check that *entityStore implements spi.EntityStore.

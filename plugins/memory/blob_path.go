@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Blob names are hex-encoded rather than validated.

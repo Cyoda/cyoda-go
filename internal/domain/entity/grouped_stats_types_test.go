@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
 )
 
 func TestGroupedStatsRequest_DecodeBasic(t *testing.T) {

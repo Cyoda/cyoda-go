@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/exporter"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/internal/domain/model/exporter"
+	"github.com/cyoda/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // extendThroughEntity widens a freshly imported model through the

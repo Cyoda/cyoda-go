@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // MaxJWTExpirySeconds is the longest token lifetime, the largest

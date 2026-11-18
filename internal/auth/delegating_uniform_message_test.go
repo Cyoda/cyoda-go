@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // TestDelegatingAuthenticator_UniformClientMessage pins the user-enumeration

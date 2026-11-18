@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 const workflowNamespace = "workflow"

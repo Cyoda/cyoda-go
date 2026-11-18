@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 	"github.com/gofrs/flock"
 
 	_ "github.com/ncruces/go-sqlite3/driver"

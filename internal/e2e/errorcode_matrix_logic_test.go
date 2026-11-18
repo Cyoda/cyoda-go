@@ -3,8 +3,8 @@ package e2e_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/errorcodematrix"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda/cyoda-go/internal/e2e/errorcodematrix"
+	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
 )
 
 func TestProducibleGaps(t *testing.T) {

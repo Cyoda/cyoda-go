@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
 )
 
 // callback_txjoin_errors_test.go — loud-fail error-code coverage

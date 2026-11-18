@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // jwkEntry represents a single JWK entry in the JWKS response.

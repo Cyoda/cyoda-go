@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // SimpleViewExporter exports a ModelNode tree as Cyoda's native SIMPLE_VIEW

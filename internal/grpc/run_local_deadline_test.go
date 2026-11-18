@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 func TestRunLocal_CalloutDeadline_CutsOffTheTryInProgress_AsNoAnswer(t *testing.T) {

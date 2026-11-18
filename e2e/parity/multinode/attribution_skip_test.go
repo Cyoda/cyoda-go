@@ -3,7 +3,7 @@ package multinode
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity"
 )
 
 // stubNoAttrFixture implements MultiNodeFixture but deliberately does NOT

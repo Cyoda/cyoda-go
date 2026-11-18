@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // cbdRPCWorkflowJSON carries a COMMIT_BEFORE_DISPATCH processor on the create's

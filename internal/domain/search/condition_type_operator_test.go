@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // textOperators is every string and pattern operator: the sixteen the kernel

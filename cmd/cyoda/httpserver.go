@@ -3,7 +3,7 @@ package main
 import (
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // newHTTPServer is the one place an http.Server is built for this binary, so

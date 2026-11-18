@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 var confirmSetting = Setting{StartUnixMicro: 1, AnchorUnixMicro: 1, RatePPM: 1_000_000, Version: 3, Writer: "b"}

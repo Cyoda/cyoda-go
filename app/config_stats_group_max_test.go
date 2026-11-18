@@ -3,7 +3,7 @@ package app_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // TestDefaultConfig_StatsGroupMax_ClampsNonPositive pins the contract that

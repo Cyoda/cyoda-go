@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // TestSMAuditEvents_HasTenantTransactionIndex asserts sm_audit_events carries an

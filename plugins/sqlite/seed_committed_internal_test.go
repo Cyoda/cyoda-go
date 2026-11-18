@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // saveCommitted saves e in a transaction of its own, commits it and returns

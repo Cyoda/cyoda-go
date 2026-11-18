@@ -8,8 +8,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
 )
 
 func roleCtx(roles ...string) context.Context {

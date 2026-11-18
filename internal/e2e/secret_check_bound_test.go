@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // secretFloodWorkers is the number of concurrent wrong-secret token requests.

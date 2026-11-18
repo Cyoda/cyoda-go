@@ -8,8 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // crashMatchAll is an empty AND group — it matches every entity of the model,

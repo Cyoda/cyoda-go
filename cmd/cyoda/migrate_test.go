@@ -15,7 +15,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/cyoda-platform/cyoda-go/internal/testpg"
+	"github.com/cyoda/cyoda-go/internal/testpg"
 )
 
 // TestRunMigrate_ReadsEnvFiles pins that migrate reads the env files the

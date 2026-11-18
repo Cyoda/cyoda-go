@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
 )
 
 // TestNewRemote_UsesProvidedBaseURLAndToken verifies the remote constructor

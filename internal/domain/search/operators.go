@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // ErrInvalidCondition is the sentinel for a condition that fails structural

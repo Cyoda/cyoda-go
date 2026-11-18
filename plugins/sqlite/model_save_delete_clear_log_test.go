@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // insertDeltaRow writes one delta row to ref's extension log directly, as a

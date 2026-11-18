@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 var testDelta = spi.SchemaDelta(`[{"op":"add","path":"$.x"}]`)

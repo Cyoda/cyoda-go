@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // search_group_operator_not_test.go covers Task 12 of the NOT-node plan on

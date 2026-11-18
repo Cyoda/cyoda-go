@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
 )
 
 // presaveCreateModel's workflow runs a SYNC processor on its automated transition

@@ -10,7 +10,7 @@ import (
 	"math/bits"
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 const (
