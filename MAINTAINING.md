@@ -668,7 +668,7 @@ Fix before running `goreleaser release --snapshot`:
 ```bash
 cd /path/to/temp/clone
 git remote set-url origin https://github.com/cyoda/cyoda-go.git
-# Also disable push from this temp clone so an absent-minded `git push`
+# Also disable push from this temp clone so an absent-minded "git push"
 # does not accidentally shove a local branch to the real upstream:
 git remote set-url --push origin NO_PUSH
 ```

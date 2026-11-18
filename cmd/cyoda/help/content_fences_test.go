@@ -48,10 +48,11 @@ func TestHelpContent_FencesClose(t *testing.T) {
 }
 
 // TestHelpContent_ShellCommentsPasteInZsh: a comment line in a shell code
-// block holds no unbalanced single quote. Interactive zsh does not treat `#`
+// block holds no unbalanced single quote and no command substitution. Interactive zsh does not treat `#`
 // as a comment unless INTERACTIVE_COMMENTS is set, so an apostrophe there
 // ("kubectl's") opens a quote that never closes, and the pasted block stops
-// at the `quote>` prompt without running the commands after it.
+// at the `quote>` prompt without running the commands after it; and a
+// backtick or `$(` in a comment line runs the command it names.
 func TestHelpContent_ShellCommentsPasteInZsh(t *testing.T) {
 	shellLang := map[string]bool{"": true, "bash": true, "sh": true, "shell": true, "zsh": true, "console": true}
 	err := fs.WalkDir(embeddedContent, "content", func(path string, d fs.DirEntry, err error) error {
@@ -76,8 +77,14 @@ func TestHelpContent_ShellCommentsPasteInZsh(t *testing.T) {
 				}
 				continue
 			}
-			if inBlock && shell && strings.HasPrefix(trimmed, "#") && strings.Count(trimmed, "'")%2 == 1 {
-				t.Errorf("%s:%d: a comment line with an unbalanced single quote breaks a paste into interactive zsh: %q", path, i+1, trimmed)
+			if !inBlock || !shell || !strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if strings.Count(trimmed, "'")%2 == 1 || strings.Count(trimmed, `"`)%2 == 1 {
+				t.Errorf("%s:%d: a comment line with an unbalanced quote breaks a paste into interactive zsh: %q", path, i+1, trimmed)
+			}
+			if strings.Contains(trimmed, "`") || strings.Contains(trimmed, "$(") {
+				t.Errorf("%s:%d: a comment line with a command substitution runs that command when pasted into interactive zsh: %q", path, i+1, trimmed)
 			}
 		}
 		return nil

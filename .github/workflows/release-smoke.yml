@@ -39,6 +39,17 @@ jobs:
           sh scripts/install.sh | tee "$RUNNER_TEMP/install.log"
           grep -q 'Signatures verified (cosign)' "$RUNNER_TEMP/install.log"
           "$CYODA_INSTALL_DIR/cyoda" --version | grep -q 'cyoda version 0.8.4'
+      - name: An unknown CYODA_COSIGN_VERIFY value stops the script
+        env:
+          CYODA_VERSION: v0.8.4
+          CYODA_COSIGN_VERIFY: "true"
+          CYODA_INSTALL_DIR: ${{ runner.temp }}/bin-unknown
+        run: |
+          if sh scripts/install.sh > "$RUNNER_TEMP/unknown.log" 2>&1; then
+            echo "FAIL: CYODA_COSIGN_VERIFY=true was accepted"; cat "$RUNNER_TEMP/unknown.log"; exit 1
+          fi
+          grep -q 'CYODA_COSIGN_VERIFY=true is not one of' "$RUNNER_TEMP/unknown.log"
+          test ! -e "$CYODA_INSTALL_DIR/cyoda"
 
   smoke:
     runs-on: ubuntu-latest

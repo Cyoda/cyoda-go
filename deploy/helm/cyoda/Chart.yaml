@@ -26,4 +26,4 @@ annotations:
     - `jwt.expirySeconds` defaults to 300 and is capped at 3600 (1 hour), the largest value the server accepts
     - `jwt.issuer` must not be empty; the server refuses to start with an empty issuer
     - The NOTES and README examples keep secrets off the command line: the metrics bearer goes on stdin, and Secrets are created from private files
-    - With `gateway.enabled=true` (the default), an empty, null or missing `gateway.parentRefs` fails the install; it used to render routes attached to no Gateway. Set `gateway.parentRefs`, or `gateway.enabled=false`
+    - With `gateway.enabled=true` (the default), an empty, null or missing `gateway.parentRefs`, or an entry with no `name`, fails the install; it used to render routes attached to no Gateway. Set `gateway.parentRefs`, or `gateway.enabled=false`

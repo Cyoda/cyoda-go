@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - 'deploy/helm/**'
+      - '.github/workflows/release-chart.yml'
       - '.github/workflows/helm-chart-ci.yml'
   pull_request:
     paths:
       - 'deploy/helm/**'
+      - '.github/workflows/release-chart.yml'
       - '.github/workflows/helm-chart-ci.yml'
 
 # Default to read-only token for all jobs. Individual jobs may opt-in to
@@ -34,6 +36,16 @@ jobs:
             | tar -xz
           sudo mv kubeconform /usr/local/bin/
           kubeconform -v
+
+      - name: The chart release never takes GitHub's Latest mark
+        # install.sh and every /releases/latest/download/ URL resolve through
+        # the Latest mark; the chart release holds only the chart archive.
+        run: |
+          if ! grep -Eq '^\s*mark_as_latest:\s*false\s*$' .github/workflows/release-chart.yml; then
+            echo "FAIL: release-chart.yml must set mark_as_latest: false"
+            exit 1
+          fi
+          echo "PASS: release-chart.yml sets mark_as_latest: false"
 
       - name: helm lint
         # Chart requires operator-provided existingSecret values (no sensible
@@ -97,6 +109,25 @@ jobs:
             exit 1
           fi
           echo "PASS: schema rejected a null gateway.parentRefs."
+
+      - name: helm template — schema rejects a parentRefs entry with no name
+        run: |
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set 'gateway.parentRefs[0].namespace=gateway-system' \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ] || ! echo "$output" | grep -q "missing property 'name'"; then
+            echo "FAIL: expected the schema to refuse a parentRefs entry with no name; got status $status:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected a parentRefs entry with no name."
 
       - name: helm template — gateway.enabled=false needs no parentRefs
         run: |
