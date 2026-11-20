@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // arrayClauseOfSize is an array clause with n entries, the first non-null

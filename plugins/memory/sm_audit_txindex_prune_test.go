@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // auditTxIndexSize reports how many transaction entries smAuditTxIndex holds

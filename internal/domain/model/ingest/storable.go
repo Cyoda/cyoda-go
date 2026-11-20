@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // Reasons a payload cannot be stored. Kept as distinct sentences so the

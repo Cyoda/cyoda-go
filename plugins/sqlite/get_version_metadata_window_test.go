@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // TestGetVersionMetadata_EmptyWindow_ReturnsEmptyNotNotFound verifies that

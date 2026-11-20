@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
 )
 
 func TestIncarnationFromLog(t *testing.T) {

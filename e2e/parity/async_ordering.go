@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // RunAsyncOrderingRespected (task E7.2, design §9 row 19: "Async result

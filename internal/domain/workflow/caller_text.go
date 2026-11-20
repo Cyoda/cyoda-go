@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // refuseNULCallerText refuses a caller's transition name or If-Match that holds

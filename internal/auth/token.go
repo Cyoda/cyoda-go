@@ -17,8 +17,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/tenantroute"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/tenantroute"
 )
 
 // The token-exchange grant (RFC 8693) and the only subject token type it

@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // Point-in-time boundaries must be derived from the SERVER's timeline, never

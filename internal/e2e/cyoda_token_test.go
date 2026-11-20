@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/auth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

@@ -10,11 +10,11 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 const (

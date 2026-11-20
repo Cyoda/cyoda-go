@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/api/middleware"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // stubAuthService implements contract.AuthenticationService for testing the

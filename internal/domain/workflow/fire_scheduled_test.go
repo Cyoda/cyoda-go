@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // testTenantB is a second tenant distinct from testTenant. It plays the

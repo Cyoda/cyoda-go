@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 func newBootstrap(t *testing.T) *rsa.PrivateKey {

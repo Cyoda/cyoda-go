@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Search implements spi.EntityStore.Search for the SQLite entity store. The

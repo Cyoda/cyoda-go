@@ -1,7 +1,7 @@
 package match
 
 import (
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // operandsToStrings renders each element of a BETWEEN operand slice through

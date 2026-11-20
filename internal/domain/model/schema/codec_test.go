@@ -3,7 +3,7 @@ package schema_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 func TestRoundTripFlatObject(t *testing.T) {

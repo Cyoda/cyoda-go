@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 func ctxFor(tenant string) context.Context {

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/clusterstatus"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/clusterstatus"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 // DispatchForwarder sends a callout dispatch request to a peer node. The peer

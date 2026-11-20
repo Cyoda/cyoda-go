@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // type_admission.go covers the design's backend-agnostic §10 rows: held

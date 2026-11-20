@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // requireKeyStore returns false after writing 501 NOT_IMPLEMENTED if the

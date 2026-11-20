@@ -3,7 +3,7 @@ package dispatch
 import (
 	"encoding/json"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // DispatchCalloutRequest is a callout handed over to a peer node: what the

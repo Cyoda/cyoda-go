@@ -13,7 +13,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"gopkg.in/yaml.v3"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
+	genapi "github.com/cyoda/cyoda-go/api"
 )
 
 // TagEntry pairs a tag's URL-safe slug with its canonical name as it

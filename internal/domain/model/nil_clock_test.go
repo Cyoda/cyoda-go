@@ -3,7 +3,7 @@ package model_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
 )
 
 func TestNew_NilClockPanics(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
 )
 
 // restartTask reads the entity's Fire task through GET /scheduled-tasks.

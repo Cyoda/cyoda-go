@@ -32,10 +32,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/admin"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/admin"
+	"github.com/cyoda/cyoda-go/internal/testing/localproc"
 )
 
 // --- harness ---------------------------------------------------------------

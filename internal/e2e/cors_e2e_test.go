@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // newCORSTestServer builds a minimal app and wraps it in an httptest.Server.

@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"time"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // The ranges of the GET /platform/cluster query parameters, and the wait's

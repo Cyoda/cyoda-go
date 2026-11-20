@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
 )
 
 // ErrProcessorOutputRejected marks data returned by a processor that the model

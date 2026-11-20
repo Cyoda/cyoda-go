@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // CreateJob always persists PointInTime, the zero instant included: the

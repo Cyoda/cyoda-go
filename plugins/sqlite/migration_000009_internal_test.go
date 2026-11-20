@@ -12,7 +12,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 func migrateTo(t *testing.T, db *sql.DB, version uint) {

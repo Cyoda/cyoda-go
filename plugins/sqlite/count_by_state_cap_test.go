@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // Regression tests for the CountByState state-filter cap.

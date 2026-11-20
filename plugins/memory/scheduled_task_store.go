@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // taskKey identifies one task row. The tenant is part of the key, so no call

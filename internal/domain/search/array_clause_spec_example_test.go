@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 
-	"github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 // The spec's whole-clause example for the array clause must parse, validate

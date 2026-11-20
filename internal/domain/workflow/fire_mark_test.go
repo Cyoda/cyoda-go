@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // scriptedMarkStore counts MarkUnsafe calls and, when markErr is set,

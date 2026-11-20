@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // countingOp returns an op that answers errs in order, then nil, and a

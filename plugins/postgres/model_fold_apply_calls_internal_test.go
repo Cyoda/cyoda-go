@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestFold_OneApplyCall: the apply function decodes and re-encodes the whole

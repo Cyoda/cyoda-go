@@ -5,8 +5,8 @@ package driver_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/memory"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda/cyoda-go/e2e/parity/memory"
 )
 
 // TestDriverRemoteModeSmoke proves the NewRemote path has no dependency

@@ -4,7 +4,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity"
 )
 
 // FreshStackEnv returns the environment of a fresh clock-controlled stack:

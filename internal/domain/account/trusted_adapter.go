@@ -11,11 +11,11 @@ import (
 	"net/http"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // requireTrustedKeyStore returns false after writing 501 NOT_IMPLEMENTED if the

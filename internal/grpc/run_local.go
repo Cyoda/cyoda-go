@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // TryNumberer gives the fencing number for the next try. RunLocal calls it

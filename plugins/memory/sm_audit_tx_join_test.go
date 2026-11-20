@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 func auditStore(t *testing.T, fx taskFixture, ctx context.Context) spi.StateMachineAuditStore {

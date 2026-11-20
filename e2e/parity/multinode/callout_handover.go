@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // callout_handover.go — the hand-over on a real cluster. A pnode whose own

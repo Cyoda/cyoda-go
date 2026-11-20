@@ -1,6 +1,6 @@
 /*
 Package openapivalidator validates HTTP responses captured during E2E tests
-against the OpenAPI 3.1 spec embedded in github.com/cyoda-platform/cyoda-go/api.
+against the OpenAPI 3.1 spec embedded in github.com/cyoda/cyoda-go/api.
 
 Architecture:
 

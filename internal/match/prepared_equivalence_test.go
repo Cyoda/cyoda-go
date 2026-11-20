@@ -31,8 +31,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // --- generated corpus ----------------------------------------------------

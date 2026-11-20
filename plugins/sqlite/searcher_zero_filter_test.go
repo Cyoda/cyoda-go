@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
-	sqlite "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	sqlite "github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // A zero-value Filter means "match all". planQuery treats the empty Op as

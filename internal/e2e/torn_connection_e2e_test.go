@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // pgProxy forwards TCP to PostgreSQL and can cut every live connection on

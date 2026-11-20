@@ -11,7 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help/renderer"
 )
 
 //go:embed content

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
 )
 
 // slogTime is the time format of the server's slog text handler.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // SchemaOpKind enumerates the catalog of additive schema operations.

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func sampleWorkflows() []spi.WorkflowDefinition {

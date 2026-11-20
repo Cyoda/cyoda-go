@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // criterion_function.go — a function condition nested in a group, handed over.

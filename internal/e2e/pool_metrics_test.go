@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/observability"
 )
 
 // Pool statistics are exported on the metrics endpoint with the rendered

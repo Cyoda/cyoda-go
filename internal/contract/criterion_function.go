@@ -3,7 +3,7 @@ package contract
 import (
 	"encoding/json"
 
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
 )
 
 // CriterionFunctionConfig is the callout configuration of a function

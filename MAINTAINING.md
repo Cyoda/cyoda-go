@@ -238,7 +238,7 @@ to the tags you cut in step 1:
 # the root release version
 V=v0.6.0
 for p in memory postgres sqlite; do
-  go mod edit -require="github.com/cyoda-platform/cyoda-go/plugins/$p@$V"
+  go mod edit -require="github.com/cyoda/cyoda-go/plugins/$p@$V"
 done
 # refresh go.sum against the tagged modules
 GOWORK=off go mod download
@@ -440,7 +440,7 @@ a pin bump. Cut a **minor** for that, as for any interface break.
 the root and plugin `go.mod` files pin a pseudo-version of `cyoda-go-spi`
 against `main` HEAD, and the final bump to the tagged `vX.Y.Z` happens by hand
 at release time (gate 0 above). `.github/dependabot.yml` therefore carries an
-`ignore` rule for `github.com/cyoda-platform/cyoda-go-spi` in every `gomod`
+`ignore` rule for `github.com/cyoda/cyoda-go-spi` in every `gomod`
 block. This is deliberate: the SPI pin moves in lock-step with a coordinated
 cross-repo release (gate 0), and a Dependabot group that bundles the SPI pin
 with routine third-party bumps gets **mass-closed** if the pin can't resolve at

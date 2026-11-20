@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // RunAsyncStatusNoFailureReasonUnlessFailed pins, on every backend, the half of

@@ -5,7 +5,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // listVersion names one state of one pnode's tag list. Epoch is the pnode's

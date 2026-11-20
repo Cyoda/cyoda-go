@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // The router the wiring passes is the cluster's own.

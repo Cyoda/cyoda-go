@@ -13,7 +13,7 @@ import (
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
 
-	cloudevents "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cloudevents "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // This is a compile-time assertion to ensure that this generated file

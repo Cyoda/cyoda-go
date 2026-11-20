@@ -3,7 +3,7 @@ package modelcache
 import (
 	"encoding/json"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // topicModelInvalidate is the gossip topic used for cache drop messages.

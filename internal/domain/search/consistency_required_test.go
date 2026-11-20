@@ -3,8 +3,8 @@ package search_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 func TestNewSearchService_NilConsistencyPanics(t *testing.T) {

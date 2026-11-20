@@ -6,7 +6,7 @@ import (
 
 	"github.com/hashicorp/memberlist"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // MaxTopicMsgSize caps the total encoded size of a gossip topic message

@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // RunGuard travels on the context of one scheduled run (spec §5.3). The

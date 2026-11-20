@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	parityclient "github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	parityclient "github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // consistency_time.go — a save confirmed on one node is included by another

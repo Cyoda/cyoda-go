@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // runHealth implements 'cyoda health': GET /readyz on the admin listener,

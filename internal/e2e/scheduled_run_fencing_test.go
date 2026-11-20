@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // scheduled_run_fencing_test.go — a run that lost its life or its claim

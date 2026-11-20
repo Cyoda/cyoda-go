@@ -87,5 +87,5 @@
 //
 // Registration:
 //
-//	import _ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+//	import _ "github.com/cyoda/cyoda-go/plugins/postgres"
 package postgres

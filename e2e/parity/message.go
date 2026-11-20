@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // RunMessageCreateAndGet verifies that a message can be created via

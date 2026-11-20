@@ -3,8 +3,8 @@ package auth
 import (
 	"net/http"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // PlatformTenantID is the tenant whose admins are platform operators.

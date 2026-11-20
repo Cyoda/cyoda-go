@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/plugins/memory"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // personRef is the model every scenario operates on. Storage saves an entity

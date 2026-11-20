@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // tokenAnswer is what a token request got back.

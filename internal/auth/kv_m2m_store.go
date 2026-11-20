@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // tenantLockStripes bounds the memory of the per-tenant locks of the M2M

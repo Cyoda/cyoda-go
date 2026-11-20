@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/match"
 )
 
 // delete_condition_type_gating_test.go pins conditional delete's

@@ -17,9 +17,9 @@ import (
 	"github.com/hashicorp/memberlist"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
 )
 
 // GossipConfig holds the configuration for a gossip-based NodeRegistry.

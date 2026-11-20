@@ -8,7 +8,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // The callback reports each pool's current state under backend="postgres"

@@ -5,9 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func TestApp_DefaultMemoryBackend(t *testing.T) {

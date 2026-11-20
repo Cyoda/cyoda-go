@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 // A criterion's jsonPath is JSON Path nomenclature, exactly like a search

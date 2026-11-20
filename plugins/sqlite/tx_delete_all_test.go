@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // In-tx DeleteAll stages every committed id of the model and every buffered

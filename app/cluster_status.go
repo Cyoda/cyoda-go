@@ -1,9 +1,9 @@
 package app
 
 import (
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
-	"github.com/cyoda-platform/cyoda-go/internal/clusterstatus"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/clusterstatus"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 // gossipDirectory is the status read's directory in cluster mode: every member

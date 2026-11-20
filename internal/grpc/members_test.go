@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 func noopSend(_ *cepb.CloudEvent) error { return nil }

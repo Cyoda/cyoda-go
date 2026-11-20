@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // audit_nul.go — a compute member's reason holding U+0000 is refused through a

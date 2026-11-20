@@ -3,7 +3,7 @@ package workflow
 import (
 	"context"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // EngineResult is the cyoda-go-internal cascade result. It embeds the SPI's

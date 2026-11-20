@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // The SPI filter contract (spi.Prepare/PreparedFilter.Match): an explicit empty AND is the AND

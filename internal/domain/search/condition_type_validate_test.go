@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // buildDoubleModel returns a minimal ModelNode with a single DOUBLE leaf at $.price.

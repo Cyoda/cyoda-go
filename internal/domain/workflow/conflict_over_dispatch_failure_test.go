@@ -3,13 +3,13 @@ package workflow
 import (
 	"context"
 	"errors"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // TestConflictOverDispatchFailure_HealthyTxKeepsProcessorFailure is

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // A message never joins the caller's transaction (spi.MessageStore contract):

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // newRunServersFixture builds an App plus the three loopback listeners

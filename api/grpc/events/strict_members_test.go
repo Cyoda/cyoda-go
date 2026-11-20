@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
 
-	"github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // A CloudEvent's data is a client's typed JSON. Every generated type decodes

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // Migration 18 drops model_schema_extensions.tx_id: an extension never

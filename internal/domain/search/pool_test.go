@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // mustSubmitEventually retries Submit past the narrow startup race between

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 var testTime = time.Date(2026, 3, 28, 10, 0, 0, 123456000, time.UTC)

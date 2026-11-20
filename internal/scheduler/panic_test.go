@@ -11,8 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
 )
 
 var ticketText = regexp.MustCompile(`^internal error \[ticket: [0-9a-f-]{36}\]$`)

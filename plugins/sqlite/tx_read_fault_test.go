@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // Inside a transaction, a read that fails for any reason other than the

@@ -10,14 +10,14 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/logging"
 )
 
 // EntityModelManage handles unary model management CloudEvents (import, export,

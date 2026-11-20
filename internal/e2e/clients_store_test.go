@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // clients_store_test.go proves the cluster-shared M2M client store end to end

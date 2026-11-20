@@ -17,13 +17,13 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 // What the platform clock does to the platform's behaviour, through the full

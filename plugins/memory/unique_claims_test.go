@@ -11,9 +11,9 @@ import (
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // ucModel is the model the tests save into; setupUCFactory stores it LOCKED

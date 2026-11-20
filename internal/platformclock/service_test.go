@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 const testPoll = time.Millisecond

@@ -14,8 +14,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // OBOClient is an on-behalf-of client of a tenant and the trusted key its

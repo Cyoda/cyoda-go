@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda/cyoda-go/e2e/parity"
 )
 
 // bodyPreview returns the first 200 bytes of body for diagnostic logging,

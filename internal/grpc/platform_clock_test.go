@@ -11,9 +11,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 func TestPlatformClock_GRPC_Success(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"iter"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // failingStoreFactory is a mock that returns a failingEntityStore from EntityStore().

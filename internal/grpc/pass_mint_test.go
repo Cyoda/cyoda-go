@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
 )
 
 func verifyPass(t *testing.T, pass string) *token.Claims {

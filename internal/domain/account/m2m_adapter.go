@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"strings"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // clientIDLen is the number of base32-hex characters in a generated clientId.

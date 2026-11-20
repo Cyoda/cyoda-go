@@ -5,7 +5,7 @@ package workflow
 // `eventType` the audit writer adds. An optional property whose value the
 // engine does not know is left out.
 
-import "github.com/cyoda-platform/cyoda-go/internal/contract"
+import "github.com/cyoda/cyoda-go/internal/contract"
 
 // StopReason is why a run stopped, as the FINISH event's `stopReason`.
 type StopReason struct {

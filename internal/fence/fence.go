@@ -19,7 +19,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // ErrSuperseded is the cause carried by every refusal, and the cause with which

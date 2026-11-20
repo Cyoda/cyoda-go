@@ -3,17 +3,17 @@ package workflow
 import (
 	"context"
 	"encoding/json"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // lifecycleCriterion returns a criterion that checks a lifecycle field (e.g. "state").

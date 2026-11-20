@@ -3,11 +3,11 @@ package match_test
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/match"
 )
 
 // subscriptDoc and subscriptFields are a REALISTIC pairing: the document, and

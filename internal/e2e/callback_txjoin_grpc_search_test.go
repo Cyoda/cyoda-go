@@ -11,9 +11,9 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // callback_txjoin_grpc_search_test.go proves that a compute-node callback which

@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/logging"
+	"github.com/cyoda/cyoda-go/internal/observability"
 )
 
 // maxAdminBodyBytes bounds the two admin POST bodies, matching the 1 MiB

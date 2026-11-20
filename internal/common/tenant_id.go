@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // MaxTenantIDLen bounds a tenant id at 100 bytes. The figure is not arbitrary:

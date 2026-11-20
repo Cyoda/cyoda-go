@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // applyDelta replays one delta onto base through ApplyMany, the apply function

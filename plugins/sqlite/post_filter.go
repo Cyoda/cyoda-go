@@ -1,7 +1,7 @@
 package sqlite
 
 import (
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // EvaluateFilter is a public wrapper around evaluateFilter exposed so that

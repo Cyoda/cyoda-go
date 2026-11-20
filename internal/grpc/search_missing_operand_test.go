@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // gRPC refuses a missing operand on an operator that takes one, as the HTTP

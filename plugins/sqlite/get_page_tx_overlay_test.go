@@ -5,8 +5,8 @@ import (
 	"sort"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // Every in-tx page equals the corresponding slice of the full in-tx Iterate

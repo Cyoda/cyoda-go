@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 const timeoutCause = "DISPATCH_TIMEOUT: processor dispatch timed out after 100ms: no response"

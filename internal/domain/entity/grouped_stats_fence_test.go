@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/consistency"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
 )
 
 // neverReadStore embeds a nil EntityStore: any read through it panics, which

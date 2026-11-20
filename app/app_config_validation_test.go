@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // TestNew_InvalidSearchAsyncConfigExits asserts app.New itself refuses a

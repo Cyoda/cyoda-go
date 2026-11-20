@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // testHash is a bcrypt hash of "s" at bcrypt.DefaultCost, made once: the

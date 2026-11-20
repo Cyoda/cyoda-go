@@ -14,8 +14,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // The helpers below come in two shapes. The `t`-taking form (doAuth, readBody,

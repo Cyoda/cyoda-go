@@ -12,8 +12,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // fakeTM stands in for the store. The value a call returns is fixed at call

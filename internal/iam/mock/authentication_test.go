@@ -5,10 +5,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	mockiam "github.com/cyoda/cyoda-go/internal/iam/mock"
 )
 
 // TestMockAuthentication_CarriesClientTokenMarker: in mock mode every request

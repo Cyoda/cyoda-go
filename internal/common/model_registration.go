@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // EnsureModelRegistered returns a 404 MODEL_NOT_FOUND AppError when ref names a

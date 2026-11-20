@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema/gentree"
 )
 
 // propertyNumSeeds is the number of seeded sequences driven per backend.

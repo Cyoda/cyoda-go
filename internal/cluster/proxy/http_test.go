@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/api/middleware"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/health"
 )
 
 // fakeRegistry is a test double for contract.NodeRegistry that supports multiple

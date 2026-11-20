@@ -13,12 +13,12 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/scheduledtask"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/domain/scheduledtask"
 )
 
 const tenantA spi.TenantID = "tenant-a"

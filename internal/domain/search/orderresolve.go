@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // errUnknownSortField is the sentinel for a DATA sort key absent from the

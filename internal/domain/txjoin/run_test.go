@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 type runEnv struct {

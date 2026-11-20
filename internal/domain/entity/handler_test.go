@@ -13,15 +13,15 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/app"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/app"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {

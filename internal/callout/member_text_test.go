@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 func TestVerdict_MemberTextSurvivesEarlierNoAnswer(t *testing.T) {

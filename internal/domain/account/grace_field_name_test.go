@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/domain/account"
 )
 
 // A 400 for an out-of-range grace period names the field the request

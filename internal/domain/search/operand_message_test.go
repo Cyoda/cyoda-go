@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // Each operand-shape refusal reaches the client as a 400 INVALID_CONDITION

@@ -12,9 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // clients_tenant_scope_test.go covers caller-chosen client ids and the

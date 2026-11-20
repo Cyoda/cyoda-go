@@ -13,12 +13,12 @@ import (
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
+	"github.com/cyoda/cyoda-go/internal/domain/pagination"
 )
 
 const (

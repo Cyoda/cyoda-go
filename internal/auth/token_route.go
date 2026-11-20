@@ -3,7 +3,7 @@ package auth
 import (
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/tenantroute"
+	"github.com/cyoda/cyoda-go/internal/tenantroute"
 )
 
 // TokenPattern is the token endpoint's route, relative to the context path.

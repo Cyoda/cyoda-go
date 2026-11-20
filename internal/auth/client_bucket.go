@@ -6,7 +6,7 @@ import (
 
 	"golang.org/x/time/rate"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // clientKey names a client: ids are unique only within a tenant.

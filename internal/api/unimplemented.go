@@ -5,8 +5,8 @@ import (
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // Unimplemented satisfies genapi.ServerInterface with every method returning

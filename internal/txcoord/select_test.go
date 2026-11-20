@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord/txcoordtest"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/txcoord/txcoordtest"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // coordFactory is a memory factory that answers TransactionCoordinator as the

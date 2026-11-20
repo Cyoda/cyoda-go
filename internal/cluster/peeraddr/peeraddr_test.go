@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
+	"github.com/cyoda/cyoda-go/internal/cluster/peeraddr"
 )
 
 // TestValidate_RejectsLoopback confirms that loopback addresses are blocked

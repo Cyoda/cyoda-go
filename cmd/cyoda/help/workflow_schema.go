@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
 )
 
 // workflowSchemaVersionsPayload mirrors what the versions action

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // ifmatch_doors_test.go — every door that takes If-Match. If-Match states the

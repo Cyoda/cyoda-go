@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
 )
 
 // TestSchedulerMN_FrozenOwnerSendsNoUnsafe: pnodes 0-2 claim, pnode 3 hosts

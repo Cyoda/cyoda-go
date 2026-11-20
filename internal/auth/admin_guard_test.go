@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // oboUC is an on-behalf-of principal of tenant: a user stated by a client,

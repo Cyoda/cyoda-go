@@ -18,7 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // The token-exchange grant and the subject token type it accepts.

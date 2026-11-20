@@ -8,7 +8,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/cyoda-platform/cyoda-go/internal/testpg"
+	"github.com/cyoda/cyoda-go/internal/testpg"
 )
 
 // TestHardenedOptions_Applied proves the CI-hardening knobs actually reach the

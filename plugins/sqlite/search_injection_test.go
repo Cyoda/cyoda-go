@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // TestSearcher_RejectsMaliciousFilterPath confirms that user-supplied Filter

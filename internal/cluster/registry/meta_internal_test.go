@@ -10,7 +10,7 @@ import (
 
 	"github.com/hashicorp/memberlist"
 
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
 )
 
 // TestCheckIdentityFits_MeasuresLongestState pins that the size check measures

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // forgeTokenWithAlg produces a JWT whose header declares the given alg but

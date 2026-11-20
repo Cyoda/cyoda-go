@@ -34,7 +34,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // getEntityTxID retrieves an entity and returns its current meta.transactionId.

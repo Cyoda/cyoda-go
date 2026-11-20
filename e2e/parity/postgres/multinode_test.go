@@ -3,7 +3,7 @@ package postgres
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/multinode"
+	"github.com/cyoda/cyoda-go/e2e/parity/multinode"
 )
 
 // TestMultiNode runs the cluster-shareable scenario set against a 3-node

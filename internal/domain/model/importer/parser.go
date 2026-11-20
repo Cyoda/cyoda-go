@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
 )
 
 // ParseJSON parses a JSON reader into a generic any tree.

@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
+	spi "github.com/cyoda/cyoda-go-spi"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/consistency"
 )
 
 // consistencyTimeTM answers ConsistencyTime with the instant or error the test

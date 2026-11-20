@@ -408,7 +408,7 @@ const file_cloudevents_cloudevents_proto_rawDesc = "" +
 	"\x04attrB\x06\n" +
 	"\x04data\"H\n" +
 	"\x0fCloudEventBatch\x125\n" +
-	"\x06events\x18\x01 \x03(\v2\x1d.io.cloudevents.v1.CloudEventR\x06eventsB9Z7github.com/cyoda-platform/cyoda-go/api/grpc/cloudeventsb\x06proto3"
+	"\x06events\x18\x01 \x03(\v2\x1d.io.cloudevents.v1.CloudEventR\x06eventsB0Z.github.com/cyoda/cyoda-go/api/grpc/cloudeventsb\x06proto3"
 
 var (
 	file_cloudevents_cloudevents_proto_rawDescOnce sync.Once

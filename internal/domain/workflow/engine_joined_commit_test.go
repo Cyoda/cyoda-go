@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // TestEngine_JoinedChain_RefusesCommitBeforeDispatch: a chain that joined its

@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
 )
 
 // TestAuditEvents_TxTokenRefusal_410 sends a transaction routing token to an

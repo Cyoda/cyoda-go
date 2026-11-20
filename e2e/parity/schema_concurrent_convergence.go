@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // RunSchemaExtensionConcurrentConvergence asserts B-I7 for STRUCTURAL

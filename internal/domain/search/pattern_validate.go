@@ -1,8 +1,8 @@
 package search
 
 import (
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // ValidatePatterns rejects a condition carrying a pattern operand the kernel

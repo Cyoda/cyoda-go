@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	genapi "github.com/cyoda/cyoda-go/api"
+	internalapi "github.com/cyoda/cyoda-go/internal/api"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // groupedStatsRoute is the one data route app.go registers by hand, on the

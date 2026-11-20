@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
 )
 
 type clusterNodeClock struct {

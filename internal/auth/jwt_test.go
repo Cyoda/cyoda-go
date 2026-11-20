@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 func generateTestKey(t *testing.T) *rsa.PrivateKey {

@@ -13,10 +13,10 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda/cyoda-go/internal/cluster/peeraddr"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
 )
 
 // echoServer captures inbound metadata and echoes the CloudEvent back.

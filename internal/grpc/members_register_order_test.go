@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // A member is published to the registry before its writer puts the greet on

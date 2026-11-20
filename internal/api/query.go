@@ -9,8 +9,8 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // QueryRules holds, for each spec operation, the query parameters it

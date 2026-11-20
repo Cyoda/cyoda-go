@@ -3,7 +3,7 @@ package memory
 import (
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // defaultUUIDGenerator produces real UUID v1 values. Used by NewFactory

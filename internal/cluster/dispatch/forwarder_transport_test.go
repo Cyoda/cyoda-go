@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/cluster/dispatch"
 )
 
 func okAnswer(*http.Request, []byte) any {

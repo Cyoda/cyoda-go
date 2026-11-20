@@ -3,7 +3,7 @@ package postgres
 import (
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ErrInvalidFilterPath is returned when a Filter.Path, GroupExpr.Path, or

@@ -3,7 +3,7 @@ package postgres_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 func TestValidateInChunks_EmptyIDs(t *testing.T) {

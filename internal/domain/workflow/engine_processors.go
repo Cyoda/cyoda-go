@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // ErrCommitBeforeDispatchInfra wraps every infrastructure-layer failure

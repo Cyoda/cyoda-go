@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // stubNodeRegistry returns a fixed list of nodes.

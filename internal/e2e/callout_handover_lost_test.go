@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // callout_handover_lost_test.go covers the one hand-over outcome no

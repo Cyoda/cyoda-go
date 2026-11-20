@@ -28,7 +28,7 @@ updates:
     # bump. Ignoring it keeps the grouped third-party PRs from being entangled
     # with — and mass-closed alongside — an unresolvable SPI pin mid-milestone.
     ignore:
-      - dependency-name: "github.com/cyoda-platform/cyoda-go-spi"
+      - dependency-name: "github.com/cyoda/cyoda-go-spi"
     groups:
       minor-and-patch:
         update-types:
@@ -45,7 +45,7 @@ updates:
       day: monday
     open-pull-requests-limit: 10
     ignore:
-      - dependency-name: "github.com/cyoda-platform/cyoda-go-spi"
+      - dependency-name: "github.com/cyoda/cyoda-go-spi"
     groups:
       minor-and-patch:
         update-types:
@@ -60,7 +60,7 @@ updates:
       day: monday
     open-pull-requests-limit: 10
     ignore:
-      - dependency-name: "github.com/cyoda-platform/cyoda-go-spi"
+      - dependency-name: "github.com/cyoda/cyoda-go-spi"
     groups:
       minor-and-patch:
         update-types:
@@ -75,7 +75,7 @@ updates:
       day: monday
     open-pull-requests-limit: 10
     ignore:
-      - dependency-name: "github.com/cyoda-platform/cyoda-go-spi"
+      - dependency-name: "github.com/cyoda/cyoda-go-spi"
     groups:
       minor-and-patch:
         update-types:

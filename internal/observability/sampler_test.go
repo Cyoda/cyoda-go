@@ -9,7 +9,7 @@ import (
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/observability"
 )
 
 func TestDynamicSampler_InitialDefault(t *testing.T) {

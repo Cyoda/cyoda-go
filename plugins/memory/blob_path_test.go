@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestBlobName_IsUnspellable asserts the property the encoding buys: no tenant

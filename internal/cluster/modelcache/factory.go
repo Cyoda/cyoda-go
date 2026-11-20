@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // CachingStoreFactory wraps an spi.StoreFactory so that ModelStore(ctx)

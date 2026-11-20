@@ -9,8 +9,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/observability"
 )
 
 // tagMetrics are the membership instruments an operator alerts on: sends that

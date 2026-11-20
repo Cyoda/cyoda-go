@@ -9,12 +9,12 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/messaging"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // handler_attribution_test.go covers spec §7.5 / Ruling 8: NewMessage records

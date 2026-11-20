@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // Regression tests: gRPC search/getAll handlers

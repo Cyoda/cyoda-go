@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Tests for import-time rejection of an unknown criterion operatorType.

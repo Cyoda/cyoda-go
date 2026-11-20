@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/multinode"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/multinode"
 )
 
 // reconcileInterval is the own cluster's CYODA_AUTH_CACHE_RECONCILE_INTERVAL.

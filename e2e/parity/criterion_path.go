@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // criterion_path.go pins the workflow-criterion twin of the condition jsonPath

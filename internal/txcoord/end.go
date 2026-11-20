@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/http"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/fence"
 )
 
 // failure is a request that did not succeed, as the table of how a scope ends

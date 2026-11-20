@@ -17,10 +17,10 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/health"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 // healthTestAuth accepts "Bearer m2m" (ROLE_M2M) and "Bearer plain" (no

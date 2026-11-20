@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help"
 )
 
 // TestHTTP_ConfigAll_JSON verifies GET /help/config/all over the real

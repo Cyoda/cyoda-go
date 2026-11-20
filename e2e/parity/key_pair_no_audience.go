@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // RunKeyPairNoAudience: the operator reads the current signing key without an

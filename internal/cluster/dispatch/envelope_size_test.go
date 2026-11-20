@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/cluster/dispatch"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // oversizedRequest is a hand-over whose sealed envelope is above the ceiling

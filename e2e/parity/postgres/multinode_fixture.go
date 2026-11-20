@@ -17,10 +17,10 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/multinode"
-	"github.com/cyoda-platform/cyoda-go/internal/testpg"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/e2e/parity/multinode"
+	"github.com/cyoda/cyoda-go/internal/testpg"
 )
 
 // pgMultiNode implements multinode.MultiNodeFixture for the postgres backend.

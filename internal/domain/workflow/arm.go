@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strconv"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // taskID deterministically derives a ScheduledTask's ID from the tenant,

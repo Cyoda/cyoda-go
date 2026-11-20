@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // attribution_test.go — single-backend (postgres) e2e coverage for follow-on

@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/childproc"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/testing/childproc"
 )
 
 // TestProvisionComputeClient_IsAStoredClientOfTheTenant: the credentials

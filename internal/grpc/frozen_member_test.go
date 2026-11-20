@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
 )
 
 // A member that joins, then stops reading while the server keeps writing,

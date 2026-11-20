@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
 )
 
 // grpcSelectionWorkflows imports two active workflows that declare THE SAME

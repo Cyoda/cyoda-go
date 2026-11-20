@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // sqlPlan holds the result of translating a spi.Filter into SQL.

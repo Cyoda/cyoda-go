@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // insertBacklog inserts n WAITING tasks, ids and entities prefix||g and

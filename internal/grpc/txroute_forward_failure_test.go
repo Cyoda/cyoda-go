@@ -17,11 +17,11 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // shortProxyTimeout is the CYODA_PROXY_TIMEOUT of the tests that reach it.

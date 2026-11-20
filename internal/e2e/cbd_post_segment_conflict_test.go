@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // A COMMIT_BEFORE_DISPATCH processor commits the write's first segment before

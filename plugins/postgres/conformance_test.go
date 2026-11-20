@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // noCloseFactory wraps a StoreFactory so that the harness's factory.Close()

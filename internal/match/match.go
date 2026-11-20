@@ -3,9 +3,9 @@ package match
 import (
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // FieldTypes resolves a condition's JSONPath (in "$."-prefixed FieldsMap key

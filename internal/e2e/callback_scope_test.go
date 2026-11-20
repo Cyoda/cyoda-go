@@ -11,8 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	"github.com/cyoda/cyoda-go/app"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // callback_scope_test.go — every joined request runs in a scope of its own,

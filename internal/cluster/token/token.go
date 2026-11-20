@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
+	"github.com/cyoda/cyoda-go/internal/fence"
 )
 
 var (

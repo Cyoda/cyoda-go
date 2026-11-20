@@ -18,17 +18,17 @@ mkdir -p "$scratch/drift/plugins/a" "$scratch/drift/plugins/b"
 cat > "$scratch/drift/go.mod" <<'EOF'
 module example.com/root
 go 1.26
-require github.com/cyoda-platform/cyoda-go-spi v0.7.1
+require github.com/cyoda/cyoda-go-spi v0.7.1
 EOF
 cat > "$scratch/drift/plugins/a/go.mod" <<'EOF'
 module example.com/root/plugins/a
 go 1.26
-require github.com/cyoda-platform/cyoda-go-spi v0.7.1
+require github.com/cyoda/cyoda-go-spi v0.7.1
 EOF
 cat > "$scratch/drift/plugins/b/go.mod" <<'EOF'
 module example.com/root/plugins/b
 go 1.26
-require github.com/cyoda-platform/cyoda-go-spi v0.6.1
+require github.com/cyoda/cyoda-go-spi v0.6.1
 EOF
 
 if (cd "$scratch/drift" && "$SCRIPT") >/dev/null 2>&1; then
@@ -42,7 +42,7 @@ for f in "$scratch/aligned/go.mod" "$scratch/aligned/plugins/a/go.mod" "$scratch
   cat > "$f" <<'EOF'
 module example.com
 go 1.26
-require github.com/cyoda-platform/cyoda-go-spi v0.7.1
+require github.com/cyoda/cyoda-go-spi v0.7.1
 EOF
 done
 

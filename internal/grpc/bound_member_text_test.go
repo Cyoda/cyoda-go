@@ -7,8 +7,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // A 600-rune message with a multi-byte rune sitting exactly astride the

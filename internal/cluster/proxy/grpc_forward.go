@@ -17,9 +17,9 @@ import (
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda/cyoda-go/internal/cluster/peeraddr"
 )
 
 // ClientPool holds one lazily-dialled *grpc.ClientConn per peer address.

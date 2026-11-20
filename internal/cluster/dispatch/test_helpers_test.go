@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/cluster/dispatch"
 )
 
 // testSharedSecret is a 32-byte shared secret used across tests that need to

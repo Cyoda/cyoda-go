@@ -4,7 +4,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // newMockIAMServer builds an in-process server using mock IAM mode with the

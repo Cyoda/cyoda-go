@@ -8,7 +8,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // exampleCheck is one example found in the spec and the schema it must satisfy.

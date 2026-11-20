@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
 )
 
 // arrayClauseWithEntries is an array clause with n entries in `values`: one

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/testing/taskconflict"
+	"github.com/cyoda/cyoda-go/internal/testing/taskconflict"
 )
 
 // The reconcile's refusal comes from the statement, as on PostgreSQL. It

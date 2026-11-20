@@ -3,16 +3,16 @@ package workflow
 import (
 	"context"
 	"errors"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // Workflow-level selection is criterion-driven and applies on EVERY engine

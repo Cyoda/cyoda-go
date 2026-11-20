@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestFencedRefusal pins which store answers end a claim: a stale claim, a

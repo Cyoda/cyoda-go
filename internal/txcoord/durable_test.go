@@ -13,12 +13,12 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord/txcoordtest"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/fence"
+	"github.com/cyoda/cyoda-go/internal/txcoord/txcoordtest"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // cluster is two pnodes, each with its own durable coordination, over one

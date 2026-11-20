@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // --- Test 3.1: Concurrent entity creates (same model) ---

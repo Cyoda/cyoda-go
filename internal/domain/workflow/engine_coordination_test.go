@@ -3,9 +3,9 @@ package workflow
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // An engine that makes callouts must be given the coordination its callouts

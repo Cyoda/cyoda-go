@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
 )
 
 func marshalMeta(cfg GossipConfig, version listVersion, state lifecycle.State) ([]byte, error) {

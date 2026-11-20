@@ -13,8 +13,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
 )
 
 // CloudEvent type constants — duplicated here so the compute-test-client

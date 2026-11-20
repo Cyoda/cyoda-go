@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // An entity's data is a JSON object at every change level. Without a change

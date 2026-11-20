@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestClaimStale_TakesOldestJobsFirst mirrors the sqlite test of the same

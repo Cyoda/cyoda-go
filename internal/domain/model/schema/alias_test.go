@@ -3,8 +3,8 @@ package schema_test
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // One definition. The engine's field walk and a self-executing backend's field

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 func TestPrintBannerTo_Suppressed(t *testing.T) {

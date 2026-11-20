@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // baseAudClaims produces a minimal, otherwise-valid claims map. Tests

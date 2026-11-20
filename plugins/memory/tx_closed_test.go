@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Every read and bulk-write entry point refuses a committed transaction's

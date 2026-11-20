@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // TestCyodaTryFloat8 covers the D21 truth table from the grouped-stats design spec §6.3.

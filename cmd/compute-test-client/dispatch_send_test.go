@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 type overlapStream struct {

@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"regexp"
 
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
 )
 
 // trustedKIDPattern is the character whitelist enforced on trusted-key

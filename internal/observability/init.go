@@ -25,7 +25,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const instrumentationName = "github.com/cyoda-platform/cyoda-go"
+const instrumentationName = "github.com/cyoda/cyoda-go"
 
 var (
 	tp         *sdktrace.TracerProvider

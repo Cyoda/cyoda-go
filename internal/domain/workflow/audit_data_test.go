@@ -6,9 +6,9 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
 )
 
 func TestConstructors_ValidateAgainstTheirMember(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
-	"github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // On gRPC an event's data is read as one JSON document through strictjson,

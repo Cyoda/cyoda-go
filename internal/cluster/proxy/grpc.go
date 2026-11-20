@@ -7,9 +7,9 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // GRPCTxTokenKey is the gRPC metadata key carrying the transaction routing token.

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // callback_txjoin_bounds_test.go — the running-backend rows for the two bounds

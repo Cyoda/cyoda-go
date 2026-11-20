@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 // Import accepts function conditions at any depth of a criterion and checks

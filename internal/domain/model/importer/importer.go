@@ -3,7 +3,7 @@ package importer
 import (
 	"io"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // Importer converts raw data from a reader into a ModelNode schema tree.

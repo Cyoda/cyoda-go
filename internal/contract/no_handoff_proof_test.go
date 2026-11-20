@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // The proof is read through every wrap the engine adds, and through a join.

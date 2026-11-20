@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	sqliteplugin "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	"github.com/cyoda/cyoda-go/app"
+	sqliteplugin "github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // goos mirrors runtime.GOOS so tests can inspect it without importing

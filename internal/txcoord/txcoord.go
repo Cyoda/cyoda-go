@@ -36,8 +36,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/fence"
 )
 
 // RequestClass is what a joined request does to the transaction, decided by the

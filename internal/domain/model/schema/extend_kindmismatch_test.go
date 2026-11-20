@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // These two cases used to assert that a path declaring one kind REFUSED a

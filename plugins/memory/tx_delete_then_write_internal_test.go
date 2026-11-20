@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	spitest "github.com/cyoda-platform/cyoda-go-spi/spitest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 func tenantCtxInternal(tenant string) context.Context {

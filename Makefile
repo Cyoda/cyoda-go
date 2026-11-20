@@ -114,14 +114,14 @@ comma := ,
 PARITY_SUITES  := $(subst $(space),$(comma),$(strip $(PARITY_PKGS)))
 PARITY_ARGS    := $(addprefix ./,$(PARITY_PKGS))
 # An anchored alternation for filtering `go list ./...` output.
-PARITY_EXCLUDE := $(subst $(space),|,$(strip $(patsubst %,github.com/cyoda-platform/cyoda-go/%,$(PARITY_PKGS))))
+PARITY_EXCLUDE := $(subst $(space),|,$(strip $(patsubst %,github.com/cyoda/cyoda-go/%,$(PARITY_PKGS))))
 
 preflight:             ## Verify Docker can actually serve the test suites
 	@./scripts/preflight-docker.sh
 
 test: preflight        ## Iteration tier: unit + cross-backend parity (~115s cold, ~85s warm — parity always re-runs). Excludes internal/e2e and plugin submodules.
 	@echo "==> unit — NOT in this tier: internal/e2e, plugin submodules (see test-full)"
-	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda-platform/cyoda-go/internal/e2e$$' | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
+	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda/cyoda-go/internal/e2e$$' | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
 	go test -json -timeout 20m $$pkgs | go run ./scripts/testreport
 	@echo "==> cross-backend parity (uncached — the fixture builds the server outside the cache's view)"
 	@go test -json -count=1 -timeout 20m $(PARITY_ARGS) | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
@@ -156,7 +156,7 @@ test-full: test-root   ## End-of-deliverable: everything, root + every plugin su
 # also exercised by the workflow/cluster/plugin unit tests below — those keep race
 # coverage. CI invokes this same target so local and CI stay in lock-step.
 race:                  ## Run race detector on race-sensitive packages (CI parity; excludes internal/e2e)
-	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda-platform/cyoda-go/internal/e2e$$' | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
+	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda/cyoda-go/internal/e2e$$' | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
 	echo "race-testing $$(echo "$$pkgs" | wc -l | tr -d ' ') packages, plus the parity suites"; \
 	go test -json -race -timeout=15m $$pkgs | go run ./scripts/testreport
 	@echo "==> cross-backend parity (uncached — the fixture builds the server outside the cache's view)"

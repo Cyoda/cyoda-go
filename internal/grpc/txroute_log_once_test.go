@@ -14,11 +14,11 @@ import (
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/peeraddr"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda/cyoda-go/internal/cluster/peeraddr"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 func wantOneLineNaming(t *testing.T, logs *lockedBuffer, level, rpc, ceID string) {

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // resolveGRPCAddr returns the gRPC dial target for a peer node: the peer's

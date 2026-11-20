@@ -4,7 +4,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // staticKeySource is a KeySource over a fixed kid→key map, for exercising

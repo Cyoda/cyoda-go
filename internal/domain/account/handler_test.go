@@ -8,11 +8,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
+	spi "github.com/cyoda/cyoda-go-spi"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/account"
 )
 
 func TestNewHandler(t *testing.T) {

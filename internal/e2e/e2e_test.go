@@ -22,16 +22,16 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
-	"github.com/cyoda-platform/cyoda-go/internal/testpg"
+	"github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/testing/localproc"
+	"github.com/cyoda/cyoda-go/internal/testpg"
 
 	// Register stock storage plugins so spi.GetPlugin("postgres") resolves.
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
-	_ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
+	_ "github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 var (

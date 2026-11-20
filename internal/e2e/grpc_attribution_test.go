@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	"github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda/cyoda-go/api/grpc/events"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // grpc_attribution_test.go — on-behalf-of attribution and the own-user join

@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // setupFCWTest creates an isolated pool + schema + wired StoreFactory+TM.

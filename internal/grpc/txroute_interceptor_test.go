@@ -18,16 +18,16 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/domain/txjoin"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // --- test doubles -----------------------------------------------------------

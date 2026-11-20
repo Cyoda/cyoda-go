@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
 )
 
 // Task 7 (spec §5): a query never executes against a field the model does

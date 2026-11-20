@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestSchemaExtension_ConcurrentEveryDoor_No409 fires N concurrent writes on

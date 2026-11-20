@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // The processor's answer payload is a DataPayload: type, data, meta. Its

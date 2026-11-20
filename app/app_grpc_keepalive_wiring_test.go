@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // CYODA_KEEPALIVE_INTERVAL / _TIMEOUT reach the gRPC server. They used to be

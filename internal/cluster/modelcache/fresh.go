@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // GetFresh reads the model from storage, bypassing this node's cached entry

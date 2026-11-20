@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
 )
 
 // Conditional delete reads at most 10 MiB of condition, as every other JSON

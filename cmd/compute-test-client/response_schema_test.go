@@ -9,8 +9,8 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodaschemas "github.com/cyoda-platform/cyoda-go/docs/cyoda/schema"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodaschemas "github.com/cyoda/cyoda-go/docs/cyoda/schema"
 )
 
 // compilePublished compiles one schema of the published tree with the whole

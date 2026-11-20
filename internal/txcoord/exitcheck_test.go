@@ -28,7 +28,7 @@ import (
 	"testing"
 )
 
-const modulePath = "github.com/cyoda-platform/cyoda-go"
+const modulePath = "github.com/cyoda/cyoda-go"
 
 // testDoublePath is the test double of the optional SPI capability: no
 // production file imports it.

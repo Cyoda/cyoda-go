@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"sync"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/fence"
 )
 
 // NewDurable returns the coordination over co, the coordinator of a storage

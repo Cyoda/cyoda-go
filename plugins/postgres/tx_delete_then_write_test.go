@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // The other half of the same-transaction-delete story: the empty expected ID

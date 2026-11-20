@@ -1,7 +1,7 @@
 package grpc
 
 import (
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // TxTokenAttr is the CloudEvent extension attribute carrying the signed

@@ -11,7 +11,7 @@ import (
 	"sort"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // IssueRequest is a validated POST /oauth/keys/keypair.

@@ -7,11 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
+	spi "github.com/cyoda/cyoda-go-spi"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/domain/account"
 )
 
 func TestAdapter_AlgorithmEnum_Coverage(t *testing.T) {

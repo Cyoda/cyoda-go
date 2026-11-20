@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 func TestNewStoreFactoryForTest(t *testing.T) {

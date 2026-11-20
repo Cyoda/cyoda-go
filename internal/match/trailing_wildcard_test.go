@@ -3,8 +3,8 @@ package match
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // A path whose LAST hop is an array wildcard ("$.tags[*]") addresses the array's

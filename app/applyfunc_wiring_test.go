@@ -4,11 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	memoryplugin "github.com/cyoda-platform/cyoda-go/plugins/memory"
-	pgplugin "github.com/cyoda-platform/cyoda-go/plugins/postgres"
-	sqliteplugin "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	memoryplugin "github.com/cyoda/cyoda-go/plugins/memory"
+	pgplugin "github.com/cyoda/cyoda-go/plugins/postgres"
+	sqliteplugin "github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // Run wires the schema replay function into the storage factory through

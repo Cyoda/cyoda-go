@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // callout_harness_selftest_test.go holds the self-tests of the callout test

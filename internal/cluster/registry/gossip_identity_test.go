@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
 )
 
 // lockedBuffer collects log output written from memberlist's goroutines while
@@ -331,9 +331,9 @@ func TestGossipRegistry_DuplicateFoundByInboundExchangeRefusesToStart(t *testing
 	captureAddr(impostor)
 	t.Cleanup(func() { _ = impostor.Deregister(context.Background(), "inbound-dup") })
 
-	// The impostor holds the claim open for as long as the joiner is
-	// starting. A finding is judged per attempt, so what must keep the joiner
-	// out is a claim that is still live, not one that has been and gone.
+	// The impostor keeps trying on a doubling backoff until the joiner has
+	// given up, so that it, too, refuses to start. It is refused and is never
+	// a member: the joiner sees it only at each of its attempts.
 	impostorCtx, stopImpostor := context.WithCancel(context.Background())
 	defer stopImpostor()
 	impostorDone := make(chan error, 1)
@@ -341,12 +341,20 @@ func TestGossipRegistry_DuplicateFoundByInboundExchangeRefusesToStart(t *testing
 		impostorDone <- impostor.Register(impostorCtx, "inbound-dup", "http://inbound-dup.test:8080")
 	}()
 
-	// The joiner has run its merge delegate on that inbound exchange.
-	eventually(t, 5*time.Second, "the joiner refuses the inbound exchange", func() bool {
+	// The impostor has made its first try and been refused (the line is its
+	// own: claimedBy is the node that writes it). That fixes when its next
+	// tries come; the joiner's first attempt forgets this one.
+	eventually(t, 5*time.Second, "the impostor's first try is refused", func() bool {
 		return countLines(logged.String(), refusalBy(addrOf(impostor))...) == 1
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	// A finding is judged per attempt, so the attempt whose window holds the
+	// impostor's knocks must be the one that decides. The budget ends inside
+	// the second attempt, which cannot finish before 4.5s (the first window of
+	// 2s, a 500ms backoff, the second window of 2s): the joiner then answers
+	// with the duplicate its first attempt found. A longer budget lets a later
+	// attempt whose window falls between two knocks decide the outcome.
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	err = joiner.Register(ctx, "inbound-dup", "http://inbound-dup.test:8080")
 	if err == nil {
@@ -436,7 +444,13 @@ func TestGossipRegistry_DuplicateFoundDuringStabilityWindowRefusesToStart(t *tes
 	captureAddr(joiner)
 	t.Cleanup(func() { _ = joiner.Deregister(context.Background(), "stability-dup") })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	// Each attempt forgets what earlier attempts saw, so the attempt whose
+	// wait the impostor enters must be the one that decides. The budget ends
+	// inside the second attempt, which cannot finish before 6.5s (the first
+	// window of 3s, a 500ms backoff, the second window of 3s): the joiner
+	// then answers with the duplicate its first attempt found. A longer
+	// budget lets a second attempt that saw no knock decide the outcome.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	registered := make(chan error, 1)
@@ -457,9 +471,10 @@ func TestGossipRegistry_DuplicateFoundDuringStabilityWindowRefusesToStart(t *tes
 	}
 	t.Cleanup(func() { _ = impostor.Deregister(context.Background(), "stability-dup") })
 
-	// The impostor keeps claiming the id until the joiner has given up, so
-	// the claim is live at the end of the joiner's budget and not only inside
-	// one of its attempts.
+	// The impostor is refused and is never a member: the joiner sees it only
+	// at each of its attempts to join, which follow a doubling backoff. It
+	// keeps trying until the joiner has given up, so that it, too, refuses to
+	// start.
 	impostorCtx, stopImpostor := context.WithCancel(context.Background())
 	defer stopImpostor()
 	impostorDone := make(chan error, 1)

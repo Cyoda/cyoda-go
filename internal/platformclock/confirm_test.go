@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 var confirmSetting = Setting{StartUnixMicro: 1, AnchorUnixMicro: 1, RatePPM: 1_000_000, Version: 3, Writer: "b"}
@@ -95,7 +95,7 @@ func TestClusterConfirm_PushFails(t *testing.T) {
 	if !slices.Equal(nc.Nodes, []string{"c"}) {
 		t.Fatalf("%v", nc.Nodes)
 	}
-	if !strings.Contains(err.Error(), "c") || strings.Contains(err.Error(), "addr-c") {
+	if !strings.HasSuffix(err.Error(), "by node(s) c") || strings.Contains(err.Error(), "addr-c") {
 		t.Fatalf("error text %q", err.Error())
 	}
 }

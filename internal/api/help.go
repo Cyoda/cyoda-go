@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help/renderer"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // dispatchHelpAction buffers an action handler's output, then either

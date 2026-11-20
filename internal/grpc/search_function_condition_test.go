@@ -7,7 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // gRPC is a separate entry point from HTTP and must reject a `function`

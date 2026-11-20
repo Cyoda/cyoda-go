@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // TestMigrate_UniqueClaimsTable is a smoke test that verifies migration 000003

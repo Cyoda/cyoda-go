@@ -3,12 +3,12 @@ package grpc_test
 import (
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/callout"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/internal/callout"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 func init() {

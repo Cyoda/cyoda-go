@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
 )
 
 // groupedStatsInTx sends each body as a grouped-stats query from inside a

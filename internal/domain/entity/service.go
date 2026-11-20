@@ -13,18 +13,18 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/cluster/modelcache"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/pagination"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // --- Input/Output types ---

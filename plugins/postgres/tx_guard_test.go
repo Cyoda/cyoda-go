@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // beginGuarded begins a transaction and registers a t.Cleanup that rolls it

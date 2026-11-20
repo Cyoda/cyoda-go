@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // claimIndex is what ClaimDue reads instead of every task row: per tenant, its

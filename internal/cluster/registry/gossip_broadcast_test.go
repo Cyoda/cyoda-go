@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
 )
 
 // TestGossipBroadcaster_TwoNodeRoundTrip verifies that Broadcast from one node

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 func TestSchedule_RoundTrip_TimeoutMsPointerStates(t *testing.T) {

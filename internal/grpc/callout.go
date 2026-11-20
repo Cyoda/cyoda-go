@@ -8,11 +8,11 @@ import (
 	"slices"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	spi "github.com/cyoda/cyoda-go-spi"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // CalloutKind is which of the three callouts a Callout is.

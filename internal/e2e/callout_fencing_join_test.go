@@ -14,7 +14,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
 )
 
 // callout_fencing_join_test.go is the join layer itself: one transaction, one

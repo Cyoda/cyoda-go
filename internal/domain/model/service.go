@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/exporter"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go/internal/cluster/modelcache"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/exporter"
+	"github.com/cyoda/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // classifyGetErr maps ModelStore.Get errors to AppError: genuine not-found

@@ -3,7 +3,7 @@ package registry
 import (
 	"context"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // Local is a single-node NodeRegistry implementation. It always reports

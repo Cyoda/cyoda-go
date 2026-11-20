@@ -12,12 +12,12 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // retryPolicyNone is the retryPolicy value that selects a single try. Every

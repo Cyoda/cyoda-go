@@ -15,7 +15,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
 )
 
 // TestGroupedStats_TemporalStringOp_Returns400_ConditionTypeMismatch verifies

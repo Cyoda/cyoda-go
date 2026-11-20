@@ -52,7 +52,7 @@ The secondary use case is programmatic entity and model management: `entityManag
 
 ## SERVICES
 
-The proto package is `org.cyoda.cloud.api.grpc`. The Go package is `github.com/cyoda-platform/cyoda-go/api/grpc/cyoda`.
+The proto package is `org.cyoda.cloud.api.grpc`. The Go package is `github.com/cyoda/cyoda-go/api/grpc/cyoda`.
 
 ```proto
 syntax = "proto3";
@@ -573,9 +573,9 @@ reaches a compute node. A segregation-of-duties check built on these
 attributes is set out in `cyoda help auth integration` (*READING IDENTITY IN A
 COMPUTE NODE*).
 
-The public Go package `github.com/cyoda-platform/cyoda-go/api/grpc/authctx`
+The public Go package `github.com/cyoda/cyoda-go/api/grpc/authctx`
 reads these attributes for a compute node. Every function takes a
-`*cloudevents.CloudEvent` from `github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents`
+`*cloudevents.CloudEvent` from `github.com/cyoda/cyoda-go/api/grpc/cloudevents`
 (the protobuf `io.cloudevents.v1.CloudEvent`): `Type(ce) string` and
 `ID(ce) string` (the attributed principal), `ExecutorType(ce) string` and
 `ExecutorID(ce) string` (the executor), each `""` when absent, and

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // No cnode, one attaches inside the patience: the callout succeeds, and the

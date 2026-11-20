@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // --- Test 2.1: Processor returns error → entity creation fails ---

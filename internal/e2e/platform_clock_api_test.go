@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // The API contract of GET and POST /platform/clock through the full HTTP

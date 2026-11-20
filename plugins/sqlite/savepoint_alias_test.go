@@ -3,7 +3,7 @@ package sqlite_test
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // A savepoint survives its own rollback, so the restored buffer must not alias

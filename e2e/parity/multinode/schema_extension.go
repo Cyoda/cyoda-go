@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	parityclient "github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	parityclient "github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // schema_extension.go — an extension made on one node is visible on the

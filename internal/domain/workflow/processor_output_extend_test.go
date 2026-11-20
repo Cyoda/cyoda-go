@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/cluster/modelcache"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // extendingMemoryFactory is a memory factory whose ExtendSchema really applies

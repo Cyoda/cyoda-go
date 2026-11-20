@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/testing/localproc"
 )
 
 func testEntity() *spi.Entity {

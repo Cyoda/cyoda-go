@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
 )
 
 // maxAnswerText bounds the free-text fields of a peer's answer.

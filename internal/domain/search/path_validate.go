@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // extractFieldPaths walks a predicate.Condition tree and collects every

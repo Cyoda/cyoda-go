@@ -114,7 +114,7 @@ func moduleGoFiles(t *testing.T) []string {
 // The server sends no event type that the mapping of StateMachineEventDto
 // lacks, and the mapping lists no type that nothing declares.
 func TestEventTypeConstantsEqualTheMapping(t *testing.T) {
-	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/cyoda-platform/cyoda-go-spi").Output()
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/cyoda/cyoda-go-spi").Output()
 	if err != nil {
 		t.Fatalf("go list the SPI module: %v", err)
 	}

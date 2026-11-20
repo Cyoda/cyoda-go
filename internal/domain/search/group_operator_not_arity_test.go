@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // group_operator_not_arity_test.go pins Task 12 of the NOT-node plan: the

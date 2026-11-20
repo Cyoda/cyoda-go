@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // TestCollectionOps_TransactionWindow_JoinedRejected400: transactionWindow

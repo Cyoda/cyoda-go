@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/observability"
 )
 
 func TestInit_ReturnsShutdownFunc(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // type_admission_test.go covers the design's §9 gRPC rows for BOTH entity

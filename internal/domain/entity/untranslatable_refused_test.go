@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // TestQueryGroupedStats_FunctionCondition_Is400 pins the BOUNDARY that stands

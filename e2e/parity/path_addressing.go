@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // path_addressing.go pins docs/cloud-parity/path-grammar.md sections 3, 4, 5

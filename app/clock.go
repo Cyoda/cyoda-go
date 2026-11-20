@@ -4,11 +4,11 @@ import (
 	"context"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	clusterdispatch "github.com/cyoda/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 // clockControlWarning is logged at startup on a node with clock control on.

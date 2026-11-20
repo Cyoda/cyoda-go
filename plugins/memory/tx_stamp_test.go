@@ -3,7 +3,7 @@ package memory_test
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestTx_UnstampedWrite_CarriesTheTransactionID pins the stamping contract a

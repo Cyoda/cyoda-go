@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // A string or pattern operator on a field with no text type can never match a

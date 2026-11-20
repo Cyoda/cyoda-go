@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
-	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help/renderer"
+	internalapi "github.com/cyoda/cyoda-go/internal/api"
 )
 
 func TestHelpSubcommand_ExistsAndDispatches(t *testing.T) {

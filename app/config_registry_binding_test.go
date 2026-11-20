@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help"
 )
 
 // preConfigVars are root vars that DefaultConfig() does not populate — either

@@ -27,7 +27,7 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // patchEntityRaw issues an authenticated PATCH request to path with the given

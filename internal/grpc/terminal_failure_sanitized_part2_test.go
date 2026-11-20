@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // A criterion FUNCTION definition that does not parse is a broken workflow

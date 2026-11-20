@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
 )
 
 // grpc_callback.go — gRPC-transport callback for the

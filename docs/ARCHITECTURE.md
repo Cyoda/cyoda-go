@@ -43,8 +43,8 @@ Domain concepts are grouped under `internal/domain/` by responsibility (`entity`
 
 | Module | Path | Purpose | License |
 |--------|------|---------|---------|
-| `cyoda-go` | github.com/cyoda-platform/cyoda-go | Application core + stock plugins | Apache 2.0 |
-| `cyoda-go-spi` | github.com/cyoda-platform/cyoda-go-spi | Storage-plugin contract | Apache 2.0 |
+| `cyoda-go` | github.com/cyoda/cyoda-go | Application core + stock plugins | Apache 2.0 |
+| `cyoda-go-spi` | github.com/cyoda/cyoda-go-spi | Storage-plugin contract | Apache 2.0 |
 
 ### Package Layout (`cyoda-go`)
 
@@ -56,7 +56,7 @@ cmd/
   compute-test-client/    Local compute harness for parity tests
   release-preflight/      Release-gate checks
 app/                      Application wiring, Config, startup; resolves plugin via spi.GetPlugin
-go.mod                    module github.com/cyoda-platform/cyoda-go
+go.mod                    module github.com/cyoda/cyoda-go
 go.work                   Lists ., plugins/memory, plugins/postgres, plugins/sqlite
 
 plugins/                  Each plugin is its own Go module with its own go.mod
@@ -193,7 +193,7 @@ The `predicate` package imports only the standard library and the SPI's own `str
 ### Plugin Contract (summary)
 
 ```go
-// In github.com/cyoda-platform/cyoda-go-spi
+// In github.com/cyoda/cyoda-go-spi
 
 type Plugin interface {
     Name() string
@@ -229,9 +229,9 @@ A plugin registers itself from `init()`. `cmd/cyoda/main.go` blank-imports the p
 
 ```go
 import (
-    _ "github.com/cyoda-platform/cyoda-go/plugins/memory"
-    _ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
-    _ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+    _ "github.com/cyoda/cyoda-go/plugins/memory"
+    _ "github.com/cyoda/cyoda-go/plugins/postgres"
+    _ "github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 ```
 

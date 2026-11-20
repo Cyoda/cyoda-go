@@ -3,8 +3,8 @@ package grpc
 import (
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // OwnerTestConfig is what an envelope test may set on the owner's loop.

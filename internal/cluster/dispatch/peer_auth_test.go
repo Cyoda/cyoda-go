@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/cluster/dispatch"
 )
 
 func TestPeerIdentity_MissingFromEmptyContext(t *testing.T) {

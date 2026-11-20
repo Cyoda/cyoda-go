@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // attemptsFailure is the error for a callout that recorded attempts and can do

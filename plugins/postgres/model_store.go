@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // modelStore implements spi.ModelStore backed by PostgreSQL. Every method

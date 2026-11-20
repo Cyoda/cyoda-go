@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func ctTenantCtx(tenant string) context.Context {

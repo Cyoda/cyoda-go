@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"sync"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Method names a ScheduledTaskStore method a Plan can refuse.

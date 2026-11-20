@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/scheduledtask"
+	genapi "github.com/cyoda/cyoda-go/api"
+	internalapi "github.com/cyoda/cyoda-go/internal/api"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/domain/scheduledtask"
 )
 
 type routeStore struct {

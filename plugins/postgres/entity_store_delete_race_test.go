@@ -8,8 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // deleteRacers is the number of concurrent Deletes of the same entity both

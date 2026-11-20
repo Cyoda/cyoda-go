@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // grpcNonJSONPathSpellings mirrors the HTTP e2e table. gRPC is a separate

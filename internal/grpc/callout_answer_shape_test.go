@@ -7,10 +7,10 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // callout_answer_shape_test.go pins how a LOCAL compute member's answer is

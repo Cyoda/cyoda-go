@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // TestRLS_PoliciesExist verifies that the migrations define RLS policies on

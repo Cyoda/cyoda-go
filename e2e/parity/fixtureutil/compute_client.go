@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/childproc"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/internal/testing/childproc"
 )
 
 // ComputeClientOpts says how to start one compute-test-client.

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema/gentree"
 )
 
 // applyOne replays one delta onto the stored bytes base in its own ApplyMany

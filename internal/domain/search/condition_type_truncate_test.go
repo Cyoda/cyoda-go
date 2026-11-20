@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // TestValidateSimpleConditionType_MismatchTruncatesLargeOperand is the M2(b)

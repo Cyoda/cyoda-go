@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/exporter"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/exporter"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 func TestJSONSchemaFlatObject(t *testing.T) {

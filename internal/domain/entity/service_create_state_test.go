@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestBatchCreate_StateAndTransitionForLatestSave: a batch create sets each

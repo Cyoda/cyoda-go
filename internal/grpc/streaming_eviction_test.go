@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // wedgingStream parks every send after the greet until released, and keeps

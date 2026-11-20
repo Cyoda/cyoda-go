@@ -8,15 +8,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
 
-	"github.com/cyoda-platform/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // TestClassifyWorkflowError_InfraErrorMapsTo5xx is the regression test for
@@ -265,7 +266,7 @@ func TestClassifyWorkflowError_ScheduledTaskInfraMapsTo5xx(t *testing.T) {
 	}
 	body := rr.Body.String()
 	for _, leak := range []string{"SQLSTATE", "57014", "statement timeout", "canceling statement"} {
-		if strings.Contains(body, leak) {
+		if strings.Contains(withoutUUIDs(body), leak) {
 			t.Errorf("client response leaks internal detail (%q): %s", leak, body)
 		}
 	}
@@ -456,7 +457,7 @@ func TestDeleteError_SanitizesStorageDetail(t *testing.T) {
 	msg := reportIDError(context.Background(), "e-1", deleteError("e-1", raw))
 
 	for _, leak := range []string{"SQLSTATE", "57014", "canceling statement", "mark entity deleted"} {
-		if strings.Contains(msg, leak) {
+		if strings.Contains(withoutUUIDs(msg), leak) {
 			t.Errorf("per-id error leaks internal detail (%q): %s", leak, msg)
 		}
 	}
@@ -466,7 +467,8 @@ func TestDeleteError_SanitizesStorageDetail(t *testing.T) {
 	if !strings.Contains(msg, "ticket") {
 		t.Errorf("per-id error carries no ticket, so the logged detail cannot be correlated: %s", msg)
 	}
-	if logged := buf.String(); !strings.Contains(logged, "57014") {
+	// "SQLSTATE 57014": no ticket or timestamp in the log can contain it by chance.
+	if logged := buf.String(); !strings.Contains(logged, "SQLSTATE 57014") {
 		t.Errorf("the detail was sanitized out of the response but never logged, so it is lost: %s", logged)
 	}
 }
@@ -670,3 +672,10 @@ func TestClassifyEngineError_DeepCausedErrorKeepsTheEngineText(t *testing.T) {
 		t.Errorf("Detail = %q, want the engine text and the entity", got.Detail)
 	}
 }
+
+// uuidText matches a UUID, such as an error's ticket.
+var uuidText = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// withoutUUIDs removes every UUID from s. A leak check removes them first: a
+// random ticket can contain a short marker such as a SQLSTATE by chance.
+func withoutUUIDs(s string) string { return uuidText.ReplaceAllString(s, "") }

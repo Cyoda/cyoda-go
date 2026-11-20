@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ChangeReason names why the stored model did not already admit a value.

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	"github.com/cyoda-platform/cyoda-go/app"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda/cyoda-go/app"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // callback_txjoin_grpc_bounds_test.go proves CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES

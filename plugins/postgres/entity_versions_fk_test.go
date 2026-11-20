@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // TestEntityVersionsRequireAnEntityRow proves the foreign key holds. A version

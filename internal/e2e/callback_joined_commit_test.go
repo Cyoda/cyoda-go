@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // callback_joined_commit_test.go — a callback never commits the transaction it

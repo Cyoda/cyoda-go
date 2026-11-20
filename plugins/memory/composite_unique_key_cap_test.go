@@ -3,7 +3,7 @@ package memory
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 func TestFactory_SupportsCompositeUniqueKeys(t *testing.T) {

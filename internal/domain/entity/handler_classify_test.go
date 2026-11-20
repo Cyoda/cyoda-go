@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // TestClassifyValidateOrExtendErr_ChangeLevelViolation_GetsValidationFailed

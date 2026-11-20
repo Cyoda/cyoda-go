@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // entityMeta is the JSON-serializable representation of the _meta block

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // foldedModel is a model as one statement read it: the stored doc, the

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
 )
 
 func TestDriver_SubmitAsyncSearch_POST(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // callback_read_current_test.go — a callout that carries the transaction

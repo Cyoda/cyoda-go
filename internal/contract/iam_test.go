@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 func TestClientToken_RoundTrip(t *testing.T) {

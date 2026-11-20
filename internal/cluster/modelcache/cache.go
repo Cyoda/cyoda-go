@@ -28,8 +28,8 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // Clock abstracts time.Now so tests can drive expiry deterministically.

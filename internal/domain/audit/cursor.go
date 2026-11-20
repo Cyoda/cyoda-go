@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
 )
 
 // cursorBody is the decoded form of an audit page cursor: the sort key of

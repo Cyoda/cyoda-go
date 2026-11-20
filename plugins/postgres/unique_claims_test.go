@@ -15,9 +15,9 @@ import (
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/spitest"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // ucModel is ucEntity's model.

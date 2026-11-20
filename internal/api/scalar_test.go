@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
+	internalapi "github.com/cyoda/cyoda-go/internal/api"
 )
 
 func TestScalarUIEndpoint(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	cyodaschemas "github.com/cyoda-platform/cyoda-go/docs/cyoda/schema"
+	cyodaschemas "github.com/cyoda/cyoda-go/docs/cyoda/schema"
 )
 
 // registeredEventTypes lists every CloudEvent type declared in

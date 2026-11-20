@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help"
 )
 
 // TestResolveCommand_SelectsCommand pins the command each accepted command

@@ -10,7 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // The greet is the first event on the wire, ahead of anything a dispatcher

@@ -3,7 +3,7 @@ package grpc
 import (
 	"testing"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 func TestAttachAndReadTxToken(t *testing.T) {

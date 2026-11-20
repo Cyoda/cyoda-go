@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 func failing(name string) func(context.Context, spi.ProcessorDefinition, string) (*spi.Entity, error) {

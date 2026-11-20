@@ -7,7 +7,7 @@
 // Registration happens at init() time via spi.Register. A binary
 // picks up this plugin by blank-importing it:
 //
-//	import _ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+//	import _ "github.com/cyoda/cyoda-go/plugins/memory"
 //
 // Configuration: none. The plugin reads no environment variables
 // and does not implement spi.DescribablePlugin.

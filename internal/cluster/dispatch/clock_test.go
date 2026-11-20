@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 func clockSetting(version uint64) platformclock.Setting {

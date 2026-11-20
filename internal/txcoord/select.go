@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Select picks the coordination for the storage backend behind factory, once,

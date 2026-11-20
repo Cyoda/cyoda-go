@@ -1,7 +1,7 @@
 package workflow
 
 import (
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // applyImportMode merges incoming workflows with existing ones based on the import mode.

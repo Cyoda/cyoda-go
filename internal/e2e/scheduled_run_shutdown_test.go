@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // scheduled_run_shutdown_test.go — the scheduler's drain on one stack

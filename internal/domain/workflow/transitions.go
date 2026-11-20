@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // GetAvailableTransitions returns the names of transitions available from the

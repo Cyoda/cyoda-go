@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
 )
 
 func TestValidateGroupedStatsRequest(t *testing.T) {

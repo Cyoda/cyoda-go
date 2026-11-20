@@ -3,8 +3,8 @@ package scheduler
 import (
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
 )
 
 // BookkeepingKind is the fenced write that records a run's outcome.

@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // TestJSONErrorShape_StrictJSON: a strictjson refusal logs its class, and

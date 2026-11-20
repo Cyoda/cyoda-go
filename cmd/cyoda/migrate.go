@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	pgplugin "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/app"
+	pgplugin "github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 type migrateConfig struct {
