@@ -120,7 +120,7 @@ entries:
       Postgres, fronted by Gateway API (default) or a still-maintained Ingress controller
       (transitional). '
     digest: 59f9afb00fa13a27cdf8d08dc94d406d8f336d8747e1f15c30ca0a7dcc26c58f
-    home: https://github.com/cyoda-platform/cyoda-go
+    home: https://github.com/cyoda/cyoda-go
     keywords:
     - cyoda
     - digital-twin
@@ -128,12 +128,12 @@ entries:
     kubeVersion: '>=1.31.0'
     maintainers:
     - name: Cyoda Platform
-      url: https://github.com/cyoda-platform
+      url: https://github.com/cyoda
     name: cyoda
     sources:
-    - https://github.com/cyoda-platform/cyoda-go
+    - https://github.com/cyoda/cyoda-go
     type: application
     urls:
-    - https://github.com/Cyoda-platform/cyoda-go/releases/download/cyoda-0.6.3/cyoda-0.6.3.tgz
+    - https://github.com/Cyoda/cyoda-go/releases/download/cyoda-0.6.3/cyoda-0.6.3.tgz
     version: 0.6.3
 generated: "2026-09-09T23:14:19.860537943Z"
