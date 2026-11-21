@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -166,15 +167,40 @@ func TestExportedCriterionDiscriminatesByType(t *testing.T) {
 	doc := viewedSpec(t)
 	export := doc.Paths.Value("/model/{entityName}/{modelVersion}/workflow/export").Get.
 		Responses.Status(200).Value.Content.Get("application/json").Schema.Value
-	body := func(criterion string) any {
-		var c any
-		if err := json.Unmarshal([]byte(criterion), &c); err != nil {
-			t.Fatalf("bad test JSON %s: %v", criterion, err)
+	decode := func(s string) any {
+		var v any
+		if err := json.Unmarshal([]byte(s), &v); err != nil {
+			t.Fatalf("bad test JSON %s: %v", s, err)
 		}
+		return v
+	}
+	withTransition := func(field, value string) any {
 		return map[string]any{"entityName": "e", "modelVersion": 1, "workflows": []any{map[string]any{
 			"version": "1.0", "name": "w", "initialState": "a", "active": true,
 			"states": map[string]any{"a": map[string]any{"transitions": []any{map[string]any{
-				"name": "t", "next": "a", "manual": true, "criterion": c}}}}}}}
+				"name": "t", "next": "a", "manual": true, field: decode(value)}}}}}}}
+	}
+	body := func(criterion string) any { return withTransition("criterion", criterion) }
+	if err := openapivalidator.ValidateValue(doc, export, body(`{"type":"nosuch"}`)); err == nil || !strings.Contains(err.Error(), "validation failed") {
+		t.Fatalf("the export is not checked by kin's JSON Schema 2020-12 validator: %v", err)
+	}
+	// ProcessorDefinitionDto does not require its discriminator property; a
+	// use of it still takes only a processor with a mapped type.
+	for name, c := range map[string]struct {
+		processors string
+		valid      bool
+	}{
+		"an externalized processor":  {`[{"type":"externalized","name":"p"}]`, true},
+		"a processor without a type": {`[{"name":"p"}]`, false},
+		"a processor of no type":     {`[{"type":"nosuch","name":"p"}]`, false},
+	} {
+		err := openapivalidator.ValidateValue(doc, export, withTransition("processors", c.processors))
+		if c.valid && err != nil {
+			t.Errorf("%s refused: %v", name, err)
+		}
+		if !c.valid && err == nil {
+			t.Errorf("%s accepted", name)
+		}
 	}
 	for name, c := range map[string]struct {
 		criterion string

@@ -189,6 +189,9 @@ func TestApplyView(t *testing.T) {
 		doc, _ := load(t)
 		h := doc.Components.Schemas["Holder2020"].Value
 		viewCheck(t, h, `{"one":{"kind":"a","x":1}}`, true)
+		if err := h.VisitJSON(map[string]any{"one": map[string]any{"kind": "zzz", "x": 1.0}}, openapi3.EnableJSONSchema2020()); err == nil || !strings.Contains(err.Error(), "validation failed") {
+			t.Fatalf("Holder2020 is not checked by kin's JSON Schema 2020-12 validator: %v", err)
+		}
 		viewCheck(t, h, `{"one":{"kind":"zzz","x":1}}`, false)
 		viewCheck(t, h, `{"one":{"kind":"b","x":1}}`, false)
 		viewCheck(t, h, `{"one":{"x":1}}`, false)
@@ -281,8 +284,8 @@ components:
         - $ref: '#/components/schemas/M'
 `
 	for name, spec := range map[string]string{"a target of two bases": two, "a target that is a base": nested} {
-		if err := ApplyView(loadSpec(t, spec)); err == nil || !strings.Contains(err.Error(), "M") {
-			t.Errorf("%s: ApplyView = %v, want an error naming M", name, err)
+		if err := ApplyView(loadSpec(t, spec)); err == nil || !strings.Contains(err.Error(), "mapping target #/components/schemas/M ") {
+			t.Errorf("%s: ApplyView = %v, want an error naming the mapping target M", name, err)
 		}
 	}
 }

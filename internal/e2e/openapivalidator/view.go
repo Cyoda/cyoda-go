@@ -46,7 +46,7 @@ func ApplyView(doc *openapi3.T) error {
 	v := newViewBuilder(doc)
 	v.limitMembersToTheirKeys()
 	if doc.Components != nil {
-		for _, name := range sortedKeys(doc.Components.Schemas) {
+		for _, name := range slices.Sorted(maps.Keys(doc.Components.Schemas)) {
 			v.walk(doc.Components.Schemas[name].Value, name)
 		}
 		for name, p := range doc.Components.Parameters {
@@ -130,15 +130,6 @@ func newViewBuilder(doc *openapi3.T) *viewBuilder {
 		}
 	}
 	return v
-}
-
-func sortedKeys(m openapi3.Schemas) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func (v *viewBuilder) parameterRef(p *openapi3.ParameterRef, where string) {
@@ -243,9 +234,15 @@ func (v *viewBuilder) limitMembersToTheirKeys() {
 			if !ok {
 				continue
 			}
-			if other, ok := limited[target]; ok || v.bases[target] != nil {
+			if other, ok := limited[target]; ok {
 				if v.err == nil {
-					v.err = fmt.Errorf("mapping target %s is a base or in the mapping of another base (%s); the view cannot limit it to the keys of %s", target, other, baseRef)
+					v.err = fmt.Errorf("mapping target %s is in the mappings of %s and %s; the view cannot limit it to the keys of one", target, other, baseRef)
+				}
+				continue
+			}
+			if v.bases[target] != nil {
+				if v.err == nil {
+					v.err = fmt.Errorf("mapping target %s of %s is itself a base; the view cannot limit it to the keys of %s", target, baseRef, baseRef)
 				}
 				continue
 			}
@@ -318,8 +315,10 @@ func nullDecidedByNotType(s *openapi3.Schema) bool {
 	return rest.IsEmpty()
 }
 
-// isUntypedLeaf reports whether s has no type, no union or allOf, and is not
-// a boolean schema (true or false), which decides every value itself.
+// isUntypedLeaf reports whether s is an untyped, non-composite schema: no
+// type, no union or allOf, and not a boolean schema (true or false), which
+// decides every value itself. It may have properties; an untyped schema
+// accepts every type, whatever else it asserts.
 func isUntypedLeaf(s *openapi3.Schema) bool {
 	return (s.Type == nil || len(*s.Type) == 0) && s.Always == nil &&
 		len(s.AllOf) == 0 && len(s.OneOf) == 0 && len(s.AnyOf) == 0

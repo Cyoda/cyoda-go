@@ -52,8 +52,9 @@ ADR 0003 decision 4 requires a discriminated union to carry "an explicit
 unknown/default variant". Neither generator can declare such a variant: there is
 no schema form that both generators read as "any other value".
 
-The e2e response validator, kin-openapi v0.149.0, differs from JSON Schema in two
-ways that matter for the base form: it checks a value against a base's own
+The e2e response validator, kin-openapi, differs from JSON Schema in two ways
+that matter for the base form (the validator view under Enforcement makes up
+for both): it checks a value against a base's own
 properties only and follows a mapping only on a `oneOf`, so `{"type":"nosuch"}`
 passes `QueryConditionDto`; and it refuses `null` for an untyped schema, which
 JSON Schema accepts.
@@ -138,9 +139,8 @@ decision 4 to the forms of Rule 1; it does not change that decision.
   it. An untyped schema whose answer for `null` depends on an `enum`, a `const`
   or a `not` beyond a type is refused when the view is built. No other schema
   is given `null`: a member, a replaced use and a typed schema keep refusing it.
-  kin
-  applies a recursive schema to each nested value (a group's `conditions`, a
-  function's pre-check) itself. `ValidateValue` runs kin on one value; the
+  kin applies a recursive schema to each nested value (a group's `conditions`,
+  a function's pre-check) itself. `ValidateValue` runs kin on one value; the
   `api/` tests validate the spec's examples and the wire samples with it, so
   samples, examples and responses are checked the same way.
 - *The client-generation check* (`api/clientprobe/`, CI job

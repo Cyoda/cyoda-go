@@ -520,6 +520,7 @@ func TestValidator_BaseUse_JSONSchema2020Path(t *testing.T) {
 		t.Fatal("fixture Group block not found")
 	}
 	v := newSpecValidator(t, yaml)
+	requireJSONSchema2020Path(t, v)
 	for name, body := range map[string]string{
 		"an unmapped key":               `{"type":"group","conditions":[{"type":"zzz","value":1}]}`,
 		"a key on another member shape": `{"type":"group","conditions":[{"type":"group","value":1}]}`,
@@ -545,7 +546,19 @@ func TestValidator_BaseUse_OptionalKeyStillRequired(t *testing.T) {
 	if !strings.Contains(yaml, "propertyNames") || strings.Contains(yaml, "required: [type]") {
 		t.Fatal("fixture blocks not found")
 	}
-	if m := validateBody(t, newSpecValidator(t, yaml), "/group", `{"type":"group","conditions":[{"value":1}]}`); len(m) == 0 {
+	v := newSpecValidator(t, yaml)
+	requireJSONSchema2020Path(t, v)
+	if m := validateBody(t, v, "/group", `{"type":"group","conditions":[{"value":1}]}`); len(m) == 0 {
 		t.Error("a use of the base without its key accepted")
+	}
+}
+
+// requireJSONSchema2020Path fails the test unless v checks /group with kin's
+// JSON Schema 2020-12 validator, whose rows read "validation failed"; its own
+// visitor's read "doesn't match schema".
+func requireJSONSchema2020Path(t *testing.T, v *Validator) {
+	t.Helper()
+	if m := validateBody(t, v, "/group", `{"type":"group","conditions":[null]}`); len(m) != 1 || !strings.Contains(m[0].Reason, "validation failed") {
+		t.Fatalf("/group is not checked by kin's JSON Schema 2020-12 validator: %+v", m)
 	}
 }
