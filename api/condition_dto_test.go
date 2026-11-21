@@ -122,9 +122,10 @@ func arrayConditionValuesSchema(t *testing.T, doc *openapi3.T) *openapi3.Schema 
 // The spec declares OpenAPI 3.1, where `nullable` is not a keyword: a null
 // value is admitted by a `null` type or by an untyped leaf. Each value is
 // checked through the validator view with openapivalidator.ValidateValue, in
-// two kin-openapi modes: the e2e response validator's options, which try the
-// JSON Schema 2020-12 validator first (kin falls back to its own visitor for
-// a schema that holds a reference), and kin's own visitor alone.
+// two kin-openapi modes: the e2e response validator's options, under which kin
+// uses its JSON Schema 2020-12 validator unless the schema holds a component
+// reference and reaches no JSON Schema 2020-12 keyword, where it uses its own
+// visitor; and kin's own visitor alone.
 var schemaValidators = map[string][]openapi3.SchemaValidationOption{
 	"response-validator": nil,
 	"kin-visitor":        {openapi3.MultiErrors()},

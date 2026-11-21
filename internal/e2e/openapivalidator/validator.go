@@ -183,6 +183,10 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		return nil
 	}
 
+	body := resp.Body
+	if body == nil {
+		body = http.NoBody // kin closes the body it reads
+	}
 	// Options must be set on ResponseValidationInput — ValidateResponse reads
 	// input.Options (not input.RequestValidationInput.Options).
 	input := &openapi3filter.ResponseValidationInput{
@@ -192,7 +196,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		},
 		Status:  resp.StatusCode,
 		Header:  resp.Header,
-		Body:    resp.Body,
+		Body:    body,
 		Options: v.opts,
 	}
 	kinErr := openapi3filter.ValidateResponse(ctx, input)
@@ -454,11 +458,24 @@ func (v *Validator) toMismatches(err error, opId string, req *http.Request, stat
 }
 
 // schemaErrors unwraps a kin-openapi MultiError into its errors, so each
-// schema problem becomes its own row; any other error is returned alone.
+// schema problem becomes its own row; any other error is returned alone. A
+// row whose JSON pointer and reason equal those of an earlier row is dropped:
+// kin refuses a value no union member accepts once per member.
 func schemaErrors(err error) []error {
 	var multi openapi3.MultiError
-	if errors.As(err, &multi) {
-		return multi
+	if !errors.As(err, &multi) {
+		return []error{err}
 	}
-	return []error{err}
+	out := make([]error, 0, len(multi))
+	seen := map[mismatchKey]bool{}
+	for _, e := range multi {
+		if k, ok := keyOf(e); ok {
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+		}
+		out = append(out, e)
+	}
+	return out
 }

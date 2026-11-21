@@ -369,3 +369,67 @@ func TestValidator_RecursiveSchema_ExcludeResponseBodyRespected(t *testing.T) {
 		t.Fatalf("expected no mismatch with ExcludeResponseBody, got %+v", mismatches)
 	}
 }
+
+// recursiveFixture2020YAML is the fixture with a JSON Schema 2020-12 keyword
+// (propertyNames) on the group. kin then checks a schema that reaches the
+// group with its JSON Schema 2020-12 validator instead of its own visitor, as
+// it does for the spec's workflow export.
+var recursiveFixture2020YAML = strings.Replace(recursiveFixtureYAML,
+	"    Group:\n      type: object\n",
+	"    Group:\n      type: object\n      propertyNames: {pattern: '^[a-z]+$'}\n", 1)
+
+// On kin's JSON Schema 2020-12 path too, a defect below a recursion gives one
+// row and a valid nested body passes.
+func TestValidator_RecursiveSchema_JSONSchema2020Path(t *testing.T) {
+	if recursiveFixture2020YAML == recursiveFixtureYAML {
+		t.Fatal("fixture Group block not found")
+	}
+	v := newSpecValidator(t, recursiveFixture2020YAML)
+	for name, body := range map[string]string{
+		"a defect three levels down": `{"type":"group","conditions":[{"type":"group","conditions":[
+			{"type":"group","conditions":[{"type":"simple","value":"not-an-integer"}]}]}]}`,
+		"null in a group in a group":        `{"type":"group","conditions":[{"type":"group","conditions":[null]}]}`,
+		"a property name the group refuses": `{"type":"group","conditions":[{"type":"group","conditions":[],"Bad":1}]}`,
+	} {
+		if mismatches := validateBody(t, v, "/group", body); len(mismatches) != 1 {
+			t.Errorf("%s: expected exactly 1 mismatch, got %d: %+v", name, len(mismatches), mismatches)
+		}
+	}
+	// The rows of kin's JSON Schema 2020-12 validator read "validation failed";
+	// its own visitor's read "doesn't match schema". The fixture is on the
+	// first path only while this holds.
+	if m := validateBody(t, v, "/group", `{"type":"group","conditions":[null]}`); len(m) != 1 || !strings.Contains(m[0].Reason, "validation failed") {
+		t.Fatalf("the fixture does not reach kin's JSON Schema 2020-12 validator: %+v", m)
+	}
+	valid := `{"type":"group","conditions":[{"type":"simple","value":1},
+		{"type":"group","conditions":[{"type":"group","conditions":[{"type":"simple","value":2}]}]}]}`
+	if mismatches := validateBody(t, v, "/group", valid); len(mismatches) != 0 {
+		t.Errorf("valid nested body refused: %+v", mismatches)
+	}
+}
+
+// A response with no body is validated as an empty body, not a panic.
+func TestValidator_NilBodyIsAnEmptyBody(t *testing.T) {
+	v := newSpecValidator(t, recursiveFixtureYAML)
+	req, _ := http.NewRequest("GET", "http://x/group", nil)
+	resp := mkResp(200, "application/json", "")
+	resp.Body = nil
+	for _, m := range v.Validate(context.Background(), req, resp) {
+		if strings.Contains(m.Reason, "panic") {
+			t.Fatalf("Validate panicked on a nil body: %s", m.Reason)
+		}
+	}
+}
+
+// One defect gives one row: kin refuses a null no member of a root union
+// accepts once per member, with the same pointer and reason.
+func TestValidator_RootUnionNullReportedOnce(t *testing.T) {
+	rootPath := "paths:\n  /condition:\n    get:\n      operationId: getCondition\n      responses:\n        \"200\":\n          description: ok\n          content:\n            application/json:\n              schema:\n                $ref: '#/components/schemas/Condition'\n"
+	yaml := strings.Replace(recursiveFixtureYAML, "paths:\n", rootPath, 1)
+	if yaml == recursiveFixtureYAML {
+		t.Fatal("fixture paths block not found")
+	}
+	if mismatches := validateBody(t, newSpecValidator(t, yaml), "/condition", `null`); len(mismatches) != 1 {
+		t.Fatalf("expected exactly 1 mismatch, got %d: %+v", len(mismatches), mismatches)
+	}
+}

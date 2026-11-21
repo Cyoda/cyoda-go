@@ -157,3 +157,40 @@ func TestCriterionShapesValidate(t *testing.T) {
 		{"lifecycle value object", lifecycle, `{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":{"k":1}}`, false},
 	})
 }
+
+// The workflow export reaches a JSON Schema 2020-12 keyword (propertyNames on
+// states), so kin checks it with its JSON Schema 2020-12 validator, which
+// knows no discriminator. A criterion still takes only a mapped type, checked
+// against the member the mapping names.
+func TestExportedCriterionDiscriminatesByType(t *testing.T) {
+	doc := viewedSpec(t)
+	export := doc.Paths.Value("/model/{entityName}/{modelVersion}/workflow/export").Get.
+		Responses.Status(200).Value.Content.Get("application/json").Schema.Value
+	body := func(criterion string) any {
+		var c any
+		if err := json.Unmarshal([]byte(criterion), &c); err != nil {
+			t.Fatalf("bad test JSON %s: %v", criterion, err)
+		}
+		return map[string]any{"entityName": "e", "modelVersion": 1, "workflows": []any{map[string]any{
+			"version": "1.0", "name": "w", "initialState": "a", "active": true,
+			"states": map[string]any{"a": map[string]any{"transitions": []any{map[string]any{
+				"name": "t", "next": "a", "manual": true, "criterion": c}}}}}}}
+	}
+	for name, c := range map[string]struct {
+		criterion string
+		valid     bool
+	}{
+		"a lifecycle condition":              {`{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"NEW"}`, true},
+		"an unmapped type":                   {`{"type":"nosuch","field":"state","operatorType":"EQUALS","value":"NEW"}`, false},
+		"a simple type on a lifecycle shape": {`{"type":"simple","field":"state","operatorType":"EQUALS","value":"NEW"}`, false},
+		"a lifecycle shape without a type":   {`{"field":"state","operatorType":"EQUALS","value":"NEW"}`, false},
+	} {
+		err := openapivalidator.ValidateValue(doc, export, body(c.criterion))
+		if c.valid && err != nil {
+			t.Errorf("%s refused: %v", name, err)
+		}
+		if !c.valid && err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}

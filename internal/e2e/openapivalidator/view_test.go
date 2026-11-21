@@ -2,6 +2,7 @@ package openapivalidator
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -73,6 +74,12 @@ components:
           not: {type: object}
         notNull:
           not: {type: [object, "null"]}
+    Holder2020:
+      type: object
+      propertyNames: {pattern: '^[a-z]+$'}
+      properties:
+        one:
+          $ref: '#/components/schemas/Shape'
 `
 
 func viewCheck(t *testing.T, s *openapi3.Schema, doc string, wantOK bool) {
@@ -148,7 +155,7 @@ func TestApplyView(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ComponentUse(Shape): %v", err)
 		}
-		if len(base.OneOf) != 3 || base.Discriminator == nil {
+		if len(base.OneOf) != 3 {
 			t.Fatalf("a use of the base Shape is not the oneOf of its mapping: %+v", base)
 		}
 		viewCheck(t, base, `{"kind":"a","x":1}`, true)
@@ -165,10 +172,53 @@ func TestApplyView(t *testing.T) {
 			t.Error("ComponentUse(Nope): no error")
 		}
 	})
+	// A propertyNames sends kin to its JSON Schema 2020-12 validator, which
+	// knows no discriminator. A use of the base still takes only a mapped
+	// value, checked against the member the mapping names.
+	t.Run("use_under_a_json_schema_2020_keyword", func(t *testing.T) {
+		doc, _ := load(t)
+		h := doc.Components.Schemas["Holder2020"].Value
+		viewCheck(t, h, `{"one":{"kind":"a","x":1}}`, true)
+		viewCheck(t, h, `{"one":{"kind":"zzz","x":1}}`, false)
+		viewCheck(t, h, `{"one":{"kind":"b","x":1}}`, false)
+		viewCheck(t, h, `{"one":{"x":1}}`, false)
+	})
 	t.Run("member_allOf_entry_left_alone", func(t *testing.T) {
 		doc, _ := load(t)
 		if got := doc.Components.Schemas["A"].Value.AllOf[0].Ref; got != "#/components/schemas/Shape" {
 			t.Errorf("A.AllOf[0].Ref = %q, want the base left alone", got)
 		}
 	})
+}
+
+// ApplyView decides null for an untyped leaf from its `not` type alone. A leaf
+// whose enum, const or richer `not` could also exclude null is one it cannot
+// decide, so it refuses the document instead of accepting null for it.
+func TestApplyView_RefusesUntypedLeafItCannotDecide(t *testing.T) {
+	for name, leaf := range map[string]string{
+		"enum":           `{enum: [a, b]}`,
+		"const":          `{const: a}`,
+		"not with const": `{not: {const: a}}`,
+		"not with enum":  `{not: {type: object, enum: [{}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := loadSpec(t, `openapi: 3.1.0
+info: {title: t, version: "1"}
+paths: {}
+components:
+  schemas:
+    Holder:
+      type: object
+      properties:
+        leaf: `+leaf+`
+`)
+			err := ApplyView(doc)
+			if err == nil {
+				t.Fatal("ApplyView accepted a leaf it cannot decide null for")
+			}
+			if !strings.Contains(err.Error(), "Holder.leaf") {
+				t.Errorf("error does not name the leaf Holder.leaf: %v", err)
+			}
+		})
+	}
 }

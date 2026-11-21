@@ -15,9 +15,8 @@ import (
 // Validator passes for a body of doc: MultiErrors, EnableJSONSchema2020 for
 // OpenAPI 3.1, and VisitAsResponse.
 //
-// The result is nil or an openapi3.MultiError that lists every defect once. A
-// row whose JSON pointer and reason equal those of an earlier row is dropped:
-// kin refuses a value no union member accepts once per member.
+// The result is nil or an openapi3.MultiError that lists every defect once,
+// as the Validator's rows do (schemaErrors).
 func ValidateValue(doc *openapi3.T, schema *openapi3.Schema, value any, opts ...openapi3.SchemaValidationOption) error {
 	if len(opts) == 0 {
 		opts = schemaOptions(validatorOptions(), doc)
@@ -26,18 +25,7 @@ func ValidateValue(doc *openapi3.T, schema *openapi3.Schema, value any, opts ...
 	if kinErr == nil {
 		return nil
 	}
-	var errs openapi3.MultiError
-	seen := map[mismatchKey]bool{}
-	for _, e := range schemaErrors(kinErr) {
-		if k, ok := keyOf(e); ok {
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
-		}
-		errs = append(errs, e)
-	}
-	return errs
+	return openapi3.MultiError(schemaErrors(kinErr))
 }
 
 // schemaOptions returns the options openapi3filter.ValidateResponse passes to

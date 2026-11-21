@@ -3,6 +3,7 @@ package openapivalidator
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -13,16 +14,22 @@ const schemaRefPrefix = "#/components/schemas/"
 // ApplyView rewrites a freshly loaded document in place so that kin-openapi
 // gives JSON Schema's answers where it otherwise would not:
 //
-//  1. kin checks a value against a base's own properties only and follows a
-//     discriminator mapping only on a oneOf. Each use of a base (a schema with
-//     a discriminator and a mapping) is therefore replaced by a oneOf of the
-//     base's mapping targets that carries the base's discriminator. Each member
-//     $ref is spelled as in the mapping. A member's allOf entry is left alone.
+//  1. kin checks a value against a base's own properties only, and its JSON
+//     Schema 2020-12 validator, which it uses for a schema that reaches a
+//     JSON Schema 2020-12 keyword, knows no discriminator. Each use of a base
+//     (a schema with a discriminator and a mapping) is therefore replaced by a
+//     oneOf with one branch per mapping target: the target, and the
+//     discriminator property limited to the keys that map to it. A value then
+//     matches the branch its key names, or none, on both of kin's paths. A
+//     member's allOf entry is left alone.
 //  2. kin refuses null for an untyped leaf: for a 3.1 document it ignores
 //     nullable, which 3.1 does not have, and accepts null only for a schema
 //     whose type lists it. Each untyped leaf is given every JSON type, unless
 //     its not excludes null. An untyped schema accepts every type, so listing
-//     all seven changes no other value's answer.
+//     all seven changes no other value's answer. kin accepts null before it
+//     checks enum and const, so a leaf whose answer for null depends on an
+//     enum, a const or a not beyond a type is one the view cannot decide:
+//     ApplyView returns an error that names it.
 //
 // No other schema is changed, so a member and a replaced use keep refusing
 // null.
@@ -33,36 +40,37 @@ func ApplyView(doc *openapi3.T) error {
 	v := newViewBuilder(doc)
 	if doc.Components != nil {
 		for _, name := range sortedKeys(doc.Components.Schemas) {
-			v.walk(doc.Components.Schemas[name].Value)
+			v.walk(doc.Components.Schemas[name].Value, name)
 		}
-		for _, p := range doc.Components.Parameters {
-			v.parameterRef(p)
+		for name, p := range doc.Components.Parameters {
+			v.parameterRef(p, "parameter "+name)
 		}
-		for _, h := range doc.Components.Headers {
+		for name, h := range doc.Components.Headers {
 			if h != nil && h.Value != nil {
-				v.parameter(&h.Value.Parameter)
+				v.parameter(&h.Value.Parameter, "header "+name)
 			}
 		}
-		for _, b := range doc.Components.RequestBodies {
-			v.requestBodyRef(b)
+		for name, b := range doc.Components.RequestBodies {
+			v.requestBodyRef(b, "requestBody "+name)
 		}
-		for _, r := range doc.Components.Responses {
-			v.responseRef(r)
+		for name, r := range doc.Components.Responses {
+			v.responseRef(r, "response "+name)
 		}
 	}
 	if doc.Paths != nil {
-		for _, item := range doc.Paths.Map() {
+		for path, item := range doc.Paths.Map() {
 			for _, p := range item.Parameters {
-				v.parameterRef(p)
+				v.parameterRef(p, path+" param")
 			}
-			for _, op := range item.Operations() {
+			for method, op := range item.Operations() {
+				where := method + " " + path
 				for _, p := range op.Parameters {
-					v.parameterRef(p)
+					v.parameterRef(p, where+" param")
 				}
-				v.requestBodyRef(op.RequestBody)
+				v.requestBodyRef(op.RequestBody, where+" body")
 				if op.Responses != nil {
-					for _, r := range op.Responses.Map() {
-						v.responseRef(r)
+					for code, r := range op.Responses.Map() {
+						v.responseRef(r, where+" "+code)
 					}
 				}
 			}
@@ -72,7 +80,7 @@ func ApplyView(doc *openapi3.T) error {
 }
 
 // ComponentUse returns the schema that a $ref to the component schema name
-// stands for in the view: the oneOf of the mapping targets when name is a
+// stands for in the view: the oneOf of the mapping's branches when name is a
 // base, otherwise the component's schema. doc is in the view already.
 func ComponentUse(doc *openapi3.T, name string) (*openapi3.Schema, error) {
 	var ref *openapi3.SchemaRef
@@ -126,61 +134,73 @@ func sortedKeys(m openapi3.Schemas) []string {
 	return keys
 }
 
-func (v *viewBuilder) parameterRef(p *openapi3.ParameterRef) {
+func (v *viewBuilder) parameterRef(p *openapi3.ParameterRef, where string) {
 	if p != nil && p.Value != nil {
-		v.parameter(p.Value)
+		v.parameter(p.Value, where+" "+p.Value.Name)
 	}
 }
 
-func (v *viewBuilder) parameter(p *openapi3.Parameter) {
-	p.Schema = v.use(p.Schema)
-	v.content(p.Content)
+func (v *viewBuilder) parameter(p *openapi3.Parameter, where string) {
+	p.Schema = v.use(p.Schema, where)
+	v.content(p.Content, where)
 }
 
-func (v *viewBuilder) requestBodyRef(b *openapi3.RequestBodyRef) {
+func (v *viewBuilder) requestBodyRef(b *openapi3.RequestBodyRef, where string) {
 	if b != nil && b.Value != nil {
-		v.content(b.Value.Content)
+		v.content(b.Value.Content, where)
 	}
 }
 
-func (v *viewBuilder) responseRef(r *openapi3.ResponseRef) {
+func (v *viewBuilder) responseRef(r *openapi3.ResponseRef, where string) {
 	if r == nil || r.Value == nil {
 		return
 	}
-	v.content(r.Value.Content)
-	for _, h := range r.Value.Headers {
+	v.content(r.Value.Content, where)
+	for name, h := range r.Value.Headers {
 		if h != nil && h.Value != nil {
-			v.parameter(&h.Value.Parameter)
+			v.parameter(&h.Value.Parameter, where+" header "+name)
 		}
 	}
 }
 
-func (v *viewBuilder) content(c openapi3.Content) {
-	for _, mt := range c {
+func (v *viewBuilder) content(c openapi3.Content, where string) {
+	for name, mt := range c {
 		if mt != nil {
-			mt.Schema = v.use(mt.Schema)
+			mt.Schema = v.use(mt.Schema, where+" "+name)
 		}
 	}
 }
 
 // use returns the schema reference to store in a slot that holds ref: a oneOf
-// of the mapping targets when ref names a base, otherwise ref itself, whose
-// schema is walked.
-func (v *viewBuilder) use(ref *openapi3.SchemaRef) *openapi3.SchemaRef {
+// of the mapping's branches when ref names a base, otherwise ref itself, whose
+// schema is walked. where names the slot; a $ref to a component schema is
+// named by the component.
+func (v *viewBuilder) use(ref *openapi3.SchemaRef, where string) *openapi3.SchemaRef {
 	if ref == nil {
 		return nil
 	}
 	if base, ok := v.bases[ref.Ref]; ok {
 		return v.replacement(ref.Ref, base)
 	}
-	v.walk(ref.Value)
+	if name, ok := strings.CutPrefix(ref.Ref, schemaRefPrefix); ok {
+		where = name
+	}
+	v.walk(ref.Value, where)
 	return ref
 }
 
+// replacement returns the oneOf that stands for a use of base: one branch per
+// mapping target, which is allOf the target and requires the discriminator
+// property to be one of the keys that map to the target.
 func (v *viewBuilder) replacement(baseRef string, base *openapi3.Schema) *openapi3.SchemaRef {
-	targets := make([]string, 0, len(base.Discriminator.Mapping))
-	for _, m := range base.Discriminator.Mapping {
-		targets = append(targets, m.Ref)
+	property := base.Discriminator.PropertyName
+	keys := map[string][]string{} // target -> the keys that map to it
+	for key, m := range base.Discriminator.Mapping {
+		keys[m.Ref] = append(keys[m.Ref], key)
+	}
+	targets := make([]string, 0, len(keys))
+	for target := range keys {
+		targets = append(targets, target)
 	}
 	sort.Strings(targets)
 	oneOf := make(openapi3.SchemaRefs, 0, len(targets))
@@ -192,43 +212,76 @@ func (v *viewBuilder) replacement(baseRef string, base *openapi3.Schema) *openap
 			}
 			continue
 		}
-		oneOf = append(oneOf, &openapi3.SchemaRef{Ref: target, Value: member.Value})
+		sort.Strings(keys[target])
+		enum := make([]any, len(keys[target]))
+		for i, k := range keys[target] {
+			enum[i] = k
+		}
+		oneOf = append(oneOf, &openapi3.SchemaRef{Value: &openapi3.Schema{
+			AllOf:      openapi3.SchemaRefs{{Ref: target, Value: member.Value}},
+			Required:   []string{property},
+			Properties: openapi3.Schemas{property: {Value: &openapi3.Schema{Type: &openapi3.Types{openapi3.TypeString}, Enum: enum}}},
+		}})
 	}
-	return &openapi3.SchemaRef{Value: &openapi3.Schema{OneOf: oneOf, Discriminator: base.Discriminator}}
+	return &openapi3.SchemaRef{Value: &openapi3.Schema{OneOf: oneOf}}
 }
 
-// walk visits s once. It replaces uses of bases below s and gives s every
-// JSON type when it is an untyped leaf.
-func (v *viewBuilder) walk(s *openapi3.Schema) {
+// walk visits s, which where names, once. It replaces uses of bases below s
+// and gives s every JSON type when it is an untyped leaf that admits null.
+func (v *viewBuilder) walk(s *openapi3.Schema, where string) {
 	if s == nil || v.visited[s] {
 		return
 	}
 	v.visited[s] = true
 
 	for name, p := range s.Properties {
-		s.Properties[name] = v.use(p)
+		s.Properties[name] = v.use(p, where+"."+name)
 	}
-	s.Items = v.use(s.Items)
-	s.AdditionalProperties.Schema = v.use(s.AdditionalProperties.Schema)
-	s.Not = v.use(s.Not)
-	for _, m := range s.AllOf { // a member's allOf entry keeps its $ref to the base
+	s.Items = v.use(s.Items, where+"[]")
+	s.AdditionalProperties.Schema = v.use(s.AdditionalProperties.Schema, where+"{}")
+	s.Not = v.use(s.Not, where+"!")
+	for i, m := range s.AllOf { // a member's allOf entry keeps its $ref to the base
 		if m != nil {
-			v.walk(m.Value)
+			v.walk(m.Value, where+"/allOf/"+strconv.Itoa(i))
 		}
 	}
 	for i, m := range s.OneOf {
-		s.OneOf[i] = v.use(m)
+		s.OneOf[i] = v.use(m, where+"/oneOf/"+strconv.Itoa(i))
 	}
 	for i, m := range s.AnyOf {
-		s.AnyOf[i] = v.use(m)
+		s.AnyOf[i] = v.use(m, where+"/anyOf/"+strconv.Itoa(i))
 	}
 
-	if isUntypedLeaf(s) && !notExcludesNull(s) {
+	if !isUntypedLeaf(s) {
+		return
+	}
+	if !nullDecidedByNotType(s) {
+		if v.err == nil {
+			v.err = fmt.Errorf("untyped schema %s has an enum, a const or a not beyond a type; the view cannot decide whether it admits null", where)
+		}
+		return
+	}
+	if !notExcludesNull(s) {
 		s.Type = &openapi3.Types{
 			openapi3.TypeArray, openapi3.TypeBoolean, openapi3.TypeInteger, openapi3.TypeNull,
 			openapi3.TypeNumber, openapi3.TypeObject, openapi3.TypeString,
 		}
 	}
+}
+
+// nullDecidedByNotType reports whether nothing but the type of its not decides
+// whether the untyped leaf s admits null: s has no enum and no const, and its
+// not, if any, holds a type and no other assertion.
+func nullDecidedByNotType(s *openapi3.Schema) bool {
+	if len(s.Enum) > 0 || s.Const != nil {
+		return false
+	}
+	if s.Not == nil || s.Not.Value == nil {
+		return true
+	}
+	rest := *s.Not.Value
+	rest.Type = nil
+	return rest.IsEmpty()
 }
 
 func isUntypedLeaf(s *openapi3.Schema) bool {
