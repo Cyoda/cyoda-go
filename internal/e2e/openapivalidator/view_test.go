@@ -74,6 +74,7 @@ components:
           not: {type: object}
         notNull:
           not: {type: [object, "null"]}
+        never: false
     Holder2020:
       type: object
       propertyNames: {pattern: '^[a-z]+$'}
@@ -140,6 +141,10 @@ func TestApplyView(t *testing.T) {
 		viewCheck(t, h, `{"leaf":null}`, true)
 		viewCheck(t, h, `{"leaf":{}}`, false)
 	})
+	t.Run("false_schema_refuses_null", func(t *testing.T) {
+		_, h := load(t)
+		viewCheck(t, h, `{"never":null}`, false)
+	})
 	t.Run("null_fails_leaf_whose_not_excludes_it", func(t *testing.T) {
 		_, h := load(t)
 		viewCheck(t, h, `{"notNull":null}`, false)
@@ -155,7 +160,7 @@ func TestApplyView(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ComponentUse(Shape): %v", err)
 		}
-		if len(base.OneOf) != 3 {
+		if len(base.OneOf) != 3 || base.Discriminator == nil {
 			t.Fatalf("a use of the base Shape is not the oneOf of its mapping: %+v", base)
 		}
 		viewCheck(t, base, `{"kind":"a","x":1}`, true)

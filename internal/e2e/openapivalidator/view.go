@@ -2,6 +2,8 @@ package openapivalidator
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,14 +16,16 @@ const schemaRefPrefix = "#/components/schemas/"
 // ApplyView rewrites a freshly loaded document in place so that kin-openapi
 // gives JSON Schema's answers where it otherwise would not:
 //
-//  1. kin checks a value against a base's own properties only, and its JSON
-//     Schema 2020-12 validator, which it uses for a schema that reaches a
-//     JSON Schema 2020-12 keyword, knows no discriminator. Each use of a base
-//     (a schema with a discriminator and a mapping) is therefore replaced by a
-//     oneOf with one branch per mapping target: the target, and the
-//     discriminator property limited to the keys that map to it. A value then
-//     matches the branch its key names, or none, on both of kin's paths. A
-//     member's allOf entry is left alone.
+//  1. kin checks a value against a base's own properties only and follows a
+//     discriminator mapping only on a oneOf. Each use of a base (a schema with
+//     a discriminator and a mapping) is therefore replaced by a oneOf of the
+//     base's mapping targets that carries the base's discriminator. Each member
+//     $ref is spelled as in the mapping. A member's allOf entry is left alone.
+//     kin's JSON Schema 2020-12 validator knows no discriminator, so each
+//     mapping target also limits the discriminator property to the keys that
+//     map to it: there the oneOf matches only the member the key names. kin's
+//     own visitor checks only the member the key selects, which the limit
+//     always admits.
 //  2. kin refuses null for an untyped leaf: for a 3.1 document it ignores
 //     nullable, which 3.1 does not have, and accepts null only for a schema
 //     whose type lists it. Each untyped leaf is given every JSON type, unless
@@ -38,6 +42,7 @@ const schemaRefPrefix = "#/components/schemas/"
 // parsed.
 func ApplyView(doc *openapi3.T) error {
 	v := newViewBuilder(doc)
+	v.limitMembersToTheirKeys()
 	if doc.Components != nil {
 		for _, name := range sortedKeys(doc.Components.Schemas) {
 			v.walk(doc.Components.Schemas[name].Value, name)
@@ -80,7 +85,7 @@ func ApplyView(doc *openapi3.T) error {
 }
 
 // ComponentUse returns the schema that a $ref to the component schema name
-// stands for in the view: the oneOf of the mapping's branches when name is a
+// stands for in the view: the oneOf of the mapping targets when name is a
 // base, otherwise the component's schema. doc is in the view already.
 func ComponentUse(doc *openapi3.T, name string) (*openapi3.Schema, error) {
 	var ref *openapi3.SchemaRef
@@ -172,7 +177,7 @@ func (v *viewBuilder) content(c openapi3.Content, where string) {
 }
 
 // use returns the schema reference to store in a slot that holds ref: a oneOf
-// of the mapping's branches when ref names a base, otherwise ref itself, whose
+// of the mapping targets when ref names a base, otherwise ref itself, whose
 // schema is walked. where names the slot; a $ref to a component schema is
 // named by the component.
 func (v *viewBuilder) use(ref *openapi3.SchemaRef, where string) *openapi3.SchemaRef {
@@ -189,41 +194,57 @@ func (v *viewBuilder) use(ref *openapi3.SchemaRef, where string) *openapi3.Schem
 	return ref
 }
 
-// replacement returns the oneOf that stands for a use of base: one branch per
-// mapping target, which is allOf the target and requires the discriminator
-// property to be one of the keys that map to the target.
 func (v *viewBuilder) replacement(baseRef string, base *openapi3.Schema) *openapi3.SchemaRef {
-	property := base.Discriminator.PropertyName
-	keys := map[string][]string{} // target -> the keys that map to it
-	for key, m := range base.Discriminator.Mapping {
-		keys[m.Ref] = append(keys[m.Ref], key)
-	}
-	targets := make([]string, 0, len(keys))
-	for target := range keys {
-		targets = append(targets, target)
+	targets := make([]string, 0, len(base.Discriminator.Mapping))
+	for _, m := range base.Discriminator.Mapping {
+		targets = append(targets, m.Ref)
 	}
 	sort.Strings(targets)
 	oneOf := make(openapi3.SchemaRefs, 0, len(targets))
 	for _, target := range targets {
-		member, ok := v.doc.Components.Schemas[strings.TrimPrefix(target, schemaRefPrefix)]
-		if !ok || !strings.HasPrefix(target, schemaRefPrefix) {
-			if v.err == nil {
-				v.err = fmt.Errorf("discriminator mapping of %s names %q, which is not a component schema", baseRef, target)
-			}
+		member, ok := v.member(baseRef, target)
+		if !ok {
 			continue
 		}
-		sort.Strings(keys[target])
-		enum := make([]any, len(keys[target]))
-		for i, k := range keys[target] {
-			enum[i] = k
-		}
-		oneOf = append(oneOf, &openapi3.SchemaRef{Value: &openapi3.Schema{
-			AllOf:      openapi3.SchemaRefs{{Ref: target, Value: member.Value}},
-			Required:   []string{property},
-			Properties: openapi3.Schemas{property: {Value: &openapi3.Schema{Type: &openapi3.Types{openapi3.TypeString}, Enum: enum}}},
-		}})
+		oneOf = append(oneOf, &openapi3.SchemaRef{Ref: target, Value: member})
 	}
-	return &openapi3.SchemaRef{Value: &openapi3.Schema{OneOf: oneOf}}
+	return &openapi3.SchemaRef{Value: &openapi3.Schema{OneOf: oneOf, Discriminator: base.Discriminator}}
+}
+
+// member returns the component schema that target, a mapping target of the
+// base baseRef, names, or records an error.
+func (v *viewBuilder) member(baseRef, target string) (*openapi3.Schema, bool) {
+	ref, ok := v.doc.Components.Schemas[strings.TrimPrefix(target, schemaRefPrefix)]
+	if !ok || !strings.HasPrefix(target, schemaRefPrefix) || ref.Value == nil {
+		if v.err == nil {
+			v.err = fmt.Errorf("discriminator mapping of %s names %q, which is not a component schema", baseRef, target)
+		}
+		return nil, false
+	}
+	return ref.Value, true
+}
+
+// limitMembersToTheirKeys adds to each mapping target of each base an allOf
+// entry that limits the discriminator property to the keys that map to it.
+func (v *viewBuilder) limitMembersToTheirKeys() {
+	for _, baseRef := range slices.Sorted(maps.Keys(v.bases)) {
+		d := v.bases[baseRef].Discriminator
+		keys := map[string][]any{} // target -> the keys that map to it
+		for _, key := range slices.Sorted(maps.Keys(d.Mapping)) {
+			keys[d.Mapping[key].Ref] = append(keys[d.Mapping[key].Ref], key)
+		}
+		for _, target := range slices.Sorted(maps.Keys(keys)) {
+			member, ok := v.member(baseRef, target)
+			if !ok {
+				continue
+			}
+			member.AllOf = append(member.AllOf, &openapi3.SchemaRef{Value: &openapi3.Schema{
+				Properties: openapi3.Schemas{d.PropertyName: {Value: &openapi3.Schema{
+					Type: &openapi3.Types{openapi3.TypeString}, Enum: keys[target],
+				}}},
+			}})
+		}
+	}
 }
 
 // walk visits s, which where names, once. It replaces uses of bases below s
@@ -284,8 +305,10 @@ func nullDecidedByNotType(s *openapi3.Schema) bool {
 	return rest.IsEmpty()
 }
 
+// isUntypedLeaf reports whether s has no type, no union or allOf, and is not
+// a boolean schema (true or false), which decides every value itself.
 func isUntypedLeaf(s *openapi3.Schema) bool {
-	return (s.Type == nil || len(*s.Type) == 0) &&
+	return (s.Type == nil || len(*s.Type) == 0) && s.Always == nil &&
 		len(s.AllOf) == 0 && len(s.OneOf) == 0 && len(s.AnyOf) == 0
 }
 

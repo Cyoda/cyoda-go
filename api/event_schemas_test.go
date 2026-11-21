@@ -319,14 +319,14 @@ func TestStopReasonSchema(t *testing.T) {
 
 // eventDataUse returns the viewed schema of StateMachineAuditEventDto.data,
 // which must be a use of the base StateMachineEventDto: the view replaces a
-// use with an inline oneOf of the base's members.
+// use with a oneOf of the base's members.
 func eventDataUse(t *testing.T, doc *openapi3.T) *openapi3.Schema {
 	t.Helper()
 	data := ownProperty(doc.Components.Schemas["StateMachineAuditEventDto"].Value, "data")
 	if data == nil || data.Value == nil {
 		t.Fatal("StateMachineAuditEventDto.data missing")
 	}
-	if data.Ref != "" || len(data.Value.OneOf) == 0 {
+	if len(data.Value.OneOf) == 0 || data.Value.Discriminator == nil {
 		t.Fatal("StateMachineAuditEventDto.data is not a use of StateMachineEventDto")
 	}
 	return data.Value

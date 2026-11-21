@@ -121,12 +121,16 @@ decision 4 to the forms of Rule 1; it does not change that decision.
   constants against the mapping.
 - *The validator view* (`internal/e2e/openapivalidator`, `ApplyView`). The e2e
   validator checks responses against a view of the spec built once at load; the
-  published spec does not change. Each use of a base becomes a `oneOf` with one
-  branch per mapping target: the target, with the discriminator property
-  limited to the keys that map to it. kin's JSON Schema 2020-12 validator, which
-  it uses for a schema that reaches a JSON Schema 2020-12 keyword, knows no
-  discriminator; with the branches, both of kin's paths check the member the
-  key names and refuse an unmapped key. Each untyped schema whose `not` does
+  published spec does not change. Each use of a base becomes a `oneOf` of the
+  mapping's targets carrying the base's discriminator, so kin's own visitor
+  checks the member the discriminator selects and refuses an unmapped value.
+  kin checks a schema with its JSON Schema 2020-12 validator unless the schema
+  holds a component reference and reaches no JSON Schema 2020-12 keyword; that
+  validator knows no discriminator, so each mapping target also limits the
+  discriminator property to the keys that map to it, and the `oneOf` matches
+  only the member the key names. A row from that validator lists the errors
+  of every member and repeats segments of its JSON pointer; the defect is among
+  them. Each untyped schema whose `not` does
   not exclude `null` is given every JSON type, `null` included: for a 3.1
   document kin ignores `nullable` and accepts `null` only where the type lists
   it. An untyped schema whose answer for `null` depends on an `enum`, a `const`

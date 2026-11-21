@@ -3,7 +3,6 @@ package openapivalidator
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -457,25 +456,18 @@ func (v *Validator) toMismatches(err error, opId string, req *http.Request, stat
 	return out
 }
 
-// schemaErrors unwraps a kin-openapi MultiError into its errors, so each
-// schema problem becomes its own row; any other error is returned alone. A
-// row whose JSON pointer and reason equal those of an earlier row is dropped:
-// kin refuses a value no union member accepts once per member.
+// schemaErrors splits kin-openapi's top-level MultiError — err itself, or the
+// cause of a response error — into its errors, so each schema problem becomes
+// its own row; any other error is returned alone. A MultiError nested inside
+// one problem, such as the errors of a union's members, stays in its row.
 func schemaErrors(err error) []error {
-	var multi openapi3.MultiError
-	if !errors.As(err, &multi) {
-		return []error{err}
-	}
-	out := make([]error, 0, len(multi))
-	seen := map[mismatchKey]bool{}
-	for _, e := range multi {
-		if k, ok := keyOf(e); ok {
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
+	if re, ok := err.(*openapi3filter.ResponseError); ok {
+		if multi, ok := re.Err.(openapi3.MultiError); ok {
+			return multi
 		}
-		out = append(out, e)
 	}
-	return out
+	if multi, ok := err.(openapi3.MultiError); ok {
+		return multi
+	}
+	return []error{err}
 }

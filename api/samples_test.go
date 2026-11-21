@@ -148,10 +148,10 @@ func TestSamples(t *testing.T) {
 		if !s.valid() || s.Class == "" {
 			continue
 		}
-		// The class is the member the base's discriminator selects, or the
-		// schema itself when it is not a base.
+		// The class is the member the discriminator selects, or the schema
+		// itself when it has no discriminator.
 		want := s.Schema
-		if d := doc.Components.Schemas[s.Schema].Value.Discriminator; d != nil {
+		if d := schema.Discriminator; d != nil {
 			obj, _ := s.value.(map[string]any)
 			key, _ := obj[d.PropertyName].(string)
 			want = strings.TrimPrefix(d.Mapping[key].Ref, schemaRefPrefix)

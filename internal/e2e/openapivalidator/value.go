@@ -1,9 +1,6 @@
 package openapivalidator
 
 import (
-	"errors"
-	"strings"
-
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 )
@@ -15,8 +12,8 @@ import (
 // Validator passes for a body of doc: MultiErrors, EnableJSONSchema2020 for
 // OpenAPI 3.1, and VisitAsResponse.
 //
-// The result is nil or an openapi3.MultiError that lists every defect once,
-// as the Validator's rows do (schemaErrors).
+// The result is nil or an openapi3.MultiError of the Validator's rows
+// (schemaErrors).
 func ValidateValue(doc *openapi3.T, schema *openapi3.Schema, value any, opts ...openapi3.SchemaValidationOption) error {
 	if len(opts) == 0 {
 		opts = schemaOptions(validatorOptions(), doc)
@@ -46,27 +43,3 @@ func schemaOptions(o *openapi3filter.Options, doc *openapi3.T) []openapi3.Schema
 	}
 	return append(opts, openapi3.VisitAsResponse())
 }
-
-// mismatchKey identifies a schema defect: the JSON pointer of the value and
-// kin's reason.
-type mismatchKey struct {
-	pointer string
-	reason  string
-}
-
-// keyOf returns the key of err, a kin error, or false when err carries no
-// *openapi3.SchemaError.
-func keyOf(err error) (mismatchKey, bool) {
-	var se *openapi3.SchemaError
-	if !errors.As(err, &se) {
-		return mismatchKey{}, false
-	}
-	var p string
-	for _, token := range se.JSONPointer() {
-		p += "/" + pointerEscaper.Replace(token)
-	}
-	return mismatchKey{pointer: p, reason: se.Reason}, true
-}
-
-// pointerEscaper escapes a JSON pointer reference token (RFC 6901).
-var pointerEscaper = strings.NewReplacer("~", "~0", "/", "~1")

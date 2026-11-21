@@ -14,7 +14,9 @@ import (
 // recursiveFixtureYAML has a recursive condition schema shaped like the
 // spec's GroupConditionDto as the validator's view presents it: a group's
 // conditions are a discriminated oneOf (the view's replacement of a use of
-// the base QueryConditionDto) that includes the group itself. /flat has no
+// the base QueryConditionDto) that includes the group itself, and each member
+// limits its type to its own key (the view's limit on a mapping target).
+// recursiveBaseFixtureYAML has the same through the view itself. /flat has no
 // recursion.
 const recursiveFixtureYAML = `openapi: 3.1.0
 info: { title: recursive fixture, version: "1" }
@@ -431,5 +433,103 @@ func TestValidator_RootUnionNullReportedOnce(t *testing.T) {
 	}
 	if mismatches := validateBody(t, newSpecValidator(t, yaml), "/condition", `null`); len(mismatches) != 1 {
 		t.Fatalf("expected exactly 1 mismatch, got %d: %+v", len(mismatches), mismatches)
+	}
+}
+
+// recursiveBaseFixtureYAML is the recursive fixture with Condition as a base,
+// as the spec's QueryConditionDto is: a discriminator and a mapping, and each
+// member allOf the base. The view replaces each use of it.
+const recursiveBaseFixtureYAML = `openapi: 3.1.0
+info: { title: recursive base fixture, version: "1" }
+paths:
+  /group:
+    get:
+      operationId: getGroup
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+components:
+  schemas:
+    Condition:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string }
+      discriminator:
+        propertyName: type
+        mapping:
+          simple: '#/components/schemas/Simple'
+          group: '#/components/schemas/Group'
+    Simple:
+      allOf:
+        - $ref: '#/components/schemas/Condition'
+        - type: object
+          required: [value]
+          properties:
+            value: { type: integer }
+    Group:
+      allOf:
+        - $ref: '#/components/schemas/Condition'
+        - type: object
+          required: [conditions]
+          properties:
+            conditions:
+              type: array
+              items:
+                $ref: '#/components/schemas/Condition'
+`
+
+// Through a use of a base, kin's own visitor checks the member the key
+// selects: one row per defect, naming the defect in that member.
+func TestValidator_BaseUse_RowNamesTheSelectedMember(t *testing.T) {
+	v := newSpecValidator(t, recursiveBaseFixtureYAML)
+	for name, c := range map[string]struct{ body, want string }{
+		"an unmapped key":          {`{"type":"group","conditions":[{"type":"zzz"}]}`, `discriminator property "type" has invalid value`},
+		"a defect in the member":   {`{"type":"group","conditions":[{"type":"simple","value":"x"}]}`, `Error at "/value": value must be an integer`},
+		"a member missing a field": {`{"type":"group","conditions":[{"type":"simple"}]}`, `property "value" is missing`},
+		"a defect two levels down": {`{"type":"group","conditions":[{"type":"group","conditions":[{"type":"simple","value":"x"}]}]}`, `Error at "/value": value must be an integer`},
+	} {
+		mismatches := validateBody(t, v, "/group", c.body)
+		if len(mismatches) != 1 {
+			t.Errorf("%s: expected exactly 1 mismatch, got %d: %+v", name, len(mismatches), mismatches)
+			continue
+		}
+		// "conditions" is missing only where the group member is checked
+		// against a value whose key selects another member.
+		if r := mismatches[0].Reason; !strings.Contains(r, c.want) || strings.Contains(r, `property "conditions" is missing`) {
+			t.Errorf("%s: reason does not name the selected member's defect %s:\n%.600s", name, c.want, r)
+		}
+	}
+	if m := validateBody(t, v, "/group", `{"type":"group","conditions":[{"type":"simple","value":1},{"type":"group","conditions":[]}]}`); len(m) != 0 {
+		t.Errorf("valid body refused: %+v", m)
+	}
+}
+
+// With a JSON Schema 2020-12 keyword on the group, kin checks the group with
+// its JSON Schema 2020-12 validator, which knows no discriminator; a use of
+// the base still takes only a mapped key, on the member it names.
+func TestValidator_BaseUse_JSONSchema2020Path(t *testing.T) {
+	yaml := strings.Replace(recursiveBaseFixtureYAML,
+		"    Group:\n      allOf:\n",
+		"    Group:\n      propertyNames: {pattern: '^[a-z]+$'}\n      allOf:\n", 1)
+	if yaml == recursiveBaseFixtureYAML {
+		t.Fatal("fixture Group block not found")
+	}
+	v := newSpecValidator(t, yaml)
+	for name, body := range map[string]string{
+		"an unmapped key":               `{"type":"group","conditions":[{"type":"zzz","value":1}]}`,
+		"a key on another member shape": `{"type":"group","conditions":[{"type":"group","value":1}]}`,
+		"a defect two levels down":      `{"type":"group","conditions":[{"type":"group","conditions":[{"type":"simple","value":"x"}]}]}`,
+	} {
+		if m := validateBody(t, v, "/group", body); len(m) == 0 {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	if m := validateBody(t, v, "/group", `{"type":"group","conditions":[{"type":"simple","value":1},{"type":"group","conditions":[]}]}`); len(m) != 0 {
+		t.Errorf("valid body refused: %+v", m)
 	}
 }
