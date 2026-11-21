@@ -18,15 +18,13 @@ const schemaRefPrefix = "#/components/schemas/"
 //     a discriminator and a mapping) is therefore replaced by a oneOf of the
 //     base's mapping targets that carries the base's discriminator. Each member
 //     $ref is spelled as in the mapping. A member's allOf entry is left alone.
-//  2. kin refuses null for an untyped leaf. Each untyped leaf is marked
-//     nullable, unless its not excludes null.
-//  3. kin accepts any value for a schema it is already visiting higher up, so
-//     null reaching a recursive member through a nullable reference
-//     (oneOf [{type: null}, {$ref}]) matches both branches and is refused.
-//     Each union with a {type: null} branch is marked nullable, which
-//     accepts null before the branches are tried; it accepted null already.
+//  2. kin refuses null for an untyped leaf: for a 3.1 document it ignores
+//     nullable, which 3.1 does not have, and accepts null only for a schema
+//     whose type lists it. Each untyped leaf is given every JSON type, unless
+//     its not excludes null. An untyped schema accepts every type, so listing
+//     all seven changes no other value's answer.
 //
-// No other schema is marked, so a member and a replaced use keep refusing
+// No other schema is changed, so a member and a replaced use keep refusing
 // null.
 //
 // The document is changed in place; callers pass one that api.GetSwagger just
@@ -199,8 +197,8 @@ func (v *viewBuilder) replacement(baseRef string, base *openapi3.Schema) *openap
 	return &openapi3.SchemaRef{Value: &openapi3.Schema{OneOf: oneOf, Discriminator: base.Discriminator}}
 }
 
-// walk visits s once. It replaces uses of bases below s and marks s nullable
-// when it is an untyped leaf.
+// walk visits s once. It replaces uses of bases below s and gives s every
+// JSON type when it is an untyped leaf.
 func (v *viewBuilder) walk(s *openapi3.Schema) {
 	if s == nil || v.visited[s] {
 		return
@@ -225,25 +223,17 @@ func (v *viewBuilder) walk(s *openapi3.Schema) {
 		s.AnyOf[i] = v.use(m)
 	}
 
-	if isUntypedLeaf(s) && !notExcludesNull(s) || hasNullBranch(s) {
-		s.Nullable = true
+	if isUntypedLeaf(s) && !notExcludesNull(s) {
+		s.Type = &openapi3.Types{
+			openapi3.TypeArray, openapi3.TypeBoolean, openapi3.TypeInteger, openapi3.TypeNull,
+			openapi3.TypeNumber, openapi3.TypeObject, openapi3.TypeString,
+		}
 	}
 }
 
 func isUntypedLeaf(s *openapi3.Schema) bool {
 	return (s.Type == nil || len(*s.Type) == 0) &&
 		len(s.AllOf) == 0 && len(s.OneOf) == 0 && len(s.AnyOf) == 0
-}
-
-func hasNullBranch(s *openapi3.Schema) bool {
-	for _, union := range []openapi3.SchemaRefs{s.OneOf, s.AnyOf} {
-		for _, b := range union {
-			if b != nil && b.Ref == "" && b.Value != nil && b.Value.Type != nil && b.Value.Type.Is(openapi3.TypeNull) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func notExcludesNull(s *openapi3.Schema) bool {

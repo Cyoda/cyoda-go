@@ -133,8 +133,7 @@ func TestCriterionShapesValidate(t *testing.T) {
 		{"function member in a group (refused in search)", group, `{"type":"group","operator":"AND","conditions":[{"type":"function","function":{"name":"f"}}]}`, true},
 		{"unknown member in a group", group, `{"type":"group","operator":"AND","conditions":[{"type":"bogus"}]}`, false},
 		{"group with an unknown operator", group, `{"type":"group","operator":"XOR","conditions":[]}`, false},
-		// kin accepts any value where a schema recurs; ValidateValue's walk
-		// checks it.
+		// A value below a recursion of the group schema is checked too.
 		{"null in a group", group, `{"type":"group","operator":"AND","conditions":[null]}`, false},
 		{"a number in a group", group, `{"type":"group","operator":"AND","conditions":[42]}`, false},
 		{"a string in a group", group, `{"type":"group","operator":"AND","conditions":["x"]}`, false},

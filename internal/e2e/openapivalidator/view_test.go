@@ -121,9 +121,8 @@ func TestApplyView(t *testing.T) {
 		viewCheck(t, h, `{"opt":{"kind":"a","x":"no"}}`, false)
 		viewCheck(t, h, `{"opt":null}`, true)
 	})
-	// kin-openapi accepts any value for a schema it is already visiting
-	// higher up, so null reaching a recursive member through a nullable
-	// reference matched both branches of the oneOf.
+	// null reaching a recursive member through a nullable reference matches
+	// only the null branch of the oneOf.
 	t.Run("null_passes_nullable_oneOf_under_a_recursive_member", func(t *testing.T) {
 		_, h := load(t)
 		viewCheck(t, h, `{"many":[{"kind":"g","opt":null}]}`, true)

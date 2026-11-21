@@ -39,10 +39,9 @@ import (
 // declared; full schema validation requires a proper routers.Route which the
 // fallback path cannot construct without re-entering the broken router).
 type Validator struct {
-	doc       *openapi3.T
-	router    routers.Router
-	opts      *openapi3filter.Options
-	recursive map[*openapi3.Schema]bool // see checkRecursive
+	doc    *openapi3.T
+	router routers.Router
+	opts   *openapi3filter.Options
 }
 
 // NewValidator builds a Validator from a parsed OpenAPI 3.1 document.
@@ -58,10 +57,9 @@ func NewValidator(doc *openapi3.T) (*Validator, error) {
 		return nil, fmt.Errorf("build router: %w", err)
 	}
 	return &Validator{
-		doc:       doc,
-		router:    router,
-		opts:      validatorOptions(),
-		recursive: recursiveSchemas(doc),
+		doc:    doc,
+		router: router,
+		opts:   validatorOptions(),
 	}, nil
 }
 
@@ -185,19 +183,6 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		return nil
 	}
 
-	// Read response body for validation. The middleware passed the captured
-	// bytes via resp.Body; they are buffered here because both kin and
-	// checkRecursive read them.
-	var body []byte
-	if resp.Body != nil {
-		var err error
-		body, err = io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		if err != nil {
-			return v.toMismatches(fmt.Errorf("failed to read response body: %w", err), opId, req, resp.StatusCode)
-		}
-	}
 	// Options must be set on ResponseValidationInput — ValidateResponse reads
 	// input.Options (not input.RequestValidationInput.Options).
 	input := &openapi3filter.ResponseValidationInput{
@@ -207,15 +192,12 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		},
 		Status:  resp.StatusCode,
 		Header:  resp.Header,
-		Body:    io.NopCloser(bytes.NewReader(body)),
+		Body:    resp.Body,
 		Options: v.opts,
 	}
 	kinErr := openapi3filter.ValidateResponse(ctx, input)
 	if kinErr != nil {
 		mismatches = v.toMismatches(kinErr, opId, req, resp.StatusCode)
-	}
-	if err := v.checkRecursive(route, req, resp.StatusCode, resp.Header, body, kinErr); err != nil {
-		mismatches = append(mismatches, v.toMismatches(err, opId, req, resp.StatusCode)...)
 	}
 	return mismatches
 }

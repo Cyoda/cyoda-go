@@ -124,14 +124,14 @@ decision 4 to the forms of Rule 1; it does not change that decision.
   published spec does not change. Each use of a base becomes a `oneOf` of the
   mapping's targets carrying the base's discriminator, so kin checks the member
   the discriminator selects and refuses an unmapped value. Each untyped schema
-  whose `not` does not exclude `null` is marked nullable, and so is each
-  `[{type: "null"}, {$ref}]` union. No other schema is marked: a member, a
-  replaced use and a typed schema keep refusing `null`. kin accepts any value at
-  a position where a schema recurs (a group's `conditions`, a function's
-  pre-check), so the validator's recursive walk checks those values with a fresh
-  visit. `ValidateValue` runs kin and the same walk; the `api/` tests validate
-  the spec's examples and the wire samples with it, so samples, examples and
-  responses are checked the same way.
+  whose `not` does not exclude `null` is given every JSON type, `null`
+  included: for a 3.1 document kin ignores `nullable` and accepts `null` only
+  where the type lists it. No other schema is changed: a member, a replaced use and a typed schema
+  keep refusing `null`. kin applies a recursive schema to each nested value (a
+  group's `conditions`, a function's pre-check) itself. `ValidateValue` runs kin
+  on one value; the `api/` tests validate the spec's examples and the wire
+  samples with it, so samples, examples and responses are checked the same
+  way.
 - *The client-generation check* (`api/clientprobe/`, CI job
   `openapi-client-generation.yml`, `make client-probe` locally). A Maven project
   runs openapi-generator 7.18.0 twice — `kotlin-spring` with Cloud's

@@ -19,11 +19,10 @@ Architecture:
     middleware fails it. FailOnUnreported (collector.go) fails a run that
     collected mismatches no test reported.
 
-The validator checks the spec through the view of view.go (ApplyView), and
-recursive.go checks the values kin-openapi accepts unchecked where a schema
-recurs. The api/ tests check examples and samples the same way: value.go
-(ValidateValue) runs kin-openapi and that recursive walk on one value, and
-ComponentUse gives the schema a use of a component stands for in the view.
+The validator checks the spec through the view of view.go (ApplyView). The
+api/ tests check examples and samples the same way: value.go (ValidateValue)
+runs kin-openapi on one value, and ComponentUse gives the schema a use of a
+component stands for in the view.
 
 Streaming responses (application/x-ndjson) skip body validation but still
 validate status code and headers. Detection uses the matched operation's
