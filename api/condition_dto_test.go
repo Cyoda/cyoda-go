@@ -124,8 +124,8 @@ func arrayConditionValuesSchema(t *testing.T, doc *openapi3.T) *openapi3.Schema 
 // checked through the validator view with openapivalidator.ValidateValue, in
 // two kin-openapi modes: the e2e response validator's options, under which kin
 // uses its JSON Schema 2020-12 validator unless the schema holds a component
-// reference and reaches no JSON Schema 2020-12 keyword, where it uses its own
-// visitor; and kin's own visitor alone.
+// reference and reaches no JSON Schema 2020-12 keyword, or the validator cannot
+// compile it, where it uses its own visitor; and kin's own visitor alone.
 var schemaValidators = map[string][]openapi3.SchemaValidationOption{
 	"response-validator": nil,
 	"kin-visitor":        {openapi3.MultiErrors()},

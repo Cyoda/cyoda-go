@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -192,7 +191,7 @@ func (v *viewBuilder) replacement(baseRef string, base *openapi3.Schema) *openap
 	for _, m := range base.Discriminator.Mapping {
 		targets = append(targets, m.Ref)
 	}
-	sort.Strings(targets)
+	slices.Sort(targets)
 	oneOf := make(openapi3.SchemaRefs, 0, len(targets))
 	for _, target := range targets {
 		member, ok := v.member(baseRef, target)

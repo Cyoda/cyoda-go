@@ -2,10 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
 )
@@ -181,8 +183,19 @@ func TestExportedCriterionDiscriminatesByType(t *testing.T) {
 				"name": "t", "next": "a", "manual": true, field: decode(value)}}}}}}}
 	}
 	body := func(criterion string) any { return withTransition("criterion", criterion) }
-	if err := openapivalidator.ValidateValue(doc, export, body(`{"type":"nosuch"}`)); err == nil || !strings.Contains(err.Error(), "validation failed") {
+	var ve *jsonschema.ValidationError
+	if err := export.VisitJSON(body(`{"type":"nosuch"}`), openapi3.EnableJSONSchema2020()); !errors.As(err, &ve) {
 		t.Fatalf("the export is not checked by kin's JSON Schema 2020-12 validator: %v", err)
+	}
+	// Its rows are written from kin's error tree: one per defect, at the
+	// defect's JSON pointer, in the member the key selects.
+	twoDefects := withTransition("criterion", `{"type":"lifecycle","field":"state","operatorType":"NOPE","value":"x"}`)
+	twoDefects.(map[string]any)["workflows"].([]any)[0].(map[string]any)["states"].(map[string]any)["a"].(map[string]any)["transitions"].([]any)[0].(map[string]any)["processors"] = decode(`[{"type":"externalized","name":""}]`)
+	var multi openapi3.MultiError
+	if err := openapivalidator.ValidateValue(doc, export, twoDefects); !errors.As(err, &multi) || len(multi) != 2 ||
+		!strings.HasPrefix(multi[0].Error(), `Error at "/workflows/0/states/a/transitions/0/criterion/operatorType": value must be one of`) ||
+		multi[1].Error() != `Error at "/workflows/0/states/a/transitions/0/processors/0/name": minLength: got 0, want 1` {
+		t.Errorf("two defects: want one row each, got %v", err)
 	}
 	// ProcessorDefinitionDto does not require its discriminator property; a
 	// use of it still takes only a processor with a mapped type.

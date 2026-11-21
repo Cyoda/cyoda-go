@@ -5,10 +5,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // recursiveFixtureYAML has a recursive condition schema shaped like the
@@ -397,12 +399,7 @@ func TestValidator_RecursiveSchema_JSONSchema2020Path(t *testing.T) {
 			t.Errorf("%s: expected exactly 1 mismatch, got %d: %+v", name, len(mismatches), mismatches)
 		}
 	}
-	// The rows of kin's JSON Schema 2020-12 validator read "validation failed";
-	// its own visitor's read "doesn't match schema". The fixture is on the
-	// first path only while this holds.
-	if m := validateBody(t, v, "/group", `{"type":"group","conditions":[null]}`); len(m) != 1 || !strings.Contains(m[0].Reason, "validation failed") {
-		t.Fatalf("the fixture does not reach kin's JSON Schema 2020-12 validator: %+v", m)
-	}
+	requireJSONSchema2020Path(t, v)
 	valid := `{"type":"group","conditions":[{"type":"simple","value":1},
 		{"type":"group","conditions":[{"type":"group","conditions":[{"type":"simple","value":2}]}]}]}`
 	if mismatches := validateBody(t, v, "/group", valid); len(mismatches) != 0 {
@@ -553,12 +550,54 @@ func TestValidator_BaseUse_OptionalKeyStillRequired(t *testing.T) {
 	}
 }
 
-// requireJSONSchema2020Path fails the test unless v checks /group with kin's
-// JSON Schema 2020-12 validator, whose rows read "validation failed"; its own
-// visitor's read "doesn't match schema".
+// requireJSONSchema2020Path fails the test unless kin checks v's Group schema
+// with its JSON Schema 2020-12 validator, whose error holds the
+// jsonschema.ValidationError of the library.
 func requireJSONSchema2020Path(t *testing.T, v *Validator) {
 	t.Helper()
-	if m := validateBody(t, v, "/group", `{"type":"group","conditions":[null]}`); len(m) != 1 || !strings.Contains(m[0].Reason, "validation failed") {
-		t.Fatalf("/group is not checked by kin's JSON Schema 2020-12 validator: %+v", m)
+	group := v.doc.Components.Schemas["Group"].Value
+	err := group.VisitJSON(map[string]any{"type": "group", "conditions": []any{nil}}, openapi3.EnableJSONSchema2020())
+	var ve *jsonschema.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("Group is not checked by kin's JSON Schema 2020-12 validator: %v", err)
+	}
+}
+
+// On kin's JSON Schema 2020-12 path the Validator writes its rows from kin's
+// error tree: one row per defect, at the defect's JSON pointer, naming the
+// defect in the member the key selects.
+func TestValidator_JSONSchema2020Rows(t *testing.T) {
+	yaml := strings.Replace(recursiveBaseFixtureYAML,
+		"    Group:\n      allOf:\n",
+		"    Group:\n      propertyNames: {pattern: '^[a-z]+$'}\n      allOf:\n", 1)
+	if yaml == recursiveBaseFixtureYAML {
+		t.Fatal("fixture Group block not found")
+	}
+	v := newSpecValidator(t, yaml)
+	requireJSONSchema2020Path(t, v)
+	for name, c := range map[string]struct {
+		body string
+		want []string
+	}{
+		"an unmapped key": {`{"type":"group","conditions":[{"type":"zzz"}]}`,
+			[]string{`Error at "/conditions/0/type": "zzz" is not one of the mapped keys "group", "simple"`}},
+		"a missing key": {`{"type":"group","conditions":[{"value":1}]}`,
+			[]string{`Error at "/conditions/0": missing discriminator property "type"`}},
+		"a defect two levels down": {`{"type":"group","conditions":[{"type":"group","conditions":[{"type":"simple","value":"x"}]}]}`,
+			[]string{`Error at "/conditions/0/conditions/0/value": got string, want integer`}},
+		"two defects": {`{"type":"group","conditions":[{"type":"simple","value":"x"},{"type":"simple"}]}`,
+			[]string{`Error at "/conditions/0/value": got string, want integer`, `Error at "/conditions/1": missing property 'value'`}},
+		"a null member": {`{"type":"group","conditions":[null]}`,
+			[]string{`Error at "/conditions/0": got null, want object`}},
+		"a property name the group refuses": {`{"type":"group","conditions":[],"Bad":1}`,
+			[]string{`Error at "": 'Bad' does not match pattern '^[a-z]+$'`}},
+	} {
+		var got []string
+		for _, m := range validateBody(t, v, "/group", c.body) {
+			got = append(got, m.Reason)
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s:\n got  %q\n want %q", name, got, c.want)
+		}
 	}
 }

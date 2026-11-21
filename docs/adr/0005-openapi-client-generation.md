@@ -126,14 +126,16 @@ decision 4 to the forms of Rule 1; it does not change that decision.
   mapping's targets carrying the base's discriminator, so kin's own visitor
   checks the member the discriminator selects and refuses an unmapped value.
   kin checks a schema with its JSON Schema 2020-12 validator unless the schema
-  holds a component reference and reaches no JSON Schema 2020-12 keyword; that
+  holds a component reference and reaches no JSON Schema 2020-12 keyword, or
+  the validator cannot compile it; that
   validator knows no discriminator, so each mapping target also requires the
   discriminator property and limits it to the keys that map to it, and the
   `oneOf` matches only the member the key names; a member used directly takes
   only its own keys. A target in two mappings, or one that is itself a base, is
-  refused when the view is built. That validator gives one row for the whole
-  response, which lists the errors of every member and repeats segments of its
-  JSON pointer; each defect is among them. Each untyped schema whose `not` does
+  refused when the view is built. That validator returns one error for the
+  whole value; the e2e validator writes it as one row per failing value, at the
+  value's JSON pointer, following only the member the key selects, and one row
+  for a key no member takes. Each untyped schema whose `not` does
   not exclude `null` is given every JSON type, `null` included: for a 3.1
   document kin ignores `nullable` and accepts `null` only where the type lists
   it. An untyped schema whose answer for `null` depends on an `enum`, a `const`

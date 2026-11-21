@@ -456,20 +456,33 @@ func (v *Validator) toMismatches(err error, opId string, req *http.Request, stat
 	return out
 }
 
-// schemaErrors splits kin-openapi's top-level MultiError — err itself, or the
-// cause of a response error — into its errors, so each schema problem kin's
-// own visitor finds becomes its own row; any other error is returned alone. A
-// MultiError nested inside one problem, such as the errors of a union's
-// members, stays in its row. kin's JSON Schema 2020-12 validator returns one
-// error for the whole value, which is one row.
+// schemaErrors returns the rows of a kin-openapi error. It splits kin's
+// top-level MultiError — err itself, or the cause of a response error — into
+// its errors, so each schema problem kin's own visitor finds becomes its own
+// row; a MultiError nested inside one problem, such as the errors of a
+// union's members, stays in its row. An error of kin's JSON Schema 2020-12
+// validator, which covers the whole value, becomes the rows jsonSchemaRows
+// writes from it. Any other error is returned alone.
 func schemaErrors(err error) []error {
+	errs := []error{err}
 	if re, ok := err.(*openapi3filter.ResponseError); ok {
+		if _, ok := re.Err.(*openapi3.SchemaError); ok {
+			errs = []error{re.Err}
+		}
 		if multi, ok := re.Err.(openapi3.MultiError); ok {
-			return multi
+			errs = multi
 		}
 	}
 	if multi, ok := err.(openapi3.MultiError); ok {
-		return multi
+		errs = multi
 	}
-	return []error{err}
+	var out []error
+	for _, e := range errs {
+		if rows, ok := jsonSchemaRows(e); ok {
+			out = append(out, rows...)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
