@@ -533,3 +533,19 @@ func TestValidator_BaseUse_JSONSchema2020Path(t *testing.T) {
 		t.Errorf("valid body refused: %+v", m)
 	}
 }
+
+// A base need not require its discriminator property, as ProcessorDefinitionDto
+// does not. kin's visitor still refuses a use without it; on kin's JSON Schema
+// 2020-12 path the members' key limits refuse it.
+func TestValidator_BaseUse_OptionalKeyStillRequired(t *testing.T) {
+	yaml := strings.Replace(recursiveBaseFixtureYAML,
+		"    Group:\n      allOf:\n",
+		"    Group:\n      propertyNames: {pattern: '^[a-z]+$'}\n      allOf:\n", 1)
+	yaml = strings.Replace(yaml, "    Condition:\n      type: object\n      required: [type]\n", "    Condition:\n      type: object\n", 1)
+	if !strings.Contains(yaml, "propertyNames") || strings.Contains(yaml, "required: [type]") {
+		t.Fatal("fixture blocks not found")
+	}
+	if m := validateBody(t, newSpecValidator(t, yaml), "/group", `{"type":"group","conditions":[{"value":1}]}`); len(m) == 0 {
+		t.Error("a use of the base without its key accepted")
+	}
+}

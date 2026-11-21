@@ -22,10 +22,12 @@ const schemaRefPrefix = "#/components/schemas/"
 //     base's mapping targets that carries the base's discriminator. Each member
 //     $ref is spelled as in the mapping. A member's allOf entry is left alone.
 //     kin's JSON Schema 2020-12 validator knows no discriminator, so each
-//     mapping target also limits the discriminator property to the keys that
-//     map to it: there the oneOf matches only the member the key names. kin's
-//     own visitor checks only the member the key selects, which the limit
-//     always admits.
+//     mapping target also requires the discriminator property and limits it
+//     to the keys that map to it: there the oneOf matches only the member the
+//     key names. Through a use of the base, kin's own visitor checks only the
+//     member the key selects, which the limit admits. A member used directly
+//     takes only its own keys. A target in two mappings, or one that is itself
+//     a base, cannot be limited: ApplyView returns an error that names it.
 //  2. kin refuses null for an untyped leaf: for a 3.1 document it ignores
 //     nullable, which 3.1 does not have, and accepts null only for a schema
 //     whose type lists it. Each untyped leaf is given every JSON type, unless
@@ -35,8 +37,8 @@ const schemaRefPrefix = "#/components/schemas/"
 //     enum, a const or a not beyond a type is one the view cannot decide:
 //     ApplyView returns an error that names it.
 //
-// No other schema is changed, so a member and a replaced use keep refusing
-// null.
+// The leaves of point 2 are the only schemas given null, so a member and a
+// replaced use keep refusing it.
 //
 // The document is changed in place; callers pass one that api.GetSwagger just
 // parsed.
@@ -225,8 +227,11 @@ func (v *viewBuilder) member(baseRef, target string) (*openapi3.Schema, bool) {
 }
 
 // limitMembersToTheirKeys adds to each mapping target of each base an allOf
-// entry that limits the discriminator property to the keys that map to it.
+// entry that requires the discriminator property and limits it to the keys
+// that map to the target. A target in the mappings of two bases, or one that
+// is itself a base, is a shape it cannot limit: it records an error.
 func (v *viewBuilder) limitMembersToTheirKeys() {
+	limited := map[string]string{} // target -> the base whose keys limit it
 	for _, baseRef := range slices.Sorted(maps.Keys(v.bases)) {
 		d := v.bases[baseRef].Discriminator
 		keys := map[string][]any{} // target -> the keys that map to it
@@ -238,7 +243,15 @@ func (v *viewBuilder) limitMembersToTheirKeys() {
 			if !ok {
 				continue
 			}
+			if other, ok := limited[target]; ok || v.bases[target] != nil {
+				if v.err == nil {
+					v.err = fmt.Errorf("mapping target %s is a base or in the mapping of another base (%s); the view cannot limit it to the keys of %s", target, other, baseRef)
+				}
+				continue
+			}
+			limited[target] = baseRef
 			member.AllOf = append(member.AllOf, &openapi3.SchemaRef{Value: &openapi3.Schema{
+				Required: []string{d.PropertyName},
 				Properties: openapi3.Schemas{d.PropertyName: {Value: &openapi3.Schema{
 					Type: &openapi3.Types{openapi3.TypeString}, Enum: keys[target],
 				}}},

@@ -126,16 +126,19 @@ decision 4 to the forms of Rule 1; it does not change that decision.
   checks the member the discriminator selects and refuses an unmapped value.
   kin checks a schema with its JSON Schema 2020-12 validator unless the schema
   holds a component reference and reaches no JSON Schema 2020-12 keyword; that
-  validator knows no discriminator, so each mapping target also limits the
-  discriminator property to the keys that map to it, and the `oneOf` matches
-  only the member the key names. A row from that validator lists the errors
-  of every member and repeats segments of its JSON pointer; the defect is among
-  them. Each untyped schema whose `not` does
+  validator knows no discriminator, so each mapping target also requires the
+  discriminator property and limits it to the keys that map to it, and the
+  `oneOf` matches only the member the key names; a member used directly takes
+  only its own keys. A target in two mappings, or one that is itself a base, is
+  refused when the view is built. That validator gives one row for the whole
+  response, which lists the errors of every member and repeats segments of its
+  JSON pointer; each defect is among them. Each untyped schema whose `not` does
   not exclude `null` is given every JSON type, `null` included: for a 3.1
   document kin ignores `nullable` and accepts `null` only where the type lists
   it. An untyped schema whose answer for `null` depends on an `enum`, a `const`
-  or a `not` beyond a type is refused when the view is built. No other schema is
-  changed: a member, a replaced use and a typed schema keep refusing `null`. kin
+  or a `not` beyond a type is refused when the view is built. No other schema
+  is given `null`: a member, a replaced use and a typed schema keep refusing it.
+  kin
   applies a recursive schema to each nested value (a group's `conditions`, a
   function's pre-check) itself. `ValidateValue` runs kin on one value; the
   `api/` tests validate the spec's examples and the wire samples with it, so

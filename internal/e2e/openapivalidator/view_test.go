@@ -75,6 +75,11 @@ components:
         notNull:
           not: {type: [object, "null"]}
         never: false
+    Direct:
+      type: object
+      properties:
+        a:
+          $ref: '#/components/schemas/A'
     Holder2020:
       type: object
       propertyNames: {pattern: '^[a-z]+$'}
@@ -188,6 +193,14 @@ func TestApplyView(t *testing.T) {
 		viewCheck(t, h, `{"one":{"kind":"b","x":1}}`, false)
 		viewCheck(t, h, `{"one":{"x":1}}`, false)
 	})
+	// A mapping target limits the discriminator property to its own keys, so
+	// a member used directly takes only those.
+	t.Run("member_used_directly_takes_only_its_key", func(t *testing.T) {
+		doc, _ := load(t)
+		d := doc.Components.Schemas["Direct"].Value
+		viewCheck(t, d, `{"a":{"kind":"a","x":1}}`, true)
+		viewCheck(t, d, `{"a":{"kind":"b","x":1}}`, false)
+	})
 	t.Run("member_allOf_entry_left_alone", func(t *testing.T) {
 		doc, _ := load(t)
 		if got := doc.Components.Schemas["A"].Value.AllOf[0].Ref; got != "#/components/schemas/Shape" {
@@ -225,5 +238,51 @@ components:
 				t.Errorf("error does not name the leaf Holder.leaf: %v", err)
 			}
 		})
+	}
+}
+
+// ApplyView limits each mapping target to its own keys. A target in the
+// mappings of two bases, or a target that is itself a base, is a shape it
+// cannot limit, so it refuses the document.
+func TestApplyView_RefusesMappingItCannotLimit(t *testing.T) {
+	const two = `openapi: 3.1.0
+info: {title: t, version: "1"}
+paths: {}
+components:
+  schemas:
+    P:
+      type: object
+      properties: {k: {type: string}}
+      discriminator: {propertyName: k, mapping: {m: '#/components/schemas/M'}}
+    Q:
+      type: object
+      properties: {k: {type: string}}
+      discriminator: {propertyName: k, mapping: {n: '#/components/schemas/M'}}
+    M:
+      allOf:
+        - $ref: '#/components/schemas/P'
+        - $ref: '#/components/schemas/Q'
+`
+	const nested = `openapi: 3.1.0
+info: {title: t, version: "1"}
+paths: {}
+components:
+  schemas:
+    P:
+      type: object
+      properties: {k: {type: string}}
+      discriminator: {propertyName: k, mapping: {m: '#/components/schemas/M'}}
+    M:
+      allOf:
+        - $ref: '#/components/schemas/P'
+      discriminator: {propertyName: j, mapping: {x: '#/components/schemas/X'}}
+    X:
+      allOf:
+        - $ref: '#/components/schemas/M'
+`
+	for name, spec := range map[string]string{"a target of two bases": two, "a target that is a base": nested} {
+		if err := ApplyView(loadSpec(t, spec)); err == nil || !strings.Contains(err.Error(), "M") {
+			t.Errorf("%s: ApplyView = %v, want an error naming M", name, err)
+		}
 	}
 }

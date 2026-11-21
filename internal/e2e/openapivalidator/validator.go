@@ -20,8 +20,8 @@ import (
 // the matched operation's declared schema.
 //
 // IncludeResponseStatus=true is load-bearing: openapi3filter's default
-// behavior is to silently pass undeclared status codes (verified against
-// kin-openapi v0.137.0 openapi3filter/validate_response.go:48-58). Without
+// behavior is to silently pass undeclared status codes (kin-openapi v0.153.0
+// openapi3filter/validate_response.go:52-58). Without
 // this flag the validator misses an entire class of drift.
 //
 // MultiError=true accumulates all schema errors per response rather than
@@ -457,9 +457,11 @@ func (v *Validator) toMismatches(err error, opId string, req *http.Request, stat
 }
 
 // schemaErrors splits kin-openapi's top-level MultiError — err itself, or the
-// cause of a response error — into its errors, so each schema problem becomes
-// its own row; any other error is returned alone. A MultiError nested inside
-// one problem, such as the errors of a union's members, stays in its row.
+// cause of a response error — into its errors, so each schema problem kin's
+// own visitor finds becomes its own row; any other error is returned alone. A
+// MultiError nested inside one problem, such as the errors of a union's
+// members, stays in its row. kin's JSON Schema 2020-12 validator returns one
+// error for the whole value, which is one row.
 func schemaErrors(err error) []error {
 	if re, ok := err.(*openapi3filter.ResponseError); ok {
 		if multi, ok := re.Err.(openapi3.MultiError); ok {

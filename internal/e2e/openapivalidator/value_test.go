@@ -76,8 +76,8 @@ func TestValidateValue_ListsEveryDefect(t *testing.T) {
 	}
 }
 
-// kin refuses a null no union member accepts once per member, with the same
-// pointer and reason; ValidateValue lists it once.
+// kin refuses a null no union member accepts with one error that holds each
+// member's; ValidateValue splits only the top level, so it lists one row.
 func TestValidateValue_KinRowsListedOnce(t *testing.T) {
 	err := validateFixtureValue(t, "Condition", `null`)
 	var multi openapi3.MultiError
