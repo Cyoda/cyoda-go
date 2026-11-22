@@ -412,7 +412,11 @@ func groupExprToSQL(g spi.GroupExpr) (string, string, error) {
 		// json_extract on meta JSONB blob. Missing/null state surfaces as
 		// SQL NULL → sql.NullString.Valid==false → response value nil,
 		// matching the streaming-tally path's coercion (no collapse to "").
-		return "json_extract(json(meta), '$.state')", "state", nil
+		//
+		// A NULL meta is a corrupt row (every writer stores one): the
+		// COALESCE substitutes text json() rejects, so the query fails
+		// instead of bucketing the row under a null state.
+		return "json_extract(json(COALESCE(meta, 'missing-meta')), '$.state')", "state", nil
 	case spi.GroupExprDataPath:
 		if err := validateJSONPath(g.Path); err != nil {
 			return "", "", err
