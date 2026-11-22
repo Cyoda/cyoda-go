@@ -134,9 +134,10 @@ decision 4 to the forms of Rule 1; it does not change that decision.
   `oneOf` matches only the member the key names; a member used directly takes
   only its own keys. A target in two mappings, or one that is itself a base, is
   refused when the view is built. That validator returns one error for the
-  whole value; the e2e validator writes it as one row per failing value, at the
+  whole value; the e2e validator writes it as one row per defect, at the failing
   value's JSON pointer, following only the member the key selects, and one row
-  for a key no member takes. Each untyped schema whose `not` does
+  for an absent or unmapped key. That library gives a property name's error no
+  reliable location, so its row names no pointer. Each untyped schema whose `not` does
   not exclude `null` is given every JSON type, `null` included: for a 3.1
   document kin ignores `nullable` and accepts `null` only where the type lists
   it. An untyped schema whose answer for `null` depends on an `enum`, a `const`

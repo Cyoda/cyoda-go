@@ -205,6 +205,15 @@ func TestExportedCriterionDiscriminatesByType(t *testing.T) {
 			t.Errorf("%s: want the one row %s…, got %v", name, c.row, err)
 		}
 	}
+	// A state name is a property name, whose row gives no pointer.
+	emptyState := withTransition("criterion", `{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"x"}`)
+	states := emptyState.(map[string]any)["workflows"].([]any)[0].(map[string]any)["states"].(map[string]any)
+	states[""] = map[string]any{"transitions": []any{}}
+	var named openapi3.MultiError
+	if err := openapivalidator.ValidateValue(doc, export, emptyState); !errors.As(err, &named) || len(named) != 1 ||
+		named[0].Error() != `Error at a property name: minLength: got 0, want 1` {
+		t.Errorf("an empty state name: want one property-name row, got %v", err)
+	}
 	var multi openapi3.MultiError
 	if err := openapivalidator.ValidateValue(doc, export, twoDefects); !errors.As(err, &multi) || len(multi) != 2 ||
 		!strings.HasPrefix(multi[0].Error(), `Error at "/workflows/0/states/a/transitions/0/criterion/operatorType": value must be one of`) ||

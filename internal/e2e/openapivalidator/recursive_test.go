@@ -590,7 +590,7 @@ func TestValidator_JSONSchema2020Rows(t *testing.T) {
 		"a null member": {`{"type":"group","conditions":[null]}`,
 			[]string{`Error at "/conditions/0": got null, want object`}},
 		"a property name the group refuses": {`{"type":"group","conditions":[],"Bad":1}`,
-			[]string{`Error at "": 'Bad' does not match pattern '^[a-z]+$'`}},
+			[]string{`Error at a property name: 'Bad' does not match pattern '^[a-z]+$'`}},
 	} {
 		var got []string
 		for _, m := range validateBody(t, v, "/group", c.body) {

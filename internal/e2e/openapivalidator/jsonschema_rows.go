@@ -20,27 +20,37 @@ import (
 // validator (santhosh-tekuri/jsonschema) unless the schema holds a component
 // reference and reaches no JSON Schema 2020-12 keyword, or the library cannot
 // compile it for another reason than an unresolved reference (kin
-// openapi3/schema_jsonschema_validator.go:400-421). The library returns
-// one error for the whole value. kin converts its tree of errors into a tree
-// of SchemaErrors: each node carries the JSON pointer of the failing value and
+// openapi3/schema_jsonschema_validator.go:400-424). The library returns one
+// error for the whole value. kin converts its tree of errors into a tree of
+// SchemaErrors: each node carries the JSON pointer of the failing value and
 // the failing keyword, each leaf the library's error. A node that wraps one
-// cause, such as a failing $ref, carries the keyword of its innermost cause. kin's text of that tree
-// repeats the errors of every member of every union, and segments of each
-// pointer. jsonSchemaRows writes the tree as rows instead.
+// cause, such as a failing $ref, carries the keyword and pointer of its
+// innermost cause. kin's text of that tree repeats the errors of every member
+// of every union, and segments of each pointer. jsonSchemaRows writes the tree
+// as rows instead.
 
 // jsonSchemaRows returns the rows of err when err is a SchemaError of kin's
 // JSON Schema 2020-12 validator, and false otherwise. A row is a leaf of the
 // tree: the JSON pointer of the failing value and the library's message.
-// Below a oneOf, only the members the value can be are followed. Whether a member refuses the value is judged from the member's
-// own errors, not those of a union inside it:
+//
+// The library checks a property name as a value of its own and gives the
+// error no reliable location (v6.0.3 validator.go:296 stores its location
+// without copying it), so a row below a propertyNames failure says it is about
+// a property name and gives no pointer.
+//
+// Below a oneOf or anyOf, only the members the value can be are followed.
+// Whether a member refuses the value is judged from the member's own errors,
+// not those of a union inside it, and a member that is a union is judged by
+// its own branches:
 //   - a member that refuses the kind of the value (an object for null, say)
 //     is left out, unless every member does;
 //   - under a discriminator, a member that refuses the value's key is left
 //     out; when every member does and the key is absent or not mapped, the
 //     key is the defect, and one row says so.
 //
-// The rows are sorted by JSON pointer, array indexes in numeric order, then by
-// message; a row whose text equals another's is left out.
+// The rows are sorted by JSON pointer, a pointer before those below it and
+// array indexes in numeric order, then by message, property-name rows last; a
+// row whose text equals another's is left out.
 func jsonSchemaRows(err error) ([]error, bool) {
 	se, ok := err.(*openapi3.SchemaError)
 	if !ok {
@@ -53,7 +63,8 @@ func jsonSchemaRows(err error) ([]error, bool) {
 	b := &rowBuilder{seen: map[string]bool{}}
 	b.node(se)
 	slices.SortFunc(b.rows, func(x, y jsonSchemaRow) int {
-		return cmp.Or(comparePointers(x.pointer, y.pointer), strings.Compare(x.message, y.message))
+		return cmp.Or(cmp.Compare(boolInt(x.propertyName), boolInt(y.propertyName)),
+			comparePointers(x.pointer, y.pointer), strings.Compare(x.message, y.message))
 	})
 	rows := make([]error, len(b.rows))
 	for i, r := range b.rows {
@@ -63,19 +74,31 @@ func jsonSchemaRows(err error) ([]error, bool) {
 }
 
 type jsonSchemaRow struct {
-	pointer string
-	message string
+	pointer      string
+	message      string
+	propertyName bool // the row is about a property name; pointer is unknown
 }
 
 func (r jsonSchemaRow) Error() string {
+	if r.propertyName {
+		return "Error at a property name: " + r.message
+	}
 	return fmt.Sprintf("Error at %q: %s", r.pointer, r.message)
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 var rowPrinter = message.NewPrinter(language.English)
 
 type rowBuilder struct {
-	rows []jsonSchemaRow
-	seen map[string]bool
+	rows         []jsonSchemaRow
+	seen         map[string]bool
+	propertyName bool // below a propertyNames failure
 }
 
 func (b *rowBuilder) add(r jsonSchemaRow) {
@@ -86,17 +109,25 @@ func (b *rowBuilder) add(r jsonSchemaRow) {
 }
 
 func (b *rowBuilder) node(se *openapi3.SchemaError) {
+	if se.SchemaField == "propertyNames" && !b.propertyName {
+		b.propertyName = true
+		defer func() { b.propertyName = false }()
+	}
 	kids := children(se)
 	if len(kids) == 0 {
 		b.leaf(se)
 		return
 	}
-	if se.SchemaField == "oneOf" {
+	if isUnion(se) {
 		kids = b.members(se, kids)
 	}
 	for _, k := range kids {
 		b.node(k)
 	}
+}
+
+func isUnion(se *openapi3.SchemaError) bool {
+	return se.SchemaField == "oneOf" || se.SchemaField == "anyOf"
 }
 
 func (b *rowBuilder) leaf(se *openapi3.SchemaError) {
@@ -105,16 +136,20 @@ func (b *rowBuilder) leaf(se *openapi3.SchemaError) {
 	if errors.As(se, &ve) {
 		msg = ve.ErrorKind.LocalizedString(rowPrinter)
 	}
+	if b.propertyName {
+		b.add(jsonSchemaRow{message: msg, propertyName: true})
+		return
+	}
 	b.add(jsonSchemaRow{pointer: pointerOf(se.JSONPointer()), message: msg})
 }
 
-// members returns the members of the oneOf se, given as its child errors,
+// members returns the members of the union se, given as its child errors,
 // that the value can be (see jsonSchemaRows). It adds the key row itself
 // when no member takes the value's key.
 func (b *rowBuilder) members(se *openapi3.SchemaError, kids []*openapi3.SchemaError) []*openapi3.SchemaError {
 	at := pointerOf(se.JSONPointer())
 	fits := slices.DeleteFunc(slices.Clone(kids), func(k *openapi3.SchemaError) bool {
-		return ownLeaf(k, func(l *openapi3.SchemaError) bool {
+		return !isUnion(k) && ownLeaf(k, func(l *openapi3.SchemaError) bool {
 			return l.SchemaField == "type" && pointerOf(l.JSONPointer()) == at
 		})
 	})
@@ -206,7 +241,7 @@ func ownLeaf(se *openapi3.SchemaError, f func(*openapi3.SchemaError) bool) bool 
 		return f(se)
 	}
 	return slices.ContainsFunc(kids, func(k *openapi3.SchemaError) bool {
-		return k.SchemaField != "oneOf" && k.SchemaField != "anyOf" && ownLeaf(k, f)
+		return !isUnion(k) && ownLeaf(k, f)
 	})
 }
 
