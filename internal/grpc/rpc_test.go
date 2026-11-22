@@ -3,42 +3,28 @@ package grpc
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
-
-// testSchemaApply mirrors app/app.go's makeSchemaApply: it folds an opaque
-// SchemaDelta onto a base schema. The plugin packages deliberately do not
-// depend on internal/domain/model/schema, so the replay function is injected
-// by the composition root — and by this harness.
-func testSchemaApply(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-	node, err := schema.Unmarshal(base)
-	if err != nil {
-		return nil, fmt.Errorf("apply: unmarshal base: %w", err)
-	}
-	extended, err := schema.Apply(node, delta)
-	if err != nil {
-		return nil, err
-	}
-	return schema.Marshal(extended)
-}
 
 // newTestEnv creates a CloudEventsServiceImpl wired to real in-memory stores
 // and a context with a test user/tenant injected.
@@ -50,7 +36,7 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 	// Without it every extension path fails the harness with "ApplyFunc not
 	// wired", which is a property of the fake rather than of the code
 	// under test.
-	factory := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
+	factory := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := factory.GetTransactionManager()
 
@@ -61,11 +47,11 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 		Roles:    []string{"ADMIN"},
 	}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
-	modelHandler := model.New(factory)
+	searchService := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cachedFactory(factory), platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -429,6 +415,22 @@ func TestRPC_ModelDelete(t *testing.T) {
 	}
 }
 
+// TestRPC_ModelGetAll_DataIsDecoded: the request's data is read like every
+// other event's, so an undeclared member, or data that is not JSON, is
+// refused rather than ignored.
+func TestRPC_ModelGetAll_DataIsDecoded(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	for name, ce := range map[string]*cepb.CloudEvent{
+		"unknown member": makeCE(EntityModelGetAllRequest, map[string]any{"id": "test", "modelName": "alpha"}),
+		"not JSON":       makeRawCE(EntityModelGetAllRequest, []byte(`{"id":`)),
+	} {
+		_, err := svc.EntityModelManage(ctx, ce)
+		if st, _ := status.FromError(err); err == nil || st.Code() != codes.InvalidArgument {
+			t.Errorf("%s: got %v; want InvalidArgument", name, err)
+		}
+	}
+}
+
 func TestRPC_ModelGetAll(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 
@@ -515,10 +517,102 @@ func TestRPC_ModelSetUniqueKeys_200(t *testing.T) {
 		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
 	}
 
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if !typed.Success {
 		t.Error("expected success=true")
+	}
+}
+
+// TestRPC_ModelSetUniqueKeys_BaseEventMembers: every event carries the
+// BaseEvent members, and a Cloud client sends success and warnings on every
+// one, so the strict decode accepts them here as it does on generated types.
+func TestRPC_ModelSetUniqueKeys_BaseEventMembers(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	if _, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName: "product", ModelVersion: "1", Format: "JSON", Converter: "SAMPLE_DATA",
+		Data: []byte(`{"name":"Alice"}`),
+	}); err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
+		"id":         "test",
+		"success":    true,
+		"warnings":   []string{},
+		"model":      map[string]any{"name": "product", "version": 1},
+		"uniqueKeys": []map[string]any{{"id": "uk1", "fields": []string{"$.name"}}},
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelSetUniqueKeysResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Errorf("expected success=true, got error %+v", typed.Error)
+	}
+}
+
+// TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema: the request is read through
+// the type generated from its published schema, so it is refused exactly as
+// that schema refuses it — a null success, an error with no code, a missing
+// required member — and the model keeps the keys it had.
+func TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	if _, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName: "product", ModelVersion: "1", Format: "JSON", Converter: "SAMPLE_DATA",
+		Data: []byte(`{"name":"Alice"}`),
+	}); err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	if _, err := svc.modelHandler.SetUniqueKeys(ctx, "product", "1", []spi.UniqueKey{{ID: "uk1", Fields: []string{"$.name"}}}); err != nil {
+		t.Fatalf("set keys failed: %v", err)
+	}
+	mdl := `"model":{"name":"product","version":1}`
+	keys := `"uniqueKeys":[{"id":"uk1","fields":["$.name"]}]`
+	// want is the member the refusal must name, so a case cannot pass on
+	// another member's refusal.
+	for name, tc := range map[string]struct{ body, want string }{
+		"null success":       {`{"id":"test","success":null,` + mdl + `,` + keys + `}`, "field success: must not be null"},
+		"error without code": {`{"id":"test","error":{"message":"m"},` + mdl + `,` + keys + `}`, "field code: required"},
+		"no model":           {`{"id":"test",` + keys + `}`, "field model: required"},
+		"no uniqueKeys":      {`{"id":"test",` + mdl + `}`, "field uniqueKeys: required"},
+		"null uniqueKeys":    {`{"id":"test",` + mdl + `,"uniqueKeys":null}`, "field uniqueKeys: must not be null"},
+		"no id":              {`{` + mdl + `,` + keys + `}`, "field id: required"},
+		"key without id":     {`{"id":"test",` + mdl + `,"uniqueKeys":[{"fields":["$.name"]}]}`, `"/uniqueKeys/0": field id: required`},
+		"key without fields": {`{"id":"test",` + mdl + `,"uniqueKeys":[{"id":"uk1"}]}`, `"/uniqueKeys/0": field fields: required`},
+	} {
+		_, err := svc.EntityModelManage(ctx, makeRawCE(EntityModelSetUniqueKeysRequest, []byte(tc.body)))
+		if st, _ := status.FromError(err); err == nil || st.Code() != codes.InvalidArgument {
+			t.Errorf("%s: got %v; want InvalidArgument", name, err)
+		} else if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %q does not say %q", name, err, tc.want)
+		}
+		exported, err := svc.modelHandler.ExportModel(ctx, "product", "1", "JSON_SCHEMA")
+		if err != nil {
+			t.Fatalf("export failed: %v", err)
+		}
+		if len(exported.UniqueKeys) != 1 {
+			t.Errorf("%s: unique keys after the refused request = %v; want the one key kept", name, exported.UniqueKeys)
+		}
+	}
+
+	// [] is the one request that removes the keys.
+	resp, err := svc.EntityModelManage(ctx, makeRawCE(EntityModelSetUniqueKeysRequest, []byte(`{"id":"test",`+mdl+`,"uniqueKeys":[]}`)))
+	if err != nil {
+		t.Fatalf("[]: unexpected error: %v", err)
+	}
+	var typed events.EntityModelSetUniqueKeysResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Fatalf("[]: expected success, got error %+v", typed.Error)
+	}
+	exported, err := svc.modelHandler.ExportModel(ctx, "product", "1", "JSON_SCHEMA")
+	if err != nil {
+		t.Fatalf("export failed: %v", err)
+	}
+	if len(exported.UniqueKeys) != 0 {
+		t.Errorf("unique keys after [] = %v; want none", exported.UniqueKeys)
 	}
 }
 
@@ -543,7 +637,7 @@ func TestRPC_ModelSetUniqueKeys_409_Locked(t *testing.T) {
 		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
 	}
 
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if typed.Success {
 		t.Error("expected success=false for locked model")
@@ -587,7 +681,7 @@ func TestRPC_ModelSetUniqueKeys_422_BadField(t *testing.T) {
 		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
 	}
 
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if typed.Success {
 		t.Error("expected success=false for bad field")
@@ -608,7 +702,7 @@ func TestRPC_ModelSetUniqueKeys_422_Unsupported(t *testing.T) {
 	// concrete SupportsCompositeUniqueKeys method on the real factory is NOT
 	// promoted — the type assertion in SetUniqueKeys returns ok=false.
 	type incapableFactory struct{ spi.StoreFactory }
-	svc.modelHandler = model.New(incapableFactory{memory.NewStoreFactory()})
+	svc.modelHandler = model.New(cachedFactory(incapableFactory{memory.NewStoreFactory()}), platformclock.Real())
 
 	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
 		"id":    "test",
@@ -626,7 +720,7 @@ func TestRPC_ModelSetUniqueKeys_422_Unsupported(t *testing.T) {
 		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
 	}
 
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if typed.Success {
 		t.Error("expected success=false for unsupported backend")
@@ -664,7 +758,7 @@ func TestRPC_ModelSetUniqueKeys_404_UnknownModel(t *testing.T) {
 		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
 	}
 
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if typed.Success {
 		t.Error("expected success=false for unknown model")
@@ -1189,6 +1283,107 @@ func TestRPC_EntityChangesMetadata(t *testing.T) {
 	}
 }
 
+// TestRPC_EntityChangesMetadata_Attribution: the gRPC change history carries
+// the attributed kind and the executor exactly as GET /entity/{id}/changes
+// does — attributedKind when the change recorded one, executedBy when it
+// recorded an executor, each omitted otherwise.
+func TestRPC_EntityChangesMetadata_Attribution(t *testing.T) {
+	str := func(p *string) string {
+		if p == nil {
+			return "<absent>"
+		}
+		return *p
+	}
+	for _, tc := range []struct {
+		name         string
+		uc           func(base *spi.UserContext) *spi.UserContext
+		wantUser     string
+		wantAttrKind *string
+		wantExec     *events.EntityChangeMetaJsonExecutedBy
+	}{
+		{
+			name: "on-behalf-of: the user, executed by the client",
+			uc: func(base *spi.UserContext) *spi.UserContext {
+				uc := *base
+				uc.UserID, uc.Kind = "alice", spi.PrincipalUser
+				uc.Executor = &spi.Principal{ID: "obo-client", Kind: spi.PrincipalService}
+				return &uc
+			},
+			wantUser:     "alice",
+			wantAttrKind: ptrString("user"),
+			wantExec:     &events.EntityChangeMetaJsonExecutedBy{ID: "obo-client", Kind: "service"},
+		},
+		{
+			name: "service client: itself on both sides",
+			uc: func(base *spi.UserContext) *spi.UserContext {
+				uc := *base
+				uc.UserID, uc.Kind = "svc-client", spi.PrincipalService
+				return &uc
+			},
+			wantUser:     "svc-client",
+			wantAttrKind: ptrString("service"),
+			wantExec:     &events.EntityChangeMetaJsonExecutedBy{ID: "svc-client", Kind: "service"},
+		},
+		{
+			name:         "no kind recorded: attributedKind omitted",
+			uc:           func(base *spi.UserContext) *spi.UserContext { return base },
+			wantUser:     "test-user",
+			wantAttrKind: nil,
+			wantExec:     &events.EntityChangeMetaJsonExecutedBy{ID: "test-user", Kind: ""},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, baseCtx := newTestEnv(t)
+			importAndLockModel(t, svc, baseCtx, "person", "1", map[string]any{"name": "Alice"})
+			ctx := spi.WithUserContext(baseCtx, tc.uc(spi.GetUserContext(baseCtx)))
+
+			createResp, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+				"id":         "test",
+				"dataFormat": "JSON",
+				"payload": map[string]any{
+					"model": map[string]any{"name": "person", "version": 1},
+					"data":  map[string]any{"name": "Alice"},
+				},
+			}))
+			if err != nil {
+				t.Fatalf("create failed: %v", err)
+			}
+			entityID := parseResponsePayload(t, createResp)["transactionInfo"].(map[string]any)["entityIds"].([]any)[0].(string)
+
+			stream := &mockEntityStream{ctx: baseCtx}
+			if err := svc.EntitySearchCollection(makeCE(EntityChangesMetadataGetRequest, map[string]any{
+				"id":       "test",
+				"entityId": entityID,
+			}), stream); err != nil {
+				t.Fatalf("changes metadata: %v", err)
+			}
+			if len(stream.sent) != 1 {
+				t.Fatalf("expected 1 change metadata response, got %d", len(stream.sent))
+			}
+			var typed events.EntityChangesMetadataResponseJson
+			validateResponse(t, stream.sent[0], &typed)
+			if !typed.Success {
+				t.Fatalf("success=false; error: %v", typed.Error)
+			}
+			meta := typed.ChangeMeta
+			if meta.User != tc.wantUser {
+				t.Errorf("user = %q, want %q", meta.User, tc.wantUser)
+			}
+			if str(meta.AttributedKind) != str(tc.wantAttrKind) {
+				t.Errorf("attributedKind = %s, want %s", str(meta.AttributedKind), str(tc.wantAttrKind))
+			}
+			switch {
+			case meta.ExecutedBy == nil:
+				t.Errorf("executedBy absent, want %+v", *tc.wantExec)
+			case *meta.ExecutedBy != *tc.wantExec:
+				t.Errorf("executedBy = %+v, want %+v", *meta.ExecutedBy, *tc.wantExec)
+			}
+		})
+	}
+}
+
+func ptrString(s string) *string { return &s }
+
 // --- Entity manage collection tests ---
 
 func TestRPC_EntityCreateCollection(t *testing.T) {
@@ -1355,6 +1550,18 @@ func TestRPC_SnapshotCancel(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 
 	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	// Hold the sole worker so the snapshot is still RUNNING when the cancel
+	// arrives: a finished one is refused (SEARCH_JOB_ALREADY_TERMINAL).
+	pool := search.NewWorkerPool(1, 1)
+	svc.searchService.WithAsyncPool(pool)
+	release := occupySoleWorker(t, pool)
+	defer func() {
+		release()
+		drainCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		pool.Drain(drainCtx)
+	}()
 
 	// Submit async search to get a snapshot ID.
 	searchCE := makeCE(EntitySnapshotSearchRequest, map[string]any{

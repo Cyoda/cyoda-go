@@ -1,9 +1,7 @@
 package grpc
 
 import (
-	"context"
-
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // TxTokenAttr is the CloudEvent extension attribute carrying the signed
@@ -33,15 +31,4 @@ func TxTokenFromCloudEvent(ce *cepb.CloudEvent) string {
 		return ""
 	}
 	return v.GetCeString()
-}
-
-type txTokenCtxKey struct{}
-
-func WithTxToken(ctx context.Context, tok string) context.Context {
-	return context.WithValue(ctx, txTokenCtxKey{}, tok)
-}
-
-func TxTokenFromContext(ctx context.Context) string {
-	tok, _ := ctx.Value(txTokenCtxKey{}).(string)
-	return tok
 }

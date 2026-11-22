@@ -97,35 +97,24 @@ func TestParseConfig_SchemaKnobs_Defaults(t *testing.T) {
 	if cfg.SchemaSavepointInterval != 64 {
 		t.Errorf("SchemaSavepointInterval default = %d, want 64", cfg.SchemaSavepointInterval)
 	}
-	if cfg.SchemaExtendMaxRetries != 8 {
-		t.Errorf("SchemaExtendMaxRetries default = %d, want 8", cfg.SchemaExtendMaxRetries)
-	}
 }
 
 func TestParseConfig_SchemaKnobs_ReadFromEnv(t *testing.T) {
 	env := map[string]string{
 		"CYODA_SCHEMA_SAVEPOINT_INTERVAL": "128",
-		"CYODA_SCHEMA_EXTEND_MAX_RETRIES": "16",
 	}
 	cfg, _ := parseConfig(func(k string) string { return env[k] })
 	if cfg.SchemaSavepointInterval != 128 {
 		t.Errorf("interval = %d, want 128", cfg.SchemaSavepointInterval)
-	}
-	if cfg.SchemaExtendMaxRetries != 16 {
-		t.Errorf("max retries = %d, want 16", cfg.SchemaExtendMaxRetries)
 	}
 }
 
 func TestParseConfig_SchemaKnobs_DefaultOnInvalid(t *testing.T) {
 	env := map[string]string{
 		"CYODA_SCHEMA_SAVEPOINT_INTERVAL": "-5",
-		"CYODA_SCHEMA_EXTEND_MAX_RETRIES": "0",
 	}
 	cfg, _ := parseConfig(func(k string) string { return env[k] })
 	if cfg.SchemaSavepointInterval != 64 {
 		t.Errorf("interval on -5 = %d, want 64 (fallback)", cfg.SchemaSavepointInterval)
-	}
-	if cfg.SchemaExtendMaxRetries != 8 {
-		t.Errorf("max retries on 0 = %d, want 8 (fallback)", cfg.SchemaExtendMaxRetries)
 	}
 }

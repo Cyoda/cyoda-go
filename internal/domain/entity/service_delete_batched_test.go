@@ -11,12 +11,13 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // --- Task 10: batched, version-guarded DeleteEntitiesConditional ---
@@ -76,8 +77,8 @@ func newDeleteBatchedCtx(t *testing.T, factory spi.StoreFactory) context.Context
 // Iterate drain, since the streamed-selection rework) rather than a stub.
 func buildDeleteBatchedHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager) *Handler {
 	t.Helper()
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	engine := wfengine.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	return New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 }
 
 // seedPersons creates n Person entities (ages 0..n-1) via h and returns their
@@ -114,10 +115,12 @@ type failNthCommitTxMgr struct {
 }
 
 func (m *failNthCommitTxMgr) Commit(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	m.commits++
-	idx := m.commits
-	m.mu.Unlock()
+	idx := func() int {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.commits++
+		return m.commits
+	}()
 	if err, ok := m.failOn[idx]; ok {
 		return err
 	}
@@ -135,9 +138,11 @@ type deleteAllSpyStore struct {
 }
 
 func (s *deleteAllSpyStore) DeleteAll(ctx context.Context, ref spi.ModelRef) error {
-	s.mu.Lock()
-	s.called = true
-	s.mu.Unlock()
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.called = true
+	}()
 	return s.EntityStore.DeleteAll(ctx, ref)
 }
 
@@ -192,10 +197,13 @@ func (s *mutateAfterSelectionStore) Get(ctx context.Context, id string) (*spi.En
 	if !s.hookOnFirstGet || id != s.targetID {
 		return e, err
 	}
-	s.mu.Lock()
-	fire := !s.fired
-	s.fired = true
-	s.mu.Unlock()
+	fire := func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		fire := !s.fired
+		s.fired = true
+		return fire
+	}()
 	if fire {
 		s.mutate()
 	}
@@ -227,10 +235,13 @@ func (it *mutateAfterSelectionIterator) Next() bool {
 func (it *mutateAfterSelectionIterator) Close() error {
 	err := it.Iterator.Close()
 	if it.sawTargetID && !it.store.hookOnFirstGet {
-		it.store.mu.Lock()
-		fire := !it.store.fired
-		it.store.fired = true
-		it.store.mu.Unlock()
+		fire := func() bool {
+			it.store.mu.Lock()
+			defer it.store.mu.Unlock()
+			fire := !it.store.fired
+			it.store.fired = true
+			return fire
+		}()
 		if fire {
 			it.store.mutate()
 		}
@@ -281,7 +292,7 @@ func TestDeleteEntitiesConditional_Batched_HappyPath(t *testing.T) {
 
 	beginsBefore := rtm.beginCount()
 
-	result, err := h.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, nil, false, 2)
+	result, err := h.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -341,7 +352,7 @@ func TestDeleteEntitiesConditional_Batched_VersionGuard(t *testing.T) {
 
 	hDelete := buildDeleteBatchedHandler(t, spyFactory, realTxMgr)
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, nil, false, 2)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -392,7 +403,7 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchContinues(t *testing.T) {
 	failMgr := &failNthCommitTxMgr{TransactionManager: realTxMgr, failOn: map[int]error{2: errors.New("commit boom")}}
 	hDelete := buildDeleteBatchedHandler(t, realFactory, failMgr)
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, nil, false, 2)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -447,7 +458,7 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchIsTicketed(t *testing.T) {
 	failMgr := &failNthCommitTxMgr{TransactionManager: realTxMgr, failOn: map[int]error{2: errors.New(cause)}}
 	hDelete := buildDeleteBatchedHandler(t, realFactory, failMgr)
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, nil, false, 2)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -460,7 +471,7 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchIsTicketed(t *testing.T) {
 
 	for id, msg := range result.IDToError {
 		if !strings.Contains(msg, "[ticket: ") {
-			t.Errorf("IDToError[%s] = %q, want a ticketed message like perIDDeleteError's internal branch", id, msg)
+			t.Errorf("IDToError[%s] = %q, want the failed batch's ticketed message", id, msg)
 		}
 		if strings.Contains(msg, "commit boom") || strings.Contains(msg, "SQLSTATE") {
 			t.Errorf("IDToError[%s] = %q, leaks the raw commit cause onto the wire", id, msg)
@@ -483,7 +494,7 @@ func TestDeleteEntitiesConditional_Batched_FailedBatchIsTicketed(t *testing.T) {
 	}
 
 	logged := buf.String()
-	if !strings.Contains(logged, "commit boom") || !strings.Contains(logged, "57014") {
+	if !strings.Contains(logged, "commit boom") || !strings.Contains(logged, "SQLSTATE 57014") {
 		t.Errorf("the commit cause was sanitized out of the response but never logged, so it is lost: %s", logged)
 	}
 
@@ -525,7 +536,7 @@ func TestDeleteEntitiesConditional_Batched_DeleteAllPath(t *testing.T) {
 	h := buildDeleteBatchedHandler(t, spyFactory, txMgr)
 	ids := seedPersons(t, h, ctx, 5)
 
-	result, err := h.DeleteEntitiesConditional(ctx, "Person", "1", nil, nil, false, 2)
+	result, err := h.DeleteEntitiesConditional(ctx, "Person", 1, nil, nil, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -573,7 +584,7 @@ func TestDeleteEntitiesConditional_NoBatchSize_Unchanged(t *testing.T) {
 
 	beginsBefore := rtm.beginCount()
 
-	result, err := h.DeleteEntitiesConditional(ctx, "Person", "1", nil, nil, false, 0)
+	result, err := h.DeleteEntitiesConditional(ctx, "Person", 1, nil, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -629,7 +640,7 @@ func TestDeleteEntitiesConditional_Batched_PointInTime_SinglePassSelection(t *te
 
 	hDelete := buildDeleteBatchedHandler(t, spyFactory, mustTxMgr(t, realFactory))
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, &pit, false, 3)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, &pit, false, 3)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -693,7 +704,7 @@ func TestDeleteEntitiesConditional_Batched_PointInTime_VersionGuard(t *testing.T
 
 	hDelete := buildDeleteBatchedHandler(t, spyFactory, realTxMgr)
 
-	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", "1", batchDeleteAgeGEZero, &pit, false, 2)
+	result, err := hDelete.DeleteEntitiesConditional(ctx, "Person", 1, batchDeleteAgeGEZero, &pit, false, 2)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}

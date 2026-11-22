@@ -29,8 +29,10 @@ type BaseEventJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -40,11 +42,15 @@ func (j *BaseEventJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in BaseEventJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in BaseEventJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain BaseEventJsonError
 	var plain Plain
@@ -61,15 +67,19 @@ func (j *BaseEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in BaseEventJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain BaseEventJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = BaseEventJson(plain)
@@ -104,8 +114,10 @@ type CalculationMemberGreetEventJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -115,11 +127,15 @@ func (j *CalculationMemberGreetEventJsonError) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in CalculationMemberGreetEventJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in CalculationMemberGreetEventJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain CalculationMemberGreetEventJsonError
 	var plain Plain
@@ -136,21 +152,29 @@ func (j *CalculationMemberGreetEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in CalculationMemberGreetEventJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["joinedLegalEntityId"]; raw != nil && !ok {
-		return fmt.Errorf("field joinedLegalEntityId in CalculationMemberGreetEventJson: required")
+	if v, ok := raw["joinedLegalEntityId"]; !ok {
+		return fmt.Errorf("field joinedLegalEntityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field joinedLegalEntityId: must not be null")
 	}
-	if _, ok := raw["memberId"]; raw != nil && !ok {
-		return fmt.Errorf("field memberId in CalculationMemberGreetEventJson: required")
+	if v, ok := raw["memberId"]; !ok {
+		return fmt.Errorf("field memberId: required")
+	} else if v == nil {
+		return fmt.Errorf("field memberId: must not be null")
 	}
 	type Plain CalculationMemberGreetEventJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = CalculationMemberGreetEventJson(plain)
@@ -163,6 +187,11 @@ type CalculationMemberJoinEventJson struct {
 
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Optional: the tenant id the member expects to join. The member always joins the
+	// tenant of its bearer token; when this is present, not empty and differs from
+	// that tenant, the join is refused with PermissionDenied.
+	JoinedLegalEntityID *string `json:"joinedLegalEntityId,omitempty" yaml:"joinedLegalEntityId,omitempty" mapstructure:"joinedLegalEntityId,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
 	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
@@ -182,8 +211,10 @@ type CalculationMemberJoinEventJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -193,11 +224,15 @@ func (j *CalculationMemberJoinEventJsonError) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in CalculationMemberJoinEventJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in CalculationMemberJoinEventJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain CalculationMemberJoinEventJsonError
 	var plain Plain
@@ -214,15 +249,19 @@ func (j *CalculationMemberJoinEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in CalculationMemberJoinEventJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain CalculationMemberJoinEventJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = CalculationMemberJoinEventJson(plain)
@@ -254,8 +293,10 @@ type CalculationMemberKeepAliveEventJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -265,11 +306,15 @@ func (j *CalculationMemberKeepAliveEventJsonError) UnmarshalJSON(value []byte) e
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in CalculationMemberKeepAliveEventJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in CalculationMemberKeepAliveEventJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain CalculationMemberKeepAliveEventJsonError
 	var plain Plain
@@ -286,18 +331,24 @@ func (j *CalculationMemberKeepAliveEventJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in CalculationMemberKeepAliveEventJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["memberId"]; raw != nil && !ok {
-		return fmt.Errorf("field memberId in CalculationMemberKeepAliveEventJson: required")
+	if v, ok := raw["memberId"]; !ok {
+		return fmt.Errorf("field memberId: required")
+	} else if v == nil {
+		return fmt.Errorf("field memberId: must not be null")
 	}
 	type Plain CalculationMemberKeepAliveEventJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = CalculationMemberKeepAliveEventJson(plain)
@@ -317,7 +368,7 @@ var enumValues_DataFormatJson = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *DataFormatJson) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -328,7 +379,7 @@ func (j *DataFormatJson) UnmarshalJSON(value []byte) error {
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_DataFormatJson, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_DataFormatJson)
 	}
 	*j = DataFormatJson(v)
 	return nil
@@ -351,8 +402,10 @@ func (j *DataPayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["type"]; raw != nil && !ok {
-		return fmt.Errorf("field type in DataPayloadJson: required")
+	if v, ok := raw["type"]; !ok {
+		return fmt.Errorf("field type: required")
+	} else if v == nil {
+		return fmt.Errorf("field type: must not be null")
 	}
 	type Plain DataPayloadJson
 	var plain Plain
@@ -365,8 +418,17 @@ func (j *DataPayloadJson) UnmarshalJSON(value []byte) error {
 
 // Metadata about entity changes including transaction information and change type.
 type EntityChangeMetaJson struct {
+	// Kind of the attributed principal in user. Open value set; known values are
+	// user, service and system. Absent when the change recorded no attribution.
+	AttributedKind *string `json:"attributedKind,omitempty" yaml:"attributedKind,omitempty" mapstructure:"attributedKind,omitempty"`
+
 	// Type of change that was made to the entity.
 	ChangeType EntityChangeMetaJsonChangeType `json:"changeType" yaml:"changeType" mapstructure:"changeType"`
+
+	// The principal that executed the change, independent of attribution: for an
+	// on-behalf-of request, the on-behalf-of client. Absent when the change recorded
+	// no attribution.
+	ExecutedBy *EntityChangeMetaJsonExecutedBy `json:"executedBy,omitempty" yaml:"executedBy,omitempty" mapstructure:"executedBy,omitempty"`
 
 	// Number of fields changed in the entity for this change.
 	FieldsChangedCount *int `json:"fieldsChangedCount,omitempty" yaml:"fieldsChangedCount,omitempty" mapstructure:"fieldsChangedCount,omitempty"`
@@ -377,7 +439,7 @@ type EntityChangeMetaJson struct {
 	// UUID of the transaction that made this change.
 	TransactionID *string `json:"transactionId,omitempty" yaml:"transactionId,omitempty" mapstructure:"transactionId,omitempty"`
 
-	// User who made the change.
+	// User who made the change: the attributed principal.
 	User string `json:"user" yaml:"user" mapstructure:"user"`
 }
 
@@ -396,7 +458,7 @@ var enumValues_EntityChangeMetaJsonChangeType = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityChangeMetaJsonChangeType) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -407,9 +469,46 @@ func (j *EntityChangeMetaJsonChangeType) UnmarshalJSON(value []byte) error {
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntityChangeMetaJsonChangeType, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_EntityChangeMetaJsonChangeType)
 	}
 	*j = EntityChangeMetaJsonChangeType(v)
+	return nil
+}
+
+// The principal that executed the change, independent of attribution: for an
+// on-behalf-of request, the on-behalf-of client. Absent when the change recorded
+// no attribution.
+type EntityChangeMetaJsonExecutedBy struct {
+	// Id of the executing principal.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Kind of the executing principal. Open value set; known values are user, service
+	// and system.
+	Kind string `json:"kind" yaml:"kind" mapstructure:"kind"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityChangeMetaJsonExecutedBy) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
+	}
+	if v, ok := raw["kind"]; !ok {
+		return fmt.Errorf("field kind: required")
+	} else if v == nil {
+		return fmt.Errorf("field kind: must not be null")
+	}
+	type Plain EntityChangeMetaJsonExecutedBy
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityChangeMetaJsonExecutedBy(plain)
 	return nil
 }
 
@@ -419,14 +518,20 @@ func (j *EntityChangeMetaJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["changeType"]; raw != nil && !ok {
-		return fmt.Errorf("field changeType in EntityChangeMetaJson: required")
+	if v, ok := raw["changeType"]; !ok {
+		return fmt.Errorf("field changeType: required")
+	} else if v == nil {
+		return fmt.Errorf("field changeType: must not be null")
 	}
-	if _, ok := raw["timeOfChange"]; raw != nil && !ok {
-		return fmt.Errorf("field timeOfChange in EntityChangeMetaJson: required")
+	if v, ok := raw["timeOfChange"]; !ok {
+		return fmt.Errorf("field timeOfChange: required")
+	} else if v == nil {
+		return fmt.Errorf("field timeOfChange: must not be null")
 	}
-	if _, ok := raw["user"]; raw != nil && !ok {
-		return fmt.Errorf("field user in EntityChangeMetaJson: required")
+	if v, ok := raw["user"]; !ok {
+		return fmt.Errorf("field user: required")
+	} else if v == nil {
+		return fmt.Errorf("field user: must not be null")
 	}
 	type Plain EntityChangeMetaJson
 	var plain Plain
@@ -447,8 +552,8 @@ type EntityChangesMetadataGetRequestJson struct {
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
-	// Point in time to retrieve the entity changes. If not provided, retrieves all
-	// changes up to the current consistency time.
+	// Point in time to retrieve the entity changes. Must be at or before the
+	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -466,8 +571,10 @@ type EntityChangesMetadataGetRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -477,11 +584,15 @@ func (j *EntityChangesMetadataGetRequestJsonError) UnmarshalJSON(value []byte) e
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityChangesMetadataGetRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityChangesMetadataGetRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityChangesMetadataGetRequestJsonError
 	var plain Plain
@@ -498,18 +609,24 @@ func (j *EntityChangesMetadataGetRequestJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityChangesMetadataGetRequestJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityChangesMetadataGetRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityChangesMetadataGetRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityChangesMetadataGetRequestJson(plain)
@@ -544,8 +661,10 @@ type EntityChangesMetadataResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -555,11 +674,15 @@ func (j *EntityChangesMetadataResponseJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityChangesMetadataResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityChangesMetadataResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityChangesMetadataResponseJsonError
 	var plain Plain
@@ -576,24 +699,202 @@ func (j *EntityChangesMetadataResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["changeMeta"]; raw != nil && !ok {
-		return fmt.Errorf("field changeMeta in EntityChangesMetadataResponseJson: required")
+	if v, ok := raw["changeMeta"]; !ok {
+		return fmt.Errorf("field changeMeta: required")
+	} else if v == nil {
+		return fmt.Errorf("field changeMeta: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityChangesMetadataResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityChangesMetadataResponseJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityChangesMetadataResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityChangesMetadataResponseJson(plain)
+	return nil
+}
+
+type EntityConsistencyTimeGetRequestJson struct {
+	// Error details (if present).
+	Error *EntityConsistencyTimeGetRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityConsistencyTimeGetRequestJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeGetRequestJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
+	}
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
+	}
+	type Plain EntityConsistencyTimeGetRequestJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityConsistencyTimeGetRequestJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeGetRequestJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
+	}
+	type Plain EntityConsistencyTimeGetRequestJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = EntityConsistencyTimeGetRequestJson(plain)
+	return nil
+}
+
+type EntityConsistencyTimeResponseJson struct {
+	// The consistency time of the caller's tenant: the instant up to which every save
+	// is final. Set when success is true.
+	ConsistencyTime *time.Time `json:"consistencyTime,omitempty" yaml:"consistencyTime,omitempty" mapstructure:"consistencyTime,omitempty"`
+
+	// Error details (if present).
+	Error *EntityConsistencyTimeResponseJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// ID of the original request.
+	RequestID string `json:"requestId" yaml:"requestId" mapstructure:"requestId"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityConsistencyTimeResponseJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeResponseJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
+	}
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
+	}
+	type Plain EntityConsistencyTimeResponseJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityConsistencyTimeResponseJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeResponseJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
+	}
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
+	}
+	type Plain EntityConsistencyTimeResponseJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = EntityConsistencyTimeResponseJson(plain)
 	return nil
 }
 
@@ -634,8 +935,10 @@ type EntityCreateCollectionRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -645,11 +948,15 @@ func (j *EntityCreateCollectionRequestJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityCreateCollectionRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityCreateCollectionRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityCreateCollectionRequestJsonError
 	var plain Plain
@@ -666,21 +973,29 @@ func (j *EntityCreateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field dataFormat in EntityCreateCollectionRequestJson: required")
+	if v, ok := raw["dataFormat"]; !ok {
+		return fmt.Errorf("field dataFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field dataFormat: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityCreateCollectionRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["payloads"]; raw != nil && !ok {
-		return fmt.Errorf("field payloads in EntityCreateCollectionRequestJson: required")
+	if v, ok := raw["payloads"]; !ok {
+		return fmt.Errorf("field payloads: required")
+	} else if v == nil {
+		return fmt.Errorf("field payloads: must not be null")
 	}
 	type Plain EntityCreateCollectionRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityCreateCollectionRequestJson(plain)
@@ -701,11 +1016,13 @@ func (j *EntityCreatePayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["data"]; raw != nil && !ok {
-		return fmt.Errorf("field data in EntityCreatePayloadJson: required")
+	if _, ok := raw["data"]; !ok {
+		return fmt.Errorf("field data: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityCreatePayloadJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntityCreatePayloadJson
 	var plain Plain
@@ -747,8 +1064,10 @@ type EntityCreateRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -758,11 +1077,15 @@ func (j *EntityCreateRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityCreateRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityCreateRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityCreateRequestJsonError
 	var plain Plain
@@ -779,21 +1102,29 @@ func (j *EntityCreateRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field dataFormat in EntityCreateRequestJson: required")
+	if v, ok := raw["dataFormat"]; !ok {
+		return fmt.Errorf("field dataFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field dataFormat: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityCreateRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityCreateRequestJson: required")
+	if v, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
+	} else if v == nil {
+		return fmt.Errorf("field payload: must not be null")
 	}
 	type Plain EntityCreateRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityCreateRequestJson(plain)
@@ -855,8 +1186,10 @@ type EntityCriteriaCalculationRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -866,11 +1199,15 @@ func (j *EntityCriteriaCalculationRequestJsonError) UnmarshalJSON(value []byte) 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityCriteriaCalculationRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityCriteriaCalculationRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityCriteriaCalculationRequestJsonError
 	var plain Plain
@@ -898,7 +1235,7 @@ var enumValues_EntityCriteriaCalculationRequestJsonTarget = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCriteriaCalculationRequestJsonTarget) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -909,7 +1246,7 @@ func (j *EntityCriteriaCalculationRequestJsonTarget) UnmarshalJSON(value []byte)
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntityCriteriaCalculationRequestJsonTarget, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_EntityCriteriaCalculationRequestJsonTarget)
 	}
 	*j = EntityCriteriaCalculationRequestJsonTarget(v)
 	return nil
@@ -921,30 +1258,44 @@ func (j *EntityCriteriaCalculationRequestJson) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["criteriaId"]; raw != nil && !ok {
-		return fmt.Errorf("field criteriaId in EntityCriteriaCalculationRequestJson: required")
+	if v, ok := raw["criteriaId"]; !ok {
+		return fmt.Errorf("field criteriaId: required")
+	} else if v == nil {
+		return fmt.Errorf("field criteriaId: must not be null")
 	}
-	if _, ok := raw["criteriaName"]; raw != nil && !ok {
-		return fmt.Errorf("field criteriaName in EntityCriteriaCalculationRequestJson: required")
+	if v, ok := raw["criteriaName"]; !ok {
+		return fmt.Errorf("field criteriaName: required")
+	} else if v == nil {
+		return fmt.Errorf("field criteriaName: must not be null")
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityCriteriaCalculationRequestJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityCriteriaCalculationRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityCriteriaCalculationRequestJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["target"]; raw != nil && !ok {
-		return fmt.Errorf("field target in EntityCriteriaCalculationRequestJson: required")
+	if v, ok := raw["target"]; !ok {
+		return fmt.Errorf("field target: required")
+	} else if v == nil {
+		return fmt.Errorf("field target: must not be null")
 	}
 	type Plain EntityCriteriaCalculationRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityCriteriaCalculationRequestJson(plain)
@@ -961,7 +1312,12 @@ type EntityCriteriaCalculationResponseJson struct {
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
-	// Criteria check result.
+	// Criteria check result. Required on any response but an explicit `success:
+	// false` one — `success` is optional and defaults to true, so a response that
+	// omits it is a successful one. A criterion decides a transition, so a successful
+	// response that omits `matches`, or sends null, is refused as an answer that
+	// could not be read rather than read as false. A `success: false` response
+	// carries no result.
 	Matches *bool `json:"matches,omitempty" yaml:"matches,omitempty" mapstructure:"matches,omitempty"`
 
 	// Reason for the criteria check result.
@@ -985,8 +1341,10 @@ type EntityCriteriaCalculationResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -996,11 +1354,15 @@ func (j *EntityCriteriaCalculationResponseJsonError) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityCriteriaCalculationResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityCriteriaCalculationResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityCriteriaCalculationResponseJsonError
 	var plain Plain
@@ -1017,21 +1379,29 @@ func (j *EntityCriteriaCalculationResponseJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityCriteriaCalculationResponseJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityCriteriaCalculationResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityCriteriaCalculationResponseJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityCriteriaCalculationResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityCriteriaCalculationResponseJson(plain)
@@ -1048,16 +1418,25 @@ type EntityDeleteAllRequestJson struct {
 	// Information about the model.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
 
-	// point in time, i.e. delete all that existed prior to this point in time
+	// Has no effect: the selection is streamed, so there is no page for it to size.
+	// Accepted so that a client sending it is not refused.
+	PageSize *int `json:"pageSize,omitempty" yaml:"pageSize,omitempty" mapstructure:"pageSize,omitempty"`
+
+	// Point in time, i.e. delete all that existed at this point in time. Must be at
+	// or before the consistency time. If not provided, the current state is used.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
 	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
 
-	// Transaction size.
+	// Number of entities to delete per transaction batch. Batches committed before a
+	// failure remain durable, and per-id and batch failures are reported in the
+	// response. Not supported on a request joining an open transaction. Absent means
+	// a single transaction.
 	TransactionSize *int `json:"transactionSize,omitempty" yaml:"transactionSize,omitempty" mapstructure:"transactionSize,omitempty"`
 
-	// Include the list of entity ids deleted in the response
+	// Include the list of entity ids the delete attempted in the response; an id
+	// whose delete failed also appears in the error map.
 	Verbose bool `json:"verbose,omitempty" yaml:"verbose,omitempty" mapstructure:"verbose,omitempty"`
 
 	// Warnings (if applicable).
@@ -1072,8 +1451,10 @@ type EntityDeleteAllRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1083,11 +1464,15 @@ func (j *EntityDeleteAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityDeleteAllRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityDeleteAllRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityDeleteAllRequestJsonError
 	var plain Plain
@@ -1104,18 +1489,24 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityDeleteAllRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityDeleteAllRequestJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntityDeleteAllRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	if v, ok := raw["verbose"]; !ok || v == nil {
@@ -1163,8 +1554,10 @@ type EntityDeleteAllResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1174,11 +1567,15 @@ func (j *EntityDeleteAllResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityDeleteAllResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityDeleteAllResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityDeleteAllResponseJsonError
 	var plain Plain
@@ -1198,27 +1595,39 @@ func (j *EntityDeleteAllResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityIds"]; raw != nil && !ok {
-		return fmt.Errorf("field entityIds in EntityDeleteAllResponseJson: required")
+	if v, ok := raw["entityIds"]; !ok {
+		return fmt.Errorf("field entityIds: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityIds: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityDeleteAllResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelId"]; raw != nil && !ok {
-		return fmt.Errorf("field modelId in EntityDeleteAllResponseJson: required")
+	if v, ok := raw["modelId"]; !ok {
+		return fmt.Errorf("field modelId: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelId: must not be null")
 	}
-	if _, ok := raw["numDeleted"]; raw != nil && !ok {
-		return fmt.Errorf("field numDeleted in EntityDeleteAllResponseJson: required")
+	if v, ok := raw["numDeleted"]; !ok {
+		return fmt.Errorf("field numDeleted: required")
+	} else if v == nil {
+		return fmt.Errorf("field numDeleted: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityDeleteAllResponseJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityDeleteAllResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityDeleteAllResponseJson(plain)
@@ -1250,8 +1659,10 @@ type EntityDeleteRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1261,11 +1672,15 @@ func (j *EntityDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityDeleteRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityDeleteRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityDeleteRequestJsonError
 	var plain Plain
@@ -1282,18 +1697,24 @@ func (j *EntityDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityDeleteRequestJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityDeleteRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityDeleteRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityDeleteRequestJson(plain)
@@ -1334,8 +1755,10 @@ type EntityDeleteResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1345,11 +1768,15 @@ func (j *EntityDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityDeleteResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityDeleteResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityDeleteResponseJsonError
 	var plain Plain
@@ -1366,27 +1793,39 @@ func (j *EntityDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityDeleteResponseJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityDeleteResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityDeleteResponseJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityDeleteResponseJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["transactionId"]; raw != nil && !ok {
-		return fmt.Errorf("field transactionId in EntityDeleteResponseJson: required")
+	if v, ok := raw["transactionId"]; !ok {
+		return fmt.Errorf("field transactionId: required")
+	} else if v == nil {
+		return fmt.Errorf("field transactionId: must not be null")
 	}
 	type Plain EntityDeleteResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityDeleteResponseJson(plain)
@@ -1442,8 +1881,10 @@ type EntityFunctionCalculationRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1453,11 +1894,15 @@ func (j *EntityFunctionCalculationRequestJsonError) UnmarshalJSON(value []byte) 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityFunctionCalculationRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityFunctionCalculationRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityFunctionCalculationRequestJsonError
 	var plain Plain
@@ -1474,30 +1919,44 @@ func (j *EntityFunctionCalculationRequestJson) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityFunctionCalculationRequestJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["functionId"]; raw != nil && !ok {
-		return fmt.Errorf("field functionId in EntityFunctionCalculationRequestJson: required")
+	if v, ok := raw["functionId"]; !ok {
+		return fmt.Errorf("field functionId: required")
+	} else if v == nil {
+		return fmt.Errorf("field functionId: must not be null")
 	}
-	if _, ok := raw["functionName"]; raw != nil && !ok {
-		return fmt.Errorf("field functionName in EntityFunctionCalculationRequestJson: required")
+	if v, ok := raw["functionName"]; !ok {
+		return fmt.Errorf("field functionName: required")
+	} else if v == nil {
+		return fmt.Errorf("field functionName: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityFunctionCalculationRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityFunctionCalculationRequestJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["workflow"]; raw != nil && !ok {
-		return fmt.Errorf("field workflow in EntityFunctionCalculationRequestJson: required")
+	if v, ok := raw["workflow"]; !ok {
+		return fmt.Errorf("field workflow: required")
+	} else if v == nil {
+		return fmt.Errorf("field workflow: must not be null")
 	}
 	type Plain EntityFunctionCalculationRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityFunctionCalculationRequestJson(plain)
@@ -1538,8 +1997,10 @@ type EntityFunctionCalculationResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1549,11 +2010,15 @@ func (j *EntityFunctionCalculationResponseJsonError) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityFunctionCalculationResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityFunctionCalculationResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityFunctionCalculationResponseJsonError
 	var plain Plain
@@ -1570,21 +2035,29 @@ func (j *EntityFunctionCalculationResponseJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityFunctionCalculationResponseJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityFunctionCalculationResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityFunctionCalculationResponseJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityFunctionCalculationResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityFunctionCalculationResponseJson(plain)
@@ -1607,7 +2080,8 @@ type EntityGetAllRequestJson struct {
 	// Page size.
 	PageSize int `json:"pageSize,omitempty" yaml:"pageSize,omitempty" mapstructure:"pageSize,omitempty"`
 
-	// point in time
+	// Point in time. Must be at or before the consistency time. If not provided, the
+	// current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -1625,8 +2099,10 @@ type EntityGetAllRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1636,11 +2112,15 @@ func (j *EntityGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityGetAllRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityGetAllRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityGetAllRequestJsonError
 	var plain Plain
@@ -1657,11 +2137,15 @@ func (j *EntityGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityGetAllRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityGetAllRequestJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntityGetAllRequestJson
 	var plain Plain
@@ -1674,7 +2158,9 @@ func (j *EntityGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	if v, ok := raw["pageSize"]; !ok || v == nil {
 		plain.PageSize = 20.0
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityGetAllRequestJson(plain)
@@ -1691,8 +2177,8 @@ type EntityGetRequestJson struct {
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
-	// Point in time to retrieve the entity. If not provided, retrieves the entity at
-	// the current consistency time.
+	// Point in time to retrieve the entity. Must be at or before the consistency
+	// time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -1710,8 +2196,10 @@ type EntityGetRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1721,11 +2209,15 @@ func (j *EntityGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityGetRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityGetRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityGetRequestJsonError
 	var plain Plain
@@ -1742,18 +2234,24 @@ func (j *EntityGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityGetRequestJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityGetRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityGetRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityGetRequestJson(plain)
@@ -1785,8 +2283,10 @@ type EntityModelDeleteRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1796,11 +2296,15 @@ func (j *EntityModelDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelDeleteRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelDeleteRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelDeleteRequestJsonError
 	var plain Plain
@@ -1817,18 +2321,24 @@ func (j *EntityModelDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelDeleteRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityModelDeleteRequestJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntityModelDeleteRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelDeleteRequestJson(plain)
@@ -1857,8 +2367,10 @@ type EntityModelDeleteResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1868,11 +2380,15 @@ func (j *EntityModelDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelDeleteResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelDeleteResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelDeleteResponseJsonError
 	var plain Plain
@@ -1889,15 +2405,19 @@ func (j *EntityModelDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelDeleteResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityModelDeleteResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelDeleteResponseJson(plain)
@@ -1932,8 +2452,10 @@ type EntityModelExportRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -1943,11 +2465,15 @@ func (j *EntityModelExportRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelExportRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelExportRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelExportRequestJsonError
 	var plain Plain
@@ -1964,21 +2490,29 @@ func (j *EntityModelExportRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["converter"]; raw != nil && !ok {
-		return fmt.Errorf("field converter in EntityModelExportRequestJson: required")
+	if v, ok := raw["converter"]; !ok {
+		return fmt.Errorf("field converter: required")
+	} else if v == nil {
+		return fmt.Errorf("field converter: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelExportRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityModelExportRequestJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntityModelExportRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelExportRequestJson(plain)
@@ -2017,8 +2551,10 @@ type EntityModelExportResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2028,11 +2564,15 @@ func (j *EntityModelExportResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelExportResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelExportResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelExportResponseJsonError
 	var plain Plain
@@ -2049,24 +2589,32 @@ func (j *EntityModelExportResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelExportResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityModelExportResponseJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
-	if _, ok := raw["modelId"]; raw != nil && !ok {
-		return fmt.Errorf("field modelId in EntityModelExportResponseJson: required")
+	if v, ok := raw["modelId"]; !ok {
+		return fmt.Errorf("field modelId: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelId: must not be null")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityModelExportResponseJson: required")
+	if _, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
 	}
 	type Plain EntityModelExportResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelExportResponseJson(plain)
@@ -2095,8 +2643,10 @@ type EntityModelGetAllRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2106,11 +2656,15 @@ func (j *EntityModelGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelGetAllRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelGetAllRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelGetAllRequestJsonError
 	var plain Plain
@@ -2127,15 +2681,19 @@ func (j *EntityModelGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelGetAllRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityModelGetAllRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelGetAllRequestJson(plain)
@@ -2167,8 +2725,10 @@ type EntityModelGetAllResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2178,11 +2738,15 @@ func (j *EntityModelGetAllResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelGetAllResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelGetAllResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelGetAllResponseJsonError
 	var plain Plain
@@ -2199,18 +2763,24 @@ func (j *EntityModelGetAllResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelGetAllResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["models"]; raw != nil && !ok {
-		return fmt.Errorf("field models in EntityModelGetAllResponseJson: required")
+	if v, ok := raw["models"]; !ok {
+		return fmt.Errorf("field models: required")
+	} else if v == nil {
+		return fmt.Errorf("field models: must not be null")
 	}
 	type Plain EntityModelGetAllResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelGetAllResponseJson(plain)
@@ -2251,8 +2821,10 @@ type EntityModelImportRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2262,11 +2834,15 @@ func (j *EntityModelImportRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelImportRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelImportRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelImportRequestJsonError
 	var plain Plain
@@ -2283,27 +2859,37 @@ func (j *EntityModelImportRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["converter"]; raw != nil && !ok {
-		return fmt.Errorf("field converter in EntityModelImportRequestJson: required")
+	if v, ok := raw["converter"]; !ok {
+		return fmt.Errorf("field converter: required")
+	} else if v == nil {
+		return fmt.Errorf("field converter: must not be null")
 	}
-	if _, ok := raw["dataFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field dataFormat in EntityModelImportRequestJson: required")
+	if v, ok := raw["dataFormat"]; !ok {
+		return fmt.Errorf("field dataFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field dataFormat: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelImportRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityModelImportRequestJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityModelImportRequestJson: required")
+	if _, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
 	}
 	type Plain EntityModelImportRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelImportRequestJson(plain)
@@ -2335,8 +2921,10 @@ type EntityModelImportResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2346,11 +2934,15 @@ func (j *EntityModelImportResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelImportResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelImportResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelImportResponseJsonError
 	var plain Plain
@@ -2367,21 +2959,252 @@ func (j *EntityModelImportResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelImportResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelId"]; raw != nil && !ok {
-		return fmt.Errorf("field modelId in EntityModelImportResponseJson: required")
+	if v, ok := raw["modelId"]; !ok {
+		return fmt.Errorf("field modelId: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelId: must not be null")
 	}
 	type Plain EntityModelImportResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelImportResponseJson(plain)
+	return nil
+}
+
+type EntityModelSetUniqueKeysRequestJson struct {
+	// Error details (if present).
+	Error *EntityModelSetUniqueKeysRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Entity model specification. The model must be unlocked.
+	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// The model's composite unique keys. They replace the keys the model has; an
+	// empty array removes them all.
+	UniqueKeys []EntityModelSetUniqueKeysRequestJsonUniqueKeysElem `json:"uniqueKeys" yaml:"uniqueKeys" mapstructure:"uniqueKeys"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityModelSetUniqueKeysRequestJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityModelSetUniqueKeysRequestJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
+	}
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
+	}
+	type Plain EntityModelSetUniqueKeysRequestJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityModelSetUniqueKeysRequestJsonError(plain)
+	return nil
+}
+
+// A composite unique key definition over one or more scalar leaf fields.
+type EntityModelSetUniqueKeysRequestJsonUniqueKeysElem struct {
+	// Ordered list of scalar leaf field paths.
+	Fields []string `json:"fields" yaml:"fields" mapstructure:"fields"`
+
+	// Unique identifier for this key definition.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityModelSetUniqueKeysRequestJsonUniqueKeysElem) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["fields"]; !ok {
+		return fmt.Errorf("field fields: required")
+	} else if v == nil {
+		return fmt.Errorf("field fields: must not be null")
+	}
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
+	}
+	type Plain EntityModelSetUniqueKeysRequestJsonUniqueKeysElem
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityModelSetUniqueKeysRequestJsonUniqueKeysElem(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityModelSetUniqueKeysRequestJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
+	}
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
+	}
+	if v, ok := raw["uniqueKeys"]; !ok {
+		return fmt.Errorf("field uniqueKeys: required")
+	} else if v == nil {
+		return fmt.Errorf("field uniqueKeys: must not be null")
+	}
+	type Plain EntityModelSetUniqueKeysRequestJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = EntityModelSetUniqueKeysRequestJson(plain)
+	return nil
+}
+
+type EntityModelSetUniqueKeysResponseJson struct {
+	// Error details (if present).
+	Error *EntityModelSetUniqueKeysResponseJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// ID of the entity model.
+	ModelID string `json:"modelId" yaml:"modelId" mapstructure:"modelId"`
+
+	// State of the entity model.
+	State string `json:"state" yaml:"state" mapstructure:"state"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityModelSetUniqueKeysResponseJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityModelSetUniqueKeysResponseJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
+	}
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
+	}
+	type Plain EntityModelSetUniqueKeysResponseJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityModelSetUniqueKeysResponseJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityModelSetUniqueKeysResponseJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
+	}
+	if v, ok := raw["modelId"]; !ok {
+		return fmt.Errorf("field modelId: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelId: must not be null")
+	}
+	if v, ok := raw["state"]; !ok {
+		return fmt.Errorf("field state: required")
+	} else if v == nil {
+		return fmt.Errorf("field state: must not be null")
+	}
+	type Plain EntityModelSetUniqueKeysResponseJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = EntityModelSetUniqueKeysResponseJson(plain)
 	return nil
 }
 
@@ -2413,8 +3236,10 @@ type EntityModelTransitionRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2424,11 +3249,15 @@ func (j *EntityModelTransitionRequestJsonError) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelTransitionRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelTransitionRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelTransitionRequestJsonError
 	var plain Plain
@@ -2452,7 +3281,7 @@ var enumValues_EntityModelTransitionRequestJsonTransition = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelTransitionRequestJsonTransition) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -2463,7 +3292,7 @@ func (j *EntityModelTransitionRequestJsonTransition) UnmarshalJSON(value []byte)
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntityModelTransitionRequestJsonTransition, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_EntityModelTransitionRequestJsonTransition)
 	}
 	*j = EntityModelTransitionRequestJsonTransition(v)
 	return nil
@@ -2475,21 +3304,29 @@ func (j *EntityModelTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelTransitionRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityModelTransitionRequestJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
-	if _, ok := raw["transition"]; raw != nil && !ok {
-		return fmt.Errorf("field transition in EntityModelTransitionRequestJson: required")
+	if v, ok := raw["transition"]; !ok {
+		return fmt.Errorf("field transition: required")
+	} else if v == nil {
+		return fmt.Errorf("field transition: must not be null")
 	}
 	type Plain EntityModelTransitionRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelTransitionRequestJson(plain)
@@ -2524,8 +3361,10 @@ type EntityModelTransitionResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2535,11 +3374,15 @@ func (j *EntityModelTransitionResponseJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelTransitionResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelTransitionResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelTransitionResponseJsonError
 	var plain Plain
@@ -2556,21 +3399,29 @@ func (j *EntityModelTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelTransitionResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelId"]; raw != nil && !ok {
-		return fmt.Errorf("field modelId in EntityModelTransitionResponseJson: required")
+	if v, ok := raw["modelId"]; !ok {
+		return fmt.Errorf("field modelId: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelId: must not be null")
 	}
-	if _, ok := raw["state"]; raw != nil && !ok {
-		return fmt.Errorf("field state in EntityModelTransitionResponseJson: required")
+	if v, ok := raw["state"]; !ok {
+		return fmt.Errorf("field state: required")
+	} else if v == nil {
+		return fmt.Errorf("field state: must not be null")
 	}
 	type Plain EntityModelTransitionResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityModelTransitionResponseJson(plain)
@@ -2598,11 +3449,13 @@ func (j *EntityPatchPayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityPatchPayloadJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["patch"]; raw != nil && !ok {
-		return fmt.Errorf("field patch in EntityPatchPayloadJson: required")
+	if _, ok := raw["patch"]; !ok {
+		return fmt.Errorf("field patch: required")
 	}
 	type Plain EntityPatchPayloadJson
 	var plain Plain
@@ -2644,8 +3497,10 @@ type EntityPatchRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2655,11 +3510,15 @@ func (j *EntityPatchRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityPatchRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityPatchRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityPatchRequestJsonError
 	var plain Plain
@@ -2676,21 +3535,29 @@ func (j *EntityPatchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityPatchRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["patchFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field patchFormat in EntityPatchRequestJson: required")
+	if v, ok := raw["patchFormat"]; !ok {
+		return fmt.Errorf("field patchFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field patchFormat: must not be null")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityPatchRequestJson: required")
+	if v, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
+	} else if v == nil {
+		return fmt.Errorf("field payload: must not be null")
 	}
 	type Plain EntityPatchRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityPatchRequestJson(plain)
@@ -2746,8 +3613,10 @@ type EntityProcessorCalculationRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2757,11 +3626,15 @@ func (j *EntityProcessorCalculationRequestJsonError) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityProcessorCalculationRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityProcessorCalculationRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityProcessorCalculationRequestJsonError
 	var plain Plain
@@ -2778,30 +3651,44 @@ func (j *EntityProcessorCalculationRequestJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityProcessorCalculationRequestJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityProcessorCalculationRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["processorId"]; raw != nil && !ok {
-		return fmt.Errorf("field processorId in EntityProcessorCalculationRequestJson: required")
+	if v, ok := raw["processorId"]; !ok {
+		return fmt.Errorf("field processorId: required")
+	} else if v == nil {
+		return fmt.Errorf("field processorId: must not be null")
 	}
-	if _, ok := raw["processorName"]; raw != nil && !ok {
-		return fmt.Errorf("field processorName in EntityProcessorCalculationRequestJson: required")
+	if v, ok := raw["processorName"]; !ok {
+		return fmt.Errorf("field processorName: required")
+	} else if v == nil {
+		return fmt.Errorf("field processorName: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityProcessorCalculationRequestJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["workflow"]; raw != nil && !ok {
-		return fmt.Errorf("field workflow in EntityProcessorCalculationRequestJson: required")
+	if v, ok := raw["workflow"]; !ok {
+		return fmt.Errorf("field workflow: required")
+	} else if v == nil {
+		return fmt.Errorf("field workflow: must not be null")
 	}
 	type Plain EntityProcessorCalculationRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityProcessorCalculationRequestJson(plain)
@@ -2839,8 +3726,10 @@ type EntityProcessorCalculationResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2850,11 +3739,15 @@ func (j *EntityProcessorCalculationResponseJsonError) UnmarshalJSON(value []byte
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityProcessorCalculationResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityProcessorCalculationResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityProcessorCalculationResponseJsonError
 	var plain Plain
@@ -2871,21 +3764,29 @@ func (j *EntityProcessorCalculationResponseJson) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityProcessorCalculationResponseJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityProcessorCalculationResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityProcessorCalculationResponseJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityProcessorCalculationResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityProcessorCalculationResponseJson(plain)
@@ -2920,8 +3821,10 @@ type EntityResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -2931,11 +3834,15 @@ func (j *EntityResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityResponseJsonError
 	var plain Plain
@@ -2952,21 +3859,29 @@ func (j *EntityResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityResponseJson: required")
+	if v, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
+	} else if v == nil {
+		return fmt.Errorf("field payload: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityResponseJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityResponseJson(plain)
@@ -2994,7 +3909,8 @@ type EntitySearchRequestJson struct {
 	// OrderBy corresponds to the JSON schema field "orderBy".
 	OrderBy []EntitySearchRequestJsonOrderByElem `json:"orderBy,omitempty" yaml:"orderBy,omitempty" mapstructure:"orderBy,omitempty"`
 
-	// point in time
+	// Point in time. Must be at or before the consistency time. If not provided, the
+	// current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -3024,8 +3940,10 @@ type EntitySearchRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3035,11 +3953,15 @@ func (j *EntitySearchRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntitySearchRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntitySearchRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntitySearchRequestJsonError
 	var plain Plain
@@ -3078,7 +4000,7 @@ var enumValues_EntitySearchRequestJsonOrderByElemSource = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySearchRequestJsonOrderByElemSource) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -3089,7 +4011,7 @@ func (j *EntitySearchRequestJsonOrderByElemSource) UnmarshalJSON(value []byte) e
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntitySearchRequestJsonOrderByElemSource, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_EntitySearchRequestJsonOrderByElemSource)
 	}
 	*j = EntitySearchRequestJsonOrderByElemSource(v)
 	return nil
@@ -3101,8 +4023,10 @@ func (j *EntitySearchRequestJsonOrderByElem) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["path"]; raw != nil && !ok {
-		return fmt.Errorf("field path in EntitySearchRequestJsonOrderByElem: required")
+	if v, ok := raw["path"]; !ok {
+		return fmt.Errorf("field path: required")
+	} else if v == nil {
+		return fmt.Errorf("field path: must not be null")
 	}
 	type Plain EntitySearchRequestJsonOrderByElem
 	var plain Plain
@@ -3125,21 +4049,29 @@ func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["condition"]; raw != nil && !ok {
-		return fmt.Errorf("field condition in EntitySearchRequestJson: required")
+	if v, ok := raw["condition"]; !ok {
+		return fmt.Errorf("field condition: required")
+	} else if v == nil {
+		return fmt.Errorf("field condition: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntitySearchRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntitySearchRequestJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntitySearchRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	if v, ok := raw["trackingRead"]; !ok || v == nil {
@@ -3165,7 +4097,8 @@ type EntitySnapshotSearchRequestJson struct {
 	// OrderBy corresponds to the JSON schema field "orderBy".
 	OrderBy []EntitySnapshotSearchRequestJsonOrderByElem `json:"orderBy,omitempty" yaml:"orderBy,omitempty" mapstructure:"orderBy,omitempty"`
 
-	// point in time
+	// Point in time. Must be at or before the consistency time. If not provided, the
+	// consistency time at submission.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -3186,8 +4119,10 @@ type EntitySnapshotSearchRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3197,11 +4132,15 @@ func (j *EntitySnapshotSearchRequestJsonError) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntitySnapshotSearchRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntitySnapshotSearchRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntitySnapshotSearchRequestJsonError
 	var plain Plain
@@ -3240,7 +4179,7 @@ var enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySnapshotSearchRequestJsonOrderByElemSource) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -3251,7 +4190,7 @@ func (j *EntitySnapshotSearchRequestJsonOrderByElemSource) UnmarshalJSON(value [
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource)
 	}
 	*j = EntitySnapshotSearchRequestJsonOrderByElemSource(v)
 	return nil
@@ -3263,8 +4202,10 @@ func (j *EntitySnapshotSearchRequestJsonOrderByElem) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["path"]; raw != nil && !ok {
-		return fmt.Errorf("field path in EntitySnapshotSearchRequestJsonOrderByElem: required")
+	if v, ok := raw["path"]; !ok {
+		return fmt.Errorf("field path: required")
+	} else if v == nil {
+		return fmt.Errorf("field path: must not be null")
 	}
 	type Plain EntitySnapshotSearchRequestJsonOrderByElem
 	var plain Plain
@@ -3287,21 +4228,29 @@ func (j *EntitySnapshotSearchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["condition"]; raw != nil && !ok {
-		return fmt.Errorf("field condition in EntitySnapshotSearchRequestJson: required")
+	if v, ok := raw["condition"]; !ok {
+		return fmt.Errorf("field condition: required")
+	} else if v == nil {
+		return fmt.Errorf("field condition: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntitySnapshotSearchRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntitySnapshotSearchRequestJson: required")
+	if v, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntitySnapshotSearchRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntitySnapshotSearchRequestJson(plain)
@@ -3333,8 +4282,10 @@ type EntitySnapshotSearchResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3344,11 +4295,15 @@ func (j *EntitySnapshotSearchResponseJsonError) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntitySnapshotSearchResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntitySnapshotSearchResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntitySnapshotSearchResponseJsonError
 	var plain Plain
@@ -3365,18 +4320,24 @@ func (j *EntitySnapshotSearchResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntitySnapshotSearchResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["status"]; raw != nil && !ok {
-		return fmt.Errorf("field status in EntitySnapshotSearchResponseJson: required")
+	if v, ok := raw["status"]; !ok {
+		return fmt.Errorf("field status: required")
+	} else if v == nil {
+		return fmt.Errorf("field status: must not be null")
 	}
 	type Plain EntitySnapshotSearchResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntitySnapshotSearchResponseJson(plain)
@@ -3393,8 +4354,8 @@ type EntityStatsByStateGetRequestJson struct {
 	// Optional specifier of the Entity model to calculate statistics for.
 	Model *ModelSpecJson `json:"model,omitempty" yaml:"model,omitempty" mapstructure:"model,omitempty"`
 
-	// The point-in-time for statistics in ISO 8601 format. Defaults to current
-	// consistency time if not provided.
+	// The point-in-time for statistics in RFC 3339 format. Must be at or before the
+	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Optional list of states for which to calculate statistics. If not provided,
@@ -3416,8 +4377,10 @@ type EntityStatsByStateGetRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3427,11 +4390,15 @@ func (j *EntityStatsByStateGetRequestJsonError) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityStatsByStateGetRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityStatsByStateGetRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityStatsByStateGetRequestJsonError
 	var plain Plain
@@ -3448,15 +4415,19 @@ func (j *EntityStatsByStateGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityStatsByStateGetRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityStatsByStateGetRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityStatsByStateGetRequestJson(plain)
@@ -3500,8 +4471,10 @@ type EntityStatsByStateResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3511,11 +4484,15 @@ func (j *EntityStatsByStateResponseJsonError) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityStatsByStateResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityStatsByStateResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityStatsByStateResponseJsonError
 	var plain Plain
@@ -3532,30 +4509,44 @@ func (j *EntityStatsByStateResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["count"]; raw != nil && !ok {
-		return fmt.Errorf("field count in EntityStatsByStateResponseJson: required")
+	if v, ok := raw["count"]; !ok {
+		return fmt.Errorf("field count: required")
+	} else if v == nil {
+		return fmt.Errorf("field count: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityStatsByStateResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelName"]; raw != nil && !ok {
-		return fmt.Errorf("field modelName in EntityStatsByStateResponseJson: required")
+	if v, ok := raw["modelName"]; !ok {
+		return fmt.Errorf("field modelName: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelName: must not be null")
 	}
-	if _, ok := raw["modelVersion"]; raw != nil && !ok {
-		return fmt.Errorf("field modelVersion in EntityStatsByStateResponseJson: required")
+	if v, ok := raw["modelVersion"]; !ok {
+		return fmt.Errorf("field modelVersion: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelVersion: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityStatsByStateResponseJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["state"]; raw != nil && !ok {
-		return fmt.Errorf("field state in EntityStatsByStateResponseJson: required")
+	if v, ok := raw["state"]; !ok {
+		return fmt.Errorf("field state: required")
+	} else if v == nil {
+		return fmt.Errorf("field state: must not be null")
 	}
 	type Plain EntityStatsByStateResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityStatsByStateResponseJson(plain)
@@ -3572,8 +4563,8 @@ type EntityStatsGetRequestJson struct {
 	// Optional specifier of the Entity model to calculate statistics for.
 	Model *ModelSpecJson `json:"model,omitempty" yaml:"model,omitempty" mapstructure:"model,omitempty"`
 
-	// The point-in-time for statistics in ISO 8601 format. Defaults to current
-	// consistency time if not provided.
+	// The point-in-time for statistics in RFC 3339 format. Must be at or before the
+	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -3591,8 +4582,10 @@ type EntityStatsGetRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3602,11 +4595,15 @@ func (j *EntityStatsGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityStatsGetRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityStatsGetRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityStatsGetRequestJsonError
 	var plain Plain
@@ -3623,15 +4620,19 @@ func (j *EntityStatsGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityStatsGetRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityStatsGetRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityStatsGetRequestJson(plain)
@@ -3672,8 +4673,10 @@ type EntityStatsResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3683,11 +4686,15 @@ func (j *EntityStatsResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityStatsResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityStatsResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityStatsResponseJsonError
 	var plain Plain
@@ -3704,27 +4711,39 @@ func (j *EntityStatsResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["count"]; raw != nil && !ok {
-		return fmt.Errorf("field count in EntityStatsResponseJson: required")
+	if v, ok := raw["count"]; !ok {
+		return fmt.Errorf("field count: required")
+	} else if v == nil {
+		return fmt.Errorf("field count: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityStatsResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelName"]; raw != nil && !ok {
-		return fmt.Errorf("field modelName in EntityStatsResponseJson: required")
+	if v, ok := raw["modelName"]; !ok {
+		return fmt.Errorf("field modelName: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelName: must not be null")
 	}
-	if _, ok := raw["modelVersion"]; raw != nil && !ok {
-		return fmt.Errorf("field modelVersion in EntityStatsResponseJson: required")
+	if v, ok := raw["modelVersion"]; !ok {
+		return fmt.Errorf("field modelVersion: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelVersion: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityStatsResponseJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityStatsResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityStatsResponseJson(plain)
@@ -3745,8 +4764,10 @@ func (j *EntityTransactionInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityIds"]; raw != nil && !ok {
-		return fmt.Errorf("field entityIds in EntityTransactionInfoJson: required")
+	if v, ok := raw["entityIds"]; !ok {
+		return fmt.Errorf("field entityIds: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityIds: must not be null")
 	}
 	type Plain EntityTransactionInfoJson
 	var plain Plain
@@ -3785,8 +4806,10 @@ type EntityTransactionResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3796,11 +4819,15 @@ func (j *EntityTransactionResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityTransactionResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityTransactionResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityTransactionResponseJsonError
 	var plain Plain
@@ -3817,21 +4844,29 @@ func (j *EntityTransactionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityTransactionResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityTransactionResponseJson: required")
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["transactionInfo"]; raw != nil && !ok {
-		return fmt.Errorf("field transactionInfo in EntityTransactionResponseJson: required")
+	if v, ok := raw["transactionInfo"]; !ok {
+		return fmt.Errorf("field transactionInfo: required")
+	} else if v == nil {
+		return fmt.Errorf("field transactionInfo: must not be null")
 	}
 	type Plain EntityTransactionResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityTransactionResponseJson(plain)
@@ -3866,8 +4901,10 @@ type EntityTransitionRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3877,11 +4914,15 @@ func (j *EntityTransitionRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityTransitionRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityTransitionRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityTransitionRequestJsonError
 	var plain Plain
@@ -3898,21 +4939,29 @@ func (j *EntityTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityTransitionRequestJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityTransitionRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["transition"]; raw != nil && !ok {
-		return fmt.Errorf("field transition in EntityTransitionRequestJson: required")
+	if v, ok := raw["transition"]; !ok {
+		return fmt.Errorf("field transition: required")
+	} else if v == nil {
+		return fmt.Errorf("field transition: must not be null")
 	}
 	type Plain EntityTransitionRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityTransitionRequestJson(plain)
@@ -3944,8 +4993,10 @@ type EntityTransitionResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -3955,11 +5006,15 @@ func (j *EntityTransitionResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityTransitionResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityTransitionResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityTransitionResponseJsonError
 	var plain Plain
@@ -3976,15 +5031,19 @@ func (j *EntityTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityTransitionResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityTransitionResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityTransitionResponseJson(plain)
@@ -4028,8 +5087,10 @@ type EntityUpdateCollectionRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4039,11 +5100,15 @@ func (j *EntityUpdateCollectionRequestJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityUpdateCollectionRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityUpdateCollectionRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityUpdateCollectionRequestJsonError
 	var plain Plain
@@ -4060,21 +5125,29 @@ func (j *EntityUpdateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field dataFormat in EntityUpdateCollectionRequestJson: required")
+	if v, ok := raw["dataFormat"]; !ok {
+		return fmt.Errorf("field dataFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field dataFormat: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityUpdateCollectionRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["payloads"]; raw != nil && !ok {
-		return fmt.Errorf("field payloads in EntityUpdateCollectionRequestJson: required")
+	if v, ok := raw["payloads"]; !ok {
+		return fmt.Errorf("field payloads: required")
+	} else if v == nil {
+		return fmt.Errorf("field payloads: must not be null")
 	}
 	type Plain EntityUpdateCollectionRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityUpdateCollectionRequestJson(plain)
@@ -4098,11 +5171,13 @@ func (j *EntityUpdatePayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["data"]; raw != nil && !ok {
-		return fmt.Errorf("field data in EntityUpdatePayloadJson: required")
+	if _, ok := raw["data"]; !ok {
+		return fmt.Errorf("field data: required")
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityUpdatePayloadJson: required")
+	if v, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
 	type Plain EntityUpdatePayloadJson
 	var plain Plain
@@ -4144,8 +5219,10 @@ type EntityUpdateRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4155,11 +5232,15 @@ func (j *EntityUpdateRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityUpdateRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityUpdateRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityUpdateRequestJsonError
 	var plain Plain
@@ -4176,21 +5257,29 @@ func (j *EntityUpdateRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field dataFormat in EntityUpdateRequestJson: required")
+	if v, ok := raw["dataFormat"]; !ok {
+		return fmt.Errorf("field dataFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field dataFormat: must not be null")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityUpdateRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityUpdateRequestJson: required")
+	if v, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
+	} else if v == nil {
+		return fmt.Errorf("field payload: must not be null")
 	}
 	type Plain EntityUpdateRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EntityUpdateRequestJson(plain)
@@ -4222,8 +5311,10 @@ type EventAckResponseJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4233,11 +5324,15 @@ func (j *EventAckResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EventAckResponseJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EventAckResponseJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EventAckResponseJsonError
 	var plain Plain
@@ -4254,18 +5349,24 @@ func (j *EventAckResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EventAckResponseJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["sourceEventId"]; raw != nil && !ok {
-		return fmt.Errorf("field sourceEventId in EventAckResponseJson: required")
+	if v, ok := raw["sourceEventId"]; !ok {
+		return fmt.Errorf("field sourceEventId: required")
+	} else if v == nil {
+		return fmt.Errorf("field sourceEventId: must not be null")
 	}
 	type Plain EventAckResponseJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = EventAckResponseJson(plain)
@@ -4285,7 +5386,7 @@ var enumValues_ModelConverterTypeJson = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *ModelConverterTypeJson) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -4296,7 +5397,7 @@ func (j *ModelConverterTypeJson) UnmarshalJSON(value []byte) error {
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_ModelConverterTypeJson, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_ModelConverterTypeJson)
 	}
 	*j = ModelConverterTypeJson(v)
 	return nil
@@ -4322,17 +5423,25 @@ func (j *ModelInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in ModelInfoJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["name"]; raw != nil && !ok {
-		return fmt.Errorf("field name in ModelInfoJson: required")
+	if v, ok := raw["name"]; !ok {
+		return fmt.Errorf("field name: required")
+	} else if v == nil {
+		return fmt.Errorf("field name: must not be null")
 	}
-	if _, ok := raw["state"]; raw != nil && !ok {
-		return fmt.Errorf("field state in ModelInfoJson: required")
+	if v, ok := raw["state"]; !ok {
+		return fmt.Errorf("field state: required")
+	} else if v == nil {
+		return fmt.Errorf("field state: must not be null")
 	}
-	if _, ok := raw["version"]; raw != nil && !ok {
-		return fmt.Errorf("field version in ModelInfoJson: required")
+	if v, ok := raw["version"]; !ok {
+		return fmt.Errorf("field version: required")
+	} else if v == nil {
+		return fmt.Errorf("field version: must not be null")
 	}
 	type Plain ModelInfoJson
 	var plain Plain
@@ -4357,11 +5466,15 @@ func (j *ModelSpecJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["name"]; raw != nil && !ok {
-		return fmt.Errorf("field name in ModelSpecJson: required")
+	if v, ok := raw["name"]; !ok {
+		return fmt.Errorf("field name: required")
+	} else if v == nil {
+		return fmt.Errorf("field name: must not be null")
 	}
-	if _, ok := raw["version"]; raw != nil && !ok {
-		return fmt.Errorf("field version in ModelSpecJson: required")
+	if v, ok := raw["version"]; !ok {
+		return fmt.Errorf("field version: required")
+	} else if v == nil {
+		return fmt.Errorf("field version: must not be null")
 	}
 	type Plain ModelSpecJson
 	var plain Plain
@@ -4385,7 +5498,7 @@ var enumValues_PatchFormatJson = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *PatchFormatJson) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -4396,9 +5509,185 @@ func (j *PatchFormatJson) UnmarshalJSON(value []byte) error {
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_PatchFormatJson, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_PatchFormatJson)
 	}
 	*j = PatchFormatJson(v)
+	return nil
+}
+
+type PlatformClockGetRequestJson struct {
+	// Error details (if present).
+	Error *PlatformClockGetRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type PlatformClockGetRequestJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *PlatformClockGetRequestJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
+	}
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
+	}
+	type Plain PlatformClockGetRequestJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = PlatformClockGetRequestJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *PlatformClockGetRequestJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
+	}
+	type Plain PlatformClockGetRequestJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = PlatformClockGetRequestJson(plain)
+	return nil
+}
+
+type PlatformClockResponseJson struct {
+	// Whether this node accepts changes to the clock. Set when success is true.
+	Controllable *bool `json:"controllable,omitempty" yaml:"controllable,omitempty" mapstructure:"controllable,omitempty"`
+
+	// Error details (if present).
+	Error *PlatformClockResponseJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// This node's platform time. Set when success is true.
+	Now *time.Time `json:"now,omitempty" yaml:"now,omitempty" mapstructure:"now,omitempty"`
+
+	// Platform seconds per real second; 1 without clock control. Set when success is
+	// true.
+	Rate *float64 `json:"rate,omitempty" yaml:"rate,omitempty" mapstructure:"rate,omitempty"`
+
+	// ID of the original request.
+	RequestID string `json:"requestId" yaml:"requestId" mapstructure:"requestId"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type PlatformClockResponseJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *PlatformClockResponseJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
+	}
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
+	}
+	type Plain PlatformClockResponseJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = PlatformClockResponseJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *PlatformClockResponseJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
+	}
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
+	}
+	type Plain PlatformClockResponseJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = PlatformClockResponseJson(plain)
 	return nil
 }
 
@@ -4416,11 +5705,15 @@ func (j *ProcessorInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in ProcessorInfoJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["name"]; raw != nil && !ok {
-		return fmt.Errorf("field name in ProcessorInfoJson: required")
+	if v, ok := raw["name"]; !ok {
+		return fmt.Errorf("field name: required")
+	} else if v == nil {
+		return fmt.Errorf("field name: must not be null")
 	}
 	type Plain ProcessorInfoJson
 	var plain Plain
@@ -4435,8 +5728,21 @@ type SearchSnapshotStatusJson struct {
 	// Number of entities collected.
 	EntitiesCount *int `json:"entitiesCount,omitempty" yaml:"entitiesCount,omitempty" mapstructure:"entitiesCount,omitempty"`
 
-	// Expiration date of the snapshot.
+	// When the snapshot stops being readable: its finish time plus
+	// CYODA_SEARCH_SNAPSHOT_TTL. From then on a request for it is refused with
+	// SEARCH_JOB_NOT_FOUND. While the snapshot is RUNNING, a lower bound, its create
+	// time plus the TTL; final once it ends. cyoda-go sets it on the answers to
+	// SnapshotGetStatusRequest and SnapshotCancelRequest; the answer to the submit
+	// and an error for no snapshot leave it out.
 	ExpirationDate *time.Time `json:"expirationDate,omitempty" yaml:"expirationDate,omitempty" mapstructure:"expirationDate,omitempty"`
+
+	// Why the snapshot failed. Present only when status is FAILED, and absent for
+	// every other status. For a failure the request itself caused, it is the same
+	// client error a direct search would answer, code first; for any other failure it
+	// names no internal detail: a server-side failure is SERVER_ERROR: internal error
+	// [ticket: <uuid>], its detail logged under the ticket, and a few known causes
+	// carry a fixed text.
+	FailureReason *string `json:"failureReason,omitempty" yaml:"failureReason,omitempty" mapstructure:"failureReason,omitempty"`
 
 	// ID of the snapshot.
 	SnapshotID string `json:"snapshotId" yaml:"snapshotId" mapstructure:"snapshotId"`
@@ -4464,7 +5770,7 @@ var enumValues_SearchSnapshotStatusJsonStatus = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *SearchSnapshotStatusJsonStatus) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -4475,7 +5781,7 @@ func (j *SearchSnapshotStatusJsonStatus) UnmarshalJSON(value []byte) error {
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_SearchSnapshotStatusJsonStatus, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_SearchSnapshotStatusJsonStatus)
 	}
 	*j = SearchSnapshotStatusJsonStatus(v)
 	return nil
@@ -4487,11 +5793,15 @@ func (j *SearchSnapshotStatusJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["snapshotId"]; raw != nil && !ok {
-		return fmt.Errorf("field snapshotId in SearchSnapshotStatusJson: required")
+	if v, ok := raw["snapshotId"]; !ok {
+		return fmt.Errorf("field snapshotId: required")
+	} else if v == nil {
+		return fmt.Errorf("field snapshotId: must not be null")
 	}
-	if _, ok := raw["status"]; raw != nil && !ok {
-		return fmt.Errorf("field status in SearchSnapshotStatusJson: required")
+	if v, ok := raw["status"]; !ok {
+		return fmt.Errorf("field status: required")
+	} else if v == nil {
+		return fmt.Errorf("field status: must not be null")
 	}
 	type Plain SearchSnapshotStatusJson
 	var plain Plain
@@ -4527,8 +5837,10 @@ type SnapshotCancelRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4538,11 +5850,15 @@ func (j *SnapshotCancelRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in SnapshotCancelRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in SnapshotCancelRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain SnapshotCancelRequestJsonError
 	var plain Plain
@@ -4559,18 +5875,24 @@ func (j *SnapshotCancelRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in SnapshotCancelRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["snapshotId"]; raw != nil && !ok {
-		return fmt.Errorf("field snapshotId in SnapshotCancelRequestJson: required")
+	if v, ok := raw["snapshotId"]; !ok {
+		return fmt.Errorf("field snapshotId: required")
+	} else if v == nil {
+		return fmt.Errorf("field snapshotId: must not be null")
 	}
 	type Plain SnapshotCancelRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = SnapshotCancelRequestJson(plain)
@@ -4611,8 +5933,10 @@ type SnapshotGetRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4622,11 +5946,15 @@ func (j *SnapshotGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in SnapshotGetRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in SnapshotGetRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain SnapshotGetRequestJsonError
 	var plain Plain
@@ -4643,11 +5971,15 @@ func (j *SnapshotGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in SnapshotGetRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["snapshotId"]; raw != nil && !ok {
-		return fmt.Errorf("field snapshotId in SnapshotGetRequestJson: required")
+	if v, ok := raw["snapshotId"]; !ok {
+		return fmt.Errorf("field snapshotId: required")
+	} else if v == nil {
+		return fmt.Errorf("field snapshotId: must not be null")
 	}
 	type Plain SnapshotGetRequestJson
 	var plain Plain
@@ -4660,7 +5992,9 @@ func (j *SnapshotGetRequestJson) UnmarshalJSON(value []byte) error {
 	if v, ok := raw["pageSize"]; !ok || v == nil {
 		plain.PageSize = 10.0
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = SnapshotGetRequestJson(plain)
@@ -4692,8 +6026,10 @@ type SnapshotGetStatusRequestJsonError struct {
 	// Error message.
 	Message string `json:"message" yaml:"message" mapstructure:"message"`
 
-	// Flag indicates whether this error is retryable (for example, whether cyoda
-	// should retry the calculation request).
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
 	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
 }
 
@@ -4703,11 +6039,15 @@ func (j *SnapshotGetStatusRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in SnapshotGetStatusRequestJsonError: required")
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in SnapshotGetStatusRequestJsonError: required")
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain SnapshotGetStatusRequestJsonError
 	var plain Plain
@@ -4724,18 +6064,24 @@ func (j *SnapshotGetStatusRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in SnapshotGetStatusRequestJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["snapshotId"]; raw != nil && !ok {
-		return fmt.Errorf("field snapshotId in SnapshotGetStatusRequestJson: required")
+	if v, ok := raw["snapshotId"]; !ok {
+		return fmt.Errorf("field snapshotId: required")
+	} else if v == nil {
+		return fmt.Errorf("field snapshotId: must not be null")
 	}
 	type Plain SnapshotGetStatusRequestJson
 	var plain Plain
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["success"]; !ok || v == nil {
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
 		plain.Success = true
 	}
 	*j = SnapshotGetStatusRequestJson(plain)
@@ -4762,17 +6108,25 @@ func (j *TransitionInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in TransitionInfoJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["name"]; raw != nil && !ok {
-		return fmt.Errorf("field name in TransitionInfoJson: required")
+	if v, ok := raw["name"]; !ok {
+		return fmt.Errorf("field name: required")
+	} else if v == nil {
+		return fmt.Errorf("field name: must not be null")
 	}
-	if _, ok := raw["stateFrom"]; raw != nil && !ok {
-		return fmt.Errorf("field stateFrom in TransitionInfoJson: required")
+	if v, ok := raw["stateFrom"]; !ok {
+		return fmt.Errorf("field stateFrom: required")
+	} else if v == nil {
+		return fmt.Errorf("field stateFrom: must not be null")
 	}
-	if _, ok := raw["stateTo"]; raw != nil && !ok {
-		return fmt.Errorf("field stateTo in TransitionInfoJson: required")
+	if v, ok := raw["stateTo"]; !ok {
+		return fmt.Errorf("field stateTo: required")
+	} else if v == nil {
+		return fmt.Errorf("field stateTo: must not be null")
 	}
 	type Plain TransitionInfoJson
 	var plain Plain
@@ -4797,11 +6151,15 @@ func (j *WorkflowInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in WorkflowInfoJson: required")
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["name"]; raw != nil && !ok {
-		return fmt.Errorf("field name in WorkflowInfoJson: required")
+	if v, ok := raw["name"]; !ok {
+		return fmt.Errorf("field name: required")
+	} else if v == nil {
+		return fmt.Errorf("field name: must not be null")
 	}
 	type Plain WorkflowInfoJson
 	var plain Plain

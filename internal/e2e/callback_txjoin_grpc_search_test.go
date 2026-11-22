@@ -11,9 +11,9 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // callback_txjoin_grpc_search_test.go proves that a compute-node callback which
@@ -69,7 +69,7 @@ const internalgrpcTxTokenKey = "tx-token"
 // When joinTok is set the read joins T. Returns whether the entity was observed
 // and its data.status marker.
 func (h *callbackHarness) getEntityGRPC(entityID, joinTok string) (found bool, marker string, err error) {
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
 	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityGetRequest, map[string]any{
 		"id":       "cb-grpc-get",
 		"entityId": entityID,
@@ -96,7 +96,7 @@ func (h *callbackHarness) getEntityGRPC(entityID, joinTok string) (found bool, m
 // matching data.status == statusEq over (entityName, version). When joinTok is
 // set the search joins T. Returns the number of matched entities.
 func (h *callbackHarness) searchGRPC(entityName string, version int, statusEq, joinTok string) (count int, err error) {
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
 	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntitySearchRequest, map[string]any{
 		"id":    "cb-grpc-search",
 		"model": map[string]any{"name": entityName, "version": version},
@@ -234,7 +234,7 @@ func TestCallback_GRPCSearch_SeesUncommittedWrite(t *testing.T) {
 			"version": "1.1", "name": "primary-grpc-search-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-grpc-search", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "cb-grpc-search", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}

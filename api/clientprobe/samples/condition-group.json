@@ -1,0 +1,28 @@
+{
+  "schema": "QueryConditionDto",
+  "class": "GroupConditionDto",
+  "value": {
+    "type": "group",
+    "operator": "AND",
+    "conditions": [
+      {
+        "type": "simple",
+        "jsonPath": "$.amount",
+        "operatorType": "EQUALS",
+        "value": 1
+      },
+      {
+        "type": "group",
+        "operator": "NOT",
+        "conditions": [
+          {
+            "type": "lifecycle",
+            "field": "state",
+            "operatorType": "EQUALS",
+            "value": "NEW"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/errorcontract"
 )
 
 func TestMatch_StatusAndErrorCode_RFC9457Body(t *testing.T) {

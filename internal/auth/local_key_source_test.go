@@ -1,123 +1,198 @@
 package auth_test
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
 	"errors"
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 func TestLocalKeySource_ReturnsPublicKeyForRegisteredKID(t *testing.T) {
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("failed to generate test key: %v", err)
-	}
-
-	ks := auth.NewInMemoryKeyStore()
-	kid := "test-kid-123"
-	if err := ks.Save(&auth.KeyPair{
-		KID:        kid,
-		Audience:   "client",
-		Algorithm:  "RS256",
-		PublicKey:  &priv.PublicKey,
-		PrivateKey: priv,
-		Active:     true,
-		ValidFrom:  time.Now().UTC(),
-	}, auth.RotateOptions{}); err != nil {
-		t.Fatalf("failed to save keypair: %v", err)
-	}
+	ks := newTestKeyStore(t, newBootstrap(t))
+	kp := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
 
 	src := auth.NewLocalKeySource(ks)
-	got, err := src.GetKey(kid)
+	got, err := src.GetKey(kp.KID)
 	if err != nil {
 		t.Fatalf("GetKey returned unexpected error: %v", err)
 	}
 	if got == nil {
 		t.Fatal("GetKey returned nil public key")
 	}
-	if got.N.Cmp(priv.PublicKey.N) != 0 || got.E != priv.PublicKey.E {
-		t.Fatal("GetKey returned a different public key than registered")
+	if !got.Equal(kp.PublicKey) {
+		t.Fatal("GetKey returned a different public key than issued")
+	}
+}
+
+func TestLocalKeySource_ReturnsBootstrapPublicKey(t *testing.T) {
+	boot := newBootstrap(t)
+	ks := newTestKeyStore(t, boot)
+
+	got, err := auth.NewLocalKeySource(ks).GetKey(bootKID(t, boot))
+	if err != nil {
+		t.Fatalf("GetKey(bootstrap) returned unexpected error: %v", err)
+	}
+	if !got.Equal(&boot.PublicKey) {
+		t.Fatal("GetKey returned a different public key than the bootstrap key")
 	}
 }
 
 func TestLocalKeySource_ReturnsErrorForUnknownKID(t *testing.T) {
-	ks := auth.NewInMemoryKeyStore()
-	src := auth.NewLocalKeySource(ks)
+	src := auth.NewLocalKeySource(newTestKeyStore(t, newBootstrap(t)))
 
 	got, err := src.GetKey("nonexistent-kid")
-	if err == nil {
-		t.Fatal("expected error for unknown kid, got nil")
+	if !errors.Is(err, auth.ErrKeyNotFound) {
+		t.Fatalf("expected ErrKeyNotFound for unknown kid, got %v", err)
 	}
 	if got != nil {
 		t.Fatalf("expected nil key on error, got %v", got)
 	}
 }
 
-func TestLocalKeySource_ErrorIsUnwrappable(t *testing.T) {
-	// The returned error should unwrap to something meaningful — not just
-	// a string. Keeps callers able to check for ErrKeyNotFound semantically.
-	ks := auth.NewInMemoryKeyStore()
-	src := auth.NewLocalKeySource(ks)
+// The returned error matches both ErrKeyNotFound (what callers classify on)
+// and the store's own error (the diagnostic).
+func TestLocalKeySource_ErrorWrapsBothSentinels(t *testing.T) {
+	src := auth.NewLocalKeySource(newTestKeyStore(t, newBootstrap(t)))
 
 	_, err := src.GetKey("nope")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	// Don't overspecify the sentinel; just confirm it wraps something.
-	if errors.Unwrap(err) == nil {
-		t.Log("note: error does not wrap inner error; acceptable but less helpful for callers")
+	if !errors.Is(err, auth.ErrKeyNotFound) || !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("err = %v, want both ErrKeyNotFound and ErrKeyPairNotFound", err)
 	}
 }
 
-// TestLocalKeySource_RejectsInvalidatedKey covers HIGH-1: an invalidated
-// signing key (Active=false) must NOT be returned by the key source. Until
-// the fix, GetKey echoes the public key regardless of Active, which means
-// the JWT validator would still accept tokens signed by the just-invalidated
-// kid — defeating the entire point of Invalidate.
-func TestLocalKeySource_RejectsInvalidatedKey(t *testing.T) {
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("failed to generate test key: %v", err)
-	}
-
-	ks := auth.NewInMemoryKeyStore()
-	const kid = "rotation-victim"
-	if err := ks.Save(&auth.KeyPair{
-		KID:        kid,
-		Audience:   "client",
-		Algorithm:  "RS256",
-		PublicKey:  &priv.PublicKey,
-		PrivateKey: priv,
-		Active:     true,
-		ValidFrom:  time.Now().UTC(),
-	}, auth.RotateOptions{}); err != nil {
-		t.Fatalf("failed to save keypair: %v", err)
-	}
-
+// An invalidated key pair keeps verifying until the end of its grace period
+// (its validTo), and never after. Grace 0 ends it at once.
+func TestLocalKeySource_InvalidatedKeyVerifiesThroughGrace(t *testing.T) {
+	ks := newTestKeyStore(t, newBootstrap(t))
 	src := auth.NewLocalKeySource(ks)
 
-	// Pre-condition: while Active, the key is returned successfully.
+	withGrace := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
+	if err := ks.Invalidate(systemCtx(), withGrace.KID, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(withGrace.KID); err != nil {
+		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
+	}
+
+	noGrace := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
+	if err := ks.Invalidate(systemCtx(), noGrace.KID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(noGrace.KID); !errors.Is(err, auth.ErrKeyNotFound) {
+		t.Fatalf("invalidated with grace 0: want ErrKeyNotFound, got %v", err)
+	}
+
+	// Cutting a running grace period short: invalidate again with 0.
+	if err := ks.Invalidate(systemCtx(), withGrace.KID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(withGrace.KID); !errors.Is(err, auth.ErrKeyNotFound) {
+		t.Fatalf("re-invalidated with 0: want ErrKeyNotFound, got %v", err)
+	}
+}
+
+func TestLocalKeySource_DeleteDuringGraceEndsVerification(t *testing.T) {
+	ks := newTestKeyStore(t, newBootstrap(t))
+	src := auth.NewLocalKeySource(ks)
+	kp := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
+	if err := ks.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(kp.KID); err != nil {
+		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
+	}
+	if err := ks.Delete(systemCtx(), kp.KID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(kp.KID); !errors.Is(err, auth.ErrKeyNotFound) {
+		t.Fatalf("deleted during grace: want ErrKeyNotFound, got %v", err)
+	}
+}
+
+func TestLocalKeySource_ReactivateDuringGrace(t *testing.T) {
+	ks := newTestKeyStore(t, newBootstrap(t))
+	src := auth.NewLocalKeySource(ks)
+	kp := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
+	if err := ks.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(kp.KID); err != nil {
+		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
+	}
+	got, err := ks.Reactivate(systemCtx(), kp.KID, time.Now(), time.Now().Add(2*time.Hour))
+	if err != nil || !got.Active {
+		t.Fatalf("reactivate during grace: %v %v", got, err)
+	}
+	if _, err := src.GetKey(kp.KID); err != nil {
+		t.Fatalf("reactivated: expected the key to verify, got %v", err)
+	}
+}
+
+// An invalidated key pair never signs, even inside its grace period: the
+// bootstrap key, always a candidate, signs instead.
+func TestKVKeyStore_InvalidatedKeyInGraceNeverSigns(t *testing.T) {
+	boot := newBootstrap(t)
+	ks := newTestKeyStore(t, boot)
+	src := auth.NewLocalKeySource(ks)
+	kp := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
+	if err := ks.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(kp.KID); err != nil {
+		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
+	}
+	signer, _, err := ks.Signer()
+	if err != nil || signer.KID != bootKID(t, boot) {
+		t.Fatalf("signer = %v, %v; want the bootstrap key — the invalidated key pair must not be chosen even in its grace period", signer, err)
+	}
+}
+
+// The configured signing key follows the grace rule too: invalidated with a
+// grace period it keeps verifying (there is no other key pair, so there is no
+// signer), invalidated again with 0 it stops verifying.
+func TestKVKeyStore_BootstrapKeyGracePath(t *testing.T) {
+	boot := newBootstrap(t)
+	ks := newTestKeyStore(t, boot)
+	src := auth.NewLocalKeySource(ks)
+	kid := bootKID(t, boot)
+
+	if err := ks.Invalidate(systemCtx(), kid, 3600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := src.GetKey(kid); err != nil {
-		t.Fatalf("GetKey while active: unexpected error: %v", err)
+		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
+	}
+	if _, _, err := ks.Signer(); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("signer = %v, want none: the signing key is invalidated and no other key pair exists", err)
 	}
 
-	// Invalidate the key (gracePeriodSec=0 means immediate expiry).
-	if err := ks.Invalidate(kid, 0); err != nil {
-		t.Fatalf("Invalidate: %v", err)
+	if err := ks.Invalidate(systemCtx(), kid, 0); err != nil {
+		t.Fatal(err)
 	}
+	if _, err := src.GetKey(kid); !errors.Is(err, auth.ErrKeyNotFound) {
+		t.Fatalf("invalidated with grace 0: want ErrKeyNotFound, got %v", err)
+	}
+}
 
-	// Post-condition: GetKey must reject with ErrKeyNotFound semantics.
-	got, err := src.GetKey(kid)
-	if err == nil {
-		t.Fatal("GetKey after Invalidate: expected error, got nil")
+// A signing key verifies only inside its window [ValidFrom, ValidTo). An
+// active key past its ValidTo, or not yet at its ValidFrom, is not returned,
+// so tokens it signed stop verifying when its window ends.
+func TestLocalKeySource_RejectsKeyOutsideItsWindow(t *testing.T) {
+	now := time.Now()
+	past, future := now.Add(-time.Hour), now.Add(time.Hour)
+	ks := newTestKeyStore(t, newBootstrap(t))
+	expired := issueWindow(t, ks, now.Add(-2*time.Hour), past)
+	notYet := issueWindow(t, ks, future, future.Add(time.Hour))
+	inWindow := issueWindow(t, ks, past, future)
+
+	src := auth.NewLocalKeySource(ks)
+	for name, kid := range map[string]string{"expired": expired.KID, "not-yet": notYet.KID} {
+		if _, err := src.GetKey(kid); !errors.Is(err, auth.ErrKeyNotFound) {
+			t.Errorf("GetKey(%s) = %v, want ErrKeyNotFound", name, err)
+		}
 	}
-	if got != nil {
-		t.Fatalf("GetKey after Invalidate: expected nil key, got %v", got)
-	}
-	if !errors.Is(err, auth.ErrKeyNotFound) {
-		t.Fatalf("GetKey after Invalidate: expected errors.Is(err, ErrKeyNotFound), got %v", err)
+	if _, err := src.GetKey(inWindow.KID); err != nil {
+		t.Errorf("GetKey(in-window) = %v, want the key", err)
 	}
 }

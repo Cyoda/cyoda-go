@@ -3,8 +3,8 @@ package dispatch_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 func TestRandomSelector_SingleCandidate(t *testing.T) {

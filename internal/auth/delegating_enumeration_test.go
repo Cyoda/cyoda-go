@@ -6,9 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // TestDelegatingAuthenticator_ErrorsAreWrappedAsAuthFailed is the regression
@@ -24,7 +23,7 @@ import (
 // The specific failure reason is now carried by the structured slog.Warn
 // record emitted from Authenticate (see TestDelegatingAuthenticator_LogsStructuredReason).
 func TestDelegatingAuthenticator_ErrorsAreWrappedAsAuthFailed(t *testing.T) {
-	validator := auth.NewJWKSValidator("http://localhost:0/jwks", "cyoda", 5*time.Minute)
+	validator := auth.NewValidatorFromSource(staticKeySource{}, "cyoda")
 	authn := auth.NewDelegatingAuthenticator(validator)
 
 	cases := []struct {

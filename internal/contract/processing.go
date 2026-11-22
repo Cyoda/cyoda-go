@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ErrNoMatchingMember is returned by ExternalProcessingService implementations
@@ -23,11 +23,12 @@ var ErrNoMatchingMember = errors.New("no matching calculation member")
 
 // ErrAuthContextUnavailable is joined into the error AttachAuthContext
 // (internal/grpc) returns when it cannot faithfully populate a dispatch
-// CloudEvent's Auth Context extension: no UserContext on ctx, an unset or
-// unrecognized principal Kind, or a nil CloudEvent. None of these can ever
-// originate from client-supplied input — the client does not control
-// dispatch-path UserContext construction — so they are server-side
-// conditions (missed constructor / missed cross-node context forwarding /
+// CloudEvent's Auth Context extension: a callout identity whose attributed
+// principal or executor has no id (as when the dispatching context carried
+// no UserContext) or an unset or unrecognized Kind, or a nil CloudEvent.
+// None of these can ever originate from client-supplied input — the client
+// does not control how a callout's identity is computed — so they are
+// server-side conditions (missed constructor / missed cross-node forwarding /
 // misconfiguration), not a bad request.
 //
 // error-classification code in internal/domain/entity matches this sentinel
@@ -42,6 +43,25 @@ var ErrNoMatchingMember = errors.New("no matching calculation member")
 // internal/domain/entity cannot import internal/grpc back. internal/contract
 // is a leaf package safe for both sides to import.
 var ErrAuthContextUnavailable = errors.New("auth context unavailable for dispatch")
+
+// ExecutionModeSync is the SYNC processor execution mode, and the mode a
+// processor with none configured runs in. The workflow package's
+// ExecutionModeSync is this constant. It is here rather than beside the
+// workflow package's other mode constants because internal/observability,
+// which reports the mode too, cannot import internal/domain/workflow, which
+// imports it.
+const ExecutionModeSync = "SYNC"
+
+// ProcessorExecutionMode is the mode a processor with the configured
+// ExecutionMode mode runs in: mode itself, or ExecutionModeSync when none is
+// configured. The workflow engine's audit record and the dispatch span both
+// report it.
+func ProcessorExecutionMode(mode string) string {
+	if mode == "" {
+		return ExecutionModeSync
+	}
+	return mode
+}
 
 // FunctionResult holds the outcome of a generic Function callout dispatch —
 // used, e.g., by scheduled-transition timing where a compute node computes a
@@ -59,11 +79,18 @@ type FunctionResult struct {
 // ExternalProcessingService dispatches processor execution and criteria evaluation
 // to external calculation nodes.
 type ExternalProcessingService interface {
+	// DispatchProcessor runs a processor on an external node. It returns the
+	// entity data the processor answered with, or a nil entity when the
+	// processor answered with no payload — never the entity it was given.
+	// A nil entity leaves the entity as it is: a processor changes the entity
+	// it runs for only through the data it returns.
 	DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error)
-	// DispatchCriteria evaluates a FUNCTION criterion on an external node.
-	// reason carries the compute node's explanation for the result (empty
-	// when none was supplied); it is only consumed on a matches=false
-	// rejection.
+	// DispatchCriteria evaluates one function condition on an external node.
+	// criterion is that function condition's own JSON
+	// ({"type":"function","function":{…}}), whatever its position in the
+	// criterion. reason carries the compute node's explanation for the
+	// result (empty when none was supplied); it is only consumed on a
+	// matches=false rejection.
 	DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (matches bool, reason string, err error)
 	// DispatchFunction sends a generic Function callout (e.g. a scheduled-
 	// transition timing computation) to an external node and returns its

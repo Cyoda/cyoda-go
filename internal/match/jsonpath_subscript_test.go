@@ -3,8 +3,8 @@ package match
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // A numeric array subscript ("$.arr[0]") is valid JSON Path, is ACCEPTED by
@@ -89,7 +89,7 @@ func TestPrepare_NumericSubscriptResolves(t *testing.T) {
 // addressing an element of the subscripted base path (e.g. "$.a[1].b[0]") —
 // and is resolved the same way any other leaf is, through spi.ResolvePath.
 func TestPrepareArray_NumericSubscriptBase(t *testing.T) {
-	cond := &predicate.ArrayCondition{JsonPath: "$.a[1].b", Values: []any{"p", "q"}}
+	cond := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.a[1].b", Values: []any{"p", "q"}}
 	p, err := Prepare(cond, func(string) []spi.DataType { return []spi.DataType{spi.String} })
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)

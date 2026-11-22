@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // TestConcurrencyStress exercises concurrent transactional writes against
@@ -52,6 +53,7 @@ func TestConcurrencyStress(t *testing.T) {
 
 	ctx := testCtx("tenant-stress")
 	ref := spi.ModelRef{EntityName: "counter", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 
 	// Seed the shared entity so update transactions find it.
 	store, err := factory.EntityStore(ctx)

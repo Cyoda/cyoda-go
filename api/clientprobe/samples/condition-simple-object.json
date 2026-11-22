@@ -1,0 +1,12 @@
+{
+  "schema": "QueryConditionDto",
+  "valid": false,
+  "value": {
+    "type": "simple",
+    "jsonPath": "$.amount",
+    "operatorType": "EQUALS",
+    "value": {
+      "k": 1
+    }
+  }
+}

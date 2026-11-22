@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/google/uuid"
+
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // The helpers below come in two shapes. The `t`-taking form (doAuth, readBody,
@@ -49,21 +53,30 @@ func resultOf(resp *http.Response, err error) httpResult {
 
 // e2eCtx returns the request context for a test's HTTP calls.
 //
-// It attaches t via openapivalidator.WithTestT for continuity with the
-// existing helpers, but note that this does NOT reach the validator: the
-// suite talks to a real httptest TCP listener (see TestMain), and the
-// middleware reads TestTFromContext(r.Context()) — the *server's* context,
-// which is built fresh per connection. A client-side context value cannot
-// cross the wire, so the validator's TestName is always "unknown" and its
-// enforce-mode t.Errorf never fires. That is pre-existing; wiring it up
-// needs the test identity carried in a header and resolved server-side.
+// It attaches t via openapivalidator.WithTestT. A request made with it
+// through http.DefaultClient names t to the conformance validator (TestMain
+// sets the client's Transport): the report names the test that received a
+// non-conforming response, and a -run-filtered run fails that test. A
+// request made without it is still validated; a mismatch on it fails the
+// run through TestOpenAPIConformanceReport or, in a filtered run, through
+// openapivalidator.FailOnUnreported.
 //
-// What the context is actually good for here is the standard thing —
-// cancellation and deadlines — and giving the Raw helpers an idiomatic
-// first parameter. Nothing about goroutine safety depends on it.
+// The context also carries the standard things — cancellation and
+// deadlines — and gives the Raw helpers an idiomatic first parameter.
+// Nothing about goroutine safety depends on it.
 func e2eCtx(t *testing.T) context.Context {
 	t.Helper()
 	return openapivalidator.WithTestT(context.Background(), t)
+}
+
+// e2eGet is http.Get bound to the test's context.
+func e2eGet(t *testing.T, url string) (*http.Response, error) {
+	t.Helper()
+	req, err := e2eNewRequest(t, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(req)
 }
 
 // e2eNewRequest creates an http.Request bound to the test's context.
@@ -72,21 +85,17 @@ func e2eNewRequest(t *testing.T, method, urlStr string, body io.Reader) (*http.R
 	return http.NewRequestWithContext(e2eCtx(t), method, urlStr, body)
 }
 
-// getTokenRaw obtains a JWT token via client_credentials grant. The token
-// endpoint uses HTTP Basic Auth for client authentication.
-func getTokenRaw(ctx context.Context, clientID, clientSecret string) (string, error) {
-	data := url.Values{
-		"grant_type": {"client_credentials"},
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", serverURL+"/api/oauth/token", strings.NewReader(data.Encode()))
+// suiteTenant is the tenant of the shared server's suite admin token and of
+// the clients the suite creates with it.
+const suiteTenant = "test-tenant"
+
+// getTokenRaw obtains a JWT token via client_credentials grant for a client
+// of tenant. The token endpoint uses HTTP Basic Auth for client
+// authentication.
+func getTokenRaw(ctx context.Context, tenant, clientID, clientSecret string) (string, error) {
+	resp, err := postTokenRaw(ctx, serverURL, tenant, url.Values{"grant_type": {"client_credentials"}}, clientID, clientSecret)
 	if err != nil {
-		return "", fmt.Errorf("create token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(clientID, clientSecret)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("token request: %w", err)
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -104,19 +113,170 @@ func getTokenRaw(ctx context.Context, clientID, clientSecret string) (string, er
 	return token, nil
 }
 
-// getToken is the test-goroutine form of getTokenRaw.
+// getToken is the test-goroutine form of getTokenRaw for a suite-tenant
+// client.
 func getToken(t *testing.T, clientID, clientSecret string) string {
 	t.Helper()
-	token, err := getTokenRaw(e2eCtx(t), clientID, clientSecret)
+	return getTokenIn(t, suiteTenant, clientID, clientSecret)
+}
+
+// getTokenIn is getToken for a client of tenant.
+func getTokenIn(t *testing.T, tenant, clientID, clientSecret string) string {
+	t.Helper()
+	token, err := getTokenRaw(e2eCtx(t), tenant, clientID, clientSecret)
 	if err != nil {
 		t.Fatalf("get token: %v", err)
 	}
 	return token
 }
 
+// signServiceToken signs a token in the shape of a client_credentials token
+// (scopes → a service principal) with key, for the given issuer/audience/
+// sub/tenant/userID/roles; an empty audience omits the aud claim, which a
+// stack with CYODA_JWT_AUDIENCE set requires. Every "admin token for a stack"
+// helper in this package (suiteTokenRaw, callbackHarness.fetchToken/
+// adminTokenFor, adminTokenForTenant, newStandaloneApp, bootstrapToken) is a
+// thin wrapper over this one signing call. It never touches *testing.T.
+func signServiceToken(key *rsa.PrivateKey, issuer, audience, sub, tenant, userID string, roles []string) (string, error) {
+	kid, err := auth.DeriveKID(&key.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	claims := map[string]any{
+		"sub":          sub,
+		"iss":          issuer,
+		"caas_user_id": userID,
+		"caas_org_id":  tenant,
+		"scopes":       roles,
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}
+	if audience != "" {
+		claims["aud"] = audience
+	}
+	return auth.Sign(context.Background(), claims, auth.NewRSASigner(key), kid)
+}
+
+// suiteTokenRaw signs an admin token for the shared server in the shape of a
+// client_credentials token (scopes → a service principal), so attribution
+// assertions are unchanged. It never touches *testing.T.
+func suiteTokenRaw() (string, error) {
+	return signServiceToken(e2eSignKey, e2eIssuer, "", "suite-admin", suiteTenant, "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
+}
+
+// suiteToken is the test-goroutine form of suiteTokenRaw.
+func suiteToken(t *testing.T) string {
+	t.Helper()
+	tok, err := suiteTokenRaw()
+	if err != nil {
+		t.Fatalf("sign suite token: %v", err)
+	}
+	return tok
+}
+
+// platformTokenRaw signs a token for the shared server in the PLATFORM tenant
+// with roles. With ROLE_ADMIN it is a platform operator, the only principal
+// the platform-wide admin endpoints accept. It never touches *testing.T.
+func platformTokenRaw(roles ...string) (string, error) {
+	return signServiceToken(e2eSignKey, e2eIssuer, "", "platform-operator",
+		string(auth.PlatformTenantID), "platform-operator", roles)
+}
+
+// platformToken is a platform-operator token for the shared server.
+func platformToken(t *testing.T) string {
+	t.Helper()
+	tok, err := platformTokenRaw("ROLE_ADMIN", "ROLE_M2M")
+	if err != nil {
+		t.Fatalf("sign platform token: %v", err)
+	}
+	return tok
+}
+
+// deleteClientAtCleanup registers a t.Cleanup that deletes the M2M client id
+// through DELETE {baseURL}/api/clients/{id}, authenticated with the token
+// bearer returns when the cleanup runs. The request runs on a context of its
+// own (t.Context() is cancelled before cleanups run). A 404 is accepted: the
+// test may have deleted the client itself.
+func deleteClientAtCleanup(t *testing.T, baseURL, id string, bearer func() string) {
+	t.Helper()
+	t.Cleanup(func() {
+		req, err := http.NewRequestWithContext(e2eCtx(t), http.MethodDelete, baseURL+"/api/clients/"+url.PathEscape(id), nil)
+		if err != nil {
+			t.Errorf("cleanup: delete client %s: %v", id, err)
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+bearer())
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Errorf("cleanup: delete client %s: %v", id, err)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+			b, _ := io.ReadAll(resp.Body)
+			t.Errorf("cleanup: delete client %s: %d %s", id, resp.StatusCode, b)
+		}
+	})
+}
+
+// createClient creates an M2M client in the suite tenant through POST
+// /clients and returns its id and secret (never log the secret). The client
+// is deleted when the test ends. onBehalfOf requests an on-behalf-of client
+// (?onBehalfOf=true); it is never combined with withAdminRole=true.
+func createClient(t *testing.T, withAdminRole, onBehalfOf bool) (string, string) {
+	t.Helper()
+	path := "/api/clients"
+	var q []string
+	if withAdminRole {
+		q = append(q, "withAdminRole=true")
+	}
+	if onBehalfOf {
+		q = append(q, "onBehalfOf=true")
+	}
+	if len(q) > 0 {
+		path += "?" + strings.Join(q, "&")
+	}
+	resp := doAuth(t, http.MethodPost, path, "")
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create client: %d %s", resp.StatusCode, raw)
+	}
+	cred := decodeCredential(t, "create client", raw)
+	deleteClientAtCleanup(t, serverURL, cred.id, func() string { return suiteToken(t) })
+	return cred.id, cred.secret
+}
+
+// decodeCredential decodes the client_id and client_secret of a 200 answer
+// from POST /clients or PUT /clients/{id}/secret; what names the call in a
+// failure message. raw holds a secret, so it is never printed.
+func decodeCredential(t *testing.T, what string, raw []byte) m2mCredential {
+	t.Helper()
+	var cred struct {
+		ID     string `json:"client_id"`
+		Secret string `json:"client_secret"`
+	}
+	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
+		t.Fatalf("%s: no credentials in response (%v)", what, err)
+	}
+	return m2mCredential{id: cred.ID, secret: cred.Secret}
+}
+
+// withheld is raw for a failure message, unless status is 200: a 200 from
+// POST /clients or PUT /clients/{id}/secret carries a secret.
+func withheld(status int, raw []byte) string {
+	if status == http.StatusOK {
+		return "(credentials withheld)"
+	}
+	return string(raw)
+}
+
 // authRequestRaw creates an authenticated HTTP request.
 func authRequestRaw(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	token, err := getTokenRaw(ctx, "testclient", "testsecret")
+	token, err := suiteTokenRaw()
 	if err != nil {
 		return nil, err
 	}
@@ -237,4 +397,30 @@ func queryDB(t *testing.T, tenantID, sql string, args ...any) int {
 		t.Fatalf("query failed: %v", err)
 	}
 	return count
+}
+
+// assertProblemJSON asserts that resp carries an RFC-9457 ProblemDetail envelope
+// with the expected HTTP status and errorCode in properties.errorCode.
+// It drains and closes the body.
+func assertProblemJSON(t *testing.T, resp *http.Response, wantStatus int, wantCode string) {
+	t.Helper()
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want %d; body=%s", resp.StatusCode, wantStatus, withheld(resp.StatusCode, raw))
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("content-type: got %q, want application/problem+json", ct)
+	}
+	var pd struct {
+		Status     int            `json:"status"`
+		Properties map[string]any `json:"properties"`
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(raw, &pd); err != nil {
+		t.Fatalf("unmarshal ProblemDetail: %v; body=%s", err, raw)
+	}
+	if got := fmt.Sprintf("%v", pd.Properties["errorCode"]); got != wantCode {
+		t.Fatalf("errorCode: got %q, want %q; body=%s", got, wantCode, raw)
+	}
 }

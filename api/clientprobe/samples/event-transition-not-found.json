@@ -1,0 +1,9 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineTransitionNotFoundDto",
+  "value": {
+    "eventType": "TRANSITION_NOT_FOUND",
+    "workflowName": "orders",
+    "transition": "ship"
+  }
+}

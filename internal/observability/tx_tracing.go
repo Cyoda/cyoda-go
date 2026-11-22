@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -55,9 +55,9 @@ func NewTracingTransactionManager(inner spi.TransactionManager, meter metric.Met
 
 func (t *TracingTransactionManager) Begin(ctx context.Context) (string, context.Context, error) {
 	ctx, span := t.tracer.Start(ctx, "tx.begin")
-	start := time.Now()
+	start := time.Now() // realtime: latency metric
 	txID, txCtx, err := t.inner.Begin(ctx)
-	t.txDuration.Record(ctx, time.Since(start).Seconds(), t.opBegin)
+	t.txDuration.Record(ctx, time.Since(start).Seconds(), t.opBegin) // realtime: latency metric
 	if err != nil {
 		span.RecordError(err)
 		span.End()
@@ -72,9 +72,9 @@ func (t *TracingTransactionManager) Begin(ctx context.Context) (string, context.
 func (t *TracingTransactionManager) Commit(ctx context.Context, txID string) error {
 	ctx, span := t.tracer.Start(ctx, "tx.commit", trace.WithAttributes(AttrTxID.String(txID)))
 	defer span.End()
-	start := time.Now()
+	start := time.Now() // realtime: latency metric
 	err := t.inner.Commit(ctx, txID)
-	t.txDuration.Record(ctx, time.Since(start).Seconds(), t.opCommit)
+	t.txDuration.Record(ctx, time.Since(start).Seconds(), t.opCommit) // realtime: latency metric
 	if err != nil {
 		span.RecordError(err)
 		if isConflict(err) {
@@ -90,9 +90,9 @@ func (t *TracingTransactionManager) Commit(ctx context.Context, txID string) err
 func (t *TracingTransactionManager) Rollback(ctx context.Context, txID string) error {
 	ctx, span := t.tracer.Start(ctx, "tx.rollback", trace.WithAttributes(AttrTxID.String(txID)))
 	defer span.End()
-	start := time.Now()
+	start := time.Now() // realtime: latency metric
 	err := t.inner.Rollback(ctx, txID)
-	t.txDuration.Record(ctx, time.Since(start).Seconds(), t.opRollback)
+	t.txDuration.Record(ctx, time.Since(start).Seconds(), t.opRollback) // realtime: latency metric
 	if err != nil {
 		span.RecordError(err)
 		return err
@@ -107,6 +107,22 @@ func (t *TracingTransactionManager) Join(ctx context.Context, txID string) (cont
 
 func (t *TracingTransactionManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
 	return t.inner.GetSubmitTime(ctx, txID)
+}
+
+func (t *TracingTransactionManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
+	ctx, span := t.tracer.Start(ctx, "tx.consistency_time")
+	defer span.End()
+	ct, err := t.inner.ConsistencyTime(ctx)
+	if err != nil {
+		span.RecordError(err)
+	}
+	return ct, err
+}
+
+// LatestRecordedTime forwards to the wrapped manager; it reads without
+// waiting, so it has no span.
+func (t *TracingTransactionManager) LatestRecordedTime(ctx context.Context) (time.Time, error) {
+	return t.inner.LatestRecordedTime(ctx)
 }
 
 func (t *TracingTransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
@@ -145,6 +161,12 @@ func (t *TracingTransactionManager) ReleaseSavepoint(ctx context.Context, txID s
 		span.RecordError(err)
 	}
 	return err
+}
+
+// LostRace asks the wrapped manager whether the transaction has already lost a
+// write race. It is a read-only question and is not traced.
+func (t *TracingTransactionManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	return t.inner.LostRace(ctx, txID)
 }
 
 // isConflict reports whether err is a transaction serialization conflict.

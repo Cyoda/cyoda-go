@@ -130,3 +130,22 @@ func TestSupportsMessageNamesSupportedMajors(t *testing.T) {
 		}
 	}
 }
+
+// TestSchemaVersion_15_DualShape pins the 1.5 contract: 1.5 is current, and
+// every MINOR from 1.1 stays accepted (nothing retired).
+func TestSchemaVersion_15_DualShape(t *testing.T) {
+	if CurrentSchemaVersion != "1.5" {
+		t.Fatalf("CurrentSchemaVersion = %q, want 1.5", CurrentSchemaVersion)
+	}
+	for minor := 1; minor <= 5; minor++ {
+		if err := Supports(1, minor); err != nil {
+			t.Errorf("Supports(1, %d) = %v, want nil (dual-shape retention)", minor, err)
+		}
+	}
+	if err := Supports(1, 0); err == nil {
+		t.Error("Supports(1, 0) = nil; 1.0 stays retired")
+	}
+	if err := Supports(1, 6); err == nil {
+		t.Error("Supports(1, 6) = nil; 1.6 does not exist")
+	}
+}

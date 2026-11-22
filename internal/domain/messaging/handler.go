@@ -13,10 +13,11 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // Handler implements the edge messaging endpoints.
@@ -69,8 +70,8 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 		Payload  json.RawMessage `json:"payload"`
 		MetaData map[string]any  `json:"metaData"`
 	}
-	if err := json.Unmarshal(rawBody, &envelope); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: expected an object with a 'payload' field"))
+	if err := strictjson.Decode(rawBody, &envelope); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 
@@ -79,24 +80,23 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 		return
 	}
 
-	// Compact the payload JSON to normalize whitespace (matches Cyoda Cloud behavior).
-	// json.Unmarshal above already validated envelope.Payload as a JSON value, so
-	// json.Compact must succeed. If it fails, that is an invariant violation caused
-	// by a future code path constructing Payload by hand instead of via Unmarshal.
+	// Compact the payload JSON to normalize whitespace (matches Cyoda Cloud
+	// behavior). strictjson.Decode above validated envelope.Payload as one
+	// JSON value, so Compact cannot fail.
 	var compacted bytes.Buffer
-	if err := json.Compact(&compacted, envelope.Payload); err != nil {
-		common.WriteError(w, r, common.Internal("payload validation invariant broken", err))
-		return
-	}
+	_ = json.Compact(&compacted, envelope.Payload)
 	payloadString := compacted.String()
 
+	attributed, executor := spi.AttributionFor(opCtx)
 	header := spi.MessageHeader{
 		Subject:         subject,
 		ContentType:     params.ContentType,
 		ContentLength:   params.ContentLength,
 		ContentEncoding: "UTF-8",
 		MessageID:       derefStr(params.XMessageID),
-		UserID:          derefStr(params.XUserID),
+		UserID:          attributed.ID,
+		AttributedKind:  attributed.Kind,
+		Executor:        executor,
 		Recipient:       derefStr(params.XRecipient),
 		ReplyTo:         derefStr(params.XReplyTo),
 		CorrelationID:   derefStr(params.XCorrelationID),
@@ -197,6 +197,15 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId u
 	if header.UserID != "" {
 		respHeader["userId"] = header.UserID
 	}
+	if header.AttributedKind != "" {
+		respHeader["attributedKind"] = header.AttributedKind
+	}
+	if header.Executor.ID != "" {
+		respHeader["executedBy"] = map[string]any{
+			"id":   header.Executor.ID,
+			"kind": header.Executor.Kind,
+		}
+	}
 	if header.Recipient != "" {
 		respHeader["recipient"] = header.Recipient
 	}
@@ -280,8 +289,8 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 	}
 
 	var ids []string
-	if err := json.Unmarshal(rawBody, &ids); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: expected array of UUID strings"))
+	if err := strictjson.Decode(rawBody, &ids); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 

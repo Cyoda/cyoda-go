@@ -2,17 +2,18 @@ package workflow
 
 import (
 	"errors"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // newEngineWithFailingModelStore builds an engine on the standard
 // setupEngine fixture, but wraps the factory so ModelStore(ctx) fails — the
-// branch at engine.go that sets loadErr. It returns an entity whose model
+// branch in criterion_eval.go (prepareLocalUnits) that sets loadErr. It returns an entity whose model
 // declares $.age as an Integer (irrelevant here since the store never comes
 // up, but keeps the fixture parallel to the healthy variant).
 func newEngineWithFailingModelStore(t *testing.T) (*Engine, *spi.Entity, *criterionContext) {
@@ -22,7 +23,7 @@ func newEngineWithFailingModelStore(t *testing.T) (*Engine, *spi.Entity, *criter
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := baseFactory.NewTransactionManager(uuids)
 	factory := &errModelStoreFactory{StoreFactory: baseFactory, err: errors.New("model store down")}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
@@ -79,7 +80,7 @@ func TestEvaluateCriterion_InfraFailureBeatsStructuralError(t *testing.T) {
 
 	e, entity, cc := newEngineWithFailingModelStore(t)
 
-	_, _, err := e.evaluateCriterion(criterion, entity, cc)
+	_, err := e.evaluateCriterion(criterion, entity, cc)
 	if err == nil {
 		t.Fatal("evaluateCriterion() = nil error, want the infra failure")
 	}
@@ -105,7 +106,7 @@ func TestEvaluateCriterion_StructuralErrorReportedWhenStoreIsHealthy(t *testing.
 
 	e, entity, cc := newEngineWithHealthyModelStore(t)
 
-	_, _, err := e.evaluateCriterion(criterion, entity, cc)
+	_, err := e.evaluateCriterion(criterion, entity, cc)
 	if err == nil {
 		t.Fatal("evaluateCriterion() = nil error, want the structural fault")
 	}

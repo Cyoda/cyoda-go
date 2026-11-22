@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // TestEntityStatsByStateGet_UnknownModel_ModelNotFound verifies that
@@ -848,7 +849,7 @@ func TestDirectSearch_OmittedLimitDefaultsTo1000(t *testing.T) {
 		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) { return nil, nil }}
 	factory := &searcherFactoryG{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
 
 	ce := makeCE(EntitySearchRequest, map[string]any{
 		"id":        "s-capdef-1",
@@ -876,7 +877,7 @@ func TestDirectSearch_ResultLimitSentinel_ClientError(t *testing.T) {
 			return nil, spi.ErrSearchResultLimitExceeded
 		}}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(&searcherFactoryG{StoreFactory: base, entityStore: ses}, common.NewDefaultUUIDGenerator(), searchStore)}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(&searcherFactoryG{StoreFactory: base, entityStore: ses}), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, &searcherFactoryG{StoreFactory: base, entityStore: ses}), platformclock.Real())}
 
 	ce := makeCE(EntitySearchRequest, map[string]any{
 		"id":        "s-caperr-1",
@@ -941,7 +942,7 @@ func directSearch(t *testing.T, opts ...directSearchOpt) *events.EntityResponseJ
 		}}
 	factory := &searcherFactoryG{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
 
 	fields := map[string]any{
 		"id":        "s-capnonpos-1",
@@ -1183,7 +1184,7 @@ func TestDirectSearch_SchemaLoadFails_ServerErrorEnvelope(t *testing.T) {
 
 	factory := &brokenModelFactoryG{StoreFactory: base, ms: &brokenSchemaModelStoreG{ref: ref}}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
 
 	ce := makeCE(EntitySearchRequest, map[string]any{
 		"id":        "s-brokenschema-1",
@@ -1204,5 +1205,120 @@ func TestDirectSearch_SchemaLoadFails_ServerErrorEnvelope(t *testing.T) {
 	}
 	if typed.Error == nil || typed.Error.Code != "SERVER_ERROR" {
 		t.Fatalf("Error = %+v, want Code=SERVER_ERROR", typed.Error)
+	}
+}
+
+// Cancelling a snapshot that has already finished is refused, as the HTTP
+// door refuses it (400 SEARCH_JOB_ALREADY_TERMINAL): success false, the same
+// error, and the status the snapshot ended with.
+func TestEntitySearch_SnapshotCancel_AlreadyTerminal(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"surname": "Smith"})
+
+	submitCE := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "snap-done-1",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	})
+	submitResp, err := svc.EntitySearch(ctx, submitCE)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	var submitTyped events.EntitySnapshotSearchResponseJson
+	validateResponse(t, submitResp, &submitTyped)
+	snapshotID := submitTyped.Status.SnapshotID
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st, err := svc.searchService.GetAsyncStatus(ctx, snapshotID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if st.Status == "SUCCESSFUL" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("snapshot status = %s, want SUCCESSFUL", st.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelResp, err := svc.EntitySearch(ctx, makeCE(SnapshotCancelRequest, map[string]any{
+		"id":         "cancel-done-1",
+		"snapshotId": snapshotID,
+	}))
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, cancelResp, &typed)
+	if typed.Success {
+		t.Fatal("success = true for a cancel of a finished snapshot, want false")
+	}
+	if typed.Error == nil || typed.Error.Code != "CLIENT_ERROR" || !strings.HasPrefix(typed.Error.Message, "SEARCH_JOB_ALREADY_TERMINAL: ") {
+		t.Fatalf("error = %+v, want CLIENT_ERROR with a SEARCH_JOB_ALREADY_TERMINAL message", typed.Error)
+	}
+	if typed.Status.Status != events.SearchSnapshotStatusJsonStatusSUCCESSFUL || typed.Status.SnapshotID != snapshotID {
+		t.Errorf("status = %+v, want the snapshot's own SUCCESSFUL status", typed.Status)
+	}
+	if typed.Status.ExpirationDate == nil {
+		t.Error("status.expirationDate absent from the refused cancel's own status")
+	}
+}
+
+// The gRPC snapshot status carries expirationDate, the job's finish time plus
+// the snapshot TTL (the service's default here), as the HTTP status does.
+func TestEntitySearch_SnapshotGetStatus_ExpirationDate(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"surname": "Smith"})
+
+	submitResp, err := svc.EntitySearch(ctx, makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "snap-exp-1",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type": "group", "operator": "AND", "conditions": []any{},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	var submitTyped events.EntitySnapshotSearchResponseJson
+	validateResponse(t, submitResp, &submitTyped)
+	snapshotID := submitTyped.Status.SnapshotID
+	deadline := time.Now().Add(5 * time.Second) // realtime: test poll deadline
+	var finish time.Time
+	for {
+		st, err := svc.searchService.GetAsyncStatus(ctx, snapshotID)
+		if err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if st.Status == "SUCCESSFUL" {
+			finish = *st.FinishTime
+			break
+		}
+		if time.Now().After(deadline) { // realtime: test poll deadline
+			t.Fatalf("snapshot status = %s, want SUCCESSFUL", st.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	statusResp, err := svc.EntitySearch(ctx, makeCE(SnapshotGetStatusRequest, map[string]any{
+		"id":         "status-exp-1",
+		"snapshotId": snapshotID,
+	}))
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, statusResp, &typed)
+	if !typed.Success {
+		t.Fatalf("status answer failed: %+v", typed.Error)
+	}
+	if typed.Status.ExpirationDate == nil {
+		t.Fatal("status.expirationDate absent")
+	}
+	if want := finish.Add(time.Hour); !typed.Status.ExpirationDate.Equal(want) {
+		t.Fatalf("status.expirationDate = %s; want finish + 1h = %s", typed.Status.ExpirationDate, want)
 	}
 }

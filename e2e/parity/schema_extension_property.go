@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema/gentree"
 )
 
 // propertyNumSeeds is the number of seeded sequences driven per backend.
@@ -134,7 +134,7 @@ func runPropertySeed(t *testing.T, fixture BackendFixture, seed int64) {
 		// Surface oracle state so the failure is diagnosable even when
 		// the backend itself returned an error (e.g. the sqlite-specific
 		// MODEL_NOT_FOUND storm after a 500 SERVER_ERROR during
-		// validateOrExtend — see task 27 reporting).
+		// ValidateOrExtend).
 		extBytes, _ := json.MarshalIndent(extensions, "", "  ")
 		t.Fatalf(
 			"ExportModel failed\n"+

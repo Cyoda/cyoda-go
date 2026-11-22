@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -28,12 +29,22 @@ type Entity struct {
 	State string          `json:"state"`
 	Data  json.RawMessage `json:"data"`
 
-	// AuthType is the executor's principal kind (user|service|system) carried
-	// by the dispatch's CloudEvents authtype attribute. Set by the dispatcher
-	// from the calc-request CloudEvent, not decoded from entity JSON — hence
-	// json:"-". Lets a processor observe the faithful executor kind, including
-	// the kind a cross-node forwarded dispatch reconstructs (Task 7).
-	AuthType string `json:"-"`
+	// AuthType/AuthID are the attributed principal (the authtype and authid
+	// attributes) and AuthExecType/AuthExecID the executor (authexectype and
+	// authexecid) of the calc request. Set by the dispatcher from the
+	// calc-request CloudEvent, not decoded from entity JSON — hence json:"-".
+	// They let a processor observe the auth context as it arrived, including
+	// on a callout another pnode forwarded.
+	AuthType     string `json:"-"`
+	AuthID       string `json:"-"`
+	AuthExecType string `json:"-"`
+	AuthExecID   string `json:"-"`
+
+	// RequestTxID is the calc request's transactionId and PayloadTxID its
+	// payload's meta.transactionId, set by the dispatcher like the auth
+	// fields.
+	RequestTxID string `json:"-"`
+	PayloadTxID string `json:"-"`
 }
 
 // processorFunc is the signature of a registered processor.
@@ -70,6 +81,9 @@ type catalog struct {
 // processor. Pass nil for either when the corresponding transport is unconfigured.
 func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 	callbackProcs, callbackCrit := newCallbackCatalog(gcb)
+	// retryableOnceFailed is whether inject-error-retryable-once has failed yet.
+	// A client serves one catalog for its life, so "once" is once per client.
+	var retryableOnceFailed atomic.Bool
 	return &catalog{
 		callbackProcessors: callbackProcs,
 		callbackCriteria:   callbackCrit,
@@ -104,11 +118,41 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 			"inject-error": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
 				return nil, fmt.Errorf("inject-error: deliberate failure")
 			},
+			// inject-error-retryable / -not-retryable fail like inject-error and
+			// add this compute node's verdict (error.retryable) to the response.
+			"inject-error-retryable": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
+				return nil, &verdictError{msg: "inject-error-retryable: deliberate failure", retryable: true}
+			},
+			"inject-error-not-retryable": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
+				return nil, &verdictError{msg: "inject-error-not-retryable: deliberate failure", retryable: false}
+			},
+			// inject-error-retryable-once fails its first run like
+			// inject-error-retryable and succeeds on every later run of this
+			// client, leaving the entity as it came.
+			"inject-error-retryable-once": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
+				if retryableOnceFailed.CompareAndSwap(false, true) {
+					return nil, &verdictError{msg: "inject-error-retryable-once: deliberate failure", retryable: true}
+				}
+				return entity, nil
+			},
 			"slow-configurable": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
 				var cfg struct {
 					SleepMS int `json:"sleep_ms"`
 				}
-				_ = json.Unmarshal(config, &cfg)
+				// The server delivers the processor's context as a JSON
+				// string in parameters (dispatch.go passes req.Parameters
+				// through unchanged); unwrap it before reading sleep_ms,
+				// while still accepting a bare object for unit callers.
+				raw := []byte(config)
+				var asString string
+				if err := json.Unmarshal(raw, &asString); err == nil {
+					raw = []byte(asString)
+				}
+				if len(raw) > 0 {
+					if err := json.Unmarshal(raw, &cfg); err != nil {
+						return nil, fmt.Errorf("slow-configurable: invalid config: %w", err)
+					}
+				}
 				if cfg.SleepMS > 0 {
 					select {
 					case <-time.After(time.Duration(cfg.SleepMS) * time.Millisecond):
@@ -143,13 +187,14 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 				}
 				return &Entity{ID: entity.ID, State: entity.State, Data: out}, nil
 			},
-			// record-authtype — records the executor principal kind observed on
-			// the dispatch (Entity.AuthType, from the CloudEvents authtype
-			// attribute) into entity data at `observedAuthType`. Used by the
-			// cross-node attribution parity scenario to assert a forwarded
-			// processor dispatch (A→B) reconstructs the originating executor's
-			// true kind on the member-hosting node (Task 7). attachEntity:true
-			// is required so entity.Data is present to merge into.
+			// record-authtype — records the auth context observed on the
+			// dispatch into entity data: the attributed principal at
+			// `observedAuthType`/`observedAuthID` and the executor at
+			// `observedAuthExecType`/`observedAuthExecID`. Used by the
+			// cross-node attribution parity scenarios to assert a forwarded
+			// callout carries the identity the dispatching pnode computed.
+			// attachEntity:true is required so entity.Data is present to merge
+			// into.
 			"record-authtype": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
 				data := map[string]any{}
 				if len(entity.Data) > 0 {
@@ -158,6 +203,27 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 					}
 				}
 				data["observedAuthType"] = entity.AuthType
+				data["observedAuthID"] = entity.AuthID
+				data["observedAuthExecType"] = entity.AuthExecType
+				data["observedAuthExecID"] = entity.AuthExecID
+				out, err := json.Marshal(data)
+				if err != nil {
+					return nil, err
+				}
+				return &Entity{ID: entity.ID, State: entity.State, Data: out}, nil
+			},
+			// record-txids writes the calc request's transactionId and its
+			// payload's meta.transactionId into the entity data, as
+			// requestTxId and payloadTxId.
+			"record-txids": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
+				data := map[string]any{}
+				if len(entity.Data) > 0 {
+					if err := json.Unmarshal(entity.Data, &data); err != nil {
+						return nil, err
+					}
+				}
+				data["requestTxId"] = entity.RequestTxID
+				data["payloadTxId"] = entity.PayloadTxID
 				out, err := json.Marshal(data)
 				if err != nil {
 					return nil, err
@@ -187,6 +253,9 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 			},
 			"always-false": func(ctx context.Context, entity *Entity, config json.RawMessage) (bool, error) {
 				return false, nil
+			},
+			"inject-criterion-error-retryable": func(ctx context.Context, entity *Entity, config json.RawMessage) (bool, error) {
+				return false, &verdictError{msg: "inject-criterion-error-retryable: deliberate failure", retryable: true}
 			},
 			"amount-gt-100": func(ctx context.Context, entity *Entity, config json.RawMessage) (bool, error) {
 				var data map[string]any
@@ -248,7 +317,8 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 			// entity.Data carries the funcSchedData shape above, and returns
 			// the matching resolveSchedule Schedule result:
 			//
-			//   - "absolute":     fireAt = now + offsetMs (default 300ms)
+			//   - "absolute":     fireAt = now + offsetMs (default 300ms); now is the
+			//                     request's time attribute (platform time)
 			//   - "relative":     fireAfterMs = offsetMs (default 300ms)
 			//   - "bornExpired":  fireAfterMs = offsetMs (default 1000ms),
 			//                     expireAfterMs = 0 — expiry == fire time,
@@ -259,19 +329,20 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 			//   - "expiryElapsed": fireAt = now - offsetMs (default 5000ms)
 			//                     and expireAt = fireAt + expireOffsetMs
 			//                     (default 110ms) — a VALID (non-born-expired)
-			//                     arm whose lateness already exceeds
-			//                     timeoutMs+grace at arm time, so the very
-			//                     first scan expires it deterministically
-			//                     regardless of scan cadence (no need to
-			//                     race a live scheduler against a real-time
-			//                     sleep, unlike internal/e2e's bespoke-clock
-			//                     variant of this scenario).
+			//                     arm whose deadline has already passed at
+			//                     arm time, so the very first claim expires
+			//                     it deterministically regardless of scan
+			//                     cadence.
 			"sched-fn-resolve": func(ctx context.Context, entity *Entity, config json.RawMessage) (string, map[string]any, error) {
 				var data funcSchedData
 				if err := json.Unmarshal(entity.Data, &data); err != nil {
 					return "", nil, fmt.Errorf("sched-fn-resolve: decode entity data: %w", err)
 				}
-				now := time.Now().UnixMilli()
+				at, err := platformNow(ctx)
+				if err != nil {
+					return "", nil, fmt.Errorf("sched-fn-resolve: %w", err)
+				}
+				now := at.UnixMilli()
 				switch data.SchedMode {
 				case "absolute":
 					offset := data.OffsetMs
@@ -311,6 +382,9 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 				default:
 					return "", nil, fmt.Errorf("sched-fn-resolve: unknown schedMode %q", data.SchedMode)
 				}
+			},
+			"inject-fn-error-retryable": func(ctx context.Context, entity *Entity, config json.RawMessage) (string, map[string]any, error) {
+				return "", nil, &verdictError{msg: "inject-fn-error-retryable: deliberate failure", retryable: true}
 			},
 		},
 	}

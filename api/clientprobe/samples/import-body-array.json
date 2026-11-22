@@ -1,0 +1,11 @@
+{
+  "body": "POST /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion}",
+  "value": [
+    {
+      "category": "physics"
+    },
+    {
+      "category": "chemistry"
+    }
+  ]
+}

@@ -14,14 +14,15 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // TestFlows_ErrorPathsReleaseTheTransaction asserts that every converted flow
@@ -147,89 +148,8 @@ func TestPanickingWrite_ReleasesBufferedState(t *testing.T) {
 	}
 }
 
-// TestJoinedSegmentedFlow_FreesTheGateBeforeReleaseRollsBack pins the defer
-// ordering the conversion introduces.
-//
-//	defer scope.Release()   // registered FIRST
-//	...
-//	defer releaseGate()     // registered SECOND
-//
-// LIFO frees the joined gate before Release runs, which is what lets Release
-// re-acquire a gate on the same registry without hold-and-wait. Registering them
-// the other way round leaves the flow holding gate(entry) while Release takes
-// gate(segment) — two gates at once, and a self-deadlock the moment Release is
-// hardened to gate the entry transaction too.
-//
-// The observation is an event ordering, not a sleep: a competitor for
-// gate(entry) is launched from inside the rollback and the rollback does not
-// return until that competitor has reached a decided outcome — either it holds
-// the gate (freed first: correct) or it is parked inside txgate.Acquire (still
-// held: the defect). A reversal therefore FAILS rather than hangs.
-//
-// The scenario is the joined-segmented can't-happen branch, which is also the
-// only shape where Release rolls anything back on a joined call: the engine's
-// COMMIT_BEFORE_DISPATCH processor commits the entry transaction and opens a
-// segment that belongs to nobody, the handler's guard rejects the call, and the
-// segment must not survive it.
-func TestJoinedSegmentedFlow_FreesTheGateBeforeReleaseRollsBack(t *testing.T) {
-	hn := newTrackingHandler(t)
-	hn.registerSegmentingWorkflow(t)
-
-	ownerTxID, _, err := hn.tracker.Begin(hn.ctx)
-	if err != nil {
-		t.Fatalf("owner Begin: %v", err)
-	}
-	joinedCtx, err := hn.tracker.Join(hn.ctx, ownerTxID)
-	if err != nil {
-		t.Fatalf("Join: %v", err)
-	}
-
-	competitorDone := make(chan struct{})
-	hn.tracker.onRollback = func(txID string) {
-		if txID == ownerTxID {
-			return // not the segment; nothing to observe
-		}
-		hn.tracker.record("rollback-start")
-		started := make(chan struct{})
-		go func() {
-			close(started)
-			release := hn.h.gate.Acquire(ownerTxID)
-			hn.tracker.record("competitor-acquired")
-			release()
-			close(competitorDone)
-		}()
-		<-started
-		waitForGateContention(t, competitorDone)
-	}
-
-	_, err = hn.h.CreateEntity(joinedCtx, rollbackWidgetInput())
-	if err == nil {
-		t.Fatal("a joined call that segmented must be rejected, not committed")
-	}
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) || appErr.Status != 500 {
-		t.Fatalf("joined-segmented guard returned %v, want a 500 AppError", err)
-	}
-
-	select {
-	case <-competitorDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("joined flow never freed gate(entry); a hardened Release would deadlock here")
-	}
-
-	want := []string{"rollback-start", "competitor-acquired", "rollback-end"}
-	if got := hn.tracker.trace(); !slices.Equal(got, want) {
-		t.Fatalf("gate(entry) was still held while Release rolled the segment back: events = %v, want %v", got, want)
-	}
-	// ...and the segment the guard rejected is gone, which is the behaviour the
-	// guard-plus-scope pairing exists to deliver.
-	if open := hn.tracker.openTxIDs(); len(open) != 0 {
-		t.Fatalf("joined-segmented guard leaked %d transaction(s): %v", len(open), open)
-	}
-}
-
-// TestJoinedFlows_ErrorPath_DoNotDeadlock is the bounded-timeout guard for the
-// ordinary joined shape, where Release declines to roll anything back. It exists
+// TestJoinedFlows_ErrorPath_DoNotDeadlock is the bounded-timeout guard for a
+// joined call's error path, where Release declines to roll anything back. It exists
 // so a regression in the defer ordering surfaces as a failure with a diagnosis
 // rather than a hung package.
 func TestJoinedFlows_ErrorPath_DoNotDeadlock(t *testing.T) {
@@ -257,7 +177,7 @@ func TestJoinedFlows_ErrorPath_DoNotDeadlock(t *testing.T) {
 			t.Fatal("expected the joined call to fail")
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("joined error path did not return; the gate and Release are deadlocked")
+		t.Fatal("joined error path did not return; Release is deadlocked")
 	}
 
 	if hn.tracker.wasRolledBack(ownerTxID) {
@@ -266,13 +186,21 @@ func TestJoinedFlows_ErrorPath_DoNotDeadlock(t *testing.T) {
 	if !hn.tracker.isOpen(ownerTxID) {
 		t.Fatal("owner's transaction is no longer open; the owner must decide its fate")
 	}
-	// The gate must be free for the owner to finish its own work.
-	freed := make(chan struct{})
-	go func() { hn.h.gate.Acquire(ownerTxID)(); close(freed) }()
+	// The owner must be able to finish its own work: its seal waits for no
+	// scope the joined call left open, and is not refused.
+	sealed := make(chan error, 1)
+	go func() {
+		finish, err := hn.h.coord.Seal(hn.ctx, ownerTxID)
+		finish()
+		sealed <- err
+	}()
 	select {
-	case <-freed:
+	case err := <-sealed:
+		if err != nil {
+			t.Fatalf("owner's seal after the joined call: %v", err)
+		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("joined call returned still holding gate(entry)")
+		t.Fatal("the owner's seal did not return: the joined call left the transaction held")
 	}
 }
 
@@ -288,9 +216,9 @@ func TestUpdateCollection_PostSegmentConflict_AbortsBatch(t *testing.T) {
 	segID := hn.createEntityIn(t, rollbackSegmentModel, `{"name":"seg"}`)
 	plainID := hn.createEntityIn(t, rollbackModel, `{"name":"before"}`)
 
-	// A CURRENT If-Match: the first-segment flush must accept it so the cascade
-	// reaches the far side of TX_pre's commit, which is where the conflict under
-	// test lives. A stale one would fail earlier and prove nothing.
+	// A CURRENT If-Match: the precondition must hold so the cascade reaches
+	// the far side of TX_pre's commit, which is where the conflict under test
+	// lives. A stale one would fail earlier and prove nothing.
 	current := hn.committedEntity(t, segID).Meta.TransactionID
 	hn.failApplyResultCAS()
 
@@ -302,28 +230,16 @@ func TestUpdateCollection_PostSegmentConflict_AbortsBatch(t *testing.T) {
 	if n := dispatched.Load(); n != 1 {
 		t.Fatalf("callout fired %d time(s), want 1; the cascade never reached the apply-result CAS", n)
 	}
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("batch returned %v (res %+v), want an AppError; a conflict on the far side of a committed segment aborts the call", err, res)
+	if res != nil {
+		t.Fatalf("batch returned a result %+v beside its error; the call fails whole", res)
 	}
 	// Pinned, because the pre-fix symptom was ALSO an error — a sanitized 500
 	// SERVER_ERROR raised when the terminal commit re-committed an already-
 	// committed txID, arriving only after item 1 had been executed and silently
-	// discarded. 400 WORKFLOW_FAILED reports the item that actually failed.
-	//
-	// Not 412: that asserts nothing happened, but TX_pre committed and the
-	// callout fired. Not 409-retryable: a retry re-fires a non-idempotent
-	// external callout.
-	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeWorkflowFailed {
-		t.Fatalf("batch returned %d %s, want 400 %s", appErr.Status, appErr.Code, common.ErrCodeWorkflowFailed)
-	}
-	// A 4xx carries its domain detail as one `CODE: message` line. This is the
-	// only error in the package whose text reaches a response body verbatim
-	// rather than through a sanitized 5xx, so the sentinel must be chained onto
-	// the conflict, not joined beside it.
-	if strings.Contains(appErr.Message, "\n") {
-		t.Fatalf("4xx detail must be a single line, got %q", appErr.Message)
-	}
+	// discarded. The 412 names the entity another transaction changed, as the
+	// single update does for the same conflict. Not 409-retryable: a retry
+	// re-fires a non-idempotent external callout.
+	assertPostSegmentEntityModified(t, err, segID)
 	if n := touched.Load(); n != 0 {
 		t.Fatalf("item 1 ran %d time(s) after the segment committed; its write could only be lost", n)
 	}
@@ -348,8 +264,8 @@ func TestUpdateCollection_SegmentCommitConflict_AbortsBatch(t *testing.T) {
 	segID := hn.createEntityIn(t, rollbackSegmentModel, `{"name":"seg"}`)
 	plainID := hn.createEntityIn(t, rollbackModel, `{"name":"before"}`)
 
-	// Current, so the flush's own CompareAndSave accepts it and the failure
-	// under test is the commit that follows — not the precondition.
+	// Current, so the precondition holds and the failure under test is the
+	// commit that follows the first-segment flush.
 	current := hn.committedEntity(t, segID).Meta.TransactionID
 	hn.failSegmentCommit(fmt.Errorf("%w: Commit: read set validation failed", spi.ErrConflict))
 
@@ -385,11 +301,12 @@ func TestUpdateCollection_SegmentCommitConflict_AbortsBatch(t *testing.T) {
 	}
 }
 
-// TestUpdateCollection_FirstFlushConflict_StillIsolates: the precondition failed
-// before TX_pre committed and before any dispatch fired. That item is cleanly
-// isolable and the batch continues — without this, the fix could be "abort on
-// every conflict", which would break per-item isolation entirely.
-func TestUpdateCollection_FirstFlushConflict_StillIsolates(t *testing.T) {
+// TestUpdateCollection_StaleIfMatch_StillIsolates: the precondition failed
+// before the engine ran anything — no segment committed, no dispatch fired.
+// That item is cleanly isolable and the batch continues — without this, the fix
+// could be "abort on every conflict", which would break per-item isolation
+// entirely.
+func TestUpdateCollection_StaleIfMatch_StillIsolates(t *testing.T) {
 	hn := newTrackingHandler(t)
 	dispatched := hn.registerManualSegmentingWorkflow(t, rollbackSegmentModel)
 	touched := hn.registerCountedTouchWorkflow(t, rollbackModel)
@@ -405,7 +322,7 @@ func TestUpdateCollection_FirstFlushConflict_StillIsolates(t *testing.T) {
 		t.Fatalf("a precondition failure raised before any commit must not abort the batch: %v", err)
 	}
 	if n := dispatched.Load(); n != 0 {
-		t.Fatalf("callout fired %d time(s); the flush was supposed to reject the precondition first", n)
+		t.Fatalf("callout fired %d time(s); the precondition was supposed to be rejected first", n)
 	}
 	if len(res.Failed) != 1 || res.Failed[0].ItemIndex != 0 || res.Failed[0].Code != common.ErrCodeEntityModified {
 		t.Fatalf("item 0 was not isolated: %+v", res.Failed)
@@ -422,10 +339,10 @@ func TestUpdateCollection_FirstFlushConflict_StillIsolates(t *testing.T) {
 }
 
 // TestUpdateEntity_PostSegmentConflict_Still412 pins what the marker must NOT
-// change. A single-entity update has no later items to lose, so it maps every
-// engine conflict — either side of the commit — to 412 ENTITY_MODIFIED. That
-// mapping reads errors.Is(err, spi.ErrConflict), which only survives because the
-// marker is joined to the conflict rather than wrapping it away.
+// change. A conflict on either side of the commit is a precondition on the
+// request's own entity, so it answers 412 ENTITY_MODIFIED. That mapping reads
+// errors.Is(err, spi.ErrConflict), which only survives because the marker is
+// chained onto the conflict rather than wrapping it away.
 func TestUpdateEntity_PostSegmentConflict_Still412(t *testing.T) {
 	hn := newTrackingHandler(t)
 	hn.registerManualSegmentingWorkflow(t, rollbackSegmentModel)
@@ -441,16 +358,161 @@ func TestUpdateEntity_PostSegmentConflict_Still412(t *testing.T) {
 		Transition: "segment",
 		IfMatch:    current,
 	})
+	assertPostSegmentEntityModified(t, err, segID)
+}
+
+// TestCreateEntity_PostSegmentConflict_Is412: another transaction changed the
+// new entity between TX_pre's commit and the apply-result compare. The create
+// answers as the single update does for the same conflict — 412 naming the
+// entity, with the engine's own text kept out of the body.
+func TestCreateEntity_PostSegmentConflict_Is412(t *testing.T) {
+	hn := newTrackingHandler(t)
+	hn.registerSegmentingWorkflow(t)
+	var dispatchedIDs []string
+	hn.proc.dispatchProcessor = func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+		dispatchedIDs = append(dispatchedIDs, e.Meta.ID)
+		return nil, nil
+	}
+	hn.failApplyResultCAS()
+
+	res, err := hn.h.CreateEntity(hn.ctx, rollbackWidgetInput())
+
+	if len(dispatchedIDs) != 1 {
+		t.Fatalf("callout fired %d time(s), want 1; the cascade never reached the apply-result CAS", len(dispatchedIDs))
+	}
+	if res != nil {
+		t.Fatalf("create returned a result %+v beside its error", res)
+	}
+	assertPostSegmentEntityModified(t, err, dispatchedIDs[0])
+}
+
+// TestCreateEntityCollection_PostSegmentConflict_Is412: the same conflict on
+// an item of a collection create. The call fails whole — no later item runs,
+// nothing past the committed segment is committed — and the 412 names the item
+// whose entity another transaction changed.
+func TestCreateEntityCollection_PostSegmentConflict_Is412(t *testing.T) {
+	hn := newTrackingHandler(t)
+	hn.registerSegmentingWorkflow(t)
+	var dispatchedIDs []string
+	hn.proc.dispatchProcessor = func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+		dispatchedIDs = append(dispatchedIDs, e.Meta.ID)
+		return nil, nil
+	}
+	hn.failApplyResultCAS()
+
+	item := CollectionItem{
+		ModelName:    rollbackModel.EntityName,
+		ModelVersion: 1,
+		Payload:      json.RawMessage(`{"name":"w"}`),
+	}
+	res, err := hn.h.CreateEntityCollection(hn.ctx, []CollectionItem{item, item})
+
+	if len(dispatchedIDs) != 1 {
+		t.Fatalf("callout fired %d time(s), want 1; the batch must stop at the item that conflicted", len(dispatchedIDs))
+	}
+	if res != nil {
+		t.Fatalf("batch returned a result %+v beside its error; the call fails whole", res)
+	}
+	assertPostSegmentEntityModified(t, err, dispatchedIDs[0])
+	if open := hn.tracker.openTxIDs(); len(open) != 0 {
+		t.Fatalf("the failed batch left %d transaction(s) open: %v", len(open), open)
+	}
+}
+
+// assertPostSegmentEntityModified asserts the answer every write route gives a
+// conflict past a committed COMMIT_BEFORE_DISPATCH segment: the single
+// update's 412, naming entityID, with no engine text in the message.
+func assertPostSegmentEntityModified(t *testing.T, err error, entityID string) {
+	t.Helper()
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {
-		t.Fatalf("update returned %v, want an AppError", err)
+		t.Fatalf("returned %v, want an AppError", err)
 	}
 	if appErr.Status != http.StatusPreconditionFailed || appErr.Code != common.ErrCodeEntityModified {
-		t.Fatalf("update returned %d %s, want 412 %s", appErr.Status, appErr.Code, common.ErrCodeEntityModified)
+		t.Fatalf("returned %d %s (%q), want 412 %s", appErr.Status, appErr.Code, appErr.Message, common.ErrCodeEntityModified)
+	}
+	if want := common.ErrCodeEntityModified + ": entity has been modified since last read"; appErr.Message != want {
+		t.Fatalf("message = %q, want %q", appErr.Message, want)
+	}
+	if appErr.Retryable {
+		t.Fatal("a conflict past a committed segment is not retryable: a retry re-fires the callout")
+	}
+	if got := appErr.Props["entityId"]; got != entityID {
+		t.Fatalf("properties.entityId = %v, want %s", got, entityID)
+	}
+}
+
+// TestCreateEntity_AsyncNewTxSavepointFailure_NothingCommitted is the
+// handler-level half of the savepoint contract. An ASYNC_NEW_TX processor whose
+// savepoint cannot be released leaves the transaction unusable; treating that as
+// the processor's own (non-fatal) failure carries the pipeline on to the final
+// save and commits a write nobody can vouch for. The create must fail with a
+// ticketed 5xx and leave the store exactly as it found it.
+func TestCreateEntity_AsyncNewTxSavepointFailure_NothingCommitted(t *testing.T) {
+	boom := errors.New(`ERROR: current transaction is aborted (SQLSTATE 25P02) host=db-1`)
+	hn := newTrackingHandlerWrapping(t, "memory", func(tm spi.TransactionManager) spi.TransactionManager {
+		return failingSavepoints{TransactionManager: tm, failRelease: boom}
+	})
+	hn.registerAsyncNewTxWorkflow(t)
+
+	var dispatchedIDs []string
+	hn.proc.dispatchProcessor = func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+		dispatchedIDs = append(dispatchedIDs, e.Meta.ID)
+		return nil, nil
+	}
+
+	_, err := hn.h.CreateEntity(hn.ctx, rollbackWidgetInput())
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("create returned %v, want an AppError", err)
+	}
+	if appErr.Status != http.StatusInternalServerError || appErr.Code != common.ErrCodeServerError {
+		t.Fatalf("create returned %d %s, want 500 %s", appErr.Status, appErr.Code, common.ErrCodeServerError)
+	}
+	if strings.Contains(appErr.Message, "SQLSTATE") || strings.Contains(appErr.Message, "db-1") {
+		t.Fatalf("the driver's text reached the client: %q", appErr.Message)
+	}
+	if len(dispatchedIDs) == 0 {
+		t.Fatal("the processor never ran, so no savepoint was released; the case proves nothing")
+	}
+	for _, id := range dispatchedIDs {
+		if hn.committedVisible(t, id) {
+			t.Fatalf("entity %s was committed although the savepoint around its processor could not be released", id)
+		}
+	}
+	if open := hn.tracker.openTxIDs(); len(open) != 0 {
+		t.Fatalf("the failed create left %d transaction(s) open: %v", len(open), open)
 	}
 }
 
 // --- harness ---
+
+// failingSavepoints fails one of the three savepoint operations, as a plugin
+// does for a transaction that is gone, a savepoint that is missing, or (on
+// PostgreSQL) a transaction an earlier failed statement has already aborted.
+type failingSavepoints struct {
+	spi.TransactionManager
+	failCreate, failUndo, failRelease error
+}
+
+func (m failingSavepoints) Savepoint(ctx context.Context, txID string) (string, error) {
+	if m.failCreate != nil {
+		return "", m.failCreate
+	}
+	return m.TransactionManager.Savepoint(ctx, txID)
+}
+func (m failingSavepoints) RollbackToSavepoint(ctx context.Context, txID, sp string) error {
+	if m.failUndo != nil {
+		return m.failUndo
+	}
+	return m.TransactionManager.RollbackToSavepoint(ctx, txID, sp)
+}
+func (m failingSavepoints) ReleaseSavepoint(ctx context.Context, txID, sp string) error {
+	if m.failRelease != nil {
+		return m.failRelease
+	}
+	return m.TransactionManager.ReleaseSavepoint(ctx, txID, sp)
+}
 
 // rollbackModel is the locked model every flow in this file writes against.
 var rollbackModel = spi.ModelRef{EntityName: "RollbackWidget", ModelVersion: "1"}
@@ -483,14 +545,12 @@ type trackingTxMgr struct {
 	mu         sync.Mutex
 	begun      []string
 	rolledBack []string
-	events     []string
 
 	// Commit-failure injection — see failCommitOf.
 	commitErr      error
 	failCommitTxID string
 
-	onBegin    func(txID string)
-	onRollback func(txID string)
+	onBegin func(txID string)
 }
 
 // failCommitOf makes the commit of one named transaction fail with err.
@@ -514,14 +574,17 @@ func (m *trackingTxMgr) failCommitOf(txID string, err error) {
 }
 
 func (m *trackingTxMgr) Commit(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	failure := m.commitErr
-	armed := m.failCommitTxID != "" && m.failCommitTxID == txID
-	if armed {
-		m.failCommitTxID = ""
-		m.commitErr = nil
-	}
-	m.mu.Unlock()
+	armed, failure := func() (bool, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		failure := m.commitErr
+		armed := m.failCommitTxID != "" && m.failCommitTxID == txID
+		if armed {
+			m.failCommitTxID = ""
+			m.commitErr = nil
+		}
+		return armed, failure
+	}()
 	if !armed {
 		return m.TransactionManager.Commit(ctx, txID)
 	}
@@ -536,10 +599,12 @@ func (m *trackingTxMgr) Begin(ctx context.Context) (string, context.Context, err
 	if err != nil {
 		return txID, txCtx, err
 	}
-	m.mu.Lock()
-	m.begun = append(m.begun, txID)
-	cb := m.onBegin
-	m.mu.Unlock()
+	cb := func() func(txID string) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.begun = append(m.begun, txID)
+		return m.onBegin
+	}()
 	if cb != nil {
 		cb(txID)
 	}
@@ -547,28 +612,12 @@ func (m *trackingTxMgr) Begin(ctx context.Context) (string, context.Context, err
 }
 
 func (m *trackingTxMgr) Rollback(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	m.rolledBack = append(m.rolledBack, txID)
-	cb := m.onRollback
-	m.mu.Unlock()
-	if cb != nil {
-		cb(txID)
-	}
-	err := m.TransactionManager.Rollback(ctx, txID)
-	m.record("rollback-end")
-	return err
-}
-
-func (m *trackingTxMgr) record(ev string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.events = append(m.events, ev)
-}
-
-func (m *trackingTxMgr) trace() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return slices.Clone(m.events)
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.rolledBack = append(m.rolledBack, txID)
+	}()
+	return m.TransactionManager.Rollback(ctx, txID)
 }
 
 // isOpen reports whether the plugin still holds txID active. Join is
@@ -579,9 +628,11 @@ func (m *trackingTxMgr) isOpen(txID string) bool {
 }
 
 func (m *trackingTxMgr) openTxIDs() []string {
-	m.mu.Lock()
-	ids := slices.Clone(m.begun)
-	m.mu.Unlock()
+	ids := func() []string {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return slices.Clone(m.begun)
+	}()
 	var open []string
 	for _, id := range ids {
 		if m.isOpen(id) {
@@ -611,30 +662,49 @@ func (m *trackingTxMgr) wasRolledBack(txID string) bool {
 type armedFactory struct {
 	spi.StoreFactory
 	armed atomic.Bool
+
+	// saveErr, when set, is what the handler's own Save returns.
+	saveErr error
 }
 
 func (f *armedFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
 	if f.armed.Load() {
 		return nil, errArmedEntityStore
 	}
-	return f.StoreFactory.EntityStore(ctx)
+	es, err := f.StoreFactory.EntityStore(ctx)
+	if err != nil || f.saveErr == nil {
+		return es, err
+	}
+	return &saveFailEntityStore{EntityStore: es, err: f.saveErr}, nil
+}
+
+// saveFailEntityStore fails every Save with err.
+type saveFailEntityStore struct {
+	spi.EntityStore
+	err error
+}
+
+func (s *saveFailEntityStore) Save(context.Context, *spi.Entity) (int64, error) {
+	return 0, s.err
 }
 
 // casHookFactory wraps the ENGINE's store factory so a test can fail the
 // CompareAndSave executeCommitBeforeDispatch performs AFTER a
-// COMMIT_BEFORE_DISPATCH segment committed and its callout returned. The handler
-// keeps its own factory, so the injected failure is always the engine's — and
-// arming it from inside the dispatch stub leaves the pre-dispatch first-segment
-// flush, which goes through the same method, untouched.
+// COMMIT_BEFORE_DISPATCH segment committed and its callout returned, or the
+// Save of the first-segment flush before it. The handler keeps its own
+// factory, so the injected failure is always the engine's.
 type casHookFactory struct {
 	spi.StoreFactory
 	armed atomic.Bool
 
-	// onCompareAndSave, when set, is called with the transaction each CAS runs
-	// in. The first CAS a segmenting cascade makes is the first-segment flush,
-	// immediately before that transaction is committed — which is the only place
-	// a test can name TX_pre before it goes.
-	onCompareAndSave func(txID string)
+	// onSave, when set, is called with the transaction each Save runs in. The
+	// first Save a segmenting cascade makes is the first-segment flush,
+	// immediately before that transaction is committed — which is the only
+	// place a test can name TX_pre before it goes.
+	onSave func(txID string)
+
+	// saveErr, when set, is what every Save returns.
+	saveErr error
 }
 
 func (f *casHookFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
@@ -650,12 +720,19 @@ type casHookEntityStore struct {
 	f *casHookFactory
 }
 
-func (s *casHookEntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
-	if s.f.onCompareAndSave != nil {
+func (s *casHookEntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
+	if s.f.onSave != nil {
 		if tx := spi.GetTransaction(ctx); tx != nil {
-			s.f.onCompareAndSave(tx.ID)
+			s.f.onSave(tx.ID)
 		}
 	}
+	if s.f.saveErr != nil {
+		return 0, s.f.saveErr
+	}
+	return s.EntityStore.Save(ctx, entity)
+}
+
+func (s *casHookEntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	if s.f.armed.Load() {
 		return 0, spi.ErrConflict
 	}
@@ -703,6 +780,14 @@ func newTrackingHandler(t *testing.T) *rollbackHarness {
 
 func newTrackingHandlerFor(t *testing.T, backend string) *rollbackHarness {
 	t.Helper()
+	return newTrackingHandlerWrapping(t, backend, nil)
+}
+
+// newTrackingHandlerWrapping is newTrackingHandlerFor with a seam between the
+// plugin's manager and the tracker, for a test that needs one SPI method to
+// misbehave. wrap may be nil.
+func newTrackingHandlerWrapping(t *testing.T, backend string, wrap func(spi.TransactionManager) spi.TransactionManager) *rollbackHarness {
+	t.Helper()
 	ctx := rollbackTestCtx()
 
 	var raw spi.StoreFactory
@@ -726,15 +811,18 @@ func newTrackingHandlerFor(t *testing.T, backend string) *rollbackHarness {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
+	if wrap != nil {
+		tm = wrap(tm)
+	}
 	tracker := &trackingTxMgr{TransactionManager: tm, probeCtx: ctx}
 
 	proc := &stubExternalProc{}
 	engineCAS := &casHookFactory{StoreFactory: raw}
-	engine := wfengine.NewEngine(engineCAS, common.NewDefaultUUIDGenerator(), tracker,
-		wfengine.WithExternalProcessing(proc))
+	engine := wfengine.NewEngine(cachedFactory(engineCAS), common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
+		wfengine.WithExternalProcessing(proc), wfengine.WithCoordination(txcoord.New(tracker)))
 
 	armed := &armedFactory{StoreFactory: raw}
-	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(cachedFactory(armed), tracker, common.NewDefaultUUIDGenerator(), engine, txcoord.New(tracker), newTestConsistencyFor(tracker), platformclock.Real())
 
 	hn := &rollbackHarness{h: h, tracker: tracker, raw: raw, armed: armed, engineCAS: engineCAS, proc: proc, ctx: ctx}
 	hn.registerModel(t, rollbackModel)
@@ -819,10 +907,31 @@ func (hn *rollbackHarness) registerSegmentingWorkflow(t *testing.T) {
 			"A": {Transitions: []spi.TransitionDefinition{{
 				Name: "segment", Next: "B",
 				Processors: []spi.ProcessorDefinition{{
+					Type:                 wfengine.ProcessorTypeExternalized,
+					Name:                 "segmenter",
+					ExecutionMode:        wfengine.ExecutionModeCommitBeforeDispatch,
+					StartNewTxOnDispatch: &startNewTx,
+				}},
+			}}},
+			"B": {},
+		},
+	})
+}
+
+// registerAsyncNewTxWorkflow puts an ASYNC_NEW_TX processor on rollbackModel's
+// automated transition, so an ordinary create runs one savepoint around one
+// dispatch.
+func (hn *rollbackHarness) registerAsyncNewTxWorkflow(t *testing.T) {
+	t.Helper()
+	hn.saveWorkflow(t, rollbackModel, spi.WorkflowDefinition{
+		Version: "1.1", Name: "RollbackAsyncNewTxWF", InitialState: "A", Active: true,
+		States: map[string]spi.StateDefinition{
+			"A": {Transitions: []spi.TransitionDefinition{{
+				Name: "sideEffect", Next: "B",
+				Processors: []spi.ProcessorDefinition{{
 					Type:          wfengine.ProcessorTypeExternalized,
-					Name:          "segmenter",
-					ExecutionMode: wfengine.ExecutionModeCommitBeforeDispatch,
-					Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &startNewTx},
+					Name:          "sideEffect",
+					ExecutionMode: wfengine.ExecutionModeAsyncNewTx,
 				}},
 			}}},
 			"B": {},
@@ -845,10 +954,10 @@ func (hn *rollbackHarness) registerManualSegmentingWorkflow(t *testing.T, ref sp
 			"A": {Transitions: []spi.TransitionDefinition{{
 				Name: "segment", Next: "B", Manual: true,
 				Processors: []spi.ProcessorDefinition{{
-					Type:          wfengine.ProcessorTypeExternalized,
-					Name:          "segmenter",
-					ExecutionMode: wfengine.ExecutionModeCommitBeforeDispatch,
-					Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &startNewTx},
+					Type:                 wfengine.ProcessorTypeExternalized,
+					Name:                 "segmenter",
+					ExecutionMode:        wfengine.ExecutionModeCommitBeforeDispatch,
+					StartNewTxOnDispatch: &startNewTx,
 				}},
 			}}},
 			"B": {},
@@ -863,9 +972,9 @@ func (hn *rollbackHarness) registerManualSegmentingWorkflow(t *testing.T, ref sp
 }
 
 // failApplyResultCAS makes the engine's apply-result CompareAndSave conflict.
-// Armed from inside the dispatch stub so the first-segment flush — which applies
-// the item's If-Match and commits TX_pre — runs untouched: the conflict this
-// produces is genuinely on the far side of a durable commit.
+// Armed from inside the dispatch stub, after the first-segment flush committed
+// TX_pre: the conflict this produces is genuinely on the far side of a durable
+// commit.
 func (hn *rollbackHarness) failApplyResultCAS() {
 	prev := hn.proc.dispatchProcessor
 	hn.proc.dispatchProcessor = func(ctx context.Context, e *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) (*spi.Entity, error) {
@@ -878,11 +987,11 @@ func (hn *rollbackHarness) failApplyResultCAS() {
 }
 
 // failSegmentCommit makes TX_pre's own commit fail with err — the segment
-// boundary's Commit, not its CAS. Armed from inside the first-segment flush's
-// CompareAndSave, the call immediately before that commit, so it names exactly
-// the transaction the engine is about to close.
+// boundary's Commit, not its Save. Armed from inside the first-segment flush's
+// Save, the call immediately before that commit, so it names exactly the
+// transaction the engine is about to close.
 func (hn *rollbackHarness) failSegmentCommit(err error) {
-	hn.engineCAS.onCompareAndSave = func(txID string) {
+	hn.engineCAS.onSave = func(txID string) {
 		hn.tracker.failCommitOf(txID, err)
 	}
 }
@@ -939,6 +1048,24 @@ func (hn *rollbackHarness) committedEntity(t *testing.T, id string) *spi.Entity 
 		t.Fatalf("Get %s: %v", id, err)
 	}
 	return e
+}
+
+// committedVisible reports whether an entity is readable outside any
+// transaction, i.e. whether it was committed. committedEntity's sibling for the
+// case where absence is the expected answer.
+func (hn *rollbackHarness) committedVisible(t *testing.T, id string) bool {
+	t.Helper()
+	es, err := hn.raw.EntityStore(hn.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := es.Get(hn.ctx, id); err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			return false
+		}
+		t.Fatalf("Get %s: %v", id, err)
+	}
+	return true
 }
 
 // committedName reads the "name" field of an entity's committed payload.
@@ -1018,12 +1145,12 @@ func driveDeleteFailure(_ *testing.T, hn *rollbackHarness) error {
 }
 
 func driveDeleteAllFailure(_ *testing.T, hn *rollbackHarness) error {
-	_, err := hn.h.DeleteAllEntities(hn.ctx, rollbackModel.EntityName, rollbackModel.ModelVersion)
+	_, err := hn.h.DeleteAllEntities(hn.ctx, rollbackModel.EntityName, 1)
 	return err
 }
 
 func driveDeleteConditionalFailure(_ *testing.T, hn *rollbackHarness) error {
-	_, err := hn.h.DeleteEntitiesConditional(hn.ctx, rollbackModel.EntityName, rollbackModel.ModelVersion,
+	_, err := hn.h.DeleteEntitiesConditional(hn.ctx, rollbackModel.EntityName, 1,
 		rollbackCondition, nil, false, 0)
 	return err
 }

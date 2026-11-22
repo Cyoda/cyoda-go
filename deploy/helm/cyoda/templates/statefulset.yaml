@@ -35,6 +35,7 @@ spec:
     spec:
       serviceAccountName: {{ include "cyoda.serviceAccountName" . }}
       automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ required "terminationGracePeriodSeconds is required" .Values.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -82,7 +83,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: CYODA_NODE_ADDR
-              value: "http://$(CYODA_NODE_ID).{{ include "cyoda.fullname" . }}-headless.$(POD_NAMESPACE).svc.cluster.local:9090"
+              value: "http://$(CYODA_NODE_ID).{{ include "cyoda.fullname" . }}-headless.$(POD_NAMESPACE).svc.cluster.local:8080"
             - name: CYODA_GOSSIP_ADDR
               value: "0.0.0.0:7946"
             # Credentials via _FILE suffix (projected-volume mount)
@@ -94,10 +95,6 @@ spec:
               value: /etc/cyoda/secrets/hmac-secret
             - name: CYODA_METRICS_BEARER_FILE
               value: /etc/cyoda/secrets/metrics-bearer
-            {{- if .Values.bootstrap.clientId }}
-            - name: CYODA_BOOTSTRAP_CLIENT_SECRET_FILE
-              value: /etc/cyoda/secrets/bootstrap-client-secret
-            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -115,9 +112,10 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-          # /readyz fails on an uninitialised store factory or a recovered
-          # panic; 3 × 5s takes the pod out of the Service within ~15s, which
-          # stops new client connections only. Peers route through the gossip
+          # /readyz fails on an uninitialised store factory, a recovered
+          # panic, or from the start of shutdown (SIGTERM). After a panic,
+          # 3 × 5s takes the pod out of the Service within ~15s, which stops
+          # new client connections only. Peers route through the gossip
           # registry, not this Service, so a tainted node keeps receiving
           # forwarded work until an operator deletes the pod.
           readinessProbe:
@@ -161,13 +159,6 @@ spec:
                   items:
                     - key: {{ .Values.monitoring.metricsBearer.existingSecretKey }}
                       path: metrics-bearer
-              {{- if .Values.bootstrap.clientId }}
-              - secret:
-                  name: {{ include "cyoda.bootstrapSecretName" . }}
-                  items:
-                    - key: {{ .Values.bootstrap.clientSecret.existingSecretKey }}
-                      path: bootstrap-client-secret
-              {{- end }}
         - name: tmp
           emptyDir: {}
       {{- with .Values.nodeSelector }}

@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // Task 13 — per-backend pushdown soundness property.
@@ -121,6 +122,7 @@ func newSoundnessStore(t *testing.T) (*sqlite.StoreFactory, spi.EntityStore, con
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
+	spitest.EnsureLockedModel(t, factory, ctx, gsModel)
 	return factory, store, ctx, clock
 }
 

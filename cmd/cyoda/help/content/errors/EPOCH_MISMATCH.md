@@ -1,18 +1,17 @@
 ---
 topic: errors.EPOCH_MISMATCH
-title: "EPOCH_MISMATCH — shard ownership epoch has changed"
+title: "EPOCH_MISMATCH — the storage shard changed owner during the transaction"
 stability: stable
 see_also:
   - errors
   - errors.CONFLICT
-  - errors.TX_CONFLICT
 ---
 
 # errors.EPOCH_MISMATCH
 
 ## NAME
 
-EPOCH_MISMATCH — a node attempted to write to a shard it no longer owns because the cluster epoch advanced.
+EPOCH_MISMATCH — the storage backend refused the transaction because the shard it ran on moved to another owner while it ran.
 
 ## SYNOPSIS
 
@@ -20,12 +19,13 @@ HTTP: `409` `Conflict`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-Shard ownership is tracked by an epoch counter that increments whenever the cluster re-partitions. A write is rejected with this error when the writing node's cached epoch is stale — another node has since taken ownership of the shard. This prevents split-brain writes.
+A storage backend that partitions its data into shards, each owned by one process at a time, refuses a transaction whose shard changes owner before the transaction completes. The backend rolls the transaction back, so nothing of it is applied, and the same request can succeed on a fresh attempt.
 
-Retryable. The routing layer re-routes to the current shard owner on retry. Frequent recurrence indicates cluster instability or high re-partitioning frequency.
+The stock storage backends (`memory`, `sqlite`, `postgres`) do not partition data into owned shards and never answer this code.
+
+Retryable. Frequent recurrence means that shard ownership in the storage backend moves often, for example during repeated node restarts.
 
 ## SEE ALSO
 
 - errors
 - errors.CONFLICT
-- errors.TX_CONFLICT

@@ -3,8 +3,9 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"sync"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -14,21 +15,48 @@ type StoreFactory struct {
 	pool              *pgxpool.Pool
 	cfg               config              // plugin config; threaded into stores that read config fields (e.g. modelStore)
 	tm                *TransactionManager // may be nil if transactions not configured
-	applyFunc         ApplyFunc           // set via SetApplyFunc; used by modelStore.Get to fold the schema delta log
+	applyFunc         ApplyFunc           // set via SetApplyFunc; folds the schema extension log and checks each extension
 	unregisterMetrics func()              // stops the pool-stat OTel callback; nil when NewStoreFactory/newStoreFactoryWithConfig built this factory outside Plugin.NewFactory
+	// uuids is the id generator the transaction manager carries, mirrored
+	// here whenever the manager is wired in (setTransactionManager) so that
+	// StateMachineAuditStore.Record can read it without going through the
+	// TransactionManager (see spi.StateMachineAuditStore).
+	uuids spi.UUIDGenerator
+	// sched holds the scheduler's own pools (scheduler_pool.go), opened on
+	// first use and closed by Close.
+	sched schedulerPools
+	// models is the model store's own pool (model_pool.go), opened by
+	// Plugin.NewFactory or on first use (modelPool), and closed by Close.
+	// modelsMu guards it and modelsClosed.
+	modelsMu     sync.Mutex
+	models       *modelPool
+	modelsClosed bool
+	// keys caches each tenant's marker key; see tenantKeys. The factory owns
+	// it from construction and never replaces it: its entity stores use it
+	// for their non-transactional writes, and InitTransactionManager hands
+	// the same cache to the manager it builds.
+	keys *tenantKeys
+	// clock is the business clock given by spi.WithClock: the time of commit
+	// stamps, consistency times, placeholder dates and the retention and
+	// reaping cutoffs. nil — production — leaves those on the database clock
+	// (and the cutoffs on the process clock), as they were before the option
+	// existed. Liveness never reads it.
+	clock spi.Clock
 }
 
-// ApplyFunc replays an opaque SchemaDelta onto a base schema
-// represented in the plugin's canonical bytes. Callers (cmd/cyoda/main.go)
-// pass schema.Apply wrapped in a codec round-trip.
-type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
+// ApplyFunc replays opaque SchemaDeltas, in order, onto a base schema in
+// one call and returns the new schema bytes; an empty list re-encodes base.
+// The composition root (app/app.go) passes schema.ApplyMany, which decodes
+// and encodes the schema once per call, so the fold makes one call for the
+// whole log after the savepoint.
+type ApplyFunc func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)
 
 // NewStoreFactory creates a new PostgreSQL-backed StoreFactory. The
 // factory is configured with defaults equivalent to parseConfig on an
 // empty environment — callers that need non-default config (e.g. a
 // custom SchemaSavepointInterval) should use newStoreFactoryWithConfig.
 func NewStoreFactory(pool *pgxpool.Pool) *StoreFactory {
-	return &StoreFactory{pool: pool, cfg: defaultStoreConfig()}
+	return newStoreFactoryWithKeys(pool, defaultStoreConfig(), newTenantKeys())
 }
 
 // newStoreFactoryWithConfig is the config-aware constructor used by
@@ -39,7 +67,15 @@ func NewStoreFactory(pool *pgxpool.Pool) *StoreFactory {
 // same internal-test helpers; no external caller needs to synthesize
 // a full config.
 func newStoreFactoryWithConfig(pool *pgxpool.Pool, cfg config) *StoreFactory {
-	return &StoreFactory{pool: pool, cfg: cfg}
+	return newStoreFactoryWithKeys(pool, cfg, newTenantKeys())
+}
+
+// newStoreFactoryWithKeys builds a factory around an existing tenant-key
+// cache. Every constructor goes through it, so a factory has exactly one
+// cache from the start. A test that pairs a factory with a transaction
+// manager it built on its own passes the manager's cache here.
+func newStoreFactoryWithKeys(pool *pgxpool.Pool, cfg config, keys *tenantKeys) *StoreFactory {
+	return &StoreFactory{pool: pool, cfg: cfg, keys: keys}
 }
 
 // defaultStoreConfig returns the config values produced by parseConfig
@@ -52,7 +88,7 @@ func defaultStoreConfig() config {
 	return config{
 		MaxConns:                25,
 		MinConns:                5,
-		SchemaSavepointInterval: 64,
+		SchemaSavepointInterval: defaultSchemaSavepointInterval,
 		// A zero ceiling reads as "disabled" to every consumer of these fields,
 		// so the baseline carries the shipped defaults rather than zero values.
 		StatementTimeout:       defaultStatementTimeout,
@@ -60,11 +96,14 @@ func defaultStoreConfig() config {
 		AcquireTimeout:         defaultAcquireTimeout,
 		MigrateLockTimeout:     defaultMigrateLockTimeout,
 		SearchStatementTimeout: defaultSearchStatementTimeout,
+		SchedulerConns:         defaultSchedulerConns,
+		ModelConns:             defaultModelConns,
 	}
 }
 
-// SetApplyFunc installs the replay function used by modelStore.Get
-// to fold the extension log. It may be called at most once —
+// SetApplyFunc installs the apply function the model store folds the
+// extension log with and checks each extension against; ExtendSchema
+// refuses to run without it. It may be called at most once —
 // typically at factory-construction time in app/app.go.
 // Calling it twice is a programmer error (panic).
 //
@@ -73,21 +112,26 @@ func defaultStoreConfig() config {
 // setter uniformly across plugins whose named ApplyFunc types differ.
 // Values of postgres.ApplyFunc are assignable to this parameter because
 // the underlying signatures are identical.
-func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
 	if f.applyFunc != nil {
 		panic("postgres: SetApplyFunc called twice")
 	}
 	f.applyFunc = ApplyFunc(fn)
 }
 
-// setTransactionManager wires the plugin's own TM into the factory. The
-// field is written exactly once, at construction time, by initTransactionManager
-// (same package) — so reads in resolveRaw are safe without synchronization
-// because the construction return establishes happens-before for every
-// subsequent caller. Keep this unexported: there is no legitimate external
-// caller, and opening it would invite a race the factory isn't designed for.
+// setTransactionManager wires tm into the factory, setting both tm and
+// uuids (mirrored from tm.uuids so StateMachineAuditStore.Record can read
+// the generator without going through the TransactionManager). Called by
+// InitTransactionManager at construction time, and by test helpers that wire
+// a TM of their own (e.g. NewStoreFactoryWithTMForTest); each call fully
+// replaces both fields. tm must use this factory's tenant-key cache:
+// InitTransactionManager builds it with that cache, and the test helpers
+// build the factory around the TM's cache (newStoreFactoryWithKeys). Keep
+// this unexported: there is no legitimate external caller, and opening it
+// would invite a race the factory isn't designed for.
 func (f *StoreFactory) setTransactionManager(tm *TransactionManager) {
 	f.tm = tm
+	f.uuids = tm.uuids
 }
 
 // Pool returns the underlying connection pool.
@@ -162,8 +206,9 @@ func (f *StoreFactory) querier() Querier {
 // Not joining is exactly what makes a submit issued INSIDE a transaction hold
 // two connections at once, so the acquire is bounded on that path — the shared
 // mechanism in unjoinedQuerier, the same one every point-in-time read takes.
-// Outside a transaction (the reaper, the heartbeat, the job goroutine's own
-// writes) it is the plain unbounded pool, unchanged.
+// Outside a transaction (the reaper, the job goroutine's own writes) it is the
+// plain unbounded pool. The heartbeat and the claim are not here: they run on
+// the scheduler pool.
 func (f *StoreFactory) poolQuerier() Querier {
 	return unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "async search job"}
 }
@@ -202,6 +247,8 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 		tm:             f.tm,
 		pool:           f.pool,
 		acquireTimeout: f.cfg.AcquireTimeout,
+		keys:           f.keys,
+		clock:          f.clock,
 	}, nil
 }
 
@@ -210,23 +257,33 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelStore{q: f.querier(), pool: f.pool, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
+	models, err := f.modelPool()
+	if err != nil {
+		return nil, err
+	}
+	return newModelStore(models, tid, f.applyFunc, f.cfg), nil
 }
 
+// KeyValueStore never joins the caller's transaction (spi.KeyValueStore
+// contract): each operation is applied when it returns. Inside a transaction
+// the connection acquire is bounded, so a saturated pool fails the call with
+// a retryable storage-unavailable error instead of waiting without end.
 func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, error) {
 	tid, err := resolveTenant(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &kvStore{q: f.querier(), tenantID: tid}, nil
+	return &kvStore{q: unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "key-value"}, tenantID: tid}, nil
 }
 
+// MessageStore never joins the caller's transaction (spi.MessageStore
+// contract): a message is applied when Save returns and survives a rollback.
 func (f *StoreFactory) MessageStore(ctx context.Context) (spi.MessageStore, error) {
 	tid, err := resolveTenant(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &messageStore{q: f.querier(), tenantID: tid}, nil
+	return &messageStore{q: unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "message"}, tenantID: tid}, nil
 }
 
 func (f *StoreFactory) WorkflowStore(ctx context.Context) (spi.WorkflowStore, error) {
@@ -243,7 +300,7 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 	if err != nil {
 		return nil, err
 	}
-	return &smAuditStore{q: f.querier(), tenantID: tid}, nil
+	return &smAuditStore{q: f.querier(), tenantID: tid, uuids: f.uuids}, nil
 }
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
@@ -252,25 +309,48 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	// context.Background() (no tenant). ReapExpired also runs without tenant context.
 	return &asyncSearchStore{
 		q:                      f.poolQuerier(),
+		sched:                  f.schedulerQuerier("async search liveness"),
 		pool:                   f.pool,
 		acquireTimeout:         f.cfg.AcquireTimeout,
 		searchStatementTimeout: f.cfg.SearchStatementTimeout,
+		clock:                  f.clock,
 	}, nil
 }
 
-// ScheduledTaskStore returns a store backed by the context-resolving
-// querier: unlike the per-tenant accessors above, it does not resolve a
-// tenant here — ScanDue is a cross-tenant read called with a
-// background/tenant-less context, and Upsert/Delete/Reconcile carry the
-// tenant on the task/request itself (see spi.StoreFactory godoc).
+// ScheduledTaskStore returns the scheduled-task store. It resolves no tenant:
+// tenant-facing methods take the tenant as an argument, and ClaimDue,
+// GiveBackIdle, the owner methods and the sweeps are cross-tenant. See
+// scheduledTaskStore for which methods join the transaction on ctx.
 func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
-	return &scheduledTaskStore{q: f.querier()}, nil
+	return &scheduledTaskStore{
+		q:     f.querier(),
+		query: unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "scheduled task query"},
+		pool:  f.pool,
+		txOpen: func(txID string) bool {
+			if f.tm == nil {
+				return false
+			}
+			_, ok := f.tm.LookupTx(txID)
+			return ok
+		},
+		sched:     f.schedulerQuerier("scheduled task"),
+		heartbeat: f.heartbeatQuerier(),
+	}, nil
+}
+
+// Ping implements spi.StoreFactory. It checks the main pool only; the
+// scheduler pools are not consulted. After Close the pool is closed and the
+// ping fails.
+func (f *StoreFactory) Ping(ctx context.Context) error {
+	return f.pool.Ping(ctx)
 }
 
 func (f *StoreFactory) Close() error {
 	if f.unregisterMetrics != nil {
 		f.unregisterMetrics()
 	}
+	f.closeSchedulerPools()
+	f.closeModelPool()
 	f.pool.Close()
 	return nil
 }
@@ -285,8 +365,12 @@ func (f *StoreFactory) TransactionManager(ctx context.Context) (spi.TransactionM
 }
 
 // newStoreFactory is the unexported constructor called by Plugin.NewFactory.
-func newStoreFactory(pool *pgxpool.Pool, cfg config) *StoreFactory {
-	return newStoreFactoryWithConfig(pool, cfg)
+// clock is the business clock from spi.WithClock, nil when none was given; set
+// before InitTransactionManager, which hands it to the manager.
+func newStoreFactory(pool *pgxpool.Pool, cfg config, clock spi.Clock) *StoreFactory {
+	f := newStoreFactoryWithConfig(pool, cfg)
+	f.clock = clock
+	return f
 }
 
 // InitTransactionManager installs a TransactionManager on the factory using
@@ -298,7 +382,9 @@ func newStoreFactory(pool *pgxpool.Pool, cfg config) *StoreFactory {
 // for use within the package; external callers — including test packages —
 // should call this exported form.
 func (f *StoreFactory) InitTransactionManager(uuids spi.UUIDGenerator) {
-	tm := NewTransactionManager(f.pool, uuids, WithAcquireTimeout(f.cfg.AcquireTimeout))
+	tm := NewTransactionManager(f.pool, uuids,
+		WithAcquireTimeout(f.cfg.AcquireTimeout), withStatementTimeout(f.cfg.StatementTimeout),
+		withTenantKeys(f.keys), withBusinessClock(f.clock))
 	f.setTransactionManager(tm)
 }
 

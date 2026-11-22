@@ -1,7 +1,6 @@
 package grpc
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,13 +10,15 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
+	"github.com/cyoda/cyoda-go/internal/logging"
 )
 
 // EntityManage handles unary entity management CloudEvents (create, update,
@@ -30,14 +31,16 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return nil, status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entityManage", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
 	switch eventType {
 	case EntityCreateRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
+		if appErr := unstorableEvent(payload); appErr != nil {
+			return entityTransactionError(ctx, ce.Id, appErr)
+		}
 		var req events.EntityCreateRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -48,9 +51,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		defer cancelTimeout()
 
 		format := string(req.DataFormat)
-		if format == "" {
-			format = "JSON"
-		}
 		// The payload bytes go to the entity service verbatim — no
 		// decode→re-marshal round-trip, which would rewrite unpaired
 		// surrogates and invalid UTF-8 to U+FFFD and collapse duplicate
@@ -65,7 +65,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
 				err = appErr
 			}
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransactionError(ctx, ce.Id, err)
 		}
 
@@ -86,10 +85,11 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityTransactionResponse, resp)
 
 	case EntityUpdateRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
+		if appErr := unstorableEvent(payload); appErr != nil {
+			return entityTransactionError(ctx, ce.Id, appErr)
+		}
 		var req events.EntityUpdateRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -100,9 +100,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		defer cancelTimeout()
 
 		format := string(req.DataFormat)
-		if format == "" {
-			format = "JSON"
-		}
 		transition := ""
 		if req.Payload.Transition != nil {
 			transition = *req.Payload.Transition
@@ -118,7 +115,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
 				err = appErr
 			}
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransactionError(ctx, ce.Id, err)
 		}
 
@@ -139,10 +135,11 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityTransactionResponse, resp)
 
 	case EntityPatchRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
+		if appErr := unstorableEvent(payload); appErr != nil {
+			return entityTransactionError(ctx, ce.Id, appErr)
+		}
 		var req events.EntityPatchRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -155,7 +152,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		if req.Payload.IfMatch == nil || *req.Payload.IfMatch == "" {
 			return entityTransactionError(ctx, ce.Id, common.Operational(
 				http.StatusPreconditionRequired, common.ErrCodePreconditionRequired,
-				"missing ifMatch: provide the transactionId from your last read, or \"*\" to accept last-writer-wins"))
+				"missing or empty ifMatch: provide the transactionId from your last read, or \"*\" to accept last-writer-wins"))
 		}
 		transition := ""
 		if req.Payload.Transition != nil {
@@ -172,7 +169,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
 				err = appErr
 			}
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransactionError(ctx, ce.Id, err)
 		}
 		diag := common.GetDiagnostics(ctx)
@@ -190,16 +186,13 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityTransactionResponse, resp)
 
 	case EntityDeleteRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
 		var req events.EntityDeleteRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
 		result, err := s.entityHandler.DeleteEntity(ctx, req.EntityID)
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityDeleteError(ctx, ce.Id, req.EntityID, err)
 		}
 
@@ -220,36 +213,16 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityDeleteResponse, resp)
 
 	case EntityTransitionRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
 		var req events.EntityTransitionRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
-		// Fetch the entity's current data to pass through with the transition.
-		envelope, err := s.entityHandler.GetEntity(ctx, entity.GetOneEntityInput{
-			EntityID: req.EntityID,
-		})
-		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
-			return entityTransitionError(ctx, ce.Id, err)
-		}
-
-		dataBytes, err := json.Marshal(envelope.Data)
-		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
-			return entityTransitionError(ctx, ce.Id, fmt.Errorf("failed to marshal entity data: %v", err))
-		}
-
-		_, err = s.entityHandler.UpdateEntity(ctx, entity.UpdateEntityInput{
+		_, err := s.entityHandler.TransitionEntity(ctx, entity.TransitionEntityInput{
 			EntityID:   req.EntityID,
-			Format:     "JSON",
-			Data:       dataBytes,
 			Transition: req.Transition,
 		})
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			return entityTransitionError(ctx, ce.Id, err)
 		}
 
@@ -279,14 +252,20 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		return status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entityManageCollection", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
 	switch eventType {
 	case EntityCreateCollectionRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
+		if appErr := unstorableEvent(payload); appErr != nil {
+			respCE, ceErr := entityTransactionError(ctx, ce.Id, appErr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(respCE)
+		}
 		var req events.EntityCreateCollectionRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -299,6 +278,14 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			return stream.Send(respCE)
 		}
 		defer cancelTimeout()
+
+		if werr := refuseJoinedTransactionWindow(ctx, req.TransactionWindow); werr != nil {
+			respCE, ceErr := entityTransactionError(ctx, ce.Id, werr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(respCE)
+		}
 
 		if len(req.Payloads) == 0 {
 			return status.Errorf(codes.InvalidArgument, "payloads array is empty")
@@ -318,7 +305,6 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
 				err = appErr
 			}
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			respCE, ceErr := entityTransactionError(ctx, ce.Id, err)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -346,10 +332,15 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		return stream.Send(respCE)
 
 	case EntityUpdateCollectionRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
+		if appErr := unstorableEvent(payload); appErr != nil {
+			respCE, ceErr := entityTransactionError(ctx, ce.Id, appErr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(respCE)
+		}
 		var req events.EntityUpdateCollectionRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -366,14 +357,19 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		}
 		defer cancelTimeout()
 
+		if werr := refuseJoinedTransactionWindow(ctx, req.TransactionWindow); werr != nil {
+			respCE, ceErr := entityTransactionError(ctx, ce.Id, werr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(respCE)
+		}
+
 		if len(req.Payloads) == 0 {
 			return status.Errorf(codes.InvalidArgument, "payloads array is empty")
 		}
 
 		format := string(req.DataFormat)
-		if format == "" {
-			format = "JSON"
-		}
 
 		// Update each entity individually, collecting IDs.
 		allIDs := make([]string, 0, len(req.Payloads))
@@ -382,15 +378,16 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			// Generic cancellation check at the iteration head (spec D9) —
 			// fires on ANY ctx cancellation, not only our own feature
 			// deadline. Routed through the identical whole-envelope error
-			// path a genuine per-item failure below already takes: earlier
-			// items already committed and are durable, this item and any
-			// after it are never attempted.
+			// path a genuine per-item failure below already takes: this item
+			// and any after it are never attempted. Without a transaction
+			// token each earlier item committed on its own and is durable;
+			// a request that joined a transaction keeps none of its entity
+			// writes once it fails, only the schema extensions they made.
 			if ctxErr := opCtx.Err(); ctxErr != nil {
 				loopErr := fmt.Errorf("operation aborted: %w", ctxErr)
 				if appErr := common.ClassifyRequestTimeout(opCtx, loopErr, common.ErrCodeTransactionTimeout); appErr != nil {
 					loopErr = appErr
 				}
-				slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", loopErr.Error())
 				respCE, ceErr := entityTransactionError(ctx, ce.Id, loopErr)
 				if ceErr != nil {
 					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -413,7 +410,6 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 				if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeTransactionTimeout); appErr != nil {
 					err = appErr
 				}
-				slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
 				respCE, ceErr := entityTransactionError(ctx, ce.Id, err)
 				if ceErr != nil {
 					return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -444,10 +440,8 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		return stream.Send(respCE)
 
 	case EntityDeleteAllRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
 		var req events.EntityDeleteAllRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -481,9 +475,8 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 			}
 		}
 
-		delRes, err := s.entityHandler.DeleteEntitiesConditional(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), nil, req.PointInTime, req.Verbose, size)
+		delRes, err := s.entityHandler.DeleteEntitiesConditional(ctx, req.Model.Name, int(req.Model.Version), nil, req.PointInTime, req.Verbose, size)
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManageCollection", "type", eventType, "ceId", ce.Id, "error", err.Error())
 			respCE, ceErr := entityDeleteAllError(ctx, ce.Id, err)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -522,8 +515,9 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 
 // deleteAllErrorsByID converts a DeleteResult.IDToError map into the
 // schema's ErrorsByID shape (map[string]interface{}). The batched
-// (transactionSize>0) delete-all path folds per-id and per-batch-commit
-// failures into IDToError and still returns Success:true — RemovedCount can
+// delete-all folds per-id outcomes (an entity gone or changed since
+// selection) and every failed batch's ids into IDToError and still returns
+// Success:true — RemovedCount can
 // be less than MatchedCount — so the caller must be able to see which ids
 // failed and why, the same way the HTTP door's idToError field already does.
 // An empty/nil input returns nil so the omitempty field is left off the
@@ -537,4 +531,14 @@ func deleteAllErrorsByID(idToError map[string]string) events.EntityDeleteAllResp
 		out[id] = msg
 	}
 	return out
+}
+
+// unstorableEvent refuses an entity-write event holding text no store can
+// hold. The event carries an entity payload, which the unstorable check must
+// see as the client sent it, so it reads the whole event before the strict
+// decode: a payload no store can hold is refused as such, with the event's
+// error response, rather than by the decode, which refuses invalid UTF-8 and
+// duplicate names anywhere in the event with a bare InvalidArgument.
+func unstorableEvent(payload json.RawMessage) *common.AppError {
+	return ingest.RejectUnstorable(payload)
 }

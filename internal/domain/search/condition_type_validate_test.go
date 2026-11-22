@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // buildDoubleModel returns a minimal ModelNode with a single DOUBLE leaf at $.price.
@@ -29,7 +29,7 @@ func TestValidateConditionTypes_Between_TypeMismatch(t *testing.T) {
 		OperatorType: "BETWEEN",
 		Value:        []any{"abc", "def"},
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err == nil {
 		t.Fatal("expected error for string values against DOUBLE BETWEEN condition, got nil")
 	}
@@ -48,62 +48,28 @@ func TestValidateConditionTypes_Between_ValidIntegers(t *testing.T) {
 		// float64 is what json.Unmarshal produces for numbers
 		Value: []any{float64(10), float64(20)},
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err != nil {
 		t.Fatalf("expected no error for numeric BETWEEN values against DOUBLE field, got: %v", err)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Mixed-type array values (IN semantics)
-// ---------------------------------------------------------------------------
-
-// TestValidateConditionTypes_In_TypeMismatch verifies that an array containing
-// a non-numeric string element against a DOUBLE field is rejected: parse-based,
-// "abc" parses into no declared type (DOUBLE), so the leaf is a type mismatch.
-func TestValidateConditionTypes_In_TypeMismatch(t *testing.T) {
-	model := buildDoubleModel()
-	cond := &predicate.SimpleCondition{
-		JsonPath:     "$.price",
-		OperatorType: "EQUALS",
-		Value:        []any{float64(1), "abc", float64(3)},
-	}
-	err := ValidateConditionValueTypes(model, cond)
-	if err == nil {
-		t.Fatal("expected error for mixed-type array value against DOUBLE field, got nil")
-	}
-	if !errors.Is(err, errConditionTypeMismatch) {
-		t.Errorf("expected errConditionTypeMismatch sentinel, got: %v", err)
-	}
-}
-
-// TestValidateConditionTypes_In_AllNumeric verifies that an array of all-numeric
-// values against a DOUBLE field is accepted (every element parses as DOUBLE).
-func TestValidateConditionTypes_In_AllNumeric(t *testing.T) {
-	model := buildDoubleModel()
-	cond := &predicate.SimpleCondition{
-		JsonPath:     "$.price",
-		OperatorType: "EQUALS",
-		Value:        []any{float64(1), float64(2), float64(3)},
-	}
-	err := ValidateConditionValueTypes(model, cond)
-	if err != nil {
-		t.Fatalf("expected no error for all-numeric array value against DOUBLE field, got: %v", err)
-	}
-}
-
-// TestValidateConditionTypes_EmptyArray_Accepted verifies that an empty array
-// value is accepted without error (no elements to mismatch).
-func TestValidateConditionTypes_EmptyArray_Accepted(t *testing.T) {
+// TestValidateConditionTypes_Between_OneBoundMismatch verifies that a BETWEEN
+// pair is refused when only one bound fails to parse into the field's type:
+// each bound is checked, not just the first.
+func TestValidateConditionTypes_Between_OneBoundMismatch(t *testing.T) {
 	model := buildDoubleModel()
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.price",
 		OperatorType: "BETWEEN",
-		Value:        []any{},
+		Value:        []any{float64(1), "abc"},
 	}
-	err := ValidateConditionValueTypes(model, cond)
-	if err != nil {
-		t.Fatalf("expected no error for empty array value, got: %v", err)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
+	if err == nil {
+		t.Fatal("expected error for a non-numeric upper bound against a DOUBLE field, got nil")
+	}
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("expected errConditionTypeMismatch sentinel, got: %v", err)
 	}
 }
 
@@ -135,7 +101,7 @@ func TestValidateConditionTypes_ScalarOnPureContainer_Rejects(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "abc",
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err == nil {
 		t.Fatal("expected error for scalar EQUALS on a pure-container path, got nil")
 	}
@@ -154,7 +120,7 @@ func TestValidateConditionTypes_LeafUnderContainer_Accepts(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "some-key",
 	}
-	if err := ValidateConditionValueTypes(model, cond); err != nil {
+	if err := ValidateConditionValueTypes(model.FieldsMap(), cond); err != nil {
 		t.Fatalf("expected no error for scalar EQUALS on the leaf path, got: %v", err)
 	}
 }
@@ -169,7 +135,7 @@ func TestValidateConditionTypes_NullPresenceOnContainer_Accepts(t *testing.T) {
 			JsonPath:     "$.some-object",
 			OperatorType: op,
 		}
-		if err := ValidateConditionValueTypes(model, cond); err != nil {
+		if err := ValidateConditionValueTypes(model.FieldsMap(), cond); err != nil {
 			t.Errorf("%s on container path should be accepted, got: %v", op, err)
 		}
 	}
@@ -190,7 +156,7 @@ func TestValidateConditionTypes_MixedObjectOrScalar_Accepts(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "abc",
 	}
-	if err := ValidateConditionValueTypes(root, cond); err != nil {
+	if err := ValidateConditionValueTypes(root.FieldsMap(), cond); err != nil {
 		t.Fatalf("mixed object-or-string leaf should accept a string operand, got: %v", err)
 	}
 }
@@ -206,7 +172,7 @@ func TestValidateConditionTypes_ScalarOnUnknownPath_NotContainerRule(t *testing.
 		OperatorType: "EQUALS",
 		Value:        "abc",
 	}
-	if err := ValidateConditionValueTypes(model, cond); err != nil {
+	if err := ValidateConditionValueTypes(model.FieldsMap(), cond); err != nil {
 		t.Fatalf("unknown non-container path should not be rejected here, got: %v", err)
 	}
 }
@@ -217,7 +183,7 @@ func TestValidateConditionTypes_ScalarOnUnknownPath_NotContainerRule(t *testing.
 
 // An object operand is a shape/arity error (spec §6/§8), not a field-type
 // mismatch — it is rejected upstream at the model-independent ValidateCondition
-// boundary (validateOperandShape, operators.go) as INVALID_CONDITION, before
+// boundary (validateOperand, operators.go) as INVALID_CONDITION, before
 // ValidateConditionValueTypes's parse-based type check ever runs. These tests
 // exercise that combined pipeline (ValidateCondition then
 // ValidateConditionValueTypes), matching the order every real entry point
@@ -285,25 +251,6 @@ func TestValidateCondition_ObjectValue_NonBetweenOperator_Rejects(t *testing.T) 
 }
 
 // ---------------------------------------------------------------------------
-// Null element inside array — accepted (null compatible with any type)
-// ---------------------------------------------------------------------------
-
-// TestValidateConditionTypes_ArrayWithNullElement_Accepted verifies that a nil
-// element inside an array value is accepted (null is compatible with any type).
-func TestValidateConditionTypes_ArrayWithNullElement_Accepted(t *testing.T) {
-	model := buildDoubleModel()
-	cond := &predicate.SimpleCondition{
-		JsonPath:     "$.price",
-		OperatorType: "BETWEEN",
-		Value:        []any{float64(10), nil},
-	}
-	err := ValidateConditionValueTypes(model, cond)
-	if err != nil {
-		t.Fatalf("expected no error for array with null element, got: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ArrayCondition — routed through spi.DesugarCondition rather than a second
 // type check, so it gets the SAME declared-type check a simple clause's
 // positional leaf gets.
@@ -313,15 +260,16 @@ func TestValidateConditionTypes_ArrayWithNullElement_Accepted(t *testing.T) {
 // array clause tested against an integer-declared array field rejects a
 // string value the same way a positional SimpleCondition would —
 // walkConditionTypes' ArrayCondition arm desugars into SimpleCondition
-// EQUALS leaves and recurses, rather than skipping the check entirely.
+// leaves carrying the clause's operator and recurses, rather than skipping the check entirely.
 func TestValidateConditionTypes_ArrayCondition_TypeMismatch(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("nums", schema.NewArrayNode(schema.NewLeafNode(schema.Integer)))
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.nums[*]",
-		Values:   []any{"not-a-number"},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.nums[*]",
+		Values:       []any{"not-a-number"},
 	}
-	err := ValidateConditionValueTypes(node, cond)
+	err := ValidateConditionValueTypes(node.FieldsMap(), cond)
 	if err == nil {
 		t.Fatal("expected error for string value against an INTEGER array element, got nil")
 	}
@@ -336,10 +284,11 @@ func TestValidateConditionTypes_ArrayCondition_Accepted(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("nums", schema.NewArrayNode(schema.NewLeafNode(schema.Integer)))
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.nums[*]",
-		Values:   []any{float64(3)},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.nums[*]",
+		Values:       []any{float64(3)},
 	}
-	if err := ValidateConditionValueTypes(node, cond); err != nil {
+	if err := ValidateConditionValueTypes(node.FieldsMap(), cond); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -351,23 +300,15 @@ func TestValidateConditionTypes_ArrayCondition_Accepted(t *testing.T) {
 
 // TestValidate_TemporalRejectsStringOp verifies that a string or pattern
 // operator (CONTAINS) against a temporal meta field (creationDate) is
-// REJECTED as 400 INVALID_CONDITION.
-//
-// This reverses an earlier deliberate acceptance (see git history): the SPI
-// kernel's pushdown re-check bridges a temporal field to its RFC3339 text
-// and matches CONTAINS lexically, while internal/match's prepareLifecycle
-// guards the same case to a never-match on field identity — the same
-// request answering two ways depending only on which query plan served it
-// (a pushdown narrowing vs. a residual re-check). Both evaluators' own
-// "KNOWN DIVERGENCE" comments name this exact fix: reject the predicate here,
-// at the one boundary every condition surface — search, conditional delete,
-// grouped stats, and workflow-criterion import — funnels through, which
-// makes both evaluators' now-conflicting behaviour unreachable.
+// REJECTED as 400 CONDITION_TYPE_MISMATCH: the operator does not apply to the
+// field's type. The refusal sits at the one boundary every condition surface
+// — search, conditional delete, grouped stats, workflow-criterion import and
+// evaluation — funnels through.
 func TestValidate_TemporalRejectsStringOp(t *testing.T) {
 	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
 	err := validateLifecycleType(c)
-	if !errors.Is(err, ErrInvalidCondition) {
-		t.Errorf("CONTAINS on creationDate must be rejected as ErrInvalidCondition, got %v", err)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("CONTAINS on creationDate must be rejected as errConditionTypeMismatch, got %v", err)
 	}
 }
 
@@ -378,8 +319,8 @@ func TestValidate_TemporalRejectsStringOp(t *testing.T) {
 func TestValidate_TemporalRejectsPatternOp(t *testing.T) {
 	c := &predicate.LifecycleCondition{Field: "lastUpdateTime", OperatorType: "MATCHES_PATTERN", Value: "^2021.*"}
 	err := validateLifecycleType(c)
-	if !errors.Is(err, ErrInvalidCondition) {
-		t.Errorf("MATCHES_PATTERN on lastUpdateTime must be rejected as ErrInvalidCondition, got %v", err)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("MATCHES_PATTERN on lastUpdateTime must be rejected as errConditionTypeMismatch, got %v", err)
 	}
 }
 
@@ -389,8 +330,8 @@ func TestValidate_TemporalRejectsPatternOp(t *testing.T) {
 func TestValidate_TemporalRejectsCaseInsensitiveStringOp(t *testing.T) {
 	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "ICONTAINS", Value: "2021"}
 	err := validateLifecycleType(c)
-	if !errors.Is(err, ErrInvalidCondition) {
-		t.Errorf("ICONTAINS on creationDate must be rejected as ErrInvalidCondition, got %v", err)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("ICONTAINS on creationDate must be rejected as errConditionTypeMismatch, got %v", err)
 	}
 }
 
@@ -497,29 +438,28 @@ func TestValidate_UnknownMetaField(t *testing.T) {
 func TestValidate_WalkConditionTypes_LifecycleNoLongerExempt(t *testing.T) {
 	model := buildDoubleModel()
 	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if !errors.Is(err, errConditionTypeMismatch) {
 		t.Errorf("expected errConditionTypeMismatch through ValidateConditionValueTypes, got %v", err)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Nil model — lifecycle/temporal (model-independent) validation must still
-// run when no schema is available; only the data-field-vs-schema check is
-// schema-dependent and gracefully skipped. This is what lets grouped-stats
-// (which has no model-schema plumbing) reuse ValidateConditionValueTypes for
-// temporal/lifecycle type-soundness by passing a nil model.
+// Nil fields map — lifecycle/temporal (model-independent) validation must
+// still run when no fields map is passed; only the data-field-vs-schema check
+// is schema-dependent and skipped. A lifecycle-only condition has no fields
+// map, and grouped stats' service layer passes none.
 // ---------------------------------------------------------------------------
 
 // TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound verifies that
-// a nil model no longer causes ValidateConditionValueTypes to no-op: a
+// a nil fields map does not cause ValidateConditionValueTypes to no-op: a
 // type-unsound lifecycle/temporal condition (a comparison operand that parses
 // into no temporal type) is still rejected even without a model schema.
 func TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
 	err := ValidateConditionValueTypes(nil, cond)
 	if !errors.Is(err, errConditionTypeMismatch) {
-		t.Errorf("expected errConditionTypeMismatch even with nil model, got: %v", err)
+		t.Errorf("expected errConditionTypeMismatch even with a nil fields map, got: %v", err)
 	}
 }
 
@@ -530,19 +470,19 @@ func TestValidateConditionValueTypes_NilModel_UnknownMetaField(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "bogus", OperatorType: "EQUALS", Value: "x"}
 	err := ValidateConditionValueTypes(nil, cond)
 	if !errors.Is(err, errInvalidFieldPath) {
-		t.Errorf("expected errInvalidFieldPath even with nil model, got: %v", err)
+		t.Errorf("expected errInvalidFieldPath even with a nil fields map, got: %v", err)
 	}
 }
 
 // TestValidateConditionValueTypes_NilModel_ValidDataCondition_Accepted
-// verifies that a nil model gracefully skips the schema-dependent data-field
+// verifies that a nil fields map skips the schema-dependent data-field
 // type check (no schema to check against) rather than rejecting a
 // perfectly valid condition.
 func TestValidateConditionValueTypes_NilModel_ValidDataCondition_Accepted(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.price", OperatorType: "EQUALS", Value: float64(10)}
 	err := ValidateConditionValueTypes(nil, cond)
 	if err != nil {
-		t.Fatalf("expected no error for data condition with nil model (schema check skipped), got: %v", err)
+		t.Fatalf("expected no error for data condition with a nil fields map (schema check skipped), got: %v", err)
 	}
 }
 

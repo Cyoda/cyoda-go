@@ -5,14 +5,17 @@ import (
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/clusterstatus"
+	"github.com/cyoda/cyoda-go/internal/domain/account"
+	"github.com/cyoda/cyoda-go/internal/domain/audit"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/messaging"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/scheduledtask"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 // Server composes domain handlers with an Unimplemented fallback for any
@@ -20,13 +23,16 @@ import (
 type Server struct {
 	*Unimplemented
 
-	Entity    *entity.Handler
-	Model     *model.Handler
-	Workflow  *workflow.Handler
-	Search    *search.Handler
-	Audit     *audit.Handler
-	Messaging *messaging.Handler
-	Account   *account.Handler
+	Entity          *entity.Handler
+	Model           *model.Handler
+	Workflow        *workflow.Handler
+	Search          *search.Handler
+	Audit           *audit.Handler
+	Messaging       *messaging.Handler
+	Account         *account.Handler
+	ScheduledTasks  *scheduledtask.Handler
+	PlatformClock   *platformclock.Handler
+	PlatformCluster *clusterstatus.Handler
 }
 
 // NewServer returns a Server with the Unimplemented fallback initialised.
@@ -37,9 +43,25 @@ func NewServer() *Server {
 	}
 }
 
+// joinParams is the name the methods below give a generated params struct whose
+// only field is the X-Tx-Token header. The join middleware wraps the generated
+// router, so by the time a method here runs it has already read that header,
+// verified the pass and either refused the request or joined it to the
+// transaction the token names: the header is spent, and no handler reads it.
+// The argument exists because the published contract declares the parameter,
+// and it travels no further than the Unimplemented fallback.
+
 // ---------------------------------------------------------------------------
-// Entity delegation (15 methods)
+// Entity delegation (20 methods)
 // ---------------------------------------------------------------------------
+
+func (s *Server) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
+	if s.Entity != nil {
+		s.Entity.GetConsistencyTime(w, r)
+		return
+	}
+	s.Unimplemented.GetConsistencyTime(w, r)
+}
 
 func (s *Server) GetEntityStatistics(w http.ResponseWriter, r *http.Request, params genapi.GetEntityStatisticsParams) {
 	if s.Entity != nil {
@@ -73,12 +95,12 @@ func (s *Server) GetEntityStatisticsForModel(w http.ResponseWriter, r *http.Requ
 	s.Unimplemented.GetEntityStatisticsForModel(w, r, entityName, modelVersion, params)
 }
 
-func (s *Server) DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID) {
+func (s *Server) DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, joinParams genapi.DeleteSingleEntityParams) {
 	if s.Entity != nil {
 		s.Entity.DeleteSingleEntity(w, r, entityId)
 		return
 	}
-	s.Unimplemented.DeleteSingleEntity(w, r, entityId)
+	s.Unimplemented.DeleteSingleEntity(w, r, entityId, joinParams)
 }
 
 func (s *Server) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetOneEntityParams) {
@@ -97,27 +119,27 @@ func (s *Server) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Request
 	s.Unimplemented.GetEntityChangesMetadata(w, r, entityId, params)
 }
 
-// GetEntityTransitions and FetchEntityTransitions are routed directly in app/app.go
-// before the generated API mux — these delegation methods satisfy ServerInterface
-// but are never reached in production.
-// TODO(adr-0001-task-5.1): consolidate the
-// transitions handler with the generated ServerInterface dispatch.
-// Currently the real handlers are mounted directly via app.go's outer mux
-// (which routes BEFORE the generated dispatch fires); these stubs are
-// unreachable in production.
 func (s *Server) GetEntityTransitions(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetEntityTransitionsParams) {
+	if s.Entity != nil {
+		s.Entity.GetEntityTransitions(w, r, entityId, params)
+		return
+	}
 	s.Unimplemented.GetEntityTransitions(w, r, entityId, params)
 }
 
 func (s *Server) FetchEntityTransitions(w http.ResponseWriter, r *http.Request, params genapi.FetchEntityTransitionsParams) {
+	if s.Entity != nil {
+		s.Entity.FetchEntityTransitions(w, r, params)
+		return
+	}
 	s.Unimplemented.FetchEntityTransitions(w, r, params)
 }
 
 // QueryGroupedEntityStatisticsForModel is routed directly in app/app.go before the
 // generated API mux — this method satisfies ServerInterface but is never reached in
 // production.
-func (s *Server) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
-	s.Unimplemented.QueryGroupedEntityStatisticsForModel(w, r, entityName, modelVersion)
+func (s *Server) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, joinParams genapi.QueryGroupedEntityStatisticsForModelParams) {
+	s.Unimplemented.QueryGroupedEntityStatisticsForModel(w, r, entityName, modelVersion, joinParams)
 }
 
 func (s *Server) DeleteEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.DeleteEntitiesParams) {
@@ -193,7 +215,39 @@ func (s *Server) Create(w http.ResponseWriter, r *http.Request, format genapi.Cr
 }
 
 // ---------------------------------------------------------------------------
-// Model delegation (8 methods)
+// Platform clock delegation (2 methods)
+// ---------------------------------------------------------------------------
+
+func (s *Server) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
+	if s.PlatformClock != nil {
+		s.PlatformClock.GetPlatformClock(w, r)
+		return
+	}
+	s.Unimplemented.GetPlatformClock(w, r)
+}
+
+func (s *Server) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
+	if s.PlatformClock != nil {
+		s.PlatformClock.ChangePlatformClock(w, r)
+		return
+	}
+	s.Unimplemented.ChangePlatformClock(w, r)
+}
+
+// ---------------------------------------------------------------------------
+// Platform cluster delegation (1 method)
+// ---------------------------------------------------------------------------
+
+func (s *Server) GetPlatformCluster(w http.ResponseWriter, r *http.Request, params genapi.GetPlatformClusterParams) {
+	if s.PlatformCluster != nil {
+		s.PlatformCluster.GetPlatformCluster(w, r, params)
+		return
+	}
+	s.Unimplemented.GetPlatformCluster(w, r, params)
+}
+
+// ---------------------------------------------------------------------------
+// Model delegation (9 methods)
 // ---------------------------------------------------------------------------
 
 func (s *Server) GetAvailableEntityModels(w http.ResponseWriter, r *http.Request) {
@@ -308,20 +362,20 @@ func (s *Server) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, j
 	s.Unimplemented.GetAsyncSearchResults(w, r, jobId, params)
 }
 
-func (s *Server) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
+func (s *Server) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, joinParams genapi.CancelAsyncSearchParams) {
 	if s.Search != nil {
 		s.Search.CancelAsyncSearch(w, r, jobId)
 		return
 	}
-	s.Unimplemented.CancelAsyncSearch(w, r, jobId)
+	s.Unimplemented.CancelAsyncSearch(w, r, jobId, joinParams)
 }
 
-func (s *Server) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
+func (s *Server) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, joinParams genapi.GetAsyncSearchStatusParams) {
 	if s.Search != nil {
 		s.Search.GetAsyncSearchStatus(w, r, jobId)
 		return
 	}
-	s.Unimplemented.GetAsyncSearchStatus(w, r, jobId)
+	s.Unimplemented.GetAsyncSearchStatus(w, r, jobId, joinParams)
 }
 
 func (s *Server) SearchEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.SearchEntitiesParams) {
@@ -344,12 +398,24 @@ func (s *Server) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request,
 	s.Unimplemented.SearchEntityAuditEvents(w, r, entityId, params)
 }
 
-func (s *Server) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID) {
+func (s *Server) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID, joinParams genapi.GetStateMachineFinishedEventParams) {
 	if s.Audit != nil {
 		s.Audit.GetStateMachineFinishedEvent(w, r, entityId, transactionId)
 		return
 	}
-	s.Unimplemented.GetStateMachineFinishedEvent(w, r, entityId, transactionId)
+	s.Unimplemented.GetStateMachineFinishedEvent(w, r, entityId, transactionId, joinParams)
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled task delegation (1 method)
+// ---------------------------------------------------------------------------
+
+func (s *Server) ListScheduledTasks(w http.ResponseWriter, r *http.Request, params genapi.ListScheduledTasksParams) {
+	if s.ScheduledTasks != nil {
+		s.ScheduledTasks.ListScheduledTasks(w, r, params)
+		return
+	}
+	s.Unimplemented.ListScheduledTasks(w, r, params)
 }
 
 // ---------------------------------------------------------------------------
@@ -372,24 +438,24 @@ func (s *Server) NewMessage(w http.ResponseWriter, r *http.Request, subject stri
 	s.Unimplemented.NewMessage(w, r, subject, params)
 }
 
-func (s *Server) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
+func (s *Server) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, joinParams genapi.DeleteMessageParams) {
 	if s.Messaging != nil {
 		s.Messaging.DeleteMessage(w, r, messageId)
 		return
 	}
-	s.Unimplemented.DeleteMessage(w, r, messageId)
+	s.Unimplemented.DeleteMessage(w, r, messageId, joinParams)
 }
 
-func (s *Server) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
+func (s *Server) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, joinParams genapi.GetMessageParams) {
 	if s.Messaging != nil {
 		s.Messaging.GetMessage(w, r, messageId)
 		return
 	}
-	s.Unimplemented.GetMessage(w, r, messageId)
+	s.Unimplemented.GetMessage(w, r, messageId, joinParams)
 }
 
 // ---------------------------------------------------------------------------
-// Account delegation (24 methods)
+// Account delegation (17 methods)
 // ---------------------------------------------------------------------------
 
 func (s *Server) AccountGet(w http.ResponseWriter, r *http.Request) {
@@ -440,12 +506,12 @@ func (s *Server) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Request
 	s.Unimplemented.ResetTechnicalUserSecret(w, r, clientId)
 }
 
-func (s *Server) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params genapi.GetTechnicalUserTokenParams) {
+func (s *Server) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, tenant string, params genapi.GetTechnicalUserTokenParams) {
 	if s.Account != nil {
-		s.Account.GetTechnicalUserToken(w, r, params)
+		s.Account.GetTechnicalUserToken(w, r, tenant, params)
 		return
 	}
-	s.Unimplemented.GetTechnicalUserToken(w, r, params)
+	s.Unimplemented.GetTechnicalUserToken(w, r, tenant, params)
 }
 
 func (s *Server) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
@@ -456,12 +522,12 @@ func (s *Server) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	s.Unimplemented.IssueJwtKeyPair(w, r)
 }
 
-func (s *Server) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params genapi.GetCurrentJwtKeyPairParams) {
+func (s *Server) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	if s.Account != nil {
-		s.Account.GetCurrentJwtKeyPair(w, r, params)
+		s.Account.GetCurrentJwtKeyPair(w, r)
 		return
 	}
-	s.Unimplemented.GetCurrentJwtKeyPair(w, r, params)
+	s.Unimplemented.GetCurrentJwtKeyPair(w, r)
 }
 
 func (s *Server) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
@@ -526,60 +592,4 @@ func (s *Server) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, ke
 		return
 	}
 	s.Unimplemented.ReactivateTrustedKey(w, r, keyId)
-}
-
-func (s *Server) ListOidcProviders(w http.ResponseWriter, r *http.Request, params genapi.ListOidcProvidersParams) {
-	if s.Account != nil {
-		s.Account.ListOidcProviders(w, r, params)
-		return
-	}
-	s.Unimplemented.ListOidcProviders(w, r, params)
-}
-
-func (s *Server) RegisterOidcProvider(w http.ResponseWriter, r *http.Request) {
-	if s.Account != nil {
-		s.Account.RegisterOidcProvider(w, r)
-		return
-	}
-	s.Unimplemented.RegisterOidcProvider(w, r)
-}
-
-func (s *Server) ReloadOidcProviders(w http.ResponseWriter, r *http.Request) {
-	if s.Account != nil {
-		s.Account.ReloadOidcProviders(w, r)
-		return
-	}
-	s.Unimplemented.ReloadOidcProviders(w, r)
-}
-
-func (s *Server) DeleteOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if s.Account != nil {
-		s.Account.DeleteOidcProvider(w, r, id)
-		return
-	}
-	s.Unimplemented.DeleteOidcProvider(w, r, id)
-}
-
-func (s *Server) UpdateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if s.Account != nil {
-		s.Account.UpdateOidcProvider(w, r, id)
-		return
-	}
-	s.Unimplemented.UpdateOidcProvider(w, r, id)
-}
-
-func (s *Server) InvalidateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if s.Account != nil {
-		s.Account.InvalidateOidcProvider(w, r, id)
-		return
-	}
-	s.Unimplemented.InvalidateOidcProvider(w, r, id)
-}
-
-func (s *Server) ReactivateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if s.Account != nil {
-		s.Account.ReactivateOidcProvider(w, r, id)
-		return
-	}
-	s.Unimplemented.ReactivateOidcProvider(w, r, id)
 }

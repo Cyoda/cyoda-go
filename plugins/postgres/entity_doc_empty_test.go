@@ -22,12 +22,12 @@ func TestEntityDoc_EmptyObjectDataRoundTripsAsDecodableJSON(t *testing.T) {
 	ent := testEntity()
 	ent.Data = []byte(`{}`)
 
-	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, false)
+	raw, err := marshalEntityDoc(ent, false)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
 
-	got, err := unmarshalEntityDoc(raw)
+	got, err := unmarshalEntityDoc(raw, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityDoc: %v", err)
 	}
@@ -50,12 +50,12 @@ func TestEntityDoc_EmptyObjectVersionRoundTrips(t *testing.T) {
 	ent := testEntity()
 	ent.Data = []byte(`{}`)
 
-	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, false)
+	raw, err := marshalEntityDoc(ent, false)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
 
-	ver, err := unmarshalEntityVersion(raw, 1, testTime)
+	ver, err := unmarshalEntityVersion(raw, 1, testTime, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityVersion: %v", err)
 	}
@@ -77,12 +77,12 @@ func TestEntityDoc_DeletedVersionKeepsNoDomainData(t *testing.T) {
 	ent := testEntity()
 	ent.Data = nil
 
-	raw, err := marshalEntityDoc(ent, testTime, testTime, testTime, true /* deleted */)
+	raw, err := marshalEntityDoc(ent, true /* deleted */)
 	if err != nil {
 		t.Fatalf("marshalEntityDoc: %v", err)
 	}
 
-	got, err := unmarshalEntityDoc(raw)
+	got, err := unmarshalEntityDoc(raw, testTime, testTime)
 	if err != nil {
 		t.Fatalf("unmarshalEntityDoc: %v", err)
 	}

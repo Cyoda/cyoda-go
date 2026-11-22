@@ -8,8 +8,8 @@ import (
 )
 
 // Metrics-bearer env resolution: follows the same _FILE suffix convention
-// as the four other credential env vars (CYODA_POSTGRES_URL,
-// CYODA_JWT_SIGNING_KEY, CYODA_HMAC_SECRET, CYODA_BOOTSTRAP_CLIENT_SECRET).
+// as the other credential env vars (CYODA_POSTGRES_URL, CYODA_JWT_SIGNING_KEY,
+// CYODA_HMAC_SECRET).
 
 func TestConfig_MetricsBearer_PlainEnv(t *testing.T) {
 	t.Setenv("CYODA_METRICS_BEARER", "plain-bearer")

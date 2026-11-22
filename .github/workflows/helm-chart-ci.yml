@@ -5,13 +5,13 @@ on:
     branches: [main]
     paths:
       - 'deploy/helm/**'
+      - '.github/workflows/release-chart.yml'
       - '.github/workflows/helm-chart-ci.yml'
-      - '.github/ct.yaml'
   pull_request:
     paths:
       - 'deploy/helm/**'
+      - '.github/workflows/release-chart.yml'
       - '.github/workflows/helm-chart-ci.yml'
-      - '.github/ct.yaml'
 
 # Default to read-only token for all jobs. Individual jobs may opt-in to
 # additional scopes if they need them; none currently do.
@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: azure/setup-helm@v5.0.1
+      - uses: azure/setup-helm@v5.1.0
         with:
           version: v4.1.4
 
@@ -37,16 +37,127 @@ jobs:
           sudo mv kubeconform /usr/local/bin/
           kubeconform -v
 
+      - name: The chart release never takes GitHub's Latest mark
+        # install.sh and every /releases/latest/download/ URL resolve through
+        # the Latest mark; the chart release holds only the chart archive.
+        run: |
+          if ! grep -Eq '^\s*mark_as_latest:\s*false\s*$' .github/workflows/release-chart.yml; then
+            echo "FAIL: release-chart.yml must set mark_as_latest: false"
+            exit 1
+          fi
+          echo "PASS: release-chart.yml sets mark_as_latest: false"
+
       - name: helm lint
         # Chart requires operator-provided existingSecret values (no sensible
-        # defaults for Secret names); lint with placeholders that satisfy the
-        # schema's minLength:1 constraint.
+        # defaults for Secret names, nor for the Gateway the routes attach to);
+        # lint with placeholders that satisfy the schema.
         run: |
           helm lint deploy/helm/cyoda \
             --set postgres.existingSecret=lint-placeholder \
             --set jwt.existingSecret=lint-placeholder \
             --set cluster.hmacSecret.existingSecret=lint-placeholder \
-            --set monitoring.metricsBearer.existingSecret=lint-placeholder
+            --set monitoring.metricsBearer.existingSecret=lint-placeholder \
+            --set gateway.parentRefs[0].name=lint-placeholder
+
+      - name: helm template — schema rejects Gateway API routing with no parentRefs
+        run: |
+          # gateway.enabled defaults to true, and a route with no parent
+          # attaches to nothing: the install must fail, not succeed unrouted.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "FAIL: expected schema rejection of empty gateway.parentRefs; got success."
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "/gateway/parentRefs"; then
+            echo "FAIL: expected error to name /gateway/parentRefs; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected empty gateway.parentRefs."
+
+      - name: helm template — schema rejects a null gateway.parentRefs
+        run: |
+          # `--set gateway.parentRefs=null` (or a bare `parentRefs:` in a values
+          # file) removes the key; the routes would render with no parent.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs=null \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "FAIL: expected schema rejection of a null gateway.parentRefs; got success."
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "parentRefs"; then
+            echo "FAIL: expected the error to name parentRefs; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected a null gateway.parentRefs."
+
+      - name: helm template — schema rejects a parentRefs entry with no name
+        run: |
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set 'gateway.parentRefs[0].namespace=gateway-system' \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ] || ! echo "$output" | grep -q "missing property 'name'"; then
+            echo "FAIL: expected the schema to refuse a parentRefs entry with no name; got status $status:"
+            echo "$output"
+            exit 1
+          fi
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set-json 'gateway.parentRefs=[{"name":""}]' \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ] || ! echo "$output" | grep -q "parentRefs/0/name"; then
+            echo "FAIL: expected the schema to refuse an empty parentRefs name; got status $status:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected a parentRefs entry with no name, and an empty name."
+
+      - name: helm template — gateway.enabled=false needs no parentRefs
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.enabled=false \
+            > /tmp/no-gateway.yaml
+          if grep -q "kind: HTTPRoute\|kind: GRPCRoute" /tmp/no-gateway.yaml; then
+            echo "FAIL: gateway.enabled=false still rendered a route."
+            exit 1
+          fi
+          echo "PASS: no routes rendered with gateway.enabled=false."
 
       - name: helm template — default (Gateway API, replicas=1)
         run: |
@@ -65,6 +176,56 @@ jobs:
             -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.31.0-standalone-strict/{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json' \
             -skip HTTPRoute,GRPCRoute,ServiceMonitor \
             /tmp/default.yaml
+
+      - name: helm template — pods get the shutdown grace period
+        run: |
+          grep -qE '^\s+terminationGracePeriodSeconds: 390$' /tmp/default.yaml
+
+      - name: helm template — schema rejects a zero grace period
+        run: |
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            --set terminationGracePeriodSeconds=0 \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ] || ! echo "$output" | grep -q "/terminationGracePeriodSeconds"; then
+            echo "FAIL: expected schema rejection of terminationGracePeriodSeconds=0; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected a zero grace period."
+
+      - name: helm template — schema rejects an empty jwt.issuer
+        run: |
+          # The binary refuses an empty CYODA_JWT_ISSUER at startup; the chart
+          # refuses it at render time.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            --set jwt.issuer= \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ] || ! echo "$output" | grep -q "/jwt/issuer"; then
+            echo "FAIL: expected schema rejection of an empty jwt.issuer; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected an empty jwt.issuer."
 
       - name: helm template — ingress mode
         run: |
@@ -100,6 +261,14 @@ jobs:
             /tmp/replicas3.yaml
           # Must render a PDB at replicas=3.
           grep -q "kind: PodDisruptionBudget" /tmp/replicas3.yaml
+          # CYODA_NODE_ADDR is the HTTP base URL peers proxy requests and
+          # hand callouts over to: it must name the HTTP port, not gRPC.
+          grep -A1 "name: CYODA_NODE_ADDR" /tmp/replicas3.yaml \
+            | grep -q 'svc.cluster.local:8080"'
+          # The API and gRPC listeners default to loopback; the Service,
+          # peers and compute nodes reach them only if the chart opens them.
+          grep -q 'CYODA_HTTP_BIND_ADDRESS: "0.0.0.0"' /tmp/replicas3.yaml
+          grep -q 'CYODA_GRPC_BIND_ADDRESS: "0.0.0.0"' /tmp/replicas3.yaml
 
       - name: helm template — monitoring + networkPolicy
         run: |
@@ -233,18 +402,18 @@ jobs:
           echo "PASS: schema rejected gateway+ingress both-enabled."
 
   helm-install-smoke:
-    name: ct install on kind
+    name: helm install on kind
     needs: helm-lint-and-validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - uses: azure/setup-helm@v5.0.1
+      - uses: azure/setup-helm@v5.1.0
         with:
           version: v4.1.4
 
       - name: Set up kind cluster
-        uses: helm/kind-action@v1.15.0
+        uses: helm/kind-action@v1.15.2
         with:
           version: v0.24.0
           cluster_name: cyoda-chart-ci
@@ -261,7 +430,7 @@ jobs:
         # tag (e.g. ghcr.io/cyoda/cyoda:0.1.0) that may not yet
         # exist for an in-progress PR. Build the image from the PR's
         # source tree and load it into the kind node, then override
-        # image.repository + image.pullPolicy during ct install so the
+        # image.repository + image.pullPolicy during helm install so the
         # chart pulls the freshly-built image rather than the unreleased
         # registry tag.
         run: |

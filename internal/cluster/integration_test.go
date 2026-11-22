@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 func TestEndToEnd_ProxyRouting(t *testing.T) {
@@ -39,12 +39,12 @@ func TestEndToEnd_ProxyRouting(t *testing.T) {
 	nodeBLocal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"served_by": "node-b-local"})
 	})
-	nodeBHandler := proxy.HTTPRouting(signer, reg, "node-b", 5*time.Second, true)(nodeBLocal)
+	nodeBHandler := proxy.HTTPRouting(signer, reg, "node-b", 5*time.Second, true, "")(nodeBLocal)
 	nodeB := httptest.NewServer(nodeBHandler)
 	defer nodeB.Close()
 
 	// Issue a token for node-a
-	tok, err := signer.Issue("node-a", "tx-123", time.Now().Add(30*time.Second))
+	tok, err := signer.Issue(token.Claims{NodeID: "node-a", TxRef: "tx-123", ExpiresAt: time.Now().Add(30 * time.Second).Unix(), Callout: "req-tx-123", Major: 1})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestEndToEnd_NoToken_ServesLocally(t *testing.T) {
 	localHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"served_by": "node-b-local"})
 	})
-	handler := proxy.HTTPRouting(signer, reg, "node-b", 5*time.Second, true)(localHandler)
+	handler := proxy.HTTPRouting(signer, reg, "node-b", 5*time.Second, true, "")(localHandler)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -110,3 +110,4 @@ func (r *testRegistry) Lookup(_ context.Context, nodeID string) (string, bool, e
 	return addr, ok, nil
 }
 func (r *testRegistry) List(_ context.Context) ([]contract.NodeInfo, error) { return nil, nil }
+func (r *testRegistry) Changed() <-chan struct{}                            { return nil }

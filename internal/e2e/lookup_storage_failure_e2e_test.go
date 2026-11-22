@@ -35,7 +35,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 const lookupFailureSample = `{"name":"Alice","amount":1,"status":"new"}`
@@ -53,9 +53,6 @@ const lookupFailureCycles = 3
 func newLookupFailureHarness(t *testing.T) *callbackHarness {
 	t.Helper()
 	return newTinyPoolHarnessConfigured(t, 1, func(cfg *app.Config) {
-		// The scan loop would reconnect the pool between the kill and the probe
-		// request, and log acquire failures unrelated to what is under test.
-		cfg.Scheduler.Enabled = false
 		cfg.IAM.TrustedKeyRegistrationEnabled = true
 	})
 }
@@ -345,7 +342,7 @@ func TestE2E_TrustedKeyMutations_StorageFailureIsNotNotFound(t *testing.T) {
 func registerTrustedTestKey(t *testing.T, h *callbackHarness, kid string) {
 	t.Helper()
 	jwk := rsaJWK(t, kid)
-	body, err := json.Marshal(map[string]any{"keyId": kid, "jwk": jwk, "audience": "human"})
+	body, err := json.Marshal(map[string]any{"keyId": kid, "jwk": jwk})
 	if err != nil {
 		t.Fatalf("marshal register body: %v", err)
 	}

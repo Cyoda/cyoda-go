@@ -1,12 +1,20 @@
 package common
 
 const (
-	ErrCodeModelNotFound                    = "MODEL_NOT_FOUND"
-	ErrCodeModelNotLocked                   = "MODEL_NOT_LOCKED"
-	ErrCodeModelAlreadyLocked               = "MODEL_ALREADY_LOCKED"
-	ErrCodeModelAlreadyUnlocked             = "MODEL_ALREADY_UNLOCKED"
-	ErrCodeModelHasEntities                 = "MODEL_HAS_ENTITIES"
-	ErrCodeEntityModified                   = "ENTITY_MODIFIED"
+	ErrCodeModelNotFound        = "MODEL_NOT_FOUND"
+	ErrCodeModelNotLocked       = "MODEL_NOT_LOCKED"
+	ErrCodeModelAlreadyLocked   = "MODEL_ALREADY_LOCKED"
+	ErrCodeModelAlreadyUnlocked = "MODEL_ALREADY_UNLOCKED"
+	ErrCodeModelHasEntities     = "MODEL_HAS_ENTITIES"
+	ErrCodeEntityModified       = "ENTITY_MODIFIED"
+	// ErrCodeEntityModelMismatch is returned when a Save/CompareAndSave
+	// targets an existing entity under a model different from the one it
+	// was created under. An entity's model reference is fixed at creation
+	// (spi.ErrEntityModelMismatch). See classifySaveErr in
+	// internal/domain/entity/service.go for the current reachability claim
+	// — kept there, next to the request paths it depends on, rather than
+	// here.
+	ErrCodeEntityModelMismatch              = "ENTITY_MODEL_MISMATCH"
 	ErrCodeEntityNotFound                   = "ENTITY_NOT_FOUND"
 	ErrCodeValidationFailed                 = "VALIDATION_FAILED"
 	ErrCodeTransitionNotFound               = "TRANSITION_NOT_FOUND"
@@ -27,32 +35,32 @@ const (
 	// field). Equivalent to Cloud's
 	// FoundIncompatibleTypeWithEntityModelException. Distinct from
 	// ErrCodeConditionTypeMismatch which is the search-side equivalent
-	// for a condition's literal-vs-field mismatch.
-	ErrCodeIncompatibleType          = "INCOMPATIBLE_TYPE"
-	ErrCodeInvalidChangeLevel        = "INVALID_CHANGE_LEVEL"
-	ErrCodeInvalidFieldPath          = "INVALID_FIELD_PATH"
-	ErrCodeUnauthorized              = "UNAUTHORIZED"
-	ErrCodeForbidden                 = "FORBIDDEN"
-	ErrCodeFeatureDisabled           = "FEATURE_DISABLED"
-	ErrCodeKeyOwnedByDifferentTenant = "KEY_OWNED_BY_DIFFERENT_TENANT"
-	ErrCodeKeypairNotFound           = "KEYPAIR_NOT_FOUND"
-	ErrCodeTrustedKeyCapReached      = "TRUSTED_KEY_CAP_REACHED"
-	ErrCodeTrustedKeyNotFound        = "TRUSTED_KEY_NOT_FOUND"
-	ErrCodeM2MClientNotFound         = "M2M_CLIENT_NOT_FOUND"
-	ErrCodeUnsupportedAlgorithm      = "UNSUPPORTED_ALGORITHM"
-	ErrCodeUnsupportedKeyType        = "UNSUPPORTED_KEY_TYPE"
-	ErrCodeServerError               = "SERVER_ERROR"
-	ErrCodeNotImplemented            = "NOT_IMPLEMENTED"
-	ErrCodeNotFound                  = "NOT_FOUND"
-	ErrCodePreconditionRequired      = "PRECONDITION_REQUIRED"
-	ErrCodeUnsupportedMediaType      = "UNSUPPORTED_MEDIA_TYPE"
+	// for a condition whose operator applies to none of the field's
+	// declared types, or whose comparison or range operand parses into none
+	// of the types the operator applies to.
+	ErrCodeIncompatibleType     = "INCOMPATIBLE_TYPE"
+	ErrCodeInvalidChangeLevel   = "INVALID_CHANGE_LEVEL"
+	ErrCodeInvalidFieldPath     = "INVALID_FIELD_PATH"
+	ErrCodeUnauthorized         = "UNAUTHORIZED"
+	ErrCodeForbidden            = "FORBIDDEN"
+	ErrCodeFeatureDisabled      = "FEATURE_DISABLED"
+	ErrCodeKeypairNotFound      = "KEYPAIR_NOT_FOUND"
+	ErrCodeTrustedKeyCapReached = "TRUSTED_KEY_CAP_REACHED"
+	ErrCodeTrustedKeyNotFound   = "TRUSTED_KEY_NOT_FOUND"
+	ErrCodeM2MClientNotFound    = "M2M_CLIENT_NOT_FOUND"
+	ErrCodeM2MClientCapReached  = "M2M_CLIENT_CAP_REACHED"
+	ErrCodeM2MClientExists      = "M2M_CLIENT_EXISTS"
+	ErrCodeUnsupportedAlgorithm = "UNSUPPORTED_ALGORITHM"
+	ErrCodeUnsupportedKeyType   = "UNSUPPORTED_KEY_TYPE"
+	ErrCodeServerError          = "SERVER_ERROR"
+	ErrCodeNotImplemented       = "NOT_IMPLEMENTED"
+	ErrCodePreconditionRequired = "PRECONDITION_REQUIRED"
+	ErrCodeUnsupportedMediaType = "UNSUPPORTED_MEDIA_TYPE"
 )
 
 const (
 	ErrCodeTransactionNodeUnavailable = "TRANSACTION_NODE_UNAVAILABLE"
 	ErrCodeTransactionExpired         = "TRANSACTION_EXPIRED"
-	ErrCodeIdempotencyConflict        = "IDEMPOTENCY_CONFLICT"
-	ErrCodeClusterNodeNotRegistered   = "CLUSTER_NODE_NOT_REGISTERED"
 	ErrCodeTransactionNotFound        = "TRANSACTION_NOT_FOUND"
 	// ErrCodeTransactionTimeout is returned when the client-supplied
 	// transactionTimeoutMillis expires before the first commit. Nothing is
@@ -60,6 +68,15 @@ const (
 	// commit-before-dispatch workflows) the timeout only governs the first
 	// commit — failures after that surface through the per-chunk contract.
 	ErrCodeTransactionTimeout = "TRANSACTION_TIMEOUT"
+	// ErrCodeTransactionRollbackOnly is returned when a transaction, or the
+	// part of it a request would run in, can only be rolled back because a
+	// request that joined it failed. To the owner: it may not commit. To a
+	// joined request: it may not run. Not retryable.
+	ErrCodeTransactionRollbackOnly = "TRANSACTION_ROLLBACK_ONLY"
+	// ErrCodeTransactionBusy is returned to a callback of a transaction while
+	// another callback of the same transaction is paused in a callout of its
+	// own. Retryable: send it again once that callback has been answered.
+	ErrCodeTransactionBusy = "TRANSACTION_BUSY"
 )
 
 const (
@@ -67,26 +84,61 @@ const (
 	ErrCodeDispatchForwardFailed     = "DISPATCH_FORWARD_FAILED"
 	ErrCodeDispatchTimeout           = "DISPATCH_TIMEOUT"
 	ErrCodeComputeMemberDisconnected = "COMPUTE_MEMBER_DISCONNECTED"
-)
-
-const (
-	ErrCodeTxRequired                 = "TX_REQUIRED"
-	ErrCodeTxConflict                 = "TX_CONFLICT"
-	ErrCodeTxCoordinatorNotConfigured = "TX_COORDINATOR_NOT_CONFIGURED"
-	ErrCodeTxNoState                  = "TX_NO_STATE"
+	// ErrCodeCalloutFailed is returned when a callout recorded more than one
+	// failed try and nothing more could be done: every try was used, or the
+	// patience or the callout's deadline ran out with tries still left. The
+	// message lists the tries. Exactly one attempt is reported as that
+	// attempt's own code instead — see internal/callout.attemptsFailure.
+	ErrCodeCalloutFailed = "CALLOUT_FAILED"
+	// ErrCodeCalloutSuperseded is returned to a compute node's callback when
+	// the callout it belongs to was given to another compute node or has ended
+	// while the transaction is still open. Not retryable: the compute node must
+	// stop working on that request.
+	ErrCodeCalloutSuperseded = "CALLOUT_SUPERSEDED"
+	// ErrCodeJoinedResponseTooLarge is returned to a compute node's callback
+	// whose answer is larger than CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES. The
+	// answer is held in memory while the transaction's gate is held, so the
+	// owner's next move waits behind it. Not retryable: the same callback
+	// answers the same bytes again — the caller pages the read instead.
+	ErrCodeJoinedResponseTooLarge = "JOINED_RESPONSE_TOO_LARGE"
+	// ErrCodeTooManyJoinedRequests is returned to a compute node's callback
+	// when CYODA_CALLOUT_JOINED_MAX_WAITERS callbacks are already queued for
+	// its transaction. Callbacks of one transaction are served one at a time,
+	// so the queue is bounded rather than each waiting callback holding its
+	// request for the life of the callout. Retryable: the queue drains as the
+	// callbacks ahead of it finish.
+	ErrCodeTooManyJoinedRequests = "TOO_MANY_JOINED_REQUESTS"
+	// ErrCodeCommitInJoinedTransaction is returned to a compute node's
+	// callback whose workflow reaches a COMMIT_BEFORE_DISPATCH processor. That
+	// processor commits the transaction it runs in, and a callback's
+	// transaction is the one it joined: only the operation that began it
+	// commits it. Refused before that transaction is flushed or committed and
+	// before the processor is dispatched. Not retryable: the same
+	// callback reaches the same processor again.
+	ErrCodeCommitInJoinedTransaction = "COMMIT_IN_JOINED_TRANSACTION"
+	// ErrCodeModelAdminInJoinedTransaction is returned to a request that
+	// carries a transaction token and would change a model or its workflows:
+	// import, lock, unlock, change level, unique keys, delete, workflow
+	// import. Model and workflow administration never runs inside a
+	// transaction, so the request is refused before the token is verified,
+	// before any transaction lock is taken and before anything is read or
+	// written. Not retryable: make the request without the token.
+	ErrCodeModelAdminInJoinedTransaction = "MODEL_ADMIN_IN_JOINED_TRANSACTION"
 )
 
 const (
 	ErrCodeSearchJobNotFound        = "SEARCH_JOB_NOT_FOUND"
 	ErrCodeSearchJobAlreadyTerminal = "SEARCH_JOB_ALREADY_TERMINAL"
-	ErrCodeSearchShardTimeout       = "SEARCH_SHARD_TIMEOUT"
 	ErrCodeSearchResultLimit        = "SEARCH_RESULT_LIMIT"
-	// ErrCodeConditionTypeMismatch is returned when a simple condition's value
-	// type does not match the field's locked DataType (e.g. "abc" against a
-	// DOUBLE field). Equivalent to Cloud's InvalidTypesInClientConditionException.
+	// ErrCodeConditionTypeMismatch is returned when a simple condition's
+	// operator applies to none of the field's declared DataTypes, or a
+	// comparison or range operand parses into none of the types the operator
+	// applies to (e.g. EQUALS "abc" against a DOUBLE field). A string or
+	// pattern operand is not parsed against the field's types. Equivalent to
+	// Cloud's InvalidTypesInClientConditionException for the operand case.
 	ErrCodeConditionTypeMismatch = "CONDITION_TYPE_MISMATCH"
 	// ErrCodeInvalidCondition is returned when a request body condition
-	// (AbstractConditionDto) cannot be parsed. Non-retryable: the client
+	// (QueryConditionDto) cannot be parsed. Non-retryable: the client
 	// must fix the malformed condition.
 	ErrCodeInvalidCondition = "INVALID_CONDITION"
 	// ErrCodeSearchTimeout is returned when the client-supplied
@@ -101,6 +153,33 @@ const (
 	// caller's action is identical, and which bound bit is operator
 	// information. Retryable: capacity frees as in-flight jobs complete.
 	ErrCodeSearchQueueFull = "SEARCH_QUEUE_FULL"
+	// ErrCodePointInTimeAfterConsistencyTime is returned when a read's
+	// pointInTime is later than the consistency time: an answer at that
+	// instant could still change. 400, not retryable as sent; the
+	// problem's properties.consistencyTime carries the current consistency
+	// time, at or before which the read is served.
+	ErrCodePointInTimeAfterConsistencyTime = "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"
+	// ErrCodeConsistencyTimeUnavailable is returned when the store could not
+	// certify a consistency time within its wait budget, typically because a
+	// save of the tenant is held in its commit phase. 503, retryable.
+	ErrCodeConsistencyTimeUnavailable = "CONSISTENCY_TIME_UNAVAILABLE"
+	// ErrCodeClockControlDisabled is returned by POST /platform/clock on a
+	// node not started with clock control enabled. 403, not retryable.
+	ErrCodeClockControlDisabled = "CLOCK_CONTROL_DISABLED"
+	// ErrCodeClockBeforeRecordedTime is returned by POST /platform/clock when
+	// the requested time is earlier than the latest time the store has
+	// recorded. 409, not retryable as sent; the clock is unchanged.
+	ErrCodeClockBeforeRecordedTime = "CLOCK_BEFORE_RECORDED_TIME"
+	// ErrCodeClockNotConfirmed is returned by POST /platform/clock when a node
+	// of the cluster did not confirm the change or a move's step. 503, not
+	// retryable; nothing is rolled back.
+	ErrCodeClockNotConfirmed = "CLOCK_NOT_CONFIRMED"
+	// ErrCodeServerBusy is returned when the node has no capacity left for
+	// the bounded work a request needs within the wait — today, a
+	// client-secret hash on POST /clients or PUT /clients/{clientId}/secret
+	// with every CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS slot taken.
+	// Nothing was written. 503 with Retry-After. Retryable.
+	ErrCodeServerBusy = "SERVER_BUSY"
 )
 
 // Grouped statistics — POST /api/entity/stats/{entityName}/{modelVersion}/query.
@@ -208,31 +287,106 @@ const (
 	ErrCodeScheduleFunctionInvalidResult = "SCHEDULE_FUNCTION_INVALID_RESULT"
 )
 
-// OIDC provider management
-const (
-	// ErrCodeOidcInvalidTenant is returned when an OIDC provider registration
-	// is attempted from a tenant context whose ID is not a valid UUID.
-	// OIDC provider ownership requires UUID-shaped legal entity identifiers
-	// (matching the cyoda data model). Bootstrap deployments using the literal
-	// "default-tenant" string must migrate to real tenant UUIDs before
-	// registering OIDC providers.
-	ErrCodeOidcInvalidTenant     = "OIDC_INVALID_TENANT"
-	ErrCodeOIDCProviderDuplicate = "OIDC_PROVIDER_DUPLICATE"
-	ErrCodeOIDCProviderNotFound  = "OIDC_PROVIDER_NOT_FOUND"
-	ErrCodeOIDCProviderInactive  = "OIDC_PROVIDER_INACTIVE"
-	ErrCodeOIDCSSRFBlocked       = "OIDC_SSRF_BLOCKED"
-)
-
 // Token-validation failures (audience mismatch, claims invalid, iat
 // pre-transition, KID unknown, JWKS unavailable during key resolution) carry
-// no precise OIDC_* code. The bearer-auth middleware uniformly returns a
+// no precise per-cause code. The bearer-auth middleware uniformly returns a
 // problem-detail body with code UNAUTHORIZED and no per-cause distinction; a
-// precise code would enumerate IdP / audience / kid / claim-shape recognition
-// to an unauthenticated caller.
+// precise code would enumerate audience / kid / claim-shape recognition to an
+// unauthenticated caller.
 //
-// Discovery failures at registration time also carry no precise code.
-// Registry warm-up is non-fatal: the provider stays registered, discovery
-// errors log internally, and tokens 401 until the IdP becomes reachable.
-//
-// The per-cause diagnostic path is the server-side log stream — see the
-// auth.oidc help topic.
+// The per-cause diagnostic path is the server-side log stream.
+
+// knownErrorCodes is every error code this build defines. It exists because an
+// error code is part of the contract a client reads: a code arriving from
+// outside this process — a peer node classifying a failure it handled — must be
+// recognised before it is passed on, or one process's vocabulary becomes
+// another's. Kept exactly in step with the constants above by
+// TestKnownErrorCode_IsExactlyWhatThisFileDefines.
+var knownErrorCodes = map[string]struct{}{
+	ErrCodeBadRequest:                       {},
+	ErrCodeCalloutFailed:                    {},
+	ErrCodeCalloutSuperseded:                {},
+	ErrCodeCommitInJoinedTransaction:        {},
+	ErrCodeModelAdminInJoinedTransaction:    {},
+	ErrCodeCompositeKeyUnsupported:          {},
+	ErrCodeComputeMemberDisconnected:        {},
+	ErrCodeConditionTypeMismatch:            {},
+	ErrCodeClockBeforeRecordedTime:          {},
+	ErrCodeClockControlDisabled:             {},
+	ErrCodeClockNotConfirmed:                {},
+	ErrCodeConflict:                         {},
+	ErrCodeConsistencyTimeUnavailable:       {},
+	ErrCodeDeleteNotConverged:               {},
+	ErrCodeDispatchForwardFailed:            {},
+	ErrCodeDispatchTimeout:                  {},
+	ErrCodeDuplicateAggregationAlias:        {},
+	ErrCodeDuplicateGroupBy:                 {},
+	ErrCodeEntityModelMismatch:              {},
+	ErrCodeEntityModified:                   {},
+	ErrCodeEntityNotFound:                   {},
+	ErrCodeEpochMismatch:                    {},
+	ErrCodeFeatureDisabled:                  {},
+	ErrCodeForbidden:                        {},
+	ErrCodeGroupCardinalityExceeded:         {},
+	ErrCodeHelpTopicNotFound:                {},
+	ErrCodeIncompatibleType:                 {},
+	ErrCodeInvalidAggregationField:          {},
+	ErrCodeInvalidAggregationOp:             {},
+	ErrCodeInvalidChangeLevel:               {},
+	ErrCodeInvalidCondition:                 {},
+	ErrCodeInvalidFieldPath:                 {},
+	ErrCodeInvalidGroupByPath:               {},
+	ErrCodeInvalidLimit:                     {},
+	ErrCodeInvalidUniqueKey:                 {},
+	ErrCodeInvalidUniqueKeyDefinition:       {},
+	ErrCodeJoinedResponseTooLarge:           {},
+	ErrCodeKeypairNotFound:                  {},
+	ErrCodeM2MClientCapReached:              {},
+	ErrCodeM2MClientExists:                  {},
+	ErrCodeM2MClientNotFound:                {},
+	ErrCodeMalformedRequest:                 {},
+	ErrCodeMissingGroupBy:                   {},
+	ErrCodeModelAlreadyLocked:               {},
+	ErrCodeModelAlreadyUnlocked:             {},
+	ErrCodeModelHasEntities:                 {},
+	ErrCodeModelNotFound:                    {},
+	ErrCodeModelNotLocked:                   {},
+	ErrCodeNoComputeMemberForTag:            {},
+	ErrCodeNotImplemented:                   {},
+	ErrCodePointInTimeAfterConsistencyTime:  {},
+	ErrCodePreconditionRequired:             {},
+	ErrCodeScheduleFunctionInvalidResult:    {},
+	ErrCodeSearchJobAlreadyTerminal:         {},
+	ErrCodeSearchJobNotFound:                {},
+	ErrCodeSearchQueueFull:                  {},
+	ErrCodeSearchResultLimit:                {},
+	ErrCodeSearchTimeout:                    {},
+	ErrCodeServerBusy:                       {},
+	ErrCodeServerError:                      {},
+	ErrCodeStorageUnavailable:               {},
+	ErrCodeTooManyJoinedRequests:            {},
+	ErrCodeTransactionExpired:               {},
+	ErrCodeTransactionNodeUnavailable:       {},
+	ErrCodeTransactionNotFound:              {},
+	ErrCodeTransactionRollbackOnly:          {},
+	ErrCodeTransactionBusy:                  {},
+	ErrCodeTransactionTimeout:               {},
+	ErrCodeTransitionNotFound:               {},
+	ErrCodeTrustedKeyCapReached:             {},
+	ErrCodeTrustedKeyNotFound:               {},
+	ErrCodeUnauthorized:                     {},
+	ErrCodeUniqueViolation:                  {},
+	ErrCodeUnsupportedAlgorithm:             {},
+	ErrCodeUnsupportedKeyType:               {},
+	ErrCodeUnsupportedMediaType:             {},
+	ErrCodeValidationFailed:                 {},
+	ErrCodeWorkflowFailed:                   {},
+	ErrCodeWorkflowNotFound:                 {},
+	ErrCodeWorkflowSchemaVersionUnsupported: {},
+}
+
+// KnownErrorCode reports whether code is an error code this build defines.
+func KnownErrorCode(code string) bool {
+	_, ok := knownErrorCodes[code]
+	return ok
+}

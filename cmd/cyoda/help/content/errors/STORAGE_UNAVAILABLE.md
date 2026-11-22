@@ -22,13 +22,15 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 Raised in three cases, all transient:
 
-- The connection pool could not supply a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default `10s`). Writes, and reads that need a second connection while your transaction already holds one (a point-in-time read or an async-search submit issued inside a transaction), fail fast here rather than queueing behind a saturated pool.
+- A connection pool could not supply a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default `10s`). This applies to an operation that opens a transaction — every entity create, update, patch and delete, a schema extension, a model unlock, and an async search's scan and result writes — and to one that needs a second connection while your transaction already holds one (a point-in-time read, a model read, or an async-search submit issued inside a transaction). Such an operation fails fast here rather than queueing behind a saturated pool. A statement issued outside a transaction — an entity read, list, search or statistics read, an audit read, any other model, workflow or message read or write — is not bounded by this deadline: it waits for a free connection instead (see `cyoda help config database`).
 - An operation found its transaction already aborted because the connection sat idle inside it for longer than `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` (default `5m`). The usual cause is a workflow processor whose `responseTimeoutMs` exceeds that ceiling.
 - The database connection went away underneath the operation — the session was terminated, or the network dropped it.
 
+Each case applies to a schema extension too, including one for data a workflow processor returns: the write that extends answers this code.
+
 Retryable. The same request may well succeed on a second attempt. Repeated occurrences mean the pool is undersized for the offered load, a workflow holds transactions open across a callout longer than the ceiling allows, or the link to the database is unstable.
 
-A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT` is **not** reported here. Re-running it would exceed the same ceiling again, so it is a `500` with a ticket rather than a retryable `503`; the server log names the setting that fired.
+A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT` is **not** reported here. Re-running it would exceed the same ceiling again, so it is a `500` with a ticket rather than a retryable `503`; the server log names the setting that fired. A statement timeout while the store is producing a consistency time is reported as `CONSISTENCY_TIME_UNAVAILABLE`, not as a `500`.
 
 See `cyoda help config database` for the pool and ceiling settings.
 

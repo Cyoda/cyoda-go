@@ -9,13 +9,14 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // saveMinimalModelSqlite registers a minimal model descriptor against a real
@@ -35,7 +36,7 @@ func saveMinimalModelSqlite(t *testing.T, ctx context.Context, factory *sqlite.S
 	if err != nil {
 		t.Fatalf("schema.Marshal: %v", err)
 	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
+	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw, State: spi.ModelLocked}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
 }
@@ -97,7 +98,7 @@ func TestSearchEntities_ResidualScanIsUnmetered_RealSqlite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	h := search.NewHandler(search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore))
+	h := search.NewHandler(search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()))
 
 	// MATCHES_PATTERN maps to spi.FilterMatchesRegex, which sqlite never pushes
 	// down (see filter_translate.go's mapOperator and the absence of

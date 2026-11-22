@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // At a same-millisecond boundary, the version selected by Search (raw <=)
@@ -26,6 +27,7 @@ func TestSqlitePIT_SearchSelectMatchesGetAsAtRefetch(t *testing.T) {
 	ctx := testCtx("tenant-1")
 	store, _ := factory.EntityStore(ctx)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 
 	e := &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e-c", ModelRef: ref, State: "NEW"},

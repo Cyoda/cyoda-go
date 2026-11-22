@@ -7,7 +7,9 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"flag"
+	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,16 +22,16 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
-	"github.com/cyoda-platform/cyoda-go/internal/testpg"
+	"github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/testing/localproc"
+	"github.com/cyoda/cyoda-go/internal/testpg"
 
 	// Register stock storage plugins so spi.GetPlugin("postgres") resolves.
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
-	_ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
+	_ "github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 var (
@@ -38,7 +40,12 @@ var (
 	procSvc         *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
 	allOperationIds []string
 	markedOps       = map[string]string{} // operationId → x-cyoda-status value
-	testApp         *app.App              // exposed for test-mode store seeding (e.g. cross-tenant M2M client bootstrap)
+	testApp         *app.App              // exposed for test-mode store seeding
+	e2eSignKey      *rsa.PrivateKey       // the stack's JWT signing key, for tests that mint bespoke claims
+	e2eIssuer       string                // the stack's JWT issuer, for the same
+	// conformanceValidator checks every response of every e2e test server
+	// against the spec; see validated.
+	conformanceValidator *openapivalidator.Validator
 )
 
 // readCyodaStatus returns the x-cyoda-status marker on an operation, or "".
@@ -60,6 +67,9 @@ func TestMain(m *testing.M) {
 	if testing.Short() {
 		os.Exit(0) // skip E2E in short mode
 	}
+	// Text-format logs, the format internal/logging gives the server, to stderr
+	// and into e2eLogs, which the scheduler waits read (awaitScheduler).
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, &e2eLogs), nil)))
 
 	ctx := context.Background()
 
@@ -67,7 +77,6 @@ func TestMain(m *testing.M) {
 	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("minicyoda_test"),
 		tcpostgres.WithUsername("testuser"),
-		tcpostgres.WithPassword("testpass"),
 	}, testpg.HardenedOptions()...)
 	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {
@@ -126,13 +135,8 @@ func TestMain(m *testing.M) {
 	cfg.IAM.JWTSigningKey = keyPEM
 	cfg.IAM.JWTIssuer = "cyoda-test"
 	cfg.IAM.JWTExpiry = 3600
-	cfg.Bootstrap = app.BootstrapConfig{
-		ClientID:     "testclient",
-		ClientSecret: "testsecret",
-		TenantID:     "test-tenant",
-		UserID:       "test-admin",
-		Roles:        "ROLE_ADMIN,ROLE_M2M",
-	}
+	e2eSignKey = rsaKey
+	e2eIssuer = cfg.IAM.JWTIssuer
 	// Enable trusted-key feature for E2E coverage. The KV store backing the
 	// trusted-key store is wired in app.New, so this must be set before that call.
 	cfg.IAM.TrustedKeyRegistrationEnabled = true
@@ -150,6 +154,14 @@ func TestMain(m *testing.M) {
 	// job. Plain config, no test hook.
 	cfg.SearchJobHeartbeatInterval = time.Hour
 	cfg.SearchJobStaleAfter = 4 * time.Hour
+
+	// No scheduler on the package-global testApp. A claim is cross-tenant,
+	// and this database is shared by every per-test stack; a scheduler here
+	// would claim tasks those stacks armed and run them through testApp's
+	// engine, whose processors (procSvc) are not theirs. Tests that need a
+	// fire build a stack with a scheduler on a database of their own
+	// (newSchedulerHarness). Plain config, no test hook.
+	cfg.Scheduler.Enabled = false
 
 	// In-process processor/criteria service for workflow E2E tests.
 	procSvc = localproc.New()
@@ -192,11 +204,14 @@ func TestMain(m *testing.M) {
 	// from the spec against the test server's /api/entity/{id} requests and
 	// reports every operation as "no spec route matches".
 	swagger.Servers = openapi3.Servers{{URL: cfg.ContextPath}}
-	validator, err := openapivalidator.NewValidator(swagger)
+	conformanceValidator, err = openapivalidator.NewValidator(swagger)
 	if err != nil {
 		log.Fatalf("build validator: %v", err)
 	}
-	srv.Config.Handler = openapivalidator.NewMiddleware(validator)(testApp.Handler())
+	srv.Config.Handler = validated(testApp.Handler())
+	// Every request the suite sends through http.DefaultClient names its
+	// test to the validator (see openapivalidator.Transport).
+	http.DefaultClient.Transport = openapivalidator.Transport(http.DefaultTransport)
 
 	// Capture the full operationId set so the conformance test can compute
 	// the uncovered list at end-of-suite. Every published operation is
@@ -214,7 +229,16 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	os.Exit(m.Run())
+	os.Exit(openapivalidator.FailOnUnreported(m.Run()))
+}
+
+// validated puts h behind the OpenAPI conformance validator. Every e2e test
+// server that serves the API is built with it, so that every response the
+// suite receives is checked against the spec and reported by
+// TestOpenAPIConformanceReport. The server's API must be mounted under
+// "/api", the validator's server URL.
+func validated(h http.Handler) http.Handler {
+	return openapivalidator.NewMiddleware(conformanceValidator)(h)
 }
 
 func TestHealth(t *testing.T) {

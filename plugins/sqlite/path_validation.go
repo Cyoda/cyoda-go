@@ -3,7 +3,7 @@ package sqlite
 import (
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ErrInvalidFilterPath is returned when a Filter.Path or OrderSpec.Path

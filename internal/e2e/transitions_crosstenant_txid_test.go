@@ -32,7 +32,7 @@ func TestTransitions_CrossTenantTransactionID_Rejected(t *testing.T) {
 	}`
 	setupModelWithWorkflow(t, model, wf)
 
-	// Tenant A (the bootstrap tenant) creates an entity, capturing the txID.
+	// Tenant A (the suite tenant) creates an entity, capturing the txID.
 	entityID, txIDA := createEntityE2EWithTxID(t, model, 1, `{"name":"A","amount":1,"status":"new"}`)
 	if txIDA == "" {
 		t.Fatal("create returned empty transactionId")
@@ -46,11 +46,11 @@ func TestTransitions_CrossTenantTransactionID_Rejected(t *testing.T) {
 	}
 
 	// Tenant B: a second M2M client in a different tenant.
-	clientBID, clientBSecret := createM2MClient(t, "tenant-b-transitions", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	clientBID, clientBSecret := createM2MClient(t, "tenant-b-transitions", "user-b", true)
 
 	getTransitionsAsB := func(txID string) (int, string) {
 		t.Helper()
-		resp := adminRequestAs(t, clientBID, clientBSecret,
+		resp := adminRequestAs(t, "tenant-b-transitions", clientBID, clientBSecret,
 			http.MethodGet, fmt.Sprintf("/entity/%s/transitions?transactionId=%s", entityID, txID), nil)
 		defer resp.Body.Close()
 		raw, err := io.ReadAll(resp.Body)
@@ -72,5 +72,17 @@ func TestTransitions_CrossTenantTransactionID_Rejected(t *testing.T) {
 	statusBogus, bodyBogus := getTransitionsAsB(uuid.New().String())
 	if statusBogus != http.StatusBadRequest {
 		t.Errorf("tenant B transitions?transactionId=<bogus>: got %d, want 400; body: %s", statusBogus, bodyBogus)
+	}
+
+	// (3) The BODY must not distinguish them either. Matching status codes
+	// close only half the oracle: GetSubmitTime answers ErrTxTenantMismatch
+	// for a foreign transaction and ErrTxNotFound for one that exists
+	// nowhere, and the handler renders err.Error() verbatim into the detail —
+	// so tenant B can still read off whether tenant A's transaction exists
+	// and committed. The two responses must be byte-identical, which also
+	// means neither may echo the submitted txID back.
+	if bodyReal != bodyBogus {
+		t.Errorf("cross-tenant and nonexistent txID must be indistinguishable to the caller\n"+
+			" foreign txID: %s\n nonexistent : %s", bodyReal, bodyBogus)
 	}
 }

@@ -1,0 +1,30 @@
+{
+  "schema": "QueryConditionDto",
+  "class": "FunctionConditionDto",
+  "value": {
+    "type": "function",
+    "function": {
+      "name": "isPriority",
+      "criterion": {
+        "type": "group",
+        "operator": "AND",
+        "conditions": [
+          {
+            "type": "lifecycle",
+            "field": "state",
+            "operatorType": "EQUALS",
+            "value": "NEW"
+          },
+          {
+            "type": "array",
+            "jsonPath": "$.scores[*]",
+            "operatorType": "EQUALS",
+            "values": [
+              "a"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

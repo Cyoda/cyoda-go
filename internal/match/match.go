@@ -3,9 +3,9 @@ package match
 import (
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // FieldTypes resolves a condition's JSONPath (in "$."-prefixed FieldsMap key
@@ -57,26 +57,4 @@ func fieldMapKey(raw string) string {
 		p = "$." + p
 	}
 	return schema.CanonicalFieldPath(p)
-}
-
-// IsTemporalOperator reports whether op is a valid operator on a temporal
-// field: the six comparisons, the two range ops, and the two null tests.
-// String operators are excluded so a temporal field never substring-matches
-// its formatted representation.
-//
-// Exported so search.validateLifecycleType can reuse this exact set at the
-// shared validation boundary (operator-semantics.md §7: pushdown narrows, it
-// does not decide — a string or pattern operator on a temporal meta field
-// must be rejected before either evaluator ever sees it, rather than each
-// evaluator maintaining its own copy of "which operators are valid here").
-func IsTemporalOperator(op string) bool {
-	switch op {
-	case "EQUALS", "NOT_EQUAL",
-		"GREATER_THAN", "LESS_THAN", "GREATER_OR_EQUAL", "LESS_OR_EQUAL",
-		"BETWEEN", "BETWEEN_INCLUSIVE",
-		"IS_NULL", "NOT_NULL":
-		return true
-	default:
-		return false
-	}
 }

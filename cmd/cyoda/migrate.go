@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	pgplugin "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/app"
+	pgplugin "github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 type migrateConfig struct {
@@ -17,10 +18,15 @@ type migrateConfig struct {
 }
 
 func parseMigrateArgs(args []string) (*migrateConfig, error) {
-	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	fs := flag.NewFlagSet("cyoda migrate", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	timeout := fs.Duration("timeout", 5*time.Minute, "maximum duration for migration run")
 	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	if fs.NArg() != 0 {
+		err := fmt.Errorf("unexpected argument %q", fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "cyoda migrate: %v\n", err)
 		return nil, err
 	}
 	return &migrateConfig{Timeout: *timeout}, nil
@@ -28,11 +34,13 @@ func parseMigrateArgs(args []string) (*migrateConfig, error) {
 
 // runMigrate is the entry point for `cyoda migrate`. Returns exit code:
 // 0 on success; 1 on runtime error (bad config, DB unreachable, migration
-// failure, timeout); 2 on flag-parse error (Unix convention: misuse).
+// failure, timeout); 2 on a flag or argument error (Unix convention: misuse).
+// -h/--help prints the usage and returns 0.
 //
 // Behavior:
-//   - Loads the same config the server does (via app.DefaultConfig; honors
-//     _FILE suffix resolution and every CYODA_* env var identically).
+//   - Loads the same config the server does: the env files (app.LoadEnvFiles),
+//     then app.DefaultConfig, which honors _FILE suffix resolution and every
+//     CYODA_* env var identically.
 //   - Dispatches on CYODA_STORAGE_BACKEND:
 //     memory  — no-op, exits 0
 //     sqlite  — no-op (migrations applied lazily at open), exits 0
@@ -44,14 +52,19 @@ func parseMigrateArgs(args []string) (*migrateConfig, error) {
 //     goroutines. Short-lived process.
 func runMigrate(args []string) int {
 	cfg, err := parseMigrateArgs(args)
+	if errors.Is(err, flag.ErrHelp) {
+		return 0 // -h/--help: the flag package printed the usage to stderr
+	}
 	if err != nil {
-		// flag package already wrote the error to stderr
+		// parseMigrateArgs, or the flag package, already wrote the error
+		// to stderr.
 		return 2
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer cancel()
 
+	app.LoadEnvFiles()
 	appCfg := app.DefaultConfig()
 
 	switch appCfg.StorageBackend {
@@ -80,7 +93,7 @@ func runPostgresMigrate(ctx context.Context) int {
 		return 1
 	}
 
-	start := time.Now()
+	start := time.Now() // realtime: migration duration log
 	if err := pgMigrate(ctx, dsn); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			slog.Error("migration timed out", "err", err)
@@ -89,7 +102,7 @@ func runPostgresMigrate(ctx context.Context) int {
 		slog.Error("migration failed", "err", err)
 		return 1
 	}
-	slog.Info("migrations applied", "duration", time.Since(start))
+	slog.Info("migrations applied", "duration", time.Since(start)) // realtime: migration duration log
 	return 0
 }
 

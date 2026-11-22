@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 func TestParseRSAPublicKeyFromJWK_RejectsOversizedModulus(t *testing.T) {
@@ -35,5 +35,45 @@ func TestParseRSAPublicKeyFromJWK_Accepts4096BitModulus(t *testing.T) {
 	_, err := auth.ParseRSAPublicKeyFromJWK(jwk)
 	if err != nil {
 		t.Fatalf("4096-bit modulus should be accepted, got: %v", err)
+	}
+}
+
+// TestParseRSAPublicKeyFromJWK_MemberNamesAreExact: JWK member names are
+// case-sensitive (RFC 7517 §4), so "N" is not "n". A JWK carries members of
+// its own beyond kty, n and e, and those are allowed; a duplicate is not.
+func TestParseRSAPublicKeyFromJWK_MemberNamesAreExact(t *testing.T) {
+	mod := make([]byte, 256)
+	for i := range mod {
+		mod[i] = 0xFF
+	}
+	n := base64.RawURLEncoding.EncodeToString(mod)
+	e := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x00, 0x01})
+	for name, jwk := range map[string]string{
+		"case-variant n and e": `{"kty":"RSA","N":"` + n + `","E":"` + e + `"}`,
+		"case-variant kty":     `{"KTY":"RSA","n":"` + n + `","e":"` + e + `"}`,
+		// The valid modulus last: read leniently, the last duplicate wins
+		// and the key would be accepted.
+		"duplicate n": `{"kty":"RSA","n":"AQAB","n":"` + n + `","e":"` + e + `"}`,
+	} {
+		if _, err := auth.ParseRSAPublicKeyFromJWK([]byte(jwk)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := auth.ParseRSAPublicKeyFromJWK([]byte(`{"kty":"RSA","use":"sig","alg":"RS256","kid":"k","n":"` + n + `","e":"` + e + `"}`)); err != nil {
+		t.Errorf("a JWK's own members must be allowed: %v", err)
+	}
+}
+
+func TestParseRSAPublicKeyFromJWK_RejectsModulusUnder2048Bits(t *testing.T) {
+	// 255 bytes of 0xFF is a 2040-bit modulus.
+	small := make([]byte, 255)
+	for i := range small {
+		small[i] = 0xFF
+	}
+	n := base64.RawURLEncoding.EncodeToString(small)
+	e := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x00, 0x01})
+	jwk := []byte(`{"kty":"RSA","n":"` + n + `","e":"` + e + `"}`)
+	if _, err := auth.ParseRSAPublicKeyFromJWK(jwk); err == nil {
+		t.Fatal("expected error for a 2040-bit modulus, got nil")
 	}
 }

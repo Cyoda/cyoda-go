@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -33,28 +32,20 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/admin"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/admin"
+	"github.com/cyoda/cyoda-go/internal/testing/localproc"
 )
 
 // --- harness ---------------------------------------------------------------
 
-// newTinyPoolHarness builds a postgres-backed app with a pool small enough that
-// a handful of leaked connections exhausts it, so "did the connection come back"
-// is observable rather than inferred.
-func newTinyPoolHarness(t *testing.T, maxConns int32) *callbackHarness {
-	t.Helper()
-	return newTinyPoolHarnessConfigured(t, maxConns, nil)
-}
-
-// newTinyPoolHarnessConfigured is newTinyPoolHarness with an extra cfg mutator
-// applied after the pool sizing. It also stamps a per-test application_name on
-// the harness pool's DSN so the pg_stat_activity probe can be scoped to this
-// harness's own backends — see harnessAppName.
+// newTinyPoolHarnessConfigured builds a postgres-backed app with a pool small
+// enough that a handful of leaked connections exhausts it, so "did the
+// connection come back" is observable rather than inferred. configure, if not
+// nil, is applied after the pool sizing. It also stamps a per-test
+// application_name on the harness pool's DSN so the pg_stat_activity probe can
+// be scoped to this harness's own backends — see harnessAppName.
 func newTinyPoolHarnessConfigured(t *testing.T, maxConns int32, configure func(*app.Config)) *callbackHarness {
 	t.Helper()
 	baseURL := pgURLFromEnv(t)
@@ -73,8 +64,7 @@ func newTinyPoolHarnessConfigured(t *testing.T, maxConns int32, configure func(*
 
 // harnessAppName is the application_name this test's harness pool reports. It is
 // derived from the test name so the probe below and the harness agree without
-// threading a value through newTinyPoolHarness's signature (Tasks 10 and 11
-// consume that signature as published).
+// threading a value through newTinyPoolHarnessConfigured's signature.
 func harnessAppName(t *testing.T) string {
 	t.Helper()
 	name := "txlife-" + strings.Map(func(r rune) rune {
@@ -103,7 +93,7 @@ func withAppName(t *testing.T, dsn, name string) string {
 	return u.String()
 }
 
-// newTinyPoolProcHarness is newTinyPoolHarness with an in-process dispatcher, so
+// newTinyPoolProcHarness is newTinyPoolHarnessConfigured with an in-process dispatcher, so
 // a registered callout runs on the SERVER's request goroutine. The gRPC compute
 // member the callback harness connects is unused by these scenarios.
 func newTinyPoolProcHarness(t *testing.T, maxConns int32) (*callbackHarness, *localproc.LocalProcessingService) {
@@ -199,9 +189,9 @@ func txLifeSegmentWF(name, processor, criterion string) string {
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "STAGED", "manual": false,
-					"processors": [{"type": "calculator", "name": %q,
+					"processors": [{"type": "externalized", "name": %q,
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
-						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]}]},
+						"startNewTxOnDispatch": true, "config": {"attachEntity": true, "calculationNodesTags": ""}}]}]},
 				"STAGED": {"transitions": [{"name": "gate", "next": "DONE", "manual": false,
 					"criterion": {"type":"function","function":{"name":%q}}}]},
 				"DONE":   {}
@@ -211,6 +201,14 @@ func txLifeSegmentWF(name, processor, criterion string) string {
 }
 
 const txLifeSample = `{"name":"tx-life","amount":1,"status":"new"}`
+
+// --- cluster secret shared with the hand-over tests ---
+
+// clusterHMACSecret32 is the fixed cluster secret of the single-node cluster
+// stacks the handover tests build. Exactly 32 bytes: both
+// dispatch.NewAEADPeerAuth (>= 32) and memberlist's AES key (16/24/32) accept
+// it.
+var clusterHMACSecret32 = bytes.Repeat([]byte{0xA5}, 32)
 
 // --- coverage row 1: a panic in an owned write returns the connection --------
 
@@ -229,6 +227,32 @@ func TestE2E_PanicInOwnedWrite_ReturnsConnection(t *testing.T) {
 		t.Fatalf("status = %d, want 500 with a ticket; body: %s", status, body)
 	}
 
+	// Coverage row 7b, through the production path: a real HTTP request onto
+	// the assembled app handler, the handler-wide middleware.Recovery wrap,
+	// the app's own health latch, ReadinessCheck, and the real admin handler.
+	// Serving and being ready are different questions — the node answers
+	// requests (below) and is no longer ready to be sent new ones (here),
+	// because its state is unverified.
+	if err := h.app.ReadinessCheck(); err == nil {
+		t.Error("ReadinessCheck() = nil after a recovered panic — the node keeps taking client traffic with unverified state")
+	}
+	adminH := admin.NewHandler(admin.Options{Readiness: h.app.ReadinessCheck})
+	rec := httptest.NewRecorder()
+	adminH.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("/readyz = %d after a recovered panic, want 503", rec.Code)
+	}
+	// Gate 3: the probe body stays generic.
+	if body := rec.Body.String(); strings.Contains(body, "panic") || strings.Contains(body, "injected") {
+		t.Errorf("/readyz body leaked internal state: %q", body)
+	}
+	// /livez is deliberately untouched: the node drains, it is not restarted.
+	rec = httptest.NewRecorder()
+	adminH.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("/livez = %d after a recovered panic, want 200 — liveness must not turn a deterministic panic into a restart loop", rec.Code)
+	}
+
 	waitFor(t, 15*time.Second, "connection returned to the pool",
 		func() bool { return idleInTransactionConns(t) <= before })
 
@@ -242,8 +266,8 @@ func TestE2E_PanicInOwnedWrite_ReturnsConnection(t *testing.T) {
 // --- coverage row 2: repeated panics do not take the node out ---------------
 
 // TestE2E_RepeatedPanics_NodeKeepsServing asserts request handling continues —
-// NOT that health is green. The recovery middleware stores false on the health
-// flag and nothing resets it, so the health endpoint reports DOWN after the
+// NOT that health is green. The recovery middleware trips the health
+// latch and nothing resets it, so the health endpoint reports DOWN after the
 // first recovered panic. That is the existing contract and is deliberate: a node
 // that has panicked has unknown state.
 func TestE2E_RepeatedPanics_NodeKeepsServing(t *testing.T) {
@@ -382,7 +406,7 @@ func TestE2E_ClientCancelledRequest_StillRollsBack(t *testing.T) {
 
 	before := idleInTransactionConns(t)
 
-	reqCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	reqCtx, cancel := context.WithTimeout(e2eCtx(t), 300*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
 		h.baseURL+"/api/entity/JSON/txlife-slow/1", strings.NewReader(txLifeSample))
@@ -411,32 +435,35 @@ const txLifeAbsentEntityID = "00000000-0000-4000-8000-0000000004a3"
 // processor, asserted on the test goroutine afterwards.
 type joinedCallbackOutcome struct {
 	deleteStatus int
-	createStatus int
-	createdID    string
 }
 
-// TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner is coverage row 3's E2E
+// TestE2E_JoinedCallbackFailure_OwnerRollbackOnly is coverage row 3's E2E
 // half. It runs over the REAL gRPC dispatch path so the callback genuinely joins
-// the owner's transaction via the signed tx-token, and the joined write's own
-// deferred scope must decline to touch a transaction it does not own.
+// the owner's transaction via the signed tx-token.
 //
-// The joined write is a DELETE of an absent id, chosen deliberately.
-// DeleteEntity's very first act is beginScope, so the 404 surfaces from
-// entityStore.Get with the joined scope live and `defer scope.Release()` armed —
-// the code path under test. A joined CREATE against an unregistered model would
-// NOT do: CreateEntity resolves and validates the model ~50 lines before
-// beginScope, so it returns 404 having constructed no scope at all, and the test
-// would pass against a Release that rolls back its owner unconditionally.
+// The joined write is a DELETE of an absent id: DeleteEntity's very first act is
+// beginScope, so the 404 surfaces with the joined write's own deferred scope
+// live and armed. The 404 is a non-retryable failure of a joined write, so the
+// request's callback scope is discarded and the owner's transaction made
+// rollback-only — by the coordination, never by the joined write's own scope,
+// which must decline to touch a transaction it does not own. The owner, whose
+// processor answers success regardless, is refused 409
+// TRANSACTION_ROLLBACK_ONLY naming the callback's ENTITY_NOT_FOUND, and nothing
+// of its operation is committed.
 //
-// Two consequences are asserted, and the second is the load-bearing one:
-// a SECOND joined write, issued after the failure, must still succeed and must
-// still be durable after the owner commits. That can only hold if the owner's
-// transaction survived the first callback intact.
-func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
+// No later joined request is asserted here. The mark cancels the callout the
+// failed write ran under, and the owner ends it at once, so a later request
+// on its pass is refused 410 CALLOUT_SUPERSEDED — or 404 once the owner has
+// rolled back. Which one depends on timing; that a later request is refused,
+// not retryably, is pinned at both doors by
+// TestCallbackScope_FailedWrite_LaterRequestsOnThePassRefused. The 409 refusal
+// of a request under a marked scope is pinned at both doors by
+// TestTxJoin_FailedWriteMakesTheTransactionRollbackOnly and
+// TestTxRoute_RawHandlerErrorMarks.
+func TestE2E_JoinedCallbackFailure_OwnerRollbackOnly(t *testing.T) {
 	h := newCallbackHarness(t)
 
 	const primary = "txlife-owner"
-	const secondary = "txlife-owner-child"
 	outcome := make(chan joinedCallbackOutcome, 1)
 
 	h.RegisterProc("txlife-owner-proc", func(rc *reqCtx) (map[string]any, error) {
@@ -448,14 +475,6 @@ func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
 		}
 		out.deleteStatus = del.StatusCode
 
-		// The owner's transaction must still be open and still committable. This
-		// write lands in the same buffer and is read back below after the commit.
-		created, err := rc.CreateEntity(secondary, 1, txLifeSample)
-		if err != nil {
-			return nil, fmt.Errorf("callback create: %w", err)
-		}
-		out.createStatus, out.createdID = created.StatusCode, created.EntityID
-
 		outcome <- out
 		return nil, nil // the owner's cascade carries on regardless
 	})
@@ -466,7 +485,7 @@ func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
 			"version": "1.1", "name": "txlife-owner-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "txlife-owner-proc",
+					"processors": [{"type": "externalized", "name": "txlife-owner-proc",
 						"executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]}]},
 				"ACTIVE": {}
@@ -474,11 +493,11 @@ func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
 		}]
 	}`
 	h.setupModelSampleWithWorkflow(t, primary, txLifeSample, primaryWF)
-	h.setupModelSampleWithWorkflow(t, secondary, txLifeSample, workflowV1)
 
-	primaryID, status, body := h.CreateEntity(t, primary, 1, txLifeSample)
-	if status != http.StatusOK {
-		t.Fatalf("owner create failed; a joined callback rolled back its owner's transaction: %d %s", status, body)
+	_, status, body := h.CreateEntity(t, primary, 1, txLifeSample)
+	pd := assertProblem(t, status, body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
+	if !strings.Contains(pd.Detail, "ENTITY_NOT_FOUND") {
+		t.Errorf("owner detail = %q; want it to name the callback's ENTITY_NOT_FOUND", pd.Detail)
 	}
 
 	var out joinedCallbackOutcome
@@ -491,252 +510,7 @@ func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
 	if out.deleteStatus != http.StatusNotFound {
 		t.Fatalf("joined delete status = %d, want 404 from inside the flow; the test must fail AFTER beginScope", out.deleteStatus)
 	}
-	if out.createStatus != http.StatusOK {
-		t.Fatalf("the joined write after the failure returned %d; the failed callback took its owner's transaction down with it", out.createStatus)
-	}
-
-	// The owner committed: its entity is durable and reached its settled state.
-	state, s := h.GetEntityState(t, primaryID)
-	if s != http.StatusOK {
-		t.Fatalf("owner's entity is not readable after commit: %d", s)
-	}
-	if state != "ACTIVE" {
-		t.Fatalf("owner's entity state = %q, want ACTIVE", state)
-	}
-
-	// ...and so is the write the second joined callback buffered into it. A
-	// rollback by the first callback would have discarded this.
-	if out.createdID == "" {
-		t.Fatal("joined create returned no entity id")
-	}
-	if _, s := h.GetEntityState(t, out.createdID); s != http.StatusOK {
-		t.Fatalf("the joined callback's write is not durable after the owner committed: GET returned %d", s)
-	}
-}
-
-// --- coverage row 7a: a panic on the peer scheduler RPC door is recovered --
-
-// clusterHMACSecret32 is this test's fixed cluster shared secret. Exactly 32
-// bytes to satisfy both dispatch.NewAEADPeerAuth (requires >= 32) and
-// memberlist's AES key-size requirement (16/24/32 only, nothing else). The
-// value is arbitrary; what matters is the length and that both the signer
-// (this test) and the verifier (the harness node) use the same bytes.
-var clusterHMACSecret32 = bytes.Repeat([]byte{0xA5}, 32)
-
-// schedulerTaskPathForTest mirrors the unexported schedulerTaskPath constant
-// in internal/cluster/scheduler_rpc.go. Duplicated rather than exported
-// across the package boundary for a one-line route string — the same
-// precedent that file's own ensureScheme helper already sets.
-const schedulerTaskPathForTest = "/internal/dispatch/scheduled-task"
-
-// newClusterHarness builds the callback harness (real Postgres, the
-// package's shared TestMain container, default — not tiny — pool sizing)
-// with cluster mode on for a single node: a "cluster of one". No peer ever
-// joins; the gossip agent binds an OS-assigned local port purely to satisfy
-// app.New's cluster wiring, which is what makes the peer scheduler RPC route
-// exist on the mux at all — it is registered only when cfg.Cluster.Enabled.
-// The scan loop is disabled so this test's own signed RPC call — standing in
-// for a peer's authenticated dispatch — is the only thing that can ever fire
-// the armed task; nothing races it.
-func newClusterHarness(t *testing.T) (*callbackHarness, *localproc.LocalProcessingService) {
-	t.Helper()
-	svc := localproc.New()
-	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
-		cfg.ExternalProcessing = svc
-		cfg.Scheduler.Enabled = false
-		cfg.Cluster.Enabled = true
-		cfg.Cluster.NodeID = harnessAppName(t)
-		cfg.Cluster.GossipAddr = "127.0.0.1:0" // OS-assigned; no seeds configured, so this node forms a cluster of one
-		cfg.Cluster.HMACSecret = clusterHMACSecret32
-	})
-	return h, svc
-}
-
-// txLifeSchedDelayMs is the delay this file's scheduled-fire tests arm with.
-// FireScheduledTransition re-checks ScheduledTime <= now on every call — the
-// "re-armed to the future" guard (design §5.3 step 3) — so a task cannot be
-// fired early no matter who calls it (scan loop or a direct peer RPC); the
-// delay must actually elapse first. Small and constant so callers just sleep
-// past it before firing.
-const txLifeSchedDelayMs = 200
-
-// txLifeSchedGateWF is txLifeGateWF's scheduled counterpart: the automated
-// transition carries BOTH a Schedule (so entity creation arms a durable
-// ScheduledTask) and a FUNCTION criterion (so firing it dispatches through
-// localproc.DispatchCriteria — the unrecovered callout entry point this
-// file's header comment describes). The harness's scan loop is disabled, so
-// nothing but a caller's own deliberate RPC ever fires the task, however long
-// after txLifeSchedDelayMs elapses that happens.
-func txLifeSchedGateWF(name, criterion string) string {
-	return fmt.Sprintf(`{
-		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
-			"states": {
-				"NONE":   {"transitions": [{"name": "gate", "next": "ACTIVE", "manual": false,
-					"schedule": {"delayMs": %d},
-					"criterion": {"type":"function","function":{"name":%q}}}]},
-				"ACTIVE": {}
-			}
-		}]
-	}`, name, txLifeSchedDelayMs, criterion)
-}
-
-// findScheduledTask locates the ScheduledTask a create armed for entityID.
-// Scans via the public ScheduledTaskStore contract rather than recomputing
-// the store's internal deterministic task-ID formula (a private
-// implementation detail of package workflow), so this test depends only on
-// documented behavior: ScanDue is cross-tenant and returns every task whose
-// ScheduledTime is due by the given instant.
-func findScheduledTask(t *testing.T, factory spi.StoreFactory, entityID string) spi.ScheduledTask {
-	t.Helper()
-	sts, err := factory.ScheduledTaskStore(context.Background())
-	if err != nil {
-		t.Fatalf("ScheduledTaskStore: %v", err)
-	}
-	// Pushed two hours out so this read-only lookup finds the row regardless
-	// of how long txLifeSchedDelayMs's short delay has had to elapse.
-	due := time.Now().Add(2 * time.Hour).UnixMilli()
-	tasks, err := sts.ScanDue(context.Background(), due, 500)
-	if err != nil {
-		t.Fatalf("ScanDue: %v", err)
-	}
-	for _, task := range tasks {
-		if task.EntityID == entityID {
-			return task
-		}
-	}
-	t.Fatalf("no scheduled task found for entity %s among %d due tasks", entityID, len(tasks))
-	return spi.ScheduledTask{}
-}
-
-// postSchedulerRPC signs task the way a peer would — dispatch.NewAEADPeerAuth
-// over the same shared secret the harness node verifies against — and POSTs
-// it to the harness's peer scheduler RPC door. Returns the raw response
-// (rather than routing through cluster.SchedulerRPCClient, which folds a
-// non-2xx response and a transport-level connection drop into the same
-// generic error) so the caller can tell "the server replied 500" apart from
-// "the connection was dropped" — precisely the distinction this test exists
-// to draw.
-func postSchedulerRPC(t *testing.T, h *callbackHarness, task spi.ScheduledTask) (*http.Response, error) {
-	t.Helper()
-	auth, err := dispatch.NewAEADPeerAuth(clusterHMACSecret32, 30*time.Second)
-	if err != nil {
-		t.Fatalf("NewAEADPeerAuth: %v", err)
-	}
-	plain, err := json.Marshal(cluster.SchedulerTaskRequest{Task: task})
-	if err != nil {
-		t.Fatalf("marshal SchedulerTaskRequest: %v", err)
-	}
-	req, err := http.NewRequest(http.MethodPost, h.baseURL+schedulerTaskPathForTest, nil)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	wire, err := auth.Sign(req, plain)
-	if err != nil {
-		t.Fatalf("sign request: %v", err)
-	}
-	req.Body = io.NopCloser(bytes.NewReader(wire))
-	req.ContentLength = int64(len(wire))
-	return http.DefaultClient.Do(req)
-}
-
-// TestE2E_SchedulerRPCPanic_RecoveredAndRolledBack is coverage row 7a. The
-// peer scheduler RPC opens a transaction and runs a full fire plus cascade
-// including compute-node callouts, and is reachable by any peer — but until
-// this task it was registered at a pattern more specific than "/", so it
-// escaped middleware.Recovery entirely (app/app.go wrapped only the "/"
-// catch-all, and every more-specific pattern wins over that in Go's
-// http.ServeMux). Pre-fix, net/http's own per-connection recover still keeps
-// the panic from taking the node down, but it drops the connection instead
-// of returning the project's usual ProblemDetail-with-ticket 500 — this test
-// tells the two apart, and also proves the fire's own transaction rolled
-// back rather than partially committing.
-func TestE2E_SchedulerRPCPanic_RecoveredAndRolledBack(t *testing.T) {
-	h, svc := newClusterHarness(t)
-	svc.RegisterCriteria("txlife-sched-rpc-boom", func(context.Context, *spi.Entity, json.RawMessage) (bool, error) {
-		panic("injected panic in scheduled-transition criterion callout")
-	})
-
-	const model = "txlife-sched-rpc-panic"
-	h.setupModelSampleWithWorkflow(t, model, txLifeSample, txLifeSchedGateWF(model+"-wf", "txlife-sched-rpc-boom"))
-
-	entityID, status, body := h.CreateEntity(t, model, 1, txLifeSample)
-	if status != http.StatusOK {
-		t.Fatalf("create entity: %d %s", status, body)
-	}
-
-	task := findScheduledTask(t, h.app.StoreFactory(), entityID)
-
-	// FireScheduledTransition re-checks ScheduledTime <= now itself (design
-	// §5.3 step 3, "re-armed to the future") regardless of who calls it, so
-	// the delay must actually elapse before this RPC can reach the
-	// criterion — otherwise the fire is silently dropped (no error, no
-	// criterion dispatch) rather than reaching the panic this test injects.
-	time.Sleep(2 * txLifeSchedDelayMs * time.Millisecond)
-
-	resp, err := postSchedulerRPC(t, h, task)
-	if err != nil {
-		t.Fatalf("scheduler RPC request failed: %v (want a ProblemDetail 500 with a ticket, not a dropped connection)", err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want a ProblemDetail 500 with a ticket; body: %s", resp.StatusCode, respBody)
-	}
-	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
-		t.Fatalf("content-type = %q; the connection was dropped instead of an error body", ct)
-	}
-	var pd struct {
-		Ticket string `json:"ticket"`
-	}
-	if err := json.Unmarshal(respBody, &pd); err != nil {
-		t.Fatalf("decode ProblemDetail: %v; body: %s", err, respBody)
-	}
-	if pd.Ticket == "" {
-		t.Errorf("expected a non-empty ticket in the ProblemDetail body: %s", respBody)
-	}
-
-	// Rolled back: the fire's transaction must not have partially committed
-	// the transition despite the mid-cascade panic.
-	state, s := h.GetEntityState(t, entityID)
-	if s != http.StatusOK {
-		t.Fatalf("entity not readable after the recovered panic: %d", s)
-	}
-	if state != "NONE" {
-		t.Fatalf("entity state = %q, want NONE (unchanged) — the panicking fire committed partially instead of rolling back", state)
-	}
-
-	// And the node still serves — the recovered panic did not take it down.
-	if _, s, b := h.CreateEntity(t, model, 1, txLifeSample); s != http.StatusOK {
-		t.Fatalf("node could not serve after the recovered scheduler-RPC panic: %d %s", s, b)
-	}
-
-	// Coverage row 7b, through the production path this test already drove:
-	// a real HTTP request onto the assembled app handler, the handler-wide
-	// middleware.Recovery wrap, the app's own health flag, ReadinessCheck,
-	// and the real admin handler. Serving and being ready are different
-	// questions — the node answers requests (above) and is no longer ready
-	// to be sent new ones (here), because its state is unverified.
-	if err := h.app.ReadinessCheck(); err == nil {
-		t.Error("ReadinessCheck() = nil after a recovered panic — the node keeps taking client traffic with unverified state")
-	}
-	adminH := admin.NewHandler(admin.Options{Readiness: h.app.ReadinessCheck})
-	rec := httptest.NewRecorder()
-	adminH.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("/readyz = %d after a recovered panic, want 503", rec.Code)
-	}
-	// Gate 3: the probe body stays generic.
-	if body := rec.Body.String(); strings.Contains(body, "panic") || strings.Contains(body, "injected") {
-		t.Errorf("/readyz body leaked internal state: %q", body)
-	}
-	// /livez is deliberately untouched: the node drains, it is not restarted.
-	rec = httptest.NewRecorder()
-	adminH.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/livez", nil))
-	if rec.Code != http.StatusOK {
-		t.Errorf("/livez = %d after a recovered panic, want 200 — liveness must not turn a deterministic panic into a restart loop", rec.Code)
+	if n := h.countEntities(t, primary); n != 0 {
+		t.Errorf("%d owner entities committed; want none", n)
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineStartedDto",
+  "value": {
+    "eventType": "STATE_MACHINE_START"
+  }
+}

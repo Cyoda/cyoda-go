@@ -4,9 +4,9 @@ import (
 	"reflect"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
 )
 
 // TestMetaVocabulary_EvaluatorMatchesAllowlist pins the invariant

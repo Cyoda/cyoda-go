@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // attribution_test.go — single-backend (postgres) e2e coverage for follow-on
@@ -30,23 +30,26 @@ import (
 //   - the harness's M2M client-credentials token (scopes claim → Kind=service) —
 //     the compute member's identity, and the executor of joined cascade writes.
 //
+// The on-behalf-of scenarios use real OBO tokens (oboTokenOn / oboToken):
+// Kind=user, attributed to the user, executed by the OBO client (act.sub).
+//
 // The tx-token is never logged (Gate 3 / spec §8-H10).
 
 const (
 	// attrTestIssuer matches newCallbackHarnessConfigured's cfg.IAM.JWTIssuer.
 	attrTestIssuer = "cyoda-callback-test"
-	// attrTenant matches the harness bootstrap TenantID.
+	// attrTenant matches the harness's default (self-signed) admin tenant.
 	attrTenant = "test-tenant"
 	// attrServiceID is the service principal id the harness's client-credentials
-	// token carries (caas_user_id == bootstrap client.UserID). It is the executor
-	// id of every joined callback the member makes, and the attributed id when a
-	// detached service callback records itself (§4.3).
+	// token carries (caas_user_id, per callback_harness_test.go's fetchToken).
+	// It is the executor id of every joined callback the member makes, and the
+	// attributed id when a detached service callback records itself (§4.3).
 	attrServiceID = "test-admin"
 )
 
 // --- token minting + explicit-bearer request helpers -------------------------
 
-// signingKID recomputes the deterministic KID app.NewAuthService derives from
+// signingKID recomputes the deterministic KID auth.DeriveKID derives from
 // the signing key's public part (sha256(SPKI)[:16] hex) so a self-minted token
 // validates against the stack's local key source.
 func (h *callbackHarness) signingKID(t *testing.T) string {
@@ -61,12 +64,11 @@ func (h *callbackHarness) signingKID(t *testing.T) string {
 
 // mintUserToken mints an OBO-shaped user JWT (carries the user_roles claim key →
 // validator assigns Kind=user) for the given principal id. Signed with the
-// stack's own key so it validates first-party.
+// stack's own key so it validates first-party. It always carries ROLE_M2M, the
+// role every data route requires, in addition to roles.
 func (h *callbackHarness) mintUserToken(t *testing.T, userID string, roles ...string) string {
 	t.Helper()
-	if roles == nil {
-		roles = []string{}
-	}
+	roles = append(append([]string{}, roles...), "ROLE_M2M")
 	now := time.Now()
 	claims := map[string]any{
 		"sub":          userID,
@@ -78,7 +80,7 @@ func (h *callbackHarness) mintUserToken(t *testing.T, userID string, roles ...st
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
 	}
-	tok, err := auth.Sign(claims, h.signKey, h.signingKID(t))
+	tok, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(h.signKey), h.signingKID(t))
 	if err != nil {
 		t.Fatalf("mint user token: %v", err)
 	}
@@ -94,7 +96,7 @@ func (h *callbackHarness) DoAuthBearer(t *testing.T, method, path, body, txToken
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.baseURL+path, r)
+	req, err := e2eNewRequest(t, method, h.baseURL+path, r)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -119,7 +121,7 @@ func (h *callbackHarness) callbackBearer(method, path, body, txToken, bearer str
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.baseURL+path, r)
+	req, err := http.NewRequestWithContext(h.ownerCtx(), method, h.baseURL+path, r)
 	if err != nil {
 		return callbackResult{}, err
 	}
@@ -265,22 +267,22 @@ func assertAttribution(t *testing.T, change map[string]any, label, wantUser, wan
 }
 
 // procCascadeWF builds a single-transition workflow whose init transition runs
-// one processor of the given name and execution mode. cfgExtra is spliced into
-// the processor config object (e.g. `, "startNewTxOnDispatch": true`).
-func procCascadeWF(name, procName, execMode, cfgExtra string) string {
+// one processor of the given name and execution mode. procExtra is spliced into
+// the processor object (e.g. `, "startNewTxOnDispatch": true`).
+func procCascadeWF(name, procName, execMode, procExtra string) string {
 	return fmt.Sprintf(`{
 		"importMode": "REPLACE",
 		"workflows": [{
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": %q,
-						"config": {"attachEntity": true, "calculationNodesTags": ""%s}}]
+					"processors": [{"type": "externalized", "name": %q, "executionMode": %q%s,
+						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
 			}
 		}]
-	}`, name+"-wf", procName, execMode, cfgExtra)
+	}`, name+"-wf", procName, execMode, procExtra)
 }
 
 // --- Scenario 1: cascade — service processor writes Y in the user's tx --------
@@ -487,14 +489,15 @@ func TestAttribution_CBDDetachedHandover(t *testing.T) {
 	})
 }
 
-// --- Scenario 4: D3 — OBO user token joined into another user's tx ------------
+// --- Scenario 4: D3 — an OBO callback joins its own user's transaction ------
 
-// TestAttribution_D3_OBOKeepsOwnUser: a processor callback presenting an OBO
-// user token (bob) AND echoing the tx-token JOINS alice's transaction. Per D3
-// (§7 stamp rule) a user-kind executor records ITSELF — so Y records bob, not
-// the chain origin alice. A scheduled timer armed on Y inside that same tx,
-// however, carries the CHAIN ORIGIN (alice) as ArmedBy (§5.2 divergence),
-// verified by durable-task inspection.
+// TestAttribution_D3_OBOKeepsOwnUser: alice's on-behalf-of token creates X; X's
+// SYNC processor calls back presenting alice's OBO token AND the pass, so the
+// callback JOINS alice's own transaction (an OBO request may join only that
+// one). An OBO write attributes to its own user, executed by the OBO client,
+// and never inherits an origin — here they coincide: Y records alice, executed
+// by the OBO client. A scheduled timer armed on Y inside that transaction
+// carries alice as ArmedBy, verified by durable-task inspection.
 func TestAttribution_D3_OBOKeepsOwnUser(t *testing.T) {
 	h := newCallbackHarness(t)
 
@@ -502,24 +505,13 @@ func TestAttribution_D3_OBOKeepsOwnUser(t *testing.T) {
 	const secondary = "attr-d3-secondary"
 	// Y's workflow: init → Open, with a far-future scheduled AutoClose so the
 	// task stays armed (never due) while we inspect ArmedBy.
-	secondaryWF := `{
-		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": "attr-d3-y-wf", "initialState": "NONE", "active": true,
-			"states": {
-				"NONE": {"transitions": [{"name": "init", "next": "Open", "manual": false}]},
-				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 600000}}]},
-				"Closed": {}
-			}
-		}]
-	}`
-	h.SetupModelWithWorkflow(t, secondary, secondaryWF)
+	h.SetupModelWithWorkflow(t, secondary, farFutureTimerWF("attr-d3-y-wf"))
 
-	bob := h.mintUserToken(t, "bob", "ROLE_USER")
+	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
 	yIDs := make(chan string, 1)
 	h.RegisterProc("attr-d3-proc", func(rc *reqCtx) (map[string]any, error) {
-		// Joined (rc.token present) BUT presenting bob's user token → D3.
-		res, err := rc.CreateEntityAs(bob, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
+		// Joined (rc.token present), presenting alice's own OBO token.
+		res, err := rc.CreateEntityAs(alice, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
 		if err != nil {
 			return nil, fmt.Errorf("d3 create: %w", err)
 		}
@@ -531,9 +523,8 @@ func TestAttribution_D3_OBOKeepsOwnUser(t *testing.T) {
 	})
 	h.SetupModelWithWorkflow(t, primary, procCascadeWF("attr-d3", "attr-d3-proc", "SYNC", ""))
 
-	alice := h.mintUserToken(t, "alice", "ROLE_USER")
 	if _, status, body := h.createEntityAs(t, alice, primary, 1, `{"name":"x","amount":100,"status":"new"}`); status != http.StatusOK {
-		t.Fatalf("create X as alice: %d %s", status, body)
+		t.Fatalf("create X as alice (OBO): %d %s", status, body)
 	}
 
 	var yID string
@@ -542,13 +533,22 @@ func TestAttribution_D3_OBOKeepsOwnUser(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout: D3 processor did not create Y")
 	}
+	// farFutureTimerWF's AutoClose never fires (ten minutes out) and this
+	// stack's scheduler is disabled (newCallbackHarness default, shares the
+	// package database), so nothing ever claims or cancels Y's armed task —
+	// delete Y so it doesn't outlive the test (deletion cancels its
+	// scheduled tasks).
+	t.Cleanup(func() {
+		if resp := h.DoAuthBearer(t, http.MethodDelete, "/api/entity/"+yID, "", "", alice); resp.StatusCode != http.StatusOK {
+			t.Errorf("cleanup: delete Y=%s: %d %s", yID, resp.StatusCode, h.readBody(t, resp))
+		}
+	})
 
-	// Write attribution: bob (the presented user), NOT alice (chain origin).
 	change := findChangeByType(h.getChanges(t, yID), "CREATE")
-	assertAttribution(t, change, "Y D3 write", "bob", "user", "user", "bob")
+	assertAttribution(t, change, "Y D3 write", "alice", "user", "service", oboClientOf(t, alice))
 
-	// Timer arming: the AutoClose task armed on Y inside alice's tx carries the
-	// CHAIN ORIGIN (alice), not the executor bob (§5.2). Inspect the durable row.
+	// Timer arming: the AutoClose task armed on Y inside alice's transaction
+	// carries alice. Inspect the durable row.
 	var armedID, armedKind string
 	if err := dbPool.QueryRow(context.Background(),
 		`SELECT armed_by_id, armed_by_kind FROM scheduled_tasks WHERE entity_id=$1`, yID,
@@ -556,8 +556,104 @@ func TestAttribution_D3_OBOKeepsOwnUser(t *testing.T) {
 		t.Fatalf("inspect scheduled_task for Y=%s: %v", yID, err)
 	}
 	if armedID != "alice" || armedKind != "user" {
-		t.Errorf("armed timer principal = {%q,%q}; want {alice,user} (chain origin, not executor bob)", armedID, armedKind)
+		t.Errorf("armed timer principal = {%q,%q}; want {alice,user}", armedID, armedKind)
 	}
+}
+
+// farFutureTimerWF is a workflow whose init lands in Open, from which a
+// scheduled AutoClose ten minutes out leads to Closed: the timer is armed and
+// stays armed for the length of a test.
+func farFutureTimerWF(name string) string {
+	return fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "Open", "manual": false}]},
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 600000}}]},
+				"Closed": {}
+			}
+		}]
+	}`, name)
+}
+
+// --- Scenario 4b: OBO write and compute write-back ---------------------------
+
+// TestAttribution_OBOWrite: an entity created with alice's on-behalf-of token
+// records alice as the attributed user, of kind user, executed by the OBO
+// client that holds the token.
+func TestAttribution_OBOWrite(t *testing.T) {
+	const model = "attr-obo-write"
+	importModel(t, model, 1)
+
+	alice := oboToken(t, "alice")
+	resp := requestAs(t, alice, http.MethodPost, "/entity/JSON/"+model+"/1", []byte(`{"x":1}`))
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create as alice (OBO): %d %s", resp.StatusCode, body)
+	}
+	id := parseCreatedEntityID(body)
+	if id == "" {
+		t.Fatalf("create as alice (OBO): no entity id in %s", body)
+	}
+
+	cr := doAuth(t, http.MethodGet, "/api/entity/"+id+"/changes", "")
+	crBody := readBody(t, cr)
+	if cr.StatusCode != http.StatusOK {
+		t.Fatalf("GET changes: %d %s", cr.StatusCode, crBody)
+	}
+	var changes []map[string]any
+	if err := json.Unmarshal([]byte(crBody), &changes); err != nil {
+		t.Fatalf("decode changes: %v: %s", err, crBody)
+	}
+	assertAttribution(t, findChangeByType(changes, "CREATE"), "OBO write", "alice", "user", "service", oboClientOf(t, alice))
+}
+
+// TestAttribution_OBOWriteBack: alice's on-behalf-of token creates X; X's SYNC
+// processor writes Y back through the compute client's own token, joined to
+// alice's transaction. Y attributes to alice — the transaction's origin —
+// executed by the compute client.
+func TestAttribution_OBOWriteBack(t *testing.T) {
+	h := newCallbackHarness(t)
+
+	const primary = "attr-obo-wb-primary"
+	const secondary = "attr-obo-wb-secondary"
+	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
+
+	compute := h.computeBearer(t)
+	computeID, _ := decodeJWTPayload(t, compute)["caas_user_id"].(string)
+	if computeID == "" {
+		t.Fatal("the compute client's token carries no caas_user_id")
+	}
+	yIDs := make(chan string, 1)
+	h.RegisterProc("attr-obo-wb-proc", func(rc *reqCtx) (map[string]any, error) {
+		res, err := rc.CreateEntityAs(compute, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
+		if err != nil {
+			return nil, fmt.Errorf("write-back create: %w", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("write-back create status=%d body=%s", res.StatusCode, res.Body)
+		}
+		yIDs <- res.EntityID
+		return nil, nil
+	})
+	h.SetupModelWithWorkflow(t, primary, procCascadeWF("attr-obo-wb", "attr-obo-wb-proc", "SYNC", ""))
+
+	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
+	xID, status, body := h.createEntityAs(t, alice, primary, 1, `{"name":"x","amount":100,"status":"new"}`)
+	if status != http.StatusOK {
+		t.Fatalf("create X as alice (OBO): %d %s", status, body)
+	}
+
+	var yID string
+	select {
+	case yID = <-yIDs:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: write-back processor did not create Y")
+	}
+
+	assertAttribution(t, findChangeByType(h.getChanges(t, xID), "CREATE"), "X OBO write", "alice", "user", "service", oboClientOf(t, alice))
+	assertAttribution(t, findChangeByType(h.getChanges(t, yID), "CREATE"), "Y write-back", "alice", "user", "service", computeID)
 }
 
 // --- Scenario 5: delete cascade ----------------------------------------------

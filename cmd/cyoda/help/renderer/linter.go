@@ -54,10 +54,10 @@ func FindUnsupported(src []byte) []Issue {
 			issues = append(issues, Issue{Line: lineNum, Kind: "html block", Text: line})
 			continue
 		}
-		// Nested list (indented bullet).
+		// Nested list (indented bullet or numbered item).
 		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
 			t := strings.TrimLeft(line, " \t")
-			if strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ") {
+			if strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ") || isNumberedItem(t) {
 				issues = append(issues, Issue{Line: lineNum, Kind: "nested list", Text: line})
 				continue
 			}
@@ -72,4 +72,11 @@ func FindUnsupported(src []byte) []Issue {
 	// bytes.Reader (we control the call sites), which cannot produce
 	// an I/O error.
 	return issues
+}
+
+// isNumberedItem reports whether s starts with a numbered list marker:
+// one or more digits, a period, and a space.
+func isNumberedItem(s string) bool {
+	digits := len(s) - len(strings.TrimLeft(s, "0123456789"))
+	return digits > 0 && strings.HasPrefix(s[digits:], ". ")
 }

@@ -17,7 +17,29 @@
     },
     "user": {
       "type": "string",
-      "description": "User who made the change."
+      "description": "User who made the change: the attributed principal."
+    },
+    "attributedKind": {
+      "type": "string",
+      "description": "Kind of the attributed principal in user. Open value set; known values are user, service and system. Absent when the change recorded no attribution."
+    },
+    "executedBy": {
+      "type": "object",
+      "description": "The principal that executed the change, independent of attribution: for an on-behalf-of request, the on-behalf-of client. Absent when the change recorded no attribution.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Id of the executing principal."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Kind of the executing principal. Open value set; known values are user, service and system."
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ]
     },
     "changeType": {
       "type": "string",

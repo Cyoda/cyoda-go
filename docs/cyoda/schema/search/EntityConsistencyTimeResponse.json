@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/EntityConsistencyTimeResponse.json",
+  "title": "EntityConsistencyTimeResponse",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "ID of the original request."
+    },
+    "consistencyTime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The consistency time of the caller's tenant: the instant up to which every save is final. Set when success is true."
+    }
+  },
+  "required": [
+    "requestId"
+  ]
+}

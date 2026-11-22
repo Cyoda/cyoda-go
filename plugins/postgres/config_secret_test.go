@@ -86,6 +86,35 @@ func TestParseConfig_URLFileUnreadable(t *testing.T) {
 	}
 }
 
+// TestResolveSecretWith_EmptyFileNoFallback verifies that a _FILE whose
+// contents trim to empty yields an empty value rather than falling back to
+// the plain variable.
+func TestResolveSecretWith_EmptyFileNoFallback(t *testing.T) {
+	secretPath := filepath.Join(t.TempDir(), "pg-url")
+	if err := os.WriteFile(secretPath, []byte("   \n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	getenv := func(key string) string {
+		switch key {
+		case "CYODA_POSTGRES_URL":
+			return "postgres://from-env@host/db"
+		case "CYODA_POSTGRES_URL_FILE":
+			return secretPath
+		default:
+			return ""
+		}
+	}
+
+	got, err := resolveSecretWith(getenv, "CYODA_POSTGRES_URL")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("file with only whitespace should return empty, not fall back to CYODA_POSTGRES_URL; got %q", got)
+	}
+}
+
 func TestParseConfig_SchemaSavepointInterval(t *testing.T) {
 	env := map[string]string{
 		"CYODA_POSTGRES_URL":              "postgres://localhost/x",

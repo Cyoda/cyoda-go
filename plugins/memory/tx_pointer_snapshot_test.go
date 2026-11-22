@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // An in-transaction Count answers over the same merged view Search/Iterate and
@@ -13,8 +13,18 @@ import (
 // committed row of the model being counted: the buffer overlay is
 // model-scoped everywhere else, and the count must scope its skip the same
 // way or it silently under-counts.
+//
+// The buffered other-model row uses a DIFFERENT entity ID from the
+// committed one: an entity's model reference is fixed at creation
+// (spi.ErrEntityModelMismatch), so the same ID can no longer be buffered
+// under a different model than its committed row — that reuse was this
+// test's original shape, before the immutability check made it impossible
+// to construct. Two distinct IDs still exercise the property under test:
+// Count(refA) must not be confused by an unrelated buffered write for a
+// different model.
 func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-ptr"), spi.ModelRef{EntityName: "m-ptr", ModelVersion: "1"}, spi.ModelRef{EntityName: "m-ptr", ModelVersion: "2"})
 	ctx := tenantCtx(spi.TenantID("tenant-ptr"))
 	refA := spi.ModelRef{EntityName: "m-ptr", ModelVersion: "1"}
 	refB := spi.ModelRef{EntityName: "m-ptr", ModelVersion: "2"}
@@ -35,16 +45,16 @@ func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = tm.Rollback(txCtx, txID) })
 
-	// Buffer the same id under a different model.
+	// Buffer a DIFFERENT id under a different model.
 	if _, err := store.Save(txCtx, &spi.Entity{
-		Meta: spi.EntityMeta{ID: "e-ptr", TenantID: "tenant-ptr", ModelRef: refB, State: "open"},
+		Meta: spi.EntityMeta{ID: "e-ptr-other-model", TenantID: "tenant-ptr", ModelRef: refB, State: "open"},
 		Data: []byte(`{"n":2}`),
 	}); err != nil {
 		t.Fatalf("in-tx Save: %v", err)
 	}
 
 	all := drainAll(t, txCtx, store, refA, nil)
-	n, err := store.Count(txCtx, refA)
+	n, err := store.Count(txCtx, refA, nil)
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}
@@ -52,7 +62,7 @@ func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 		t.Fatalf("Count(refA) = %d, Iterate(refA) = %d rows — the count must match the merged view", n, len(all))
 	}
 
-	byState, err := store.CountByState(txCtx, refA, nil)
+	byState, err := store.CountByState(txCtx, refA, nil, nil)
 	if err != nil {
 		t.Fatalf("CountByState: %v", err)
 	}
@@ -71,6 +81,7 @@ func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 // tenant first.
 func TestTx_GetPage_CancelledContextAbortsPointerSnapshot(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-ptr-cancel"), spi.ModelRef{EntityName: "m-ptr-cancel", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-ptr-cancel"))
 	ref := spi.ModelRef{EntityName: "m-ptr-cancel", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)

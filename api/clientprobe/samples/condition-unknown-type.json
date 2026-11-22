@@ -1,0 +1,7 @@
+{
+  "schema": "QueryConditionDto",
+  "valid": false,
+  "value": {
+    "type": "nosuch"
+  }
+}

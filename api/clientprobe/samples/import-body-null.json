@@ -1,0 +1,5 @@
+{
+  "body": "POST /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion}",
+  "valid": false,
+  "value": null
+}

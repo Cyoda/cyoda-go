@@ -4,14 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
 // A successful write response means the write is visible to every
-// subsequent read. The former consistency-wait flag is retired; a request
-// still carrying it — with any value — is accepted and the flag ignored.
-// One case per write operation × value.
-func TestWriteVisibility_RetiredFlagIgnored_AllWriteOps(t *testing.T) {
+// subsequent read, unconditionally. The former consistency-wait flag is
+// retired and, like any query parameter an operation does not declare, is
+// refused: the write is not made. One case per write operation, each made
+// once with the flag (refused, nothing changes) and once without (visible at
+// once).
+func TestWriteVisibility_RetiredFlagRefused_AllWriteOps(t *testing.T) {
 	const model = "e2e-wvis-flag"
 	setupModelWithWorkflow(t, model, `{
 		"importMode": "REPLACE",
@@ -23,53 +26,69 @@ func TestWriteVisibility_RetiredFlagIgnored_AllWriteOps(t *testing.T) {
 			}
 		}]
 	}`)
-
-	for _, val := range []string{"true", "false", "maybe"} {
-		q := "?waitForConsistencyAfter=" + val
-
-		t.Run("create/"+val, func(t *testing.T) {
-			resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1%s", model, q), `{"name":"A","amount":1,"status":"new"}`)
-			id := firstEntityID(t, resp)
-			assertEntityAmount(t, id, 1)
-		})
-		t.Run("createCollection/"+val, func(t *testing.T) {
-			resp := doAuth(t, http.MethodPost, "/api/entity/JSON"+q,
-				fmt.Sprintf(`[{"model":{"name":%q,"version":1},"payload":"{\"name\":\"B\",\"amount\":2,\"status\":\"new\"}"}]`, model))
-			id := firstEntityID(t, resp)
-			assertEntityAmount(t, id, 2)
-		})
-		t.Run("updateSingle/"+val, func(t *testing.T) {
-			id := createEntityE2E(t, model, 1, `{"name":"C","amount":3,"status":"new"}`)
-			resp := doAuth(t, http.MethodPut, fmt.Sprintf("/api/entity/JSON/%s/touch%s", id, q), `{"name":"C","amount":30,"status":"new"}`)
-			expect200(t, resp)
-			assertEntityAmount(t, id, 30)
-		})
-		t.Run("updateSingleWithLoopback/"+val, func(t *testing.T) {
-			id := createEntityE2E(t, model, 1, `{"name":"D","amount":4,"status":"new"}`)
-			resp := doAuth(t, http.MethodPut, fmt.Sprintf("/api/entity/JSON/%s%s", id, q), `{"name":"D","amount":40,"status":"new"}`)
-			expect200(t, resp)
-			assertEntityAmount(t, id, 40)
-		})
-		t.Run("updateCollection/"+val, func(t *testing.T) {
-			id := createEntityE2E(t, model, 1, `{"name":"E","amount":5,"status":"new"}`)
-			resp := doAuth(t, http.MethodPut, "/api/entity/JSON"+q,
-				fmt.Sprintf(`[{"id":%q,"payload":"{\"name\":\"E\",\"amount\":50,\"status\":\"new\"}"}]`, id))
-			expect200(t, resp)
-			assertEntityAmount(t, id, 50)
-		})
-		t.Run("patchSingleWithLoopback/"+val, func(t *testing.T) {
-			id, txID := createEntityE2EWithTxID(t, model, 1, `{"name":"F","amount":6,"status":"new"}`)
-			resp := patchEntity(t, fmt.Sprintf("/api/entity/JSON/%s%s", id, q), "application/merge-patch+json", txID, `{"amount":60}`)
-			expect200(t, resp)
-			assertEntityAmount(t, id, 60)
-		})
-		t.Run("patchSingle/"+val, func(t *testing.T) {
-			id, txID := createEntityE2EWithTxID(t, model, 1, `{"name":"G","amount":7,"status":"new"}`)
-			resp := patchEntity(t, fmt.Sprintf("/api/entity/JSON/%s/touch%s", id, q), "application/merge-patch+json", txID, `{"amount":70}`)
-			expect200(t, resp)
-			assertEntityAmount(t, id, 70)
-		})
+	const flag = "?waitForConsistencyAfter=true"
+	refused := func(t *testing.T, resp *http.Response) {
+		t.Helper()
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "unknown query parameter") {
+			t.Fatalf("with the retired flag: status = %d, want 400 unknown query parameter; body: %s", resp.StatusCode, body)
+		}
 	}
+
+	t.Run("create", func(t *testing.T) {
+		before := countEntitiesInModel(t, model, 1)
+		refused(t, doAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1%s", model, flag), `{"name":"A","amount":1,"status":"new"}`))
+		if after := countEntitiesInModel(t, model, 1); after != before {
+			t.Fatalf("a refused create wrote: %d entities, want %d", after, before)
+		}
+		resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), `{"name":"A","amount":1,"status":"new"}`)
+		assertEntityAmount(t, firstEntityID(t, resp), 1)
+	})
+	t.Run("createCollection", func(t *testing.T) {
+		body := fmt.Sprintf(`[{"model":{"name":%q,"version":1},"payload":"{\"name\":\"B\",\"amount\":2,\"status\":\"new\"}"}]`, model)
+		before := countEntitiesInModel(t, model, 1)
+		refused(t, doAuth(t, http.MethodPost, "/api/entity/JSON"+flag, body))
+		if after := countEntitiesInModel(t, model, 1); after != before {
+			t.Fatalf("a refused create wrote: %d entities, want %d", after, before)
+		}
+		assertEntityAmount(t, firstEntityID(t, doAuth(t, http.MethodPost, "/api/entity/JSON", body)), 2)
+	})
+	t.Run("updateSingle", func(t *testing.T) {
+		id := createEntityE2E(t, model, 1, `{"name":"C","amount":3,"status":"new"}`)
+		refused(t, doAuth(t, http.MethodPut, fmt.Sprintf("/api/entity/JSON/%s/touch%s", id, flag), `{"name":"C","amount":30,"status":"new"}`))
+		assertEntityAmount(t, id, 3)
+		expect200(t, doAuth(t, http.MethodPut, fmt.Sprintf("/api/entity/JSON/%s/touch", id), `{"name":"C","amount":30,"status":"new"}`))
+		assertEntityAmount(t, id, 30)
+	})
+	t.Run("updateSingleWithLoopback", func(t *testing.T) {
+		id := createEntityE2E(t, model, 1, `{"name":"D","amount":4,"status":"new"}`)
+		refused(t, doAuth(t, http.MethodPut, fmt.Sprintf("/api/entity/JSON/%s%s", id, flag), `{"name":"D","amount":40,"status":"new"}`))
+		assertEntityAmount(t, id, 4)
+		expect200(t, doAuth(t, http.MethodPut, fmt.Sprintf("/api/entity/JSON/%s", id), `{"name":"D","amount":40,"status":"new"}`))
+		assertEntityAmount(t, id, 40)
+	})
+	t.Run("updateCollection", func(t *testing.T) {
+		id := createEntityE2E(t, model, 1, `{"name":"E","amount":5,"status":"new"}`)
+		body := fmt.Sprintf(`[{"id":%q,"payload":"{\"name\":\"E\",\"amount\":50,\"status\":\"new\"}"}]`, id)
+		refused(t, doAuth(t, http.MethodPut, "/api/entity/JSON"+flag, body))
+		assertEntityAmount(t, id, 5)
+		expect200(t, doAuth(t, http.MethodPut, "/api/entity/JSON", body))
+		assertEntityAmount(t, id, 50)
+	})
+	t.Run("patchSingleWithLoopback", func(t *testing.T) {
+		id, txID := createEntityE2EWithTxID(t, model, 1, `{"name":"F","amount":6,"status":"new"}`)
+		refused(t, patchEntity(t, fmt.Sprintf("/api/entity/JSON/%s%s", id, flag), "application/merge-patch+json", txID, `{"amount":60}`))
+		assertEntityAmount(t, id, 6)
+		expect200(t, patchEntity(t, fmt.Sprintf("/api/entity/JSON/%s", id), "application/merge-patch+json", txID, `{"amount":60}`))
+		assertEntityAmount(t, id, 60)
+	})
+	t.Run("patchSingle", func(t *testing.T) {
+		id, txID := createEntityE2EWithTxID(t, model, 1, `{"name":"G","amount":7,"status":"new"}`)
+		refused(t, patchEntity(t, fmt.Sprintf("/api/entity/JSON/%s/touch%s", id, flag), "application/merge-patch+json", txID, `{"amount":70}`))
+		assertEntityAmount(t, id, 7)
+		expect200(t, patchEntity(t, fmt.Sprintf("/api/entity/JSON/%s/touch", id), "application/merge-patch+json", txID, `{"amount":70}`))
+		assertEntityAmount(t, id, 70)
+	})
 }
 
 func expect200(t *testing.T, resp *http.Response) {

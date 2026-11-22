@@ -12,7 +12,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help/renderer"
 )
 
 func TestParseFrontMatter_ValidMinimal(t *testing.T) {
@@ -424,6 +424,7 @@ var topLevelTopicsV061 = []string{
 	"cli", "config", "errors", "crud", "search", "analytics",
 	"models", "workflows", "run", "helm", "telemetry",
 	"openapi", "grpc", "quickstart", "admin", "cluster",
+	"scheduled-tasks", "install", "design",
 }
 
 // TestAllTopLevelTopicsPresent guards against accidental deletion of a
@@ -441,7 +442,7 @@ var envVarPattern = regexp.MustCompile(`CYODA_[A-Z][A-Z0-9_]*`)
 
 // Test-only env var prefixes — referenced in tests but not meant to be
 // documented in config/*.md.
-var testOnlyEnvPrefixes = []string{"CYODA_TEST_", "CYODA_MARKER", "CYODA_DEBUG_"}
+var testOnlyEnvPrefixes = []string{"CYODA_TEST_", "CYODA_MARKER"}
 
 // testOnlyEnvSuffix marks env vars that are deliberately-undocumented test-only
 // escape hatches (e.g. CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING, which reopens
@@ -583,13 +584,45 @@ func TestErrCode_Parity(t *testing.T) {
 	}
 }
 
+// TestErrorIndex_ListsEveryCode: the ERROR CODE INDEX in errors.md has one
+// entry for every errors/<CODE>.md topic, and no entry without a topic.
+func TestErrorIndex_ListsEveryCode(t *testing.T) {
+	root := repoRoot(t)
+	index, err := os.ReadFile(filepath.Join(root, "cmd/cyoda/help/content/errors.md"))
+	if err != nil {
+		t.Fatalf("read errors.md: %v", err)
+	}
+	listed := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^- `errors\\.([A-Z0-9_]+)` — ").FindAllStringSubmatch(string(index), -1) {
+		listed[m[1]] = true
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "cmd/cyoda/help/content/errors"))
+	if err != nil {
+		t.Fatalf("read errors/: %v", err)
+	}
+	topics := map[string]bool{}
+	for _, e := range entries {
+		if code, ok := strings.CutSuffix(e.Name(), ".md"); ok {
+			topics[code] = true
+			if !listed[code] {
+				t.Errorf("errors/%s.md has no entry in the ERROR CODE INDEX of errors.md", code)
+			}
+		}
+	}
+	for code := range listed {
+		if !topics[code] {
+			t.Errorf("errors.md lists %s, but there is no errors/%s.md", code, code)
+		}
+	}
+}
+
 // Phrases that MUST appear somewhere under cli/*.md or config/*.md
 // after the printHelp() migration. Pins content that the env-var
 // grep alone doesn't cover.
 var printHelpMustAppearPhrases = []string{
 	"_FILE",          // secret-from-file pattern
 	"--force",        // cyoda init flag
-	"--timeout",      // cyoda health/migrate flag
+	"--timeout",      // cyoda migrate flag
 	"CYODA_PROFILES", // profile loader (config.md covers this)
 	"mock",           // mock IAM default warning
 	"docker",         // run-docker.sh reference or docker run example
@@ -755,12 +788,14 @@ func TestDefaultTree_AuthTopics(t *testing.T) {
 			[]string{"## NAME", "## GOAL", "## WHICH PATH DO I NEED?", "## TOKEN PRESENTATION", "## SEE ALSO"}},
 		{[]string{"auth", "clients"}, "auth.clients — M2M client lifecycle",
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
-		{[]string{"auth", "tokens"}, "auth.tokens — /oauth/token grants and JWT claim contract",
+		{[]string{"auth", "tokens"}, "auth.tokens — the token endpoint, its grants and the JWT claim contract",
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
-		{[]string{"auth", "oidc"}, "auth.oidc — federated OIDC providers",
-			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## DIAGNOSTICS", "## ERRORS", "## SEE ALSO"}},
-		{[]string{"auth", "trusted-keys"}, "auth.trusted-keys — register public keys for offline JWT signing",
+		{[]string{"auth", "trusted-keys"}, "auth.trusted-keys — register public keys for token-exchange subject tokens",
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
+		{[]string{"auth", "integration"}, "auth.integration — integrate an application with cyoda authentication, step by step",
+			[]string{"## NAME", "## GOAL", "## GLOSSARY", "## STEP 1", "## STEP 4", "## STEP 6",
+				"## READING IDENTITY IN A COMPUTE NODE", "## ERRORS AND RETRIES", "## ROTATION",
+				"## INCIDENTS", "## RUNNING IT LOCALLY", "## MOVING FROM", "## SEE ALSO"}},
 	}
 
 	for _, tc := range cases {
@@ -876,7 +911,7 @@ func TestDefaultTree_AuthCurlExamplesMatchOpenAPI(t *testing.T) {
 		return false
 	}
 
-	for _, pageName := range []string{"auth.md", "auth/clients.md", "auth/tokens.md", "auth/oidc.md", "auth/trusted-keys.md"} {
+	for _, pageName := range []string{"auth.md", "auth/clients.md", "auth/tokens.md", "auth/trusted-keys.md", "auth/integration.md"} {
 		t.Run(pageName, func(t *testing.T) {
 			body, err := os.ReadFile(filepath.Join("content", pageName))
 			if err != nil {
@@ -905,7 +940,7 @@ func TestDefaultTree_AuthLandingListsAllChildren(t *testing.T) {
 	if auth == nil {
 		t.Fatal("Find([auth]): topic missing")
 	}
-	want := map[string]bool{"clients": true, "tokens": true, "oidc": true, "trusted-keys": true}
+	want := map[string]bool{"clients": true, "tokens": true, "trusted-keys": true, "integration": true}
 	got := map[string]bool{}
 	for _, c := range auth.Children {
 		if len(c.Path) == 0 {

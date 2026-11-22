@@ -1,0 +1,10 @@
+{
+  "schema": "QueryConditionDto",
+  "class": "LifecycleConditionDto",
+  "value": {
+    "type": "lifecycle",
+    "field": "state",
+    "operatorType": "EQUALS",
+    "value": true
+  }
+}

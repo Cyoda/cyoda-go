@@ -6,6 +6,7 @@ see_also:
   - errors
   - errors.UNAUTHORIZED
   - errors.FORBIDDEN
+  - auth.clients
 ---
 
 # errors.M2M_CLIENT_NOT_FOUND
@@ -29,6 +30,8 @@ The detail field carries a generic `M2M client not found` message; internal stor
 
 Not retryable. Verify the `clientId` via `GET /clients` before retrying the operation.
 
+A reset racing a delete of the same client answers `404`, or `200` with a secret the delete then removes: the delete always wins and the client stays deleted. See `auth.clients` (STORAGE AND CONSISTENCY).
+
 Returned uniformly for `clientId`s that do not exist AND `clientId`s owned by another tenant; the response does not distinguish — by design, to prevent cross-tenant existence enumeration.
 
 ## SEE ALSO
@@ -36,3 +39,4 @@ Returned uniformly for `clientId`s that do not exist AND `clientId`s owned by an
 - errors
 - errors.UNAUTHORIZED
 - errors.FORBIDDEN
+- auth.clients

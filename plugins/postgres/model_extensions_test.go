@@ -4,14 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // countExtensionRows returns the number of rows in model_schema_extensions
@@ -35,7 +34,7 @@ func countExtensionRows(t *testing.T, pool *pgxpool.Pool, tenantID string, ref s
 // delta bytes under a dedicated "$$applied" array on the base object —
 // deep-merging is outside the scope of these plugin tests.
 func jsonRecordingApplyFunc() postgres.ApplyFunc {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	return func(base []byte, deltas []spi.SchemaDelta) ([]byte, error) {
 		var m map[string]json.RawMessage
 		if len(base) == 0 {
 			m = map[string]json.RawMessage{}
@@ -49,7 +48,9 @@ func jsonRecordingApplyFunc() postgres.ApplyFunc {
 				return nil, err
 			}
 		}
-		applied = append(applied, json.RawMessage(delta))
+		for _, delta := range deltas {
+			applied = append(applied, json.RawMessage(delta))
+		}
 		encoded, err := json.Marshal(applied)
 		if err != nil {
 			return nil, err
@@ -69,14 +70,25 @@ func setupModelExtTest(t *testing.T) *postgres.StoreFactory {
 		t.Fatalf("migration failed: %v", err)
 	}
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
-	return postgres.NewStoreFactory(pool)
+	return newClosingStoreFactory(t, pool)
 }
 
+// newClosingStoreFactory builds a factory on pool and closes the model pool
+// it opens when the test ends.
+func newClosingStoreFactory(t *testing.T, pool *pgxpool.Pool) *postgres.StoreFactory {
+	t.Helper()
+	f := postgres.NewStoreFactory(pool)
+	t.Cleanup(func() { postgres.CloseModelPoolForTest(f) })
+	return f
+}
+
+// seedBaseModel saves a LOCKED model: only a locked model accepts
+// extensions.
 func seedBaseModel(t *testing.T, ms spi.ModelStore, ctx context.Context, ref spi.ModelRef, schemaJSON string, cl spi.ChangeLevel) {
 	t.Helper()
 	desc := &spi.ModelDescriptor{
 		Ref:         ref,
-		State:       spi.ModelUnlocked,
+		State:       spi.ModelLocked,
 		ChangeLevel: cl,
 		Schema:      []byte(schemaJSON),
 		UpdateDate:  time.Now().UTC().Truncate(time.Millisecond),
@@ -217,7 +229,7 @@ func TestGet_WithExtensions_ButNoApplyFunc_Errors(t *testing.T) {
 	}
 
 	// Build a SECOND factory sharing the same pool but with no ApplyFunc.
-	factory2 := postgres.NewStoreFactory(factory.Pool())
+	factory2 := newClosingStoreFactory(t, factory.Pool())
 	ms2, err := factory2.ModelStore(ctx)
 	if err != nil {
 		t.Fatalf("ModelStore 2: %v", err)
@@ -238,131 +250,10 @@ func TestStoreFactory_SetApplyFuncTwicePanics(t *testing.T) {
 	factory.SetApplyFunc(jsonRecordingApplyFunc())
 }
 
-// --- D2: Save/Unlock clear extension log + dev-time assertion ---
-
-func TestSave_AfterPriorExtensions_ClearsLog_ProductionMode(t *testing.T) {
-	// Default debugMode == false → production path: Save logs a warn
-	// but succeeds; the log is cleared unconditionally.
-	factory := setupModelExtTest(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-
-	// Create an extension row.
-	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-
-	// Save again (simulating operator-misuse: Save while stale rows exist).
-	if err := ms.Save(ctx, &spi.ModelDescriptor{
-		Ref:         ref,
-		State:       spi.ModelUnlocked,
-		ChangeLevel: spi.ChangeLevelStructural,
-		Schema:      []byte(`{"base":2}`),
-		UpdateDate:  time.Now().UTC().Truncate(time.Millisecond),
-	}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 0 {
-		t.Errorf("expected 0 extension rows after Save, got %d", n)
-	}
-}
-
-func TestSave_AfterPriorExtensions_DevMode_ReturnsError(t *testing.T) {
-	postgres.SetDebugMode(true)
-	t.Cleanup(func() { postgres.SetDebugMode(false) })
-
-	factory := setupModelExtTest(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-
-	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-
-	err = ms.Save(ctx, &spi.ModelDescriptor{
-		Ref:         ref,
-		State:       spi.ModelUnlocked,
-		ChangeLevel: spi.ChangeLevelStructural,
-		Schema:      []byte(`{"base":2}`),
-		UpdateDate:  time.Now().UTC().Truncate(time.Millisecond),
-	})
-	if err == nil {
-		t.Fatal("expected dev-mode assertion error on stale extension rows")
-	}
-	if !strings.Contains(err.Error(), "operator-contract violation") {
-		t.Errorf("want operator-contract error, got: %v", err)
-	}
-}
-
-func TestUnlock_WithLiveExtensions_DevMode_ReturnsError(t *testing.T) {
-	postgres.SetDebugMode(true)
-	t.Cleanup(func() { postgres.SetDebugMode(false) })
-
-	factory := setupModelExtTest(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-
-	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-
-	err = ms.Unlock(ctx, ref)
-	if err == nil {
-		t.Fatal("expected dev-mode assertion error on live extension rows")
-	}
-	if !strings.Contains(err.Error(), "operator-contract violation") {
-		t.Errorf("want operator-contract error, got: %v", err)
-	}
-}
-
-func TestUnlock_CleanState_Succeeds(t *testing.T) {
-	postgres.SetDebugMode(true)
-	t.Cleanup(func() { postgres.SetDebugMode(false) })
-
-	factory := setupModelExtTest(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-	// No ExtendSchema — log is empty.
-
-	if err := ms.Unlock(ctx, ref); err != nil {
-		t.Fatalf("Unlock: %v", err)
-	}
-}
-
-// --- D5: conformance extras — rollback invisibility, multi-delta fold, tenant isolation ---
+// --- D5: conformance extras — caller rollback, multi-delta fold, tenant isolation ---
 
 // setupModelExtTestWithTM is like setupModelExtTest but also wires a
-// TransactionManager onto the factory so tests can Begin/Commit/Rollback
-// and exercise tx-bound visibility of ExtendSchema.
+// TransactionManager onto the factory so tests can Begin/Commit/Rollback.
 func setupModelExtTestWithTM(t *testing.T) *postgres.StoreFactory {
 	t.Helper()
 	pool := newTestPool(t)
@@ -373,15 +264,15 @@ func setupModelExtTestWithTM(t *testing.T) *postgres.StoreFactory {
 		t.Fatalf("migration failed: %v", err)
 	}
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
-	factory := postgres.NewStoreFactory(pool)
+	factory := newClosingStoreFactory(t, pool)
 	factory.InitTransactionManager(newTestUUIDGenerator())
 	return factory
 }
 
-// TestExtendSchema_RolledBack_NotVisible asserts that ExtendSchema called
-// inside a tx that is subsequently rolled back leaves no observable effect
-// on disk or on Get — visibility must be commit-bound.
-func TestExtendSchema_RolledBack_NotVisible(t *testing.T) {
+// TestExtendSchema_SurvivesCallerRollback asserts that an extension made
+// with an entity transaction on ctx commits on its own: it stays in the
+// model after that transaction rolls back.
+func TestExtendSchema_SurvivesCallerRollback(t *testing.T) {
 	factory := setupModelExtTestWithTM(t)
 	factory.SetApplyFunc(jsonRecordingApplyFunc())
 
@@ -398,10 +289,6 @@ func TestExtendSchema_RolledBack_NotVisible(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	txID, txCtx := beginGuarded(t, tm, ctx)
-	// ExtendSchema must be invoked via a store built for the tx-carrying
-	// context so that subsequent plugin-internal resolutions still see the
-	// tx (the ctxQuerier will re-resolve on each call anyway, but we reuse
-	// the same ms because resolveRaw inspects the call-time context).
 	if err := ms.ExtendSchema(txCtx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
 		t.Fatalf("ExtendSchema: %v", err)
 	}
@@ -409,50 +296,15 @@ func TestExtendSchema_RolledBack_NotVisible(t *testing.T) {
 		t.Fatalf("Rollback: %v", err)
 	}
 
-	// Post-rollback: extension row must not exist.
-	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 0 {
-		t.Errorf("after rollback expected 0 extension rows, got %d", n)
+	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 1 {
+		t.Errorf("after the caller's rollback expected 1 extension row, got %d", n)
 	}
-
-	// And Get returns the base schema untouched — the applied-delta marker
-	// inserted by jsonRecordingApplyFunc must not appear.
 	desc, err := ms.Get(ctx, ref)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if bytes.Contains(desc.Schema, []byte(`"$$applied"`)) {
-		t.Errorf("rolled-back delta leaked into Get result: %s", desc.Schema)
-	}
-}
-
-// TestExtendSchema_Commit_VisibleAfterCommit asserts the happy path: the
-// delta written inside the tx becomes visible once the tx commits.
-func TestExtendSchema_Commit_VisibleAfterCommit(t *testing.T) {
-	factory := setupModelExtTestWithTM(t)
-	factory.SetApplyFunc(jsonRecordingApplyFunc())
-
-	ctx := ctxWithTenant("t1")
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
-	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
-
-	tm, err := factory.TransactionManager(ctx)
-	if err != nil {
-		t.Fatalf("TransactionManager: %v", err)
-	}
-	txID, txCtx := beginGuarded(t, tm, ctx)
-	if err := ms.ExtendSchema(txCtx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
-		t.Fatalf("ExtendSchema: %v", err)
-	}
-	if err := tm.Commit(ctx, txID); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
-
-	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 1 {
-		t.Errorf("after commit expected 1 extension row, got %d", n)
+	if !bytes.Contains(desc.Schema, []byte(`"$$applied"`)) {
+		t.Errorf("extension lost with the caller's rollback: %s", desc.Schema)
 	}
 }
 
@@ -513,13 +365,13 @@ func TestExtendSchema_CrossTenantIsolation(t *testing.T) {
 
 	ref := spi.ModelRef{EntityName: "Shared", ModelVersion: "1"}
 	if err := msA.Save(ctxA, &spi.ModelDescriptor{
-		Ref: ref, State: spi.ModelUnlocked, ChangeLevel: spi.ChangeLevelStructural,
+		Ref: ref, State: spi.ModelLocked, ChangeLevel: spi.ChangeLevelStructural,
 		Schema: []byte(`{"t":"A"}`), UpdateDate: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("Save A: %v", err)
 	}
 	if err := msB.Save(ctxB, &spi.ModelDescriptor{
-		Ref: ref, State: spi.ModelUnlocked, ChangeLevel: spi.ChangeLevelStructural,
+		Ref: ref, State: spi.ModelLocked, ChangeLevel: spi.ChangeLevelStructural,
 		Schema: []byte(`{"t":"B"}`), UpdateDate: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("Save B: %v", err)

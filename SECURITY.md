@@ -23,7 +23,7 @@ If you discover a security vulnerability in cyoda-go, please report it privately
 
 ## Supported Versions
 
-Cyoda-go is pre-1.0. Security fixes are applied to the latest minor release on `main`. Older versions are not maintained.
+Cyoda-go is pre-1.0. Only the latest minor release is supported. A security fix is made on the current `release/vX.Y.Z` branch and ships in the next release. Older versions are not maintained.
 
 ## Scope
 

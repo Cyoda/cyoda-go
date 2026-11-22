@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // procOutputWorkflow is a workflow whose single automatic transition runs one
@@ -31,7 +31,7 @@ func procOutputWorkflow(procName string) string {
 			"version": "1.1", "name": "proc-output-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]}]},
 				"CREATED": {}
 			}
@@ -123,17 +123,13 @@ func TestWorkflowProcOutput_UnstorableRejected(t *testing.T) {
 	assertErrorCode(t, body, "WORKFLOW_FAILED")
 }
 
-// TestWorkflowProcOutput_ExtensionRollsBackWithTheTransition asserts that a
-// schema extension made by one processor does not survive a later processor
-// failing the same transition.
-//
-// Both processors here are SYNC, so this exercises the ordinary in-transaction
-// path. The commit-before-dispatch placement — where the check must run on
-// TX_post rather than where the data arrives — is pinned at the unit level by
-// TestProcessorOutput_OffModelFieldRejectedInEveryExecutionMode, which drives
-// all three execution modes.
-func TestWorkflowProcOutput_ExtensionRollsBackWithTheTransition(t *testing.T) {
-	const model = "e2e-procout-rollback"
+// TestWorkflowProcOutput_ExtensionKeptWhenTransitionFails asserts that a
+// schema extension made by one processor stays in the model when a later
+// processor fails the same transition. The extension commits in its own
+// transaction, not in the transition's: the transition rolls back, the field
+// stays (removing it takes an unlock, a delete and a fresh import).
+func TestWorkflowProcOutput_ExtensionKeptWhenTransitionFails(t *testing.T) {
+	const model = "e2e-procout-kept"
 	registerRewriter(t, "procout-p1", `{"name":"x","amount":1,"status":"new","p1Field":"v"}`)
 	procSvc.RegisterProcessor("procout-p2", func(ctx context.Context, e *spi.Entity, p spi.ProcessorDefinition) (*spi.Entity, error) {
 		return nil, fmt.Errorf("deliberate failure after the extension")
@@ -146,13 +142,13 @@ func TestWorkflowProcOutput_ExtensionRollsBackWithTheTransition(t *testing.T) {
 	status, body := importWorkflowE2E(t, model, 1, fmt.Sprintf(`{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.1", "name": "procout-rollback-wf", "initialState": "NONE", "active": true,
+			"version": "1.1", "name": "procout-kept-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [
-						{"type": "calculator", "name": "procout-p1", "executionMode": "SYNC",
+						{"type": "externalized", "name": "procout-p1", "executionMode": "SYNC",
 							"config": {"attachEntity": true, "calculationNodesTags": ""}},
-						{"type": "calculator", "name": "procout-p2", "executionMode": "SYNC",
+						{"type": "externalized", "name": "procout-p2", "executionMode": "SYNC",
 							"config": {"attachEntity": true, "calculationNodesTags": ""}}
 					]}]},
 				"CREATED": {}
@@ -169,8 +165,13 @@ func TestWorkflowProcOutput_ExtensionRollsBackWithTheTransition(t *testing.T) {
 	if resp.StatusCode == http.StatusOK {
 		t.Fatalf("expected the transition to fail on the second processor; body: %s", respBody)
 	}
-	if raw := fmt.Sprintf("%v", exportModelE2E(t, model, 1)); strings.Contains(raw, "p1Field") {
-		t.Errorf("the first processor's schema extension survived a rolled-back transition: %s", raw)
+	if raw := fmt.Sprintf("%v", exportModelE2E(t, model, 1)); !strings.Contains(raw, "p1Field") {
+		t.Errorf("the first processor's schema extension did not survive the failed transition: %s", raw)
+	}
+	// The transition itself rolled back: no entity was committed.
+	if count := queryDB(t, "test-tenant",
+		"SELECT count(*) FROM entities WHERE model_name = $1 AND NOT deleted", model); count != 0 {
+		t.Errorf("expected no entity after the failed transition, got %d", count)
 	}
 }
 

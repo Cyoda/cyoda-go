@@ -5,9 +5,10 @@ package memory
 
 import (
 	"testing"
+	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
 )
 
 // memoryFixture implements parity.BackendFixture for the memory backend.
@@ -15,6 +16,22 @@ type memoryFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	// computeCreds holds the M2M client of each tenant a further compute
+	// client joins under.
+	computeCreds *fixtureutil.ComputeCredentials
+	computeBin   string
+	// logs is the cyoda node's captured output (parity.SchedulerWaitFixture).
+	logs *fixtureutil.SyncBuffer
+}
+
+var _ parity.ComputeClientFixture = (*memoryFixture)(nil)
+
+var _ parity.SchedulerWaitFixture = (*memoryFixture)(nil)
+
+// AwaitScheduler implements parity.SchedulerWaitFixture.
+func (f *memoryFixture) AwaitScheduler(t *testing.T, slack time.Duration, what string, check func() (bool, string)) {
+	t.Helper()
+	fixtureutil.AwaitNodeScheduler(t, slack, what, check, f.logs)
 }
 
 // BaseURL implements parity.BackendFixture.
@@ -36,19 +53,26 @@ func (f *memoryFixture) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
-// NewNonAdminTenant implements parity.NonAdminTenantFixture — mints a
-// fresh JWT without ROLE_ADMIN for authz-negative parity scenarios.
-func (f *memoryFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
+// PlatformOperator implements parity.BackendFixture.
+func (f *memoryFixture) PlatformOperator(t *testing.T) parity.Tenant {
 	t.Helper()
-	return fixtureutil.MintNonAdminTenantJWT(t, f.keySet)
+	return fixtureutil.MintPlatformOperatorJWT(t, f.keySet)
 }
 
-// IsTxBoundAuditStore implements parity.TxBoundAuditFixture. The memory
-// backend writes audit events via the in-process bus before any
-// entity-update rollback runs, so a rolled-back entity write still
-// leaves its paired STATE_MACHINE_START + TRANSITION_ABORTED events
-// durable in the audit log.
-func (f *memoryFixture) IsTxBoundAuditStore() bool { return false }
+// StartComputeClient implements parity.ComputeClientFixture.
+func (f *memoryFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
+	t.Helper()
+	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+}
+
+var _ parity.FreshStackFixture = (*memoryFixture)(nil)
+
+// NewFreshStack implements parity.FreshStackFixture: a memory stack of its own
+// (the store is the process's).
+func (f *memoryFixture) NewFreshStack(t *testing.T, env map[string]string) parity.FreshStack {
+	t.Helper()
+	return fixtureutil.LaunchFreshStack(t, f.keySet, []string{"CYODA_STORAGE_BACKEND=memory"}, env)
+}
 
 // setup builds binaries, launches subprocesses, and waits for readiness.
 // It returns a teardown function that kills the subprocesses.
@@ -58,15 +82,8 @@ func setup() (*memoryFixture, func(), error) {
 		return nil, nil, err
 	}
 
-	result, cleanup, err := fixtureutil.LaunchCyodaAndCompute(ks, []string{
-		"CYODA_STORAGE_BACKEND=memory",
-		// Tuned down from the 1s production default so the
-		// scheduledtransition parity scenarios (e2e/parity/scheduledtransition)
-		// observe fires within a small, bounded poll window instead of
-		// needing multi-second timeouts. Harmless to every other parity
-		// scenario — an empty ScanDue is a cheap no-op query.
-		"CYODA_SCHEDULER_SCAN_INTERVAL=50ms",
-	})
+	result, cleanup, err := fixtureutil.LaunchCyodaAndCompute(ks,
+		append([]string{"CYODA_STORAGE_BACKEND=memory"}, fixtureutil.TunedServerEnv()...))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -75,6 +92,9 @@ func setup() (*memoryFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeCreds: fixtureutil.NewComputeCredentials(ks),
+		computeBin:   result.ComputeBin,
+		logs:         result.Logs,
 	}
 
 	return fix, cleanup, nil

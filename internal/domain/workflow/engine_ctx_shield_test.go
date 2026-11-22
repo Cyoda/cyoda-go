@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // TestFlushAndCommitSegment_ExpiredCtxBeforeCommit_FailsClosed is coverage row
@@ -15,7 +15,7 @@ import (
 // flushAndCommitSegment would commit TX_pre, the commit must not be attempted
 // at all — the segment stays uncommitted so a caller-side rollback produces
 // the spec D2 "nothing committed" guarantee. Routed through
-// ManualTransitionWithIfMatch (attemptTransition/fireTransition), NOT the
+// ManualTransition (attemptTransition/fireTransition), NOT the
 // cascade loop, so this isolates flushAndCommitSegment's own pre-commit check
 // from the separate check added to cascadeAutomated's loop head.
 func TestFlushAndCommitSegment_ExpiredCtxBeforeCommit_FailsClosed(t *testing.T) {
@@ -30,7 +30,7 @@ func TestFlushAndCommitSegment_ExpiredCtxBeforeCommit_FailsClosed(t *testing.T) 
 	defer cancel()
 	<-expiredCtx.Done() // deadline expires before the engine ever runs
 
-	_, err := h.engine.ManualTransitionWithIfMatch(expiredCtx, h.entity, "segment", "")
+	_, err := h.engine.ManualTransition(expiredCtx, h.entity, "segment", IfMatch{})
 	if err == nil {
 		t.Fatal("expected the pre-commit ctx check to fail the segment commit")
 	}
@@ -65,7 +65,7 @@ func TestFlushAndCommitSegment_CommitCtxInterrupted_WrapsErrCommitInterrupted(t 
 		return ctx.Err()
 	}
 
-	err := h.fireSegment(t, "")
+	err := h.fireSegment(t)
 	if err == nil {
 		t.Fatal("expected the interrupted commit to fail the segment transition")
 	}
@@ -87,7 +87,7 @@ func TestFlushAndCommitSegment_CommitCtxInterrupted_WrapsErrCommitInterrupted(t 
 // still live. By the time cascadeAutomated's loop reaches the next automated
 // transition, the SAME original deadline has genuinely elapsed — but the
 // cascade is now running on the post-CBD ctx (context.WithoutCancel-derived,
-// via commitAndBeginNextSegment), which carries no deadline of its own. The
+// via beginNextSegment), which carries no deadline of its own. The
 // cascade must continue to the entity's final state regardless.
 func TestCascadeAutomated_ExpiredOriginalDeadline_PostCBD_ContinuesToFinalState(t *testing.T) {
 	h := newSegmentGuardHarness(t, "memory")
@@ -112,14 +112,14 @@ func TestCascadeAutomated_ExpiredOriginalDeadline_PostCBD_ContinuesToFinalState(
 		return nil, nil
 	}
 
-	res, err := h.engine.Execute(shortCtx, h.entity, "")
+	res, err := h.engine.Execute(shortCtx, h.entity)
 	if err != nil {
 		t.Fatalf("cascade aborted despite running on the post-CBD (WithoutCancel) ctx: %v", err)
 	}
 	if h.entity.Meta.State != "C" {
 		t.Fatalf("cascade did not continue past the CBD segment to the final state: got %q", h.entity.Meta.State)
 	}
-	if res == nil || !res.Segmented {
+	if res == nil || res.FinalTxID == entryTxID {
 		t.Fatalf("test did not segment; it proves nothing: res=%+v", res)
 	}
 	if len(h.segmentTxIDs) == 0 || h.segmentTxIDs[len(h.segmentTxIDs)-1] == entryTxID {
@@ -142,7 +142,7 @@ func TestCascadeAutomated_PreCancelledCtx_ReturnsError(t *testing.T) {
 	cancelledCtx, cancel := context.WithCancel(entryCtx)
 	cancel()
 
-	_, err := h.engine.Execute(cancelledCtx, h.entity, "")
+	_, err := h.engine.Execute(cancelledCtx, h.entity)
 	if err == nil {
 		t.Fatal("expected cascadeAutomated to abort on a pre-cancelled ctx")
 	}

@@ -9,7 +9,8 @@ package e2e_test
 // Coverage:
 //   - Merge happy-path (field preserved, field changed).
 //   - Error preconditions: 415 (XML format), 415 (wrong Content-Type),
-//     428 (missing If-Match), 501 (json-patch+json), 412 (stale token).
+//     428 (missing or empty If-Match), 501 (json-patch+json), 412 (stale token),
+//     404 (unknown entity).
 //   - PATCH with a named transition (state advance + merge).
 //   - Merge-then-transition ordering: PATCH sets a field; a SYNC processor on
 //     the transition overwrites it. Processor value must win (full E2E,
@@ -24,14 +25,16 @@ import (
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // patchEntityRaw issues an authenticated PATCH request to path with the given
 // Content-Type, If-Match (non-empty), and body. It never touches *testing.T,
 // so it is safe to call from a goroutine.
 func patchEntityRaw(ctx context.Context, path, contentType, ifMatch, body string) (*http.Response, error) {
-	token, err := getTokenRaw(ctx, "testclient", "testsecret")
+	token, err := suiteTokenRaw()
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +66,7 @@ func patchEntity(t *testing.T, path, contentType, ifMatch, body string) *http.Re
 // If-Match header, used to exercise the 428 precondition-required path.
 func patchEntityNoIfMatch(t *testing.T, path, contentType, body string) *http.Response {
 	t.Helper()
-	token := getToken(t, "testclient", "testsecret")
+	token := suiteToken(t)
 	req, err := e2eNewRequest(t, http.MethodPatch, serverURL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("patchEntityNoIfMatch newRequest: %v", err)
@@ -85,7 +88,7 @@ func patchEntityNoIfMatch(t *testing.T, path, contentType, body string) *http.Re
 //  1. Merge happy-path: patch one field, assert the other is preserved.
 //  2. XML format → 415.
 //  3. Wrong Content-Type (application/json) → 415.
-//  4. Missing If-Match → 428.
+//  4. Missing If-Match → 428; an empty If-Match → 428, nothing changed.
 //  5. application/json-patch+json → 501.
 //  6. Stale If-Match token → 412.
 func TestE2E_EntityPatch_MergeAndPreconditions(t *testing.T) {
@@ -166,6 +169,24 @@ func TestE2E_EntityPatch_MergeAndPreconditions(t *testing.T) {
 		t.Errorf("missing If-Match: expected 428, got %d", r428.StatusCode)
 	}
 
+	// ── 4b. Empty If-Match → 428, nothing changed ─────────────────────────
+	// An empty value states no version; only "*" accepts last-writer-wins.
+	r428empty := patchEntity(t,
+		fmt.Sprintf("/api/entity/JSON/%s", entityID),
+		"application/merge-patch+json",
+		"",
+		`{"amount":77}`,
+	)
+	body428empty := readBody(t, r428empty)
+	if r428empty.StatusCode != http.StatusPreconditionRequired {
+		t.Errorf("empty If-Match: expected 428, got %d; body: %s", r428empty.StatusCode, body428empty)
+	} else {
+		assertErrorCode(t, body428empty, "PRECONDITION_REQUIRED")
+	}
+	if amt, _ := getEntityData(t, entityID, "")["amount"].(float64); amt != 31 {
+		t.Errorf("empty If-Match: amount changed to %v", amt)
+	}
+
 	// ── 5. application/json-patch+json → 501 ─────────────────────────────
 	r501 := patchEntity(t,
 		fmt.Sprintf("/api/entity/JSON/%s", entityID),
@@ -189,6 +210,25 @@ func TestE2E_EntityPatch_MergeAndPreconditions(t *testing.T) {
 	body412 := readBody(t, r412)
 	if r412.StatusCode != http.StatusPreconditionFailed {
 		t.Errorf("stale If-Match: expected 412, got %d; body: %s", r412.StatusCode, body412)
+	}
+
+	// ── 7. Unknown entity → 404 ENTITY_NOT_FOUND ──────────────────────────
+	unknownID := uuid.NewString()
+	r404 := patchEntity(t,
+		"/api/entity/JSON/"+unknownID,
+		"application/merge-patch+json",
+		"*",
+		`{"amount":1}`,
+	)
+	body404 := readBody(t, r404)
+	if r404.StatusCode != http.StatusNotFound || !strings.Contains(body404, "ENTITY_NOT_FOUND") {
+		t.Errorf("unknown entity: expected 404 ENTITY_NOT_FOUND, got %d; body: %s", r404.StatusCode, body404)
+	}
+	var problem404 struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(body404), &problem404); err != nil || problem404.Properties["entityId"] != unknownID {
+		t.Errorf("unknown entity: properties.entityId = %v, want %s; body: %s", problem404.Properties["entityId"], unknownID, body404)
 	}
 }
 
@@ -279,7 +319,7 @@ func TestE2E_EntityPatch_MergeOrdering_WithProcessor(t *testing.T) {
 			"states": {
 				"NONE":    {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "%s",
+					"processors": [{"type": "externalized", "name": "%s",
 						"executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},

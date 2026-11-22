@@ -10,18 +10,17 @@ import (
 // Exported so cmd/cyoda can share the same _FILE resolution (including
 // trailing-whitespace trim) without duplicating the logic.
 //
-// ResolveSecretEnv returns the value of the named env var, OR — if that
-// env var is empty and <name>_FILE is set — reads the value from the
-// file at the path given by <name>_FILE.
-//
-// Precedence: <name>_FILE wins if both are set (documented and tested).
-// The _FILE path is the canonical Docker/Kubernetes pattern for passing
-// credentials without exposing them in `env` output.
+// ResolveSecretEnv returns the contents of the file at the path given by
+// <name>_FILE when that env var is set, and otherwise the value of the
+// named env var. <name>_FILE wins whenever it is set, whatever <name>
+// holds. The _FILE path is the canonical Docker/Kubernetes pattern for
+// passing credentials without exposing them in `env` output.
 //
 // Trailing whitespace (spaces, tabs, \n, \r) is stripped from file
 // contents — safe for both DSN strings and multi-line PEM keys. A file
-// whose contents trim to empty is treated as unset (the caller's
-// normal downstream validation reports the real problem).
+// whose contents trim to empty yields an empty value, with no fallback
+// to <name>; the caller's normal downstream validation reports the
+// real problem.
 //
 // Errors: returned only when <name>_FILE points at a path that cannot
 // be read. Silent fallthrough to empty would let a typo'd path look

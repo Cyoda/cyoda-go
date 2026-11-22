@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // group_operator_not_arity_test.go pins Task 12 of the NOT-node plan: the
@@ -14,7 +14,7 @@ import (
 // two or more, is rejected as 400 INVALID_CONDITION — the same sentinel
 // (ErrInvalidCondition) every other structural rejection in this file wraps,
 // so it maps identically on every surface that funnels through these
-// validators (search.StructuralConditionErrCode / the criterion import
+// validators (search.ValidateConditionForModel / the criterion import
 // path's location-wrapped error).
 //
 // The check deliberately lives here, not in predicate.ParseCondition: a

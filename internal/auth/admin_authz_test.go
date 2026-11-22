@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // withNonAdminCtx attaches a UserContext holding only ROLE_USER.

@@ -4,7 +4,6 @@ title: "SEARCH_QUEUE_FULL — async-search submission was refused for capacity"
 stability: stable
 see_also:
   - errors
-  - errors.SEARCH_SHARD_TIMEOUT
   - errors.STORAGE_UNAVAILABLE
   - config
 ---
@@ -35,6 +34,5 @@ See `cyoda help config` (Search internals) for the variables.
 ## SEE ALSO
 
 - errors
-- errors.SEARCH_SHARD_TIMEOUT
 - errors.STORAGE_UNAVAILABLE
 - config

@@ -1,0 +1,34 @@
+-- The commit phase stamps audit events by (tenant_id, transaction_id)
+-- (TransactionManager.stampCommitInstant). The index 000001 created,
+-- idx_sm_events_tx, is (tenant_id, entity_id, transaction_id): entity_id sits
+-- between the two columns that WHERE constrains, and a B-tree can only use a
+-- leading prefix, so that index reduces the stamp to a scan of every audit row
+-- the tenant owns — on every commit, including a read-only one. This index
+-- makes it a lookup.
+--
+-- idx_sm_events_tx is kept, not replaced: it serves GetEventsByTransaction,
+-- which filters on all three columns and would lose its own index if this one
+-- took its place.
+--
+-- Lock profile, derived for THIS migration rather than restated from an earlier
+-- one: a plain CREATE INDEX takes SHARE on sm_audit_events for the duration of
+-- the build. SHARE conflicts with the ROW EXCLUSIVE every INSERT/UPDATE holds,
+-- so audit writers — which now includes the commit-phase stamp itself, i.e.
+-- every committing transaction — block until the build finishes. It does NOT
+-- conflict with ACCESS SHARE, so readers of the audit trail are unaffected
+-- throughout. That is the whole story here: unlike 000011 this migration
+-- neither drops nor renames anything, so no AccessExclusiveLock is taken at any
+-- point and no reader is ever blocked.
+--
+-- Not CONCURRENTLY, and splitting it into its own file does not change that:
+-- golang-migrate holds ONE session-level advisory lock for a migrator's entire
+-- Up() run, spanning every file in the batch. CONCURRENTLY's multi-phase build
+-- then waits for every other backend's in-flight statement, including a second
+-- node's migrator merely blocked trying to acquire that same advisory lock — a
+-- genuine cycle, reproduced deterministically by
+-- TestRunMigrateWithDSN_ConcurrentWithNodeBoot, and this project's primary
+-- deployment scenario is exactly two nodes racing to auto-migrate
+-- (.claude/rules/multi-node-primary.md). Blocking audit writers for one index
+-- build is acceptable pre-1.0; deadlocking a concurrent boot is not.
+CREATE INDEX IF NOT EXISTS idx_sm_events_tenant_tx
+    ON sm_audit_events (tenant_id, transaction_id);

@@ -12,9 +12,10 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // scopeTxMgr records lifecycle calls and the context each one arrived on.
@@ -29,24 +30,6 @@ type scopeTxMgr struct {
 	commitCtx  context.Context
 	onRollback func()
 	onCommit   func(ctx context.Context)
-
-	// events is an ordered trace of gate-relevant moments. The gate test
-	// asserts mutual exclusion by comparing this ordering, which is why
-	// "rollback-end" is recorded inside Rollback — Release still holds the
-	// per-tx gate at that point and only frees it once Rollback returns.
-	events []string
-}
-
-func (m *scopeTxMgr) record(ev string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.events = append(m.events, ev)
-}
-
-func (m *scopeTxMgr) trace() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return slices.Clone(m.events)
 }
 
 func (m *scopeTxMgr) Rollback(ctx context.Context, txID string) error {
@@ -59,8 +42,19 @@ func (m *scopeTxMgr) Rollback(ctx context.Context, txID string) error {
 	m.rbCtxErr = append(m.rbCtxErr, ctx.Err())
 	dl, _ := ctx.Deadline()
 	m.rbDeadline = append(m.rbDeadline, dl)
-	m.events = append(m.events, "rollback-end")
 	return nil
+}
+
+func (m *scopeTxMgr) rolledBackTxs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.rolledBack)
+}
+
+func (m *scopeTxMgr) committedTxs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.committed)
 }
 
 func (m *scopeTxMgr) Commit(ctx context.Context, txID string) error {
@@ -75,14 +69,80 @@ func (m *scopeTxMgr) Commit(ctx context.Context, txID string) error {
 }
 
 func newScopeHandler(m *scopeTxMgr) *Handler {
-	return &Handler{txMgr: m, gate: txgate.New()}
+	return &Handler{txMgr: m, coord: txcoord.New(m)}
+}
+
+// liveScope is an owned scope on a transaction of the memory plugin, whose
+// coordination can open callback scopes in it. Rollback and Commit are only
+// recorded (scopeTxMgr); the rest is the plugin's.
+type liveScope struct {
+	s       *txScope
+	m       *scopeTxMgr
+	userCtx context.Context
+}
+
+func newLiveScope(t *testing.T) *liveScope {
+	t.Helper()
+	f := memory.NewStoreFactory()
+	t.Cleanup(func() { _ = f.Close() })
+	f.NewTransactionManager(common.NewDefaultUUIDGenerator())
+	m := &scopeTxMgr{TransactionManager: f.GetTransactionManager()}
+	userCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "u1", Kind: spi.PrincipalUser, Tenant: spi.Tenant{ID: "tenant-a"},
+	})
+	txID, txCtx, err := m.Begin(userCtx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	return &liveScope{s: &txScope{h: newScopeHandler(m), ctx: txCtx, txID: txID, owned: true}, m: m, userCtx: userCtx}
+}
+
+// openCallback opens a callback scope in the transaction, under a callout the
+// owner made, as the join layer does for a joined request. end ends the scope
+// with o, then the callout.
+func (l *liveScope) openCallback(t *testing.T) (end func(o *common.Outcome)) {
+	t.Helper()
+	coord := l.s.h.coord
+	callout := "callout-" + l.s.txID
+	_, endCallout := coord.BeginCallout(l.s.ctx, l.s.txID, callout)
+	coord.Advance(callout, 1)
+	joined, err := l.m.Join(l.userCtx, l.s.txID)
+	if err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	sc, _, err := coord.Enter(joined, l.s.txID, []txcoord.Pair{{Callout: callout, Major: 1}}, txcoord.Write, 0)
+	if err != nil {
+		t.Fatalf("enter: %v", err)
+	}
+	return func(o *common.Outcome) {
+		sc.End(o)
+		endCallout()
+	}
+}
+
+// markRoot makes the transaction rollback-only as a failed joined write does.
+func (l *liveScope) markRoot(t *testing.T) {
+	t.Helper()
+	l.openCallback(t)(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+}
+
+// assertForgotten asserts the coordination holds nothing of the transaction:
+// a seal of it now is the seal of a transaction never seen, which a kept
+// marked transaction would refuse.
+func (l *liveScope) assertForgotten(t *testing.T) {
+	t.Helper()
+	finish, err := l.s.h.coord.Seal(l.userCtx, l.s.txID)
+	finish()
+	if err != nil {
+		t.Fatalf("the coordination still holds the transaction after its rollback: a new seal answered %v", err)
+	}
 }
 
 // TestTxScope_OwnedRelease_RollsBack — the base case the 40 deleted rollbackOwned
 // calls were doing by hand.
 func TestTxScope_OwnedRelease_RollsBack(t *testing.T) {
 	m := &scopeTxMgr{}
-	s := &txScope{h: newScopeHandler(m), entryTxID: "tx-1", ctx: context.Background(), txID: "tx-1", owned: true}
+	s := &txScope{h: newScopeHandler(m), ctx: context.Background(), txID: "tx-1", owned: true}
 	s.Release()
 	if len(m.rolledBack) != 1 || m.rolledBack[0] != "tx-1" {
 		t.Fatalf("owned scope did not roll back: %v", m.rolledBack)
@@ -93,24 +153,10 @@ func TestTxScope_OwnedRelease_RollsBack(t *testing.T) {
 // callback must never roll back the transaction its owner will commit.
 func TestTxScope_JoinedRelease_DoesNotRollBackOwnersTx(t *testing.T) {
 	m := &scopeTxMgr{}
-	s := &txScope{h: newScopeHandler(m), entryTxID: "tx-owner", ctx: context.Background(), txID: "tx-owner", owned: false}
+	s := &txScope{h: newScopeHandler(m), ctx: context.Background(), txID: "tx-owner", owned: false}
 	s.Release()
 	if len(m.rolledBack) != 0 {
 		t.Fatalf("joined scope rolled back the owner's transaction: %v", m.rolledBack)
-	}
-}
-
-// TestTxScope_JoinedRelease_RollsBackEngineOpenedSegment is coverage row 8b. A
-// joined call that unexpectedly segments holds a transaction that is nobody
-// else's — the engine opened it during this call. It is a can't-happen branch;
-// fail-closed says handle it anyway.
-func TestTxScope_JoinedRelease_RollsBackEngineOpenedSegment(t *testing.T) {
-	m := &scopeTxMgr{}
-	s := &txScope{h: newScopeHandler(m), entryTxID: "tx-owner", ctx: context.Background(), txID: "tx-owner", owned: false}
-	s.Advance(context.Background(), "tx-post")
-	s.Release()
-	if len(m.rolledBack) != 1 || m.rolledBack[0] != "tx-post" {
-		t.Fatalf("engine-opened segment leaked on a joined call: %v", m.rolledBack)
 	}
 }
 
@@ -139,7 +185,7 @@ func TestTxScope_Advance_IgnoresIncompleteSegment(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &scopeTxMgr{}
 			entryCtx := context.WithValue(context.Background(), scopeCtxKey{}, "entry")
-			s := &txScope{h: newScopeHandler(m), entryTxID: "tx-1", ctx: entryCtx, txID: "tx-1", owned: true}
+			s := &txScope{h: newScopeHandler(m), ctx: entryCtx, txID: "tx-1", owned: true}
 
 			s.Advance(tc.ctx, tc.txID)
 
@@ -164,27 +210,27 @@ func TestTxScope_Advance_IgnoresIncompleteSegment(t *testing.T) {
 // rollback here would be both meaningless and ungated.
 func TestTxScope_ReleaseWithoutSegment_IsNoOp(t *testing.T) {
 	m := &scopeTxMgr{}
-	s := &txScope{h: newScopeHandler(m), entryTxID: "", ctx: context.Background(), txID: "", owned: true}
+	s := &txScope{h: newScopeHandler(m), ctx: context.Background(), txID: "", owned: true}
 	s.Release()
 	if len(m.rolledBack) != 0 {
 		t.Fatalf("rolled back a scope that names no segment: %d rollback(s) %q", len(m.rolledBack), m.rolledBack)
 	}
 }
 
-// TestTxScope_Release_GateWaitDoesNotConsumeRollbackBudget pins the ordering
+// TestTxScope_Release_SealWaitDoesNotConsumeRollbackBudget pins the ordering
 // common.RollbackContext documents: the budget "bounds the Rollback call
 // itself. It does NOT bound the wait to reach it". Deriving the deadline before
-// acquiring the gate would charge the queue against the rollback, and a rollback
-// handed an already-expired context fails — on postgres destroying the pooled
-// connection instead of returning it.
+// the seal would charge the seal's wait for a callback in progress against the
+// rollback, and a rollback handed an already-expired context fails — on
+// postgres destroying the pooled connection instead of returning it.
 //
-// Deterministic by construction, not by timing: the test stamps gateFreedAt
-// before it frees the gate, so a deadline derived AFTER the acquire is
-// necessarily at least a full budget past that stamp, while one derived before
-// the acquire is necessarily short by however long the gate was held.
-func TestTxScope_Release_GateWaitDoesNotConsumeRollbackBudget(t *testing.T) {
-	m := &scopeTxMgr{}
-	h := newScopeHandler(m)
+// Deterministic by construction, not by timing: the test stamps scopeEndedAt
+// before it ends the callback scope the seal waits for, so a deadline derived
+// AFTER the seal is necessarily at least a full budget past that stamp, while
+// one derived before the seal is necessarily short by however long the scope
+// stayed open.
+func TestTxScope_Release_SealWaitDoesNotConsumeRollbackBudget(t *testing.T) {
+	l := newLiveScope(t)
 
 	// Read the budget off RollbackContext itself rather than restating it.
 	// Measuring it after the fact under-reports slightly, which only widens the
@@ -194,30 +240,28 @@ func TestTxScope_Release_GateWaitDoesNotConsumeRollbackBudget(t *testing.T) {
 	probeCancel()
 	budget := time.Until(probeDeadline)
 
-	s := &txScope{h: h, entryTxID: "tx-1", ctx: context.Background(), txID: "tx-1", owned: true}
-
-	release := h.gate.Acquire("tx-1")
+	endCallback := l.openCallback(t)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.Release()
+		l.s.Release()
 	}()
 
-	// Wait until Release is provably parked on the gate — observed, not slept.
-	waitForGateContention(t, done)
-	// Hold it a little longer so a deadline derived before the acquire is
+	// Wait until Release is provably parked in the seal — observed, not slept.
+	waitForSealWait(t, done)
+	// Hold it a little longer so a deadline derived before the seal is
 	// unambiguously short, rather than short by a clock tick.
 	time.Sleep(50 * time.Millisecond)
 
-	gateFreedAt := time.Now()
-	release()
+	scopeEndedAt := time.Now()
+	endCallback(nil)
 	<-done
 
-	if len(m.rbDeadline) != 1 {
-		t.Fatalf("expected exactly one rollback, got %d", len(m.rbDeadline))
+	if len(l.m.rbDeadline) != 1 {
+		t.Fatalf("expected exactly one rollback, got %d", len(l.m.rbDeadline))
 	}
-	if got := m.rbDeadline[0].Sub(gateFreedAt); got < budget {
-		t.Fatalf("rollback budget consumed by the gate wait: %v left after the gate freed, want the full %v", got, budget)
+	if got := l.m.rbDeadline[0].Sub(scopeEndedAt); got < budget {
+		t.Fatalf("rollback budget consumed by the seal's wait: %v left after the scope ended, want the full %v", got, budget)
 	}
 }
 
@@ -234,7 +278,7 @@ func TestTxScope_ReleaseAfterCommit_IsNoOp(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &scopeTxMgr{commitErr: tc.commitErr}
-			s := &txScope{h: newScopeHandler(m), entryTxID: "tx-1", ctx: context.Background(), txID: "tx-1", owned: true}
+			s := &txScope{h: newScopeHandler(m), ctx: context.Background(), txID: "tx-1", owned: true}
 			_ = s.Commit()
 			s.Release()
 			if len(m.rolledBack) != 0 {
@@ -256,7 +300,7 @@ func TestTxScope_Commit_PreCommitCheckFailsClosed(t *testing.T) {
 	defer cancel()
 	<-ctx.Done() // deadline expires before commit
 
-	s := &txScope{h: h, entryTxID: "tx-1", ctx: ctx, txID: "tx-1", owned: true}
+	s := &txScope{h: h, ctx: ctx, txID: "tx-1", owned: true}
 	err := s.Commit()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want DeadlineExceeded from pre-commit check, got %v", err)
@@ -282,7 +326,7 @@ func TestTxScope_Commit_Joined_SkipsPreCommitCheck(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	s := &txScope{h: h, entryTxID: "tx-owner", ctx: ctx, txID: "tx-owner", owned: false}
+	s := &txScope{h: h, ctx: ctx, txID: "tx-owner", owned: false}
 	if err := s.Commit(); err != nil {
 		t.Fatalf("joined Commit must stay a no-op regardless of ctx state, got %v", err)
 	}
@@ -320,7 +364,7 @@ func TestTxScope_Commit_RunsOnShieldedCtx(t *testing.T) {
 		}
 	}
 
-	s := &txScope{h: h, entryTxID: "tx-1", ctx: reqCtx, txID: "tx-1", owned: true}
+	s := &txScope{h: h, ctx: reqCtx, txID: "tx-1", owned: true}
 	if err := s.Commit(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -335,7 +379,7 @@ func TestTxScope_ReleaseOnCancelledContext_StillRollsBack(t *testing.T) {
 	m := &scopeTxMgr{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := &txScope{h: newScopeHandler(m), entryTxID: "tx-1", ctx: ctx, txID: "tx-1", owned: true}
+	s := &txScope{h: newScopeHandler(m), ctx: ctx, txID: "tx-1", owned: true}
 	s.Release()
 	if len(m.rolledBack) != 1 {
 		t.Fatalf("cancelled request abandoned its transaction: %v", m.rolledBack)
@@ -345,61 +389,93 @@ func TestTxScope_ReleaseOnCancelledContext_StillRollsBack(t *testing.T) {
 	}
 }
 
-// TestTxScope_Release_HoldsTheGate is coverage row 8. Ten of the rollbacks this
-// replaces ran inside h.gate.Acquire today; the property that must survive is
-// mutual exclusion on the underlying transaction handle.
-//
-// The assertion is an event ordering, not a sleep. A competing acquirer is
-// launched from inside the rollback, and the rollback does not return until that
-// competitor has reached a decided outcome: either it is parked inside
-// txgate.Acquire (the gate is held — correct), or it walked straight through
-// (the gate is not held — the defect). Both outcomes are observed, never waited
-// out, so "competitor-acquired" lands after "rollback-end" if and only if
-// Release held the gate across the whole rollback.
-func TestTxScope_Release_HoldsTheGate(t *testing.T) {
-	h := newScopeHandler(nil)
-	acquired := make(chan struct{})
+// TestTxScope_Release_WaitsForTheCallbackInProgress: the rollback does not
+// run under a callback scope still in progress — the seal it starts with waits
+// for the scope to end. That is what keeps a joined request's writes and the
+// owner's rollback apart now that the owner takes no gate.
+func TestTxScope_Release_WaitsForTheCallbackInProgress(t *testing.T) {
+	l := newLiveScope(t)
+	endCallback := l.openCallback(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		l.s.Release()
+	}()
 
-	var m *scopeTxMgr
-	m = &scopeTxMgr{onRollback: func() {
-		m.record("rollback-start")
-		started := make(chan struct{})
-		go func() {
-			close(started)
-			release := h.gate.Acquire("tx-1")
-			m.record("competitor-acquired")
-			release()
-			close(acquired)
-		}()
-		<-started
-		waitForGateContention(t, acquired)
-	}}
-	h.txMgr = m
+	waitForSealWait(t, done)
+	if got := l.m.rolledBackTxs(); len(got) != 0 {
+		t.Fatalf("rolled back %v under a callback scope still in progress", got)
+	}
+	endCallback(nil)
+	<-done
+	if got := l.m.rolledBackTxs(); len(got) != 1 || got[0] != l.s.txID {
+		t.Fatalf("rolled back %v after the scope ended; want %s once", got, l.s.txID)
+	}
+	l.assertForgotten(t)
+}
 
-	s := &txScope{h: h, entryTxID: "tx-1", ctx: context.Background(), txID: "tx-1", owned: true}
-	s.Release()
-	<-acquired
+// TestTxScope_RefusedSeal_RollsBackAndForgets: a joined write failed, so the
+// seal refuses with 409 TRANSACTION_ROLLBACK_ONLY. Commit gives that refusal
+// without committing, the deferred Release rolls back, and the coordination
+// holds nothing of the transaction afterwards.
+func TestTxScope_RefusedSeal_RollsBackAndForgets(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sealedBy func(*txScope) error
+	}{
+		{"seal before the final writes", func(s *txScope) error { return s.Seal() }},
+		{"commit without a seal of its own", func(s *txScope) error { return s.Commit() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newLiveScope(t)
+			l.markRoot(t)
 
-	want := []string{"rollback-start", "rollback-end", "competitor-acquired"}
-	if got := m.trace(); !slices.Equal(got, want) {
-		t.Fatalf("Release rolled back without holding the per-tx gate: events = %v, want %v", got, want)
+			err := tc.sealedBy(l.s)
+			var appErr *common.AppError
+			if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeTransactionRollbackOnly {
+				t.Fatalf("err = %v; want TRANSACTION_ROLLBACK_ONLY", err)
+			}
+			if err := l.s.Commit(); !errors.As(err, &appErr) || appErr.Code != common.ErrCodeTransactionRollbackOnly {
+				t.Fatalf("Commit after the refused seal = %v; want the seal's TRANSACTION_ROLLBACK_ONLY", err)
+			}
+			if got := l.m.committedTxs(); len(got) != 0 {
+				t.Fatalf("committed %v although the seal refused", got)
+			}
+			l.s.Release()
+			if got := l.m.rolledBackTxs(); len(got) != 1 || got[0] != l.s.txID {
+				t.Fatalf("rolled back %v; want %s once", got, l.s.txID)
+			}
+			l.assertForgotten(t)
+		})
 	}
 }
 
-// waitForGateContention returns once a goroutine is provably parked on a mutex
-// inside txgate.Registry.Acquire, or once acquired fires — meaning no gate was
-// held and the competitor walked in, which the caller's ordering assertion then
-// reports. Polling the goroutine dump is what removes the sleep: the caller
-// resumes on an observed state, not on elapsed time. The deadline is a
-// last-resort guard against a runtime symbol rename silently turning this into
-// a hang, not a timing assumption.
-func waitForGateContention(t *testing.T, acquired <-chan struct{}) {
+// TestTxScope_JoinedSeal_IsNoOp: a joined scope does not seal the owner's
+// transaction — it would wait for its own scope — and so is not refused by a
+// mark either: the join layer's scope answers for the request.
+func TestTxScope_JoinedSeal_IsNoOp(t *testing.T) {
+	l := newLiveScope(t)
+	l.markRoot(t)
+	joined := &txScope{h: l.s.h, ctx: l.s.ctx, txID: l.s.txID, owned: false}
+	if err := joined.Seal(); err != nil {
+		t.Fatalf("joined Seal = %v; want nil", err)
+	}
+}
+
+// waitForSealWait returns once a goroutine is provably parked in txcoord's
+// Seal, waiting for a callback scope to end, or once done fires, meaning the
+// seal did not wait — which the caller's assertions then report. Polling the
+// goroutine dump is what removes the sleep: the caller resumes on an observed
+// state, not on elapsed time. The deadline is a last-resort guard against a
+// runtime symbol rename silently turning this into a hang, not a timing
+// assumption.
+func waitForSealWait(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	buf := make([]byte, 1<<16)
 	for {
 		select {
-		case <-acquired:
+		case <-done:
 			return
 		default:
 		}
@@ -413,15 +489,12 @@ func waitForGateContention(t *testing.T, acquired <-chan struct{}) {
 			buf = make([]byte, 2*len(buf))
 		}
 		for _, g := range strings.Split(dump, "\n\n") {
-			if !strings.Contains(g, "txgate.(*Registry).Acquire") {
-				continue
-			}
-			if strings.Contains(g, "sync.runtime_SemacquireMutex") || strings.Contains(g, "sync.(*Mutex).lockSlow") {
+			if strings.Contains(g, "txcoord.(*inProcess).Seal") && strings.Contains(g, "[chan receive") {
 				return
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Errorf("no goroutine parked in txgate.Acquire within 10s; dump:\n%s", dump)
+			t.Errorf("no goroutine parked in txcoord's Seal within 10s; dump:\n%s", dump)
 			return
 		}
 		runtime.Gosched()
@@ -470,3 +543,64 @@ type stubUnavailable struct{}
 
 func (stubUnavailable) Error() string            { return "acquire timed out: " + stubUnavailableDSN }
 func (stubUnavailable) StorageUnavailable() bool { return true }
+
+// suMarked is a storage plugin's marker for a transient outage.
+type suMarked struct{}
+
+func (suMarked) Error() string            { return "the session ended" }
+func (suMarked) StorageUnavailable() bool { return true }
+
+// TestClassifyCommitErr: what a refused seal or a failed commit answers. The
+// seal's own refusal passes through; a lost race and a first-committer-wins
+// refusal are the retryable 409; a transaction broken by a dead session keeps
+// the storage plugin's retryable 503; anything else is a 500.
+func TestClassifyCommitErr(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		status    int
+		code      string
+		retryable bool
+	}{
+		{"rollback-only", common.TransactionRollbackOnly(common.ErrCodeWorkflowFailed), http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false},
+		{"lost race", fmt.Errorf("the transaction lost a write race: %w", spi.ErrTxAborted), http.StatusConflict, common.ErrCodeConflict, true},
+		{"commit conflict", fmt.Errorf("commit: %w", spi.ErrConflict), http.StatusConflict, common.ErrCodeConflict, true},
+		{"broken by a dead session", fmt.Errorf("the transaction is unusable: %w", suMarked{}), http.StatusServiceUnavailable, common.ErrCodeStorageUnavailable, true},
+		{"anything else", errors.New("disk on fire"), http.StatusInternalServerError, common.ErrCodeServerError, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyCommitErr(tc.err)
+			if got.Status != tc.status || got.Code != tc.code || got.Retryable != tc.retryable {
+				t.Fatalf("classifyCommitErr = %d %s retryable=%t; want %d %s retryable=%t", got.Status, got.Code, got.Retryable, tc.status, tc.code, tc.retryable)
+			}
+		})
+	}
+}
+
+// TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn: a transaction broken by a
+// dead session carries, deep in its cause, the answer the joined request that
+// met it was given. The owner classifies the cause — its own retryable 503 —
+// and never returns that request's answer as its own. The shape is the one
+// Seal returns (txcoord: "unusable: %w" around sessionEnded's "session has
+// ended: %w" around the joined request's answered error).
+func TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		joined *common.AppError
+	}{
+		{"the joined request's own 503", common.Internal("joined read failed", suMarked{})},
+		{"a joined answer of another code", common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity id=e1 not found").WithCause(suMarked{})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broken := fmt.Errorf("the transaction is unusable: %w",
+				fmt.Errorf("the transaction's session has ended: %w", tc.joined))
+			got := classifyCommitErr(broken)
+			if got == tc.joined {
+				t.Fatal("the owner answered the joined request's own error")
+			}
+			if got.Status != http.StatusServiceUnavailable || got.Code != common.ErrCodeStorageUnavailable || !got.Retryable {
+				t.Fatalf("classifyCommitErr = %d %s retryable=%t (%s); want the retryable 503 STORAGE_UNAVAILABLE", got.Status, got.Code, got.Retryable, got.Message)
+			}
+		})
+	}
+}

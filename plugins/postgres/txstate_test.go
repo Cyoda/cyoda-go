@@ -1,18 +1,21 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // TestNewTxState_ZeroValue verifies that a freshly constructed txState has
 // the expected tenantID and empty/nil collections.
 func TestNewTxState_ZeroValue(t *testing.T) {
 	tid := spi.TenantID("tenant-1")
-	s := newTxState(tid)
+	s := newTxState(tid, 1)
 
 	if s.tenantID != tid {
 		t.Errorf("tenantID = %q, want %q", s.tenantID, tid)
@@ -37,7 +40,7 @@ func TestNewTxState_ZeroValue(t *testing.T) {
 // TestRecordRead_FirstReadWins verifies that the first read version is
 // captured and a subsequent read of the same entity is ignored.
 func TestRecordRead_FirstReadWins(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	s.RecordRead("e1", 7) // should be ignored
 	if got := s.readSet["e1"]; got != 5 {
@@ -51,7 +54,7 @@ func TestRecordRead_FirstReadWins(t *testing.T) {
 // TestRecordRead_SkipIfWritten verifies that RecordRead is a no-op when the
 // entity is already in writeSet.
 func TestRecordRead_SkipIfWritten(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.writeSet["e1"] = 3 // pre-populate directly
 	s.RecordRead("e1", 7)
 	if _, ok := s.readSet["e1"]; ok {
@@ -65,7 +68,7 @@ func TestRecordRead_SkipIfWritten(t *testing.T) {
 // TestRecordRead_MultipleEntities verifies that distinct entities are
 // recorded independently.
 func TestRecordRead_MultipleEntities(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 1)
 	s.RecordRead("e2", 2)
 	s.RecordRead("e3", 3)
@@ -86,7 +89,7 @@ func TestRecordRead_MultipleEntities(t *testing.T) {
 // TestRecordWrite_FirstWriteWins verifies that the first write version is
 // kept and subsequent writes of the same entity are ignored.
 func TestRecordWrite_FirstWriteWins(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordWrite("e1", 5)
 	s.RecordWrite("e1", 7) // should be ignored
 	if got := s.writeSet["e1"]; got != 5 {
@@ -101,7 +104,7 @@ func TestRecordWrite_FirstWriteWins(t *testing.T) {
 // readSet is promoted to writeSet using the readSet's captured version
 // and removed from readSet.
 func TestRecordWrite_PromotesFromReadSet(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	s.RecordWrite("e1", 5)
 	if _, ok := s.readSet["e1"]; ok {
@@ -115,7 +118,7 @@ func TestRecordWrite_PromotesFromReadSet(t *testing.T) {
 // TestRecordWrite_FreshInsertZero verifies that a fresh insert (version 0)
 // is recorded in writeSet with value 0.
 func TestRecordWrite_FreshInsertZero(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordWrite("e1", 0)
 	if got, ok := s.writeSet["e1"]; !ok || got != 0 {
 		t.Errorf("writeSet[e1] = %d (ok=%v), want 0 and present", got, ok)
@@ -125,7 +128,7 @@ func TestRecordWrite_FreshInsertZero(t *testing.T) {
 // TestValidateReadSet_AllMatch verifies that no error is returned when all
 // readSet entities match the current snapshot.
 func TestValidateReadSet_AllMatch(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	s.RecordRead("e2", 10)
 	current := map[string]int64{"e1": 5, "e2": 10, "e3": 99}
@@ -137,7 +140,7 @@ func TestValidateReadSet_AllMatch(t *testing.T) {
 // TestValidateReadSet_VersionMismatch verifies that a version mismatch
 // returns an error containing the entity ID.
 func TestValidateReadSet_VersionMismatch(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	current := map[string]int64{"e1": 6}
 	err := s.ValidateReadSet(current)
@@ -152,7 +155,7 @@ func TestValidateReadSet_VersionMismatch(t *testing.T) {
 // TestValidateReadSet_MissingEntity verifies that a deleted entity (absent
 // from current snapshot) returns an error.
 func TestValidateReadSet_MissingEntity(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	current := map[string]int64{}
 	err := s.ValidateReadSet(current)
@@ -168,7 +171,7 @@ func TestValidateReadSet_MissingEntity(t *testing.T) {
 // independent copies of readSet and writeSet (mutations after push don't
 // affect the snapshot).
 func TestPushSavepoint_DeepCopiesSets(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	s.RecordWrite("e2", 10)
 	s.PushSavepoint("sp1")
@@ -200,7 +203,7 @@ func TestPushSavepoint_DeepCopiesSets(t *testing.T) {
 // readSet and writeSet to the snapshot and that the savepoint itself is
 // preserved (postgres ROLLBACK TO SAVEPOINT semantics).
 func TestRestoreSavepoint_RestoresSets(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	s.PushSavepoint("sp1")
 
@@ -229,7 +232,7 @@ func TestRestoreSavepoint_RestoresSets(t *testing.T) {
 // TestRestoreSavepoint_TrimsLaterSavepoints verifies that restoring sp1
 // trims sp2 (which was pushed after sp1) but keeps sp1.
 func TestRestoreSavepoint_TrimsLaterSavepoints(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.PushSavepoint("sp1")
 	s.RecordRead("e1", 1)
 	s.PushSavepoint("sp2")
@@ -250,7 +253,7 @@ func TestRestoreSavepoint_TrimsLaterSavepoints(t *testing.T) {
 // TestReleaseSavepoint_DropsEntryKeepsWork verifies that ReleaseSavepoint
 // removes the savepoint entry but leaves the current readSet/writeSet intact.
 func TestReleaseSavepoint_DropsEntryKeepsWork(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.PushSavepoint("sp1")
 	s.RecordRead("e1", 5)
 	s.RecordWrite("e2", 10)
@@ -271,10 +274,33 @@ func TestReleaseSavepoint_DropsEntryKeepsWork(t *testing.T) {
 	}
 }
 
+// TestReleaseSavepoint_DropsLaterSavepoints verifies that releasing a
+// savepoint destroys every savepoint taken after it (SQL RELEASE) and keeps
+// the earlier ones.
+func TestReleaseSavepoint_DropsLaterSavepoints(t *testing.T) {
+	s := newTxState("t1", 1)
+	s.PushSavepoint("sp0")
+	s.PushSavepoint("sp1")
+	s.PushSavepoint("sp2")
+
+	if err := s.ReleaseSavepoint("sp1"); err != nil {
+		t.Fatalf("ReleaseSavepoint: %v", err)
+	}
+	if !s.HasSavepoint("sp0") {
+		t.Error("sp0 (earlier) must survive the release")
+	}
+	if s.HasSavepoint("sp1") || s.HasSavepoint("sp2") {
+		t.Error("sp1 and sp2 must be destroyed by releasing sp1")
+	}
+	if err := s.ReleaseSavepoint("sp2"); !errors.Is(err, spi.ErrSavepointNotFound) {
+		t.Errorf("release of destroyed sp2 = %v, want ErrSavepointNotFound", err)
+	}
+}
+
 // TestRestoreSavepoint_Unknown verifies that restoring an unknown savepoint
 // returns spi.ErrSavepointNotFound.
 func TestRestoreSavepoint_Unknown(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	err := s.RestoreSavepoint("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for unknown savepoint, got nil")
@@ -287,7 +313,7 @@ func TestRestoreSavepoint_Unknown(t *testing.T) {
 // TestReleaseSavepoint_Unknown verifies that releasing an unknown savepoint
 // returns spi.ErrSavepointNotFound.
 func TestReleaseSavepoint_Unknown(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	err := s.ReleaseSavepoint("bogus")
 	if err == nil {
 		t.Fatal("expected error for unknown savepoint, got nil")
@@ -297,17 +323,17 @@ func TestReleaseSavepoint_Unknown(t *testing.T) {
 	}
 }
 
-// TestRestoreSavepoint_ClearsTheAbortCause — a savepoint rollback is what makes
-// an aborted PostgreSQL transaction usable again, so it also has to discard the
-// reason it was aborted.
+// TestRestoreSavepoint_ClearsACeilingCause — a savepoint rollback is what makes
+// an aborted PostgreSQL transaction usable again, so it also has to discard a
+// ceiling that aborted it.
 //
 // Left set, a ceiling recorded inside the savepoint outlives the rollback that
 // undid it, and the NEXT abort — a genuine serialization failure, say — is
 // reported as that stale ceiling instead of as the conflict it is. Commit reads
 // AbortCause unconditionally, so the retryable 409 a concurrent committer earns
 // would silently become a 500.
-func TestRestoreSavepoint_ClearsTheAbortCause(t *testing.T) {
-	s := newTxState("tenant-1")
+func TestRestoreSavepoint_ClearsACeilingCause(t *testing.T) {
+	s := newTxState("tenant-1", 1)
 	s.PushSavepoint("sp-1")
 
 	s.RecordAbort(errors.New("canceling statement due to statement timeout (SQLSTATE 57014)"))
@@ -327,7 +353,7 @@ func TestRestoreSavepoint_ClearsTheAbortCause(t *testing.T) {
 // TestRestoreSavepoint_LeavesALaterAbortRecordable — clearing must not latch the
 // state closed: an abort after the rollback is a new one, and Commit needs it.
 func TestRestoreSavepoint_LeavesALaterAbortRecordable(t *testing.T) {
-	s := newTxState("tenant-1")
+	s := newTxState("tenant-1", 1)
 	s.PushSavepoint("sp-1")
 	s.RecordAbort(errors.New("first"))
 	if err := s.RestoreSavepoint("sp-1"); err != nil {
@@ -337,5 +363,92 @@ func TestRestoreSavepoint_LeavesALaterAbortRecordable(t *testing.T) {
 	s.RecordAbort(errors.New("second"))
 	if cause := s.AbortCause(); cause == nil || cause.Error() != "second" {
 		t.Fatalf("AbortCause = %v, want the abort raised after the restore", cause)
+	}
+}
+
+// TestRestoreSavepoint_KeepsAConflictCause — a concurrent writer that won
+// against the transaction is not undone by rolling back the losing statement:
+// a conflict anywhere in the transaction is a conflict of the transaction, and
+// Commit reads the kept cause to refuse it.
+func TestRestoreSavepoint_KeepsAConflictCause(t *testing.T) {
+	s := newTxState("tenant-1", 1)
+	s.PushSavepoint("sp-1")
+	conflict := &pgconn.PgError{Code: pgerrcode.SerializationFailure}
+	s.RecordAbort(conflict)
+
+	if err := s.RestoreSavepoint("sp-1"); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if cause := s.AbortCause(); !errors.Is(cause, conflict) {
+		t.Fatalf("AbortCause = %v, want the conflict kept across the savepoint rollback", cause)
+	}
+}
+
+// TestRecordWrittenEntity_LastWriteAndSavepoints verifies the record of the
+// entities a transaction wrote: it holds each entity's last write — the model
+// and bytes of a save, or a delete — keeps the given bytes without copying
+// them (the caller hands over a copy it owns), and is restored by a savepoint
+// rollback and kept by a release.
+func TestRecordWrittenEntity_LastWriteAndSavepoints(t *testing.T) {
+	s := newTxState("tenant-1", 1)
+	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
+	data := []byte(`{"code":"x"}`)
+	s.RecordSave("a", ref, data)
+	if got := s.WrittenEntities()["a"]; &got.data[0] != &data[0] || got.ref != ref || got.deleted {
+		t.Fatalf("recorded save = %+v, want the given bytes and model, not a delete", got)
+	}
+
+	s.PushSavepoint("sp1")
+	s.RecordSave("a", ref, []byte(`{"code":"y"}`))
+	s.RecordDelete("b")
+	got := s.WrittenEntities()
+	if string(got["a"].data) != `{"code":"y"}` || !got["b"].deleted || len(got) != 2 {
+		t.Fatalf("after the writes: %+v, want a's last save and b's delete", got)
+	}
+	if err := s.RestoreSavepoint("sp1"); err != nil {
+		t.Fatalf("RestoreSavepoint: %v", err)
+	}
+	got = s.WrittenEntities()
+	if _, ok := got["b"]; ok || string(got["a"].data) != `{"code":"x"}` {
+		t.Fatalf("after the rollback: %+v, want only a's write before the savepoint", got)
+	}
+
+	s.PushSavepoint("sp2")
+	s.RecordDelete("c")
+	if err := s.ReleaseSavepoint("sp2"); err != nil {
+		t.Fatalf("ReleaseSavepoint: %v", err)
+	}
+	if !s.WrittenEntities()["c"].deleted {
+		t.Fatal("a released savepoint dropped the write made after it")
+	}
+
+	t.Log("a save of no data is a save, not a delete")
+	s.RecordSave("d", ref, nil)
+	if got := s.WrittenEntities()["d"]; got.deleted || got.ref != ref {
+		t.Fatalf("a save of nil data = %+v, want a save of %s", got, ref)
+	}
+}
+
+// TestRecordWrite_MissingState_Answers verifies the answer to a write recorded
+// for a transaction this manager holds no state for: ErrTxAlreadyCommitted
+// once it committed — as a statement on it answers (deadTxQuerier) — and
+// ErrTxNotFound otherwise.
+func TestRecordWrite_MissingState_Answers(t *testing.T) {
+	tm := &TransactionManager{
+		submitTimes: map[string]submitTimeEntry{"tx-committed": {}},
+		txStates:    map[string]*txState{},
+	}
+	ref := spi.ModelRef{EntityName: "M", ModelVersion: "1"}
+	for txID, want := range map[string]error{
+		"tx-committed": spi.ErrTxAlreadyCommitted,
+		"tx-unknown":   spi.ErrTxNotFound,
+	} {
+		ctx := spi.WithTransaction(context.Background(), &spi.TransactionState{ID: txID})
+		if err := tm.recordSave(ctx, "e1", ref, []byte(`{}`)); !errors.Is(err, want) {
+			t.Errorf("recordSave on %s = %v, want %v", txID, err, want)
+		}
+		if err := tm.recordDelete(ctx, "e1"); !errors.Is(err, want) {
+			t.Errorf("recordDelete on %s = %v, want %v", txID, err, want)
+		}
 	}
 }

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 // ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ import (
 
 const intxTrackingTenant = "test-tenant"
 
-// intxTenantCtx builds a background context carrying the bootstrap tenant's
+// intxTenantCtx builds a background context carrying the suite tenant's
 // user context, matching the tenant that createEntityE2E writes under so the
 // in-process store/search sees the same rows.
 func intxTenantCtx() context.Context {
@@ -53,7 +53,7 @@ func intxTenantCtx() context.Context {
 		UserID:   "test-admin",
 		UserName: "Test Admin",
 		Tenant:   spi.Tenant{ID: intxTrackingTenant, Name: intxTrackingTenant},
-		Roles:    []string{"ROLE_ADMIN"},
+		Roles:    []string{"ROLE_ADMIN", "ROLE_M2M"},
 	})
 }
 

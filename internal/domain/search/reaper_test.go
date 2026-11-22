@@ -16,23 +16,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // newReclaimTestService builds a memory-backed SearchService with a bounded
 // pool so the reclaim sweep can actually re-execute a claimed job end to end.
 // The pool is drained at cleanup so no worker goroutines outlive the test.
-func newReclaimTestService(t *testing.T) (*search.SearchService, *memory.StoreFactory, spi.AsyncSearchStore) {
+func newReclaimTestService(t *testing.T) (*search.SearchService, *memory.StoreFactory, spi.AsyncSearchStore, *memory.TestClock) {
 	t.Helper()
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	store, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -40,17 +44,18 @@ func newReclaimTestService(t *testing.T) (*search.SearchService, *memory.StoreFa
 	}
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
-	return svc, factory, store
+	return svc, factory, store, clock
 }
 
-// createStaleReclaimJob persists a RUNNING job whose CreateTime is an hour in
-// the past (so it is stale against any staleAfter well under an hour) and no
-// heartbeat, with the condition and options envelope SubmitAsync itself
-// persists — so decodeStoredJob can reconstruct and re-run it.
-func createStaleReclaimJob(t *testing.T, store spi.AsyncSearchStore, tenant spi.TenantID, id string, ref spi.ModelRef, cond predicate.Condition, pit time.Time) {
+// createStaleReclaimJob persists a RUNNING job, then ages the store's clock an
+// hour so the job is stale against any staleAfter well under an hour: the store
+// stamps the job's heartbeat at creation and judges staleness from it alone.
+// The condition and options envelope are the ones SubmitAsync itself persists,
+// so decodeStoredJob can reconstruct and re-run it.
+func createStaleReclaimJob(t *testing.T, clock *memory.TestClock, store spi.AsyncSearchStore, tenant spi.TenantID, id string, ref spi.ModelRef, cond predicate.Condition, pit time.Time) {
 	t.Helper()
 	condJSON, err := json.Marshal(cond)
 	if err != nil {
@@ -71,18 +76,19 @@ func createStaleReclaimJob(t *testing.T, store spi.AsyncSearchStore, tenant spi.
 		ModelRef:   ref,
 		Condition:  condJSON,
 		SearchOpts: optsJSON,
-		CreateTime: time.Now().Add(-time.Hour),
+		CreateTime: clock.Now(),
 	}
 	if err := store.CreateJob(tenantCtx(string(tenant)), job); err != nil {
 		t.Fatalf("CreateJob(%s): %v", id, err)
 	}
+	clock.Advance(time.Hour)
 }
 
 // (a) a stale job with StaleClaims below the attempt cap is re-enqueued and
 // runs to SUCCESSFUL on this node — a crashed node's job is completed by a
 // live node, not failed.
 func TestReclaimStaleJobs_ReenqueuesStaleJobToSuccessful(t *testing.T) {
-	svc, factory, store := newReclaimTestService(t)
+	svc, factory, store, clock := newReclaimTestService(t)
 	ctx := tenantCtx("tenant-a")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
@@ -91,14 +97,14 @@ func TestReclaimStaleJobs_ReenqueuesStaleJobToSuccessful(t *testing.T) {
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob"}`))
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	createStaleReclaimJob(t, store, "tenant-a", "job-stale", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, store, "tenant-a", "job-stale", ref, cond, time.Now())
 
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 1 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (1, 0)", reenq, failed)
+	if reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 1", reenq)
 	}
 
 	status := pollUntilTerminal(t, svc, ctx, "job-stale", 5*time.Second)
@@ -118,21 +124,23 @@ func TestReclaimStaleJobs_ReenqueuesStaleJobToSuccessful(t *testing.T) {
 // (b) a job at the attempt cap (the staleness claim brings StaleClaims up to
 // maxAttempts) is FAILED with the jobAttemptsExhausted message, not re-run.
 func TestReclaimStaleJobs_AttemptCapFailsJob(t *testing.T) {
-	svc, _, store := newReclaimTestService(t)
+	svc, _, store, clock := newReclaimTestService(t)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	createStaleReclaimJob(t, store, "tenant-a", "job-cap", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, store, "tenant-a", "job-cap", ref, cond, time.Now())
 
 	// maxAttempts=1: this first staleness claim bumps StaleClaims to 1, which
 	// meets the cap, so the job is abandoned (FAILED) rather than re-run.
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 0 || failed != 1 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (0, 1)", reenq, failed)
+	if reenq != 0 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 0", reenq)
 	}
 
+	// The FAILED write is the sweep's second pass, sent off the sweep.
+	pollUntilTerminal(t, svc, tenantCtx("tenant-a"), "job-cap", 5*time.Second)
 	got, err := store.GetJob(tenantCtx("tenant-a"), "job-cap")
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
@@ -185,7 +193,7 @@ func createRunningReclaimJobAt(t *testing.T, store spi.AsyncSearchStore, tenant 
 // this job is claimable at all is the Release mark, isolating that path from
 // ordinary staleness.
 func TestReclaimStaleJobs_ReleaseThenClaimDoesNotCount(t *testing.T) {
-	svc, factory, store := newReclaimTestService(t)
+	svc, factory, store, _ := newReclaimTestService(t)
 	ctx := tenantCtx("tenant-a")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
@@ -200,12 +208,12 @@ func TestReclaimStaleJobs_ReleaseThenClaimDoesNotCount(t *testing.T) {
 		t.Fatalf("Release: %v", err)
 	}
 
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 1 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (1, 0) for a released (not stale) job", reenq, failed)
+	if reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 1 for a released (not stale) job", reenq)
 	}
 
 	status := pollUntilTerminal(t, svc, ctx, "job-released", 5*time.Second)
@@ -253,7 +261,7 @@ func TestReclaimStaleJobs_ZeroHeadroomClaimsNothing(t *testing.T) {
 
 	pool := search.NewWorkerPool(2, 3) // Cap() == 5
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool)
 
 	uc := &spi.UserContext{Tenant: spi.Tenant{ID: "tenant-headroom"}}
@@ -266,12 +274,12 @@ func TestReclaimStaleJobs_ZeroHeadroomClaimsNothing(t *testing.T) {
 		t.Fatalf("registry size = %d, want %d (== pool.Cap(), saturated)", got, pool.Cap())
 	}
 
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 0 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (0, 0) with zero headroom", reenq, failed)
+	if reenq != 0 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 0 with zero headroom", reenq)
 	}
 }
 
@@ -282,21 +290,24 @@ type clearResultsErrorStore struct {
 	spi.AsyncSearchStore
 }
 
-func (s *clearResultsErrorStore) ClearResults(ctx context.Context, jobID string) error {
+func (s *clearResultsErrorStore) ClearResults(ctx context.Context, jobID string, epoch int64) error {
 	return fmt.Errorf("clearResultsErrorStore: simulated ClearResults failure for %s", jobID)
 }
 
 // (e) a ClearResults failure during reclaim must leave the job RUNNING and
 // RELEASED — never FAILED (the job itself may be fine; only its prior-epoch
-// partial results couldn't be cleared) and never silently re-enqueued over
-// unknown residue (fail closed). "Released" is asserted indirectly: a
+// partial results couldn't be cleared) and never run over unknown residue
+// (fail closed). The clear runs on the worker, under the job's heartbeat, so
+// the sweep counts the job as re-enqueued and the release follows on the
+// worker. "Released" is asserted indirectly: a
 // subsequent ClaimStale with a long staleAfter re-takes the job immediately,
 // which only a released (or genuinely stale) job would allow — and
 // StaleClaims must not be bumped a second time by that re-take, proving the
 // release itself (as opposed to the original staleness claim that brought
 // the job in) was not counted as another attempt.
 func TestReclaimStaleJobs_ClearResultsErrorReleases(t *testing.T) {
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	base, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -306,35 +317,41 @@ func TestReclaimStaleJobs_ClearResultsErrorReleases(t *testing.T) {
 
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	// Stale by heartbeat baseline (CreateTime an hour in the past) so the
+	// Stale by heartbeat (the test clock advanced an hour after creation) so the
 	// FIRST ClaimStale below actually claims it in the ordinary way; the
 	// point under test is what happens to it AFTER that claim.
-	createStaleReclaimJob(t, store, "tenant-a", "job-clear-err", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, store, "tenant-a", "job-clear-err", ref, cond, time.Now())
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool)
 
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 0 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (0, 0) when ClearResults errors", reenq, failed)
+	if reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 1: the clear runs on the worker", reenq)
 	}
 
-	got, err := store.GetJob(tenantCtx("tenant-a"), "job-clear-err")
-	if err != nil {
-		t.Fatalf("GetJob: %v", err)
-	}
-	if got.Status != "RUNNING" {
-		t.Fatalf("job status after a ClearResults error = %q, want RUNNING (never FAILED, never silently dropped)", got.Status)
-	}
-
-	claimed, err := base.ClaimStale(context.Background(), time.Hour, 10)
-	if err != nil {
-		t.Fatalf("ClaimStale: %v", err)
+	// The worker's release is what makes the job eligible again at once.
+	var claimed []*spi.SearchJob
+	deadline := time.Now().Add(2 * time.Second)
+	for len(claimed) == 0 && time.Now().Before(deadline) {
+		got, err := store.GetJob(tenantCtx("tenant-a"), "job-clear-err")
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if got.Status != "RUNNING" {
+			t.Fatalf("job status after a ClearResults error = %q, want RUNNING (never FAILED, never silently dropped)", got.Status)
+		}
+		if claimed, err = base.ClaimStale(context.Background(), time.Hour, 10); err != nil {
+			t.Fatalf("ClaimStale: %v", err)
+		}
+		if len(claimed) == 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 	if len(claimed) != 1 || claimed[0].ID != "job-clear-err" {
 		t.Fatalf("ClaimStale(staleAfter=1h) after a ClearResults-error release = %v, want [job-clear-err] (a released job is eligible regardless of staleAfter)", claimed)
@@ -352,7 +369,7 @@ func TestReclaimStaleJobs_ClearResultsErrorReleases(t *testing.T) {
 // delete guard deregisterJobHandle relies on to keep a superseded executor's
 // deferred cleanup from evicting the handle that replaced it).
 func TestReclaimStaleJobs_SelfReclaimReplacesHandle(t *testing.T) {
-	svc, _, _ := newReclaimTestService(t)
+	svc, _, _, _ := newReclaimTestService(t)
 	uc := &spi.UserContext{Tenant: spi.Tenant{ID: "tenant-self-reclaim"}}
 
 	oldCtx, oldCancel := context.WithCancelCause(context.Background())
@@ -395,5 +412,90 @@ func TestReclaimStaleJobs_SelfReclaimReplacesHandle(t *testing.T) {
 	svc.DeregisterJobHandleForTest("job-self", newHandle)
 	if got := svc.RegisteredJobCountForTest(); got != 0 {
 		t.Fatalf("registry size after deregistering the new (current) handle = %d, want 0", got)
+	}
+}
+
+// inFlightClearStore holds every ClearResults at the store's door until the
+// test lets it through, whatever happens to the caller's context meanwhile —
+// as a statement already sent to the database is not recalled by a cancel.
+type inFlightClearStore struct {
+	spi.AsyncSearchStore
+	entered chan struct{}
+	proceed chan struct{}
+	result  chan error
+}
+
+func (s *inFlightClearStore) ClearResults(ctx context.Context, jobID string, epoch int64) error {
+	s.entered <- struct{}{}
+	<-s.proceed
+	err := s.AsyncSearchStore.ClearResults(context.WithoutCancel(ctx), jobID, epoch)
+	s.result <- err
+	return err
+}
+
+// (g) a clear from an owner that lost the job lands after the new owner saved
+// its results. The store refuses it at the old epoch, and the new owner's rows
+// survive.
+func TestReclaimStaleJobs_LateClearFromLostOwnerDeletesNothing(t *testing.T) {
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	t.Cleanup(func() { factory.Close() })
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	store := &inFlightClearStore{AsyncSearchStore: base,
+		entered: make(chan struct{}, 1), proceed: make(chan struct{}), result: make(chan error, 1)}
+	var proceedOnce sync.Once
+	letThrough := func() { proceedOnce.Do(func() { close(store.proceed) }) }
+
+	ctx := tenantCtx("tenant-a")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	createStaleReclaimJob(t, clock, base, "tenant-a", "job-late-clear", ref, cond, time.Now())
+
+	pool := search.NewWorkerPool(2, 8)
+	t.Cleanup(func() { pool.Drain(context.Background()) })
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
+		WithAsyncPool(pool).
+		WithHeartbeat(20 * time.Millisecond)
+	t.Cleanup(letThrough) // runs before the pool drains
+
+	if reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5); err != nil || reenq != 1 {
+		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, err %v), want (1, nil)", reenq, err)
+	}
+	select {
+	case <-store.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the reclaimed job's clear was never sent")
+	}
+
+	// Another node takes the job (epoch 3) and saves its results while this
+	// node's clear, at epoch 2, is still in flight.
+	clock.Advance(5 * time.Millisecond)
+	claimed, err := base.ClaimStale(context.Background(), time.Nanosecond, 10)
+	if err != nil || len(claimed) != 1 || claimed[0].Epoch != 3 {
+		t.Fatalf("the other node's claim = %v (err %v), want the job at epoch 3", claimed, err)
+	}
+	saved := []string{"n1", "n2", "n3"}
+	if err := base.SaveResults(ctx, "job-late-clear", 3, slices.Values(saved)); err != nil {
+		t.Fatalf("the new owner's SaveResults: %v", err)
+	}
+
+	letThrough()
+	select {
+	case cerr := <-store.result:
+		if !errors.Is(cerr, spi.ErrStaleClaim) {
+			t.Errorf("the late clear answered %v, want ErrStaleClaim", cerr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the late clear never completed")
+	}
+	_, total, err := base.GetResultIDs(ctx, "job-late-clear", 0, 10)
+	if err != nil {
+		t.Fatalf("GetResultIDs: %v", err)
+	}
+	if total != len(saved) {
+		t.Fatalf("the new owner's results = %d rows after the late clear, want %d: a clear from the lost owner deleted them", total, len(saved))
 	}
 }

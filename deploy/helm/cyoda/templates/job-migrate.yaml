@@ -53,7 +53,7 @@ spec:
           resources:
             {{- toYaml .Values.migrate.resources | nindent 12 }}
       volumes:
-        # Only mounts the DSN — migration doesn't need JWT/HMAC/bootstrap.
+        # Only mounts the DSN — migration doesn't need JWT/HMAC.
         # Principle of least privilege.
         - name: secrets
           projected:

@@ -13,7 +13,7 @@ import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 
-	cloudevents "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cloudevents "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 const (
@@ -34,7 +34,7 @@ const file_cyoda_cyoda_cloud_api_proto_rawDesc = "" +
 	"\fentityManage\x12\x1d.io.cloudevents.v1.CloudEvent\x1a\x1d.io.cloudevents.v1.CloudEvent\x12X\n" +
 	"\x16entityManageCollection\x12\x1d.io.cloudevents.v1.CloudEvent\x1a\x1d.io.cloudevents.v1.CloudEvent0\x01\x12L\n" +
 	"\fentitySearch\x12\x1d.io.cloudevents.v1.CloudEvent\x1a\x1d.io.cloudevents.v1.CloudEvent\x12X\n" +
-	"\x16entitySearchCollection\x12\x1d.io.cloudevents.v1.CloudEvent\x1a\x1d.io.cloudevents.v1.CloudEvent0\x01B3Z1github.com/cyoda-platform/cyoda-go/api/grpc/cyodab\x06proto3"
+	"\x16entitySearchCollection\x12\x1d.io.cloudevents.v1.CloudEvent\x1a\x1d.io.cloudevents.v1.CloudEvent0\x01B*Z(github.com/cyoda/cyoda-go/api/grpc/cyodab\x06proto3"
 
 var file_cyoda_cyoda_cloud_api_proto_goTypes = []any{
 	(*cloudevents.CloudEvent)(nil), // 0: io.cloudevents.v1.CloudEvent

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ModelStore is a tenant-scoped, in-memory implementation of spi.ModelStore.
@@ -68,7 +68,7 @@ func (s *ModelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 	defer s.factory.modelMu.Unlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]
 	if !ok {
-		return fmt.Errorf("model %s not found", modelRef)
+		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
 	entry.State = spi.ModelLocked
 	return nil
@@ -79,7 +79,7 @@ func (s *ModelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 	defer s.factory.modelMu.Unlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]
 	if !ok {
-		return fmt.Errorf("model %s not found", modelRef)
+		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
 	entry.State = spi.ModelUnlocked
 	return nil
@@ -90,7 +90,7 @@ func (s *ModelStore) IsLocked(ctx context.Context, modelRef spi.ModelRef) (bool,
 	defer s.factory.modelMu.RUnlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]
 	if !ok {
-		return false, fmt.Errorf("model %s not found", modelRef)
+		return false, fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
 	return entry.State == spi.ModelLocked, nil
 }
@@ -100,7 +100,7 @@ func (s *ModelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, 
 	defer s.factory.modelMu.Unlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]
 	if !ok {
-		return fmt.Errorf("model %s not found", modelRef)
+		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
 	entry.ChangeLevel = level
 	return nil
@@ -108,7 +108,8 @@ func (s *ModelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, 
 
 // ExtendSchema applies the delta to the current schema via the
 // injected ApplyFunc. Memory is single-writer so apply-in-place
-// under the factory's model mutex is correct.
+// under the factory's model mutex is correct. The caller extends only a
+// LOCKED model; the store does not check this.
 func (s *ModelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
 	if len(delta) == 0 {
 		return nil
@@ -123,7 +124,7 @@ func (s *ModelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	if !ok {
 		return fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
 	}
-	newSchema, err := s.factory.applyFunc(entry.Schema, delta)
+	newSchema, err := s.factory.applyFunc(entry.Schema, []spi.SchemaDelta{delta})
 	if err != nil {
 		return fmt.Errorf("apply delta for %s: %w", ref, err)
 	}

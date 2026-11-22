@@ -10,8 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // ProcessorFunc is a callback invoked when a processor is dispatched.

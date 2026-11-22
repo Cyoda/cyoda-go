@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // jsonEqual reports whether two json.RawMessage values are semantically equal
@@ -45,7 +45,7 @@ func TestPostgresStoreFactory_SkeletonReturnsErrors(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
 
-	factory := postgres.NewStoreFactory(pool)
+	factory := newClosingStoreFactory(t, pool)
 	ctx := ctxWithTenant("test-tenant")
 
 	// EntityStore is implemented — expect success

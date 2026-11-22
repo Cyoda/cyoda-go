@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // Locking-discipline race tests for the remaining six tx-path operations
@@ -62,6 +62,7 @@ func runOpVsRollback(
 			txMgr := factory.NewTransactionManager(uuids)
 
 			ctx := ctxWithTenant("tenant-A")
+			lockModels(t, factory, ctx, raceModelRef)
 			store, err := factory.EntityStore(ctx)
 			if err != nil {
 				t.Fatalf("%s: EntityStore failed: %v", name, err)
@@ -203,7 +204,7 @@ func TestCount_VsRollback_NoRace(t *testing.T) {
 			raceSeedOne(t, ctx, store, "e-count")
 		},
 		func(txCtx context.Context, store spi.EntityStore) error {
-			_, err := store.Count(txCtx, raceModelRef)
+			_, err := store.Count(txCtx, raceModelRef, nil)
 			return err
 		},
 	)
@@ -250,6 +251,7 @@ func runOpVsCommit(
 			txMgr := factory.NewTransactionManager(uuids)
 
 			ctx := ctxWithTenant("tenant-A")
+			lockModels(t, factory, ctx, raceModelRef)
 			store, err := factory.EntityStore(ctx)
 			if err != nil {
 				t.Fatalf("%s: EntityStore failed: %v", name, err)

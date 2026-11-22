@@ -3,11 +3,11 @@ package match_test
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/match"
 )
 
 // subscriptDoc and subscriptFields are a REALISTIC pairing: the document, and
@@ -78,7 +78,7 @@ func TestPrepare_SubscriptPathResolvesDeclaredTypes(t *testing.T) {
 // from the wildcard key too.
 func TestPrepareArray_SubscriptBaseResolvesDeclaredTypes(t *testing.T) {
 	p, err := match.Prepare(
-		&predicate.ArrayCondition{JsonPath: "$.arr", Values: []any{10, 20}},
+		&predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.arr", Values: []any{10, 20}},
 		subscriptFields())
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)

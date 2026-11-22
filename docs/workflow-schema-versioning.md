@@ -44,7 +44,9 @@ Document the choice (dual-shape vs retirement, with rationale) in the per-versio
 
 - Adding a new HTTP endpoint or response field that's outside `WorkflowConfigurationDto`. The version contract scopes the import DTO, not the wider workflow API.
 - Bug-fixing a validator that was already supposed to reject something — i.e., the rejection was always documented and the validator was the bug. Add a test, ship the fix; no schema bump. (Borderline cases: if a validator was widely-relied-upon-via-its-absence, treat as a tightening release per §above.)
+- Bug-fixing an exporter that emitted a wire shape the published schema already forbade — i.e., the schema was already correct and the serialiser was the bug. No accepted-input set moves and no document's documented shape changes; only the serialisation defect goes away. Add a test, ship the fix; no schema bump.
 - Internal refactoring of the engine, store, or audit shape. The wire contract is unchanged.
+- Widening what the engine does with a value of a field the DTO already carries, when the field's shape, default, validation and export stay the same. The version contract scopes what an import accepts and what an export emits, not every runtime consequence of a value.
 
 ### Malformed-regex criteria rejected at import (v0.8.3)
 
@@ -95,7 +97,7 @@ criterion carries a malformed bracket path imported successfully before
 this change and is rejected by the same v0.8.4 binary now, regardless of
 which schema version it declares.
 
-### Unrecognised-operator criteria rejected at evaluation, not import (v0.8.4)
+### Unrecognised-operator criteria fail the save at evaluation (v0.8.4)
 
 A workflow-level or transition-level criterion carrying an operator name the
 evaluator does not recognise (e.g. `FROBNICATE`) now fails the transition
@@ -109,11 +111,11 @@ supposed to reject something" case, same as the v0.8.3 malformed-regex entry
 above: a criterion nobody can evaluate never worked as a correct guard, so no
 *working* config is newly rejected — only which entities surface the failure
 changes (all of them, now, instead of only the ones that reached the bad
-leaf), and evaluation-time failure replaces a silent no-op. Import-time
-acceptance is unchanged: `WorkflowConfigurationDto` still validates only
-`MATCHES_PATTERN` regex syntax, not operator names, so the same workflow
-imports byte-identically. No `CurrentSchemaVersion` or `SupportedSchemaRanges`
-change.
+leaf), and evaluation-time failure replaces a silent no-op. The same release
+also refuses an unrecognised operator at import (the one-path-grammar change,
+which validates every criterion against the search operator table), so this
+entry covers a criterion that reached the store without that check. No
+`CurrentSchemaVersion` or `SupportedSchemaRanges` change.
 
 ### Undeclared-field criteria rejected at evaluation, not import (v0.8.4)
 
@@ -128,9 +130,9 @@ This is the same "bug-fixing a validator that was already supposed to reject
 something" case as the unrecognised-operator entry directly above it, reached
 through a different check: a criterion on a field the model does not declare
 never worked as a correct guard either, so no *working* config is newly
-rejected. Import-time acceptance is unchanged — `walkCriterion` still checks
-only path grammar, operator names, lifecycle type-soundness and pattern
-operands at import, not model membership, so a criterion naming a field the
+rejected. Import-time acceptance is unchanged — import checks path
+grammar, operator names, operand shape, lifecycle type-soundness and pattern
+operands, not model membership, so a criterion naming a field the
 model has not yet declared still imports byte-identically; the field's
 declaration is a modelling step, not an import-validation one. No
 `CurrentSchemaVersion` or `SupportedSchemaRanges` change.
@@ -138,6 +140,67 @@ declaration is a modelling step, not an import-validation one. No
 Not to be confused with the `NOT` group operator entry under the Changelog
 below, which **is** a bump: the two are separate changes shipped in the same
 release, and neither's bump decision generalises to the other.
+
+### Exported schedule omits `delayMs` when function-driven (v0.9.0)
+
+A scheduled transition's exported `schedule` object no longer carries
+`"delayMs": 0` when the schedule is driven by a `function` and has no static
+delay. The exporter marshalled the schedule's wire type directly, and that
+type's delay field had no `omitempty`, so a function-driven schedule — which
+has no static delay by definition — still emitted a meaningless zero
+alongside `function`. The published `TransitionScheduleDto.delayMs` already
+gave the field `minimum: 1` and documented it as mutually exclusive with
+`function`, so the old export was never a valid document against the
+server's own schema; the exporter was the bug, not the schema.
+
+This is the §"When NOT to bump" "the serialiser was the bug" case, the exact
+analogue of the v0.8.3 malformed-regex entry above: the schema never allowed
+`delayMs: 0`, so no *valid* document's shape changes and the accepted-input
+set is unchanged — only what a function-driven schedule serialises to at
+export changes, from a document the schema rejects to one it accepts. No
+`CurrentSchemaVersion` or `SupportedSchemaRanges` change. Import no longer
+treats an explicit `0` beside a `function` as an absent key: the same release
+refuses it, as a tightening recorded under 1.5 below.
+
+### `idempotent` also governs scheduled runs (v0.9.0)
+
+A processor's `config.idempotent`, added in 1.5, now also decides what the
+scheduler does when a scheduled run fails after sending that processor to a
+compute member. With `true` the run is retried. With `false`, the default, the
+task ends `FAILED` (`UNSAFE_WORK_NOT_COMPLETED`) and is not run again — unless
+the processor's callout provably never reached a compute member, in which case
+the run is retried like any other failure. Before, the scheduler could start
+such a run a second time while the first was still in progress, whatever the
+field said.
+
+The field, its type, its default, its validation and its export are unchanged;
+every document 1.5 accepted is accepted and exported byte-identically. What
+changes is what the engine does with a value it already read — the §"When NOT to
+bump" "widening what the engine does with a value" case. The declaration's own
+text already said "running this again is safe", which is the property the
+scheduler now relies on. No `CurrentSchemaVersion` or `SupportedSchemaRanges`
+change.
+
+### `schedule.timeoutMs` / `schedule.delayMs` published minimums enforced at import (v0.9.0)
+
+`schedule.timeoutMs` (published `minimum: 0`) and `schedule.delayMs`
+(published `minimum: 1`) are now rejected at import (`400
+VALIDATION_FAILED`) when they violate those minimums, instead of being
+silently accepted. A negative `timeoutMs` was accepted outright — no check
+existed. A negative `delayMs` alongside a `function` was accepted and
+silently ignored: the delayMs/function XOR check reads any non-positive
+`delayMs` as "absent", so it saw only the function and passed. A
+non-positive `delayMs` with no `function` was, and remains, already rejected
+by that same XOR check, as the "neither present" shape. A `delayMs` of `0`
+or `null` beside a `function` is refused too, but that one is a tightening,
+not a bug fix — see 1.5 below.
+
+For the negative values this is the §"When NOT to bump" "bug-fixing a validator that was already
+supposed to reject something" case: both minimums were already published in
+`TransitionScheduleDto`, so no *valid* document's shape changes and the
+accepted-input set only shrinks to match what the schema always said it
+was — the validator was the bug. No `CurrentSchemaVersion` or
+`SupportedSchemaRanges` change.
 
 ## Required commit-/PR-time checks
 
@@ -150,7 +213,200 @@ Before merging a schema bump:
 
 ## Changelog
 
-### 1.4 — v0.8.4 contract (current)
+### 1.5 — v0.9.0 contract (current)
+
+Additive MINOR — two new optional fields, and function conditions inside
+groups:
+
+- **`idempotent` on `ExternalizedProcessorConfigDto`** (a processor's
+  `config`). Boolean, default `false`, omitted on export when false. The
+  author's declaration that the processor may be run again on another compute
+  member after one that received the work went silent.
+- **`retryPolicy` on `ScheduleFunctionDto`** (`schedule.function`). The same
+  `NONE` / `FIXED` selector a processor and a criterion function already carry.
+- **Function conditions inside `AND`, `OR` and `NOT` groups**, at any depth of
+  a workflow or transition criterion, are accepted and evaluated in declaration
+  order, each group stopping as soon as its value is known. They imported
+  before and failed every evaluation, so no working configuration changes
+  meaning.
+
+Every payload 1.4 accepted that does not fall under the sixteen tightenings below
+is byte-identical and remains valid; a workflow that never mentions either
+field exports without them.
+
+**Dual-shape retention of 1.1 through 1.4.** Nothing is retired:
+`SupportedSchemaRanges` widens in place to
+`{Major: 1, MinMinor: 1, MaxMinor: 5}`.
+
+**Sixteen tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+"When NOT to bump", these are not bug fixes to a validator that was always
+meant to reject — the inputs below imported, and most of them *worked* — so
+they are recorded here, under the rubric of §"Tightening releases":
+
+1. **`retryPolicy` on a `function`-type criterion is validated** (`NONE`,
+   `FIXED` or empty), as it has been on a processor since 1.1. Until now any
+   string was accepted there and ignored, because nothing consumed the field.
+   From this release it selects the number of tries, so an unknown value has no
+   meaning to honour. Rubric point 1 applies: fail-loud where the old behaviour
+   was a silent no-op. A `function` member that cannot be read at all (for
+   example a non-integer `responseTimeoutMs`) is refused on the same pass; that
+   criterion already failed every evaluation with "invalid criterion JSON", so
+   no working configuration is affected.
+2. **`responseTimeoutMs` is bounded** on a processor, a criterion function and
+   a schedule function: negative is refused, and so is a value above the
+   server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`). This
+   one does reject configurations that worked. It is taken because tries now
+   multiply the answer limit: without a bound, four tries at a generous limit
+   outlast the five minutes PostgreSQL allows a transaction to sit idle, and
+   the operation fails as "storage unavailable" instead of as a callout
+   failure. The bound is a server setting, so whether a given payload imports
+   depends on the deployment; the error names the setting and the bound.
+3. **A `schedule.delayMs` beside a `schedule.function` is refused whatever
+   its value**, `0` and `null` included (`400 VALIDATION_FAILED`). The
+   published schema always gave `delayMs` `minimum: 1` and made it mutually
+   exclusive with `function`, but import read a `0` or `null` there as an
+   absent key and ignored it. The v0.8.3 and v0.8.4 exporters wrote
+   `"delayMs": 0` beside every `function` (see "Exported schedule omits
+   `delayMs` when function-driven" above), so their exports relied on that
+   and no longer import unchanged: remove the `delayMs` field and import
+   again. The import reads the raw request, since the decoded integer cannot
+   tell a sent `0` or `null` from an absent key.
+4. **An `array` criterion carries `operatorType`, tests at least one
+   position, and names one array.** A criterion without an operator imported
+   and worked as `EQUALS`, so this is an optional-to-required change — a MAJOR
+   change by the bump rules. It is taken inside 1.5 because no deployment of
+   either tier exists and 1.5 is unreleased. An all-`null` clause matched
+   every entity; it is refused, as is a path with a wildcard before its
+   trailing `[*]` (its positions came from different inner arrays).
+5. **A criterion that is not a valid condition is refused at import.** It
+   imported and then failed every evaluation, so no working configuration is
+   affected.
+6. **An array operand is refused under every operator other than `BETWEEN`
+   and `BETWEEN_INCLUSIVE`**, as a `simple` or `lifecycle` clause's `value`
+   and as an `array` clause's entry. No other operator takes a set of values.
+   The criterion imported, and the evaluator compared the field with the
+   array's printed text, which answers a question the author did not ask.
+   Rubric point 1 applies: fail loud where the old answer was wrong.
+7. **A `null` `BETWEEN` or `BETWEEN_INCLUSIVE` bound is refused.** The
+   evaluator read it as an empty text bound, a range nobody wrote, and the
+   stores do not agree on what it means. Rubric point 1 applies.
+8. **An object or array `BETWEEN` or `BETWEEN_INCLUSIVE` bound is refused.**
+   A bound must be a non-null scalar. The evaluator compared against the
+   bound's printed form, so the criterion answered as if the author had
+   written that text. Rubric point 1 applies.
+9. **A criterion that tests more than 10,000 entries is refused** (each entry in
+   an `array` clause's `values` counts one, `null` entries included, a
+   `function` clause counts one plus the entries of its pre-check, and every
+   other clause counts one). This one does reject configurations that worked. It
+   is taken because an `array` clause expands into one clause per entry, and the
+   engine expands the criterion again each time it evaluates it. The limit
+   bounds that expansion; it does not bound the total cost of a criterion. The
+   limit is fixed, not a server setting, and the error names the limit and the
+   count.
+10. **A function condition's pre-check (`function.criterion`) is evaluated**,
+    and a pre-check that holds a function condition, at any depth, or that
+    breaks a check or limit the rest of the criterion is held to (path
+    grammar, operator and operand shape, patterns, the entry and depth limits
+    counted through it), is refused. Rubric point 1 applies: the pre-check was
+    silently ignored, so a function was called whatever its pre-check said.
+    When a pre-check does not match, the function condition is now false and
+    the function is not called.
+11. **A function condition without a `function` object or without a `name` is
+    refused.** It imported and then failed every dispatch, so no working
+    configuration is affected.
+12. **A missing or `null` operand is refused under every operator other than
+    `IS_NULL` and `NOT_NULL`**, in a `simple` or `lifecycle` clause of a
+    criterion or a pre-check. The evaluator compared the field with an empty
+    string: `EQUALS` matched `""`, and `CONTAINS` or `STARTS_WITH` matched
+    every string. Rubric point 1 applies: fail loud where the old answer was
+    wrong.
+13. **A processor's `type` is validated** (`externalized` or empty). Until now
+    any string was accepted, stored and exported as given: `internalized`
+    imported and then failed every dispatch, and every other value ran as
+    `externalized`. An export could therefore carry a `type` that is not in
+    the published discriminator mapping, which a generated client cannot
+    read. Any value other than `externalized` is refused at import
+    (`400 VALIDATION_FAILED`), and an omitted or empty `type` is stored, and
+    exported, as `externalized` (it exported as `""` before). Rubric point 1
+    applies: fail loud where the old value was ignored or failed later.
+14. **A transition's `manual` is required** (`true` or `false`). The published
+    schema always listed it as required, but import read an omitted or `null`
+    `manual` as `false` and stored an automatic transition. It is refused now
+    (`400 VALIDATION_FAILED`), and it has no default: an automatic transition
+    carries more risk than a manual one, so the author states which it is.
+    This one does reject configurations that worked, so it is recorded here
+    and not as a validator bug fix. The import reads the raw request, since
+    the decoded boolean cannot tell an omitted or `null` `manual` from
+    `false`.
+15. **Member names are exact** in the whole import body, criteria included. A
+    name that differs from a declared member only in case (or by Unicode
+    folding) is an unknown member, a member written twice is refused, and an
+    undeclared member is refused inside a criterion too: in a condition, in a
+    function condition's `function` and in its `config`. Before, the decoder
+    matched names ignoring case and let a duplicate replace the first value,
+    so `"transitions"` beside `"Transitions"` imported a transition without
+    `manual` as automatic, and a criterion ignored a member it did not
+    declare, so `calculationNodesTags` written beside `config` instead of in
+    it left the callout untagged. A condition leaf that writes its operator
+    twice (two of `operatorType`, `operator`, `operation` holding a value) is
+    refused as a duplicate is. Rubric point 1 applies: fail loud where the old value was
+    ignored or merged.
+16. **A processor's `startNewTxOnDispatch` is read on the processor**, beside
+    `executionMode`, where the published schema has always placed it. The
+    implementation read it inside `config`, so the documented placement was
+    refused as an unknown member and the undocumented one worked. Now the
+    documented placement is accepted and exported, and the member inside
+    `config` is refused as unknown. This rejects configurations that worked,
+    so it is recorded here.
+
+**Why dual-shape and not retirement.** Rubric point 2 asks whether an older
+payload "happens to import only by coincidence". It does not: the first two rules
+touch two optional fields, the error names the offending workflow, state,
+transition and callout, and there are no deployments of either tier whose
+stored workflows could be affected. Retiring 1.1–1.4 would turn 298 fixtures
+and every client's existing files into `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`
+to guard a few fields. The third rule touches only exports of v0.8.3 and
+v0.8.4, and its error names the field to remove. Rules 4 and 5 touch only
+`array` criteria and criteria that cannot be evaluated, and the error names
+where the criterion is. An `array` criterion without an operator is fixed by
+adding `"operatorType":"EQUALS"`. Rules 6 to 8 touch only criteria whose
+operand has a shape no operator can evaluate as written, and rule 9 only a
+criterion far larger than a guard needs; each error names where the
+criterion is. Rule 10 touches only criteria whose pre-check was ignored until
+now, rule 11 only function conditions that failed every dispatch, and rule 12
+only clauses without the operand their operator compares with; each error
+names the position of the condition in the criterion. Rule 13 touches only
+processors whose `type` was not `externalized` or empty; the error names the
+processor and the value, and the fix is to send `externalized` or omit the
+field. Rule 14 touches only transitions that left `manual` out or sent
+`null`; the error names the workflow, state and transition, and the fix is
+to send `"manual": false` where the omission meant an automatic transition.
+Rule 15 touches only bodies that spell a member in another case, write it
+twice, or put a member where its shape does not declare it; the error names
+the member and where it is (a JSON Pointer for a member in another case or out
+of place, the field's path for a member written twice, and inside a criterion
+the workflow, and for a transition criterion its state and transition, in
+words, then a pointer inside the criterion; an operator written twice is named by its two members and its
+place in the condition, in words), and the fix is the spelling and place the schema gives. Rule 16 touches only processors that set
+`startNewTxOnDispatch` inside `config`; the error names the member and its
+location, and the fix is to move it beside `executionMode`.
+All sixteen rules apply to an import under **any** schema version, 1.1
+through 1.5 alike: rules 1–15 are validation-layer rules, not DTO-shape
+ones, and rule 16 moves where the decoder reads a member, under every
+version alike.
+
+No rule is retroactive: a workflow already stored is not re-checked at
+import of another. A stored `responseTimeoutMs` above a bound that was lowered
+later is not clamped; its callout fails, naming the setting.
+
+**Bump-rule step 7 ("update every fixture") is not followed here**, the same
+as at 1.2, 1.3 and 1.4: nothing is retired, so every fixture stamped `"1.1"`
+through `"1.4"` stays valid exactly as imported, and only the tests that
+assert the *current* version — export stamping, the discovery endpoint, the
+dual-shape acceptance test — change. The exception is rule 14: the fixtures
+that left `manual` out now send it.
+
+### 1.4 — v0.8.4 contract
 
 Additive MINOR — one new condition operator, `NOT`, accepted on a criterion's
 `group` clause:

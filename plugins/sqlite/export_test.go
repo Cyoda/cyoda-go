@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ClassifyErrorForTest exposes classifyError for unit tests.
 var ClassifyErrorForTest = classifyError
+
+// ClassifyRejectionForTest exposes classifyRejection for unit tests.
+var ClassifyRejectionForTest = classifyRejection
 
 // ClassifyClaimErrorForTest exposes classifyClaimError for unit tests
 // verifying the ErrUniqueViolation vs ErrConflict discrimination.
@@ -81,4 +84,9 @@ func SearchCandidateIDsForTest(f *StoreFactory, ctx context.Context, tenantID sp
 		ids = append(ids, e.Meta.ID)
 	}
 	return ids, rows.Err()
+}
+
+// CommittedLogLenForTest reports the length of the factory's committed log.
+func CommittedLogLenForTest(f *StoreFactory) int {
+	return f.tm.CommittedLogLen()
 }

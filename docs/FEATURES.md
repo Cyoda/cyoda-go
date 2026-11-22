@@ -15,7 +15,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 - JSON and XML input formats
 - Entity versioning — every mutation creates an immutable version
 - Soft delete with deletion markers (preserves history)
-- Point-in-time retrieval (`?pointInTime=<ISO8601>`)
+- Point-in-time retrieval (`?pointInTime=<RFC 3339>`)
 - Entity statistics (count, state distribution per model)
 - Optimistic concurrency via `If-Match` header (transaction ID based) — layered on top of always-on SI+FCW at the transaction layer
 
@@ -30,6 +30,7 @@ For **product context** — value proposition, target use cases, scale envelope,
   - `TYPE` — leaf types can widen
   - `ARRAY_ELEMENTS` — array element types can widen
   - `ARRAY_LENGTH` — no schema change at all (the floor; an array's length is not part of the model)
+  - an extension commits on its own, before the write's entity changes, never conflicts with another writer's, and stays if the write fails ([`docs/CONSISTENCY.md` §3a](CONSISTENCY.md#3a-model--data-contract))
 - Validation against locked schema
 
 ### Workflow Engine
@@ -70,13 +71,16 @@ For **product context** — value proposition, target use cases, scale envelope,
 - Transaction context propagation (gRPC callbacks can join caller's transaction)
 
 ### Authentication & Authorization
+- M2M-only access with on-behalf-of identity: only M2M clients connect; an application authorizes its users and acts for them through an on-behalf-of client, and every change, audit event, callout and message records the user it was for and the client that made it
 - OAuth 2.0 token issuance (`client_credentials`)
-- On-behalf-of token exchange (RFC 8693)
+- On-behalf-of token exchange (RFC 8693) with application-signed user assertions; the token carries the client's roles, never the user's
+- `ROLE_M2M` required on every data operation, HTTP and gRPC
 - JWKS public key endpoint
-- M2M technical user management (create, delete, reset secret)
+- M2M technical user management (create, delete, reset secret), including on-behalf-of clients
+- Token-endpoint cost controls: bounded concurrent secret checks per node, a verified-secret cache, a per-client token bucket
 - JWT key pair management (issue, invalidate, reactivate, delete)
-- Trusted external key registration (persistent across restarts)
-- OIDC provider per-tenant registry (register, list, get, update, invalidate, reactivate, delete, reload). External-IdP JWT validation via chained multi-issuer validator. Cross-node cache eviction via cluster broadcast.
+- Trusted key registration for user assertions (per tenant, persistent across restarts)
+- Offline operator token (`cyoda token`) signed with the signing key
 - Mock mode for zero-setup development
 
 ### Multi-Tenancy
@@ -111,7 +115,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 | **Search** | `POST /search/{direct,async}/...`, `GET /search/async/{jobId}` |
 | **Audit** | `GET /audit/entity/{entityId}`, workflow finished event |
 | **Messaging** | `POST/GET/DELETE /message/...` |
-| **Auth** | `POST /oauth/token`, `GET /.well-known/jwks.json`, key + trusted-key management |
+| **Auth** | `POST /tenants/{tenant}/oauth/token`, `GET /.well-known/jwks.json`, key + trusted-key management |
 | **M2M Clients** | `GET/POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret` |
 | **Account** | `GET /account`, subscriptions |
 | **Admin** | `GET/POST /admin/log-level`, `GET/POST /admin/trace-sampler` |

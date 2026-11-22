@@ -1,10 +1,12 @@
 package workflow
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Tests for the structural validator rules covering audit §H4, §H6, and
@@ -717,6 +719,105 @@ func TestValidator_FunctionMissingCalculationNodesTags_Rejected(t *testing.T) {
 	}
 }
 
+// --- Schedule.TimeoutMs / Schedule.DelayMs published minimums -------------
+//
+// api/openapi.yaml's TransitionScheduleDto declares `timeoutMs` minimum 0
+// and `delayMs` minimum 1, but neither bound was enforced server-side:
+//   - A negative timeoutMs was accepted outright (no check existed at all).
+//   - A negative delayMs alongside a function was accepted and silently
+//     ignored: hasDelay := DelayMs > 0 reads it as "delayMs absent", so the
+//     delayMs/function XOR check sees only the function and passes.
+// A negative delayMs with NO function was, and remains, already rejected —
+// by the XOR check itself, as the "neither present" shape (see
+// TestValidator_DelayMsNegative_Rejected above) — so that path needs no
+// new branch.
+
+func TestValidator_TimeoutMsNegative_Rejected(t *testing.T) {
+	tm := int64(-1)
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: &spi.TransitionSchedule{DelayMs: 1000, TimeoutMs: &tm}},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatal("expected a negative schedule.timeoutMs to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "schedule.timeoutMs must not be negative") {
+		t.Errorf("error must name the timeoutMs rule, got: %v", err)
+	}
+	for _, want := range []string{`"test"`, `"S1"`, `"T1"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name the offending workflow/state/transition (%s), got: %v", want, err)
+		}
+	}
+}
+
+func TestValidator_TimeoutMsNegative_RejectedWithFunctionSchedule(t *testing.T) {
+	tm := int64(-1)
+	sch := validFunctionSchedule()
+	sch.TimeoutMs = &tm
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: sch},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil || !strings.Contains(err.Error(), "schedule.timeoutMs must not be negative") {
+		t.Errorf("expected timeoutMs error on a function schedule too, got: %v", err)
+	}
+}
+
+// TestValidator_DelayMsNegativeWithFunction_Rejected is the bug the XOR
+// check alone misses: hasDelay is false for ANY non-positive DelayMs
+// (including negative), so a negative delayMs alongside a function reads
+// as "function-only" and passed silently before this fix.
+func TestValidator_DelayMsNegativeWithFunction_Rejected(t *testing.T) {
+	sch := validFunctionSchedule()
+	sch.DelayMs = -1
+	wf := spi.WorkflowDefinition{
+		Version:      "1",
+		Name:         "test",
+		InitialState: "S1",
+		Active:       true,
+		States: map[string]spi.StateDefinition{
+			"S1": {
+				Transitions: []spi.TransitionDefinition{
+					{Name: "T1", Next: "S1", Manual: false, Schedule: sch},
+				},
+			},
+		},
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatal("expected a negative schedule.delayMs alongside a function to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "schedule.delayMs must not be negative") {
+		t.Errorf("error must name the delayMs rule, got: %v", err)
+	}
+	for _, want := range []string{`"test"`, `"S1"`, `"T1"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name the offending workflow/state/transition (%s), got: %v", want, err)
+		}
+	}
+}
+
 // --- allowCycles bypass behaviour ----------------------------------------
 
 // cyclicWorkflow builds S1 -automated, no criterion-> S2 -automated, no
@@ -894,6 +995,111 @@ func TestValidateImportRequest_AcceptsAllKnownRetryPolicies(t *testing.T) {
 				t.Fatalf("expected no error for retryPolicy=%q, got: %v", policy, err)
 			}
 		})
+	}
+}
+
+// --- M1b — retryPolicy on a criterion function and on a schedule function ---
+
+// retryPolicyFunctionCriterion is functionCriterion (criterion_regex_test.go)
+// with a settable retryPolicy; distinct name to avoid colliding with the
+// existing no-arg helper.
+func retryPolicyFunctionCriterion(retryPolicy string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(
+		`{"type":"function","function":{"name":"min-amount","config":{"calculationNodesTags":"pricing","retryPolicy":%q}}}`,
+		retryPolicy))
+}
+
+func scheduleFunctionFixture(retryPolicy string) spi.WorkflowDefinition {
+	return spi.WorkflowDefinition{
+		Version: "1.1", Name: "wf-fn", InitialState: "S1", Active: true,
+		States: map[string]spi.StateDefinition{
+			"S1": {Transitions: []spi.TransitionDefinition{{
+				Name: "t", Next: "S2",
+				Schedule: &spi.TransitionSchedule{Function: &spi.ScheduleFunction{
+					Name: "computeFire", ResultKind: "Schedule",
+					CalculationNodesTags: "scheduler", RetryPolicy: retryPolicy,
+				}},
+			}}},
+			"S2": {},
+		},
+	}
+}
+
+func TestValidateImportRequest_CriterionRetryPolicy(t *testing.T) {
+	for _, policy := range []string{"", RetryPolicyNone, RetryPolicyFixed} {
+		t.Run("accepts "+policy, func(t *testing.T) {
+			for _, wf := range []spi.WorkflowDefinition{
+				wfWithTransitionCriterion(retryPolicyFunctionCriterion(policy)),
+				wfWithWorkflowCriterion(retryPolicyFunctionCriterion(policy)),
+			} {
+				if err := validateImportRequest([]spi.WorkflowDefinition{wf}); err != nil {
+					t.Fatalf("retryPolicy=%q: %v", policy, err)
+				}
+			}
+		})
+	}
+
+	t.Run("rejects an unknown value on a transition criterion", func(t *testing.T) {
+		err := validateImportRequest([]spi.WorkflowDefinition{
+			wfWithTransitionCriterion(retryPolicyFunctionCriterion("LINEAR_BACKOFF"))})
+		if err == nil {
+			t.Fatal("expected an error, got nil")
+		}
+		for _, want := range []string{`workflow "wf-regex"`, `state "S1"`, `transition "go"`,
+			`criterion function "min-amount"`, "unknown retryPolicy", `"LINEAR_BACKOFF"`, "NONE, FIXED, or empty"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error must contain %q; got: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("rejects an unknown value on a workflow criterion", func(t *testing.T) {
+		err := validateImportRequest([]spi.WorkflowDefinition{
+			wfWithWorkflowCriterion(retryPolicyFunctionCriterion("fixed"))})
+		if err == nil {
+			t.Fatal("expected an error: the vocabulary is case-sensitive, as on a processor")
+		}
+		for _, want := range []string{`workflow "wf-regex"`, `criterion function "min-amount"`, "unknown retryPolicy"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error must contain %q; got: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("rejects a function config that cannot be read", func(t *testing.T) {
+		crit := json.RawMessage(`{"type":"function","function":{"name":"f","config":{"retryPolicy":3}}}`)
+		err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(crit)})
+		if err == nil {
+			t.Fatal("expected an error: this criterion fails every dispatch with 'invalid criterion JSON'")
+		}
+		if !strings.Contains(err.Error(), `transition "go"`) {
+			t.Errorf("error must name the transition; got: %v", err)
+		}
+	})
+
+	t.Run("a simple criterion is untouched", func(t *testing.T) {
+		crit := json.RawMessage(`{"type":"simple","jsonPath":"$.amount","operatorType":"GREATER_THAN","value":1}`)
+		if err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(crit)}); err != nil {
+			t.Fatalf("simple criterion rejected: %v", err)
+		}
+	})
+}
+
+func TestValidateImportRequest_ScheduleFunctionRetryPolicy(t *testing.T) {
+	for _, policy := range []string{"", RetryPolicyNone, RetryPolicyFixed} {
+		if err := validateImportRequest([]spi.WorkflowDefinition{scheduleFunctionFixture(policy)}); err != nil {
+			t.Errorf("retryPolicy=%q rejected: %v", policy, err)
+		}
+	}
+	err := validateImportRequest([]spi.WorkflowDefinition{scheduleFunctionFixture("EXPONENTIAL")})
+	if err == nil {
+		t.Fatal("expected an error for an unknown retryPolicy, got nil")
+	}
+	for _, want := range []string{`workflow "wf-fn"`, `state "S1"`, `transition "t"`,
+		"schedule.function", "unknown retryPolicy", `"EXPONENTIAL"`, "NONE, FIXED, or empty"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must contain %q; got: %v", want, err)
+		}
 	}
 }
 

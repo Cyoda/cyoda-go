@@ -1,19 +1,21 @@
 package app
 
 import (
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/cluster"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/scheduler"
 )
 
 type Config struct {
@@ -25,19 +27,24 @@ type Config struct {
 	LogLevel          string
 	// Version is the ldflag-injected binary version string reported in the
 	// REST /help payload. Defaults to "dev" when unset.
-	Version            string
-	IAM                IAMConfig
-	GRPC               GRPCConfig
-	Admin              AdminConfig
-	Bootstrap          BootstrapConfig
-	CORS               CORSConfig
-	StorageBackend     string
-	StartupTimeout     time.Duration
-	Cluster            cluster.Config
-	SearchSnapshotTTL  time.Duration
-	SearchReapInterval time.Duration
+	Version        string
+	IAM            IAMConfig
+	GRPC           GRPCConfig
+	Admin          AdminConfig
+	CORS           CORSConfig
+	StorageBackend string
+	// ClockControlEnabled builds the controllable test clock, gives it to the
+	// storage plugin and every business-time reader, and accepts POST
+	// /platform/clock. A test feature: CYODA_CLOCK_CONTROL_ENABLED, default
+	// false.
+	ClockControlEnabled bool
+	StartupTimeout      time.Duration
+	Cluster             cluster.Config
+	SearchSnapshotTTL   time.Duration
+	SearchReapInterval  time.Duration
 	// ModelCacheLease is the baseline TTL for cached LOCKED model
-	// descriptors. Actual expiry is jittered ±10% to prevent cross-
+	// descriptors: the bound on a stale entry when a model.invalidate
+	// broadcast is lost. Actual expiry is jittered ±10% to prevent cross-
 	// node herding. Defaults to 5m; tune via CYODA_MODEL_CACHE_LEASE.
 	ModelCacheLease time.Duration
 	OTelEnabled     bool
@@ -69,7 +76,7 @@ type Config struct {
 	SearchJobHeartbeatInterval time.Duration
 	// SearchJobStaleAfter is how long a RUNNING async-search job may go
 	// without a heartbeat (spi.AsyncSearchStore.ClaimStale's staleness
-	// baseline — HeartbeatTime, or CreateTime when never heartbeated)
+	// baseline — HeartbeatTime, stamped at CreateJob)
 	// before the reaper (internal/domain/search.ReclaimStaleJobs, wired into
 	// the reclaim ticker in app.go) claims it and re-executes it on a live
 	// node (or fails it past the attempt cap). Must dominate
@@ -84,9 +91,12 @@ type Config struct {
 	// (Release then reclaim) does not count. CYODA_SEARCH_JOB_MAX_ATTEMPTS,
 	// default 3, minimum 1; 1 disables re-execution (a job is failed on its first executor loss).
 	SearchJobMaxAttempts int
-	// Scheduler configures the coordinator-only scan loop that fires due
-	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
+	// Scheduler configures how this node claims and runs due scheduled
+	// tasks. See SchedulerConfig.
 	Scheduler SchedulerConfig
+	// Callout frames one compute-node callout: how many tries it gets and how
+	// long a pnode waits for one cnode's answer. See CalloutConfig.
+	Callout CalloutConfig
 }
 
 // HTTPConfig holds the receive-side timeouts applied to both the API server
@@ -100,6 +110,10 @@ type Config struct {
 // net/http.Server fallback — so those two are off only when ReadTimeout is
 // also zero.
 type HTTPConfig struct {
+	// BindAddress (CYODA_HTTP_BIND_ADDRESS) is the host the API listener
+	// binds: a bare host, an IPv6 literal without brackets. Loopback by
+	// default, as for the admin listener; a container sets 0.0.0.0.
+	BindAddress       string
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
@@ -147,35 +161,84 @@ type SearchAsyncConfig struct {
 	MaxPerTenant int
 }
 
-// SchedulerConfig controls the scheduled-transition scan loop: cadence,
-// coordinator/distribution strategy selection, redispatch throttling, and
-// the engine's expiry grace band. See design doc §9 and
-// docs/superpowers/plans/2026-07-16-scheduled-transition-runtime.md Task D4.
+// SchedulerConfig controls the scheduler: how often a node claims due
+// scheduled tasks, how many runs it holds, how it proves itself alive, how it
+// retries and how it drains. Same fields, names and order as
+// scheduler.Config, which it converts to.
 type SchedulerConfig struct {
-	// Enabled is the kill switch for the scan loop. CYODA_SCHEDULER_ENABLED,
-	// default true.
+	// Enabled: CYODA_SCHEDULER_ENABLED, default true.
 	Enabled bool
-	// ScanInterval is the coordinator's scan cadence.
-	// CYODA_SCHEDULER_SCAN_INTERVAL, default 1s.
+	// ScanInterval: CYODA_SCHEDULER_SCAN_INTERVAL, default 1s, > 0.
 	ScanInterval time.Duration
-	// BatchSize caps how many due tasks a single scan pulls from the store.
-	// CYODA_SCHEDULER_BATCH_SIZE, default 100.
-	BatchSize int
-	// Distribution selects the dispatch-target strategy: "round-robin" or
-	// "self". CYODA_SCHEDULER_DISTRIBUTION, default "round-robin".
-	Distribution string
-	// Coordinator selects the coordinator-election strategy.
-	// CYODA_SCHEDULER_COORDINATOR, default "lowest-node-id".
-	Coordinator string
-	// RedispatchBackoff is the best-effort re-dispatch throttle window
-	// applied after a due task is picked up. CYODA_SCHEDULER_REDISPATCH_BACKOFF,
-	// default 30s.
-	RedispatchBackoff time.Duration
-	// ExpiryGrace is the margin above a scheduled transition's timeoutMs
-	// that the engine tolerates before expiring a late task instead of
-	// firing it. Size to at least the max inter-node clock skew.
-	// CYODA_SCHEDULER_EXPIRY_GRACE, default 100ms.
-	ExpiryGrace time.Duration
+	// MaxRuns: CYODA_SCHEDULER_MAX_RUNS, default 8, >= 1.
+	MaxRuns int
+	// MaxRunsPerTenant: CYODA_SCHEDULER_MAX_RUNS_PER_TENANT, default 4, 1..MaxRuns.
+	MaxRunsPerTenant int
+	// HeartbeatInterval: CYODA_SCHEDULER_HEARTBEAT_INTERVAL, default 15s, > 0.
+	HeartbeatInterval time.Duration
+	// StaleAfter: CYODA_SCHEDULER_STALE_AFTER, default 2m,
+	// >= scheduler.MinStaleAfter(HeartbeatInterval). The same on every node.
+	StaleAfter time.Duration
+	// MaxLostOwners: CYODA_SCHEDULER_MAX_LOST_OWNERS, default 3, >= 1.
+	MaxLostOwners int
+	// RetryDelay: CYODA_SCHEDULER_RETRY_DELAY, default 30s, > 0.
+	RetryDelay time.Duration
+	// RetryDelayMax: CYODA_SCHEDULER_RETRY_DELAY_MAX, default 15m, >= RetryDelay.
+	RetryDelayMax time.Duration
+	// ShutdownDrain: CYODA_SCHEDULER_SHUTDOWN_DRAIN, default 20s, >= 0.
+	ShutdownDrain time.Duration
+}
+
+// CalloutConfig holds the server-side settings of a compute-node callout
+// (a processor, criterion or function request).
+type CalloutConfig struct {
+	// FixedNumRetries is the number of retries after the first try for a
+	// callout whose retryPolicy is FIXED or unset; NONE always means one try.
+	// CYODA_RETRY_FIXED_NUM_RETRIES, default 3, must be >= 0.
+	FixedNumRetries int
+	// ResponseTimeout is the answer limit used when the workflow author set no
+	// positive responseTimeoutMs on the callout.
+	// CYODA_CALLOUT_RESPONSE_TIMEOUT_MS, default 30000, must be >= 1 and no
+	// larger than ResponseTimeoutMax.
+	ResponseTimeout time.Duration
+	// ResponseTimeoutMax is the largest responseTimeoutMs a workflow may carry.
+	// Workflow import refuses a larger value; a stored workflow whose value
+	// exceeds a bound lowered after import fails its callout rather than
+	// being clamped. CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS, default 60000,
+	// must be >= 1.
+	ResponseTimeoutMax time.Duration
+	// HandoverAllowance is what the owner allows a hand-over to another node
+	// on top of (tries left × answer limit), and the last term of a callout's
+	// deadline. CYODA_CALLOUT_HANDOVER_ALLOWANCE, default 30s, must be > 0.
+	HandoverAllowance time.Duration
+	// PassAllowance is how long a pass outlives its try's answer limit: the
+	// margin for routing a callback and for clocks that differ between nodes.
+	// CYODA_CALLOUT_PASS_ALLOWANCE, default 30s, must be > 0.
+	PassAllowance time.Duration
+	// JoinedResponseMaxBytes is the most a compute member's callback may
+	// answer with while it holds its transaction's gate — the owner's next
+	// move waits behind those bytes. An answer past it fails the callback with
+	// 413 JOINED_RESPONSE_TOO_LARGE rather than being cut short.
+	// CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES, default 10485760 (10 MiB),
+	// must be > 0.
+	JoinedResponseMaxBytes int
+	// JoinedMaxWaiters is how many of a compute member's callbacks may queue
+	// for one transaction behind the callback that holds it. Callbacks of one
+	// transaction are served one at a time, so a member that fires many at once
+	// buys no speed by it. Past the cap a callback is refused with
+	// 503 TOO_MANY_JOINED_REQUESTS, retryable.
+	//
+	// It bounds the queue's LENGTH, not its bytes. The cap is read before a
+	// callback's body is, so a refusal costs no buffer, but the reading
+	// reserves nothing — callbacks that arrive together can all pass it — and
+	// each then buffers its whole request, up to httpmw's compile-time 10 MiB,
+	// before it queues. The request side has no setting, and the queue has no
+	// byte ceiling: at this default, 10 MiB bodies reach a gigabyte for one
+	// transaction. JoinedResponseMaxBytes bounds the answers, not these.
+	// CYODA_CALLOUT_JOINED_MAX_WAITERS, default 128, must be > 0 — there is no
+	// "unlimited" value, an unbounded queue being what the cap exists to
+	// prevent.
+	JoinedMaxWaiters int
 }
 
 type AdminConfig struct {
@@ -193,6 +256,9 @@ type AdminConfig struct {
 }
 
 type GRPCConfig struct {
+	// BindAddress (CYODA_GRPC_BIND_ADDRESS) is the host the gRPC listener
+	// binds, with the same form and loopback default as HTTPConfig.BindAddress.
+	BindAddress       string
 	Port              int
 	KeepAliveInterval int // seconds
 	KeepAliveTimeout  int // seconds
@@ -207,8 +273,10 @@ type IAMConfig struct {
 	MockRoles      []string
 	// MockKind is the spi.PrincipalKind (as a string — "user", "service", or
 	// "system") assigned to the mock-mode default UserContext. CYODA_IAM_MOCK_KIND,
-	// default "user". Lets local/CI setups exercise service/system-attributed
-	// code paths without standing up real JWT auth.
+	// default "service": every mock-mode caller is a client, as every caller
+	// is in jwt mode. "user" and "system" let local/CI setups exercise
+	// user- or system-attributed code paths without standing up real JWT auth.
+	// Any other value refuses to start (ValidateIAM).
 	MockKind      string
 	JWTSigningKey string // PEM-encoded RSA private key (CYODA_JWT_SIGNING_KEY)
 	JWTIssuer     string // JWT issuer claim (CYODA_JWT_ISSUER)
@@ -218,16 +286,15 @@ type IAMConfig struct {
 
 	// IAM feature-flag fields — passed through to auth.IAMFeatures via AuthIAMFeatures().
 	// Individual fields document their own purpose; this block covers both
-	// /oauth/keys/* (TrustedKey* + KeypairDefault*) and /clients (M2MAdminRoleEnabled).
+	// /oauth/keys/* (TrustedKey* + KeypairDefault*) and /clients (M2M*).
 	TrustedKeyRegistrationEnabled bool
 	TrustedKeyMaxPerTenant        int
 	TrustedKeyMaxValidityDays     int
 	TrustedKeyMaxJWKProperties    int
 	KeypairDefaultValidityDays    int
-	BootstrapAudience             string
 
-	// AuthCacheReconcileInterval is the shared periodic KV-reconcile
-	// interval for the per-node auth caches (trusted keys, OIDC providers).
+	// AuthCacheReconcileInterval is the periodic KV-reconcile interval of
+	// the per-node signing-key cache.
 	// Jittered ±10% per tick; the fail-closed staleness bound is fixed at
 	// 10× this value. CYODA_AUTH_CACHE_RECONCILE_INTERVAL, default 60s,
 	// floor 1s.
@@ -237,24 +304,21 @@ type IAMConfig struct {
 	// env CYODA_IAM_M2M_ADMIN_ROLE_ENABLED, default false.
 	M2MAdminRoleEnabled bool
 
-	// OIDC holds the OIDC provider subsystem configuration.
-	// See OIDCConfig for per-field documentation.
-	OIDC OIDCConfig
-}
+	// M2MClientMaxPerTenant — see auth.IAMFeatures.M2MClientMaxPerTenant.
+	// env CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT, default 100; 0=unbounded.
+	M2MClientMaxPerTenant int
 
-// OIDCConfig holds the OIDC provider subsystem's configuration per spec §7.
-// All four timeouts are positive Durations; zero values inherit the 5s default
-// applied inside oidc.NewHTTPDiscovery. DefaultRolesClaim is the global default
-// for the roles claim name (per-provider override available via provider.RolesClaim).
-// AllowPrivateNetworks is a test/dev override of the SSRF blocklist; production
-// deployments leave it false.
-type OIDCConfig struct {
-	RequireHTTPS             bool
-	ConnectTimeout           time.Duration
-	SocketTimeout            time.Duration
-	ConnectionRequestTimeout time.Duration
-	AllowPrivateNetworks     bool
-	DefaultRolesClaim        string
+	// TokenRequestsPerMinute limits each client's POST /tenants/{tenant}/oauth/token requests
+	// on one node, across both grants; over it the answer is 429 slow_down.
+	// env CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE, default 600; 0=unlimited.
+	TokenRequestsPerMinute int
+
+	// TokenMaxConcurrentSecretChecks bounds the bcrypt comparisons
+	// POST /tenants/{tenant}/oauth/token runs at once on one node; a request that gets no slot
+	// within 1 s answers 503. env CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS,
+	// default runtime.GOMAXPROCS(0), the CPUs the process may use (it follows a
+	// container CPU limit); at least 1.
+	TokenMaxConcurrentSecretChecks int
 }
 
 // CORSConfig controls cross-origin resource sharing for the public HTTP
@@ -276,21 +340,12 @@ type CORSConfig struct {
 	AllowedOrigins []string // populated only in allowlist mode (Wildcard==false, len > 0)
 }
 
-type BootstrapConfig struct {
-	ClientID     string // CYODA_BOOTSTRAP_CLIENT_ID
-	ClientSecret string // CYODA_BOOTSTRAP_CLIENT_SECRET (optional, generated if empty)
-	TenantID     string // CYODA_BOOTSTRAP_TENANT_ID
-	UserID       string // CYODA_BOOTSTRAP_USER_ID
-	Roles        string // CYODA_BOOTSTRAP_ROLES (comma-separated)
-}
-
 func DefaultConfig() Config {
 	// Resolve credential env vars first; _FILE paths take precedence over
 	// the plain var when both are set. mustResolveSecretEnv panics if the
 	// _FILE path is set but unreadable — that is a fatal startup misconfiguration.
-	jwtSigningKey := envPEMFromSecret("CYODA_JWT_SIGNING_KEY")
+	jwt := mustLoadJWTSettings()
 	hmacSecret := envHexFromSecret("CYODA_HMAC_SECRET")
-	bootstrapClientSecret := mustResolveSecretEnv("CYODA_BOOTSTRAP_CLIENT_SECRET")
 	metricsBearerToken := mustResolveSecretEnv("CYODA_METRICS_BEARER")
 
 	// CYODA_STATS_GROUP_MAX defends against an operator setting the cap to
@@ -323,16 +378,10 @@ func DefaultConfig() Config {
 		LogLevel:          envString("CYODA_LOG_LEVEL", "info"),
 		Version:           "dev",
 		GRPC: GRPCConfig{
+			BindAddress:       envString("CYODA_GRPC_BIND_ADDRESS", "127.0.0.1"),
 			Port:              envInt("CYODA_GRPC_PORT", 9090),
 			KeepAliveInterval: envInt("CYODA_KEEPALIVE_INTERVAL", 10),
 			KeepAliveTimeout:  envInt("CYODA_KEEPALIVE_TIMEOUT", 30),
-		},
-		Bootstrap: BootstrapConfig{
-			ClientID:     envString("CYODA_BOOTSTRAP_CLIENT_ID", ""),
-			ClientSecret: bootstrapClientSecret,
-			TenantID:     envString("CYODA_BOOTSTRAP_TENANT_ID", "default-tenant"),
-			UserID:       envString("CYODA_BOOTSTRAP_USER_ID", "admin"),
-			Roles:        envString("CYODA_BOOTSTRAP_ROLES", "ROLE_ADMIN,ROLE_M2M"),
 		},
 		CORS: func() CORSConfig {
 			wildcard, origins := parseCORSAllowedOrigins(envString("CYODA_CORS_ALLOWED_ORIGINS", ""))
@@ -342,13 +391,14 @@ func DefaultConfig() Config {
 				AllowedOrigins: origins,
 			}
 		}(),
-		SearchSnapshotTTL:  envDuration("CYODA_SEARCH_SNAPSHOT_TTL", 1*time.Hour),
-		SearchReapInterval: envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
-		ModelCacheLease:    envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
-		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
-		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
-		StatsGroupMax:      statsGroupMax,
-		SearchMaxSortKeys:  maxSortKeys,
+		SearchSnapshotTTL:   envDuration("CYODA_SEARCH_SNAPSHOT_TTL", 1*time.Hour),
+		SearchReapInterval:  envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
+		ModelCacheLease:     envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
+		OTelEnabled:         envBool("CYODA_OTEL_ENABLED", false),
+		StorageBackend:      envString("CYODA_STORAGE_BACKEND", "memory"),
+		ClockControlEnabled: envBool("CYODA_CLOCK_CONTROL_ENABLED", false),
+		StatsGroupMax:       statsGroupMax,
+		SearchMaxSortKeys:   maxSortKeys,
 		SearchAsync: SearchAsyncConfig{
 			Workers:      asyncWorkers,
 			QueueLen:     envInt("CYODA_SEARCH_ASYNC_QUEUE", 256),
@@ -365,34 +415,28 @@ func DefaultConfig() Config {
 		},
 		StartupTimeout: envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
 		IAM: IAMConfig{
-			Mode:                          envString("CYODA_IAM_MODE", "mock"),
-			MockUserID:                    "mock-user-001",
-			MockUserName:                  "Mock User",
-			MockTenantID:                  "mock-tenant",
-			MockTenantName:                "Mock Tenant",
-			MockRoles:                     mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
-			MockKind:                      envString("CYODA_IAM_MOCK_KIND", "user"),
-			JWTSigningKey:                 jwtSigningKey,
-			JWTIssuer:                     envString("CYODA_JWT_ISSUER", "cyoda"),
-			JWTAudience:                   envString("CYODA_JWT_AUDIENCE", ""),
-			JWTExpiry:                     envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
-			RequireJWT:                    envBool("CYODA_REQUIRE_JWT", false),
-			TrustedKeyRegistrationEnabled: envBool("CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED", false),
-			TrustedKeyMaxPerTenant:        envInt("CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", 10),
-			TrustedKeyMaxValidityDays:     envInt("CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", 365),
-			TrustedKeyMaxJWKProperties:    envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
-			KeypairDefaultValidityDays:    envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
-			BootstrapAudience:             envString("CYODA_JWT_BOOTSTRAP_AUDIENCE", "client"),
-			AuthCacheReconcileInterval:    envDuration("CYODA_AUTH_CACHE_RECONCILE_INTERVAL", 60*time.Second),
-			M2MAdminRoleEnabled:           envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
-			OIDC: OIDCConfig{
-				RequireHTTPS:             envBool("CYODA_OIDC_REQUIRE_HTTPS", true),
-				ConnectTimeout:           envMillis("CYODA_OIDC_CONNECT_TIMEOUT_MS", 5*time.Second),
-				SocketTimeout:            envMillis("CYODA_OIDC_SOCKET_TIMEOUT_MS", 5*time.Second),
-				ConnectionRequestTimeout: envMillis("CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS", 5*time.Second),
-				AllowPrivateNetworks:     envBool("CYODA_OIDC_ALLOW_PRIVATE_NETWORKS", false),
-				DefaultRolesClaim:        envString("CYODA_OIDC_ROLES_CLAIM", "roles"),
-			},
+			Mode:                           envString("CYODA_IAM_MODE", "mock"),
+			MockUserID:                     "mock-user-001",
+			MockUserName:                   "Mock User",
+			MockTenantID:                   "mock-tenant",
+			MockTenantName:                 "Mock Tenant",
+			MockRoles:                      mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
+			MockKind:                       envString("CYODA_IAM_MOCK_KIND", "service"),
+			JWTSigningKey:                  jwt.SigningKeyPEM,
+			JWTIssuer:                      jwt.Issuer,
+			JWTAudience:                    jwt.Audience,
+			JWTExpiry:                      jwt.ExpirySeconds,
+			RequireJWT:                     envBool("CYODA_REQUIRE_JWT", false),
+			TrustedKeyRegistrationEnabled:  envBool("CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED", false),
+			TrustedKeyMaxPerTenant:         envInt("CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", 10),
+			TrustedKeyMaxValidityDays:      envInt("CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", 365),
+			TrustedKeyMaxJWKProperties:     envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
+			KeypairDefaultValidityDays:     envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
+			AuthCacheReconcileInterval:     envDuration("CYODA_AUTH_CACHE_RECONCILE_INTERVAL", 60*time.Second),
+			M2MAdminRoleEnabled:            envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
+			M2MClientMaxPerTenant:          envInt("CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", 100),
+			TokenRequestsPerMinute:         envInt("CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", 600),
+			TokenMaxConcurrentSecretChecks: envInt("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS", runtime.GOMAXPROCS(0)),
 		},
 		Cluster: cluster.Config{
 			// Enabled defaults false for easier onboarding — NOT because multi-node is
@@ -409,11 +453,7 @@ func DefaultConfig() Config {
 			ProxyTimeout:           envDuration("CYODA_PROXY_TIMEOUT", 30*time.Second),
 			HMACSecret:             hmacSecret,
 			DispatchWaitTimeout:    envDuration("CYODA_DISPATCH_WAIT_TIMEOUT", 5*time.Second),
-			DispatchForwardTimeout: envDuration("CYODA_DISPATCH_FORWARD_TIMEOUT", 30*time.Second),
-			// TxTokenTTL must outlive the full dispatch round-trip plus the callback's
-			// verify step, including the forwarded-chain case where two budgets stack
-			// (local dispatch + peer forward). Default ≥3× the dispatch/forward timeout (30s).
-			TxTokenTTL: envDuration("CYODA_TX_TOKEN_TTL", 90*time.Second),
+			DispatchConnectTimeout: envDuration("CYODA_DISPATCH_CONNECT_TIMEOUT", 2*time.Second),
 			// Test-only: allow the dispatch HTTP forwarder to target loopback peers.
 			// Multi-node E2E fixtures run every node on 127.0.0.1; production leaves
 			// this false so the SSRF guard stays active.
@@ -421,14 +461,27 @@ func DefaultConfig() Config {
 		},
 		Scheduler: SchedulerConfig{
 			Enabled:           envBool("CYODA_SCHEDULER_ENABLED", true),
-			ScanInterval:      envDuration("CYODA_SCHEDULER_SCAN_INTERVAL", 1*time.Second),
-			BatchSize:         envInt("CYODA_SCHEDULER_BATCH_SIZE", 100),
-			Distribution:      envString("CYODA_SCHEDULER_DISTRIBUTION", "round-robin"),
-			Coordinator:       envString("CYODA_SCHEDULER_COORDINATOR", "lowest-node-id"),
-			RedispatchBackoff: envDuration("CYODA_SCHEDULER_REDISPATCH_BACKOFF", 30*time.Second),
-			ExpiryGrace:       envDuration("CYODA_SCHEDULER_EXPIRY_GRACE", 100*time.Millisecond),
+			ScanInterval:      envDuration("CYODA_SCHEDULER_SCAN_INTERVAL", time.Second),
+			MaxRuns:           envInt("CYODA_SCHEDULER_MAX_RUNS", 8),
+			MaxRunsPerTenant:  envInt("CYODA_SCHEDULER_MAX_RUNS_PER_TENANT", 4),
+			HeartbeatInterval: envDuration("CYODA_SCHEDULER_HEARTBEAT_INTERVAL", 15*time.Second),
+			StaleAfter:        envDuration("CYODA_SCHEDULER_STALE_AFTER", 2*time.Minute),
+			MaxLostOwners:     envInt("CYODA_SCHEDULER_MAX_LOST_OWNERS", 3),
+			RetryDelay:        envDuration("CYODA_SCHEDULER_RETRY_DELAY", 30*time.Second),
+			RetryDelayMax:     envDuration("CYODA_SCHEDULER_RETRY_DELAY_MAX", 15*time.Minute),
+			ShutdownDrain:     envDuration("CYODA_SCHEDULER_SHUTDOWN_DRAIN", 20*time.Second),
+		},
+		Callout: CalloutConfig{
+			FixedNumRetries:        envInt("CYODA_RETRY_FIXED_NUM_RETRIES", 3),
+			ResponseTimeout:        envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS", 30*time.Second),
+			ResponseTimeoutMax:     envMillis("CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS", 60*time.Second),
+			HandoverAllowance:      envDuration("CYODA_CALLOUT_HANDOVER_ALLOWANCE", 30*time.Second),
+			PassAllowance:          envDuration("CYODA_CALLOUT_PASS_ALLOWANCE", 30*time.Second),
+			JoinedResponseMaxBytes: envInt("CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES", 10485760),
+			JoinedMaxWaiters:       envInt("CYODA_CALLOUT_JOINED_MAX_WAITERS", 128),
 		},
 		HTTP: HTTPConfig{
+			BindAddress:       envString("CYODA_HTTP_BIND_ADDRESS", "127.0.0.1"),
 			ReadHeaderTimeout: envDuration("CYODA_HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
 			ReadTimeout:       envDuration("CYODA_HTTP_READ_TIMEOUT", 5*time.Minute),
 			WriteTimeout:      envDuration("CYODA_HTTP_WRITE_TIMEOUT", 0),
@@ -437,21 +490,17 @@ func DefaultConfig() Config {
 	}
 }
 
-// envPEMFromSecret resolves the raw value for a PEM credential via
-// mustResolveSecretEnv (honouring <name>_FILE), then normalises it:
-// if the value starts with "-----BEGIN" it is used as-is; otherwise it
-// is treated as base64-encoded PEM (single-line friendly for .env files
-// and docker env_file).
-func envPEMFromSecret(key string) string {
-	v := mustResolveSecretEnv(key)
-	if v == "" || strings.HasPrefix(v, "-----BEGIN") {
-		return v
-	}
-	decoded, err := base64.StdEncoding.DecodeString(v)
+// mustLoadJWTSettings is LoadJWTSettings (the signing key honouring
+// CYODA_JWT_SIGNING_KEY_FILE and accepting PEM or base64-encoded PEM, plus
+// issuer, audience and expiry), panicking on error exactly as
+// mustResolveSecretEnv does — a startup-fatal misconfiguration, not a runtime
+// condition.
+func mustLoadJWTSettings() JWTSettings {
+	s, err := LoadJWTSettings()
 	if err != nil {
-		return v // not base64, return as-is
+		panic(fmt.Sprintf("config: %v", err))
 	}
-	return string(decoded)
+	return s
 }
 
 // envHexFromSecret resolves the raw value for a hex credential via
@@ -596,10 +645,9 @@ func (c CORSConfig) Mode() string {
 	}
 }
 
-// ValidateCORS verifies the CORS configuration. It is called once at startup
-// (from cmd/cyoda/main.go after slog initialisation) and returns an error
-// for any invalid origin or mode combination. A non-nil return causes the
-// binary to slog the error and os.Exit(1).
+// ValidateCORS verifies the CORS configuration. Checked by Config.Validate at
+// startup, and returns an error for any invalid origin or mode combination.
+// A non-nil return causes the binary to slog the error and os.Exit(1).
 //
 // Validation rules (full set):
 //   - Wildcard==true and AllowedOrigins non-empty is a programming error
@@ -626,7 +674,7 @@ func ValidateCORS(c CORSConfig) error {
 
 // validateCORSOrigin returns nil iff o is a well-formed origin acceptable
 // in the allowlist. Rejection rules per spec §"Allowlist normalization
-// and validation". Run once at startup, never on the hot path.
+// and validation". Checked by Config.Validate at startup, never on the hot path.
 func validateCORSOrigin(o string) error {
 	if strings.TrimSpace(o) == "" {
 		return fmt.Errorf("origin %q: empty entry not allowed", o)
@@ -713,9 +761,10 @@ func isASCII(s string) bool {
 // guard. Config is a QA'd artefact rather than untrusted input, so this is
 // an invariant held where it is relied on, not input hardening.
 //
-// The binary keeps its own per-setting calls so its startup diagnostics
-// name the offending setting; it exits before New is ever reached, so the
-// same error is never reported twice.
+// The binary calls Validate in cmd/cyoda/main.go, before printing the
+// startup banner, and app.New calls it again. An invalid config exits in
+// main before New is ever reached, so the error is reported once. Each
+// validator's error names its offending CYODA_* setting.
 func (c Config) Validate() error {
 	if err := ValidateGRPCKeepAlive(c.GRPC); err != nil {
 		return err
@@ -726,13 +775,31 @@ func (c Config) Validate() error {
 	if err := ValidateSearchJobHeartbeat(c.SearchJobHeartbeatInterval); err != nil {
 		return err
 	}
+	if err := ValidateSearchSnapshot(c.SearchSnapshotTTL, c.SearchReapInterval); err != nil {
+		return err
+	}
 	if err := ValidateSearchJobStaleAfter(c.SearchJobStaleAfter, c.SearchJobHeartbeatInterval); err != nil {
 		return err
 	}
 	if err := ValidateSearchJobMaxAttempts(c.SearchJobMaxAttempts); err != nil {
 		return err
 	}
-	return ValidateHTTP(c.HTTP)
+	if err := ValidateCallout(c.Callout); err != nil {
+		return err
+	}
+	if err := ValidateDispatch(c.Cluster); err != nil {
+		return err
+	}
+	if err := ValidateScheduler(c.Scheduler); err != nil {
+		return err
+	}
+	if err := ValidateHTTP(c.HTTP); err != nil {
+		return err
+	}
+	if err := ValidateIAM(c.IAM); err != nil {
+		return err
+	}
+	return ValidateCORS(c.CORS)
 }
 
 // ValidateGRPCKeepAlive rejects a keep-alive interval or timeout that is not
@@ -750,9 +817,8 @@ func ValidateGRPCKeepAlive(c GRPCConfig) error {
 }
 
 // ValidateSearchAsync enforces startup-time correctness for the
-// async-search worker pool sizing. Called once at startup (from
-// cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
-// and os.Exit(1).
+// async-search worker pool sizing. Checked by Config.Validate at startup;
+// a non-nil return causes the binary to slog the error and os.Exit(1).
 //
 // Config is a QA'd artefact, not runtime input: an invalid value is a hard
 // error here rather than silently clamped to the default the way
@@ -776,9 +842,9 @@ func ValidateSearchAsync(c SearchAsyncConfig) error {
 }
 
 // ValidateSearchJobHeartbeat enforces startup-time correctness for
-// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL. Called once at startup (from
-// cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
-// and os.Exit(1).
+// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL. Checked by Config.Validate at
+// startup; a non-nil return causes the binary to slog the error and
+// os.Exit(1).
 //
 // Config is a QA'd artefact, not runtime input: a non-positive interval is a
 // hard startup error rather than silently clamped to the default, matching
@@ -787,6 +853,20 @@ func ValidateSearchAsync(c SearchAsyncConfig) error {
 func ValidateSearchJobHeartbeat(interval time.Duration) error {
 	if interval <= 0 {
 		return fmt.Errorf("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL must be > 0, got %s", interval)
+	}
+	return nil
+}
+
+// ValidateSearchSnapshot rejects a non-positive snapshot TTL or reap
+// interval. A finished job is readable for the TTL, and its expirationDate
+// reports it, so a non-positive one has no meaning. time.NewTicker panics on
+// a non-positive reap interval.
+func ValidateSearchSnapshot(ttl, reapInterval time.Duration) error {
+	if ttl <= 0 {
+		return fmt.Errorf("CYODA_SEARCH_SNAPSHOT_TTL must be > 0, got %s", ttl)
+	}
+	if reapInterval <= 0 {
+		return fmt.Errorf("CYODA_SEARCH_REAP_INTERVAL must be > 0, got %s", reapInterval)
 	}
 	return nil
 }
@@ -801,9 +881,9 @@ const staleAfterMinMultiple = 4
 
 // ValidateSearchJobStaleAfter enforces startup-time correctness for
 // CYODA_SEARCH_JOB_STALE_AFTER against CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL.
-// Called once at startup (from cmd/cyoda/main.go), after both
-// ValidateSearchJobHeartbeat has already rejected a non-positive interval;
-// a non-nil return causes the binary to slog the error and os.Exit(1).
+// Checked by Config.Validate at startup, after ValidateSearchJobHeartbeat
+// has already rejected a non-positive interval; a non-nil return causes
+// the binary to slog the error and os.Exit(1).
 //
 // Config is a QA'd artefact: the interval « staleAfter invariant
 // (spi.AsyncSearchStore.ClaimStale's doc comment) is made mechanically
@@ -825,6 +905,99 @@ func ValidateSearchJobStaleAfter(staleAfter, interval time.Duration) error {
 func ValidateSearchJobMaxAttempts(n int) error {
 	if n < 1 {
 		return fmt.Errorf("CYODA_SEARCH_JOB_MAX_ATTEMPTS must be >= 1, got %d", n)
+	}
+	return nil
+}
+
+// ValidateCallout rejects callout settings no callout could be run under.
+// Config is a QA'd artefact: an out-of-range value is a hard startup error,
+// not a clamp. A default answer limit above the upper bound is rejected
+// because import would then refuse a workflow that merely spells out the
+// default.
+func ValidateCallout(c CalloutConfig) error {
+	if c.FixedNumRetries < 0 {
+		return fmt.Errorf("CYODA_RETRY_FIXED_NUM_RETRIES must be >= 0, got %d", c.FixedNumRetries)
+	}
+	if c.ResponseTimeout < time.Millisecond {
+		return fmt.Errorf("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS must be >= 1, got %d", c.ResponseTimeout.Milliseconds())
+	}
+	if c.ResponseTimeoutMax < time.Millisecond {
+		return fmt.Errorf("CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS must be >= 1, got %d", c.ResponseTimeoutMax.Milliseconds())
+	}
+	if c.ResponseTimeout > c.ResponseTimeoutMax {
+		return fmt.Errorf("CYODA_CALLOUT_RESPONSE_TIMEOUT_MS (%d) must not exceed CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS (%d)",
+			c.ResponseTimeout.Milliseconds(), c.ResponseTimeoutMax.Milliseconds())
+	}
+	if c.HandoverAllowance <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_HANDOVER_ALLOWANCE must be > 0, got %s", c.HandoverAllowance)
+	}
+	if c.PassAllowance <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_PASS_ALLOWANCE must be > 0, got %s", c.PassAllowance)
+	}
+	if c.JoinedResponseMaxBytes <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES must be > 0, got %d", c.JoinedResponseMaxBytes)
+	}
+	if c.JoinedMaxWaiters <= 0 {
+		return fmt.Errorf("CYODA_CALLOUT_JOINED_MAX_WAITERS must be > 0, got %d", c.JoinedMaxWaiters)
+	}
+	return nil
+}
+
+// ValidateDispatch rejects peer-call durations that cannot be honoured. The
+// patience may be zero (waiting disabled) but not negative; the connect
+// timeout bounds a network call and must be positive; the proxy timeout
+// bounds a proxied request, a platform clock confirmation round and each
+// status ask of the cluster status read (half of it the database check), and
+// must be positive. They are checked whether or not clustering is enabled: a value
+// that would fail the moment clustering is switched on is a configuration
+// error today.
+func ValidateDispatch(c cluster.Config) error {
+	if c.DispatchWaitTimeout < 0 {
+		return fmt.Errorf("CYODA_DISPATCH_WAIT_TIMEOUT must not be negative (0 disables waiting), got %s", c.DispatchWaitTimeout)
+	}
+	if c.DispatchConnectTimeout <= 0 {
+		return fmt.Errorf("CYODA_DISPATCH_CONNECT_TIMEOUT must be > 0, got %s", c.DispatchConnectTimeout)
+	}
+	if c.ProxyTimeout <= 0 {
+		return fmt.Errorf("CYODA_PROXY_TIMEOUT must be > 0, got %s", c.ProxyTimeout)
+	}
+	return nil
+}
+
+// ValidateScheduler rejects scheduler settings no scheduler could run under.
+// Config is a QA'd artefact: an out-of-range value is a startup error, not a
+// clamp. STALE_AFTER must leave the watchdog room for one slow or failed
+// heartbeat, so it grows with the heartbeat interval.
+func ValidateScheduler(c SchedulerConfig) error {
+	if c.ScanInterval <= 0 {
+		return fmt.Errorf("CYODA_SCHEDULER_SCAN_INTERVAL must be > 0, got %s", c.ScanInterval)
+	}
+	if c.MaxRuns < 1 {
+		return fmt.Errorf("CYODA_SCHEDULER_MAX_RUNS must be >= 1, got %d", c.MaxRuns)
+	}
+	if c.MaxRunsPerTenant < 1 || c.MaxRunsPerTenant > c.MaxRuns {
+		return fmt.Errorf("CYODA_SCHEDULER_MAX_RUNS_PER_TENANT must be between 1 and CYODA_SCHEDULER_MAX_RUNS (%d), got %d",
+			c.MaxRuns, c.MaxRunsPerTenant)
+	}
+	if c.HeartbeatInterval <= 0 {
+		return fmt.Errorf("CYODA_SCHEDULER_HEARTBEAT_INTERVAL must be > 0, got %s", c.HeartbeatInterval)
+	}
+	if minStale := scheduler.MinStaleAfter(c.HeartbeatInterval); c.StaleAfter < minStale {
+		return fmt.Errorf("CYODA_SCHEDULER_STALE_AFTER must be >= 50s + 3 x CYODA_SCHEDULER_HEARTBEAT_INTERVAL (%s, given interval=%s), got %s",
+			minStale, c.HeartbeatInterval, c.StaleAfter)
+	}
+	if c.MaxLostOwners < 1 {
+		return fmt.Errorf("CYODA_SCHEDULER_MAX_LOST_OWNERS must be >= 1, got %d", c.MaxLostOwners)
+	}
+	if c.RetryDelay <= 0 {
+		return fmt.Errorf("CYODA_SCHEDULER_RETRY_DELAY must be > 0, got %s", c.RetryDelay)
+	}
+	if c.RetryDelayMax < c.RetryDelay {
+		return fmt.Errorf("CYODA_SCHEDULER_RETRY_DELAY_MAX must be >= CYODA_SCHEDULER_RETRY_DELAY (%s), got %s",
+			c.RetryDelay, c.RetryDelayMax)
+	}
+	if c.ShutdownDrain < 0 {
+		return fmt.Errorf("CYODA_SCHEDULER_SHUTDOWN_DRAIN must be >= 0, got %s", c.ShutdownDrain)
 	}
 	return nil
 }
@@ -854,18 +1027,37 @@ func ValidateHTTP(c HTTPConfig) error {
 // ValidateIAM enforces startup-time IAM correctness. When CYODA_REQUIRE_JWT
 // is set, mock mode is rejected and the signing key must be present. In JWT
 // mode (regardless of RequireJWT) IAMFeatures are validated so that invalid
-// env values for BootstrapAudience, TrustedKeyMaxPerTenant, MaxValidityDays,
-// etc. fail startup rather than being silently ignored.
-// Callers must invoke this before wiring auth in New().
+// env values for TrustedKeyMaxPerTenant, MaxValidityDays, etc. fail startup
+// rather than being silently ignored. Called from Config.Validate, which New
+// runs before wiring auth.
 func ValidateIAM(iam IAMConfig) error {
 	// RequireJWT demands jwt mode — reject mock so a misconfigured Helm deploy
 	// can never silently fall back to unauthenticated access.
 	if iam.RequireJWT && iam.Mode != "jwt" {
 		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_IAM_MODE=%q (expected \"jwt\")", iam.Mode)
 	}
+	// Only these two modes exist. app.New wires JWT auth for "jwt" and mock
+	// auth for anything else, so an unrecognised value (a typo, a different
+	// case) would otherwise run every request as the mock admin.
+	if iam.Mode != "mock" && iam.Mode != "jwt" {
+		return fmt.Errorf("CYODA_IAM_MODE=%q is not supported (expected \"mock\" or \"jwt\")", iam.Mode)
+	}
+	// Unconditional: a bad mock kind is a config error in any mode. app.New
+	// casts it to the mock principal's kind unchecked.
+	switch spi.PrincipalKind(iam.MockKind) {
+	case spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem:
+	default:
+		return fmt.Errorf("CYODA_IAM_MOCK_KIND=%q is not supported (expected \"user\", \"service\" or \"system\")", iam.MockKind)
+	}
 	// Unconditional: a bad explicit interval is a config error in any mode.
 	if iam.AuthCacheReconcileInterval < time.Second {
 		return fmt.Errorf("CYODA_AUTH_CACHE_RECONCILE_INTERVAL must be >= 1s, got %s", iam.AuthCacheReconcileInterval)
+	}
+	if iam.TokenRequestsPerMinute < 0 {
+		return fmt.Errorf("CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE must be >= 0 (0 = unlimited), got %d", iam.TokenRequestsPerMinute)
+	}
+	if iam.TokenMaxConcurrentSecretChecks < 1 {
+		return fmt.Errorf("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS must be >= 1, got %d", iam.TokenMaxConcurrentSecretChecks)
 	}
 	// Mock mode needs no further validation.
 	if iam.Mode == "mock" {
@@ -891,7 +1083,7 @@ func (c IAMConfig) AuthIAMFeatures() auth.IAMFeatures {
 		TrustedKeyMaxValidityDays:     c.TrustedKeyMaxValidityDays,
 		TrustedKeyMaxJWKProperties:    c.TrustedKeyMaxJWKProperties,
 		KeypairDefaultValidityDays:    c.KeypairDefaultValidityDays,
-		BootstrapAudience:             c.BootstrapAudience,
 		M2MAdminRoleEnabled:           c.M2MAdminRoleEnabled,
+		M2MClientMaxPerTenant:         c.M2MClientMaxPerTenant,
 	}
 }

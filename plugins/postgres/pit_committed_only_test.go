@@ -9,14 +9,11 @@ package postgres_test
 // Querier, which joins the caller's pgx.Tx — so a point-in-time read issued
 // there sees the transaction's OWN uncommitted writes.
 //
-// The `transaction_time <= CURRENT_TIMESTAMP` guard in the PIT queries cannot
-// prevent it: Save stamps valid_time/transaction_time from CURRENT_TIMESTAMP,
-// which PostgreSQL fixes at TRANSACTION START, so inside the writing
-// transaction the comparison reduces to T_start <= T_start — trivially true.
-// The only thing that actually reads committed state is running the query off
-// the transaction, on the pool. GetPage's asAt path already does this
-// (entity_store.go's getPageAsAt); these tests hold the rest of the family to
-// the same behaviour.
+// The PIT queries carry no wall-clock guard that could hide an uncommitted
+// write, and none could: the only thing that reads committed state is running
+// the query off the transaction, on the pool (committedQuerier). GetPage's
+// asAt path does this (entity_store.go's getPageAsAt); these tests hold the
+// rest of the family to the same behaviour.
 //
 // Every test below writes INSIDE a transaction and then issues the
 // point-in-time read from that same transaction, at an `asAt` deliberately in
@@ -29,8 +26,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 var pitModel = spi.ModelRef{EntityName: "pitperson", ModelVersion: "1"}
@@ -48,6 +45,7 @@ func setupPITCommitted(t *testing.T) (*postgres.StoreFactory, *postgres.Transact
 	t.Helper()
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant(pitCommittedTenant)
+	lockModels(t, factory, ctx, pitModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore (seed): %v", err)

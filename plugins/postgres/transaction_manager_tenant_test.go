@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Tenant-isolation regression tests for the postgres plugin's TM lifecycle

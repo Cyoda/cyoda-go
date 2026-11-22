@@ -5,23 +5,21 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 type contextT = context.Context
 
-func seedOne(t *testing.T, store spi.EntityStore, ctx contextT, id string, ref spi.ModelRef) *spi.Entity {
+// seedOne commits the entity in a transaction of its own, so it carries a
+// real transaction ID: a compare-and-save naming it is a genuine "expect this
+// version" rather than the empty ID, which is rejected outright.
+func seedOne(t *testing.T, tm spi.TransactionManager, store spi.EntityStore, ctx contextT, id string, ref spi.ModelRef) *spi.Entity {
 	t.Helper()
-	e := &spi.Entity{
-		// A real transaction ID, so a compare-and-save naming it is a
-		// genuine "expect this version" rather than the empty ID, which is
-		// rejected outright.
-		Meta: spi.EntityMeta{ID: id, TenantID: "tenant-dtw", ModelRef: ref, State: "open", TransactionID: "tx-seed"},
+	saveCommitted(t, tm, store, ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: id, TenantID: "tenant-dtw", ModelRef: ref, State: "open"},
 		Data: []byte(`{"n":1}`),
-	}
-	if _, err := store.Save(ctx, e); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	})
 	got, err := store.Get(ctx, id)
 	if err != nil {
 		t.Fatalf("seed Get: %v", err)
@@ -37,11 +35,12 @@ func TestTx_DeleteThenCompareAndSave_Conflicts(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	committed := seedOne(t, store, ctx, "e-cas", ref)
+	committed := seedOne(t, tm, store, ctx, "e-cas", ref)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -69,11 +68,12 @@ func TestTx_DeleteThenSave_CommitsPresent(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	committed := seedOne(t, store, ctx, "e-save", ref)
+	committed := seedOne(t, tm, store, ctx, "e-save", ref)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -115,11 +115,12 @@ func TestTx_DeleteThenCompareAndSaveEmpty_Rejected(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	committed := seedOne(t, store, ctx, "e-cas-recreate", ref)
+	committed := seedOne(t, tm, store, ctx, "e-cas-recreate", ref)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -152,11 +153,12 @@ func TestTx_SaveThenCompareAndSave_Conflicts(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	committed := seedOne(t, store, ctx, "e-scas", ref)
+	committed := seedOne(t, tm, store, ctx, "e-scas", ref)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -193,11 +195,12 @@ func TestTx_SaveThenCompareAndSave_WithOwnTxID_Succeeds(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-dtw", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dtw", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	committed := seedOne(t, store, ctx, "e-scas-own", ref)
+	committed := seedOne(t, tm, store, ctx, "e-scas-own", ref)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {

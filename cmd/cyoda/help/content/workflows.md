@@ -3,6 +3,7 @@ topic: workflows
 title: "workflows — state machine definitions"
 stability: stable
 see_also:
+  - design
   - models
   - crud
   - grpc
@@ -13,10 +14,17 @@ see_also:
   - errors.WORKFLOW_FAILED
   - errors.NO_COMPUTE_MEMBER_FOR_TAG
   - errors.COMPUTE_MEMBER_DISCONNECTED
+  - errors.DISPATCH_TIMEOUT
+  - errors.CALLOUT_FAILED
+  - errors.CALLOUT_SUPERSEDED
   - errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED
   - errors.VALIDATION_FAILED
   - errors.MODEL_NOT_FOUND
   - errors.SCHEDULE_FUNCTION_INVALID_RESULT
+  - config.grpc
+  - scheduled-tasks
+  - config.scheduler
+  - errors.CONFLICT
 ---
 
 # workflows
@@ -36,11 +44,11 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints requ
 
 ## DESCRIPTION
 
-A workflow definition is a named finite state machine attached to an entity model. Workflows are stored per model reference `(entityName, modelVersion)`. A model may have multiple workflow definitions; the engine selects the matching one per entity using the workflow-level `criterion` field evaluated at entity creation time. When no `criterion` matches, the engine uses the default built-in workflow.
+A workflow definition is a named finite state machine attached to an entity model. Workflows are stored per model reference `(entityName, modelVersion)`. A model may have multiple workflow definitions; the engine selects the matching one per entity using the workflow-level `criterion` field, on every operation that runs the entity's workflow (see *Workflow-level selection*). When no `criterion` matches, the engine uses the default built-in workflow.
 
-The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. Manual transitions are triggered by the client via `PUT /entity/{format}/{entityId}/{transition}`.
+The engine executes automatically after every entity write. It sets the initial state, evaluates automated transitions (cascade), and invokes processors on each transition. A client fires a transition by naming it on a save: `PUT` or `PATCH /entity/{format}/{entityId}/{transition}`, an item's `transition` in a collection update (`cyoda help crud`), or gRPC `EntityTransitionRequest` (`cyoda help grpc`).
 
-The engine enforces a per-state visit limit of 10 by default (configurable via `WithMaxStateVisits`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time.
+The engine enforces a per-state visit limit of 10 by default (set by `CYODA_MAX_STATE_VISITS`) and an absolute cascade depth limit of 100 to prevent infinite loops. Static cycle detection runs at import time. Both limits count within one cascade. A callout never writes the entity its workflow runs for (PROCESSORS, *Design rule*).
 
 ## WORKFLOW SCHEMA
 
@@ -48,7 +56,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1.4",
+  "version": "1.5",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
@@ -128,9 +136,9 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 **TransitionDefinition fields:**
 
-- `name` — string — transition name; used by the client in `PUT /entity/{format}/{entityId}/{name}` and in engine cascade
+- `name` — string — transition name; a client names it on a save (see DESCRIPTION)
 - `next` — string — target state; must exist in `states`
-- `manual` — boolean — `true` means the transition requires an explicit client request; `false` means the engine evaluates it automatically in cascade
+- `manual` — boolean, required — whether the engine fires the transition on its own. `false`: the engine evaluates it in the cascade after every write, unless it has a `schedule`, which fires it instead (see SCHEDULED TRANSITIONS). `true`: the engine never fires it; it fires only when a client names it. `manual` does not limit what a client can name: a save can name any transition of the current state that is not `disabled` and has no `schedule`, a `manual: false` one included. There is no default: an import whose transition omits `manual` or sends `null` is rejected (`400 VALIDATION_FAILED`)
 - `disabled` — boolean — when `true`, the engine skips this transition entirely
 - `criterion` — `Condition` JSON or `null` — evaluated before executing the transition; `null` means always matches; the same Condition DSL as search (see `search` topic)
 - `criterionAnnotations` — object or absent — optional client-owned metadata attached to this transition's `criterion` as a whole (see WorkflowDefinition `annotations`); sibling field, engine-opaque
@@ -139,7 +147,41 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ## PROCESSORS
 
-A processor may return modified entity data. That data is governed by the model exactly as a client's write is: it must be storable, and it must satisfy the schema. Introducing a field the model does not declare requires the model's `changeLevel` to permit it; otherwise the transition fails with `WORKFLOW_FAILED` and rolls back, leaving neither the entity nor any schema change behind.
+A processor may return modified entity data. That data is governed by the model exactly as a client's write is: it must be storable, and it must satisfy the schema. Introducing a field the model does not declare requires the model's `changeLevel` to permit it; otherwise the transition fails with `WORKFLOW_FAILED` and rolls back, and the refused data changes neither the entity nor the model. Where the level permits it, the returned data extends the model exactly as a client write does, with the same side effects: the extension commits on its own before the transition commits, and stays even if the transition fails afterwards (`cyoda help models`, SCHEMA EXTENSION).
+
+**Design rule: a callout never writes the entity it runs for.** A processor,
+a function criterion and a schedule function change the entity they run for
+in one way only: a processor returns new data, and the engine applies it.
+None of them writes or deletes that entity through the API, with or without
+the transaction token. The same holds at every depth: while an entity's
+cascade is running, no callback writes or deletes that entity, including
+callbacks of the processors of other entities that callbacks create or
+update in the same transaction. Any change to the entity goes back through
+the data returned by the processor its transition called. That includes a
+change worked out by a nested processor (a processor of another entity that
+a callback creates or updates): the nested processor does not write the
+change to the entity, which would launch the entity's workflow from inside
+its own cascade; the change is passed back up and returned by the processor
+the entity's transition called. A processor runs while its entity passes
+from one state to the next: the engine moves the entity to the transition's
+target state only after the processor returns, and the processor's result is
+for the entity in the state and version the transition started from. A write
+to the entity during the callout starts another state change from a state
+the entity is only passing through, so when the processor returns, the
+entity is no longer in that state or version, and the transition's result no
+longer applies to it. Every entity write also runs the entity's workflow, so
+the write starts a second cascade of the same entity inside the first one.
+That cascade can reach the same callout, which makes the same write again:
+the cascade re-enters itself and can loop without end. The per-state visit
+and depth limits count within one cascade, so they do not stop it. A workflow that seems to
+need one is designed wrong: return the data from the processor; put a change
+that must follow the cascade in a later transition (manual or scheduled); or
+keep the changing part in an entity of its own.
+
+A processor must not change a model or a workflow through the API while it
+runs; that is not supported. An EdgeMessage a processor saves is outside the
+entity transaction: make the save idempotent and attach the message id to the
+owning entity, so that a repeat after a failover leaves at most an orphan.
 
 **ProcessorDefinition fields:**
 
@@ -151,52 +193,97 @@ A processor may return modified entity data. That data is governed by the model 
 
 **Processor `type` (execution-location axis):**
 
-- `"externalized"` (default when omitted) — dispatched via gRPC to a calculation node selected by `Config.calculationNodesTags`. This is the only execution location implemented today; all the `executionMode` semantics below apply to externalized processors.
+- `"externalized"` — dispatched via gRPC to a compute member selected by `config.calculationNodesTags`. This is the only execution location; all the `executionMode` semantics below apply to it.
 
-The engine reserves the value `"internalized"` for an in-process execution location not yet implemented. Any transition that fires a processor with `type: "internalized"` is rejected at dispatch with `WORKFLOW_FAILED` (400) and the operator-visible error `processor X failed: execution type "internalized" is not yet implemented`. The reserved value is intentionally absent from the OpenAPI enum until the subtype lands; workflow authors who include it in import payloads will not be rejected at import, but their entities cannot transit past the affected step.
-
-Any value other than `"internalized"` (including the empty string, the canonical `"externalized"`, and unknown values such as legacy `"scheduled"` or `"EXTERNAL"`) falls through to the `executionMode` dispatch path. This permissiveness will narrow in a future release; do not rely on it.
+Import accepts `"externalized"` only. An omitted or empty `type` is stored, and exported, as `"externalized"`. Any other value — `"internalized"` included — is refused at import with `VALIDATION_FAILED` (400), naming the processor and the value.
 
 **Valid `executionMode` values (exhaustive):**
 
-- `"SYNC"` — the engine dispatches the processor and blocks until a response is received; the entity write transaction remains open during the wait; processor failure (including timeout and `success=false` in the response) returns `errors.WORKFLOW_FAILED` (`400`) and the entity remains in the source state
+- `"SYNC"` — the engine dispatches the processor and blocks until a response is received; the entity write transaction remains open during the wait; a failed callout fails the operation and the entity remains in the source state; the error is set out under **What a failed callout leaves behind** below
 - `"ASYNC_SAME_TX"` — same dispatch mechanics as `SYNC` (blocks inline, transaction stays open); failure semantics are identical to `SYNC`
-- `"ASYNC_NEW_TX"` — dispatched within a savepoint; on failure the savepoint is rolled back and the error is logged as a warning; the pipeline continues to the next processor and the transition completes; returned entity modifications are discarded
-- `"COMMIT_BEFORE_DISPATCH"` — the engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout state of the transition and **commits before the processor is dispatched**, releasing the storage connection for the duration of the external compute. The processor runs outside any transaction (entity already durable in the pre-callout state). When the processor returns, the engine opens `TX_post` on the same node, reapplies the result via `CompareAndSave` (CAS expects the txID stamped at `TX_pre`'s commit), runs any subsequent SYNC processors and cascade transitions, then commits. CAS conflict at the boundary surfaces as `409 retryable`; entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. Failure of the dispatched processor (`success=false`, timeout, member crash) returns `errors.WORKFLOW_FAILED` (`400`) and the entity remains in the pre-callout state. Designed to relieve connection-pool pressure for slow processors and supersedes `ASYNC_NEW_TX` as the recommended mode for slow external work.
+- `"ASYNC_NEW_TX"` — dispatched within a savepoint; on a processor failure the savepoint is rolled back and the error is logged as a warning; the pipeline continues to the next processor and the transition completes; returned entity modifications are discarded. The processor's failure does not fail the operation. Nor does a callback's write that fails under it with an answer that is not retryable: that makes the processor fail, with everything its callbacks wrote to entities, and the operation goes on; a schema extension a callback's write made stays. A failure of the savepoint itself — it cannot be created, undone or released — does. So does a conflict: undoing the savepoint does not undo a race that a callback's write inside it had already lost against another transaction, and the operation fails with a retryable `409 CONFLICT` and nothing commits, whatever the processor answered.
+- `"COMMIT_BEFORE_DISPATCH"` — the engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout state of the transition and **commits before the processor is dispatched**, releasing the storage connection for the duration of the external compute. The entity is then durable in the pre-callout state. With `startNewTxOnDispatch: false` (the default) the processor runs outside any transaction, and the engine opens `TX_post` on the same node when it returns. With `startNewTxOnDispatch: true` the engine opens `TX_post` before the dispatch and requires the entity there to be the version `TX_pre` committed (another transaction's change in between is the conflict below, and the processor is not dispatched); the processor's callbacks then join `TX_post`. In both shapes the engine applies the result in `TX_post` via `CompareAndSave` against the version `TX_pre` committed, runs any subsequent SYNC processors and cascade transitions, then commits. A CAS conflict at the boundary — another transaction changed the entity during the dispatch — answers `412 ENTITY_MODIFIED` naming the entity on every write route — a create, an update, and an item of a collection create or update, which fails the collection request whole; the entity remains durable in the pre-callout state, no engine-side retry, no automatic compensation. A failed callout fails the operation — the error is as for `SYNC` — and the entity remains in the pre-callout state. Designed to relieve connection-pool pressure for slow processors and supersedes `ASYNC_NEW_TX` as the recommended mode for slow external work.
 
 **`COMMIT_BEFORE_DISPATCH` configuration flag:**
 
-- `startNewTxOnDispatch` — boolean — sibling field on the same processor object; default `false`; valid only when `executionMode == "COMMIT_BEFORE_DISPATCH"`. Validator rejects `true` for any other mode. When `true`, the engine opens a fresh transaction context (`TX_post`) for the dispatched processor's CRUD callbacks; the processor may use the supplied transaction token to read or write entities other than the cascade-anchor. When `false`, no transaction context is supplied to the dispatched call.
+- `startNewTxOnDispatch` — boolean — sibling field on the same processor object; default `false`; valid only when `executionMode == "COMMIT_BEFORE_DISPATCH"`. Validator rejects `true` for any other mode. When `true`, the engine opens `TX_post` before the dispatch and supplies its transaction token, so the processor's CRUD callbacks join `TX_post`, may read any entity and may write any entity except the one the processor runs for (see *A callout never writes the entity it runs for* below); `TX_post` then holds its storage connection for the whole callout. When `false`, no transaction context is supplied to the dispatched call, and no connection is held during it.
 
 **`COMMIT_BEFORE_DISPATCH` workflow-author requirements:**
 
-- **Idempotency.** A `COMMIT_BEFORE_DISPATCH` processor must be **idempotent or have an external mechanism for detecting prior completion** (e.g., a write-once external resource ID). Replays can fire from two distinct places: (a) CAS conflict during continuation — the caller's retry of the same API call restarts the cascade and re-dispatches the processor; (b) engine crash between segments — the entity is durable in the pre-callout state, the in-flight orchestration is gone, the caller retries, the cascade re-fires from the beginning, the processor is re-dispatched. The engine cannot deduplicate replays; idempotency is the workflow author's responsibility.
+- **Idempotency.** A `COMMIT_BEFORE_DISPATCH` processor must be **idempotent or have an external mechanism for detecting prior completion** (e.g., a write-once external resource ID). Replays can fire from two distinct places: (a) CAS conflict during continuation — the caller's retry of the same API call restarts the cascade and re-dispatches the processor; (b) engine crash between segments — the entity is durable in the pre-callout state, the in-flight orchestration is gone, the caller retries, the cascade re-fires from the beginning, the processor is re-dispatched. The engine cannot deduplicate replays; idempotency is the workflow author's responsibility. A replay is a new callout and carries a new `requestId`: a member cannot recognise it by `requestId`, which is shared only by the tries of one callout (see **Tries, waiting and time** below). Recognise it by a key of your own that the replay repeats, such as the write-once external id above. Setting `idempotent: true` on the processor is the matching declaration for a *repeat within one callout*; it does not replace the requirement here, which is about the *client* running the operation again.
 - **Visibility of segment-boundary states.** States on a segment boundary (the pre-callout state of a `COMMIT_BEFORE_DISPATCH` processor) are **publicly observable** to readers between segments. A concurrent transaction's `Get`/`GetPage`/`Iterate`/`Search`/`Count` will see the entity in the pre-callout state, and a second cascade may decide to fire criteria-driven transitions based on that observed state. Workflow authors using `COMMIT_BEFORE_DISPATCH` must treat segment-boundary states as committed states — design state-machine criteria, transition guards, and external monitoring accordingly. If invisibility of an intermediate state is required, model it as a workflow-level `DRAFT` parent state with sub-stages in payload, or do not expose the entity until a designated terminal state.
-- **Attribution handover with `startNewTxOnDispatch=false`.** With no transaction context supplied, the dispatched processor's callback writes are ordinary independent requests — the platform tracks no causal chain for them. Each is attributed to whatever identity it presents (its own service credentials, or an OBO user token it forwards). The dispatch's AuthContext (`authtype`/`authid`/`authclaims`) carries the causal principal so the application can self-attribute if it wants user-level attribution; the platform supplies no separate carrier for this mode.
-- **Best-practice: a processor must not save the entity it is processing for.**
-  Processors with TX-callback access (SYNC, ASYNC_SAME_TX, COMMIT_BEFORE_DISPATCH
-  with startNewTxOnDispatch=true) can write the cascade-anchor entity via the
-  supplied transaction token, but if they do AND also return mutations for the
-  same entity in their result, the engine's apply-result will overwrite the
-  processor's intra-TX writes (last-writer-wins inside the transaction buffer).
-  Pick one path: let the engine apply the result, OR have the processor write
-  the entity itself and return no mutations for it.
+- **Attribution handover with `startNewTxOnDispatch=false`.** With no transaction context supplied, the dispatched processor's callback writes are ordinary independent requests — the platform tracks no causal chain for them. Each is recorded as the identity it presents. With the compute node's own client token, that is the compute node's client, as both attributed principal and executor. A compute node never receives a user's token: a callout carries the user only as attributes (`authid`/`authtype`, the executor in `authexecid`/`authexectype`). To record a callback write for that user, the compute node must hold the credentials of an on-behalf-of client of the tenant and the private half of an active trusted key of the tenant (see `cyoda help auth integration`); it must not reuse the backend's on-behalf-of client, and a key of its own is recommended, so that each can be revoked without touching the backend's (see *WHEN ANOTHER PART ACTS FOR A USER* there); a segregation-of-duties check never lists this client among the ids it accepts as "the user approved", sign an assertion for `authid` when `authtype` is `user`, and make the write with the exchanged token; it is then recorded for the user, executed by that on-behalf-of client. Inside a scheduled fire, this processor's callout carries the principal that armed the timer in `authid`/`authtype` and `system` as the executor, as every callout of the fire does, although it is dispatched outside a transaction. The platform supplies no other carrier for this mode.
+- **A write made under a transaction token that reaches one is refused.** A compute member's callback — a request carrying a transaction token — runs in the transaction it joined, and only the operation that began a transaction commits it. A `COMMIT_BEFORE_DISPATCH` processor commits the transaction it runs in, so a callback whose write reaches one is refused with `409` `COMMIT_IN_JOINED_TRANSACTION` at that processor: it is not dispatched, the joined transaction is neither flushed nor committed, and nothing the refused write did is kept but a schema extension it made (`cyoda help models`, SCHEMA EXTENSION). As a failed write it makes the joined transaction rollback-only: its owner fails with `409` `TRANSACTION_ROLLBACK_ONLY` (under an `ASYNC_NEW_TX` processor, that processor fails instead). Both values of `startNewTxOnDispatch` are refused. A compute member that needs such a write from inside a processor makes it as an independent request, without the transaction token. The refusal is deterministic, so a test of the path finds it. Whether a workflow is reached from a callback is decided at run time, not at import, so the import does not reject the combination.
+- **A callout never writes the entity it runs for** (PROCESSORS, *Design
+  rule*). Under the token a callout's callbacks may read that entity, and
+  read or write any other entity whose cascade is not running in the same
+  transaction. A write to the entity by
+  another transaction while the workflow runs fails one of the two with a
+  conflict (see *On PostgreSQL a written entity stays locked until the
+  transaction ends* below).
+- **What a callback read of the entity returns.** A callback that reads,
+  searches, counts or pages under the transaction token sees the entity as
+  the workflow has it when the callout is made. Before each callout that
+  carries the token, other than a `COMMIT_BEFORE_DISPATCH` processor's,
+  the engine reads the entity in the open transaction. It writes the
+  entity into that transaction when that read finds nothing (a create), or
+  when the stored data bytes or state differ from the workflow's copy; a
+  change to the metadata alone does not count. On PostgreSQL the stored
+  data is the JSONB rendering of what was written, so data that came from
+  a request or a processor usually differs in its bytes and is written
+  again. The write is not committed: only that transaction and the
+  requests joined to it see it. It commits or rolls back with the
+  transaction, at the end of the operation that began the transaction, or,
+  when a `COMMIT_BEFORE_DISPATCH` processor follows, at that processor's
+  segment boundary. A later write of the entity in the same transaction
+  replaces the pending version, so the transaction records one version of
+  the entity. A `COMMIT_BEFORE_DISPATCH` processor's first segment commits
+  the entity before the callout. With `startNewTxOnDispatch: true` the
+  transaction its callbacks join reads that committed version before the
+  dispatch, so they see the current entity too; that transaction has not
+  written the entity and holds no row lock on it during the callout. With
+  `false` the callout carries no token. On a create the entity is found;
+  during workflow selection on a create it has no state yet. While a
+  transition's processors run, its state is the transition's source state
+  (the state advances after the processors) and its data includes the
+  changes earlier processors returned. The payload in a processor's or
+  criterion's request is the same entity. Other entities the transaction
+  has written — for example, through an earlier callback — are returned as
+  written. These writes are the operation's own: they do not break the
+  request's `If-Match`.
+- **On PostgreSQL a written entity stays locked until the transaction
+  ends.** From its first write of the entity — the engine's write before a
+  callout, or an earlier one — the transaction holds the entity's row lock
+  until it commits or rolls back: at the end of the operation, or at the
+  boundary of the `COMMIT_BEFORE_DISPATCH` segment it belongs to. A rollback
+  to a savepoint releases the locks of the writes it undoes: the writes of a
+  failed callback, or those of the callbacks of a failed `ASYNC_NEW_TX`
+  processor. The engine's write before an `ASYNC_NEW_TX` processor's
+  callout is made before that processor's savepoint opens, so the
+  processor's failure keeps that write and its lock. A
+  transaction that has not written the entity holds no row lock on it
+  while a callout runs; a named transition that sends no data, for
+  example, has not written it before its first processor's callout. Another transaction that writes a locked entity
+  waits at its write, and one that read it waits at its commit, until the
+  lock holder ends; if that transaction committed a change to the entity,
+  the waiting write or commit is answered with a retryable `409 CONFLICT`.
+  When `CYODA_POSTGRES_STATEMENT_TIMEOUT` (default `5m`; `0` disables it)
+  is set, a wait longer than it cancels the waiting statement. A compute member that reads a locked
+  entity in a transaction of its own, without the token, and then commits
+  therefore waits on its own callout: the callout times out, or, if the
+  statement timeout is set and shorter than the callout's response timeout,
+  the member's waiting statement is cancelled first. Read the entity under the
+  token, or from the request's payload.
 
 Import-time validation rejects any `executionMode` value not in the list above (and not empty) with `400 VALIDATION_FAILED`. The empty string continues to default to `SYNC` at engine fire.
 
 **ProcessorConfig fields:**
 
 - `attachEntity` — boolean, optional, default `true` — when `true`, the full entity payload is sent to the processor; set `false` to omit it
-- `calculationNodesTags` — string — comma-separated tags for routing to registered calculation nodes; the engine selects a node that declares all required tags; returns `errors.NO_COMPUTE_MEMBER_FOR_TAG` if no node matches
-- `responseTimeoutMs` — int64 — timeout in milliseconds for `SYNC` processor response; `0` means use node default
-- `retryPolicy` — string — selects the server-resolved retry strategy.
-  Valid values: `NONE` (single attempt, no retry), `FIXED` (up to N
-  additional attempts with fixed delay between tries, where N and delay
-  are server-configured). When omitted, defaults to `FIXED` at engine
-  fire. Import-time validation rejects any other value with `400
-  VALIDATION_FAILED`. **cyoda-go status:** captured but not consumed —
-  the dispatcher is single-shot regardless of policy; the full retry
-  loop ships in a later release. Cloud honours both policies.
+- `calculationNodesTags` — string — comma-separated tags that select the compute members this callout may go to. A member matches when it declares **at least one** of the tags; when the list is empty every compute member of the tenant matches. With no matching member attached anywhere in the cluster the callout waits for one (see **Tries, waiting and time** below) and then fails with `errors.NO_COMPUTE_MEMBER_FOR_TAG`
+- `responseTimeoutMs` — int64 — how long to wait for the compute member's answer, in milliseconds; `0` or absent means the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`; must not exceed `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`
+- `retryPolicy` — string — whether the callout may be given to more than one compute member. `NONE`: one try. `FIXED`, or omitted: one try plus the server's `CYODA_RETRY_FIXED_NUM_RETRIES` (default `3`, so four tries). The number is configured on the server, not in the workflow, and it is the normal number, not a hard limit — see **Tries, waiting and time**. There is no pause between one member and the next, and no delay setting. Import rejects any other value with `400 VALIDATION_FAILED`.
+- `idempotent` — boolean, optional, default `false` — a declaration by the workflow author, not something cyoda can check. Setting it says: *this processor may be run more than once for the same callout — possibly only partly, possibly at the same time on two compute members — and the outcome is the same as running it once, in cyoda **and in every system the processor touches**.* See **Repeating a processor** below for what qualifies. The same declaration governs a scheduled run: the scheduler never runs a processor twice for one arm of the task unless it is `idempotent` (see **SCHEDULED TRANSITIONS**).
 - `context` — string — pass-through string forwarded **verbatim** as the `parameters` JSON node of the outgoing `EntityProcessorCalculationRequest` (and `EntityCriteriaCalculationRequest` when used on a `function`-typed criterion's `config`). Marshalling shape is **pass-as-string**: the value is encoded as a JSON string, not parsed as JSON. The receiver gets a JSON-quoted string in `parameters`. Empty `context` causes `parameters` to be omitted entirely. Use to distinguish multiple workflow roles served by a single externalized processor or criterion implementation without registering a separate name per role.
 - `asyncResult` — boolean (pointer; nil-default) — declared in the
   OpenAPI for Cloud parity; the runtime does **not** implement
@@ -209,6 +296,35 @@ Import-time validation rejects any `executionMode` value not in the list above (
   for Cloud parity; the runtime does **not** implement it. Imports
   that set any non-nil value are rejected with `400 VALIDATION_FAILED`,
   including the orphan case where `asyncResult` is absent or false.
+
+**Tries, waiting and time.** A processor, a `function`-type criterion and a `schedule.function` are all *callouts*, and the same rules apply to all three.
+
+- A **try** is one attempt to hand the callout's work to one compute member. A member is never tried twice in one run over a node's members, and every try of one callout carries the same `requestId` (see `cyoda help grpc`).
+- **Waiting for a member to exist is not a try.** When no matching member is attached anywhere, the callout waits up to `CYODA_DISPATCH_WAIT_TIMEOUT` (default `5s`, one allowance for the whole callout) and wakes the moment one attaches. This applies on a single node as in a cluster, and with `retryPolicy: NONE` too. `0` switches the wait off.
+- **Whether another member is tried depends on how far the first one got.** The work never reaching the member — it had gone, or was not taking data — always gets another member tried, whether or not a processor is `idempotent`.
+- The work reaching the member, then no answer within `responseTimeoutMs`, or its connection dropping: another member is tried for a criterion, a function, or an `idempotent: true` processor; for any other processor **nothing else is tried** and the callout fails.
+- The member answering `success: false`, or its answer being unreadable: nothing else is tried, whatever `idempotent` says. A `success: false` answer carries the member's own message and its `retryable` verdict to the client; an unreadable answer fails the callout with no message of the member's own.
+- **The number of tries is the normal number, not a hard limit.** In a cluster the node holding the transaction can hand the callout on to peers, one node after another, together with the tries that are left. If a peer's answer is lost, one try is counted although it may have made more. **Time is the hard limit:** a callout never runs longer than `tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`, fixed when it starts — 155 s at the defaults. A client's own deadline is separate: if it ends the request first, the client sees its own error, not a callout error. See `cyoda help config grpc`.
+
+**Repeating a processor.** A compute member that was given the work and then went quiet has not necessarily stopped, and what it has already done does not go away — inside cyoda or outside it.
+
+- *Inside cyoda.* A member that has been replaced is shut out: its callbacks are refused with `errors.CALLOUT_SUPERSEDED`, and one that was in progress is discarded (a schema extension it made stays) and answered the same — on the in-tree backends before the next member is given the work; on a backend with location-independent transactions nothing waits, and it is refused completion when it ends. "Set this field to X" is safe to repeat. "Add 10 to the balance" is not. **"Create an entity" is never safe to repeat as it stands:** without a composite unique key on the model the repeat stores a second entity; with one, no duplicate is stored, but cyoda refuses the second create and the whole operation fails with a uniqueness error — the data is safe, the operation is lost. A processor that creates entities is repeat-safe only if it first checks whether its entity already exists.
+- *Outside cyoda.* A processor may charge a card, send a message, call another service. None of that is part of a cyoda transaction: **a rollback does not undo it, and a repeat does it again.** Making an outside action safe to repeat, or compensating for it when the operation fails — a saga, a compensating step, a key the other system uses to recognise a repeat — is the application's responsibility. The `requestId`, which is the same on every try of one callout, is a ready-made key for that. It does not cover the client running the whole operation again: that is a new callout with a new id.
+- A processor that only returns a changed entity — no callbacks, no outside systems — qualifies trivially; mark it `idempotent` so that it benefits.
+- Criteria and functions are treated as repeat-safe by rule. **They must have no effects, inside cyoda or outside it.** cyoda does not enforce this.
+- An **EdgeMessage** saved from a processor is not removed when the processor's member is replaced. Make that save idempotent and attach the message id to the entity that owns it, so that an orphan costs disk space and nothing else.
+- **Changing a model or a workflow from inside a processor is not supported.**
+
+**What a failed callout leaves behind, by `executionMode`.** In every mode below another member is tried, after "no answer", only if `idempotent`. A failure marked `retryable: true` speaks for cyoda's state only, and only where this list says "clean".
+
+- **`SYNC`, `ASYNC_SAME_TX`.** The operation fails. cyoda's state: rolled back; clean for a re-run — unless an earlier `COMMIT_BEFORE_DISPATCH` processor of the same cascade had already committed.
+- **`ASYNC_NEW_TX`.** **The operation continues:** the processor's savepoint is undone and a warning is logged. A schema extension made under it stays, as every extension does. The failure does not reach the client, nor does a member's `retryable` verdict; over gRPC the client receives the warnings the member sent, in `warnings`. cyoda's state: the rest of the transaction commits. A savepoint that cannot be created, undone or released is not a processor failure: it fails the operation with a `5xx` and nothing commits. A callback's write inside the savepoint that had already lost a race against another transaction when the savepoint was undone fails the operation with a retryable `409 CONFLICT`, and nothing commits.
+- **`COMMIT_BEFORE_DISPATCH`, `startNewTxOnDispatch: true`.** The operation fails. cyoda's state: `TX_pre` **stays committed**; `TX_post` is rolled back. Not clean for a re-run.
+- **`COMMIT_BEFORE_DISPATCH`, `startNewTxOnDispatch: false`.** The operation fails. cyoda's state: `TX_pre` stays committed; the member's callbacks were transactions of their own and stand.
+
+**A callback that failed.** Each callback of a member is all-or-nothing: a failed one keeps nothing in the transaction. A callback answered with a retryable error leaves the transaction usable, and the member may send it again. A callback **write** answered with an error that is not retryable makes the transaction rollback-only: the callout is stopped, and the operation fails with `409 TRANSACTION_ROLLBACK_ONLY`, whose message names the code the callback got. This holds whatever the member answers, for a processor in every mode whose callbacks join the transaction (`ASYNC_NEW_TX` excepted, above), for a function criterion and for a schedule function; a lost race, below, comes first. A failed callback read marks nothing.
+
+The error a client sees: no member within the wait → `503 NO_COMPUTE_MEMBER_FOR_TAG`; a single failed try → that try's own code (`503 DISPATCH_TIMEOUT`, `503 COMPUTE_MEMBER_DISCONNECTED`, `503 DISPATCH_FORWARD_FAILED`); several failed tries → `503 CALLOUT_FAILED`, listing them; a member that answered `success: false` → `400 WORKFLOW_FAILED` carrying the member's own message, `retryable: true` when the member said so. One exception holds in every mode whose callbacks join the transaction: when a callback's write had already lost a race against another transaction, the failure is a consequence of that race, and the operation answers a retryable `409 CONFLICT` instead.
 
 ## SCHEDULED TRANSITIONS
 
@@ -250,6 +366,12 @@ scheduled transition either way.
   timeout; explicit `0` is strictest (drop on any lateness). Independent
   of `delayMs` — the two measure different quantities.
 
+A resolved scheduled time, or scheduled time + `timeoutMs`, that falls
+outside the Unix epoch through `9999-12-31T23:59:59.999Z` UTC — the
+range a stored task can render as RFC 3339 — is refused at arm, not
+stored and not silently clamped: the write that would produce it fails
+with a `5xx` and a ticket, and nothing commits.
+
 **Per-entity timing — `function`.** The transition computes its firing
 time (and optional expiry) per entity via a Function callout — the same
 dispatch mechanism as an externalized processor or a `function`-type
@@ -280,8 +402,11 @@ payload or a boolean:
   entity payload is attached to the request.
 - `context` (string, optional) — pass-through string forwarded verbatim
   as the request's `parameters`; omitted when empty.
-- `responseTimeoutMs` (integer, optional) — response timeout for this
-  callout.
+- `responseTimeoutMs` (integer, optional) — how long to wait for this
+  callout's answer, in milliseconds; `0` or absent means the server's
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS`; must not exceed
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`.
+- `retryPolicy` (string, optional) — `NONE` or `FIXED`, as on a processor; omitted means `FIXED`. A function is always treated as safe to repeat, so after a try that got no answer another compute member is tried.
 
 The function responds with `resultKind: "Schedule"` and a `result`
 object giving the fire time and, optionally, an expiry:
@@ -292,8 +417,9 @@ object giving the fire time and, optionally, an expiry:
 
 - **Fire time** (required) — exactly one of `fireAt` (absolute,
   epoch-ms) or `fireAfterMs` (relative to arm time). A past `fireAt` (or
-  non-positive `fireAfterMs`) is not an error — the transition is due
-  immediately.
+  a `fireAfterMs` of 0) is not an error — the transition is due
+  immediately. A negative `fireAfterMs` or `expireAfterMs` fails the write
+  with `500 SCHEDULE_FUNCTION_INVALID_RESULT`.
 - **Expiry** (optional) — at most one of `expireAt` (absolute) or
   `expireAfterMs` (relative to the *resolved fire time*, not arm time).
   Both absent means no expiry (equivalent to an absent `timeoutMs`). A
@@ -306,76 +432,56 @@ object giving the fire time and, optionally, an expiry:
 
 *Fail-closed.* The callout runs synchronously inside the entity-write
 transaction (see **Arming** below), so a callout failure fails that
-write. If the compute node is unreachable, disconnected, or times out,
-the write fails as a retryable `503` with the same dispatch error codes
-as a processor or criterion (`NO_COMPUTE_MEMBER_FOR_TAG`,
-`DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED`) — no state change
+write. If no compute member can be reached, or none answers, the write fails as a retryable `503` with the same codes as a processor or criterion callout (`NO_COMPUTE_MEMBER_FOR_TAG`, `DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED`, `DISPATCH_FORWARD_FAILED`, or `CALLOUT_FAILED` when several tries failed); a member that answers `success: false` fails it as `400 WORKFLOW_FAILED` with the member's message — no state change
 commits against an unschedulable transition. A structurally valid
-response with the wrong `resultKind`, or a malformed `Schedule` value,
-fails with `500 SCHEDULE_FUNCTION_INVALID_RESULT` (see that error topic).
+response with the wrong `resultKind`, a malformed `Schedule` value, or
+one whose resolved fire/expiry time falls outside the Unix epoch
+through `9999-12-31T23:59:59.999Z` UTC, fails with `500
+SCHEDULE_FUNCTION_INVALID_RESULT` (see that error topic).
+
+When the arm happens inside the scheduler's own run — the fired
+transition's cascade ends in a state with a `function`-timed schedule —
+the same failure fails that run. If the run has not yet sent unsafe
+work and has not partially committed, the open transaction rolls back
+and the task is retried (see **Retries** below); otherwise it ends
+`FAILED`: `STOPPED_AFTER_PARTIAL_COMMIT` if the run already made a partial commit,
+otherwise `UNSAFE_WORK_NOT_COMPLETED`.
 
 **Import-time validation.**
 
 - Exactly one of `schedule.delayMs` / `schedule.function` must be
-  present (`VALIDATION_FAILED`).
+  present (`VALIDATION_FAILED`). A `delayMs` sent beside `function` is
+  rejected whatever its value — `0` and `null` included.
 - `schedule` and `manual: true` are mutually exclusive
-  (`VALIDATION_FAILED`).
-- Static mode: `delayMs <= 0` is rejected (`VALIDATION_FAILED`);
-  `timeoutMs` need only be `>= 0`.
+  (`VALIDATION_FAILED`). A scheduled transition still sends `manual`, as
+  every transition does: `"manual": false`.
+- `timeoutMs`, when present, must be `>= 0` (`VALIDATION_FAILED`) —
+  checked whichever mode sets the schedule.
+- Static mode: `delayMs` must be `> 0` (`VALIDATION_FAILED`).
 - Function mode: `name` and `calculationNodesTags` must be non-empty,
-  and `resultKind` must be `"Schedule"` (`VALIDATION_FAILED`).
+  and `resultKind` must be `"Schedule"` (`VALIDATION_FAILED`); omit
+  `delayMs` — `function` computes its own fire/expiry time.
 
-**Engine behaviour (applies to both timing modes).** A scheduled
-transition is driven by a background scheduler, independently of cascade
-evaluation and of any other API call touching the entity.
+**Engine behaviour (applies to both timing modes).** A scheduled transition is driven by a background scheduler, independently of cascade evaluation and of any other API call touching the entity. Each armed transition is stored as a **task**.
 
-- **Arming.** On every write that leaves the entity in the transition's
-  source state — the initial entry AND every subsequent settled write
-  (an ordinary in-place data update or a self-loop) — the transition is
-  (re-)armed with a freshly computed scheduled time. Static mode sets it
-  to `now + delayMs`; function mode **invokes the callout**
-  synchronously, inside that write's transaction, and each call fully
-  replaces the previous scheduling decision.
-- **Settled-interval reset.** Because arming happens on *every* settled
-  write, an entity written more often than its scheduled interval never
-  reaches the fire. Authors relying on "escalate N after entry"
-  semantics must account for this: routine touch-writes on a busy entity
-  postpone the fire indefinitely (and, in function mode, make a callout
-  on each such write).
-- **Firing.** When the scheduled time is due, the engine re-evaluates
-  the transition's criterion exactly **once**. A `true` (or absent)
-  criterion fires the transition normally (processors run, state
-  advances, `TRANSITION_MAKE` is recorded). A `false` criterion
-  **declines** the transition — the entity stays in its current state
-  and the timer is **not** retried (`TRANSITION_NOT_MATCH_CRITERION`).
-  See "One-shot vs. polling" below for how to model a retry.
-- **Lateness / expiry (`timeoutMs`).** `timeoutMs` — set directly on a
-  static schedule, or derived from a function schedule's expiry — bounds
-  how late the scheduler may pick up a due timer before giving up: if it
-  is picked up more than `timeoutMs` past the scheduled time, it is
-  **dropped** without evaluating the criterion (`Expired`) — the
-  transition never fires and the entity stays put. No `timeoutMs` (no
-  expiry) means no upper bound: the timer fires whenever it is
-  eventually picked up.
-- **Explicitly firing a scheduled transition by name still returns**
-  HTTP 400 `TRANSITION_NOT_FOUND`, with the message `transition "X"
-  in state "Y" is scheduled and fires automatically; it is not
-  manually fireable`. Same code returned when a transition is
-  `disabled: true` — same semantic: "the transition exists but is not
-  currently dispatchable from the caller's POV." The entity remains
-  in the source state. To allow early firing, give the state an
-  ordinary manual transition alongside the scheduled one.
-- **Audit trail.** Arming, firing, expiry, and cancellation each emit a
-  dedicated event: `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE`
-  (alongside the ordinary `TRANSITION_MAKE`), `SCHEDULED_TRANSITION_EXPIRE`,
-  `SCHEDULED_TRANSITION_CANCEL`. A loopback that re-arms the same state
-  emits only `ARM`, not `CANCEL`. `CANCEL` has two causes: the entity left
-  the source state before the timer fired, or the task came due and the
-  workflow now selected for the entity does not declare it as a scheduled
-  transition of that state (see *Workflow-level selection*). A task that is
-  both obsolete and past its `timeoutMs` grace band records `EXPIRE`, not
-  `CANCEL` — expiry is decided from the stored task and the clock alone,
-  before the workflow is consulted.
+- **Arming.** On every write that leaves the entity in the transition's source state — the initial entry AND every subsequent settled write (an ordinary in-place data update or a self-loop) — the transition is (re-)armed with a freshly computed scheduled time. Static mode sets it to `now + delayMs`; function mode **invokes the callout** synchronously, inside that write's transaction, and each call fully replaces the previous scheduling decision. Every arm starts the task afresh: its attempts, lost owners and last error are cleared, and a `FAILED` task is `WAITING` again.
+- **Settled-interval reset.** Because arming happens on *every* settled write, an entity written more often than its scheduled interval never reaches the fire. Authors relying on "escalate N after entry" semantics must account for this: routine touch-writes on a busy entity postpone the fire indefinitely (and, in function mode, make a callout on each such write).
+- **One owner per run.** Every node with `CYODA_SCHEDULER_ENABLED=true` claims due tasks from storage and runs them itself. A claimed task is `RUNNING` under one node, and every write that node makes for the run is checked against its claim. A node proves it is alive with a heartbeat; another node takes over its tasks only after the heartbeats have stopped for `CYODA_SCHEDULER_STALE_AFTER` (default `2m`). A node that is alive keeps its tasks, even when a run hangs. See `cyoda help config scheduler`.
+- **One task per entity at a time.** While one scheduled transition of an entity runs, no other scheduled transition of the same entity is claimed. It can be claimed once the first one ends. If the first one fired and the entity left the state, the other task is removed and recorded as `SCHEDULED_TRANSITION_CANCEL`.
+- **Firing.** When the scheduled time is due, the owner evaluates the transition's criterion. A `true` (or absent) criterion fires the transition normally (processors run, state advances, `TRANSITION_MAKE` is recorded) and the task is removed. A `false` criterion **declines** the transition — the entity stays in its current state, and the task is removed and not retried (`TRANSITION_NOT_MATCH_CRITERION`). See "One-shot vs. polling" below for how to model a retry. A criterion that cannot be evaluated — its compute member is down, for example — is a failure, not `false`.
+- **Retries.** A run that fails when nothing unsafe was handed to a compute member is retried: a criterion or function error, no compute member for the tag, a conflict with a concurrent write, a storage error, a commit refused on a unique key, a failed `idempotent` processor, or a processor that provably never reached a compute member. The task goes back to `WAITING` with its attempts and last error, and is tried again after `CYODA_SCHEDULER_RETRY_DELAY` (default `30s`), doubling on each failure up to `CYODA_SCHEDULER_RETRY_DELAY_MAX` (default `15m`). With `timeoutMs`, retries stop at the deadline (below). Without `timeoutMs`, a failing task is retried without end and stays visible as `WAITING`.
+- **Lateness / expiry (`timeoutMs`).** `timeoutMs` — set directly on a static schedule, or derived from a function schedule's expiry — sets the task's deadline: scheduled time + `timeoutMs`, on the owner's clock. A task with no prior attempt and no lost owner that is first claimed after its deadline is **expired**: it is removed without evaluating the criterion (`SCHEDULED_TRANSITION_EXPIRE`), the transition never fires and the entity stays put. Any counted attempt that fails after the deadline ends `FAILED` (`EXPIRED_AFTER_FAILED_ATTEMPTS`) instead — the first attempt included. A task that already failed an attempt or lost an owner is never expired: it ends `FAILED` the same way, without running again, once it is picked up more than `CYODA_SCHEDULER_RETRY_DELAY` past the deadline; otherwise it runs again. Retry delays are cut to the deadline, so the last retry is scheduled at or before it. No `timeoutMs` (no expiry) means no deadline.
+- **A processor is never repeated for one arm of the task unless it is `idempotent`.** Before the owner sends a processor that is not declared `idempotent` to a compute member, it marks the task. If that processor may have reached a compute member and the run does not commit — the member failed or did not answer, a later step failed, or the owner crashed — the task ends `FAILED` (`UNSAFE_WORK_NOT_COMPLETED`) and the scheduler never runs it again. Declare `idempotent: true` only on a processor that is safe to repeat everywhere it reaches (see **Repeating a processor** above); its failures are then retried like any other safe failure.
+- **Partial commit.** A `COMMIT_BEFORE_DISPATCH` processor in a cascade step after the fired transition commits the entity in that step's state. If the run stops after such a commit, the task ends `FAILED` (`STOPPED_AFTER_PARTIAL_COMMIT`): the entity has already moved, and running the transition again from its source state would be wrong. A `COMMIT_BEFORE_DISPATCH` processor of the fired transition itself commits the entity while it is still in the source state; a safe failure after it is retried from that committed state.
+- **`FAILED`.** The reasons are `UNSAFE_WORK_NOT_COMPLETED`, `STOPPED_AFTER_PARTIAL_COMMIT`, `EXPIRED_AFTER_FAILED_ATTEMPTS`, `OWNER_LOST_REPEATEDLY` (the task lost its owner `CYODA_SCHEDULER_MAX_LOST_OWNERS` times, default `3`) and `RUN_PANICKED` (the run panicked; the node is taken out of service, see `cyoda help run`). An internal error that does not panic is recorded like any other failure (see **Retries**), and logged at ERROR with a ticket. A `FAILED` task never moves the entity and is never claimed again. It is kept, and it is visible in `GET /scheduled-tasks` (see `cyoda help scheduled-tasks`), in the metrics (see `cyoda help telemetry`), in the server log at ERROR with a ticket, and as a `SCHEDULED_TRANSITION_FAIL` audit event on the entity. It ends when the entity is written in the source state (the task is armed afresh), when the entity leaves that state (`SCHEDULED_TRANSITION_CANCEL`), when a workflow import stops scheduling the transition, or when the entity is deleted. There is no separate retry or dismiss operation: an entity write does both.
+- **Entity writes, deletes and imports.** An entity write re-arms or removes the entity's tasks in its own transaction. A task whose transition the selected workflow does not schedule from the entity's current state is removed and recorded as `SCHEDULED_TRANSITION_CANCEL`. Deleting an entity — singly, by condition, or all of a model's — removes its tasks with no audit event. A workflow import saves the workflows first, then removes the model's tasks whose transition neither a workflow of the model nor the default workflow schedules any more.
+- **A write can answer `409` when it races the scheduler.** The scheduler writes a task when it claims it, commits part of a run, records an attempt, ends it `FAILED`, or hands it back. A client write that re-arms or removes a task the scheduler wrote after the write began fails with a retryable `409 CONFLICT` — the same answer as a write that races the fire itself. A delete that owns its transaction, and a workflow import — which always does — retry on the server, up to three more times, and answer `409` only if the conflict persists; a batched conditional delete reports it for every id of that batch that did not already fail on its own instead. An entity write that joined another transaction (`X-Tx-Token`) is not retried on the server: it runs once, and the transaction's owner decides at commit. A repeated import saves the same workflows and retries the removal. See `cyoda help errors CONFLICT`.
+- **Explicitly firing a scheduled transition by name returns** HTTP 400 `TRANSITION_NOT_FOUND`, with the message `transition "X" in state "Y" is scheduled and fires automatically; it is not manually fireable`. Same code returned when a transition is `disabled: true` — same semantic: "the transition exists but is not currently dispatchable from the caller's POV." The entity remains in the source state. To allow early firing, give the state an ordinary manual transition alongside the scheduled one.
+- **Audit trail.** Arming, firing, expiry, cancellation and failure each emit a dedicated event: `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE` (alongside the ordinary `TRANSITION_MAKE`), `SCHEDULED_TRANSITION_EXPIRE`, `SCHEDULED_TRANSITION_CANCEL`, `SCHEDULED_TRANSITION_FAIL`. `FAIL` carries the transition, the source state, the reason, the attempts and the lost owners; `cyoda help audit`, *Event data*, lists the data of each. A loopback that re-arms the same state emits only `ARM`, not `CANCEL`. `CANCEL` is recorded at a write, when some other task of the entity is no longer armed from the entity's new current state (see *Workflow-level selection*); or when the task itself comes due and the workflow now selected for the entity does not schedule it from that state, even though the entity never left it. A task whose entity carries no transaction id to guard the fire is also cancelled, and logged at ERROR. At fire time, an entity that is already gone, or has otherwise left the source state, is removed instead with no audit event. A task past its deadline on its first attempt records `EXPIRE`, not `CANCEL`, even when it is obsolete too: lateness is decided from the stored task and the clock before the workflow is consulted. A safe failure records no audit event; it shows in the task's attempts and last error, in the log at WARN, and at ERROR with a ticket when its cause is an internal error.
+- **Callbacks in a scheduled run.** A processor's callbacks join the run's transaction, as in any transition, and so do the callbacks of a `schedule.function` the run calls to arm the state it reaches. None of them writes or deletes the entity being fired (see **A callout never writes the entity it runs for** above).
+- **A run refused at commit.** A run's commit checks its final entities like any write's: a duplicate or partly filled composite unique key refuses the commit, and nothing the refused transaction wrote is kept. A segment that an earlier `COMMIT_BEFORE_DISPATCH` boundary of the run committed stays committed. That is a failed run under the rules above. Its last error is the text a client write gets for the same refusal (`UNIQUE_VIOLATION: …` or `INVALID_UNIQUE_KEY: …`), with no ticket.
+- **Criteria and functions must not trigger unsafe work.** A criterion and a `schedule.function` are treated as safe to repeat and are not marked. One whose callbacks trigger a processor that is not `idempotent` is not supported: that processor can run twice.
+- **Shutdown.** A node that shuts down stops claiming. From then on none of its runs begins a new unsafe dispatch. It waits `CYODA_SCHEDULER_SHUTDOWN_DRAIN` (default `20s`) for its runs, then cuts every other run and hands back the ones that sent nothing unsafe and made no partial commit: another node claims them at once, and the attempt is not counted. A cut run that already sent unsafe work or partially committed ends `FAILED` (`UNSAFE_WORK_NOT_COMPLETED` or `STOPPED_AFTER_PARTIAL_COMMIT`) instead. A run with a non-idempotent processor callout in flight is not cut, and is allowed to finish. If a run has not ended by the time the shutdown wait runs out, the node stops with its claim still held, and another node takes the task over after `CYODA_SCHEDULER_STALE_AFTER`. See `cyoda help run` (SHUTDOWN TIMING).
 
 **One-shot vs. polling.** The criterion is evaluated once per fire —
 there is no built-in retry-until-true. Three shapes cover the common
@@ -415,19 +521,88 @@ exclusion) and all other validators remain unconditional. The runtime
 cascade-depth and per-state visit caps still catch actual runaway at
 fire time. Use only for workflows whose cyclicity is intentional.
 
+A single-state scheduled self-loop (`S1 →scheduled→ S1`, no criterion)
+is a cycle by the same check, and needs the same `allowCycles: true` —
+or a criterion guard — to import, even though the engine's cascade
+never evaluates a scheduled transition: a scheduled transition fires
+only when the scheduler picks up its task, never during cascade.
+
 ## CRITERIA
 
-Criteria on workflows and transitions use the same `Condition` DSL as search — five condition types are supported: `simple`, `lifecycle`, `group`, `array`, `function`. All but `function` are evaluated in-memory against the entity's JSON payload and lifecycle metadata; a `function` criterion is dispatched to a compute member and must be the whole criterion — one nested inside a `group` fails the evaluation. See `cyoda help search` for the per-type JSON shapes.
+Criteria on workflows and transitions use the same `Condition` DSL as search — five condition types are supported: `simple`, `lifecycle`, `group`, `array`, `function`. All but `function` are evaluated in-memory against the entity's JSON payload and lifecycle metadata; a `function` condition is a callout to a compute member, and it can be the whole criterion or a member of a `group` at any depth (see *Function conditions* below). See `cyoda help search` for the per-type JSON shapes.
 
-`simple` and `array` criteria address entity data fields by `jsonPath`, under the same grammar a search condition obeys — the `$.` leader is required, and a path outside it is rejected at **import** with `400 VALIDATION_FAILED` rather than at every later evaluation. Write `$.amount`, not `amount`. **Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — are valid (`$.tags[*].name`, `$.arr[0]`): criteria are evaluated in memory, which resolves them. A path ending in `[*]` addresses every element, so the criterion fires when **some** element satisfies it (`$.arr[*] GREATER_THAN 50`), and never on an empty array. Any other bracket spelling (`$.a[-1]`, `$.a[0:2]`, `$.a[?(@.x)]`, `$.a[`, `$.a[0]b`) is malformed and is rejected at import with the same `400 VALIDATION_FAILED` — previously it imported cleanly and the criterion then silently never fired, because no evaluator resolves those spellings. See `cyoda help search` for the grammar.
+`simple` and `array` criteria address entity data fields by `jsonPath`, under the same grammar a search condition obeys — the `$.` leader is required, and a path outside it is rejected at **import** with `400 VALIDATION_FAILED` rather than at every later evaluation. Write `$.amount`, not `amount`. **Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — are valid (`$.tags[*].name`, `$.arr[0]`): criteria are evaluated in memory, which resolves them. A path ending in `[*]` addresses every element, so the criterion fires when **some** element satisfies it (`$.arr[*] GREATER_THAN 50`), and never on an empty array. Any other bracket spelling (`$.a[-1]`, `$.a[0:2]`, `$.a[?(@.x)]`, `$.a[`, `$.a[0]b`) is malformed and is rejected at import with the same `400 VALIDATION_FAILED`. See `cyoda help search` for the grammar. An `array` criterion needs `operatorType`, at least one non-null entry in `values`, and a path with no `[*]` before its trailing one; import refuses it otherwise with `400 VALIDATION_FAILED`. A criterion tests at most 10,000 entries, as a search condition does (each entry in an `array` clause's `values` counts one, a `function` clause counts one plus the entries of its pre-check, every other clause one); import refuses a larger one with `400 VALIDATION_FAILED`.
 
 **Import checks the path's grammar, not whether the model declares it.** A model may legitimately be declared after the workflow that references it, so a criterion naming a field the model does not yet declare imports cleanly. The model check happens instead when the criterion is **evaluated**: a query never executes against a field the model does not declare, so if the field is still undeclared at evaluation time, the save that triggered the evaluation is **aborted and rolled back** with `400 WORKFLOW_FAILED` — no entity write, no state transition, no partial effect. This applies to all 26 operators, not only the ones that need a declared type. A field that no entity has ever written must be declared explicitly through `POST /model/import/...`; the model does not grow from a criterion alone. See `errors.WORKFLOW_FAILED` and `docs/cloud-parity/unevaluable-criterion-fails-save.md`.
 
 `group` criteria combine conditions with `AND`, `OR`, or `NOT`. `NOT` takes **exactly one** child condition (`NOT(A AND B)` is written by nesting, not as a two-entry list); zero entries or two-or-more is rejected at import with `400 VALIDATION_FAILED`. Over a wildcard path `NOT` is a universal quantifier where the leaf beneath it is existential — `NOT($.tags[*] EQUALS "red")` fires when no element equals `"red"`, a different question from `$.tags[*] NOT_EQUAL "red"` (some element differs) — and `NOT` over an empty list, an explicit `null`, or an absent field fires, because the inner leaf is false. See `cyoda help search` for the full contract.
 
-`lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search.
+`lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search. While a workflow runs, the entity's `transactionId` is the id of the transaction it runs in: the request's, a scheduled fire's, or after a `COMMIT_BEFORE_DISPATCH` boundary the new transaction's.
 
-A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
+A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always matches: an automated one fires when the cascade reaches it, and a named one fires when a client names it. When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
+
+### Function conditions
+
+A **function condition** is `{"type": "function", "function": {"name": …, "config": {…}, "criterion": …}}`. Evaluating it is a callout: cyoda sends one `EntityCriteriaCalculationRequest` to a compute member, and the member's `matches` answer is the condition's value (see `cyoda help grpc`). Its optional `function.criterion` is its **pre-check**. A **local condition** is a `simple`, `lifecycle` or `array` condition, or a `group` whose members are all local conditions; cyoda evaluates a local condition itself, without a callout.
+
+- **Where.** A criterion can hold function conditions at any depth: as the whole criterion, or as members of `AND`, `OR` and `NOT` groups, nested to any depth. Every function condition can carry a pre-check.
+- **The pre-check.** A pre-check holds only local conditions, of any type. A function condition anywhere in a pre-check, at any depth, is refused at import. cyoda evaluates the pre-check before the callout: when it does not match, the function condition is `false` and no callout is made; when it matches, or when there is none (`function.criterion` absent or `null`), the callout is made and the member's answer is the value.
+- **Order and the stop rule.** Group members are evaluated in declaration order, and a group stops as soon as its value is known: `AND` at the first `false` member, `OR` at the first `true` member. `NOT` has exactly one member and inverts it. A function condition that evaluation does not reach makes no callout. Criteria and functions must have no effects (see PROCESSORS), so the order and the stop rule change which callouts are made, never the value of the criterion.
+- **Everything is checked before the first callout.** Before it makes any callout, cyoda checks the whole criterion: every local condition in it and in every pre-check, against the entity's model, and every group that holds a function condition. A fault anywhere — a field the model does not declare, an operator the field's type cannot take, a pattern that does not compile — fails the operation with `400 WORKFLOW_FAILED` and no callout is made, also when the fault is in a member that evaluation would not reach. A model store that cannot be read at this point fails it with `500` and a ticket.
+- **A failed callout fails the operation.** The first failure in evaluation order decides; no further member is evaluated to find a value around it. The client gets the callout's own error — `503 NO_COMPUTE_MEMBER_FOR_TAG`, `503 DISPATCH_TIMEOUT`, `503 COMPUTE_MEMBER_DISCONNECTED`, `503 DISPATCH_FORWARD_FAILED` for a try handed over to a peer node, `503 CALLOUT_FAILED` after several failed tries, or `400 WORKFLOW_FAILED` for a member that answered `success: false` (see "The error a client sees" under PROCESSORS). On a scheduled transition a failed callout is a failure the scheduler retries, not a decline.
+- **The entry limit counts pre-checks.** A function condition counts one entry, plus the entries of its pre-check, toward the criterion's 10,000. The nesting depth limit of 50 also counts through a pre-check: a pre-check is one level below its function condition.
+
+For example, in this transition criterion `manual-override` is called only for an entity that is not `high` priority and asked for an override, and `credit-check` only when neither member before it is true:
+
+```json
+{
+  "type": "group",
+  "operator": "OR",
+  "conditions": [
+    { "type": "simple", "jsonPath": "$.priority", "operatorType": "EQUALS", "value": "high" },
+    { "type": "function",
+      "function": {
+        "name": "manual-override",
+        "config": { "calculationNodesTags": "approvals" },
+        "criterion": { "type": "simple", "jsonPath": "$.overrideRequested", "operatorType": "EQUALS", "value": true }
+      } },
+    { "type": "function",
+      "function": { "name": "credit-check", "config": { "calculationNodesTags": "credit" } } }
+  ]
+}
+```
+
+**Audit.** When a criterion holds a function condition, the state-machine audit events of its evaluation carry a `functions` list in their `data`: one entry per function condition that evaluation reached, in evaluation order. A function condition that evaluation did not reach has no entry, so the list is empty when evaluation reached none. `WORKFLOW_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_NOT_MATCH_CRITERION` and `TRANSITION_MAKE` (named, automated and scheduled) carry `functions` beside their other data fields when the criterion holds a function condition, and leave it out otherwise (see `cyoda help audit`, *Event data*). An entry has these fields:
+
+- `path` — always — the JSON Pointer of the function condition in the criterion (`/conditions/2`, `/conditions/0/conditions/1`); `""` for a function condition that is the whole criterion.
+- `name` — always — `function.name`.
+- `preCheck` — when it has a pre-check — the pre-check as written.
+- `preCheckMatched` — when it has a pre-check — whether the pre-check matched.
+- `called` — always — whether the callout was made.
+- `matches` — when called — the member's answer.
+- `reason` — when called and the member gave one — the member's reason.
+
+For the criterion above, on an entity with `"priority": "normal"` and `"overrideRequested": false`, `credit-check` answering `false`, the `functions` member of the event's `data` is:
+
+```json
+{
+  "functions": [
+    { "path": "/conditions/1", "name": "manual-override",
+      "preCheck": { "type": "simple", "jsonPath": "$.overrideRequested", "operatorType": "EQUALS", "value": true },
+      "preCheckMatched": false, "called": false },
+    { "path": "/conditions/2", "name": "credit-check", "called": true, "matches": false, "reason": "score below 600" }
+  ]
+}
+```
+
+**The reason.** `WORKFLOW_SKIP` and `TRANSITION_NOT_MATCH_CRITERION` carry `data.reason`. For a criterion with no function condition it is `criterion did not match`. For a function condition that is the whole criterion and was called, it is the member's reason, or `criterion did not match` when the member gave none. Otherwise it lists every entry, in order, joined with `; ` (and is `criterion did not match` when there is none):
+
+- not called: `<name> at <path>: pre-check did not match, not called`
+- called: `<name> at <path>: answered <true|false>`, followed by `: <reason>` when the member gave one
+
+For a function condition that is the whole criterion, ` at <path>` is left out. The example above gives `manual-override at /conditions/1: pre-check did not match, not called; credit-check at /conditions/2: answered false: score below 600`. Every callout made is listed with its answer, and none is singled out as the cause: under `NOT`, a `true` answer can refuse a transition.
+
+A transition a client named and its criterion refused answers `400 WORKFLOW_FAILED` with the message `transition "<name>" criterion not matched`, followed by `: <reason>` when the reason is not `criterion did not match`. The named transition rolls back, so its audit event is not kept; the message is where the caller learns why.
 
 ### Workflow-level selection
 
@@ -437,7 +612,7 @@ When a model has more than one imported workflow definition, the engine picks th
 2. Skip any workflow whose `active` flag is `false`. Inactive workflows are invisible to selection, regardless of their criterion.
 3. For each active workflow, evaluate `criterion` against the entity payload and lifecycle metadata. A `null` (absent) criterion matches unconditionally — the workflow is selected immediately.
 4. The first active workflow whose criterion matches is selected. Subsequent workflows in the array are not consulted.
-5. If no active workflow matches — which includes the case where every active workflow has a criterion and none of them passes — the engine falls back to the embedded **default workflow**. The substitution surfaces on two channels: a body warning via `AddWarning` and an operator-visible `slog.Warn` line (`reason=no_criterion_matched`).
+5. If no active workflow matches — which includes the case where every active workflow has a criterion and none of them passes — the engine falls back to the embedded **default workflow**. The substitution surfaces on two channels: a warning to the client (a `Cyoda-Warning` header on an HTTP response, the `warnings` of a gRPC response; see `cyoda help errors`) and an operator-visible `slog.Warn` line (`reason=no_criterion_matched`).
 
 Place a `null`-criterion (or otherwise unconditional) workflow last in the import array if you want it to act as a catch-all. Any active workflows declared after it are unreachable for the same reason an unguarded automated transition shadows successors at the transition level.
 
@@ -445,12 +620,12 @@ Workflow-level selection is independent of transition-level selection: once a wo
 
 Because selection is re-evaluated per call, editing an entity's payload can re-bind it to a different definition. If its current state is not declared in the newly selected workflow, the engine does **not** fall through to another definition that happens to declare it: a named transition is rejected with `400 WORKFLOW_FAILED`, and a loopback settles as a no-op.
 
-A pending scheduled task the newly selected workflow no longer declares as a scheduled transition of that state is **not** cancelled by the write that caused the re-bind: cancellation on re-arm only removes tasks for a state the entity has left, and this one names the state the entity is still in. The task is discarded when it next comes due — the fire door re-resolves the workflow, finds no such scheduled transition, deletes the row and records `SCHEDULED_TRANSITION_CANCEL`. Nothing wrong fires in the meantime, but a timer retired this way is reported at its scheduled time, not at the write, and is attributed to the system principal.
+A pending scheduled task that the newly selected workflow does not schedule from the entity's current state is removed by the write that caused the re-bind, in that write's transaction, and recorded as `SCHEDULED_TRANSITION_CANCEL`.
 
 Two consequences worth designing for:
 
 - **Select on fields the caller cannot rewrite.** The criterion is evaluated against the payload of the request being served, so a criterion over a client-writable field lets one request choose which definition's guards apply to itself. Where definitions differ in what they permit, select on immutable fields or on lifecycle metadata.
-- **Select on something that stays true for the entity's whole lifetime.** A criterion over a field that changes mid-flow can strand an entity in a state its new definition does not declare, and can silently retire a scheduled transition that was acting as a time-based control.
+- **Select on something that stays true for the entity's whole lifetime.** A criterion over a field that changes mid-flow can strand an entity in a state its new definition does not declare, and can retire a scheduled transition that was acting as a time-based control; the retirement is recorded as `SCHEDULED_TRANSITION_CANCEL`, and nothing else reports it.
 
 Selection is audited: each skipped workflow records a `WORKFLOW_SKIP` event (with the criterion's rejection reason) and the chosen one a `WORKFLOW_FOUND` event, under the transaction driving the call. `GET /entity/{entityId}/transitions` is a pure read and records nothing.
 
@@ -460,6 +635,8 @@ Selection is audited: each skipped workflow records a `WORKFLOW_SKIP` event (wit
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
+
+A workflow import never runs inside a transaction. A request that carries a transaction token (`X-Tx-Token`, or the `tx-token` gRPC metadata a compute member echoes on a callback) is refused with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` before the token is verified and before anything is read or written; a processor that needs to import a workflow makes the request without the token. See `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION`.
 
 Request body (`application/json`):
 
@@ -474,6 +651,11 @@ Request body (`application/json`):
 
 - `importMode` — `"MERGE"` (default): incoming workflows overwrite existing ones by name; existing workflows not in the import are preserved. `"REPLACE"`: all existing workflows are discarded; only the incoming set is stored. `"ACTIVATE"`: incoming workflows replace same-named existing ones; existing workflows not in the import set are kept but flipped `active=false`. `REPLACE` / `ACTIVATE` reject an empty `workflows` array (or a missing `workflows` key) with `400 VALIDATION_FAILED` — once a model has imported workflows it always carries ≥1; the built-in default workflow is only used when no workflow has ever been imported. `MERGE` with an empty `workflows` array is allowed as a no-op. The field defaults to `MERGE` when omitted or empty. Parsing is **case-insensitive**: `"merge"`, `"Merge"`, and `"MERGE"` are equivalent. Any value outside the documented enum (after case-folding) is rejected with `400 BAD_REQUEST`.
 - `workflows` — array of `WorkflowDefinition`. The `active` flag on each incoming workflow is preserved as supplied; the server never overrides it. If the field is absent (or explicitly `null`), it defaults to `true`. Controlling which workflows are active is entirely up to the importer.
+- `allowCycles` — boolean, optional, default `false` — `true` skips the cycle check (the first rule in the list below); see SCHEDULED TRANSITIONS for when a cycle is wanted.
+
+**The body is read strictly**, as every request body is (see `cyoda help openapi`). A member that the request does not declare — at the top level, or in a workflow, state, transition, processor or schedule — is refused with `400 BAD_REQUEST`, and the detail names the member and where it is. So is a member name in another letter case, a member written twice, and anything after the request object. A misspelt member such as `transitionn` therefore fails the import instead of importing a workflow with no transitions. `annotations` and `criterionAnnotations` hold any members you choose. The export response is not an import body: see EXPORT RESPONSE.
+
+A request body holding text no storage backend can keep — U+0000, an unpaired surrogate, or bytes that are not valid UTF-8 — is refused with `400 BAD_REQUEST`, naming the field, before anything else is checked, as an entity payload is: a workflow's names reach the state-machine audit trail, which cannot hold U+0000 on PostgreSQL.
 
 Static validation runs on the incoming request before saving. Any of the following returns `400 VALIDATION_FAILED` with the offending workflow / state / transition named in `detail`:
 
@@ -485,14 +667,26 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Empty processor `name`.
 - Workflow / state / transition / processor names longer than 256 characters.
 - Transition `next` not declared in `states`.
+- A transition whose `manual` is omitted or `null`. `manual` has no default: send `true` or `false`.
+- A transition `schedule` that breaks a rule under *Import-time validation* in SCHEDULED TRANSITIONS above.
+- A processor `type` other than `"externalized"` (an omitted or empty `type` is stored as `"externalized"`).
+- An `annotations` or `criterionAnnotations` value that is neither a JSON object nor `null`, or that is larger than 64 KB compacted. `null` reads as absent.
 - Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
-- Unknown `retryPolicy` value on any processor (allowed: `NONE`, `FIXED`, or empty).
+- Unknown `retryPolicy` value on any processor, any function condition in a criterion (at any depth) or any `schedule.function` (allowed: `NONE`, `FIXED`, or empty).
+- A function condition in a criterion, at any depth, whose `function.config` cannot be read (for example a `responseTimeoutMs` that is not an integer).
+- A function condition in a criterion without a `function` object, or without a `function.name`.
 - `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
 - Empty `workflows` array (or a missing `workflows` key) when `importMode` is `REPLACE` or `ACTIVATE`. `MERGE` with an empty array is a legitimate no-op.
-- A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA below.
+- A criterion that is not a valid condition (unknown `type`, not a JSON object, a malformed clause). It could never be evaluated.
+- A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA above.
+- A criterion operator or operand the evaluator cannot use: an unknown or missing `operatorType`; an object operand, or an array operand under any operator other than `BETWEEN`/`BETWEEN_INCLUSIVE`; a `BETWEEN`/`BETWEEN_INCLUSIVE` value that is not a two-element array of two non-null scalar bounds; a missing or `null` operand on an operator that takes one (every operator except `IS_NULL` and `NOT_NULL`).
 - A criterion `LIKE` or `MATCHES_PATTERN` value that is not a valid pattern.
 - A criterion `lifecycle` clause naming an unknown metadata field, or comparing a temporal field (`creationDate`, `lastUpdateTime`) against a non-timestamp operand.
 - A criterion `group` clause whose `operator` is not `AND`, `OR`, or `NOT`, or whose `operator` is `NOT` with `conditions` other than exactly one entry.
+- A function condition in a pre-check (`function.criterion`), at any depth. A pre-check holds only local conditions; the message names the position of the function condition in the criterion, for example `/conditions/1/function/criterion/conditions/0`.
+- A pre-check that breaks any of the criterion checks above — path grammar, `array` clause shape, `lifecycle` soundness, operator and operand shape, `BETWEEN` bounds, group operator and `NOT` arity, patterns. They apply to every pre-check as they apply to the rest of the criterion, and the message names the pre-check's position, for example `/conditions/1/function/criterion`.
+- A criterion over the entry limit (10,000) or the nesting depth limit (50), counted through every pre-check (see *Function conditions* under CRITERIA above).
+- A `responseTimeoutMs` on a processor, a function condition in a criterion (at any depth) or a `schedule.function` that is negative, or larger than the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`). The bound is a server setting: a workflow exported from one deployment can be refused by another with a lower bound.
 
 The new structural rules (state graph, name uniqueness, `executionMode` enum, `retryPolicy` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 
@@ -529,6 +723,19 @@ Response: `200 OK`, `application/json`:
 
 Returns `404 WORKFLOW_NOT_FOUND` when no workflows have been imported for the model.
 
+**Re-importing an export.** The import refuses members it does not declare, and `entityName` and `modelVersion` are not import members, so posting an export back unchanged fails with `400 BAD_REQUEST`. Keep `workflows` and choose the `importMode`:
+
+```
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/model/nobel-prize/1/workflow/export" \
+  | jq '{importMode: "REPLACE", workflows}' > workflows.json
+curl -s -X POST -H @- <<<"Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" --data-binary @workflows.json \
+  "http://localhost:8080/api/model/nobel-prize/1/workflow/import"
+```
+
+`allowCycles` is part of the request, not of the stored workflows, so an export does not carry it. If the original import needed `allowCycles: true`, add it to the body (`jq '{importMode: "REPLACE", allowCycles: true, workflows}'`); every import checks for cycles again.
+
 **Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty. `annotations` (on the workflow, any state, any transition, or any processor) and `criterionAnnotations` (on the workflow or any transition) are omitted when absent, and re-serialised in compacted form when present.
 
 ## ENGINE EXECUTION
@@ -539,7 +746,7 @@ The workflow engine runs synchronously within the entity write transaction. The 
 2. Evaluate each workflow's `criterion` against the entity; select the first match. If none match (or if no workflows have been imported for the model), use the built-in default workflow. The substitution emits both a `slog.Warn` line (fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `entityId`, `reason=no_workflows_imported`|`no_criterion_matched`) and an `AddWarning` entry surfaced in the response body, so operators can detect models silently running on the default.
 3. Set `entity.Meta.State = workflow.initialState`.
 4. If a named transition was requested (by the client), execute it: evaluate `criterion`, invoke processors, set `entity.Meta.State = transition.next`.
-5. Cascade: repeatedly scan the current state's transitions; for each automated (`manual=false`) non-disabled transition, evaluate `criterion`; if it matches, invoke processors and advance the state. Stop when no automated transition matches or the state has no automated transitions.
+5. Cascade: repeatedly scan the current state's transitions; for each automated (`manual=false`) transition that is not disabled and has no `schedule`, evaluate `criterion`; if it matches, invoke processors and advance the state. Stop when no automated transition matches or the state has no automated transitions.
 6. The engine records `StateMachineEvent` entries to the audit log under the entity's `transactionId`.
 
 Per-state visit limit (default 10) and total cascade depth limit (100) are enforced to prevent infinite loops.
@@ -548,11 +755,19 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 
 - `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the current state's workflow
 - `errors.WORKFLOW_NOT_FOUND` — `404` — no workflows found for the model (export endpoint)
-- `errors.WORKFLOW_FAILED` — workflow engine encountered an unrecoverable error during execution
-- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no registered calculation node matches the required `calculationNodesTags`
-- `errors.COMPUTE_MEMBER_DISCONNECTED` — a calculation node disconnected during processor dispatch
+- `errors.WORKFLOW_FAILED` — `400` — the engine could not complete the transition; for a compute member that answered `success: false`, carries the member's message (cut to 512 characters) and its `retryable` verdict
+- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — no compute member matching `calculationNodesTags` appeared within `CYODA_DISPATCH_WAIT_TIMEOUT`
+- `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — the compute member's connection dropped after it was given the work
+- `errors.DISPATCH_TIMEOUT` — `503` — the compute member did not answer within `responseTimeoutMs`
+- `errors.CALLOUT_FAILED` — `503` — every try of a callout failed; the message lists them
+- `errors.CALLOUT_SUPERSEDED` — `410` — seen by a compute member, not by the client: a callback from a member that was replaced, or whose callout has ended
+- `errors.COMMIT_IN_JOINED_TRANSACTION` — `409` — seen by a compute member, not by the client: a callback's write reached a `COMMIT_BEFORE_DISPATCH` processor, which would commit the transaction the callback joined
+- `errors.TRANSACTION_ROLLBACK_ONLY` — `409` — a callback's write failed with an answer that is not retryable, so the operation's transaction can only be rolled back; a compute member sees it too, on a callback under that part of the transaction
+- `errors.TRANSACTION_BUSY` — `503` — seen by a compute member, not by the client: a callback arrived while another callback of the transaction was paused in a callout of its own
 - `errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` — `400` — workflow declares a schema version this server does not accept
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed; see IMPORT REQUEST above for the enumerated rules
+- `errors.CONFLICT` — `409` — workflow import: removing the tasks of scheduled transitions no workflow schedules any more still conflicted with the scheduler after the server's three retries; retryable, and repeating the same import retries the removal
+- `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — the workflow import carries a transaction token; model and workflow administration never runs inside a transaction
 
 ## EXAMPLES
 
@@ -560,13 +775,13 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1.4",
+        "version": "1.5",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -594,15 +809,15 @@ curl -s -X POST \
 **Export workflows:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1/workflow/export"
 ```
 
-**Trigger a manual transition:**
+**Fire a transition by name:**
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"category":"physics","year":"2024"}' \
   "http://localhost:8080/api/entity/JSON/74807f00-ed0d-11ee-a357-ae468cd3ed16/APPROVE"
@@ -612,13 +827,13 @@ curl -s -X PUT \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1.4",
+        "version": "1.5",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,
@@ -633,15 +848,25 @@ curl -s -X POST \
 
 ## SEE ALSO
 
+- design
 - models
 - crud
 - grpc
 - search
+- workflows.schema-version
 - errors.TRANSITION_NOT_FOUND
 - errors.WORKFLOW_NOT_FOUND
 - errors.WORKFLOW_FAILED
 - errors.NO_COMPUTE_MEMBER_FOR_TAG
 - errors.COMPUTE_MEMBER_DISCONNECTED
+- errors.DISPATCH_TIMEOUT
+- errors.CALLOUT_FAILED
+- errors.CALLOUT_SUPERSEDED
 - errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED
 - errors.VALIDATION_FAILED
 - errors.MODEL_NOT_FOUND
+- errors.SCHEDULE_FUNCTION_INVALID_RESULT
+- config.grpc
+- scheduled-tasks
+- config.scheduler
+- errors.CONFLICT

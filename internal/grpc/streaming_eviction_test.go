@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // wedgingStream parks every send after the greet until released, and keeps
@@ -47,7 +47,7 @@ func startStream(t *testing.T, svc *CloudEventsServiceImpl, stream bidiStream) (
 	done := make(chan error, 1)
 	go func() { done <- svc.StartStreaming(stream) }()
 	var member *Member
-	for i := 0; i < 400 && member == nil; i++ {
+	for range 400 {
 		if ms := svc.registry.List(); len(ms) == 1 {
 			member = ms[0]
 			break

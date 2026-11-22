@@ -128,6 +128,39 @@ func TestModelSetUniqueKeys_MalformedBody_400(t *testing.T) {
 	assertErrorCode(t, body, "BAD_REQUEST")
 }
 
+// TestModelSetUniqueKeys_NoUniqueKeys_400 verifies that a body without
+// uniqueKeys, or with null, returns 400 BAD_REQUEST and leaves the model's keys
+// as they were: the keys sent replace the model's keys, so reading an absence
+// as "no keys" would remove them all.
+func TestModelSetUniqueKeys_NoUniqueKeys_400(t *testing.T) {
+	const m = "e2e-uk-absent"
+	importModelWithSample(t, m, 1, ukSampleData)
+	if status, body := setUniqueKeysE2E(t, m, 1, `{"uniqueKeys":[{"id":"by-name","fields":["$.name"]}]}`); status != http.StatusOK {
+		t.Fatalf("set keys: expected 200, got %d: %s", status, body)
+	}
+	for name, keysJSON := range map[string]string{
+		"absent": `{}`,
+		"null":   `{"uniqueKeys":null}`,
+	} {
+		status, body := setUniqueKeysE2E(t, m, 1, keysJSON)
+		if status != http.StatusBadRequest {
+			t.Errorf("%s uniqueKeys: expected 400, got %d: %s", name, status, body)
+			continue
+		}
+		assertErrorCode(t, body, "BAD_REQUEST")
+
+		resp := doAuth(t, http.MethodGet, "/api/model/export/JSON_SCHEMA/"+m+"/1", "")
+		exported := readBody(t, resp)
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(exported), &parsed); err != nil {
+			t.Fatalf("export: unmarshal failed: %v\nbody: %s", err, exported)
+		}
+		if uks, _ := parsed["uniqueKeys"].([]any); len(uks) != 1 {
+			t.Errorf("%s uniqueKeys: keys after the refused request = %v; want the one key kept", name, parsed["uniqueKeys"])
+		}
+	}
+}
+
 // TestExportModel_NotFound_404 verifies that exporting a model that does not
 // exist returns 404 MODEL_NOT_FOUND.
 func TestExportModel_NotFound_404(t *testing.T) {

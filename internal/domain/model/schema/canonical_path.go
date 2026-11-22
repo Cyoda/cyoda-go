@@ -3,7 +3,7 @@ package schema
 import (
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // CanonicalFieldPath rewrites a wire jsonPath into the form [ModelNode.FieldsMap]

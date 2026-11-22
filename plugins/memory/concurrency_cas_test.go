@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // TestCompareAndSave_TxBufferWriteVsCommit_NoRace exercises the locking
@@ -48,23 +48,20 @@ func TestCompareAndSave_TxBufferWriteVsCommit_NoRace(t *testing.T) {
 				t.Fatalf("EntityStore failed: %v", err)
 			}
 			modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+			lockModels(t, factory, ctx, modelRef)
 
-			// Pre-seed an entity with a known TransactionID so the
-			// CompareAndSave call has a committed predecessor to match
-			// against.
-			seed := &spi.Entity{
+			// Pre-seed an entity in a transaction of its own, so the
+			// CompareAndSave call has a committed predecessor whose
+			// transaction ID it can match.
+			seedTxID := saveCommitted(t, txMgr, store, ctx, &spi.Entity{
 				Meta: spi.EntityMeta{
-					ID:            "e-cas",
-					TenantID:      "tenant-A",
-					ModelRef:      modelRef,
-					State:         "NEW",
-					TransactionID: "tx-seed",
+					ID:       "e-cas",
+					TenantID: "tenant-A",
+					ModelRef: modelRef,
+					State:    "NEW",
 				},
 				Data: []byte(`{"v":0}`),
-			}
-			if _, err := store.Save(ctx, seed); err != nil {
-				t.Fatalf("seed Save failed: %v", err)
-			}
+			})
 
 			txID, txCtx, err := txMgr.Begin(ctx)
 			if err != nil {
@@ -81,15 +78,14 @@ func TestCompareAndSave_TxBufferWriteVsCommit_NoRace(t *testing.T) {
 				<-start
 				e := &spi.Entity{
 					Meta: spi.EntityMeta{
-						ID:            "e-cas",
-						TenantID:      "tenant-A",
-						ModelRef:      modelRef,
-						State:         "NEW",
-						TransactionID: "tx-new",
+						ID:       "e-cas",
+						TenantID: "tenant-A",
+						ModelRef: modelRef,
+						State:    "NEW",
 					},
 					Data: []byte(fmt.Sprintf(`{"iter":%d}`, iter)),
 				}
-				_, cerr := store.CompareAndSave(txCtx, e, "tx-seed")
+				_, cerr := store.CompareAndSave(txCtx, e, seedTxID)
 				if cerr == nil || errors.Is(cerr, spi.ErrConflict) || isToleratedClosedTxErr(cerr) {
 					return
 				}
@@ -135,6 +131,7 @@ func TestSave_TxBufferWriteVsRollback_NoRace(t *testing.T) {
 				t.Fatalf("EntityStore failed: %v", err)
 			}
 			modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+			lockModels(t, factory, ctx, modelRef)
 
 			txID, txCtx, err := txMgr.Begin(ctx)
 			if err != nil {

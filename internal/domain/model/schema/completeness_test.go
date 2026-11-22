@@ -105,9 +105,9 @@ func TestDiffCoversCatalog(t *testing.T) {
 			}
 			// And the round trip holds (redundant with diff_test but
 			// explicit here as the completeness invariant).
-			applied, err := Apply(sample.old(), delta)
+			applied, err := applyDelta(sample.old(), delta)
 			if err != nil {
-				t.Fatalf("Apply: %v", err)
+				t.Fatalf("apply: %v", err)
 			}
 			wantBytes, _ := Marshal(sample.new())
 			gotBytes, _ := Marshal(applied)

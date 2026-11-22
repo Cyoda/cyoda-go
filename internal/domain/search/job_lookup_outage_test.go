@@ -13,11 +13,12 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	spi "github.com/cyoda/cyoda-go-spi"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 // outageDSN stands in for the connection detail a real pool error carries.
@@ -75,9 +76,16 @@ func (s *stubSearchStore) GetResultIDs(_ context.Context, _ string, _, _ int) ([
 	return nil, 0, s.resultIDsErr
 }
 
+// finishedNow is a terminal job's finish time, just now by the real clock the
+// stub service reads, so the job is well within its snapshot TTL.
+func finishedNow() *time.Time {
+	t := time.Now()
+	return &t
+}
+
 func stubService(store spi.AsyncSearchStore) *search.SearchService {
 	// factory and uuid generator are untouched on every path exercised here.
-	return search.NewSearchService(nil, nil, store)
+	return search.NewSearchService(cachedFactory(nil), nil, store, newFixedConsistency(), platformclock.Real())
 }
 
 // ---------------------------------------------------------------------------
@@ -209,7 +217,7 @@ func TestGetAsyncSearchResults_StorageOutage_Returns503(t *testing.T) {
 func TestGetAsyncSearchResults_ResultIDsStorageOutage_Returns503(t *testing.T) {
 	jobID := uuid.New()
 	store := &stubSearchStore{
-		job:          &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL"},
+		job:          &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL", FinishTime: finishedNow()},
 		resultIDsErr: storageOutage("GetResultIDs"),
 	}
 	w := callResults(t, stubService(store), jobID)
@@ -223,7 +231,7 @@ func TestGetAsyncSearchResults_ResultIDsStorageOutage_Returns503(t *testing.T) {
 func TestGetAsyncSearchResults_JobVanishesMidRead_Returns404(t *testing.T) {
 	jobID := uuid.New()
 	store := &stubSearchStore{
-		job:                 &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL"},
+		job:                 &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL", FinishTime: finishedNow()},
 		resultIDsErr:        fmt.Errorf("search job %q not found", jobID),
 		vanishAfterFirstGet: true,
 	}
@@ -240,7 +248,7 @@ func TestGetAsyncSearchResults_JobVanishesMidRead_Returns404(t *testing.T) {
 func TestGetAsyncSearchResults_StoreDownDuringResultIDs_StaysRetryable(t *testing.T) {
 	jobID := uuid.New()
 	store := &stubSearchStore{
-		job:          &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL"},
+		job:          &spi.SearchJob{ID: jobID.String(), Status: "SUCCESSFUL", FinishTime: finishedNow()},
 		resultIDsErr: storageOutage("GetResultIDs"),
 	}
 	w := callResults(t, stubService(store), jobID)
@@ -299,7 +307,7 @@ type resultIDsStore struct {
 }
 
 func (s *resultIDsStore) GetJob(_ context.Context, jobID string) (*spi.SearchJob, error) {
-	return &spi.SearchJob{ID: jobID, Status: "SUCCESSFUL", ResultCount: len(s.ids)}, nil
+	return &spi.SearchJob{ID: jobID, Status: "SUCCESSFUL", ResultCount: len(s.ids), FinishTime: finishedNow()}, nil
 }
 
 func (s *resultIDsStore) GetResultIDs(_ context.Context, _ string, _, _ int) ([]string, int, error) {
@@ -307,17 +315,18 @@ func (s *resultIDsStore) GetResultIDs(_ context.Context, _ string, _, _ int) ([]
 }
 
 // hydrateEntityStore answers GetAsAt per id: an id in errs fails with the mapped
-// error, anything else resolves.
+// error, anything else resolves, carrying its bytes from data.
 type hydrateEntityStore struct {
 	spi.EntityStore
 	errs map[string]error
+	data map[string][]byte
 }
 
 func (s *hydrateEntityStore) GetAsAt(_ context.Context, id string, _ time.Time) (*spi.Entity, error) {
 	if err, ok := s.errs[id]; ok {
 		return nil, err
 	}
-	return &spi.Entity{Meta: spi.EntityMeta{ID: id}}, nil
+	return &spi.Entity{Meta: spi.EntityMeta{ID: id}, Data: s.data[id]}, nil
 }
 
 type hydrateFactory struct {
@@ -330,8 +339,7 @@ func (f *hydrateFactory) EntityStore(context.Context) (spi.EntityStore, error) {
 }
 
 func hydrateService(ids []string, errs map[string]error) *search.SearchService {
-	return search.NewSearchService(
-		&hydrateFactory{store: &hydrateEntityStore{errs: errs}}, nil, &resultIDsStore{ids: ids})
+	return search.NewSearchService(cachedFactory(&hydrateFactory{store: &hydrateEntityStore{errs: errs}}), nil, &resultIDsStore{ids: ids}, newFixedConsistency(), platformclock.Real())
 }
 
 // A storage outage during hydration used to be logged and skipped, so the caller
@@ -358,10 +366,9 @@ func TestGetAsyncResults_HydrationOutage_FailsThePage(t *testing.T) {
 	}
 }
 
-// The other direction, and the reason the skip exists: an id recorded at scan
-// time whose entity has since been hard-deleted is a genuine miss, not a
-// failure. It is skipped and the rest of the page is served, exactly as before.
-func TestGetAsyncResults_HardDeletedEntity_IsSkipped(t *testing.T) {
+// A recorded result id is readable at the job's final instant, so a miss on it
+// is not a hard-deleted entity to skip: it is an internal failure of the page.
+func TestAsyncResults_NotFoundIsInternal(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	jobID := uuid.New().String()
 	ids := []string{"id-1", "id-2"}
@@ -370,13 +377,14 @@ func TestGetAsyncResults_HardDeletedEntity_IsSkipped(t *testing.T) {
 	})
 
 	page, err := svc.GetAsyncResults(ctx, jobID, search.ResultOptions{})
-	if err != nil {
-		t.Fatalf("a hard-deleted result id failed the page: %v", err)
+	if err == nil {
+		t.Fatalf("a missing result entity was skipped: %d of %d results", len(page.Results), page.Total)
 	}
-	if len(page.Results) != 1 || page.Results[0].Meta.ID != "id-1" {
-		t.Fatalf("results = %+v, want just id-1", page.Results)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Status != http.StatusInternalServerError {
+		t.Fatalf("err = %v, want an internal AppError", err)
 	}
-	if page.Total != len(ids) {
-		t.Errorf("total = %d, want %d — total counts recorded ids, not hydrated ones", page.Total, len(ids))
+	if errors.Is(err, search.ErrSearchJobNotFound) {
+		t.Errorf("a missing result entity was reported as a missing job: %v", err)
 	}
 }

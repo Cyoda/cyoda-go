@@ -2,12 +2,19 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"testing"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4"
+	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/metric"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ValidateInChunksForTest exposes validateInChunks for integration testing.
@@ -19,7 +26,7 @@ func ValidateInChunksForTest(
 
 // DropSchemaForTest exposes dropSchema (the unexported implementation) to
 // _test.go files in this package and any external test packages that import
-// "github.com/cyoda-platform/cyoda-go/plugins/postgres". The export_test.go
+// "github.com/cyoda/cyoda-go/plugins/postgres". The export_test.go
 // idiom keeps the symbol invisible to non-test compilation: the file is
 // compiled only when `go test` is building the package, so production binaries
 // never see DropSchemaForTest.
@@ -34,6 +41,36 @@ var DropSchemaForTest = dropSchema
 // tests; never in production code.
 func MigrateDownForTest(pool *pgxpool.Pool) error {
 	return migrateDown(pool, defaultMigrateLockTimeout)
+}
+
+// MigrateToVersionForTest applies migrations up to (or rolls back down to)
+// exactly the given schema_migrations version. A backfill migration's
+// behavior on pre-existing rows is only exercisable by stopping short of it,
+// seeding data against the schema as it stood one version earlier, then
+// migrating the one remaining step and inspecting the result — every other
+// test in this package migrates an empty database, so a migration's own
+// backfill logic runs against zero rows and is never actually exercised.
+// Use only in tests; never in production code.
+func MigrateToVersionForTest(pool *pgxpool.Pool, version uint) error {
+	db := openDB(pool, defaultMigrateLockTimeout)
+	defer db.Close()
+
+	driver, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{})
+	if err != nil {
+		return fmt.Errorf("create migration driver: %w", err)
+	}
+	src, err := iofs.New(migrationFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("open embedded migrations: %w", err)
+	}
+	m, err := migrate.NewWithInstance("iofs", src, "pgx5", driver)
+	if err != nil {
+		return fmt.Errorf("create migrator: %w", err)
+	}
+	if err := m.Migrate(version); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("migrate to version %d: %w", version, err)
+	}
+	return nil
 }
 
 // BeginGuardedForTest exposes beginGuarded (tx_guard_test.go) to the external
@@ -116,7 +153,7 @@ func WriteSetVersionForTest(s TxStateForTest, entityID string) (int64, bool) {
 // NewStoreFactoryWithTMForTest creates a StoreFactory with the given pool and
 // TransactionManager pre-wired. Use only in tests.
 func NewStoreFactoryWithTMForTest(pool *pgxpool.Pool, tm *TransactionManager) *StoreFactory {
-	f := NewStoreFactory(pool)
+	f := newStoreFactoryWithKeys(pool, defaultStoreConfig(), tm.keys)
 	f.setTransactionManager(tm)
 	return f
 }
@@ -150,6 +187,12 @@ const (
 // plan shape a hand-copied flat SELECT cannot stand in for.
 const GetResultIDsQueryForTest = getResultIDsQuery
 
+// PITBaseQueryForTest hands pit_plan_test.go the production point-in-time
+// base SELECT, for the same reason as the queries above: a plan assertion
+// must describe the query that actually runs, not a re-typed copy that can
+// silently drift from it.
+const PITBaseQueryForTest = pitBaseQueryTemplate
+
 // SearchCandidateIDsForTest returns the entity IDs the SQL WHERE fragment
 // planQuery(filter) produces BEFORE any Go-side postFilter re-check — i.e.
 // the raw pushdown candidate set exactly as searchCommitted would scan it,
@@ -160,7 +203,7 @@ const GetResultIDsQueryForTest = getResultIDsQuery
 // equality proxy that store.Search() (which DOES apply the residual)
 // provides.
 func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID spi.TenantID, entityName, modelVersion string, filter spi.Filter) ([]string, error) {
-	s := &entityStore{q: pool, pool: pool, tenantID: tenantID}
+	s := &entityStore{q: pool, pool: pool, tenantID: tenantID, keys: newTenantKeys()}
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, err
@@ -179,10 +222,11 @@ func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID
 	var ids []string
 	for rows.Next() {
 		var doc []byte
-		if err := rows.Scan(&doc); err != nil {
+		var creationDate, lastModified time.Time
+		if err := rows.Scan(&doc, &creationDate, &lastModified); err != nil {
 			return nil, err
 		}
-		e, err := unmarshalEntityDoc(doc)
+		e, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 		if err != nil {
 			return nil, err
 		}
@@ -201,14 +245,26 @@ func NewStoreFactoryWithAcquireTimeoutForTest(pool *pgxpool.Pool, d time.Duratio
 	return newStoreFactoryWithConfig(pool, cfg)
 }
 
-// RegisterPoolMetricsForTest exposes registerPoolMetrics to the external
-// postgres_test package. metrics_test.go must live in postgres_test to reuse
-// newTestPool (migrate_test.go), which carries the pgx v5.9.1
-// HealthCheckPeriod-hang workaround around pool.Close — duplicating that
-// workaround for an internal-package test is worse than reaching the
+// NewStoreFactoryWithStatementTimeoutForTest builds a factory whose config
+// carries statement timeout d, so InitTransactionManager wires d into the
+// manager by the production path. A consistency-time test uses it to bound the
+// wait budget in milliseconds instead of the shipped 10 s. Test-only.
+func NewStoreFactoryWithStatementTimeoutForTest(pool *pgxpool.Pool, d time.Duration) *StoreFactory {
+	cfg := defaultStoreConfig()
+	cfg.StatementTimeout = d
+	return newStoreFactoryWithConfig(pool, cfg)
+}
+
+// RegisterPoolMetricsForTest exposes registerPoolMetrics for a factory's
+// pools to the external postgres_test package. metrics_test.go must live in
+// postgres_test to reuse newTestPool (migrate_test.go), which carries the pgx
+// v5.9.1 HealthCheckPeriod-hang workaround around pool.Close — duplicating
+// that workaround for an internal-package test is worse than reaching the
 // unexported production symbol through this idiom. Test-only; never call
 // from production code.
-var RegisterPoolMetricsForTest = registerPoolMetrics
+func RegisterPoolMetricsForTest(meter metric.Meter, f *StoreFactory) (func(), error) {
+	return registerPoolMetrics(meter, f.pool, &f.sched, f.openModelPoolOrNil)
+}
 
 // MeterNameForTest exposes meterName for the same reason.
 const MeterNameForTest = meterName
@@ -220,7 +276,68 @@ const MeterNameForTest = meterName
 // short enough to observe in milliseconds rather than the shipped 10s default.
 // Test-only.
 func NewStoreFactoryWithTMAndAcquireTimeoutForTest(pool *pgxpool.Pool, tm *TransactionManager, d time.Duration) *StoreFactory {
-	f := NewStoreFactoryWithAcquireTimeoutForTest(pool, d)
+	cfg := defaultStoreConfig()
+	cfg.AcquireTimeout = d
+	f := newStoreFactoryWithKeys(pool, cfg, tm.keys)
 	f.setTransactionManager(tm)
 	return f
+}
+
+// SchedulerPoolForTest returns the factory's scheduler work pool, opening it
+// if needed. Test-only.
+func SchedulerPoolForTest(t testing.TB, f *StoreFactory) *pgxpool.Pool {
+	t.Helper()
+	work, _, err := f.schedulerPools()
+	if err != nil {
+		t.Fatalf("scheduler pools: %v", err)
+	}
+	return work
+}
+
+// CloseSchedulerPoolsForTest closes the scheduler pools a test factory
+// opened. Fixtures that close only the main pool call it. Test-only.
+func CloseSchedulerPoolsForTest(f *StoreFactory) { f.closeSchedulerPools() }
+
+// ModelPoolForTest returns the factory's model pool, opening it if needed.
+// Test-only.
+func ModelPoolForTest(t testing.TB, f *StoreFactory) *pgxpool.Pool {
+	t.Helper()
+	m, err := f.modelPool()
+	if err != nil {
+		t.Fatalf("model pool: %v", err)
+	}
+	return m.pool
+}
+
+// CloseModelPoolForTest closes the model pool a test factory opened.
+// Fixtures that close only the main pool call it. Test-only.
+func CloseModelPoolForTest(f *StoreFactory) { f.closeModelPool() }
+
+// EntityClaimLockSQLForTest takes, and waits for, the advisory lock a claim
+// takes on the entity ($1 = tenant id, $2 = entity id), so a test can play a
+// claimer that holds an entity without committing.
+func EntityClaimLockSQLForTest() string {
+	return `SELECT pg_advisory_xact_lock(` + entityLockKey("$1::text", "$2::text") + `)`
+}
+
+// CaptureSlogForTest exposes captureSlog (ceilings_test.go) to the external
+// postgres_test package, so a test can assert a specific log line without a
+// capturing hook in production code.
+var CaptureSlogForTest = captureSlog
+
+// RankClaimsSQLForTest is ClaimDue's ranking, for a test that explains its
+// plan.
+var RankClaimsSQLForTest = rankClaimsSQL
+
+// ClaimTenantsSQLForTest is the claim's tenant list.
+const ClaimTenantsSQLForTest = claimTenantsSQL
+
+// PairKeyForTest is pairKey.
+var PairKeyForTest = pairKey
+
+// NewStoreFactoryWithClockForTest builds a factory with business clock c
+// through the same internal constructor Plugin.NewFactory uses, on a pool the
+// caller configured. Call InitTransactionManager on it before use. Test-only.
+func NewStoreFactoryWithClockForTest(pool *pgxpool.Pool, c spi.Clock) *StoreFactory {
+	return newStoreFactory(pool, defaultStoreConfig(), c)
 }

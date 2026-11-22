@@ -32,7 +32,7 @@ func TestEntityDoc_JSONNullDataIsRejectedNotPanic(t *testing.T) {
 		}
 	}()
 
-	_, err := marshalEntityDoc(ent, testTime, testTime, testTime, false)
+	_, err := marshalEntityDoc(ent, false)
 	if err == nil {
 		t.Fatal("marshalEntityDoc accepted Data=null; want an error naming the problem")
 	}
@@ -56,7 +56,7 @@ func TestEntityDoc_NonObjectDataIsRejected(t *testing.T) {
 					t.Errorf("marshalEntityDoc panicked on Data=%s: %v", data, r)
 				}
 			}()
-			if _, err := marshalEntityDoc(ent, testTime, testTime, testTime, false); err == nil {
+			if _, err := marshalEntityDoc(ent, false); err == nil {
 				t.Errorf("marshalEntityDoc accepted non-object Data=%s; want an error", data)
 			}
 		}()

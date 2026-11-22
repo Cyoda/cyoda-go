@@ -57,12 +57,11 @@ scopes. The scope determines what protects it.
 | **Per-tx state** (`*spi.TransactionState` for memory/sqlite; internal `txState` for postgres) | Per-node-process, per-tx | `tx.OpMu` for memory/sqlite (RLock=in-flight ops, Lock=closure ops); internal `txState.mu` for postgres |
 | **Committed-log window** (memory/sqlite only) | Per-node-process | `m.mu` — pruned on each commit |
 | **Submit-time cache** | Per-node-process | `m.mu`; sqlite also persists to a table |
-| **Model cache** (cluster broadcast invalidation) | Per-node | `modelcache.mu` (RWMutex); gossip-driven invalidation |
-| **Path-validation cache** | Per-node | `path_validation_cache.mu` (RWMutex) |
+| **Model cache** (cluster broadcast invalidation) | Per-node | `modelcache.mu` (RWMutex) on entries and invalidation generations; single-flight groups for storage reads and extensions; gossip-driven invalidation |
 | **Gossip member registry** | Per-node | `gossip.mu` + `gossipDelegate.subsMu` |
 | **Transaction lifetime bound** | Per-request (goroutine-local `defer`) | Deferred release on every exit path including a panic; backstopped by PostgreSQL `idle_in_transaction_session_timeout` / `statement_timeout` (see `docs/PRD.md` "Transaction Timeouts") |
 | **AEAD nonce-replay cache** | Per-node | `nonce_cache.mu`; bounded TTL eviction |
-| **HTTP `pgxpool.Pool`** (postgres only) | Per-node | Vendored pool internals |
+| **HTTP `pgxpool.Pool`** (postgres only: main, scheduler, heartbeat and model pools) | Per-node | Vendored pool internals; the model pool's extension slots (`model_pool.go`) |
 | **`UserContext`, `txCtx`** | Per-request | `context.Context` (immutable values) |
 | **HMAC tx-routing token** | Per-request (issued at Begin, expires) | Cryptographic — caller cannot forge without `CYODA_HMAC_SECRET` |
 | **Per-cascade segment state** (`COMMIT_BEFORE_DISPATCH` only — pre-callout txID, dispatched-processor metadata, segment-pinning info) | Per-request, per-cascade | Engine-owned in the workflow engine's per-invocation state; lifetime spans `TX_pre.Commit` → dispatch → `TX_post.Commit`. Lost on home-node crash mid-cascade — no persistence, no engine-side reaper (see §6). |
@@ -93,6 +92,8 @@ lives in plugin-internal mutexes):
 - `plugins/postgres/transaction_manager.go:38` — `txStatesMu` (RWMutex) on the `txStates` map keying internal txState by txID.
 - `plugins/postgres/txstate.go:30` — per-tx `mu` (Mutex) on the internal `txState` (`readSet`, `writeSet`, `savepoints`).
 - `plugins/postgres/tx_registry.go:12` — `mu` (RWMutex) on the `txID → pgx.Tx` registry.
+- `plugins/postgres/model_pool.go` — `extSlots`, a channel of `CYODA_POSTGRES_MODEL_CONNS / 2` (at least 1) extension slots. A schema extension takes a slot before its model-pool connection and holds it across one short transaction, which may wait on the model's `models` row lock held by another extension of the same model (never by an entity transaction). A caller waits for a slot until its context ends. No mutex is held across the wait or the transaction.
+- `plugins/postgres/store_factory.go` — `modelsMu` (Mutex) guarding the lazy open and the close of the model pool; brief.
 
 **Memory-plugin per-store mutexes** (separate from `factory.entityMu`;
 each non-entity store has its own RWMutex):
@@ -100,20 +101,30 @@ each non-entity store has its own RWMutex):
 
 **Non-tx-state locks** (separate from the SPI contract; documented here
 for completeness):
-- `internal/cluster/modelcache/cache.go` — RWMutex on cache entries; Lock for invalidation, RLock for Get.
+- `internal/cluster/modelcache/cache.go` — `mu` (RWMutex) on cache entries and their invalidation generations; Lock for invalidation and for a fill, RLock for a lookup. Never held across a storage call: misses and refreshes share one storage read per (model, generation, inside or outside a transaction), and identical extensions on one node share one storage call, through two `singleflight` groups whose callers each wait on their own context.
+- `internal/txgate/txgate.go`, `internal/txcoord/inprocess.go`, `internal/fence/fence.go` — the transaction coordination's three mutexes: the gate registry's `mu`, the coordination's `mu` (scope tree, marks, paused stack, sealed and broken state), and the fence's `mu`. Lock order: the gate's, then the coordination's, then the fence's; the gate's admission predicate takes the coordination's `mu`, so the coordination never calls the gate while it holds it, and never cancels a context under it. Each is brief. None is held across a store call, a callout or a wait: the waits for open scopes (`Advance`, the end of a callout, `Seal`) watch a channel the coordination replaces each time a scope ends.
+- `internal/txcoord/durable.go:36` and `:121` — the durable coordination (a backend that offers `TransactionCoordinationCapable`): `durable.mu` on the map of callouts this node runs the loop of, and each `durableCallout.mu` on the error its end recorded. Each is held for one map or field access, brief, never across a call to the backend's coordinator.
 - `internal/cluster/registry/gossip.go` — multiple mutexes: `mu` on node meta, `subsMu` on subscription map, plus the gossipDelegate's broadcast queue.
 - `internal/cluster/dispatch/nonce_cache.go` — Mutex; AEAD replay-window enforcement.
-- `internal/domain/search/path_validation_cache.go` — RWMutex on validation results.
 - `internal/grpc/members.go` — multiple mutexes governing gRPC member streams.
+- `internal/auth/replica.go:89-94` — signing-key store: `mu` (RWMutex) on the node copy, brief; `adminMu`, held across an admin write's KV reads and writes; `reconcileMu`, held across a re-read's KV `List`.
+- `internal/auth/kv_m2m_store.go:56` — `createLocks`: 64 striped mutexes, chosen by a hash of the tenant id, that serialise M2M client creates of one tenant on one node. One is held across a `Get`, an optional `List` (only when a cap is configured), one `PutIfAbsent` and, on failure, one `DeleteIfEqual` (bounded by `undoTimeout`, 30 s). A create that waits on a slow store therefore delays the creates of every tenant on the same stripe, on that node. The KV store never joins a transaction.
+- `internal/auth/kv_trusted_store.go` — `locks`: 64 striped mutexes (the same tenant hash), that serialise the changes to one tenant's trusted keys on one node: register, invalidate, reactivate and delete. One is held across that change's KV reads (a `List` of the tenant's namespace for the cap and the rotation, a `Get`) and its `Put`s or `Delete`. Reads (`Get`, `List`, `GetForVerification`) take no lock. The store removes any transaction from its context before it calls the KV store.
+- `internal/auth/secret_check.go:69` — `sem`, a `semaphore.Weighted` of `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` slots (default `GOMAXPROCS`) that bounds the bcrypt operations running at once on one node: each secret comparison of `POST /tenants/{tenant}/oauth/token`, and each hash of a new secret on `POST /clients` and the secret reset. A slot is held for one bcrypt operation, with no KV call inside it; a caller waits at most 1 s for one and is then refused (`ErrSecretCheckBusy`, answered `503`). `Authenticate` takes a slot after it has read the client record; `Create` and `ResetSecret` hash the new secret in a slot before any KV read or write. A slot is never held across a KV call.
+- `internal/auth/secret_check.go:105` — `mu` (Mutex) on the verified-secret cache (`{tenant, client id}` → stored hash and SHA-256 of the secret that matched it, at most 65536 entries); held for one map lookup, insert or delete, brief.
+- `internal/auth/client_bucket.go:27` — `mu` (Mutex) on the per-client (`{tenant, client id}`) token buckets of `POST /tenants/{tenant}/oauth/token`; held for one bucket's reservation and, at most once a minute, a sweep of the full buckets, brief.
 
 These locks are local to their owning component and do not interact
-with the tx-state lock order. They each have brief, bounded critical
-sections; none is held across slow operations.
+with the tx-state lock order. Except for the `internal/auth` locks held
+across KV calls and the secret-check slots, listed above, each has a brief,
+bounded critical section.
 
 Test infrastructure (`internal/testing/...`, `internal/e2e/...`,
-`internal/common/diagnostics.go`) and per-package caches in `internal/auth/`
-are excluded from the inventory — they are local to JWT/JWKS caching or
-test setup and do not interact with the tx-state surface.
+`internal/common/diagnostics.go`) and the remaining small mutexes in
+`internal/auth/` (the validator's audience setting, the signer cache, log
+throttling, gossip-ping coalescing, the replica's loop handle) are excluded
+from the inventory — they
+guard in-memory state only and do not interact with the tx-state surface.
 
 ## 4. The SPI tx-state locking contract
 
@@ -130,7 +141,7 @@ cyoda-go-spi repository). Summary:
   fires on `tx.Buffer`/etc. The plugin does not detect or recover.
 - **Tenant isolation** (every plugin enforces): every TM lifecycle
   method rejects mismatched-tenant callers (Commit, Rollback, Join,
-  Savepoint, RollbackToSavepoint, ReleaseSavepoint).
+  Savepoint, RollbackToSavepoint, ReleaseSavepoint, LostRace).
 
 Postgres satisfies the OpMu contract trivially because its
 `*spi.TransactionState` carries only `ID` and `TenantID` — the
@@ -206,7 +217,7 @@ This section enumerates only what cluster mode promises and what it does not.
   node may still commit; clients on the other side cannot observe.
 - **Token expiry.** The token has a bounded `ExpiresAt`. If the
   client holds it past expiry, the proxy returns
-  `400 TRANSACTION_EXPIRED`. The client must abandon the tx and
+  `410 TRANSACTION_EXPIRED`. The client must abandon the tx and
   retry with a fresh `Begin()`.
 - **Double-commit / idempotent retry.** First-committer-wins +
   TOCTOU guards (`m.committing[txID]` for memory/sqlite; `pgxTx`
@@ -251,14 +262,7 @@ The third class is the application's responsibility:
    or recover from this. The application must serialise its own per-tx
    ops externally.
 
-In practice cyoda's domain layer ensures this naturally: HTTP/gRPC
-handlers process requests sequentially per request; the workflow
-engine executes processors sequentially within a single transition.
-At the time of writing no production callsite outside the
-`internal/observability/tx_tracing.go` pass-through decorator invokes
-`TransactionManager.Join`. Any future feature that fans out work across
-multiple goroutines on a single tx must either add its own per-tx
-mutex or split work across transactions, AND must update this section.
+cyoda's transaction coordination (`internal/txcoord`) serialises them through a per-transaction gate (`internal/txgate`), which no other package uses. The operation that owns the transaction is one chain of calls. Every other user is a **joined request** — a callback from a compute member, carrying the transaction's pass — and the join layer (`txjoin`, reached from the HTTP join middleware and the gRPC routing interceptor) opens a scope for it that holds the gate for the request's whole handling: reads and searches as well as writes, entity and non-entity handlers alike. The request is read in full before the gate is taken and the response is sent after it is released. A scope gives the gate up for the length of any callout it makes (`txcoord.Pause`) and takes it back before it touches the transaction again; while it is paused, only that callout's callbacks are admitted, and any other joined request is refused with `503 TRANSACTION_BUSY`. The owner never takes the gate: during a callout its chain is blocked in the callout, and before its final writes, commit or rollback it seals the transaction, which waits for the joined requests in progress and refuses every later one. During a callout the transaction's users are therefore the callbacks of the member that currently has the work, one at a time; between callouts, the owner alone. `internal/fence` decides which member that is, and the coordination waits for a joined request in progress before the work goes on. See ARCHITECTURE.md §3.8. A store that supplies the SPI's optional `TransactionCoordinationCapable` takes this responsibility itself, and its `Join` allows concurrent operations on one transaction. Any feature that fans work out across goroutines on one transaction of the in-process coordination must go through the same gate, and must update this section.
 
 A fourth class is the workflow author's responsibility:
 
@@ -270,8 +274,9 @@ A fourth class is the workflow author's responsibility:
    from an engine crash between segments (entity is durable in the
    pre-callout state, in-flight orchestration is gone, caller retries,
    the cascade re-fires from the beginning — see §6). The engine
-   has no per-cascade replay log, no dispatch-ID stability across
-   retries, and no automatic compensation transition. Idempotency
+   has no per-cascade replay log, no dispatch-id stability across a
+   *client's* re-run (the tries of one callout do share a request id),
+   and no automatic compensation transition. Idempotency
    must be designed at the processor level on application-meaningful
    keys (a write-once external resource ID, a deterministic external
    resource name derived from entity ID + a stable timestamp, etc.).

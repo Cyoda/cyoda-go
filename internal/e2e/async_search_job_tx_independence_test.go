@@ -54,7 +54,7 @@ func TestE2E_AsyncSearchSubmittedInsideTransaction_JobRecordIsIndependent(t *tes
 			"version": "1.1", "name": "asyncjob-txindep-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "asyncjob-submit-in-tx", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "asyncjob-submit-in-tx", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}

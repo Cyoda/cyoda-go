@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 func TestPlanQuery_EqSourceData(t *testing.T) {
@@ -659,13 +659,11 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 	}
 }
 
-// C1/M4 — a malformed (non-2-element) BETWEEN value now fails planQuery
-// outright: spi.Prepare rejects a malformed range arity with
-// ErrUnevaluableLeaf, and planQuery propagates it rather than computing a
-// fail-closed exclude predicate. Validation also rejects this upstream (see
-// internal/domain/search/operators.go validateBetweenArity), so this is
-// defense-in-depth for any Filter constructed directly (bypassing the
-// domain validator) — the request is rejected, never silently answered as
+// A malformed (non-2-element) BETWEEN value fails planQuery outright:
+// spi.Prepare refuses a range leaf whose Values is not two scalar bounds
+// (spi.ValidateOperand) with ErrUnevaluableLeaf, and planQuery propagates it
+// before any SQL is built. This is what lets leafToSQL index f.Values[0] and
+// [1] without a guard — the request is rejected, never silently answered as
 // an empty page, and never a panic.
 func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 	f := spi.Filter{
@@ -683,12 +681,10 @@ func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 	}
 }
 
-// TestPlan_TemporalBetween_NilValues_DoesNotPanic is the C1 regression test:
-// a CoerceTemporal BETWEEN leaf with Values=nil (the shape produced by
-// betweenValues for a malformed BETWEEN operand, before the fix landed) must
-// not panic indexing f.Values[0]/[1] — it now fails planQuery outright via
-// spi.Prepare's ErrUnevaluableLeaf (malformed range arity), never the
-// sqlite/memory-diverging match-all and never a panic.
+// TestPlan_TemporalBetween_NilValues_DoesNotPanic: a CoerceTemporal BETWEEN
+// leaf with Values=nil fails planQuery outright via spi.Prepare's
+// ErrUnevaluableLeaf, so temporalLeafToSQL never indexes f.Values[0]/[1] out
+// of range.
 func TestPlan_TemporalBetween_NilValues_DoesNotPanic(t *testing.T) {
 	f := spi.Filter{
 		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
@@ -716,48 +712,6 @@ func TestPlan_TemporalBetween_OneValue_DoesNotPanic(t *testing.T) {
 	}
 	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
 		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
-	}
-}
-
-// TestPlan_TemporalBetween_NilValues_Excludes is the direct leafToSQL-level
-// counterpart to TestPlan_TemporalBetween_NilValues_DoesNotPanic, mirroring
-// sqlite's TestSqlitePlan_TemporalBetween_NilValues_Excludes: leafToSQL
-// itself (the lower-level SQL-fragment builder, independent of planQuery's
-// spi.Prepare gate) must still emit the fail-closed exclude predicate for a
-// CoerceTemporal BETWEEN leaf with Values=nil, never index f.Values out of
-// range, and never the match-all "1=1" that would let every row through.
-// planQuery/spi.Prepare rejecting this shape upstream (see
-// TestPlan_TemporalBetween_NilValues_DoesNotPanic above) does not make this
-// lower-level guard redundant: leafToSQL is exercised directly by
-// toSQL/dissect before any evaluability check runs, and defense-in-depth
-// here is what the sqlite plugin already pins.
-func TestPlan_TemporalBetween_NilValues_Excludes(t *testing.T) {
-	f := spi.Filter{
-		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
-		Values: nil,
-	}
-	counter := 0
-	sql, args := leafToSQL(f, &counter)
-	if sql != "false" {
-		t.Errorf("sql = %s, want false (exclude) for a malformed temporal BETWEEN with no values", sql)
-	}
-	if len(args) != 0 {
-		t.Errorf("args = %v, want none", args)
-	}
-}
-
-// TestPlan_TemporalBetween_OneValue_Excludes covers the 1-element-array
-// shape of the same malformed condition — see
-// TestPlan_TemporalBetween_NilValues_Excludes's doc comment.
-func TestPlan_TemporalBetween_OneValue_Excludes(t *testing.T) {
-	f := spi.Filter{
-		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
-		Values: []any{"2021-01-01T00:00:00Z"},
-	}
-	counter := 0
-	sql, _ := leafToSQL(f, &counter)
-	if sql != "false" {
-		t.Errorf("sql = %s, want false (exclude) for a malformed temporal BETWEEN with one value", sql)
 	}
 }
 
@@ -921,15 +875,17 @@ func TestPlanQuery_IsPushableParityWithSqlite(t *testing.T) {
 // TestFieldExpr_MetaCanonicalMapping asserts fieldExpr resolves canonical
 // SourceMeta lifecycle-filter paths through the same metaJSONKey map
 // orderByFieldExpr uses for ORDER BY, and special-cases "id" to the
-// entity_id column (not present in metaJSONKey).
+// entity_id column (not present in metaJSONKey). creationDate/lastUpdateTime
+// resolve through directTemporalMetaColumns instead — they are native
+// TIMESTAMPTZ columns, not JSONB text.
 func TestFieldExpr_MetaCanonicalMapping(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
 		want string
 	}{
-		{"creationDate", "creationDate", "doc->'_meta'->>'creation_date'"},
-		{"lastUpdateTime", "lastUpdateTime", "doc->'_meta'->>'last_modified_date'"},
+		{"creationDate", "creationDate", "creation_date"},
+		{"lastUpdateTime", "lastUpdateTime", "last_modified"},
 		{"transitionForLatestSave", "transitionForLatestSave", "doc->'_meta'->>'transition'"},
 		{"transactionId", "transactionId", "doc->'_meta'->>'transaction_id'"},
 		{"id", "id", "entity_id"},
@@ -945,19 +901,20 @@ func TestFieldExpr_MetaCanonicalMapping(t *testing.T) {
 }
 
 // TestPlan_TemporalMetaEmitsEpochMillis asserts a CoerceTemporal meta leaf
-// routes through cyoda_epoch_millis on the canonically-mapped JSONB key, and
-// binds a Go-precomputed int64 epoch-ms operand (not the raw RFC3339 string).
+// on creationDate routes through the direct-column epoch expression (native
+// TIMESTAMPTZ, not JSONB text — see directTemporalMetaColumns), and binds a
+// Go-precomputed int64 epoch-ms operand (not the raw RFC3339 string).
 func TestPlan_TemporalMetaEmitsEpochMillis(t *testing.T) {
 	f := spi.Filter{Op: spi.FilterGt, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal, Value: "2021-01-01T00:00:00Z", Declared: []spi.DataType{spi.ZonedDateTime}}
 	plan, err := planQuery(f)
 	if err != nil {
 		t.Fatalf("planQuery: %v", err)
 	}
-	if !strings.Contains(plan.where, "cyoda_epoch_millis(doc->'_meta'->>'creation_date')") {
+	if !strings.Contains(plan.where, "floor(extract(epoch from creation_date) * 1000)::bigint") {
 		t.Errorf("where = %q", plan.where)
 	}
 	// SOUND SUPERSET: temporal Gt is relaxed to >=.
-	wantWhere := "(cyoda_epoch_millis(doc->'_meta'->>'creation_date') IS NOT NULL AND cyoda_epoch_millis(doc->'_meta'->>'creation_date') >= $1)"
+	wantWhere := "(floor(extract(epoch from creation_date) * 1000)::bigint IS NOT NULL AND floor(extract(epoch from creation_date) * 1000)::bigint >= $1)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -1001,7 +958,7 @@ func TestPlan_TemporalMetaBetween(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planQuery: %v", err)
 	}
-	wantWhere := "(cyoda_epoch_millis(doc->'_meta'->>'creation_date') IS NOT NULL AND cyoda_epoch_millis(doc->'_meta'->>'creation_date') BETWEEN $1 AND $2)"
+	wantWhere := "(floor(extract(epoch from creation_date) * 1000)::bigint IS NOT NULL AND floor(extract(epoch from creation_date) * 1000)::bigint BETWEEN $1 AND $2)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -1040,10 +997,11 @@ func TestPlan_TemporalData(t *testing.T) {
 
 // TestPlan_TemporalIsNull asserts that a CoerceTemporal meta leaf with
 // FilterIsNull/FilterNotNull emits a plain null-check on the raw field
-// expression (doc->'_meta'->>'creation_date') — NOT the cyoda_epoch_millis(...)
-// wrapped form and NOT the "col = $1" / "= 0" nonsense that sqlOpForTemporal's
-// unconditional "default: return \"=\"" previously produced for an op it
-// doesn't recognize. Presence checks are coercion-independent: they must be
+// expression (the creation_date column — see directTemporalMetaColumns) —
+// NOT the cyoda_epoch_millis(...)/epoch-extraction wrapped form and NOT the
+// "col = $1" / "= 0" nonsense that sqlOpForTemporal's unconditional
+// "default: return \"=\"" previously produced for an op it doesn't
+// recognize. Presence checks are coercion-independent: they must be
 // handled before the CoerceTemporal routing, mirroring spi.evalLeafFilter's
 // ordering.
 func TestPlan_TemporalIsNull(t *testing.T) {
@@ -1052,7 +1010,7 @@ func TestPlan_TemporalIsNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planQuery: %v", err)
 	}
-	wantWhere := "doc->'_meta'->>'creation_date' IS NULL"
+	wantWhere := "creation_date IS NULL"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -1079,7 +1037,7 @@ func TestPlan_TemporalNotNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planQuery: %v", err)
 	}
-	wantWhere := "doc->'_meta'->>'creation_date' IS NOT NULL"
+	wantWhere := "creation_date IS NOT NULL"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}

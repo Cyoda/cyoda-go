@@ -3,9 +3,11 @@
   "$id": "https://cyoda.com/cloud/event/entity/EntityDeleteAllRequest.json",
   "title": "EntityDeleteAllRequest",
   "type": "object",
-  "extends": {
-    "$ref": "../common/BaseEvent.json"
-  },
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
   "properties": {
     "model": {
       "$ref": "../common/ModelSpec.json",
@@ -13,16 +15,20 @@
     },
     "transactionSize": {
       "type": "integer",
-      "description": "Transaction size."
+      "description": "Number of entities to delete per transaction batch. Batches committed before a failure remain durable, and per-id and batch failures are reported in the response. Not supported on a request joining an open transaction. Absent means a single transaction."
+    },
+    "pageSize": {
+      "type": "integer",
+      "description": "Has no effect: the selection is streamed, so there is no page for it to size. Accepted so that a client sending it is not refused."
     },
     "pointInTime": {
       "type": "string",
       "format": "date-time",
-      "description": "point in time, i.e. delete all that existed prior to this point in time"
+      "description": "Point in time, i.e. delete all that existed at this point in time. Must be at or before the consistency time. If not provided, the current state is used."
     },
     "verbose": {
       "type": "boolean",
-      "description": "Include the list of entity ids deleted in the response",
+      "description": "Include the list of entity ids the delete attempted in the response; an id whose delete failed also appears in the error map.",
       "default": false
     }
   },

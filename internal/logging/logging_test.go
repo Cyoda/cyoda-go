@@ -32,6 +32,39 @@ func TestParseLevel(t *testing.T) {
 	}
 }
 
+func TestLookupLevel(t *testing.T) {
+	tests := []struct {
+		input  string
+		want   slog.Level
+		wantOK bool
+	}{
+		{"debug", slog.LevelDebug, true},
+		{"DEBUG", slog.LevelDebug, true},
+		{"info", slog.LevelInfo, true},
+		{"INFO", slog.LevelInfo, true},
+		{"warn", slog.LevelWarn, true},
+		{"warning", slog.LevelWarn, true},
+		{"WARN", slog.LevelWarn, true},
+		{"error", slog.LevelError, true},
+		{"ERROR", slog.LevelError, true},
+		{"  debug  ", slog.LevelDebug, true},
+		{"", 0, false},
+		{"unknown", 0, false},
+		{"verbose", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, ok := LookupLevel(tt.input)
+			if ok != tt.wantOK {
+				t.Fatalf("LookupLevel(%q) ok = %v, want %v", tt.input, ok, tt.wantOK)
+			}
+			if ok && got != tt.want {
+				t.Errorf("LookupLevel(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLevelString(t *testing.T) {
 	tests := []struct {
 		level slog.Level

@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // ErrCommitBeforeDispatchInfra wraps every infrastructure-layer failure
@@ -26,42 +27,26 @@ var ErrCommitBeforeDispatchInfra = errors.New("commit-before-dispatch infrastruc
 // can isolate and skip past: the segment that would have carried the rest of the
 // work is gone, and the caller's cascade cursor was never advanced.
 //
-// A conflict from the FIRST-segment flush is deliberately left unmarked. That one
-// happens before any commit and before any dispatch, so it is cleanly isolable —
-// which is the whole distinction this sentinel exists to draw.
+// The caller's If-Match, checked when the transition starts (checkIfMatch), is
+// deliberately left unmarked. It fails before anything commits or is
+// dispatched, so it is cleanly isolable — which is the whole distinction this
+// sentinel exists to draw.
 //
 // Chained alongside the conflict, never in place of it, so
-// errors.Is(err, spi.ErrConflict) stays true and the single-entity 412 mapping is
-// unaffected.
+// errors.Is(err, spi.ErrConflict) stays true and the entity service answers 412
+// ENTITY_MODIFIED on every write route — create, update, and an item of a
+// collection create or update. That 412 is right: the apply-result CAS is a
+// precondition on the request's own entity at the segment boundary — the
+// version TX_pre committed — and another writer changed that entity. On a
+// TX_post that an earlier conflict already aborted it fails with
+// spi.ErrTxAborted instead, which every door answers first, as the retryable
+// 409 CONFLICT.
 var ErrPostSegmentConflict = errors.New("conflict after a committed segment")
-
-// clientAttributableStoreErr reports whether a store error is an outcome the
-// caller can act on — a stale precondition, a unique-key clash — as opposed to
-// an infrastructure failure that merely surfaced through the same call.
-//
-// It is a deliberate allow-list rather than an "is this pgx?" heuristic,
-// because the consequence of guessing wrong runs one way only: an unrecognised
-// error reaches the entity service's catch-all, which mints a 400
-// WORKFLOW_FAILED whose detail is the raw text — driver wording, table,
-// constraint and index names, a SQLSTATE. The three sentinels below are exactly
-// the ones that classifier (and common.Internal underneath it) maps to a
-// specific status; anything else has no client-facing meaning to preserve.
-//
-// The list is what keeps the segment-boundary CAS sites honest in BOTH
-// directions: marking an infrastructure failure is required (it is the leak),
-// and marking a caller's stale If-Match is forbidden — UpdateEntityCollection
-// excludes ErrCommitBeforeDispatchInfra from per-item isolation, so a
-// mis-marked precondition failure would abort the whole request and take its
-// successful siblings with it.
-func clientAttributableStoreErr(err error) bool {
-	return errors.Is(err, spi.ErrConflict) ||
-		errors.Is(err, spi.ErrUniqueViolation) ||
-		errors.Is(err, spi.ErrPartialUniqueKey)
-}
 
 // executeProcessors runs each processor in the transition's processor pipeline
 // sequentially. Processors are dispatched according to their ExecutionMode:
-// ASYNC_NEW_TX runs within a savepoint (failures are non-fatal); SYNC and
+// ASYNC_NEW_TX runs in a processor scope of its own (the processor's failure
+// is non-fatal; a scope that cannot be opened or ended is fatal); SYNC and
 // ASYNC_SAME_TX run inline in the caller's transaction context;
 // COMMIT_BEFORE_DISPATCH commits the current segment before dispatch and
 // continues the cascade in a fresh segment.
@@ -93,7 +78,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 	}
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventProcessingPaused,
-		fmt.Sprintf("Paused for processors: %v", names), nil)
+		fmt.Sprintf("Paused for processors: %v", names), processingPausedData(workflow, transition, names))
 
 	// Resolved lazily and at most once across the pipeline — see modelDescMemo.
 	desc := &modelDescMemo{}
@@ -110,44 +95,24 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 	}()
 
 	for _, proc := range processors {
-		// Execution-location axis. Rejection is fatal and self-contained:
-		// emit the per-processor SMEventStateProcessResult audit row
-		// explicitly (mirroring the post-dispatch emit lower in this loop),
-		// then return. The post-dispatch abort gate keys on
-		// proc.ExecutionMode and would silently swallow the rejection if
-		// proc.ExecutionMode == ExecutionModeAsyncNewTx, so the rejection
-		// must short-circuit the loop entirely.
-		if proc.Type == ProcessorTypeInternalized {
-			auditData := map[string]any{
-				"success": false,
-				"mode":    proc.ExecutionMode,
-			}
-			e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
-				spi.SMEventStateProcessResult,
-				fmt.Sprintf("Processor %q completed", proc.Name), auditData)
-			return currentCtx, currentTxID, fmt.Errorf(
-				"processor %s failed: execution type %q is not yet implemented",
-				proc.Name, proc.Type)
+		// Checkpoint before each processor dispatch (spec §5.3).
+		if err := runCheckpoint(currentCtx, "processor "+proc.Name+" not dispatched"); err != nil {
+			return currentCtx, currentTxID, err
 		}
-
 		var success bool
 		var procErr error
+		// Set by a COMMIT_BEFORE_DISPATCH processor whose segment boundary
+		// committed TX_pre.
+		var boundaryCommitted bool
 
 		switch proc.ExecutionMode {
 		case ExecutionModeAsyncNewTx:
 			procErr = e.executeAsyncNewTx(currentCtx, entity, proc, workflow, transition, currentTxID)
 			success = procErr == nil
-
-			// ASYNC_NEW_TX failures are non-fatal: log warning, continue pipeline.
-			if procErr != nil {
-				slog.Warn("ASYNC_NEW_TX processor failed, continuing pipeline",
-					"pkg", "workflow", "processor", proc.Name, "error", procErr)
-			}
-
 		case ExecutionModeCommitBeforeDispatch:
 			var nCtx context.Context
 			var nTxID string
-			nCtx, nTxID, procErr = e.executeCommitBeforeDispatch(currentCtx, entity, desc, proc, workflow, transition, currentTxID, auditStore, txID)
+			nCtx, nTxID, boundaryCommitted, procErr = e.executeCommitBeforeDispatch(currentCtx, entity, desc, proc, workflow, transition, currentTxID)
 			success = procErr == nil
 			if procErr == nil {
 				currentCtx = nCtx
@@ -159,54 +124,120 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 			success = procErr == nil
 		}
 
-		auditData := map[string]any{
-			"success": success,
-			"mode":    proc.ExecutionMode,
+		// Directly after the mode switch, before the processor's audit event
+		// and before any mode decides what its result means. ASYNC_NEW_TX's
+		// "log and continue" below would otherwise swallow the refusal and
+		// carry a superseded chain on to the next processor, and past the last
+		// one to the handler's final save. A check at the top of the loop alone
+		// would never see the last processor.
+		if cerr := txcoord.Check(currentCtx); cerr != nil {
+			return currentCtx, currentTxID, cerr
 		}
-		// Note: we deliberately do NOT include procErr.Error() in audit data —
-		// engine-wrapped CBD error strings ("commit-before-dispatch: commit
-		// TX_pre: <pgx-error>") would leak internals to same-tenant audit
-		// readers. The success=false flag is sufficient for clients; the
+
+		// An ASYNC_NEW_TX processor's own failure is non-fatal: log warning,
+		// continue pipeline. So is a mark its callbacks set on its scope: the
+		// scope is discarded with it. A scope that could not be opened or
+		// ended is not that — the transaction is unusable, so it kills the
+		// pipeline like any other mode's failure. Nor is an unsafe processor
+		// a scheduled run refused to dispatch: the run must end there. Nor is
+		// a failed save of the anchor before the dispatch: the transaction
+		// could not be made to hold the anchor.
+		nonFatal := proc.ExecutionMode == ExecutionModeAsyncNewTx &&
+			!errors.Is(procErr, txcoord.ErrScopeInfra) && !errors.Is(procErr, errUnsafeNotDispatched) &&
+			!errors.Is(procErr, ErrAnchorSaveInfra)
+		if procErr != nil && nonFatal {
+			slog.Warn("ASYNC_NEW_TX processor failed, continuing pipeline",
+				"pkg", "workflow", "processor", proc.Name, "error", procErr)
+		}
+
+		// The only failure text recorded is the compute member's own
+		// (memberFailReason). procErr.Error() never is: engine-wrapped
+		// errors ("commit-before-dispatch: commit TX_pre: <pgx-error>")
+		// would leak internals to same-tenant audit readers; the
 		// request-scoped slog log captures full error detail for operators.
+		// No other event of the pipeline records a failed processor.
 		// Per spec §8: audit events use the cascade-entry txID for
 		// correlation continuity, even though they physically land in
-		// whichever segment's TX is current. The event still records via
-		// currentCtx so that pre-segment-boundary events (in TX_pre) write
-		// to TX_pre's buffer and post-segment-boundary events write to
-		// TX_post's buffer.
-		e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
-			spi.SMEventStateProcessResult,
-			fmt.Sprintf("Processor %q completed", proc.Name), auditData)
+		// whichever segment's TX is current. The event records via
+		// currentCtx: TX_pre's buffer before a segment boundary, TX_post's
+		// after a COMMIT_BEFORE_DISPATCH processor that succeeded. A
+		// COMMIT_BEFORE_DISPATCH processor that failed leaves currentCtx on
+		// TX_pre (see the mode switch above). When its boundary did not
+		// commit, TX_pre is still the operation's transaction and the event
+		// rolls back with it. When the boundary committed, TX_pre takes no
+		// more writes and TX_post is rolled back, so the event is recorded in
+		// a transaction of its own: the trail then shows the processor's
+		// failure after the PAUSE_FOR_PROCESSING the boundary committed.
+		outcome := "completed"
+		if !success {
+			outcome = "failed"
+		}
+		details := fmt.Sprintf("Processor %q %s", proc.Name, outcome)
+		data := stateProcessResultData(proc.Name, proc.ExecutionMode, success, memberFailReason(procErr))
+		if !success && boundaryCommitted {
+			e.recordEventInOwnTx(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
+				spi.SMEventStateProcessResult, details, data)
+		} else {
+			e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
+				spi.SMEventStateProcessResult, details, data)
+		}
 
-		// For SYNC/ASYNC_SAME_TX/COMMIT_BEFORE_DISPATCH, failure kills the pipeline.
-		if procErr != nil && proc.ExecutionMode != ExecutionModeAsyncNewTx {
+		// For SYNC/ASYNC_SAME_TX/COMMIT_BEFORE_DISPATCH, and for an ASYNC_NEW_TX
+		// scope failure, failure kills the pipeline.
+		if procErr != nil && !nonFatal {
 			return currentCtx, currentTxID, fmt.Errorf("processor %s failed: %w", proc.Name, procErr)
 		}
 	}
 	return currentCtx, currentTxID, nil
 }
 
+// memberFailReason is the failure text the compute member itself sent for a
+// processor, or "" when err carries none: a member that answered success=false
+// with no text, and every failure that is not the member's answer.
+func memberFailReason(err error) string {
+	var failure *contract.CalloutFailure
+	if errors.As(err, &failure) && failure.Kind == contract.MemberFailed {
+		return failure.MemberText
+	}
+	return ""
+}
+
 // executeSyncProcessor runs a SYNC or ASYNC_SAME_TX processor inline in the
 // caller's transaction. On success the entity's Data is updated with the
-// processor's returned modifications.
-func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) error {
+// processor's returned modifications; a processor that returns none leaves the
+// entity as it is.
+func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
 	if e.extProc == nil {
 		return nil
 	}
-	// Release any per-tx gate this call chain holds across the blocking dispatch
-	// (H3 invariant, generalised to the joined-callback path): the dispatch
-	// touches no local buffer but can re-enter with a descendant joined callback
-	// on the same txID, which would otherwise deadlock waiting for the gate this
-	// chain holds. resume() re-acquires before we apply the processor's result.
-	// No-op for the owner and for plain non-joined calls. Deferred resume keeps
-	// the re-acquire panic-safe; the explicit call re-acquires before touching
-	// entity so the buffer write below is gated.
-	resume := txgate.Suspend(ctx)
-	defer resume()
-	modifiedEntity, err := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
-	resume()
+	// The transaction holds the anchor as it is before the callout
+	// (saveAnchorBeforeCallout).
+	if err := e.saveAnchorBeforeCallout(ctx, entity, txID); err != nil {
+		return err
+	}
+	dispatched, err := beforeDispatch(ctx, proc)
 	if err != nil {
 		return err
+	}
+	defer func() { dispatched(retErr) }()
+	// Pause this chain's scope across the blocking dispatch: the dispatch
+	// touches no transaction state but can re-enter with a descendant joined
+	// callback on the same txID, which would otherwise deadlock waiting for
+	// the gate this chain holds. No-op for the owner and for calls that joined
+	// no transaction. The deferred resume keeps the gate panic-safe; the
+	// explicit one retakes it and checks the chain's scope before the
+	// processor's result is applied.
+	resume := txcoord.Pause(ctx)
+	defer resume()
+	callCtx, stop := runCallCtx(ctx)
+	defer stop()
+	modifiedEntity, err := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, txID)
+	stop()
+	if rerr := resume(); rerr != nil {
+		return rerr
+	}
+	if err != nil {
+		return e.conflictOverDispatchFailure(ctx, proc, err)
 	}
 	if modifiedEntity != nil && modifiedEntity.Data != nil {
 		return e.applyProcessorData(ctx, entity, desc, modifiedEntity.Data)
@@ -214,55 +245,106 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, d
 	return nil
 }
 
-// executeAsyncNewTx runs an ASYNC_NEW_TX processor within a savepoint. The
-// processor's returned entity modifications are intentionally discarded —
-// ASYNC_NEW_TX processors perform side-effects only. On dispatch failure the
-// savepoint is rolled back and the error is returned; on success the savepoint
-// is released.
-func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) error {
+// conflictOverDispatchFailure decides what a failed dispatch means when the
+// processor could call back into the transaction ctx carries (SYNC,
+// ASYNC_SAME_TX, and COMMIT_BEFORE_DISPATCH with startNewTxOnDispatch).
+//
+// A processor whose joined callback wrote an entity or task row that another
+// transaction had already committed has lost first-committer-wins for the
+// transaction. The transaction cannot commit, whatever the processor does next,
+// so a failure of the processor is then only a consequence: the conflict is
+// what happened. The engine asks the transaction manager
+// (spi.TransactionManager.LostRace), which answers the same on every backend —
+// whether the backend refused the losing write or accepted it and would refuse
+// the transaction only at commit. When the transaction has lost, the returned
+// error is spi.ErrTxAborted — the conflict that happened earlier than this
+// failure, which every door answers as a retryable 409 CONFLICT — with the
+// processor's failure attached as context. Otherwise, and when the manager
+// cannot answer, the processor's failure is returned as it is; the operation
+// fails either way.
+//
+// A dispatch that provably reached no compute node made no callback, and is
+// returned untouched.
+func (e *Engine) conflictOverDispatchFailure(ctx context.Context, proc spi.ProcessorDefinition, dispatchErr error) error {
+	tx := spi.GetTransaction(ctx)
+	if tx == nil || contract.ProvesNoHandOff(dispatchErr) {
+		return dispatchErr
+	}
+	if lost, err := e.txMgr.LostRace(ctx, tx.ID); err == nil && lost {
+		return fmt.Errorf("%w: the transaction lost a write race (processor %s failed after it: %w)", spi.ErrTxAborted, proc.Name, dispatchErr)
+	}
+	return dispatchErr
+}
+
+// executeAsyncNewTx runs an ASYNC_NEW_TX processor in a processor scope of its
+// own (txcoord's OpenChild), a child of the chain's scope. The processor's
+// returned entity modifications are intentionally discarded — ASYNC_NEW_TX
+// processors perform side-effects only. The scope is kept when the dispatch
+// succeeded and nothing refuses the scope; otherwise it is discarded, with
+// everything its callbacks wrote, and the error is returned. A mark the
+// processor's callbacks set on its scope goes with it: the processor counts as
+// failed and the operation goes on.
+//
+// A failed dispatch needs no LostRace question (see
+// conflictOverDispatchFailure): the processor's failure does not fail the
+// operation, and a callback write inside the scope that had lost a race by the
+// time the scope is discarded stays lost, so the transaction's Commit refuses
+// it with the conflict on every backend — the RollbackToSavepoint contract,
+// pinned by the spitest Savepoint cases.
+//
+// A scope that cannot be opened or ended carries txcoord.ErrScopeInfra and
+// fails the operation: it says the transaction is unusable, not that the
+// processor misbehaved. So does a failed save of the anchor before the scope
+// opens (ErrAnchorSaveInfra).
+func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) (retErr error) {
 	if e.extProc == nil {
 		return nil
 	}
-
-	// Without a transaction manager, fall back to plain dispatch (no savepoint).
-	if e.txMgr == nil {
-		// Release any per-tx gate this chain holds across the blocking dispatch
-		// (H3 invariant) — this dispatch reuses the gated txID and can re-enter
-		// with a descendant joined callback on the same tx, so holding the gate
-		// here deadlocks exactly like the SYNC path.
-		resume := txgate.Suspend(ctx)
-		defer resume()
-		_, err := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
-		resume()
+	// The transaction holds the anchor as it is before the callout
+	// (saveAnchorBeforeCallout). The save is in the chain's scope, before the
+	// processor's scope opens: discarding that scope on the processor's
+	// failure keeps it.
+	if err := e.saveAnchorBeforeCallout(ctx, entity, txID); err != nil {
 		return err
 	}
 
-	spID, err := e.txMgr.Savepoint(ctx, txID)
+	scope, pctx, err := e.coord.OpenChild(ctx)
 	if err != nil {
-		return fmt.Errorf("savepoint creation failed: %w", err)
+		return err
 	}
-
-	// Release the per-tx gate across the blocking dispatch (H3 invariant). The
-	// savepoint create above and the rollback/release below are buffer ops that
-	// must stay gated, so suspend only spans the callout: re-acquire before
-	// touching the savepoint again. No-op for the owner / non-joined calls.
-	resume := txgate.Suspend(ctx)
-	defer resume()
-	_, dispatchErr := e.extProc.DispatchProcessor(ctx, entity, proc, workflow, transition, txID)
-	resume()
-	if dispatchErr != nil {
-		if rbErr := e.txMgr.RollbackToSavepoint(ctx, txID, spID); rbErr != nil {
-			slog.Warn("failed to rollback savepoint after processor error",
-				"pkg", "workflow", "processor", proc.Name,
-				"savepointID", spID, "rollbackError", rbErr)
+	// A panic below ends the scope discarded. Registered first, so it runs
+	// after the deferred resume has retaken the gate.
+	closed := false
+	defer func() {
+		if !closed {
+			_ = scope.Close(errors.New("the processor's dispatch panicked"))
 		}
-		return dispatchErr
+	}()
+	end := func(procErr error) error {
+		closed = true
+		return scope.Close(procErr)
 	}
+	// After the scope: a scope that cannot be opened dispatches nothing, so it
+	// needs no mark.
+	dispatched, err := beforeDispatch(pctx, proc)
+	if err != nil {
+		return end(err)
+	}
+	defer func() { dispatched(retErr) }()
 
-	if err := e.txMgr.ReleaseSavepoint(ctx, txID, spID); err != nil {
-		return fmt.Errorf("savepoint release failed: %w", err)
+	// Pause the processor's scope across the blocking dispatch: its callbacks
+	// open under it. The scope is ended after the explicit resume, under the
+	// gate. No-op on the owner's chain.
+	resume := txcoord.Pause(pctx)
+	defer resume()
+	callCtx, stop := runCallCtx(pctx)
+	defer stop()
+	_, dispatchErr := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, txID)
+	stop()
+	if rerr := resume(); rerr != nil {
+		return end(rerr)
 	}
-	return nil
+	return end(dispatchErr)
 }
 
 // executeCommitBeforeDispatch implements processor execution mode
@@ -273,10 +355,18 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 // against T_pre. The caller MUST replace its (ctx, txID) with the returned
 // (newCtx, newTxID) to continue the cascade in TX_post.
 //
-// Per spec §3, §10.3: in the startNewTxOnDispatch=true branch, processors
-// must not save the cascade-anchor entity themselves AND also return
-// mutations for it (last-writer-wins inside TX_post's buffer).
-func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string, auditStore spi.StateMachineAuditStore, entryTxID string) (newCtx context.Context, newTxID string, err error) {
+// committed reports whether the segment boundary committed T_pre. On a
+// failure it tells the caller where the processor's record can go: while T_pre
+// is uncommitted it is still the operation's transaction, and once T_pre
+// committed the record needs a transaction of its own.
+func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.Entity, desc *modelDescMemo, proc spi.ProcessorDefinition, workflow, transition, txID string) (newCtx context.Context, newTxID string, committed bool, err error) {
+	// Both variants below commit txID. A chain that joined its transaction does
+	// not own it, so it is refused here — before the flush, the commit and the
+	// dispatch. Nothing of the joined transaction has been touched by this
+	// processor; its owner decides its fate.
+	if joinedTransaction(ctx) {
+		return nil, "", false, refuseCommitInJoinedTransaction(workflow, proc.Name)
+	}
 	tPre := txID
 	// This function opens TX_post and can panic before handing it to
 	// executeProcessors. Its own guard covers that window; the entry-point guard
@@ -295,65 +385,53 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 	var pending []byte
 
 	// Read the flag. Nil pointer == default == false.
-	startNewTx := proc.Config.StartNewTxOnDispatch != nil && *proc.Config.StartNewTxOnDispatch
+	startNewTx := proc.StartNewTxOnDispatch != nil && *proc.StartNewTxOnDispatch
 
-	// Per spec §4.1: a caller-supplied If-Match expected-txID (single-shot,
-	// stashed via ManualTransitionWithIfMatch) is applied to the FIRST
-	// segment-flush of the cascade — i.e. this exact call's pre-dispatch
-	// flush. Consume here so subsequent CBD segments in the same cascade fall
-	// back to the chained-CAS path against the prior segment's commit-stamped
-	// txID.
-	expectedFirstFlushTxID, ifMatchConsumed := consumeIfMatch(ctx)
+	// The segment boundary: flush and commit TX_pre. Every return below it is
+	// after TX_pre committed.
+	if fcErr := e.flushAndCommitSegment(ctx, entity, txID); fcErr != nil {
+		return nil, "", false, fcErr
+	}
 
 	if startNewTx {
-		// =true: commit TX_pre, begin TX_post, dispatch with TX_post token,
-		// apply result in TX_post.
-		newTxID, newCtx, err = e.commitAndBeginNextSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed)
+		// =true: begin TX_post, dispatch with TX_post token, apply result in
+		// TX_post.
+		newTxID, newCtx, err = e.beginNextSegment(ctx, entity, txID)
 		// Advance before checking err so the deferred rollback always targets the
-		// segment actually open. commitAndBeginNextSegment returns ("", nil, err)
-		// on failure, so segTxID becomes "" and rollbackSegment no-ops — correct,
-		// since no segment was opened.
+		// segment actually open. On a failed Begin it returns ("", nil, err) and
+		// rollbackSegment no-ops; on a failed re-read it returns TX_post, which
+		// the guard rolls back.
 		segCtx, segTxID = newCtx, newTxID
 		if err != nil {
-			// If the engine's first-segment flush rejected
-			// the caller's IfMatch precondition we have already recorded
-			// entry-side audit events (STATE_MACHINE_START, WORKFLOW_FOUND).
-			// Emit a compensating TRANSITION_ABORTED so the audit trail
-			// remains self-consistent. Best-effort — auditStore is the
-			// engine's own handle so this lands in the same TX buffer as the
-			// entry events (rolls back together with them on a chunk-wide
-			// rollback, commits together on per-item-isolated paths).
-			if ifMatchConsumed && errors.Is(err, spi.ErrConflict) {
-				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
-			}
-			return nil, "", err
+			return nil, "", true, err
 		}
+		// TX_post makes the next version: the payload carries its id, the
+		// one the dispatch's token names.
+		entity.Meta.TransactionID = newTxID
 
 		if e.extProc != nil {
-			modified, dispatchErr := e.extProc.DispatchProcessor(newCtx, entity, proc, workflow, transition, newTxID)
+			dispatched, mErr := beforeDispatch(newCtx, proc)
+			if mErr != nil {
+				return nil, "", true, mErr
+			}
+			// err is the step's named result: the error it ends with,
+			// including a failure after the dispatch returned.
+			defer func() { dispatched(err) }()
+			callCtx, stop := runCallCtx(newCtx)
+			defer stop()
+			modified, dispatchErr := e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, newTxID)
+			stop()
 			if dispatchErr != nil {
-				return nil, "", dispatchErr
+				return nil, "", true, e.conflictOverDispatchFailure(newCtx, proc, dispatchErr)
 			}
 			if modified != nil && modified.Data != nil {
 				pending = modified.Data
 			}
 		}
 	} else {
-		// =false: Save+Commit TX_pre, dispatch outside any transaction, then
-		// begin a fresh TX_post for the apply-result phase.
-		//
-		// We deliberately don't reuse commitAndBeginNextSegment here — that
-		// helper opens a TX immediately after committing, which would leak
-		// TX_post's token into the dispatch context. Splitting Save+Commit
-		// from Begin keeps both modes clean.
-		if fcErr := e.flushAndCommitSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed); fcErr != nil {
-			// See the matching block in the startNewTx==true branch above
-			// for the rationale.
-			if ifMatchConsumed && errors.Is(fcErr, spi.ErrConflict) {
-				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
-			}
-			return nil, "", fcErr
-		}
+		// =false: dispatch outside any transaction, then begin a fresh TX_post
+		// for the apply-result phase. TX_post is begun only after the dispatch,
+		// so its token never reaches the dispatch context.
 
 		// Dispatch with NO tx token in ctx. context.WithoutCancel preserves
 		// values (tenant/user) but strips cancellation; we additionally
@@ -362,10 +440,20 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		var modified *spi.Entity
 		var dispatchErr error
 		if e.extProc != nil {
-			modified, dispatchErr = e.extProc.DispatchProcessor(dispatchCtx, entity, proc, workflow, transition, "")
+			dispatched, mErr := beforeDispatch(dispatchCtx, proc)
+			if mErr != nil {
+				return nil, "", true, mErr
+			}
+			// err is the step's named result: the error it ends with,
+			// including a failure after the dispatch returned.
+			defer func() { dispatched(err) }()
+			callCtx, stop := runCallCtx(dispatchCtx)
+			defer stop()
+			modified, dispatchErr = e.extProc.DispatchProcessor(callCtx, entity, proc, workflow, transition, "")
+			stop()
 		}
 		if dispatchErr != nil {
-			return nil, "", dispatchErr
+			return nil, "", true, dispatchErr
 		}
 		if modified != nil && modified.Data != nil {
 			pending = modified.Data
@@ -376,85 +464,117 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		newTxID, newCtx, err = e.txMgr.Begin(context.WithoutCancel(ctx))
 		segCtx, segTxID = newCtx, newTxID
 		if err != nil {
-			return nil, "", fmt.Errorf("commit-before-dispatch: begin TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+			return nil, "", true, fmt.Errorf("commit-before-dispatch: begin TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+		}
+		// TX_post takes the run's guard and makes its first read (spec §5.2);
+		// the guard above rolls TX_post back on failure.
+		if err := e.continueRunSegment(newCtx, txID, newTxID); err != nil {
+			return nil, "", true, err
 		}
 	}
 
-	if pending != nil {
-		if applyErr := e.applyProcessorData(newCtx, entity, desc, pending); applyErr != nil {
-			return nil, "", applyErr
-		}
-	}
-
-	// Apply result via CAS against tPre — works in both branches.
+	// Apply the result via CompareAndSave against tPre — works in both
+	// branches. TX_post has not written the anchor before this write: the
+	// engine writes it here first, and a callout never writes the entity it
+	// runs for. A write or delete by another transaction since tPre committed
+	// makes the CompareAndSave conflict.
 	es, casErr := e.factory.EntityStore(newCtx)
 	if casErr != nil {
-		return nil, "", fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", errors.Join(ErrCommitBeforeDispatchInfra, casErr))
+		return nil, "", true, fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", errors.Join(ErrCommitBeforeDispatchInfra, casErr))
+	}
+	if pending != nil {
+		if applyErr := e.applyProcessorData(newCtx, entity, desc, pending); applyErr != nil {
+			return nil, "", true, applyErr
+		}
 	}
 	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
-		if !clientAttributableStoreErr(saveErr) {
+		// A save inside a transaction does no unique-key work (the commit
+		// does), so a conflict is the only outcome here the caller can act on.
+		// Anything else is the store failing: an unmarked error would reach the
+		// entity service's catch-all, a 400 WORKFLOW_FAILED carrying the raw
+		// store text.
+		if !errors.Is(saveErr, spi.ErrConflict) {
 			// Not a conflict at all — the store failed. Marked infra so the text
 			// takes the sanitized-5xx path instead of the 4xx body below.
 			// ErrPostSegmentConflict is dropped: the marker exists to say "a
 			// CONFLICT landed past the commit", and the infra marker already
 			// carries the only consequence a caller acts on (do not isolate this
 			// item — the transaction it would continue in is gone).
-			return nil, "", fmt.Errorf("commit-before-dispatch: apply result after dispatch: %w",
+			return nil, "", true, fmt.Errorf("commit-before-dispatch: apply result after dispatch: %w",
 				errors.Join(ErrCommitBeforeDispatchInfra, saveErr))
 		}
 		// Both sentinels stay matchable — ErrConflict for the 412 mapping,
 		// ErrPostSegmentConflict to tell a batching caller this landed on the far
-		// side of TX_pre's commit. Chained rather than errors.Join'd because this
-		// text reaches a 4xx response body verbatim, and a 4xx detail is one
-		// `CODE: message` line (see .claude/rules/error-handling.md); Join would
-		// put a newline through the middle of it.
-		return nil, "", fmt.Errorf("%w: %w", ErrPostSegmentConflict, saveErr)
+		// side of TX_pre's commit. Chained rather than errors.Join'd so the
+		// logged text stays one line.
+		return nil, "", true, fmt.Errorf("%w: %w", ErrPostSegmentConflict, saveErr)
 	}
+	// The anchor is stored as TX_post wrote it.
+	entity.Meta.TransactionID = newTxID
 
 	segHandedOff = true
-	return newCtx, newTxID, nil
+	return newCtx, newTxID, true, nil
 }
 
 // flushAndCommitSegment is the shared primitive for the COMMIT_BEFORE_DISPATCH
-// segment boundary's "flush + commit TX_pre" half. It writes the in-memory
-// entity to txID's buffer (CompareAndSave when applyIfMatch is true,
-// plain Save otherwise) and commits txID. The caller decides whether to Begin
-// a new TX afterward (=true uses commitAndBeginNextSegment; =false splits the
-// Begin around the dispatch).
+// segment boundary's "flush + commit TX_pre" half. It saves the in-memory
+// entity in txID, commits txID and stamps the entity with txID, the id the
+// stored anchor carries. It returns nil exactly when txID committed.
+// The caller begins TX_post afterward: before the dispatch with
+// startNewTxOnDispatch (beginNextSegment), after it without.
 //
-// When applyIfMatch is true the flush uses CompareAndSave with expectedTxID,
-// applying the caller's If-Match precondition (spec §4.1) before TX_pre
-// commits and before any external dispatch fires. Client-attributable CAS
-// failures (spi.ErrConflict and the unique-key sentinels) bubble unwrapped so
-// the handler maps them to 412 / 409 / 422; the CAS's OTHER failure mode — the
-// store itself — is marked infra like every other one below.
+// The save is a plain one. A caller's If-Match was checked when the transition
+// started (checkIfMatch); a write that another transaction committed since
+// txID read the entity makes the commit fail.
 //
-// Infrastructure failures (EntityStore lookup, CAS store failure, plain Save,
-// Commit) are wrapped with ErrCommitBeforeDispatchInfra so
-// classifyWorkflowError routes them to a sanitized 5xx with ticket UUID
-// instead of leaking internal text via 4xx WORKFLOW_FAILED.
+// Failures (EntityStore lookup, Save, Commit) are wrapped with
+// ErrCommitBeforeDispatchInfra so classifyWorkflowError routes them to a
+// sanitized 5xx with ticket UUID instead of leaking internal text via 4xx
+// WORKFLOW_FAILED — except those common.Internal gives a meaning of their own:
+// a conflict answers a retryable 409, a unique-key clash its own 409.
 //
-// The Save/CompareAndSave above runs on the caller's cancellable ctx — a
+// The Save above runs on the caller's cancellable ctx — a
 // segment that hasn't reached TX_pre's commit yet may still abort there, and
 // that is fail-closed and correct (spec D2). The commit itself is shielded:
 // see the pre-commit check and common.CommitContext below, mirroring
 // txScope.Commit (internal/domain/entity/txscope.go).
-func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, txID, expectedTxID string, applyIfMatch bool) error {
+func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, txID string) error {
+	// Seal TX_pre before its final writes: from here no joined request runs
+	// in it, and one that failed a write refuses the segment — the lost race
+	// first, as the retryable conflict. The coordination forgets TX_pre once
+	// this function returns; whoever rolls TX_pre back after a failure seals
+	// it afresh. Joined with ErrCommitBeforeDispatchInfra so that a broken
+	// transaction's cause is a ticketed 5xx (or the storage outage it is); a
+	// rollback-only refusal and a lost race keep their own answers, which
+	// classifyWorkflowError finds first.
+	finish, err := e.coord.Seal(ctx, txID)
+	defer finish()
+	if err != nil {
+		return fmt.Errorf("commit-before-dispatch: seal TX_pre: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+	}
 	es, err := e.factory.EntityStore(ctx)
 	if err != nil {
 		return fmt.Errorf("commit-before-dispatch: get entity store: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 	}
-	if applyIfMatch {
-		if _, err := es.CompareAndSave(ctx, entity, expectedTxID); err != nil {
-			if clientAttributableStoreErr(err) {
-				return err // ErrConflict / unique-key outcomes bubble unwrapped
+	if _, err := es.Save(ctx, entity); err != nil {
+		return fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+	}
+	// A scheduled run stamps its task as the last write of every segment
+	// (spec §5.2). The stamp is fenced; a refused stamp stops the segment from
+	// committing, and the run classifies the refusal with a non-joining
+	// re-read (fire_scheduled.go supersededBy). The guard is found by the
+	// transaction, not the context (spec §5.2).
+	// partial is read once: the stamp and PartialCommit below record the same
+	// segment.
+	g := e.runTxs.forTx(txID)
+	partial := false
+	if g != nil {
+		partial = g.firedTransitionDone.Load()
+		if err := g.Store.StampSegment(ctx, g.Ref, partial); err != nil {
+			if errors.Is(err, spi.ErrStaleClaim) || errors.Is(err, spi.ErrConflict) {
+				return fmt.Errorf("commit-before-dispatch: stamp scheduled task: %w", err)
 			}
-			return fmt.Errorf("commit-before-dispatch: apply If-Match precondition: %w",
-				errors.Join(ErrCommitBeforeDispatchInfra, err))
-		}
-	} else {
-		if _, err := es.Save(ctx, entity); err != nil {
-			return fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+			return fmt.Errorf("commit-before-dispatch: stamp scheduled task: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 		}
 	}
 	// Spec D2/D3 pre-commit check: an expired/cancelled ctx here means no
@@ -465,6 +585,13 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	// as a ticketed 5xx.
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("commit-before-dispatch: context expired before segment commit: %w", err)
+	}
+	// Checkpoint before each entity-transaction commit of a scheduled run
+	// (spec §5.3), on the guard of the transaction, so a chain without the
+	// guard on its context is checked too. Not marked infra: it is the run's
+	// cancellation.
+	if err := commitCheckpoint(g, "commit-before-dispatch: segment not committed"); err != nil {
+		return err
 	}
 	// The commit itself runs shielded via common.ShieldedCommitWithBudget —
 	// WithoutCancel plus e.commitBudget (defaults to common.CommitBudget,
@@ -479,30 +606,82 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	// seam, even though ErrCommitBeforeDispatchInfra already routes it to a
 	// ticketed 500 here (that existing classification is unaffected — the
 	// marker only disqualifies a would-be 408 reclassification downstream).
-	return common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
+	if err := common.ShieldedCommitWithBudget(ctx, e.commitBudget, func(commitCtx context.Context) error {
 		if err := e.txMgr.Commit(commitCtx, txID); err != nil {
 			return fmt.Errorf("commit-before-dispatch: commit TX_pre: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	// txID committed the anchor. A dispatch without a transaction carries the
+	// id of that committed version; with startNewTxOnDispatch, TX_post's id
+	// replaces it before the dispatch.
+	entity.Meta.TransactionID = txID
+	if partial {
+		g.partialCommitted.Store(true)
+	}
+	return nil
 }
 
-// commitAndBeginNextSegment is the COMMIT_BEFORE_DISPATCH segment-boundary
-// primitive for the startNewTxOnDispatch=true branch. It flushes the in-memory
-// entity (via flushAndCommitSegment) and begins a fresh TX (TX_post). The
-// caller continues the cascade in (newCtx, newTxID).
-//
-// On any failure after TX_pre commits, the segment may already be durable —
-// the caller cannot rollback prior work. Infrastructure failures are wrapped
-// with ErrCommitBeforeDispatchInfra; CAS conflicts bubble through unchanged
-// so the handler can map them to 412.
-func (e *Engine) commitAndBeginNextSegment(ctx context.Context, entity *spi.Entity, txID, expectedTxID string, applyIfMatch bool) (newTxID string, newCtx context.Context, err error) {
-	if fcErr := e.flushAndCommitSegment(ctx, entity, txID, expectedTxID, applyIfMatch); fcErr != nil {
-		return "", nil, fcErr
+// continueRunSegment hands the run guard of the committed transaction
+// prevTxID to the transaction newTxID, which continues the run, and makes the
+// new segment's first read: the task, re-read (spec §5.2). It does nothing
+// outside a scheduled run.
+func (e *Engine) continueRunSegment(ctx context.Context, prevTxID, newTxID string) error {
+	g := e.runTxs.forTx(prevTxID)
+	if g == nil {
+		return nil
 	}
+	e.runTxs.register(newTxID, g)
+	_, err := rereadTask(ctx, g)
+	return err
+}
+
+// beginNextSegment begins TX_post for the startNewTxOnDispatch=true branch,
+// once flushAndCommitSegment has committed txID (TX_pre). The caller continues
+// the cascade in (newCtx, newTxID).
+//
+// Every failure here is after TX_pre committed: the caller cannot roll back
+// prior work. On a failed Begin it returns no segment; on a failed re-read it
+// returns the new segment with the error, and the caller rolls it back.
+func (e *Engine) beginNextSegment(ctx context.Context, entity *spi.Entity, txID string) (newTxID string, newCtx context.Context, err error) {
 	newTxID, newCtx, err = e.txMgr.Begin(context.WithoutCancel(ctx))
 	if err != nil {
 		return "", nil, fmt.Errorf("commit-before-dispatch: begin TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 	}
+	// TX_post takes the run's guard and makes its first read (spec §5.2).
+	// On failure TX_post is handed back with the error, so the caller's guard
+	// rolls it back.
+	if err := e.continueRunSegment(newCtx, txID, newTxID); err != nil {
+		return newTxID, newCtx, err
+	}
+	// Before the dispatch, TX_post reads the anchor and requires the version
+	// txID committed. A write or delete that another transaction committed in
+	// between is a conflict, found before the processor is dispatched: its
+	// callbacks, which join TX_post, would otherwise read a version the
+	// dispatch's payload does not carry. The read also puts the anchor in
+	// TX_post's read set, so a later write by another transaction fails at
+	// commit.
+	if err := e.requireAnchorCommittedBy(newCtx, entity.Meta.ID, txID); err != nil {
+		return newTxID, newCtx, err
+	}
 	return newTxID, newCtx, nil
+}
+
+// requireAnchorCommittedBy fails with a post-segment conflict unless the
+// anchor, read in the transaction ctx carries, is the version txID committed.
+func (e *Engine) requireAnchorCommittedBy(ctx context.Context, entityID, txID string) error {
+	es, err := e.factory.EntityStore(ctx)
+	if err != nil {
+		return fmt.Errorf("commit-before-dispatch: get entity store: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+	}
+	v, err := readAnchor(ctx, es, entityID)
+	if err != nil {
+		return fmt.Errorf("commit-before-dispatch: read entity in TX_post: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
+	}
+	if !v.writtenBy(txID) {
+		return fmt.Errorf("%w: entity %s changed after the committed segment: %w", ErrPostSegmentConflict, entityID, spi.ErrConflict)
+	}
+	return nil
 }

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 func noopSend(_ *cepb.CloudEvent) error { return nil }
@@ -74,46 +74,6 @@ func TestMemberRegistry_UnregisterOfADisplacedMemberLeavesTheLiveOne(t *testing.
 	case <-second.Evicted():
 		t.Fatal("the displaced member's Unregister evicted the live member")
 	default:
-	}
-}
-
-func TestMemberRegistry_FindByTags_MatchingTag(t *testing.T) {
-	reg := NewMemberRegistry()
-	reg.Register("m-1", "tenant-1", []string{"python", "ml"}, noopSend, nil)
-
-	m := reg.FindByTags("tenant-1", "ml")
-	if m == nil {
-		t.Fatal("expected to find member with matching tag")
-	}
-}
-
-func TestMemberRegistry_FindByTags_NoMatchingTag(t *testing.T) {
-	reg := NewMemberRegistry()
-	reg.Register("m-1", "tenant-1", []string{"python", "ml"}, noopSend, nil)
-
-	m := reg.FindByTags("tenant-1", "java")
-	if m != nil {
-		t.Fatal("expected nil when no tag matches")
-	}
-}
-
-func TestMemberRegistry_FindByTags_EmptyRequired(t *testing.T) {
-	reg := NewMemberRegistry()
-	reg.Register("m-1", "tenant-1", []string{"python"}, noopSend, nil)
-
-	m := reg.FindByTags("tenant-1", "")
-	if m == nil {
-		t.Fatal("expected to find any member when required tags are empty")
-	}
-}
-
-func TestMemberRegistry_FindByTags_WrongTenant(t *testing.T) {
-	reg := NewMemberRegistry()
-	reg.Register("m-1", "tenant-1", []string{"python"}, noopSend, nil)
-
-	m := reg.FindByTags("tenant-2", "python")
-	if m != nil {
-		t.Fatal("expected nil for wrong tenant")
 	}
 }
 

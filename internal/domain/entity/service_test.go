@@ -10,13 +10,16 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/cluster/modelcache"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // TestGetEntity_InfrastructureErrorReturns500 verifies that non-ErrNotFound errors
@@ -30,12 +33,12 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 	expectStatus(t, resp, http.StatusOK)
 
 	// Now test the service layer directly with a mock that returns infrastructure error
-	handler := entity.New(
-		&failingStoreFactory{err: errors.New("database connection lost")},
+	handler := entity.New(cachedFactory(&failingStoreFactory{err: errors.New("database connection lost")}),
 		nil,
 		common.NewDefaultUUIDGenerator(),
 		nil,
-		txgate.New(),
+		txcoord.New(nil), newFixedConsistency(),
+		platformclock.Real(),
 	)
 
 	ctx := context.Background()
@@ -88,12 +91,12 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 	}
 
 	t.Run("ErrNotFound maps to 404", func(t *testing.T) {
-		h := entity.New(
-			&modelGetErrFactory{getErr: spi.ErrNotFound},
+		h := entity.New(cachedFactory(&modelGetErrFactory{getErr: spi.ErrNotFound}),
 			nil,
 			common.NewDefaultUUIDGenerator(),
 			nil,
-			txgate.New(),
+			txcoord.New(nil), newFixedConsistency(),
+			platformclock.Real(),
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -111,12 +114,12 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 
 	t.Run("arbitrary error maps to 5xx", func(t *testing.T) {
 		synthetic := errors.New("synthetic fold failure")
-		h := entity.New(
-			&modelGetErrFactory{getErr: synthetic},
+		h := entity.New(cachedFactory(&modelGetErrFactory{getErr: synthetic}),
 			nil,
 			common.NewDefaultUUIDGenerator(),
 			nil,
-			txgate.New(),
+			txcoord.New(nil), newFixedConsistency(),
+			platformclock.Real(),
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -142,12 +145,12 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 // TestGetEntity_NotFoundReturns404 verifies that ErrNotFound from the entity store
 // results in a 404.
 func TestGetEntity_NotFoundReturns404(t *testing.T) {
-	handler := entity.New(
-		&failingStoreFactory{err: spi.ErrNotFound},
+	handler := entity.New(cachedFactory(&failingStoreFactory{err: spi.ErrNotFound}),
 		nil,
 		common.NewDefaultUUIDGenerator(),
 		nil,
-		txgate.New(),
+		txcoord.New(nil), newFixedConsistency(),
+		platformclock.Real(),
 	)
 
 	ctx := context.Background()
@@ -194,7 +197,7 @@ func statsTestCtx(tenantID spi.TenantID) context.Context {
 func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h := entity.New(cachedFactory(factory), nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newTestConsistency(t, factory), platformclock.Real())
 
 	mref := spi.ModelRef{EntityName: "stats-model", ModelVersion: "1"}
 
@@ -229,7 +232,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 	}
 
 	// nil-pointer filter → all states returned.
-	stats, err := h.GetStatisticsByState(ctx, nil)
+	stats, err := h.GetStatisticsByState(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByState(nil): %v", err)
 	}
@@ -246,7 +249,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 
 	// Pointer-to-non-empty: filter to APPROVED only.
 	filter := []string{"APPROVED"}
-	stats, err = h.GetStatisticsByState(ctx, &filter)
+	stats, err = h.GetStatisticsByState(ctx, &filter, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByState(&['APPROVED']): %v", err)
 	}
@@ -259,7 +262,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 
 	// Pointer-to-empty-slice: per SPI, empty map → no rows.
 	emptyFilter := []string{}
-	stats, err = h.GetStatisticsByState(ctx, &emptyFilter)
+	stats, err = h.GetStatisticsByState(ctx, &emptyFilter, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByState(&[]): %v", err)
 	}
@@ -273,7 +276,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats-m")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h := entity.New(cachedFactory(factory), nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newTestConsistency(t, factory), platformclock.Real())
 
 	mref := spi.ModelRef{EntityName: "model-m", ModelVersion: "1"}
 
@@ -306,7 +309,7 @@ func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 	}
 
 	// nil filter → all three states.
-	stats, err := h.GetStatisticsByStateForModel(ctx, "model-m", "1", nil)
+	stats, err := h.GetStatisticsByStateForModel(ctx, "model-m", "1", nil, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByStateForModel(nil): %v", err)
 	}
@@ -323,7 +326,7 @@ func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 
 	// Filter to two states.
 	filter := []string{"NEW", "REJECTED"}
-	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &filter)
+	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &filter, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByStateForModel(&['NEW','REJECTED']): %v", err)
 	}
@@ -344,7 +347,7 @@ func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 
 	// Empty (non-nil) filter → no rows.
 	emptyFilter := []string{}
-	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &emptyFilter)
+	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &emptyFilter, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByStateForModel(&[]): %v", err)
 	}
@@ -548,7 +551,7 @@ func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h := entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
 
 	// Register a LOCKED model with zero entities.
 	mref := spi.ModelRef{EntityName: "EmptyModel", ModelVersion: "1"}
@@ -560,7 +563,7 @@ func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
 		t.Fatalf("ModelStore.Save: %v", err)
 	}
 
-	result, err := h.DeleteAllEntities(ctx, "EmptyModel", "1")
+	result, err := h.DeleteAllEntities(ctx, "EmptyModel", 1)
 	if err != nil {
 		t.Fatalf("DeleteAllEntities on empty model: expected no error, got %v", err)
 	}
@@ -678,7 +681,7 @@ var _ = strconv.Itoa // ensure strconv is not flagged as unused
 // Iterate drain rather than through SearchService.Search, so a
 // classified-4xx-forwarding test needs a selection-validation failure (an
 // unknown field path) rather than a stubbed Searcher failure.
-func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Context, entityName, modelVersion string) {
+func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Context, entityName string, modelVersion int) {
 	t.Helper()
 	base := memory.NewStoreFactory()
 	t.Cleanup(func() { base.Close() })
@@ -705,9 +708,12 @@ func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Co
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	// Production hands the handler the model cache's factory, whose request
+	// scoped store is what refreshes a schema.
+	caching := modelcache.NewCachingStoreFactory(base, nil, nil, time.Hour)
+	h = entity.New(cachedFactory(caching), txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, base), platformclock.Real())
 
-	return h, ctx, ref.EntityName, ref.ModelVersion
+	return h, ctx, ref.EntityName, 1
 }
 
 // TestDeleteEntitiesConditional_ForwardsSelection4xx verifies that a
@@ -742,8 +748,8 @@ func TestDeleteEntitiesConditional_ForwardsSelection4xx(t *testing.T) {
 // TestDeleteEntitiesConditional_StructuralErrorClassification pins that
 // planDeleteSelection's structural-condition validation (search.ValidateCondition,
 // internal/domain/entity/service.go) classifies failures identically to
-// SearchService.Search — via the same exported search.StructuralConditionErrCode
-// — rather than collapsing every structural failure under one code.
+// SearchService.Search — through the one shared validation sequence
+// (search.ValidateConditionForModel) — rather than collapsing every structural failure under one code.
 //
 // An unknown operatorType and an object-shaped operand both map to
 // INVALID_CONDITION (operator-semantics.md §4: "An operator name outside
@@ -788,15 +794,15 @@ func TestDeleteEntitiesConditional_StructuralErrorClassification(t *testing.T) {
 	})
 }
 
-// TestDeleteEntitiesConditional_TemporalStringOp_InvalidCondition covers the
-// conditional-delete surface for the fifth defect this batch closes: a
-// string or pattern operator on a temporal meta field (creationDate,
-// lastUpdateTime) is 400 INVALID_CONDITION, not a silent under- or
-// over-selection decided by which evaluator happened to serve the delete.
-// planDeleteSelection classifies via search.ClassifyConditionTypeErrCode —
-// the same function search.validateConditionTypes and grouped stats use —
-// so a regression in that shared classifier surfaces here too.
-func TestDeleteEntitiesConditional_TemporalStringOp_InvalidCondition(t *testing.T) {
+// TestDeleteEntitiesConditional_TemporalStringOp_ConditionTypeMismatch covers
+// the conditional-delete surface: a string or pattern operator on a temporal
+// meta field (creationDate, lastUpdateTime) does not apply to the field's type
+// and is 400 CONDITION_TYPE_MISMATCH, not a silent under- or over-selection
+// decided by which evaluator happened to serve the delete.
+// planDeleteSelection runs search.ValidateConditionForModel, the sequence
+// search and grouped stats run, so a regression in its type classification
+// surfaces here too.
+func TestDeleteEntitiesConditional_TemporalStringOp_ConditionTypeMismatch(t *testing.T) {
 	h, ctx, entityName, modelVersion := newDeleteFixtureWithSchema(t)
 
 	cond := []byte(`{"type":"lifecycle","field":"creationDate","operatorType":"CONTAINS","value":"2021"}`)
@@ -809,7 +815,7 @@ func TestDeleteEntitiesConditional_TemporalStringOp_InvalidCondition(t *testing.
 	if appErr.Status != http.StatusBadRequest {
 		t.Fatalf("got status %d, want %d", appErr.Status, http.StatusBadRequest)
 	}
-	if appErr.Code != common.ErrCodeInvalidCondition {
-		t.Fatalf("got code %s, want %s (a string operator on a temporal meta field is a shape violation, not a type mismatch)", appErr.Code, common.ErrCodeInvalidCondition)
+	if appErr.Code != common.ErrCodeConditionTypeMismatch {
+		t.Fatalf("got code %s, want %s (a string operator does not apply to a temporal meta field)", appErr.Code, common.ErrCodeConditionTypeMismatch)
 	}
 }

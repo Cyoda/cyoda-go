@@ -1,0 +1,7 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineWorkflowNotFoundDto",
+  "value": {
+    "eventType": "WORKFLOW_NOT_FOUND"
+  }
+}

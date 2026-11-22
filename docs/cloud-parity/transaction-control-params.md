@@ -23,12 +23,12 @@ constructing `EntityDeleteAllRequest` literals that assign a bare `int` to
 `TransactionSize` — accepted pre-1.0 (no backward-compatibility constraint on
 `api`/`grpc`/`events` importers at this stage).
 
-`EntityDeleteAllRequest.pageSize` is removed outright. Selection is streamed,
-so a page size has nothing to control, and Cloud ignores the field too (its
-`transactionSize` drives both its read page and its batch). The generated Go
-type loses the `PageSize` field — compile-breaking for the same importers, on
-the same pre-1.0 terms. A client still sending the field is tolerated: the
-request decoder ignores unknown fields.
+`EntityDeleteAllRequest.pageSize` has no effect. Selection is streamed, so a
+page size has nothing to control, and Cloud ignores the field too (its
+`transactionSize` drives both its read page and its batch). The schema still
+declares it, as having no effect, because the request decoder refuses a
+member the schema does not declare and Cloud's schema declares `pageSize`, so
+Cloud's client may send it.
 
 ### Both params are now honored, opt-in
 
@@ -60,16 +60,23 @@ through the existing per-chunk `200` contract (error elements carrying
 gRPC `EntityDeleteAllRequest.transactionSize`: batches a bulk delete instead
 of running it as one transaction / one store call.
 
-- `deleteEntities`: matching ids and their current versions are resolved
-  once, in one committed transaction (as-at `pointInTime` when supplied).
-  Ids are then deleted in successive independent transactions of at most N
-  ids each. Each batch re-reads every id's current version and deletes only
+- `deleteEntities`: with `pointInTime`, matching ids are selected once,
+  as-at that instant, and each one's current version is read before any
+  batch runs (a read fault other than the entity being gone fails the
+  request); without it, the matching ids are re-selected from committed
+  state before each batch. Ids are then deleted in successive independent
+  transactions of at most N ids each. Each batch re-reads every id's current version and deletes only
   if it still equals the resolution-time baseline; a version mismatch (the
-  entity changed after resolution) or a per-id delete failure is recorded in
-  `deleteResult.idToError`, not retried. A batch whose commit itself fails
-  maps every id it attempted into `idToError` rather than counting them as
-  removed. Batches already committed before a later failure stay committed —
-  a deliberate, opt-in partial-commit contract. `deleteAllErrorsByID` on the
+  entity changed after resolution) or an entity already gone is recorded in
+  `deleteResult.idToError`, not retried. A batch is one transaction and
+  atomic: any other failure to delete one of its entities fails the batch, as
+  does a failed commit, and the batch then maps the failure to every other id
+  it attempted in `idToError` (an id already gone or changed keeps its own
+  entry) rather than counting them as removed. Without `transactionSize` the
+  whole delete is one atomic transaction: only an entity already gone is
+  recorded per id, and any other failure fails the request, deleting nothing.
+  Batches already committed before a later failure stay committed — a
+  deliberate, opt-in partial-commit contract. `deleteAllErrorsByID` on the
   gRPC delete-all response now carries these per-id failures for the first
   time (`transactionSize` sent).
 - `deleteMessages`: the id list is chunked into successive `DeleteBatch`
@@ -109,7 +116,7 @@ cancellation-aware).
 ### Joined-request rejection
 
 Every transaction-control parameter (`transactionTimeoutMillis`,
-`transactionSize`, search `timeoutMillis`) is rejected with `400 BAD_REQUEST`
+`transactionSize`, `transactionWindow`, search `timeoutMillis`) is rejected with `400 BAD_REQUEST`
 (HTTP) / `CLIENT_ERROR` `BAD_REQUEST: …` (gRPC) when present on a request
 that joins an existing transaction (a tx-token'd request — how a routed
 compute-node callback or a cross-node forwarded request presents at
@@ -119,6 +126,12 @@ would poison a connection it does not own, and a joiner cannot commit per
 batch (`commitOwned` no-ops when the caller does not own the transaction).
 This is a uniform rule with no per-operation carve-outs, on both HTTP and
 gRPC.
+
+A joined collection write is also never split into `transactionWindow`
+chunks when the parameter is absent: it runs as one unit, so a failure in any
+item fails the request. Split, a later chunk's failure would answer `200`
+with chunk results claiming the earlier chunks were committed, when a joiner
+commits nothing and the owner may still commit them.
 
 ## Invariant Cloud must mirror
 
@@ -130,8 +143,8 @@ gRPC.
    existing partial-success/per-chunk contract, never as a top-level 408.
 3. `transactionSize`-batched deletes are partial-commit: batches committed
    before a failure remain committed and are reported as removed; failed or
-   version-conflicted ids are reported per-id, never silently dropped or
-   retried.
+   version-conflicted ids are reported per-id, never silently dropped; only
+   a batch that lost a write race is run again.
 4. Any transaction-control parameter on a joined/forwarded request is a hard
    `400`, never silently honored or silently ignored.
 5. No parameter changes default (absent) behavior — this is a PATCH-safe,

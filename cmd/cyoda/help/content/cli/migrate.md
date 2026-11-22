@@ -21,7 +21,7 @@ cli.migrate — run schema migrations for the configured storage backend and exi
 
 `cyoda migrate` is a short-lived process that applies pending schema migrations for the configured storage backend, then exits cleanly — no admin listener, no background loops, no lingering goroutines.
 
-It loads the same configuration the server does via `app.DefaultConfig`, honoring all `CYODA_*` environment variables and `_FILE` suffix resolution identically to the main server process.
+It loads the same configuration the server does: the env files (system config, user config, `./.env` and the `CYODA_PROFILES` files; see the profile loader in `cyoda help config`), then all `CYODA_*` environment variables with `_FILE` suffix resolution, identically to the main server process. A variable set in the shell wins over the same variable in any env file; a `_FILE` variant from a file still beats the plain variable.
 
 Dispatch is on `CYODA_STORAGE_BACKEND`:
 
@@ -40,14 +40,14 @@ The primary consumer is the Helm chart's pre-install and pre-upgrade Job, which 
 
 ## ENVIRONMENT VARIABLES
 
-- `CYODA_STORAGE_BACKEND` — Selects the backend to migrate (default: `memory`).
+- `CYODA_STORAGE_BACKEND` — Selects the backend to migrate (bare default: `memory`; `sqlite` after `cyoda init` has written its user config, or from the system config the deb and rpm packages install).
 - `CYODA_POSTGRES_URL` — PostgreSQL DSN, required when backend is `postgres`. Accepts `CYODA_POSTGRES_URL_FILE` variant.
 
 ## EXIT CODES
 
-- `0` — Migration succeeded (or was a no-op for memory/sqlite).
+- `0` — Migration succeeded (or was a no-op for memory/sqlite), or `-h` / `--help` (the usage goes to stderr).
 - `1` — Runtime error: bad config, database unreachable, migration failure, or timeout.
-- `2` — Flag-parse error.
+- `2` — Flag-parse error, or an argument `migrate` does not take. No configuration is read.
 
 ## EXAMPLES
 
@@ -62,7 +62,7 @@ CYODA_STORAGE_BACKEND=postgres \
   CYODA_POSTGRES_URL="postgres://user:pass@localhost/cyoda" \
   cyoda migrate --timeout 2m
 
-# No-op — memory backend
+# No-op — memory or sqlite backend
 cyoda migrate
 ```
 
@@ -73,6 +73,8 @@ An index on a table that already holds data must be built with `CREATE INDEX CON
 `CONCURRENTLY` must be the file's only statement. The migration driver sends a file as a single simple query, and PostgreSQL wraps a multi-statement simple query in an implicit transaction — inside which `CONCURRENTLY` cannot run.
 
 An index created in the same migration as its own table needs no `CONCURRENTLY`: that table is empty and no writer can reach it yet.
+
+**In this project every index added to a populated table has taken a documented exception to that rule**, because `CONCURRENTLY` deterministically deadlocks cyoda's concurrent multi-node boot: the migration driver holds one session-level advisory lock for a migrator's entire run, and `CONCURRENTLY`'s multi-phase build waits on every other backend's in-flight statement — including a second node's migrator merely blocked on that same advisory lock. That is a genuine lock cycle, reproduced deterministically, and two nodes racing to auto-migrate is the primary deployment shape. A plain `CREATE INDEX` is used instead, at the cost of blocking writers to that table for the build. The exception is not automatic: a static guard over the migration files rejects a plain `CREATE INDEX` on a pre-existing table unless the file is listed explicitly, and each listing carries its own lock-profile reasoning rather than citing precedent. Derive the lock profile for the migration you are writing, write it down, then add the entry.
 
 ## RECOVERING FROM A DIRTY MIGRATION STATE
 

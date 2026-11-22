@@ -2,24 +2,38 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Option is a functional option for NewStoreFactory.
 type Option func(*StoreFactory)
 
-// WithClock injects a custom Clock into the factory.
-// Used by conformance tests to advance time deterministically.
+// WithClock injects the PHYSICAL clock into the factory: the clock behind
+// liveness (scheduler owner heartbeats and sweeps, search-job heartbeats and
+// stale reclaim). Used by conformance tests to advance time deterministically.
 func WithClock(c Clock) Option {
 	return func(f *StoreFactory) { f.clock = c }
 }
 
-// ApplyFunc replays an opaque SchemaDelta onto a base schema.
-type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
+// WithBusinessClock injects the BUSINESS clock: the one behind submit time,
+// snapshot time, consistency time and retention cutoffs. It defaults to the
+// physical clock.
+func WithBusinessClock(c Clock) Option {
+	return func(f *StoreFactory) { f.bizClock = c }
+}
+
+// ApplyFunc replays opaque SchemaDeltas, in order, onto a base schema in one
+// call. An empty list re-encodes base.
+type ApplyFunc func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)
 
 // WithApplyFunc installs the replay function used by ExtendSchema.
 func WithApplyFunc(fn ApplyFunc) Option {
@@ -34,7 +48,7 @@ func WithApplyFunc(fn ApplyFunc) Option {
 // The parameter is the unnamed function type (not memory.ApplyFunc)
 // so that an interface type-assertion in app/app.go can satisfy the
 // setter uniformly across plugins.
-func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
 	if f.applyFunc != nil {
 		panic("memory: SetApplyFunc called twice")
 	}
@@ -52,16 +66,19 @@ type claimKey struct {
 	signature string
 }
 
-// entityTenantKey qualifies an entity ID by its tenant so that two tenants
-// with the same entity ID do not share a claim entry in claimsByEntity.
-// Guarded by entityMu.
+// entityTenantKey qualifies an entity ID by its tenant, so that two tenants
+// with the same entity ID are never taken for one entity. It keys the claim
+// entries in claimsByEntity, and ClaimDue's set of entities that already
+// have a RUNNING task. Guarded by entityMu.
 type entityTenantKey struct {
 	tenant string
 	id     string
 }
 
 type StoreFactory struct {
-	clock      Clock
+	closed     atomic.Bool // set by Close; Ping reports it
+	clock      Clock       // physical: liveness
+	bizClock   Clock       // business: stamps and retention; defaults to clock
 	entityMu   sync.RWMutex
 	modelMu    sync.RWMutex
 	kvMu       sync.RWMutex
@@ -69,9 +86,11 @@ type StoreFactory struct {
 	wfMu       sync.RWMutex
 	smAuditMu  sync.RWMutex
 	entityData map[spi.TenantID]map[string][]entityVersion
-	// txIndex maps (tenant, entityID, txID) to the earliest NON-DELETED
-	// version that transaction txID wrote for that entity — the index
-	// GetVersionByTransaction reads. Deletes never enter it (a DELETED
+	// txIndex maps (tenant, entityID, txID) to the NON-DELETED version
+	// that transaction txID wrote for that entity — the index
+	// GetVersionByTransaction reads. A transaction writes one version per
+	// entity, and a write outside a transaction records no transaction id,
+	// so it never enters the index. Deletes never enter it (a DELETED
 	// tombstone never matches GetVersionByTransaction — see its SPI doc
 	// comment). Guarded by entityMu (same mutex as entityData: maintained
 	// inside the same write-lock critical section as every entityData
@@ -87,28 +106,61 @@ type StoreFactory struct {
 	// backend — dropping the index entry there would lose an answer the
 	// others still give. submitTimes' TTL is not a precedent: that map is a
 	// lookup cache for in-flight/recent transactions, not durable history.
-	txIndex     map[spi.TenantID]map[string]map[string]int64
-	modelData   map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor
-	kvData      map[spi.TenantID]map[string]map[string][]byte
-	msgData     map[spi.TenantID]map[string]*messageEntry
-	wfData      map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition
-	smAudit     map[spi.TenantID]map[string][]spi.StateMachineEvent // tenantID -> entityID -> events
-	blobDir     string
+	txIndex   map[spi.TenantID]map[string]map[string]int64
+	modelData map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor
+	kvData    map[spi.TenantID]map[string]map[string][]byte
+	msgData   map[spi.TenantID]map[string]*messageEntry
+	wfData    map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition
+	smAudit   map[spi.TenantID]map[string][]spi.StateMachineEvent // tenantID -> entityID -> events
+	// smAuditTxIndex maps (tenant, transactionID) to the positions of the
+	// audit events carrying that label, so the commit-phase stamp
+	// (stampAuditEventsForTx) is a lookup rather than a walk over every entity
+	// of the tenant on every commit. Guarded by smAuditMu — the same mutex as
+	// smAudit, maintained in the same critical section as every append to it.
+	//
+	// Positions are stable because smAudit is append-only per (tenant,
+	// entity): nothing removes, reorders or compacts a recorded audit event.
+	// That invariant is what this index rests on; were an event ever removed,
+	// these positions would silently address the wrong events.
+	//
+	// Lifetime: one entry per recorded event that carries a transaction id, so
+	// it adds a constant factor to smAudit's own footprint rather than a new
+	// growth class — the same reasoning txIndex records above. Events with no
+	// transaction id are deliberately not indexed: nothing can look them up,
+	// because the stamp refuses an empty transaction id.
+	smAuditTxIndex map[spi.TenantID]map[string][]auditEventRef
+	blobDir        string
+	// blobRoot confines every blob operation to blobDir at the OS level.
+	// Encoding governs the name a blob can have; the root governs what that
+	// name is allowed to resolve to, which is what a symlink planted under
+	// blobDir would otherwise subvert.
+	blobRoot    *os.Root
 	txManager   *TransactionManager
 	searchStore *AsyncSearchStore
 	applyFunc   ApplyFunc
+	// uuids is the id generator the transaction manager was built with. Set
+	// once per NewTransactionManager call (which is how it is always
+	// installed — the factory's own construction and every test helper that
+	// swaps the manager go through it) and read by StateMachineAuditStore's
+	// Record to assign the event id (see spi.StateMachineAuditStore).
+	uuids spi.UUIDGenerator
 
 	// uniqueClaims and claimsByEntity maintain the in-memory unique-key claim index.
 	// Both are guarded by entityMu (write lock for mutation, read lock for lookup).
 	uniqueClaims   map[claimKey]string            // claimKey → entityID currently holding it
 	claimsByEntity map[entityTenantKey][]claimKey // (tenant,entityID) → its claimKeys (for release)
 
-	// scheduledTasks holds durable ScheduledTask rows, keyed by ScheduledTask.ID.
-	// Guarded by entityMu (write lock for mutation, read lock for lookup) —
-	// same mutex as entityData/uniqueClaims — so that a transaction's
-	// scheduled-task arm/cancel commits inside the exact same critical
-	// section as the entity buffer flush (see TransactionManager.Commit).
-	scheduledTasks map[string]spi.ScheduledTask
+	// scheduledTasks holds the task rows, keyed by (tenant, id). taskMarks
+	// holds the unsafe marks, at most one per life, each naming the claim that
+	// wrote it. schedulerOwners holds each owner's last heartbeat on the store
+	// clock. All three are guarded by entityMu — the mutex of the entity data —
+	// so a transaction's staged task writes apply in the same critical section
+	// as its entity flush, and every never-joining method is serialised with
+	// every commit.
+	scheduledTasks  map[taskKey]spi.ScheduledTask
+	taskClaimIndex  *claimIndex // scheduledTasks' claim index, kept by applyTaskOps
+	taskMarks       map[markKey]uuid.UUID
+	schedulerOwners map[uuid.UUID]time.Time
 }
 
 func NewStoreFactory(opts ...Option) *StoreFactory {
@@ -116,24 +168,39 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 	if err != nil {
 		panic(fmt.Sprintf("failed to create blob temp dir: %v", err))
 	}
+	blobRoot, err := os.OpenRoot(blobDir)
+	if err != nil {
+		// The temp tree has already been created; unwinding it here is the
+		// only chance to, since no factory exists to Close.
+		os.RemoveAll(blobDir)
+		panic(fmt.Sprintf("failed to open blob root: %v", err))
+	}
 	f := &StoreFactory{
-		clock:          wallClock{},
-		entityData:     make(map[spi.TenantID]map[string][]entityVersion),
-		txIndex:        make(map[spi.TenantID]map[string]map[string]int64),
-		modelData:      make(map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor),
-		kvData:         make(map[spi.TenantID]map[string]map[string][]byte),
-		msgData:        make(map[spi.TenantID]map[string]*messageEntry),
-		wfData:         make(map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition),
-		smAudit:        make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
-		blobDir:        blobDir,
-		uniqueClaims:   make(map[claimKey]string),
-		claimsByEntity: make(map[entityTenantKey][]claimKey),
-		scheduledTasks: make(map[string]spi.ScheduledTask),
+		clock:           wallClock{},
+		entityData:      make(map[spi.TenantID]map[string][]entityVersion),
+		txIndex:         make(map[spi.TenantID]map[string]map[string]int64),
+		modelData:       make(map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor),
+		kvData:          make(map[spi.TenantID]map[string]map[string][]byte),
+		msgData:         make(map[spi.TenantID]map[string]*messageEntry),
+		wfData:          make(map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition),
+		smAudit:         make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
+		smAuditTxIndex:  make(map[spi.TenantID]map[string][]auditEventRef),
+		blobDir:         blobDir,
+		blobRoot:        blobRoot,
+		uniqueClaims:    make(map[claimKey]string),
+		claimsByEntity:  make(map[entityTenantKey][]claimKey),
+		scheduledTasks:  make(map[taskKey]spi.ScheduledTask),
+		taskClaimIndex:  newClaimIndex(),
+		taskMarks:       make(map[markKey]uuid.UUID),
+		schedulerOwners: make(map[uuid.UUID]time.Time),
 	}
 	for _, o := range opts {
 		o(f)
 	}
-	f.searchStore = newAsyncSearchStore(f.clock)
+	if f.bizClock == nil {
+		f.bizClock = f.clock
+	}
+	f.searchStore = newAsyncSearchStore(f.clock, f.bizClock)
 	f.initTransactionManager(&defaultUUIDGenerator{})
 	return f
 }
@@ -201,22 +268,68 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 	return f.searchStore, nil
 }
 
-// ScheduledTaskStore returns the durable ScheduledTask store. Unlike the
-// per-tenant stores above, no tenant resolution happens here: ScanDue is
-// cross-tenant and Upsert/Delete/Reconcile carry the tenant on the
-// task/request itself (see spi.StoreFactory.ScheduledTaskStore godoc).
+// ScheduledTaskStore returns the scheduled-task store. No tenant is resolved
+// from ctx: every tenant-facing method takes its tenant as an argument, and
+// ClaimDue, GiveBackIdle and the owner and sweep methods are cross-tenant.
 func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
 	return &scheduledTaskStore{f: f}, nil
 }
 
+// errClosed is what Ping returns once Close has run.
+var errClosed = errors.New("memory: store factory is closed")
+
+// Ping implements spi.StoreFactory. The in-memory store always answers, so it
+// fails only when ctx is done or the factory has been closed.
+func (f *StoreFactory) Ping(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if f.closed.Load() {
+		return errClosed
+	}
+	return nil
+}
+
 func (f *StoreFactory) Close() error {
-	return os.RemoveAll(f.blobDir)
+	f.closed.Store(true)
+	// Close the root before removing the tree: on Windows an open handle
+	// blocks the removal. NewStoreFactory panics if OpenRoot fails, so
+	// blobRoot is never nil on a constructed factory and no nil check is
+	// warranted; a second Close is harmless, as os.Root.Close is idempotent.
+	//
+	// The removal runs whatever the close returned: this is a cleanup path, and
+	// returning early on a close error would strand the temp tree with nothing
+	// left to retry it. Both errors are reported.
+	closeErr := f.blobRoot.Close()
+	if closeErr != nil {
+		closeErr = fmt.Errorf("failed to close blob root: %w", closeErr)
+	}
+	return errors.Join(closeErr, os.RemoveAll(f.blobDir))
+}
+
+// modelKeys reads the unique keys of every model in refs from the tenant's
+// stored models: the keys enforced are the ones the model holds now, never
+// ones a caller passes. The model's state is not checked (the API, not the
+// store, keeps the model rules), and a model not found contributes no keys.
+// Lock order: modelKeys takes modelMu while its callers hold entityMu; model
+// operations never take entityMu, and nothing takes entityMu while holding
+// modelMu.
+func (f *StoreFactory) modelKeys(tid spi.TenantID, refs []spi.ModelRef) map[spi.ModelRef][]spi.UniqueKey {
+	f.modelMu.RLock()
+	defer f.modelMu.RUnlock()
+	keys := make(map[spi.ModelRef][]spi.UniqueKey, len(refs))
+	for _, ref := range refs {
+		if desc, ok := f.modelData[tid][ref]; ok {
+			keys[ref] = desc.UniqueKeys
+		}
+	}
+	return keys
 }
 
 // releaseClaims removes all unique-key claims held by (tenantID, entityID) from
 // the claim maps. Caller must hold entityMu (write lock).
 // tenantID qualifies the lookup so that two tenants with the same entity ID
-// do not cross-contaminate each other's claim entries (ISSUE-2 tenant isolation).
+// do not cross-contaminate each other's claim entries.
 func (f *StoreFactory) releaseClaims(tenantID, entityID string) {
 	etk := entityTenantKey{tenant: tenantID, id: entityID}
 	for _, k := range f.claimsByEntity[etk] {
@@ -241,31 +354,18 @@ func (f *StoreFactory) insertClaims(entityID, tenant, model, version string, cla
 	f.claimsByEntity[etk] = keys
 }
 
-// recordTxIndex records eid's version under txID in the per-tenant
-// tx-index that GetVersionByTransaction reads. Caller must hold entityMu
-// (write lock). No-op for a non-transactional write (empty txID): an
-// empty txID must never match via GetVersionByTransaction (see its SPI
-// doc comment), so it is never indexed.
-//
-// First write wins: the index holds the EARLIEST version recorded for
-// (tenant, entity, txID), so the invariant holds structurally rather than
-// by caller discipline. The transactional path already passes the commit's
-// first version once, but saveUnlocked calls this per non-transactional
-// save with entity.Meta.TransactionID taken verbatim — two such saves
-// sharing a txID would otherwise record the latest version, where the SQL
-// backends' ORDER BY version ASC LIMIT 1 returns the earliest.
+// recordTxIndex records the version that transaction txID committed of
+// entityID in the per-tenant tx-index that GetVersionByTransaction reads.
+// Only a commit calls it, once per entity it writes: a transaction records one
+// version of an entity, and a write outside a transaction records no
+// transaction id, so it is never indexed. Caller must hold entityMu (write
+// lock).
 func (f *StoreFactory) recordTxIndex(tid spi.TenantID, entityID, txID string, version int64) {
-	if txID == "" {
-		return
-	}
 	if f.txIndex[tid] == nil {
 		f.txIndex[tid] = make(map[string]map[string]int64)
 	}
 	if f.txIndex[tid][entityID] == nil {
 		f.txIndex[tid][entityID] = make(map[string]int64)
-	}
-	if existing, ok := f.txIndex[tid][entityID][txID]; ok && existing <= version {
-		return
 	}
 	f.txIndex[tid][entityID][txID] = version
 }
@@ -282,8 +382,8 @@ func (f *StoreFactory) TransactionManager(ctx context.Context) (spi.TransactionM
 
 // newStoreFactory is the unexported constructor called by Plugin.NewFactory.
 // It delegates to NewStoreFactory so the two paths stay in sync.
-func newStoreFactory() *StoreFactory {
-	return NewStoreFactory()
+func newStoreFactory(opts ...Option) *StoreFactory {
+	return NewStoreFactory(opts...)
 }
 
 // SupportsCompositeUniqueKeys advertises composite-unique-key enforcement.

@@ -113,18 +113,28 @@ Every version carries two timestamps:
 
 This bi-temporal model answers both "what did we know, and when?" and
 "what was true, and when?" — the distinction that compliance,
-reconciliation, and historical reporting workloads require. Correcting
-a past fact adds a new version with earlier `valid_time` and current
-`transaction_time`; the original recording remains visible for audit.
+reconciliation, and historical reporting workloads require.
 
-**Point-in-time reads run at the same performance class as current
-reads.** Current-state reads are primary-key lookups on a
-materialised `entities` table (one row per live entity). Historical
-reads (`GetAsAt`, `GetPage(asAt)`, `Iterate(pointInTime)`) are indexed seeks against a dedicated
-bi-temporal composite index (`idx_ev_bitemporal` on
-`(tenant_id, entity_id, valid_time DESC, transaction_time DESC)` in
-the postgres plugin). Both are constant-time index operations — no
-version-chain scan, no rebuild, no reconstruction from an event log.
+**For every write the system can make today, the two are equal**: both
+are the instant the writing transaction committed. They are kept as
+separate dimensions because *backdating* — correcting a past fact by
+adding a version with an earlier `valid_time` against a current
+`transaction_time`, leaving the original recording visible for audit — is
+the case that separates them. Backdating is **not implemented**: no API
+accepts a caller-chosen effective time, and no write path supplies one.
+
+**Point-in-time reads cost what the model costs, not what the history
+costs.** Current-state reads are primary-key lookups on a materialised
+`entities` table (one row per live entity). A single-entity historical
+read (`GetAsAt`) is an indexed seek against a dedicated bi-temporal
+composite index (`idx_ev_bitemporal` on
+`(tenant_id, entity_id, valid_time DESC, transaction_time DESC)` in the
+postgres plugin). A model-wide historical read (`GetPage(asAt)`,
+`Iterate(pointInTime)`, point-in-time search and grouped statistics)
+enumerates the model's entities and probes each one's revision at the
+instant through that same index — one seek per entity, bounded by the
+size of the model. No version-chain scan, no rebuild, no reconstruction
+from an event log.
 
 This combination — transactional safety with no phantom-wide
 trade-offs, plus audit-grade history with no performance penalty —
@@ -193,6 +203,8 @@ UNLOCKED ──lock──► LOCKED ──unlock──► UNLOCKED
 | `ARRAY_ELEMENTS` | Array element type widening |
 | `ARRAY_LENGTH` | Nothing — the floor of the ladder; an array's length is not part of the model |
 
+An extending write commits its extension in a short transaction of its own before its entity changes commit. Two writes that extend the same model never conflict; the extension is visible on the serving node when the write returns, on other nodes when the model cache invalidation broadcast arrives, and stays if the write fails. See [`docs/CONSISTENCY.md` §3a](CONSISTENCY.md#3a-model--data-contract) and `cyoda help models`.
+
 **Export Formats:** `JSON_SCHEMA` (standard JSON Schema) and `SIMPLE_VIEW` (lossless internal representation).
 
 ### Temporal Integrity
@@ -201,11 +213,18 @@ The persistence layer maintains bi-temporal entity versioning:
 
 | Dimension | Semantics |
 |-----------|-----------|
-| `valid_time` | When the entity version became the "current" truth |
+| `valid_time` | When the fact was true in the domain — see §2 above |
 | `transaction_time` | When the version was committed to the database |
-| `wall_clock_time` | Physical wall clock at version creation |
+| `wall_clock_time` | Physical wall clock at version creation, independent of the transaction |
 
-**Point-in-time retrieval:** Any entity (or collection) can be queried as it existed at a specific timestamp via `?pointInTime=<ISO8601>`. This applies to single-entity reads, collection reads, and search operations.
+`valid_time` and `transaction_time` are equal for every write the system
+can make (both the writing transaction's commit instant); backdating is
+the case that would separate them and is not implemented. `wall_clock_time`
+is the only one of the three that is not the commit instant: it records
+when the row was physically inserted, which is earlier than the commit by
+the remaining lifetime of the transaction.
+
+**Point-in-time retrieval:** Any entity (or collection) can be queried as it existed at a specific timestamp via `?pointInTime=<RFC 3339>`. This applies to single-entity reads, collection reads, and search operations.
 
 **Version history:** Every mutation (create, update, delete) appends a new immutable version. The full history is queryable through the audit trail.
 
@@ -343,31 +362,32 @@ but the contract is the same. See `docs/CONSISTENCY.md` for depth.
 
 ### Transaction Timeouts
 
-A transaction's lifetime is bounded on every exit path, including a panic. Each entity write flow opens its transaction inside a deferred scope that releases it — commits if the flow succeeded, rolls back otherwise — no matter how the flow returns; the workflow engine applies the same deferred-release discipline to the segments it opens for `COMMIT_BEFORE_DISPATCH` cascades. Underneath that application-side guarantee, the PostgreSQL plugin sets a server-side ceiling: `statement_timeout` bounds any single SQL statement and `idle_in_transaction_session_timeout` bounds a connection sitting idle inside an open transaction (both default to 5 minutes, via `CYODA_POSTGRES_STATEMENT_TIMEOUT` / `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`). An operation that cannot acquire a pooled connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default 10s) fails `503 STORAGE_UNAVAILABLE`, retryable, rather than queuing indefinitely — a write, or a read that needs a second connection while the caller's transaction already holds one.
+A transaction's lifetime is bounded on every exit path, including a panic. Each entity write flow opens its transaction inside a deferred scope that releases it — commits if the flow succeeded, rolls back otherwise — no matter how the flow returns; the workflow engine applies the same deferred-release discipline to the segments it opens for `COMMIT_BEFORE_DISPATCH` cascades. Underneath that application-side guarantee, the PostgreSQL plugin sets a server-side ceiling: `statement_timeout` bounds any single SQL statement and `idle_in_transaction_session_timeout` bounds a connection sitting idle inside an open transaction (both default to 5 minutes, via `CYODA_POSTGRES_STATEMENT_TIMEOUT` / `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`). An operation that cannot acquire a pooled connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default 10s) fails `503 STORAGE_UNAVAILABLE`, retryable, rather than queuing indefinitely when it opens a transaction (every entity write, an async search's scan and result writes) or needs a second connection while the caller's transaction already holds one. A statement issued outside a transaction — an entity read, an audit read, a model, workflow, message or key-value read or write — is not bounded by that deadline: it waits for a free connection, so ordinary pool contention does not fail it.
 
 ### Multi-Node Transaction Affinity
 
-In a multi-node cluster running the **postgres plugin**, the `pgx.Tx`
-handle lives in a single node's process memory. The transaction token
-encodes which node owns the transaction (see Section 9). All
-subsequent requests for that transaction are routed to the owning
-node — no distributed transaction coordination inside cyoda-go.
+In a multi-node cluster a transaction lives in the process of the node
+that began it (with the **postgres plugin**, its `pgx.Tx` handle). The
+transaction token a compute node receives for a callout encodes which
+node owns the transaction (see Section 9). Every request made under that
+token is routed to the owning node — no distributed transaction coordination
+inside cyoda-go — except on a storage plugin that coordinates its transactions
+itself (an optional SPI capability no in-tree plugin offers), whose token names
+no node and is served on the node where it lands.
 
 If the owning node dies, the transaction dies. PostgreSQL
-automatically rolls back the connection. The client receives
-`TRANSACTION_NODE_UNAVAILABLE` and must retry from scratch. Trading
-this failure mode for operational simplicity (no Paxos, no Raft, no
-ZooKeeper in the cyoda-go process) is a deliberate choice — see §9.
+automatically rolls back the connection. A compute node's callback
+under the transaction's token answers `TRANSACTION_NODE_UNAVAILABLE`,
+and the client's request fails; the client retries it from scratch.
+Trading this failure mode for operational simplicity (no Paxos, no
+Raft, no ZooKeeper in the cyoda-go process) is a deliberate choice —
+see §9.
 
-The commercial **Cassandra plugin** takes a different approach: the
-plugin coordinates transactions across the cluster, so a transaction
-is not pinned to a single owning node and does not fail when any one
-node becomes unavailable mid-transaction. This removes the
-`TRANSACTION_NODE_UNAVAILABLE` failure mode and is one of the
-operational advantages of the Cassandra plugin over the postgres
-plugin in high-availability deployments. The coordination mechanism
-is plugin-internal; contact [Cyoda](https://www.cyoda.com) for
-architectural details.
+The commercial **Cassandra plugin** changes the storage tier, not
+transaction ownership: it removes the single shared database, so writes
+scale horizontally and storage has no single point of failure. A
+transaction still belongs to the node that began it. Contact
+[Cyoda](https://www.cyoda.com) for architectural details.
 
 ---
 
@@ -523,26 +543,67 @@ for mode-specific semantics.
 
 ## 8. Authentication and Authorization
 
+### Access model
+
+Only M2M clients reach cyoda-go. Users never call it directly: an application
+signs its own users in, decides what each user may do, and calls cyoda-go for
+them. cyoda-go has no per-user data permissions. It records what an
+authenticated client states about the user and does not verify the user; like
+a database, it cannot protect data from an application that is itself
+compromised. The decision record is ADR 0004
+(`docs/adr/0004-m2m-only-access-with-on-behalf-of-identity.md`); the
+application integration guide is `cyoda help auth integration`, with
+`docs/access-to-the-cyoda-api.html`.
+
+| Client | Roles | Grant |
+|--------|-------|-------|
+| Plain M2M client | `ROLE_M2M` (every data operation requires it) | `client_credentials` |
+| Admin M2M client | `ROLE_M2M`, `ROLE_ADMIN` (manages the tenant's clients and trusted keys) | `client_credentials` |
+| On-behalf-of (OBO) client | `ROLE_M2M`, never `ROLE_ADMIN`, never in tenant `PLATFORM` | token exchange (RFC 8693) only |
+
+An application acting for a user signs a short user assertion (RS256,
+`exp − iat` ≤ 300 s, `aud` = `CYODA_JWT_ISSUER`, `caas_org_id` = its tenant,
+`sub` = the user id) with a **trusted key** its tenant admin registered, and
+its OBO client exchanges the assertion at `POST /tenants/{tenant}/oauth/token`. The issued
+token names the user as subject and the client in `act`, and carries the
+client's roles, never roles from the assertion. A trusted key verifies only
+such an assertion, in its own tenant; it is never accepted as a bearer token.
+
+Every change, audit event, callout and message records two principals: the
+**attributed** principal (who the work is for) and the **executor** (who made
+it): the user and the OBO client for an OBO request; the client twice for a
+client's own request; the transaction's origin and the compute client for a
+compute node's write-back; the arming principal and `system` for a scheduled
+firing.
+
+The one other token source is the platform operator's offline `cyoda token`,
+signed with `CYODA_JWT_SIGNING_KEY`, which solves the first-admin problem: the
+first M2M clients of a tenant are created with it. The platform operator holds
+`ROLE_ADMIN` in the tenant `PLATFORM` and manages signing key pairs and node
+settings.
+
 ### Modes
 
 | Mode | Configuration | Behavior |
 |------|--------------|----------|
-| **Mock** | `CYODA_IAM_MODE=mock` (default) | All requests auto-authenticated as a default user. Zero setup. |
-| **JWT** | `CYODA_IAM_MODE=jwt` | Real OAuth 2.0 with RS256 JWT tokens |
+| **Mock** | `CYODA_IAM_MODE=mock` (default) | Every request runs as one fixed principal (`mock-user-001` in `mock-tenant`, kind `CYODA_IAM_MOCK_KIND`, roles `CYODA_IAM_MOCK_ROLES`). No tokens, no clients. Zero setup. |
+| **JWT** | `CYODA_IAM_MODE=jwt` | RS256 tokens signed by cyoda-go's own key pairs |
 
 ### JWT Mode Capabilities
 
 | Capability | Endpoint | Description |
 |------------|----------|-------------|
-| **Token issuance** | `POST /oauth/token` | `client_credentials` grant |
-| **OBO exchange** | `POST /oauth/token` | RFC 8693 token exchange — a service acting on behalf of a user |
-| **JWKS** | `GET /.well-known/jwks.json` | Public key discovery for token verification |
-| **M2M clients** | `GET/POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret` | Create, delete, reset secret for machine-to-machine clients |
-| **Key management** | `POST/GET/DELETE /oauth/keys/keypair/...` | Issue, invalidate, reactivate, delete signing key pairs |
-| **Trusted keys** | `POST/GET/DELETE /oauth/keys/trusted/...` | Register external signing keys for cross-system trust |
-| **Bootstrap client** | `CYODA_BOOTSTRAP_CLIENT_ID` | Pre-configured M2M client at startup (solves chicken-and-egg) |
+| **Token issuance** | `POST /tenants/{tenant}/oauth/token` | `client_credentials` for plain and admin clients |
+| **OBO exchange** | `POST /tenants/{tenant}/oauth/token` | RFC 8693 token exchange, for OBO clients only |
+| **JWKS** | `GET /.well-known/jwks.json` | Public keys of cyoda-go's signing key pairs |
+| **M2M clients** | `GET/POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret` | Create (`withAdminRole`, `onBehalfOf`), list, delete, reset secret; tenant admin |
+| **Key management** | `POST/GET/DELETE /oauth/keys/keypair/...` | Issue, invalidate, reactivate, delete signing key pairs; platform operator |
+| **Trusted keys** | `POST/GET/DELETE /oauth/keys/trusted/...` | Register, invalidate, reactivate, delete the public keys user assertions are signed with; tenant admin, behind `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` |
+| **First admin token** | `cyoda token` | Signs a short-lived admin token offline with `CYODA_JWT_SIGNING_KEY` |
 
 ### Token Claims
+
+A `client_credentials` token:
 
 ```json
 {
@@ -550,55 +611,44 @@ for mode-specific semantics.
   "sub": "<client_id>",
   "jti": "<unique_id>",
   "iat": 1711700000,
-  "exp": 1711703600,
-  "caas_user_id": "<user_id>",
+  "exp": 1711700300,
+  "caas_user_id": "<client_id>",
   "caas_org_id": "<tenant_id>",
-  "scopes": "ROLE_ADMIN,ROLE_M2M",
+  "scopes": ["ROLE_M2M"],
+  "cgen": 3071582740215291,
   "caas_tier": "unlimited"
 }
-
 ```
 
-### Per-Tenant OIDC Provider Registry
+An OBO token carries the user as `sub` and `caas_user_id`, the client as
+`act: {"sub": "<client_id>"}`, the client's roles in `scopes`, and no `cgen`.
+A `cyoda token` carries `user_roles` instead of `scopes`. `aud` is added, set
+to `CYODA_JWT_AUDIENCE`, when that variable is set. Tokens live
+`CYODA_JWT_EXPIRY_SECONDS` (default 300, at most 3600); an OBO token never
+outlives its assertion. There are no refresh tokens.
 
-In JWT mode, each tenant can register one or more external Identity Providers (IdPs) whose JWTs cyoda-go will accept alongside its own locally-issued tokens. This enables single-sign-on scenarios where users authenticate through an external IdP (e.g. Okta, Keycloak, Azure AD) and present those tokens directly to cyoda-go — no token exchange required.
+### Validation
 
-**What you can do with OIDC providers:**
+Every token is checked in-process against cyoda-go's own signing key pairs:
+signature (RS256 only), `iss` = `CYODA_JWT_ISSUER`, `aud` when
+`CYODA_JWT_AUDIENCE` is set, `exp`/`iat`/`nbf` with 30 s of skew, the tenant
+and user-id rules, and a strict claim mapping (`act` + `scopes` → a user acting
+through a client; `scopes` → a client; `user_roles` → the operator's token).
+No network call is made on the request path. A token from any other issuer,
+an identity provider's included, is refused with `401`.
 
-- **Register** a provider by supplying its URL, accepted issuer values, expected audiences, and (optionally) a custom roles claim name.
-- **List, register, update, delete** providers through the `/oauth/oidc/providers` REST surface (7 endpoints, `ROLE_ADMIN` required).
-- **Invalidate** a provider to suspend JWT acceptance without removing the record; **reactivate** to restore it.
-- **Reload** to force a fresh JWKS fetch and evict the node-local cache — useful after an IdP rotates its signing keys outside the normal TTL window.
-
-Provider records are per-tenant; a tenant's OIDC configuration is invisible to other tenants.
-
-**Validation chain.** When a JWT arrives, cyoda-go first checks whether the `iss` claim matches the locally-configured issuer (`CYODA_JWT_ISSUER`). If not, it searches the requesting tenant's registered providers for one whose `issuers` list matches. A match triggers external JWKS validation; no match rejects the token.
-
-**External-issuer token structure.** Tokens from a registered OIDC provider follow the standard JWT format. The roles claim name is configurable per-provider (defaults to `CYODA_OIDC_ROLES_CLAIM`):
-
-```json
-{
-  "iss": "https://auth.example.com",
-  "sub": "user@example.com",
-  "aud": ["cyoda-api"],
-  "iat": 1750000000,
-  "exp": 1750003600,
-  "roles": ["ROLE_ADMIN"]
-}
-```
-
-Cyoda-go maps the extracted roles to its standard `ROLE_ADMIN` / `ROLE_M2M` role set. The `caas_org_id` tenant claim required for local tokens is not required from external issuers — tenant affinity is determined by which tenant registered the matching provider.
-
-### Delegating Authenticator
-
-The authenticator routes by `iss` (issuer) claim:
-- **Local tokens** (issuer matches configured `CYODA_JWT_ISSUER`): Extract roles from `scopes` claim.
-- **Registered OIDC provider tokens** (issuer matches a provider in the requesting tenant's OIDC registry): Validate via the provider's JWKS endpoint; extract roles from the provider's configured `rolesClaim`.
-- **Trusted external key tokens** (legacy path; see Trusted Keys above): Extract roles from `user_roles` claim.
+Token issuance reads the client, and the trusted key, from the shared store on
+every request, so a client delete, a secret reset or a key invalidation stops
+new tokens at once on every node; issued tokens end within their lifetime.
 
 ### gRPC Authentication
 
-gRPC calls authenticate via `Authorization` metadata. The same JWT validation applies, including the OIDC provider chain. Calculation members must authenticate with `ROLE_M2M` tokens.
+gRPC calls authenticate via `authorization` metadata with the same validation.
+A compute node opens its stream with its own client's `client_credentials`
+token (kind service, `ROLE_M2M`); the stream re-checks the client every 60 s
+and closes when the client is deleted or its secret reset. Callouts carry the
+attributed principal (`authtype`, `authid`), the executor (`authexectype`,
+`authexecid`) and the executor's roles (`authclaims`).
 
 ---
 
@@ -653,8 +703,8 @@ Every node acts as a transparent HTTP proxy for requests that belong to another 
 ```
 1. Extract txToken from header/metadata
 2. Verify HMAC signature
-3. If nodeID == self → serve locally
-4. If nodeID != self → resolve address from local memberlist → forward request
+3. If nodeID == self, or empty (a location-independent transaction) → serve locally
+4. Otherwise → resolve address from local memberlist → forward request
 5. If nodeID not found in membership → TRANSACTION_NODE_UNAVAILABLE (node is dead, tx is gone)
 ```
 
@@ -691,9 +741,9 @@ In a multi-node cluster, a calculation member's gRPC stream terminates at one no
 | **Search** | `POST /search/{direct,async}/...` | Synchronous and async search |
 | **Audit** | `GET /audit/entity/{entityId}` | Entity change history, SM audit trail |
 | **Messaging** | `POST/GET/DELETE /message/...` | Edge message store |
-| **Auth** | `POST /oauth/token`, `GET /.well-known/jwks.json`, key/trusted/M2M management | Authentication and key management |
+| **Auth** | `POST /tenants/{tenant}/oauth/token`, `GET /.well-known/jwks.json`, key/trusted/M2M management | Authentication and key management |
 | **Account** | `GET /account` | Account info, subscriptions |
-| **Cluster** | _(not exposed over REST)_ | Connected calculation-member registry is internal-only (`contract.ClusterService`) |
+| **Cluster** | `GET /platform/cluster` | Cluster status read: each node's reachability, lifecycle state and database check (platform operator) |
 | **Admin** | `GET/POST /admin/log-level` | Runtime log level control |
 
 All REST responses follow RFC 9457 (Problem Details) for errors.
@@ -773,10 +823,10 @@ details and sizing guidance.
 
 ### Writing a Third-Party Plugin
 
-Plugin authors depend only on `github.com/cyoda-platform/cyoda-go-spi` (stdlib-only Go interfaces). A plugin implements the `Plugin` interface and registers itself from `init()`:
+Plugin authors depend only on `github.com/cyoda/cyoda-go-spi` (stdlib-only Go interfaces). A plugin implements the `Plugin` interface and registers itself from `init()`:
 
 ```go
-import spi "github.com/cyoda-platform/cyoda-go-spi"
+import spi "github.com/cyoda/cyoda-go-spi"
 
 func init() { spi.Register(&myPlugin{}) }
 ```
@@ -785,9 +835,9 @@ Users compose a custom binary by blank-importing plugins alongside `cyoda-go`:
 
 ```go
 import (
-    _ "github.com/cyoda-platform/cyoda-go/plugins/memory"
-    _ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
-    _ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+    _ "github.com/cyoda/cyoda-go/plugins/memory"
+    _ "github.com/cyoda/cyoda-go/plugins/sqlite"
+    _ "github.com/cyoda/cyoda-go/plugins/postgres"
     _ "example.com/my-redis-plugin"
 )
 ```
@@ -840,7 +890,7 @@ Authoritative code list: `internal/common/error_codes.go`. Per-code semantics, H
 
 ### OpenTelemetry
 
-OpenTelemetry instrumentation is implemented end-to-end. Traces, metrics, and log correlation use the OTel SDK with OTLP HTTP exporters. When `CYODA_OTEL_ENABLED=true`, HTTP requests are auto-traced via `otelhttp`, and transaction lifecycle operations (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`) produce spans with duration/active/conflict metrics regardless of which plugin is active (the core wraps the plugin's `TransactionManager` with a tracing decorator). Workflow engine and externalized processor dispatch are also traced when `CYODA_OTEL_ENABLED=true`. Plugins may add their own plugin-namespaced spans and metrics as their hot-path semantics warrant. A Grafana / Prometheus / Tempo dashboard ships with the bundled docker environment. Standard OTel environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`) configure export and sampling. Metrics are also exposed via an always-on Prometheus scrape endpoint (`/metrics`) with no collector required, including the OIDC subsystem metric set; OTLP push remains opt-in via `CYODA_OTEL_ENABLED`.
+OpenTelemetry instrumentation is implemented end-to-end. Traces, metrics, and log correlation use the OTel SDK with OTLP HTTP exporters. When `CYODA_OTEL_ENABLED=true`, HTTP requests are auto-traced via `otelhttp`, and transaction lifecycle operations (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`) produce spans with duration/active/conflict metrics regardless of which plugin is active (the core wraps the plugin's `TransactionManager` with a tracing decorator). Workflow engine and externalized processor dispatch are also traced when `CYODA_OTEL_ENABLED=true`. Plugins may add their own plugin-namespaced spans and metrics as their hot-path semantics warrant. A Grafana / Prometheus / Tempo dashboard ships with the bundled docker environment. Standard OTel environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`) configure export and sampling. Metrics are also exposed via an always-on Prometheus scrape endpoint (`/metrics`) with no collector required, OTLP push remains opt-in via `CYODA_OTEL_ENABLED`.
 
 ---
 
@@ -895,5 +945,5 @@ See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) Section 14 for detailed technical 
 - **Per-plugin documentation:** [`docs/plugins/`](plugins/)
 - **Architecture Decision Records:** [`docs/adr/`](adr/)
 - **OpenAPI Specification:** `api/openapi.yaml`
-- **Storage Plugin SPI module:** [github.com/cyoda-platform/cyoda-go-spi](https://github.com/cyoda/cyoda-go-spi)
+- **Storage Plugin SPI module:** [github.com/cyoda/cyoda-go-spi](https://github.com/cyoda/cyoda-go-spi)
 - **Commercial Cassandra plugin:** contact Cyoda via [cyoda.com](https://www.cyoda.com)

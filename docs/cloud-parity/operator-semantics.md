@@ -23,8 +23,35 @@ numerically stored value, and a numeric operand never matches a stored string.
 Numbers compare through arbitrary-precision integer and decimal types, not
 `float64`. Comparison is correct beyond 2^53.
 
-An operand that fits no declared type of a known field is `400
-CONDITION_TYPE_MISMATCH`.
+A comparison or range operand that fits none of the declared types of a known
+field that the operator applies to is `400 CONDITION_TYPE_MISMATCH`.
+
+**An operator must apply to at least one declared type**, or the condition is
+`400 CONDITION_TYPE_MISMATCH` too:
+
+| Operators | Need a declared type that is |
+|---|---|
+| the sixteen string and pattern operators (section 4) | text: `STRING` or `CHARACTER` |
+| `GREATER_THAN`, `GREATER_OR_EQUAL`, `LESS_THAN`, `LESS_OR_EQUAL` | ordered: numeric, text or temporal |
+| `BETWEEN`, `BETWEEN_INCLUSIVE` | numeric, `STRING` or temporal, with both bounds parsing into the same type |
+
+A comparison or range operand must parse into one of the types the operator
+applies to. A field with a matching type among several takes the operator.
+
+On a numeric or boolean field a string operator can never be satisfied, and a
+negated one is satisfied by every value — an answer that only looks like one.
+A boolean or an identifier has no order, only equality, so an ordering
+operator on one matches nothing. A temporal or identifier value is stored as a
+JSON string, and the evaluator could test it as text; it is **not** text by
+decision: it compares by its own type, so a date is queried with the ordering
+and range operators, never as a string. The rule covers the temporal meta
+fields (`creationDate`, `lastUpdateTime`) as `ZonedDateTime` fields.
+
+Cloud has no such check. A string operator on a field that is not `STRING`
+answers `400` when the operand does not parse into the field's type, `500` when
+it does (the string matcher refuses the typed value), and an empty result for
+an operand its numeric bucketing drops. An ordering operator on a `BOOLEAN`
+compares `false < true`. Cloud must refuse both with `400`, as cyoda-go does.
 
 ## 2. Null and absent never match
 
@@ -72,8 +99,9 @@ what happens when a field has no declared type.
 The eight in the first group need a type slot to compare in. Two different
 things are rejected before evaluation, with two different codes, and they
 must not be conflated: an operand that parses into none of a **known**
-field's declared types is `400 CONDITION_TYPE_MISMATCH` (section 1); a field
-carrying **no declared type at all** has nothing for this check to apply to,
+field's declared types the operator applies to is `400
+CONDITION_TYPE_MISMATCH` (section 1); a field carrying **no declared type at
+all** has nothing for this check to apply to,
 so it is accepted here and instead fails at preparation with `400
 INVALID_CONDITION` (`errors.INVALID_CONDITION`), because the leaf cannot be
 evaluated against any type. The polarity rule below applies only once an
@@ -83,9 +111,10 @@ determinate answer — **a positive operator answers non-match, `NOT_EQUAL`
 answers match instead**. The other eighteen never read a declared type and
 keep evaluating.
 
-The sixteen string and pattern operators stringify the **operand** only. A
-stored value that is not textual gives a positive operator non-match; it is
-never stringified to be compared. The seven negative operators in this group
+The sixteen string and pattern operators stringify the **operand** only, and
+apply only to a field with a text type (section 1). On a field that has a text
+type among others, a stored value that is not textual gives a positive
+operator non-match; it is never stringified to be compared. The seven negative operators in this group
 (`NOT_CONTAINS`, `NOT_STARTS_WITH`, `NOT_ENDS_WITH`, `INOT_EQUAL`,
 `INOT_CONTAINS`, `INOT_STARTS_WITH`, `INOT_ENDS_WITH`) answer match instead,
 by the same polarity rule. The two presence tests compare nothing at all —
@@ -94,14 +123,16 @@ either rule.
 
 ### An unsatisfiable comparison follows operator polarity
 
-When an operand has already been accepted — it parses into at least one of
-a known field's declared types — evaluation still runs per stored-value type
-family. A family whose declared type produced no surviving sub-condition for
-that operand gives a determinate answer about the entity for that family
-(*no value of this family can satisfy this comparison*), not a failure to
-evaluate. **The answer follows the operator's polarity**: false for a
-positive operator, true for a negative one. This never applies to an operand
-that parses into none of a known field's declared types at all — that is
+When a condition has already been accepted — its operator applies to at
+least one of a known field's declared types and, for a comparison or range
+operator, its operand parses into one of the types the operator applies to —
+evaluation still runs per stored-value type family. A family whose declared
+type produced no surviving sub-condition for that operand gives a
+determinate answer about the entity for that family (*no value of this family
+can satisfy this comparison*), not a failure to evaluate. **The answer
+follows the operator's polarity**: false for a positive operator, true for a
+negative one. This never applies to a comparison or range operand that
+parses into none of the declared types the operator applies to — that is
 rejected before evaluation instead (section 1, `400
 CONDITION_TYPE_MISMATCH`). It also never applies to a field with no declared
 type at all: there is no declared-type check to run, so evaluation is
@@ -144,13 +175,15 @@ returns the rows the caller meant to exclude.
 
 ## 5. Operand rules
 
-Three operand shapes are refused, because each one otherwise fails silently:
+These operand shapes are refused with `400 INVALID_CONDITION`, because each
+one otherwise fails silently or differs between backends:
 
 | Operand | Rule |
 |---|---|
 | an object | refused — an object denotes no scalar any operator compares against |
-| `BETWEEN` / `BETWEEN_INCLUSIVE` with other than two entries | refused — the operator needs exactly `[lo, hi]` |
-| an uncompilable `LIKE` or `MATCHES_PATTERN` pattern | refused `400 INVALID_CONDITION` |
+| an array, under any operator other than `BETWEEN` / `BETWEEN_INCLUSIVE` | refused — no other operator takes a set of values; unrefused, one backend compares the array's text, another matches every row under `NOT_EQUAL` and none under `EQUALS` |
+| `BETWEEN` / `BETWEEN_INCLUSIVE` with other than two entries, or an entry that is `null`, an object or an array | refused — the operator needs exactly `[lo, hi]`, both non-null scalars |
+| an uncompilable `LIKE` or `MATCHES_PATTERN` pattern | refused |
 
 A `MATCHES_PATTERN` operand is checked **twice**, and both checks are required.
 
@@ -249,15 +282,22 @@ above:
   `internal/domain/search/operators_test.go` and
   `internal/domain/search/handler_unknown_operator_test.go` (an unknown operator
   answers `INVALID_CONDITION`, section 2).
-- The `array` clause's own type and operand-shape checks, section 8 of
-  `path-grammar.md` folded into this document's operator rules:
+- The `array` clause's operator and operands, checked as its positional
+  `simple` clauses (section 8 of `path-grammar.md`), so every operator rule in
+  this document applies to them:
   `internal/domain/search/array_condition_validate_test.go`.
+- An operator that applies to none of the field's declared types, section 1:
+  `internal/domain/search/condition_type_operator_test.go`; on every HTTP
+  surface and the workflow-criterion door,
+  `internal/e2e/search_text_operator_type_test.go`; over gRPC,
+  `internal/grpc/search_text_operator_type_test.go`; cross-backend,
+  `e2e/parity/search_type_directed.go`
+  (`SearchTextOperatorOnNonTextField400`,
+  `SearchOrderingOperatorOnUnorderedField400`).
 - The temporal meta fields, section 3 — a string or pattern operator on
-  `creationDate` or `lastUpdateTime` rejected before either evaluator sees it, so
-  the two evaluators cannot answer it two ways:
-  `internal/domain/workflow/criterion_temporal_test.go` and the exclusion this
-  boundary made unreachable, still pinned in
-  `internal/match/prepared_equivalence_test.go`.
+  `creationDate` or `lastUpdateTime` rejected before either evaluator sees it:
+  `internal/domain/search/condition_type_validate_test.go` and
+  `internal/domain/workflow/criterion_temporal_test.go`.
 - The workflow-criterion door, which enforces the same operator table at import
   rather than at evaluation: `internal/domain/workflow/criterion_operator_test.go`.
 - End to end, on a running backend and over both entry points:

@@ -3,13 +3,14 @@ package app_test
 import (
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help"
 )
 
 // preConfigVars are root vars that DefaultConfig() does not populate — either
@@ -19,10 +20,11 @@ import (
 // bound to a Config field, so they are exempt from the coverage assertion.
 var preConfigVars = map[string]bool{
 	"CYODA_PROFILES":              true, // read in app/envfiles.go before DefaultConfig() runs
-	"CYODA_DEBUG":                 true, // reserved; not read anywhere yet
 	"CYODA_SUPPRESS_BANNER":       true, // read directly in cmd/cyoda/main.go
 	"CYODA_COMPUTE_GRPC_ENDPOINT": true, // compute-test-client side, not app.Config
-	"CYODA_COMPUTE_TOKEN":         true, // compute-test-client side, not app.Config
+	"CYODA_COMPUTE_CLIENT_ID":     true, // compute-test-client side, not app.Config
+	"CYODA_COMPUTE_TENANT_ID":     true, // compute-test-client side, not app.Config
+	"CYODA_COMPUTE_CLIENT_SECRET": true, // compute-test-client side, not app.Config
 	"CYODA_COMPUTE_HTTP_BASE":     true, // compute-test-client side, not app.Config
 }
 
@@ -63,10 +65,20 @@ func renderDuration(d time.Duration) string {
 }
 
 // renderMillis renders a time.Duration stored from an integer-milliseconds
-// env var (the three CYODA_OIDC_*_TIMEOUT_MS vars) back to its millisecond
-// count, matching the table's "5000" form rather than Duration.String()'s "5s".
+// env var (every integer-milliseconds var) back to its millisecond count,
+// matching the table's "5000" form rather than Duration.String()'s "5s".
 func renderMillis(d time.Duration) string {
 	return strconv.FormatInt(int64(d/time.Millisecond), 10)
+}
+
+// renderGOMAXPROCS renders a default computed as runtime.GOMAXPROCS(0) as
+// the table spells it, "GOMAXPROCS"; any other value as the integer, so a
+// fixed default in config.go still fails the binding.
+func renderGOMAXPROCS(n int) string {
+	if n == runtime.GOMAXPROCS(0) {
+		return "GOMAXPROCS"
+	}
+	return strconv.Itoa(n)
 }
 
 // defaultFor maps each root var to the rendered default DefaultConfig()
@@ -76,6 +88,7 @@ func defaultFor(c app.Config) map[string]string {
 	return map[string]string{
 		// --- server ---
 		"CYODA_HTTP_PORT":                strconv.Itoa(c.HTTPPort),
+		"CYODA_HTTP_BIND_ADDRESS":        c.HTTP.BindAddress,
 		"CYODA_HTTP_READ_HEADER_TIMEOUT": renderDuration(c.HTTP.ReadHeaderTimeout),
 		"CYODA_HTTP_READ_TIMEOUT":        renderDuration(c.HTTP.ReadTimeout),
 		"CYODA_HTTP_WRITE_TIMEOUT":       renderDuration(c.HTTP.WriteTimeout),
@@ -87,6 +100,7 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_MAX_STATE_VISITS":         strconv.Itoa(c.MaxStateVisits),
 		"CYODA_MODEL_CACHE_LEASE":        renderDuration(c.ModelCacheLease),
 		"CYODA_STORAGE_BACKEND":          c.StorageBackend,
+		"CYODA_CLOCK_CONTROL_ENABLED":    strconv.FormatBool(c.ClockControlEnabled),
 
 		// --- admin ---
 		"CYODA_ADMIN_PORT":           strconv.Itoa(c.Admin.Port),
@@ -118,55 +132,56 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_HMAC_SECRET":              "", // secret
 		"CYODA_PROXY_TIMEOUT":            renderDuration(c.Cluster.ProxyTimeout),
 		"CYODA_DISPATCH_WAIT_TIMEOUT":    renderDuration(c.Cluster.DispatchWaitTimeout),
-		"CYODA_DISPATCH_FORWARD_TIMEOUT": renderDuration(c.Cluster.DispatchForwardTimeout),
-		"CYODA_TX_TOKEN_TTL":             renderDuration(c.Cluster.TxTokenTTL),
+		"CYODA_DISPATCH_CONNECT_TIMEOUT": renderDuration(c.Cluster.DispatchConnectTimeout),
 		"CYODA_KEEPALIVE_INTERVAL":       strconv.Itoa(c.GRPC.KeepAliveInterval),
 		"CYODA_KEEPALIVE_TIMEOUT":        strconv.Itoa(c.GRPC.KeepAliveTimeout),
 
 		// --- auth ---
-		"CYODA_IAM_MODE":                             c.IAM.Mode,
-		"CYODA_IAM_MOCK_ROLES":                       strings.Join(c.IAM.MockRoles, ","),
-		"CYODA_IAM_MOCK_KIND":                        c.IAM.MockKind,
-		"CYODA_JWT_SIGNING_KEY":                      "", // secret
-		"CYODA_JWT_ISSUER":                           c.IAM.JWTIssuer,
-		"CYODA_JWT_AUDIENCE":                         c.IAM.JWTAudience,
-		"CYODA_JWT_EXPIRY_SECONDS":                   strconv.Itoa(c.IAM.JWTExpiry),
-		"CYODA_REQUIRE_JWT":                          strconv.FormatBool(c.IAM.RequireJWT),
-		"CYODA_JWT_BOOTSTRAP_AUDIENCE":               c.IAM.BootstrapAudience,
-		"CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED": strconv.FormatBool(c.IAM.TrustedKeyRegistrationEnabled),
-		"CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT":       strconv.Itoa(c.IAM.TrustedKeyMaxPerTenant),
-		"CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS":    strconv.Itoa(c.IAM.TrustedKeyMaxValidityDays),
-		"CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES":   strconv.Itoa(c.IAM.TrustedKeyMaxJWKProperties),
-		"CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS":    strconv.Itoa(c.IAM.KeypairDefaultValidityDays),
-		"CYODA_IAM_M2M_ADMIN_ROLE_ENABLED":           strconv.FormatBool(c.IAM.M2MAdminRoleEnabled),
-		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL":        renderDuration(c.IAM.AuthCacheReconcileInterval),
-		"CYODA_BOOTSTRAP_CLIENT_ID":                  c.Bootstrap.ClientID,
-		"CYODA_BOOTSTRAP_CLIENT_SECRET":              "", // secret
-		"CYODA_BOOTSTRAP_TENANT_ID":                  c.Bootstrap.TenantID,
-		"CYODA_BOOTSTRAP_USER_ID":                    c.Bootstrap.UserID,
-		"CYODA_BOOTSTRAP_ROLES":                      c.Bootstrap.Roles,
-		"CYODA_OIDC_REQUIRE_HTTPS":                   strconv.FormatBool(c.IAM.OIDC.RequireHTTPS),
-		"CYODA_OIDC_CONNECT_TIMEOUT_MS":              renderMillis(c.IAM.OIDC.ConnectTimeout),
-		"CYODA_OIDC_SOCKET_TIMEOUT_MS":               renderMillis(c.IAM.OIDC.SocketTimeout),
-		"CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS":   renderMillis(c.IAM.OIDC.ConnectionRequestTimeout),
-		"CYODA_OIDC_ALLOW_PRIVATE_NETWORKS":          strconv.FormatBool(c.IAM.OIDC.AllowPrivateNetworks),
-		"CYODA_OIDC_ROLES_CLAIM":                     c.IAM.OIDC.DefaultRolesClaim,
+		"CYODA_IAM_MODE":                               c.IAM.Mode,
+		"CYODA_IAM_MOCK_ROLES":                         strings.Join(c.IAM.MockRoles, ","),
+		"CYODA_IAM_MOCK_KIND":                          c.IAM.MockKind,
+		"CYODA_JWT_SIGNING_KEY":                        "", // secret
+		"CYODA_JWT_ISSUER":                             c.IAM.JWTIssuer,
+		"CYODA_JWT_AUDIENCE":                           c.IAM.JWTAudience,
+		"CYODA_JWT_EXPIRY_SECONDS":                     strconv.Itoa(c.IAM.JWTExpiry),
+		"CYODA_REQUIRE_JWT":                            strconv.FormatBool(c.IAM.RequireJWT),
+		"CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED":   strconv.FormatBool(c.IAM.TrustedKeyRegistrationEnabled),
+		"CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT":         strconv.Itoa(c.IAM.TrustedKeyMaxPerTenant),
+		"CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS":      strconv.Itoa(c.IAM.TrustedKeyMaxValidityDays),
+		"CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES":     strconv.Itoa(c.IAM.TrustedKeyMaxJWKProperties),
+		"CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS":      strconv.Itoa(c.IAM.KeypairDefaultValidityDays),
+		"CYODA_IAM_M2M_ADMIN_ROLE_ENABLED":             strconv.FormatBool(c.IAM.M2MAdminRoleEnabled),
+		"CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT":          strconv.Itoa(c.IAM.M2MClientMaxPerTenant),
+		"CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE":          strconv.Itoa(c.IAM.TokenRequestsPerMinute),
+		"CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS": renderGOMAXPROCS(c.IAM.TokenMaxConcurrentSecretChecks),
+		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL":          renderDuration(c.IAM.AuthCacheReconcileInterval),
 
 		// --- cors ---
 		"CYODA_CORS_ENABLED":         strconv.FormatBool(c.CORS.Enabled),
 		"CYODA_CORS_ALLOWED_ORIGINS": strings.Join(c.CORS.AllowedOrigins, ","),
 
 		// --- grpc ---
-		"CYODA_GRPC_PORT": strconv.Itoa(c.GRPC.Port),
+		"CYODA_GRPC_PORT":                         strconv.Itoa(c.GRPC.Port),
+		"CYODA_GRPC_BIND_ADDRESS":                 c.GRPC.BindAddress,
+		"CYODA_RETRY_FIXED_NUM_RETRIES":           strconv.Itoa(c.Callout.FixedNumRetries),
+		"CYODA_CALLOUT_RESPONSE_TIMEOUT_MS":       renderMillis(c.Callout.ResponseTimeout),
+		"CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS":   renderMillis(c.Callout.ResponseTimeoutMax),
+		"CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES": strconv.Itoa(c.Callout.JoinedResponseMaxBytes),
+		"CYODA_CALLOUT_JOINED_MAX_WAITERS":        strconv.Itoa(c.Callout.JoinedMaxWaiters),
+		"CYODA_CALLOUT_HANDOVER_ALLOWANCE":        renderDuration(c.Callout.HandoverAllowance),
+		"CYODA_CALLOUT_PASS_ALLOWANCE":            renderDuration(c.Callout.PassAllowance),
 
 		// --- scheduler ---
-		"CYODA_SCHEDULER_ENABLED":            strconv.FormatBool(c.Scheduler.Enabled),
-		"CYODA_SCHEDULER_SCAN_INTERVAL":      renderDuration(c.Scheduler.ScanInterval),
-		"CYODA_SCHEDULER_BATCH_SIZE":         strconv.Itoa(c.Scheduler.BatchSize),
-		"CYODA_SCHEDULER_DISTRIBUTION":       c.Scheduler.Distribution,
-		"CYODA_SCHEDULER_COORDINATOR":        c.Scheduler.Coordinator,
-		"CYODA_SCHEDULER_REDISPATCH_BACKOFF": renderDuration(c.Scheduler.RedispatchBackoff),
-		"CYODA_SCHEDULER_EXPIRY_GRACE":       renderDuration(c.Scheduler.ExpiryGrace),
+		"CYODA_SCHEDULER_ENABLED":             strconv.FormatBool(c.Scheduler.Enabled),
+		"CYODA_SCHEDULER_SCAN_INTERVAL":       renderDuration(c.Scheduler.ScanInterval),
+		"CYODA_SCHEDULER_MAX_RUNS":            strconv.Itoa(c.Scheduler.MaxRuns),
+		"CYODA_SCHEDULER_MAX_RUNS_PER_TENANT": strconv.Itoa(c.Scheduler.MaxRunsPerTenant),
+		"CYODA_SCHEDULER_HEARTBEAT_INTERVAL":  renderDuration(c.Scheduler.HeartbeatInterval),
+		"CYODA_SCHEDULER_STALE_AFTER":         renderDuration(c.Scheduler.StaleAfter),
+		"CYODA_SCHEDULER_MAX_LOST_OWNERS":     strconv.Itoa(c.Scheduler.MaxLostOwners),
+		"CYODA_SCHEDULER_RETRY_DELAY":         renderDuration(c.Scheduler.RetryDelay),
+		"CYODA_SCHEDULER_RETRY_DELAY_MAX":     renderDuration(c.Scheduler.RetryDelayMax),
+		"CYODA_SCHEDULER_SHUTDOWN_DRAIN":      renderDuration(c.Scheduler.ShutdownDrain),
 	}
 }
 

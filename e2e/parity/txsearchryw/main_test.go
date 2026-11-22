@@ -40,8 +40,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/cyoda-platform/cyoda-go/internal/testpg"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/internal/testpg"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // pgPool is the shared PostgreSQL pool for the postgres backend, or nil when a
@@ -62,7 +62,6 @@ func TestMain(m *testing.M) {
 	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("txryw_test"),
 		tcpostgres.WithUsername("testuser"),
-		tcpostgres.WithPassword("testpass"),
 	}, testpg.HardenedOptions()...)
 
 	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)

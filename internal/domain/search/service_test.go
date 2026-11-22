@@ -9,16 +9,18 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/testing/fakeclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // helper: create a context with a UserContext for the given tenant.
@@ -39,7 +41,7 @@ func tenantCtx(tenantID string) context.Context {
 // other than the schema — limits, cancellation, sentinel mapping, transport
 // plumbing. It still declares the leaves those tests address, because a model
 // declaring NO fields is a state production cannot reach: every entity write
-// goes through validateOrExtend, which extends the model's schema before the
+// goes through ValidateOrExtend, which extends the model's schema before the
 // data lands. Saving a bare descriptor and then writing entities straight to
 // the entity store fabricated a model with data but no schema, and search
 // answered such a model by skipping field-path validation entirely.
@@ -80,6 +82,9 @@ func saveModelWithFields(t *testing.T, ctx context.Context, factory *memory.Stor
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
 	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
+	}
 }
 
 // helper: register a model whose schema declares `arrayField` as an array of
@@ -102,6 +107,9 @@ func saveModelWithArrayOfStringField(t *testing.T, ctx context.Context, factory 
 	}
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
+	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
 	}
 }
 
@@ -126,6 +134,9 @@ func saveModelWithValAndItemsArray(t *testing.T, ctx context.Context, factory *m
 	}
 	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
 		t.Fatalf("Save model: %v", err)
+	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
 	}
 }
 
@@ -154,7 +165,7 @@ func TestDirectSearchSimpleEquals(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -190,7 +201,7 @@ func TestDirectSearchNoMatches(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -218,7 +229,7 @@ func TestDirectSearchPointInTime(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -285,7 +296,7 @@ func TestDirectSearch_ReturnsEveryMatchUnderTheLimit(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
@@ -319,7 +330,7 @@ func TestAsyncLifecycle(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -382,7 +393,7 @@ func TestAsyncCancel(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -439,7 +450,7 @@ func TestAsyncTenantIsolation(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctxA := tenantCtx("tenant-A")
 	ctxB := tenantCtx("tenant-B")
@@ -492,7 +503,7 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -580,7 +591,7 @@ func TestCancelRaceDoesNotOverwriteCancelled(t *testing.T) {
 		saveResultsGate:  gate,
 	}
 
-	svc := search.NewSearchService(factory, uuids, blockedStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, blockedStore, newTestConsistency(t, factory), platformclock.Real())
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -644,17 +655,21 @@ func (c *cancelDispatchCaptureStore) SaveResults(ctx context.Context, jobID stri
 }
 
 func (c *cancelDispatchCaptureStore) Cancel(ctx context.Context, jobID string, finishTime time.Time) error {
-	c.mu.Lock()
-	c.cancelCalls++
-	c.cancelFinishTime = finishTime
-	c.mu.Unlock()
+	func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.cancelCalls++
+		c.cancelFinishTime = finishTime
+	}()
 	return c.AsyncSearchStore.Cancel(ctx, jobID, finishTime)
 }
 
 func (c *cancelDispatchCaptureStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
-	c.mu.Lock()
-	c.updateStatusCalls++
-	c.mu.Unlock()
+	func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.updateStatusCalls++
+	}()
 	return c.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
 }
 
@@ -680,7 +695,7 @@ func TestCancelAsync_DispatchesStoreCancel(t *testing.T) {
 		saveResultsGate:  gate,
 	}
 
-	svc := search.NewSearchService(factory, uuids, capture)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, capture, newTestConsistency(t, factory), platformclock.Real())
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -707,11 +722,11 @@ func TestCancelAsync_DispatchesStoreCancel(t *testing.T) {
 		t.Fatal("expected cancel to succeed while goroutine is blocked")
 	}
 
-	capture.mu.Lock()
-	cancelCalls := capture.cancelCalls
-	cancelFinishTime := capture.cancelFinishTime
-	updateStatusCalls := capture.updateStatusCalls
-	capture.mu.Unlock()
+	cancelCalls, cancelFinishTime, updateStatusCalls := func() (int, time.Time, int) {
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		return capture.cancelCalls, capture.cancelFinishTime, capture.updateStatusCalls
+	}()
 
 	if cancelCalls != 1 {
 		t.Errorf("Cancel calls = %d, want 1", cancelCalls)
@@ -784,7 +799,7 @@ func TestSubmitAsync_SelfExecutingStore_SkipsGoroutine(t *testing.T) {
 	capture := newCaptureSearchStore(baseStore)
 	store := &selfExecutingCaptureStore{captureSearchStore: capture}
 
-	svc := search.NewSearchService(factory, uuids, store)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, store, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -873,7 +888,7 @@ func TestSearchDelegatesToSearcher(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -921,7 +936,7 @@ func TestSearch_TrackingReadPushedToSearcher(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -971,7 +986,7 @@ func TestSearchDelegatesToSearcherInTransaction(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	// Create a context with an active transaction.
 	tx := &spi.TransactionState{
@@ -1033,8 +1048,8 @@ func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
 	// Model declares "surname" as a String field.
 	desc := buildSearchDescriptor(t, ref, "surname")
 	ms := &refreshingModelStore{
-		// EnsureModelRegistered + validateConditionPaths (for $.surname) +
-		// validateConditionTypes + resolveSortKeys each call Get once.
+		// EnsureModelRegistered + the path step of ValidateConditionForModel
+		// (for $.surname) + its type step + resolveSortKeys each call Get once.
 		getQueue: []*spi.ModelDescriptor{desc, desc, desc, desc},
 	}
 
@@ -1056,7 +1071,7 @@ func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.surname",
@@ -1128,7 +1143,7 @@ func TestSearch_UnknownSortField_ReturnsInvalidFieldPath(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	// LifecycleCondition: extractFieldPaths returns [] so validateConditionPaths
 	// returns early without touching the model store.
@@ -1183,7 +1198,7 @@ func TestSubmitAsync_OrderBy_InvalidField(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	baseStore, _ := base.AsyncSearchStore(context.Background())
 	capture := newCaptureSearchStore(baseStore)
-	svc := search.NewSearchService(factory, uuids, capture)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, capture, newTestConsistency(t, factory), platformclock.Real())
 
 	// LifecycleCondition has no data paths — validateConditionPaths exits
 	// early without consuming from the model store queue.
@@ -1247,7 +1262,7 @@ func TestSubmitAsync_OrderBy_PersistsTypedSpecs(t *testing.T) {
 	baseStore, _ := base.AsyncSearchStore(context.Background())
 	capture := newCaptureSearchStore(baseStore)
 	selfExec := &selfExecutingCaptureStore{captureSearchStore: capture}
-	svc := search.NewSearchService(factory, uuids, selfExec)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, selfExec, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "state",
@@ -1302,7 +1317,7 @@ func TestSearch_SortKeyCap_ReturnsError(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	// Cap set to 2 — sending 3 keys must be rejected.
-	svc := search.NewSearchService(factory, uuids, searchStore).WithMaxSortKeys(2)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).WithMaxSortKeys(2)
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
@@ -1344,7 +1359,7 @@ func TestSubmitAsync_SortKeyCap_ReturnsError(t *testing.T) {
 	baseStore, _ := factory.AsyncSearchStore(context.Background())
 	capture := newCaptureSearchStore(baseStore)
 	// Cap set to 2 — sending 3 keys must be rejected.
-	svc := search.NewSearchService(factory, uuids, capture).WithMaxSortKeys(2)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, capture, newTestConsistency(t, factory), platformclock.Real()).WithMaxSortKeys(2)
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
@@ -1410,7 +1425,7 @@ func TestSearch_DuplicateSortKeys_ReturnsError(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	// Two identical keys — same source+path must be rejected.
 	orderBy := []search.OrderKey{
@@ -1443,7 +1458,7 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -1537,7 +1552,7 @@ func TestAsyncSearchJob_PanicIsRecovered(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -1575,14 +1590,19 @@ func TestAsyncSearchJob_PanicIsRecovered(t *testing.T) {
 	if job.Error == "" {
 		t.Error("expected a non-empty job error message")
 	}
+	// A panic is a server-side failure: recorded as both doors answer one,
+	// the generic text and a ticket naming the logged stack.
+	if !strings.HasPrefix(job.Error, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("job error = %q, want the ticketed generic text", job.Error)
+	}
 	if strings.Contains(job.Error, "injected panic") || strings.Contains(job.Error, "goroutine") {
 		t.Errorf("job error message leaks panic/internal detail: %q", job.Error)
 	}
 }
 
 // TestAsyncSearchJob_PanicMarksNodeUnhealthy holds the async-search goroutine
-// to the same contract as the two request doors: a recovered panic latches the
-// node's health flag false, so the node reports 503 on /health and /readyz and
+// to the same contract as the two request doors: a recovered panic trips the
+// node's health latch, so the node reports 503 on /health and /readyz and
 // stops taking client traffic. A panic here is exactly as much evidence of
 // unverified state as a panic in an HTTP or gRPC handler — it runs the same
 // engine and store code — so recording the job FAILED and carrying on would
@@ -1605,12 +1625,11 @@ func TestAsyncSearchJob_PanicMarksNodeUnhealthy(t *testing.T) {
 	}
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthLatch := health.NewLatch()
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
-		WithHealthFlag(healthFlag)
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()).
+		WithHealthLatch(healthLatch)
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
 		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
@@ -1620,14 +1639,14 @@ func TestAsyncSearchJob_PanicMarksNodeUnhealthy(t *testing.T) {
 	}
 	awaitJobSettled(t, svc, ctx, jobID, "FAILED")
 
-	if healthFlag.Load() {
-		t.Fatal("health flag still true after a recovered panic in the async search goroutine — the node keeps taking traffic with unverified state")
+	if !healthLatch.Tripped() {
+		t.Fatal("health latch still untripped after a recovered panic in the async search goroutine — the node keeps taking traffic with unverified state")
 	}
 }
 
 // TestAsyncSearchJob_SuccessLeavesNodeHealthy is the other direction: an async
-// job that completes normally must not touch the flag. Without it, a recover
-// handler that latched the flag unconditionally would still pass the test above.
+// job that completes normally must not touch the latch. Without it, a recover
+// handler that tripped the latch unconditionally would still pass the test above.
 func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
@@ -1637,12 +1656,11 @@ func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
 	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthLatch := health.NewLatch()
 
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
-		WithHealthFlag(healthFlag)
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()).
+		WithHealthLatch(healthLatch)
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
 		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
@@ -1652,13 +1670,13 @@ func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
 	}
 	awaitJobSettled(t, svc, ctx, jobID, "SUCCESSFUL")
 
-	if !healthFlag.Load() {
-		t.Fatal("health flag went false after a successful async search — the node took itself out of service for nothing")
+	if healthLatch.Tripped() {
+		t.Fatal("health latch tripped after a successful async search — the node took itself out of service for nothing")
 	}
 }
 
 // awaitJobSettled polls until the job leaves RUNNING and asserts the terminal
-// status, so the health-flag assertions above run against a finished goroutine.
+// status, so the health latch assertions above run against a finished goroutine.
 func awaitJobSettled(t *testing.T, svc *search.SearchService, ctx context.Context, jobID string, want string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -1688,7 +1706,7 @@ func TestSearch_LimitExceedsMax(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-cap")
 	ref := spi.ModelRef{EntityName: "cap-model", ModelVersion: "1"}
@@ -1730,7 +1748,7 @@ func TestSubmitAsync_LimitExceedsMax(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := tenantCtx("tenant-async-cap")
 	ref := spi.ModelRef{EntityName: "async-cap-model", ModelVersion: "1"}
@@ -1773,57 +1791,19 @@ func TestSubmitAsync_LimitExceedsMax(t *testing.T) {
 	})
 }
 
-// --- FieldsMap threading (Task 6b) ---
-
-// wrapModelStoreCounter wraps a real spi.ModelStore and counts Get calls, so
-// tests can observe whether a code path actually consults the schema.
-type wrapModelStoreCounter struct {
-	spi.ModelStore
-	getCalls int
-}
-
-func (m *wrapModelStoreCounter) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	m.getCalls++
-	return m.ModelStore.Get(ctx, ref)
-}
-
-// wrapModelStoreCounterFactory wraps a StoreFactory and returns a
-// wrapModelStoreCounter, delegating everything else (notably EntityStore, so
-// the real memory Searcher is still exercised) to the wrapped StoreFactory.
-type wrapModelStoreCounterFactory struct {
-	spi.StoreFactory
-	modelStore *wrapModelStoreCounter
-}
-
-func (f *wrapModelStoreCounterFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
-	return f.modelStore, nil
-}
+// --- FieldsMap threading ---
 
 // TestSearch_ThreadsFieldsMapIntoConditionToFilter verifies that the
 // Searcher pushdown branch of Search loads the model's FieldsMap and
 // threads it into ConditionToFilter, rather than hardcoding nil.
 //
-// The condition addresses one data path ($.name), so validateConditionPaths
-// loads and returns a real FieldsMap (extractFieldPaths is non-empty — see
-// path_validate.go) and validateConditionTypes's own type-soundness check
-// consults the schema too (its own read is gated on exactly the same
-// path-need, per this task's fix to a validation-skip bug — a LIFECYCLE-ONLY
-// condition, by contrast, now makes NO ModelStore.Get call at all, covered
-// separately by TestValidateConditionTypes_LifecycleOnly_NoModelRead in
-// condition_type_validate_gating_test.go). An empty OrderBy makes
-// resolveSortKeys return without touching the store too, so every Get call
-// this test observes comes from the two schema-consulting checks above plus
-// EnsureModelRegistered's own lookup — at least 2, whichever two of those
-// three a given code shape happens to route through.
-//
-// (dataCoercion's routing effect is not separately observable via the
-// result set today — classifyType never classifies a *data* field as
-// spi.OrderTemporal until a future polymorphic-temporal-typing follow-up
-// flips scalarClass; meta-field temporal stamping, exercised in Task 6,
-// already works unconditionally of this fields argument. This test proves
-// the wiring itself: the schema is loaded and handed to ConditionToFilter
-// on the pushdown path, which is the forward-compatible behavior that
-// follow-up needs.)
+// The condition is an EQUALS leaf on a declared String path. A nil or empty
+// FieldsMap leaves the leaf with no declared type, and ConditionToFilter turns
+// such a comparison leaf into a non-match, so the one expected result is the
+// proof that the schema reached the filter. The test does not count model
+// reads: the model is LOCKED, so the model cache answers repeat reads, and the
+// cache cannot be bypassed here because loadFieldsMap takes the parsed schema
+// only from the cache's store (path_validate.go loadFieldsMap).
 func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()
@@ -1834,16 +1814,9 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 	saveMinimalModel(t, ctx, base, ref)
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
-	baseMS, err := base.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	cms := &wrapModelStoreCounter{ModelStore: baseMS}
-	factory := &wrapModelStoreCounterFactory{StoreFactory: base, modelStore: cms}
-
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(base), uuids, searchStore, newTestConsistency(t, base), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -1862,10 +1835,6 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d result(s), want 1: the EQUALS leaf against $.name must match when FieldsMap is threaded correctly", len(results))
 	}
-
-	if cms.getCalls < 2 {
-		t.Errorf("ModelStore.Get calls = %d, want >= 2 (EnsureModelRegistered + at least one real schema-consulting check)", cms.getCalls)
-	}
 }
 
 // newStubSearcherService builds a SearchService backed by a memory
@@ -1883,7 +1852,7 @@ func newStubSearcherService(t *testing.T, fn func(context.Context, spi.Filter, s
 	ses := &searcherEntityStore{EntityStore: realStore, searchFn: fn}
 	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	return search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore), ctx, ref
+	return search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()), ctx, ref
 }
 
 func TestSearch_SearcherResultLimitSentinel_MapsTo400(t *testing.T) {
@@ -1945,7 +1914,7 @@ func runFailingAsyncJob(t *testing.T, searchErr error) *spi.SearchJob {
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
 	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
@@ -2029,5 +1998,46 @@ func TestAsyncSearchJob_ClientErrorIsPreservedVerbatim(t *testing.T) {
 
 	if job.Error != appErr.Error() {
 		t.Fatalf("job error = %q, want the classified client error %q", job.Error, appErr.Error())
+	}
+}
+
+func TestSearchJobCreateTimeFromClock(t *testing.T) {
+	at := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore,
+		newTestConsistency(t, factory), fakeclock.New(at))
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
+		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
+	}, search.SearchOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	var status search.SearchJobStatus
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if status, err = svc.GetAsyncStatus(ctx, jobID); err != nil {
+			t.Fatalf("GetAsyncStatus: %v", err)
+		}
+		if status.Status == "SUCCESSFUL" || status.Status == "FAILED" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status.Status != "SUCCESSFUL" {
+		t.Fatalf("status = %s, want SUCCESSFUL", status.Status)
+	}
+	if !status.CreateTime.Equal(at) {
+		t.Errorf("CreateTime = %v, want %v", status.CreateTime, at)
+	}
+	if status.FinishTime == nil || !status.FinishTime.Equal(at) {
+		t.Errorf("FinishTime = %v, want %v", status.FinishTime, at)
 	}
 }

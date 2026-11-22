@@ -5,11 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // Task 16: gRPC direct search — honor timeoutMillis on EntitySearchRequest.
@@ -162,7 +163,7 @@ func TestEntitySearch_DirectSearch_TimeoutExpires_SearchTimeoutNoElements(t *tes
 	blocking := &searchTimeoutEntityStore{}
 	factory := &searchTimeoutStoreFactory{StoreFactory: base, entityStore: blocking}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
 
 	millis := 1
 	ce := makeCE(EntitySearchRequest, map[string]any{

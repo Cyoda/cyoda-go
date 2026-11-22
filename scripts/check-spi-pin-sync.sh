@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verifies every go.mod in this repo (root + plugins/*) pins
-# github.com/cyoda-platform/cyoda-go-spi to the same version.
+# github.com/cyoda/cyoda-go-spi to the same version.
 #
 # Exits 0 if all pins agree.
 # Exits 1 if any go.mod disagrees, with a readable diff.
@@ -22,7 +22,7 @@ file_version_pairs=""
 
 while IFS= read -r mod; do
   [[ -z "$mod" ]] && continue
-  ver=$(awk '/[[:space:]]github\.com\/cyoda-platform\/cyoda-go-spi v/ { print $NF; exit }' "$mod" 2>/dev/null || true)
+  ver=$(awk '/[[:space:]]github\.com\/cyoda\/cyoda-go-spi v/ { print $NF; exit }' "$mod" 2>/dev/null || true)
   if [[ -n "${ver:-}" ]]; then
     all_versions="${all_versions}${ver}"$'\n'
     file_version_pairs="${file_version_pairs}${ver} ${mod}"$'\n'

@@ -44,7 +44,7 @@ jwt:
   existingSecret: ""
   existingSecretKey: signing-key.pem
   issuer: cyoda
-  expirySeconds: 3600
+  expirySeconds: 300
 
 cluster:
   # -- HMAC secret used for gossip encryption AND inter-node HTTP dispatch
@@ -55,25 +55,9 @@ cluster:
     existingSecret: ""
     existingSecretKey: secret
 
-bootstrap:
-  # -- Bootstrap M2M client is OPT-IN. When clientId is empty, the
-  # chart renders no bootstrap Secret and the pod runs with no
-  # bootstrap M2M credential — the binary starts cleanly in jwt mode
-  # via its coupled predicate (both-empty is legitimate). Set clientId
-  # to enable bootstrap; the chart will auto-generate the secret via
-  # the lookup+GitOps-safety pattern, or use clientSecret.existingSecret
-  # if operator-provided.
-  clientId: ""
-  clientSecret:
-    existingSecret: ""
-    existingSecretKey: secret
-  tenantId: default-tenant
-  userId: admin
-  roles: "ROLE_ADMIN,ROLE_M2M"
-
 # -- Arbitrary additional env vars. Each entry is {name, value} OR
 # {name, valueFrom}. Use this for OTel configuration, feature flags, etc.
-# DO NOT set CYODA_*_FILE or the four credential env vars via this knob —
+# DO NOT set CYODA_*_FILE or the credential env vars via this knob —
 # they are set by the chart and duplicates are rejected by Kubernetes.
 extraEnv: []
 
@@ -188,6 +172,21 @@ podLabels: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# -- Seconds Kubernetes waits after SIGTERM before it kills a cyoda pod.
+# A node first drains its scheduled runs. A run with a processor in flight
+# that is not declared idempotent is allowed to finish, which can take a
+# whole callout deadline. The worst case is
+#   max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10s, callout deadline) + 100s
+# where
+#   callout deadline = (1 + CYODA_RETRY_FIXED_NUM_RETRIES)
+#                        × CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS
+#                      + CYODA_DISPATCH_WAIT_TIMEOUT
+#                      + CYODA_CALLOUT_HANDOVER_ALLOWANCE
+# At the binary's defaults: max(30s, 4 × 60s + 5s + 30s) + 100s = 375s.
+# Raise this when you raise CYODA_SCHEDULER_SHUTDOWN_DRAIN, the tries, the
+# answer limit, the wait or the hand-over allowance. See `cyoda help run`.
+terminationGracePeriodSeconds: 390
 
 nameOverride: ""
 fullnameOverride: ""

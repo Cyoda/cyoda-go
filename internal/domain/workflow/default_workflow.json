@@ -1,5 +1,5 @@
 {
-  "version": "1.4",
+  "version": "1.5",
   "name": "default",
   "desc": "Default entity lifecycle workflow",
   "initialState": "NONE",

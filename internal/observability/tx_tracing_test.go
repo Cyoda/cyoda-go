@@ -6,9 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/observability"
+	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type fakeTxManager struct {
@@ -16,6 +19,21 @@ type fakeTxManager struct {
 	commitCalled   bool
 	rollbackCalled bool
 	rollbackErr    error
+	lostRaceTxID   string
+	lostRace       bool
+	lostRaceErr    error
+	ctTime         time.Time
+	ctErr          error
+	latest         time.Time
+	latestErr      error
+}
+
+func (f *fakeTxManager) LatestRecordedTime(ctx context.Context) (time.Time, error) {
+	return f.latest, f.latestErr
+}
+
+func (f *fakeTxManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
+	return f.ctTime, f.ctErr
 }
 
 func (f *fakeTxManager) Begin(ctx context.Context) (string, context.Context, error) {
@@ -44,6 +62,109 @@ func (f *fakeTxManager) RollbackToSavepoint(ctx context.Context, txID string, sa
 }
 func (f *fakeTxManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
 	return nil
+}
+func (f *fakeTxManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	f.lostRaceTxID = txID
+	return f.lostRace, f.lostRaceErr
+}
+
+// LostRace is answered by the wrapped manager, answer and error unchanged.
+func TestTracingTxManager_LostRaceDelegates(t *testing.T) {
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
+	defer shutdown(context.Background())
+
+	inner := &fakeTxManager{lostRace: true}
+	traced := observability.NewTracingTransactionManager(inner, observability.Meter())
+	lost, err := traced.LostRace(context.Background(), "tx-9")
+	if err != nil || !lost || inner.lostRaceTxID != "tx-9" {
+		t.Fatalf("LostRace = (%v, %v), inner asked about %q; want (true, nil) for tx-9", lost, err, inner.lostRaceTxID)
+	}
+
+	wantErr := errors.New("tenant mismatch")
+	inner = &fakeTxManager{lostRaceErr: wantErr}
+	traced = observability.NewTracingTransactionManager(inner, observability.Meter())
+	if _, err := traced.LostRace(context.Background(), "tx-9"); !errors.Is(err, wantErr) {
+		t.Fatalf("LostRace error = %v, want %v", err, wantErr)
+	}
+}
+
+// ConsistencyTime is answered by the wrapped manager, value and error unchanged.
+func TestTracing_ForwardsConsistencyTime(t *testing.T) {
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
+	defer shutdown(context.Background())
+
+	want := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	inner := &fakeTxManager{ctTime: want}
+	traced := observability.NewTracingTransactionManager(inner, observability.Meter())
+	got, err := traced.ConsistencyTime(context.Background())
+	if err != nil || !got.Equal(want) {
+		t.Fatalf("ConsistencyTime = (%v, %v), want (%v, nil)", got, err, want)
+	}
+
+	wantErr := errors.New("unavailable")
+	inner = &fakeTxManager{ctErr: wantErr}
+	traced = observability.NewTracingTransactionManager(inner, observability.Meter())
+	if _, err := traced.ConsistencyTime(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("ConsistencyTime error = %v, want %v", err, wantErr)
+	}
+}
+
+// LatestRecordedTime is answered by the wrapped manager, value and error unchanged.
+func TestTracing_ForwardsLatestRecordedTime(t *testing.T) {
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
+	defer shutdown(context.Background())
+
+	want := time.Date(2015, 3, 1, 9, 0, 0, 0, time.UTC)
+	traced := observability.NewTracingTransactionManager(&fakeTxManager{latest: want}, observability.Meter())
+	got, err := traced.LatestRecordedTime(context.Background())
+	if err != nil || !got.Equal(want) {
+		t.Fatalf("LatestRecordedTime = (%v, %v), want (%v, nil)", got, err, want)
+	}
+
+	wantErr := errors.New("store down")
+	traced = observability.NewTracingTransactionManager(&fakeTxManager{latestErr: wantErr}, observability.Meter())
+	if _, err := traced.LatestRecordedTime(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("LatestRecordedTime error = %v, want %v", err, wantErr)
+	}
+}
+
+// ConsistencyTime can wait up to 10 s for in-flight commits, so it has a span;
+// a failure is recorded on it.
+func TestTracing_ConsistencyTimeSpan(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prev)
+	})
+
+	inner := &fakeTxManager{ctTime: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
+	traced := observability.NewTracingTransactionManager(inner, sdkmetric.NewMeterProvider().Meter("test"))
+	if _, err := traced.ConsistencyTime(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	inner.ctErr = errors.New("unavailable")
+	if _, err := traced.ConsistencyTime(context.Background()); err == nil {
+		t.Fatal("want error")
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 2 {
+		t.Fatalf("spans = %d, want 2", len(spans))
+	}
+	for _, s := range spans {
+		if s.Name != "tx.consistency_time" {
+			t.Errorf("span name = %q, want tx.consistency_time", s.Name)
+		}
+	}
+	if len(spans[0].Events) != 0 {
+		t.Errorf("successful call recorded events: %v", spans[0].Events)
+	}
+	if len(spans[1].Events) != 1 || spans[1].Events[0].Name != "exception" {
+		t.Errorf("failed call events = %v, want one exception event", spans[1].Events)
+	}
 }
 
 func TestTracingTxManager_DelegatesToInner(t *testing.T) {

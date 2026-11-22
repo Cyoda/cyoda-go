@@ -99,11 +99,11 @@ func wrapRows(rows pgx.Rows, classify func(error) error) pgx.Rows {
 //
 // Two kinds of caller pin an inner querier this way.
 //
-// A private transaction pins its own pgx.Tx: ExtendSchema's self-wrap and
-// SaveResults' per-chunk transaction. Neither is the caller's, both are
-// private by construction, and the funnel is what keeps their errors — a
-// serialization abort on the write-claim, a reclaimed session — carrying
-// the same sentinels the ambient path gets from ctxQuerier.
+// A private transaction pins its own pgx.Tx: the model store's transactions
+// (a schema extension, Unlock) and SaveResults' per-chunk transaction. None
+// is the caller's, all are private by construction, and the funnel is what
+// keeps their errors — a reclaimed session, a torn socket — carrying the
+// same sentinels the ambient path gets from ctxQuerier.
 //
 // unjoinedQuerier pins the pool for the statements that must not join the
 // caller's transaction at all: every point-in-time read, and every

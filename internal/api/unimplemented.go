@@ -5,8 +5,8 @@ import (
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // Unimplemented satisfies genapi.ServerInterface with every method returning
@@ -16,6 +16,10 @@ type Unimplemented struct{}
 func (u *Unimplemented) stub(w http.ResponseWriter, r *http.Request) {
 	common.WriteError(w, r, common.Operational(http.StatusNotImplemented, common.ErrCodeNotImplemented, "not yet implemented"))
 }
+
+// joinParams is the name the methods below give a generated params struct whose
+// only field is the X-Tx-Token header: the join middleware consumed that header
+// before the generated router ran, so nothing here reads it. See server.go.
 
 func (u *Unimplemented) AccountGet(w http.ResponseWriter, r *http.Request) {
 	u.stub(w, r)
@@ -29,7 +33,11 @@ func (u *Unimplemented) SearchEntityAuditEvents(w http.ResponseWriter, r *http.R
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID) {
+func (u *Unimplemented) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID, joinParams genapi.GetStateMachineFinishedEventParams) {
+	u.stub(w, r)
+}
+
+func (u *Unimplemented) ListScheduledTasks(w http.ResponseWriter, r *http.Request, params genapi.ListScheduledTasksParams) {
 	u.stub(w, r)
 }
 
@@ -49,6 +57,22 @@ func (u *Unimplemented) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.
 	u.stub(w, r)
 }
 
+func (u *Unimplemented) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
+	u.stub(w, r)
+}
+
+func (u *Unimplemented) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
+	u.stub(w, r)
+}
+
+func (u *Unimplemented) GetPlatformCluster(w http.ResponseWriter, r *http.Request, params genapi.GetPlatformClusterParams) {
+	u.stub(w, r)
+}
+
+func (u *Unimplemented) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
+	u.stub(w, r)
+}
+
 func (u *Unimplemented) GetEntityStatistics(w http.ResponseWriter, r *http.Request, params genapi.GetEntityStatisticsParams) {
 	u.stub(w, r)
 }
@@ -65,7 +89,7 @@ func (u *Unimplemented) GetEntityStatisticsForModel(w http.ResponseWriter, r *ht
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID) {
+func (u *Unimplemented) DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, joinParams genapi.DeleteSingleEntityParams) {
 	u.stub(w, r)
 }
 
@@ -77,16 +101,10 @@ func (u *Unimplemented) GetEntityChangesMetadata(w http.ResponseWriter, r *http.
 	u.stub(w, r)
 }
 
-// GetEntityTransitions is never called — the real handler is mounted directly
-// on the outer mux in app/app.go before the generated API handler.
-// TODO(future-cleanup): consolidate transitions handler with the generated ServerInterface dispatch.
 func (u *Unimplemented) GetEntityTransitions(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetEntityTransitionsParams) {
 	u.stub(w, r)
 }
 
-// FetchEntityTransitions is never called — the real handler is mounted directly
-// on the outer mux in app/app.go before the generated API handler.
-// TODO(future-cleanup): consolidate transitions handler with the generated ServerInterface dispatch.
 func (u *Unimplemented) FetchEntityTransitions(w http.ResponseWriter, r *http.Request, params genapi.FetchEntityTransitionsParams) {
 	u.stub(w, r)
 }
@@ -135,11 +153,11 @@ func (u *Unimplemented) NewMessage(w http.ResponseWriter, r *http.Request, subje
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
+func (u *Unimplemented) DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, joinParams genapi.DeleteMessageParams) {
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID) {
+func (u *Unimplemented) GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, joinParams genapi.GetMessageParams) {
 	u.stub(w, r)
 }
 
@@ -191,7 +209,7 @@ func (u *Unimplemented) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) 
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params genapi.GetCurrentJwtKeyPairParams) {
+func (u *Unimplemented) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	u.stub(w, r)
 }
 
@@ -227,35 +245,7 @@ func (u *Unimplemented) ReactivateTrustedKey(w http.ResponseWriter, r *http.Requ
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) ListOidcProviders(w http.ResponseWriter, r *http.Request, params genapi.ListOidcProvidersParams) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) RegisterOidcProvider(w http.ResponseWriter, r *http.Request) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) ReloadOidcProviders(w http.ResponseWriter, r *http.Request) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) DeleteOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) UpdateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) InvalidateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) ReactivateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params genapi.GetTechnicalUserTokenParams) {
+func (u *Unimplemented) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, tenant string, params genapi.GetTechnicalUserTokenParams) {
 	u.stub(w, r)
 }
 
@@ -267,11 +257,11 @@ func (u *Unimplemented) GetAsyncSearchResults(w http.ResponseWriter, r *http.Req
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
+func (u *Unimplemented) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, joinParams genapi.CancelAsyncSearchParams) {
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
+func (u *Unimplemented) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, joinParams genapi.GetAsyncSearchStatusParams) {
 	u.stub(w, r)
 }
 
@@ -282,6 +272,6 @@ func (u *Unimplemented) SearchEntities(w http.ResponseWriter, r *http.Request, e
 // QueryGroupedEntityStatisticsForModel is never called via this path — the real
 // handler is mounted directly on the outer mux in app/app.go before the generated
 // API handler fires.
-func (u *Unimplemented) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
+func (u *Unimplemented) QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, joinParams genapi.QueryGroupedEntityStatisticsForModelParams) {
 	u.stub(w, r)
 }

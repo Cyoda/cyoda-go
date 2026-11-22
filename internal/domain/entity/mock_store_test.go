@@ -6,7 +6,7 @@ import (
 	"iter"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // failingStoreFactory is a mock that returns a failingEntityStore from EntityStore().
@@ -41,7 +41,8 @@ func (f *failingStoreFactory) ScheduledTaskStore(_ context.Context) (spi.Schedul
 func (f *failingStoreFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
 	return nil, f.err
 }
-func (f *failingStoreFactory) Close() error { return nil }
+func (f *failingStoreFactory) Close() error               { return nil }
+func (f *failingStoreFactory) Ping(context.Context) error { return nil }
 
 // failingEntityStore always returns the configured error from Get/GetAsAt.
 type failingEntityStore struct {
@@ -78,10 +79,10 @@ func (s *failingEntityStore) DeleteAll(_ context.Context, _ spi.ModelRef) error 
 func (s *failingEntityStore) Exists(_ context.Context, _ string) (bool, error) {
 	return false, s.err
 }
-func (s *failingEntityStore) Count(_ context.Context, _ spi.ModelRef) (int64, error) {
+func (s *failingEntityStore) Count(_ context.Context, _ spi.ModelRef, _ *time.Time) (int64, error) {
 	return 0, s.err
 }
-func (s *failingEntityStore) CountByState(_ context.Context, _ spi.ModelRef, _ []string) (map[string]int64, error) {
+func (s *failingEntityStore) CountByState(_ context.Context, _ spi.ModelRef, _ []string, _ *time.Time) (map[string]int64, error) {
 	return nil, s.err
 }
 func (s *failingEntityStore) GetPage(_ context.Context, _ spi.ModelRef, _, _ int, _ *time.Time) ([]*spi.Entity, error) {
@@ -157,7 +158,8 @@ func (f *modelGetErrFactory) ScheduledTaskStore(_ context.Context) (spi.Schedule
 func (f *modelGetErrFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
 	return nil, errUnusedEntity
 }
-func (f *modelGetErrFactory) Close() error { return nil }
+func (f *modelGetErrFactory) Close() error               { return nil }
+func (f *modelGetErrFactory) Ping(context.Context) error { return nil }
 
 // errUnusedEntity is a sentinel for store accessors the CreateEntity-path
 // tests never reach because the ModelStore.Get error short-circuits.

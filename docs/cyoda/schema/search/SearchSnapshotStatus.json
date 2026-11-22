@@ -23,12 +23,16 @@
     "expirationDate": {
       "type": "string",
       "format": "date-time",
-      "description": "Expiration date of the snapshot."
+      "description": "When the snapshot stops being readable: its finish time plus CYODA_SEARCH_SNAPSHOT_TTL. From then on a request for it is refused with SEARCH_JOB_NOT_FOUND. While the snapshot is RUNNING, a lower bound, its create time plus the TTL; final once it ends. cyoda-go sets it on the answers to SnapshotGetStatusRequest and SnapshotCancelRequest; the answer to the submit and an error for no snapshot leave it out."
     },
     "entitiesCount": {
       "type": "integer",
       "existingJavaType": "java.lang.Long",
       "description": "Number of entities collected."
+    },
+    "failureReason": {
+      "type": "string",
+      "description": "Why the snapshot failed. Present only when status is FAILED, and absent for every other status. For a failure the request itself caused, it is the same client error a direct search would answer, code first; for any other failure it names no internal detail: a server-side failure is SERVER_ERROR: internal error [ticket: <uuid>], its detail logged under the ticket, and a few known causes carry a fixed text."
     }
   },
   "required": [

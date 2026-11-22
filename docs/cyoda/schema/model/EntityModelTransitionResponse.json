@@ -3,9 +3,11 @@
   "$id": "https://cyoda.com/cloud/event/model/EntityModelTransitionResponse.json",
   "title": "EntityModelTransitionResponse",
   "type": "object",
-  "extends": {
-    "$ref": "../common/BaseEvent.json"
-  },
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
   "properties": {
     "modelId": {
       "type": "string",

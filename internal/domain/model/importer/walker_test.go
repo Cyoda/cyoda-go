@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 func TestWalkFlatObject(t *testing.T) {

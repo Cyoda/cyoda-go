@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // entityStore implements spi.EntityStore backed by PostgreSQL with
@@ -44,6 +44,52 @@ type entityStore struct {
 	// its own and issues no point-in-time read.
 	pool           *pgxpool.Pool
 	acquireTimeout time.Duration
+
+	// ownTx is true on a store this plugin already repointed at a
+	// transaction it opened for itself (CompareAndSave's txStore, or save's
+	// / Delete's own non-tx branch below) — never on the store a caller
+	// obtained from the factory. It exists because spi.GetTransaction(ctx)
+	// cannot see that transaction: that function reports only a transaction
+	// the CALLER opened through TransactionManager, so a raw pgx.Tx this
+	// plugin holds for its own purposes still reads as "no ambient
+	// transaction" to it. Without ownTx, save/Delete's non-tx branch would
+	// treat a store already inside such a transaction as needing one of its
+	// own and BeginTx a SECOND transaction on the same pool — exactly the
+	// self-deadlock CompareAndSave hit against its own row lock. Checking
+	// ownTx makes the guard structural: a nested call on an ownTx store
+	// falls through to the body instead of opening another transaction, no
+	// matter which call site reaches it, not just the ones a comment warns
+	// about today.
+	ownTx bool
+
+	// keys is the factory's tenant marker-key cache (tenantKeys). markerKey
+	// is this tenant's key, resolved from it before a non-transactional write
+	// opens its own transaction; inOwnTx sets it, with q and ownTx, on the
+	// copy that runs inside that transaction, and stampOwnCommitInstant takes
+	// it. Resolving it there, not in the stamp, keeps the key lookup out of
+	// the transaction and off a second connection taken while the transaction
+	// holds one.
+	keys      *tenantKeys
+	markerKey int32
+
+	// clock is the factory's business clock (StoreFactory.clock); nil in
+	// production. It supplies the placeholder dates (placeholderAtArg) and the
+	// stamp of a write with no SPI transaction (stampAtArg).
+	clock spi.Clock
+}
+
+// inOwnTx returns the copy of s that runs inside tx, a transaction this plugin
+// opened for itself: q repointed at tx, ownTx set, and markerKey — the
+// tenant's key, resolved before tx began — for the commit stamp. Every ownTx
+// copy is made here, so none can stamp without the key. A copy rather than s
+// itself, because saveOn, deleteOn and replaceClaims read q and ownTx from
+// their receiver (see saveOn's doc comment).
+func (s *entityStore) inOwnTx(tx pgx.Tx, markerKey int32) *entityStore {
+	c := *s
+	c.q = classifiedQuerier{inner: tx}
+	c.ownTx = true
+	c.markerKey = markerKey
+	return &c
 }
 
 // SaveAll delegates to Save per-entity via spi.DefaultSaveAll; each Save
@@ -53,31 +99,80 @@ func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
 
-// txTimeSource is the SQL expression a save reads its transaction-time stamp
-// from. The two values differ only for a transaction that waits mid-flight.
-type txTimeSource string
-
-const (
-	// stampAtTxStart is CURRENT_TIMESTAMP: the transaction's start time, one
-	// value for every entity saved under it. That is what gives the entities a
-	// caller writes in a single transaction a common valid_time.
-	stampAtTxStart txTimeSource = "CURRENT_TIMESTAMP"
-
-	// stampAtStatement is statement_timestamp(): the moment the stamping
-	// statement itself runs. CompareAndSave's own transaction uses it because
-	// that transaction fixes its start time BEFORE waiting on the row lock, so
-	// a caller that queued behind another writer would otherwise date its
-	// version earlier than the version it just read and superseded — and a
-	// point-in-time read would order the two backwards. That transaction saves
-	// one entity, so it has no common valid_time to hold together.
-	stampAtStatement txTimeSource = "statement_timestamp()"
-)
-
 func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
-	return s.save(ctx, entity, stampAtTxStart)
+	return s.save(ctx, entity)
 }
 
-func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom txTimeSource) (int64, error) {
+func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, error) {
+	// A non-transactional save issues several statements — the entities
+	// upsert, its doc update, the entity_versions insert, and the model-keys
+	// read and unique-claims delete-then-insert replaceClaims issues at the
+	// end of saveOn's body — that would otherwise auto-commit one at a time. Run them in one
+	// transaction of its own so a failure cannot leave the entities row
+	// updated without its version row (or a claim row without the write it
+	// belongs to), and so no reader observes the placeholder document the
+	// upsert writes before the real one lands. CompareAndSave has done this
+	// since it gained its row lock; this brings the plain path level with
+	// it.
+	//
+	// !s.ownTx, not just "no ambient spi transaction", guards this — see
+	// ownTx's doc comment on the struct for why spi.GetTransaction(ctx)
+	// alone cannot tell a store already inside a transaction THIS PLUGIN
+	// opened from one that needs to open its own.
+	if spi.GetTransaction(ctx) == nil && !s.ownTx {
+		markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
+		if err != nil {
+			return 0, fmt.Errorf("non-transactional save: %w", err)
+		}
+		acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
+		tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+		cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
+		if err != nil {
+			return 0, classifyAcquireErr(ctx, acquireCtx, "failed to begin non-transactional save", err)
+		}
+		// Rollback after a successful Commit is a no-op, so this covers every
+		// error return below without a second exit path.
+		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
+			return 0, fmt.Errorf("failed to set tenant for non-transactional save: %w", classifyError(err))
+		}
+
+		// A copy (inOwnTx) with q repointed at the transaction, ownTx and the
+		// marker key set: saveOn (and replaceClaims, which it calls) read s.q
+		// and s.ownTx on THIS receiver, not a parameter — see saveOn's doc
+		// comment. Setting ownTx here is what makes it safe for any future
+		// code path to call back into save/Save on this copy: the guard above
+		// will see s.ownTx == true and fall through to saveOn instead of
+		// trying to open a second transaction.
+		txStore := s.inOwnTx(tx, markerKey)
+		version, err := txStore.saveOn(ctx, entity)
+		if err != nil {
+			closeIfStampFailed(ctx, tx, err)
+			return 0, err
+		}
+		// classifyCommitOutcome, not classifyError: a torn socket on COMMIT
+		// leaves the outcome in doubt and must not read as retryable.
+		if err := tx.Commit(ctx); err != nil {
+			return 0, fmt.Errorf("failed to commit non-transactional save: %w", classifyCommitOutcome(err))
+		}
+		return version, nil
+	}
+	return s.saveOn(ctx, entity)
+}
+
+// saveOn is save's body. It always runs through s.q on its own receiver —
+// never a parameter — because by the time saveOn is called, s.q already IS
+// the right connection: the original store when a caller's transaction is
+// already ambient, or (via save's non-tx branch) a copy already repointed at
+// the transaction save opened for itself. A separate q parameter here would
+// carry no information s.q doesn't already have, while inviting exactly the
+// bug that motivated this function's transaction: a future caller passing a
+// q that quietly disagrees with s.q would split writes across two
+// connections again, the same partial-write shape this function exists to
+// prevent. (Contrast compareTxID, which takes q because its receiver is
+// deliberately NOT always repointed to match it.)
+func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, error) {
 	// Defensive copy — stores own their copies (Ownership Rule 4).
 	e := *entity
 	if entity.Data != nil {
@@ -96,55 +191,131 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 	// the committing transaction owns this field, so a caller-supplied value
 	// is not authoritative — honouring one would let a row claim it was
 	// committed by a transaction that did not commit it, and would make the
-	// in-transaction compare-and-save precondition depend on what the caller
-	// happened to stamp rather than on the transaction's own view.
+	// compare-and-save precondition depend on what the caller happened to
+	// stamp rather than on the store's own record. Outside a transaction the
+	// write is its own transaction and records no id: empty, the value
+	// CompareAndSave rests on a non-transactional write storing.
 	//
-	// KNOWN ASYMMETRY, pre-dating this stamp and wider than it: this
-	// function writes back into the CALLER's *spi.Entity — TenantID here,
-	// TransactionID below, then Version, ChangeType, CreationDate and
-	// LastModifiedDate further down — while memory and sqlite stamp only
-	// their own buffered copy. Nothing may rely on the write-back, precisely
-	// because it is not portable across backends; the stamped values reach a
-	// caller through a subsequent read, and the version through this
-	// function's return. Converging the three is a change to all six fields,
-	// not to this one.
+	// The stamp lands on saveOn's own copy (made above), as every other field
+	// this function sets does: nothing is written back to the caller's
+	// *spi.Entity. The stamped values reach a caller through a subsequent
+	// read, and the version through this function's return.
+	//
+	// The same value goes into the entity_versions.transaction_id COLUMN,
+	// which must carry ONLY a transaction that actually commits these rows:
+	// the commit phase finds its own rows by it
+	// (TransactionManager.stampCommitInstant).
+	ambientTxID := ""
 	if tx := spi.GetTransaction(ctx); tx != nil {
-		entity.Meta.TransactionID = tx.ID
+		ambientTxID = tx.ID
+	}
+	entity.Meta.TransactionID = ambientTxID
+
+	// dbNow is a PROVISIONAL stamp only. Every temporal column it feeds is
+	// corrected to the transaction's real instant immediately before that
+	// transaction commits — TransactionManager.Commit's stampCommitInstant for
+	// a caller's transaction, stampOwnCommitInstant below for a write that has
+	// none. Without a business clock it is CURRENT_TIMESTAMP, this
+	// transaction's START, which is precisely the value those stamps exist to
+	// replace; it is kept here because it must be non-null before the stamp
+	// lands, and because it ties every row a transaction writes to one
+	// valid_time in the interim exactly as it does afterwards. With a business
+	// clock it is that clock's reading at each save (placeholderAtArg), because
+	// a read inside the transaction sees it and must see platform time; the
+	// rows of one transaction then carry different provisional dates until the
+	// commit stamp, which finds them by transaction id, equalises them.
+	//
+	// clock_timestamp() is a deliberately different value: wall_clock_time is
+	// the physical moment of insertion by design, and no stamp ever rewrites it.
+	//
+	// The same statement finds this transaction's pending version of the
+	// entity, if it has one (saveTimesQuery), so finding it costs no round
+	// trip of its own.
+	var dbNow, wallClockTime time.Time
+	var pendingVersion *int64
+	var pending pendingVersionRow
+	if err := s.q.QueryRow(ctx, saveTimesQuery,
+		placeholderAtArg(s.clock), tid, eid, ambientTxID).Scan(&dbNow, &wallClockTime, &pendingVersion, &pending.prior); err != nil {
+		return 0, fmt.Errorf("failed to read save times and pending version: %w", err)
 	}
 
-	// Get DB timestamps first: stampFrom (see txTimeSource) for
-	// valid_time/transaction_time, clock_timestamp() (actual wall clock) for
-	// wall_clock_time.
-	var dbNow, wallClockTime time.Time
-	if err := s.q.QueryRow(ctx, `SELECT `+string(stampFrom)+`, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
-		return 0, fmt.Errorf("failed to get DB timestamps: %w", err)
+	// One version per entity per transaction: a transaction that already
+	// wrote this entity replaces its pending version instead of adding one.
+	if pendingVersion != nil {
+		pending.version = *pendingVersion
+		return s.replacePendingSave(ctx, entity, ambientTxID, pending, dbNow, wallClockTime)
 	}
 
 	// Atomically upsert the entities row, incrementing version in the database
 	// without a prior SELECT. The single-statement upsert keeps version
-	// allocation inside one tuple-level operation — under REPEATABLE READ,
-	// concurrent inserts of distinct entities never contend, and concurrent
-	// writers to the same (tenant_id, entity_id) serialise via row locks
-	// (the loser sees 40001, classifyError → spi.ErrConflict).
+	// allocation inside one tuple-level operation, and this statement is
+	// where this transaction TAKES the entities row lock (see the lock-order
+	// note below). Concurrent writers to the same (tenant_id, entity_id)
+	// serialise via that lock: under the ambient-transaction path
+	// (TransactionManager.Begin's REPEATABLE READ), the loser sees 40001,
+	// classifyError → spi.ErrConflict, the instant it tries to acquire the
+	// lock a concurrent writer already committed under. Under save's own
+	// non-tx branch (ReadCommitted, this statement's transaction), a
+	// concurrent writer instead BLOCKS on the lock and proceeds once it is
+	// released — it only fails if that wait forms a genuine deadlock (see
+	// below) or the pool's acquire deadline expires first; concurrent
+	// inserts of DISTINCT entities never contend under either isolation
+	// level.
+	//
+	// Lock order vs. deleteOn: this statement takes the entities row lock
+	// BEFORE the entity_versions INSERT below; deleteOn's point-lookup takes
+	// the SAME lock BEFORE its own entity_versions INSERT too. Both
+	// statements taking the same lock in the same order is what makes a
+	// concurrent non-transactional Save and Delete on the same entity simply
+	// serialize on it — the loser blocks (ReadCommitted; re-evaluates once
+	// granted) rather than racing on entity_versions_pkey or deadlocking. See
+	// TestNonTxSaveDeleteConcurrent_NoTornWrite,
+	// TestPostgres_DeleteConcurrent_NonTx_OneWinner and
+	// TestPostgres_DeleteConcurrent_TxJoined_OneWinner.
 	//
 	// We insert a placeholder doc first, then update it below once we know the
 	// version. The (xmax = 0) expression is true for newly inserted rows and
 	// false for updated rows, letting us distinguish CREATED vs UPDATED.
+	//
+	// The WHERE guard is the enforcement point for spi.ErrEntityModelMismatch:
+	// an entity's model reference is fixed at creation and never rewritten by
+	// a later Save (see EntityMeta.ModelRef's doc comment). ON CONFLICT no
+	// longer touches model_name/model_version at all, and the UPDATE half
+	// only fires when the conflicting row's model already matches the
+	// incoming one. A conflicting row whose model differs matches neither the
+	// INSERT (the row exists) nor the UPDATE (the WHERE fails), so the
+	// statement returns no rows — translated to the sentinel below.
+	// creation_date and last_modified are written explicitly from dbNow, the
+	// provisional value, on insert; the UPDATE half sets last_modified to it
+	// as well — and never creation_date — so an updated row's
+	// LastModifiedDate actually advances (Get/GetPage/Search project this
+	// column, entity_store.go) and the intermediate state before a later
+	// commit-phase stamp lands matches what migrations/000012's comment
+	// documents: "stale by up to the transaction's own lifetime", not "never
+	// updated at all". Without a business clock dbNow is the value the column
+	// defaults would give (CURRENT_TIMESTAMP); with one, the defaults would be
+	// the wrong clock.
 	var nextVersion int64
 	var isNew bool
 	err := s.q.QueryRow(ctx,
-		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		 VALUES ($1, $2, $3, $4, 1, false, 'null'::jsonb)
+		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+		 VALUES ($1, $2, $3, $4, 1, false, 'null'::jsonb, $5, $5)
 		 ON CONFLICT (tenant_id, entity_id) DO UPDATE SET
-		   model_name = EXCLUDED.model_name,
-		   model_version = EXCLUDED.model_version,
 		   version = entities.version + 1,
 		   deleted = false,
-		   doc = entities.doc
+		   doc = entities.doc,
+		   last_modified = $5
+		 WHERE entities.model_name = EXCLUDED.model_name
+		   AND entities.model_version = EXCLUDED.model_version
 		 RETURNING version, (xmax = 0)`,
 		tid, eid,
-		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion).Scan(&nextVersion, &isNew)
+		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, dbNow).Scan(&nextVersion, &isNew)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The upsert's WHERE guard refused: the stored entity belongs to
+			// a different model. An entity's model is fixed at creation.
+			return 0, fmt.Errorf("entity %s: %w", eid, spi.ErrEntityModelMismatch)
+		}
 		// Already classified: every statement this store issues goes through
 		// ctxQuerier, which is where classification lives. Re-classifying here
 		// would nest the wrapper a second time.
@@ -163,19 +334,18 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 		s.tm.recordWriteIfInTx(ctx, eid, nextVersion-1)
 	}
 
-	// Set metadata based on whether this is a new or updated entity.
-	if isNew {
-		entity.Meta.ChangeType = "CREATED"
-		entity.Meta.CreationDate = dbNow
-	} else {
-		if entity.Meta.ChangeType == "" || entity.Meta.ChangeType == "CREATED" {
-			entity.Meta.ChangeType = "UPDATED"
-		}
-	}
-	entity.Meta.LastModifiedDate = dbNow
+	// No pending version, so this write adds the transaction's version: the
+	// entity's first version exactly when the upsert inserted its row, since
+	// an entities row is never removed while it has versions. isNew reads
+	// that from the upsert itself, which matters outside a transaction: at
+	// READ COMMITTED a writer that lost an insert race updates a row its
+	// statement snapshot cannot see, so a lookup of earlier versions would
+	// find none and wrongly report CREATED. The dates are columns, not part
+	// of the document (entity_doc.go), so they are not set on the copy.
+	setSaveChangeType(entity, isNew)
 
 	// Marshal document with the now-known version.
-	doc, err := marshalEntityDoc(entity, dbNow, dbNow, wallClockTime, false)
+	doc, err := marshalEntityDoc(entity, false)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal entity doc: %w", err)
 	}
@@ -188,35 +358,261 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity, stampFrom tx
 		return 0, fmt.Errorf("failed to update entity doc: %w", err)
 	}
 
-	// Insert version row (explicit wall_clock_time to match _meta value).
+	// Insert version row. valid_time and transaction_time take dbNow, the
+	// provisional value, until the commit stamp replaces them.
+	//
+	// wall_clock_time records the physical moment of insertion, for debugging
+	// and analysis; nothing reads it. Under a test clock (spi.WithClock) it
+	// keeps physical time, so it differs from the business times.
+	//
+	// creation_date is sourced from the entities row's own creation_date via
+	// a sub-select on (tenant_id, entity_id) rather than dbNow: dbNow is THIS
+	// transaction's stamp, correct for a version-1 insert (the entities row
+	// was just given that exact value by the upsert above) but wrong for
+	// every later version of an updated entity, which must report the
+	// entity's ORIGINAL creation instant, not the instant of the update that
+	// produced this particular version. The entities row already exists and
+	// already holds the right value by the time this statement runs, whether
+	// this is version 1 (just inserted) or a later version (never touched by
+	// any UPDATE — see the entities upsert above, which never sets
+	// creation_date on conflict).
 	_, err = s.q.Exec(ctx,
-		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, doc)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, wall_clock_time, transaction_id, creation_date, doc)
+		 VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8,
+		         (SELECT creation_date FROM entities WHERE tenant_id = $1 AND entity_id = $2),
+		         $9)`,
 		tid, eid,
 		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion,
-		nextVersion, dbNow, wallClockTime, doc)
+		nextVersion, dbNow, wallClockTime, ambientTxID, doc)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert entity version: %w", err)
 	}
 
-	// Maintain unique-key claims atomically within this transaction.
-	// replaceClaims is a no-op when no keys are declared in context.
-	if err := s.replaceClaims(ctx, entity); err != nil {
+	if err := s.maintainClaims(ctx, entity); err != nil {
 		return 0, fmt.Errorf("failed to maintain unique claims: %w", err)
+	}
+
+	// Last statement before this write's own transaction commits — see
+	// stampOwnCommitInstant. A write made under a CALLER's transaction is
+	// stamped by TransactionManager.Commit instead, and must not be stamped
+	// here: its instant is not known until that caller commits.
+	if spi.GetTransaction(ctx) == nil {
+		if err := s.stampOwnCommitInstant(ctx, tid, eid, nextVersion, isNew); err != nil {
+			return 0, err
+		}
 	}
 
 	return nextVersion, nil
 }
 
+// setSaveChangeType sets the change type of a save's version: CREATED for the
+// entity's first version, UPDATED otherwise. A change type the caller left on
+// the entity is ignored: it is the store's, like the rest of the entity's
+// metadata. A delete records DELETED on its own path.
+func setSaveChangeType(entity *spi.Entity, first bool) {
+	if first {
+		entity.Meta.ChangeType = "CREATED"
+		return
+	}
+	entity.Meta.ChangeType = "UPDATED"
+}
+
+// pendingVersionRow is the version a caller's transaction has already written
+// of an entity and not yet committed.
+type pendingVersionRow struct {
+	// version is the pending version's number, which a write replacing it
+	// keeps.
+	version int64
+	// prior reports whether the entity has a version from before this
+	// transaction. A save that replaces the pending version is CREATED
+	// without one and UPDATED with one, whatever the transaction wrote in
+	// between: a delete followed by a save of an entity that existed is one
+	// UPDATED version, and so is a re-create of an entity an earlier
+	// transaction deleted.
+	prior bool
+}
+
+// saveTimesQuery is saveOn's first statement. It reads the provisional and
+// wall-clock times (see saveOn) and finds the version transaction $4 has
+// written of entity $3 and not yet committed: the entity_versions row at the
+// entity's current version, when that row carries $4. The pending version's
+// number is NULL when there is none. The last column reports whether the
+// entity has a version from before the transaction: a transaction writes at
+// most one version of an entity, always the newest, so every lower version
+// was written before it.
+//
+// The lookup is in SQL rather than recorded in Go, so it is never stale: a
+// ROLLBACK TO SAVEPOINT undoes the row writes that made or replaced a pending
+// version, and this query sees exactly what is left. txState's savepoint
+// snapshots hold the read and write sets and the record of written entities,
+// never the pending version.
+//
+// The guard that $4 is not empty is required: only a caller's transaction
+// has a pending version. A write outside a transaction passes the empty id,
+// which its own rows and every earlier non-transactional version store, and
+// must add a version.
+//
+// When there is a pending version, this transaction already holds the
+// entities row lock: the write that made the pending version took it, and a
+// ROLLBACK TO SAVEPOINT that released it would also have removed the pending
+// version. So no other writer can change the row between this read and the
+// write that follows.
+//
+// $1 business-clock reading or NULL, $2 tenant, $3 entity id, $4 the
+// caller's transaction id or the empty string.
+const saveTimesQuery = `WITH pending AS (
+	    SELECT e.version
+	      FROM entities e
+	      JOIN entity_versions v
+	        ON v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id AND v.version = e.version
+	     WHERE e.tenant_id = $2 AND e.entity_id = $3 AND $4 <> '' AND v.transaction_id = $4)
+	SELECT coalesce($1::pg_catalog.timestamptz,
+		CURRENT_TIMESTAMP), -- realtime: no test clock configured; production's business clock is the database clock, a test clock is passed as $1
+		clock_timestamp(), -- realtime: wall_clock_time is the physical insertion time, kept for analysis
+		(SELECT version FROM pending),
+		EXISTS (SELECT 1 FROM entity_versions p, pending
+		         WHERE p.tenant_id = $2 AND p.entity_id = $3 AND p.version < pending.version)`
+
+// replacePendingVersionRow writes a replacing write's version into the
+// pending version's entity_versions row, in place: every column the version
+// INSERT writes, except the key and creation_date, which the replaced row
+// already holds correctly (the entity's original creation instant). The dates
+// are the same provisional values the INSERT takes, and the commit stamp,
+// which finds the row by transaction_id, corrects them in the same way.
+func (s *entityStore) replacePendingVersionRow(ctx context.Context, tid, entityID string, mref spi.ModelRef, version int64, txID string, doc []byte, dbNow, wallClockTime time.Time) error {
+	if _, err := s.q.Exec(ctx,
+		`UPDATE entity_versions SET model_name = $1, model_version = $2, doc = $3,
+		        valid_time = $4, transaction_time = $4, wall_clock_time = $5
+		  WHERE tenant_id = $6 AND entity_id = $7 AND version = $8 AND transaction_id = $9`,
+		mref.EntityName, mref.ModelVersion, doc, dbNow, wallClockTime,
+		tid, entityID, version, txID); err != nil {
+		return fmt.Errorf("failed to replace pending version: %w", err)
+	}
+	return nil
+}
+
+// replacePendingSave is saveOn's body when the caller's transaction has
+// already written the entity: the save replaces that transaction's pending
+// version in place and keeps its number, so the transaction still records one
+// version of the entity. It runs only inside a caller's transaction, which
+// stamps the rows at commit (TransactionManager.stampCommitInstant).
+//
+// The write set needs no update: the write that made the pending version
+// recorded the entity, or, for an entity this transaction created, had no
+// committed version to record.
+func (s *entityStore) replacePendingSave(ctx context.Context, entity *spi.Entity, txID string, pending pendingVersionRow, dbNow, wallClockTime time.Time) (int64, error) {
+	tid := string(s.tenantID)
+	eid := entity.Meta.ID
+
+	entity.Meta.Version = pending.version
+	setSaveChangeType(entity, !pending.prior)
+
+	doc, err := marshalEntityDoc(entity, false)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal entity doc: %w", err)
+	}
+
+	// The model guard is the upsert's (see saveOn): an entity's model is
+	// fixed at creation, also within the transaction that created it. The
+	// row exists and this transaction holds its lock (saveTimesQuery), so a
+	// row the UPDATE does not match is a row of a different model.
+	tag, err := s.q.Exec(ctx,
+		`UPDATE entities SET deleted = false, doc = $1, last_modified = $2
+		  WHERE tenant_id = $3 AND entity_id = $4
+		    AND model_name = $5 AND model_version = $6`,
+		doc, dbNow, tid, eid,
+		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update entity: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return 0, fmt.Errorf("entity %s: %w", eid, spi.ErrEntityModelMismatch)
+	}
+
+	if err := s.replacePendingVersionRow(ctx, tid, eid, entity.Meta.ModelRef, pending.version,
+		txID, doc, dbNow, wallClockTime); err != nil {
+		return 0, err
+	}
+
+	if err := s.maintainClaims(ctx, entity); err != nil {
+		return 0, fmt.Errorf("failed to maintain unique claims: %w", err)
+	}
+	return pending.version, nil
+}
+
+// maintainClaims is a save's unique-key and model work. Outside a caller's
+// transaction the save is its own transaction and does it now
+// (replaceClaims). Inside one it only records the save — its model and the
+// bytes it was given — for the transaction's Commit, which checks the models
+// and computes the claims of its final entities (commitWrittenClaims); a save in
+// between claims nothing and checks no model. entity is saveOn's own copy, so
+// its bytes are handed over without another copy.
+func (s *entityStore) maintainClaims(ctx context.Context, entity *spi.Entity) error {
+	if spi.GetTransaction(ctx) == nil {
+		return s.replaceClaims(ctx, entity)
+	}
+	return s.tm.recordSave(ctx, entity.Meta.ID, entity.Meta.ModelRef, entity.Data)
+}
+
+// stampOwnCommitInstant dates a write that has no SPI transaction at the
+// instant its OWN transaction is about to commit.
+//
+// TransactionManager.Commit's commit-phase stamp is reachable only from a
+// caller's transaction. A non-transactional Save, Delete or CompareAndSave
+// opens its own transaction (save's and Delete's non-tx branches,
+// CompareAndSave's) with no SPI transaction and no transaction id, so it never
+// passes through there. Without this, such a row keeps its provisional date —
+// CURRENT_TIMESTAMP, its transaction's START — as its permanent recorded time,
+// which is the exact defect commit stamping exists to remove: the fix would be
+// correct for transactional writes and a no-op for every other one.
+//
+// The rows are addressed by primary key rather than by transaction_id, which
+// is empty here and identifies nothing: a non-transactional write knows
+// exactly which row it wrote.
+//
+// isNew, not `version = 1`, decides whether creation_date is restamped. It is
+// the upsert's own (xmax = 0), so an entity whose entities row already existed
+// keeps its original creation instant; a delete passes false, because a delete
+// never creates an entity and its tombstone must report when the entity was
+// CREATED.
+func (s *entityStore) stampOwnCommitInstant(ctx context.Context, tid, entityID string, version int64, isNew bool) error {
+	var instant time.Time
+	// cyoda_stamp takes this write's in-flight marker and a stamp above the
+	// floor (see stampCommitInstant). Nothing after this statement waits on a
+	// lock: the two UPDATEs below address by primary key rows this transaction
+	// already wrote and locks. s.markerKey was resolved before this
+	// transaction began (see the keys field). The arguments are typed for the
+	// reason given at stampCommitInstant's call; the second is NULL without a
+	// business clock (stampAtArg).
+	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1::pg_catalog.int4, $2::pg_catalog.int8)`,
+		s.markerKey, stampAtArg(s.clock)).Scan(&instant); err != nil {
+		return fmt.Errorf("failed to read commit instant: %w", classifyStampError(err))
+	}
+	if _, err := s.q.Exec(ctx,
+		`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,
+		        creation_date = CASE WHEN $5 THEN $1 ELSE creation_date END
+		  WHERE tenant_id = $2 AND entity_id = $3 AND version = $4`,
+		instant, tid, entityID, version, isNew); err != nil {
+		return fmt.Errorf("failed to stamp version row: %w", err)
+	}
+	if _, err := s.q.Exec(ctx,
+		`UPDATE entities SET last_modified = $1,
+		        creation_date = CASE WHEN $4 THEN $1 ELSE creation_date END
+		  WHERE tenant_id = $2 AND entity_id = $3`,
+		instant, tid, entityID, isNew); err != nil {
+		return fmt.Errorf("failed to stamp entity row: %w", err)
+	}
+	return nil
+}
+
 // CompareAndSave writes entity only if its stored transaction ID is still
 // expectedTxID. expectedTxID must not be empty: it is compared literally, and
 // the empty string is the transaction ID a missing or deleted entity reports
-// — but also the one a write taken outside a transaction stores verbatim when
-// the caller supplied none, so an empty expected ID cannot tell "no entity"
-// from "an entity written outside a transaction" and would overwrite the
-// latter. It is rejected as a caller error, before any read or write.
-// CompareAndSave therefore never creates an entity and never resurrects a
-// deleted one; Save does that.
+// — but also the one a write taken outside a transaction stores, so an empty
+// expected ID cannot tell "no entity" from "an entity written outside a
+// transaction" and would overwrite the latter. It is rejected as a caller
+// error, before any read or write. CompareAndSave therefore never creates an
+// entity and never resurrects a deleted one; Save does that.
 func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	if expectedTxID == "" {
 		return 0, fmt.Errorf("CompareAndSave: expectedTxID must not be empty")
@@ -243,6 +639,13 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// always there to lock: expectedTxID is non-empty, so an absent row's
 	// current ID ("") cannot match and the check has already conflicted.
 	//
+	// The tenant's marker key, which this write's commit stamp takes, is
+	// resolved first, before the transaction's connection is taken (see the
+	// keys field and tenantKeys).
+	markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("compare-and-save: %w", err)
+	}
 	// Same scoping rule as every other acquire in this plugin: the deadline
 	// bounds getting the connection and is cancelled the instant BeginTx
 	// returns, so the transaction handle — which outlives it — cannot inherit
@@ -273,8 +676,8 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
 	// The tenant the RLS policies read, as every other transaction this plugin
-	// opens sets it (TransactionManager.Begin, ExtendSchema's self-wrap, the
-	// async-search scan). set_config rather than SET LOCAL because
+	// opens sets it (TransactionManager.Begin, the model store's transactions,
+	// the async-search scan). set_config rather than SET LOCAL because
 	// PostgreSQL's SET takes no bound parameters.
 	if _, err := tx.Exec(ctx,
 		"SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
@@ -284,21 +687,33 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// The whole save runs on that transaction's connection rather than
 	// through s.q, which would resolve the pool and auto-commit each
 	// statement. classifiedQuerier is the plain funnel s.q applies outside a
-	// transaction, so the errors callers see are unchanged.
-	txStore := *s
-	txStore.q = classifiedQuerier{inner: tx}
+	// transaction, so the errors callers see are unchanged. ownTx marks the
+	// copy as already inside a transaction this plugin opened for itself —
+	// see ownTx's doc comment on the struct — so the call to save below is
+	// safe: its guard sees ownTx == true and falls straight through to
+	// saveOn instead of trying to BeginTx a second transaction on the same
+	// pool while this one still holds the row lock from compareTxID's FOR
+	// UPDATE, which is exactly the self-deadlock this store used to hit here.
+	txStore := s.inOwnTx(tx, markerKey)
 
 	if err := txStore.compareTxID(ctx, txStore.q, entity.Meta.ID, expectedTxID, true); err != nil {
 		return 0, err
 	}
-	// stampAtStatement, so the write is dated after the lock wait rather than
-	// at this transaction's start — see txTimeSource.
-	version, err := txStore.save(ctx, entity, stampAtStatement)
+	// saveOn stamps this write at the instant just before the Commit below,
+	// not at this transaction's start — which matters here more than
+	// anywhere: this transaction fixes its start time BEFORE waiting on
+	// compareTxID's row lock, so a caller that queued behind another writer
+	// would otherwise date its own version earlier than the version it just
+	// read and superseded, and a point-in-time read would order the two
+	// backwards. See stampOwnCommitInstant.
+	version, err := txStore.save(ctx, entity)
 	if err != nil {
+		closeIfStampFailed(ctx, tx, err)
 		return 0, err
 	}
+	// classifyCommitOutcome: see save's non-tx branch.
 	if err := tx.Commit(ctx); err != nil {
-		return 0, classifyError(fmt.Errorf("failed to commit compare-and-save: %w", err))
+		return 0, fmt.Errorf("failed to commit compare-and-save: %w", classifyCommitOutcome(err))
 	}
 	return version, nil
 }
@@ -349,16 +764,17 @@ func (s *entityStore) compareTxID(ctx context.Context, q Querier, entityID, expe
 
 func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
 	var doc []byte
+	var creationDate, lastModified time.Time
 	err := s.q.QueryRow(ctx,
-		`SELECT doc FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
-		string(s.tenantID), entityID).Scan(&doc)
+		`SELECT doc, creation_date, last_modified FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
+		string(s.tenantID), entityID).Scan(&doc, &creationDate, &lastModified)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get entity %s: %w", entityID, err)
 	}
-	entity, err := unmarshalEntityDoc(doc)
+	entity, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 	if err != nil {
 		return nil, err
 	}
@@ -370,22 +786,26 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 
 // GetAsAt is committed-only: it runs through committedQuerier (pool-pinned)
 // rather than s.q, so an ambient transaction's own uncommitted writes are
-// invisible to it — see committedQuerier's doc comment for why the query's
-// transaction_time guard cannot achieve that on its own.
+// invisible to it — see committedQuerier's doc comment.
 //
-// Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
+// The reported LastModifiedDate is transaction_time, not valid_time: per this
+// project's definitions lastUpdateTime is the submit instant (transaction_time)
+// — valid_time merely equals it for a normal change and is reserved for a
+// backdated write, not yet implemented. This is the same decision
+// search_base.go's PIT lateral makes (`ev.transaction_time AS last_modified`);
+// the two must agree; a caller cannot tell them apart from the reported dates.
 func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
 	var doc []byte
+	var creationDate, transactionTime time.Time
 	err := s.committedQuerier().QueryRow(ctx,
-		`SELECT doc FROM entity_versions
+		`SELECT doc, creation_date, transaction_time FROM entity_versions
 		 WHERE tenant_id = $1 AND entity_id = $2
 		   AND valid_time <= $3
-		   AND transaction_time <= CURRENT_TIMESTAMP
-		 ORDER BY valid_time DESC, transaction_time DESC
+		 ORDER BY valid_time DESC, transaction_time DESC, version DESC
 		 LIMIT 1`,
-		string(s.tenantID), entityID, asAt).Scan(&doc)
+		string(s.tenantID), entityID, asAt).Scan(&doc, &creationDate, &transactionTime)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found at %v: %w", entityID, asAt, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get entity %s as-at %v: %w", entityID, asAt, err)
@@ -406,20 +826,107 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		}
 	}
 
-	return unmarshalEntityDoc(doc)
+	return unmarshalEntityDoc(doc, creationDate, transactionTime)
 }
+
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
+	// Same reasoning as save's non-tx branch, including the ownTx guard —
+	// see save's and ownTx's doc comments. Delete issues its own version
+	// INSERT and entities UPDATE (and releaseClaims's DELETE) as separately
+	// auto-committed statements when there is no ambient transaction, so a
+	// failure between them can leave a tombstone version row recorded in
+	// history for a delete the entities table never actually applied. Run
+	// them in one transaction of its own, mirroring CompareAndSave's
+	// sequence exactly, the same way save does.
+	if spi.GetTransaction(ctx) == nil && !s.ownTx {
+		markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
+		if err != nil {
+			return fmt.Errorf("non-transactional delete: %w", err)
+		}
+		acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
+		tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+		cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
+		if err != nil {
+			return classifyAcquireErr(ctx, acquireCtx, "failed to begin non-transactional delete", err)
+		}
+		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
+			return fmt.Errorf("failed to set tenant for non-transactional delete: %w", classifyError(err))
+		}
+
+		// Same reason save needs a receiver copy — see save's non-tx branch.
+		txStore := s.inOwnTx(tx, markerKey)
+		if err := txStore.deleteOn(ctx, entityID); err != nil {
+			closeIfStampFailed(ctx, tx, err)
+			return err
+		}
+		// classifyCommitOutcome: see save's non-tx branch.
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("failed to commit non-transactional delete: %w", classifyCommitOutcome(err))
+		}
+		return nil
+	}
+	return s.deleteOn(ctx, entityID)
+}
+
+// deleteOn is Delete's body. It always runs through s.q on its own
+// receiver, never a parameter — see saveOn's doc comment for why.
+func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	tid := string(s.tenantID)
 
-	// Get current entity (doc + version) in a single point-lookup on the PK.
-	// Fetching both avoids a second round-trip for the version.
+	// Get current entity (doc + version + dates) in a single point-lookup on
+	// the PK. Fetching all four avoids a second round-trip.
+	//
+	// Lock order vs. saveOn: FOR UPDATE makes THIS statement take the entities
+	// row lock, before version is read and before the entity_versions INSERT
+	// below — the same order saveOn's upsert uses (see its lock-order note).
+	// Without the lock here, two concurrent deletes of the same entity could
+	// both read the same version and both compute the same next
+	// entity_versions row, racing each other into entity_versions_pkey
+	// (23505) — a genuine, retryable race that a bare read can never turn
+	// into anything else. See TestPostgres_DeleteConcurrent_NonTx_OneWinner
+	// and TestPostgres_DeleteConcurrent_TxJoined_OneWinner.
+	//
+	// With the lock taken here, a second writer instead waits on THIS
+	// statement: under the ambient-transaction path (REPEATABLE READ), the
+	// loser sees 40001 the instant it is granted a lock a concurrent writer
+	// already committed under, classified to spi.ErrConflict exactly as
+	// saveOn's upsert is; under save's/delete's own non-tx path (ReadCommitted),
+	// the loser instead blocks and, once granted, re-evaluates AND NOT deleted
+	// against the now-committed row — which the winner's delete already
+	// excludes, so it comes back spi.ErrNotFound. Either way it fails before
+	// ever reading a version, so it can never reach the entity_versions
+	// INSERT with a value the winner already claimed.
+	//
+	// The same lookup reports whether this transaction already wrote the
+	// entity's current version: one version per entity per transaction, as in
+	// saveOn, so a delete of such an entity turns that pending version into
+	// the tombstone, in place and under the same number, instead of adding
+	// one. The guard that $3 is not empty is required for the reason
+	// saveTimesQuery gives: only a caller's transaction has a pending
+	// version, and a write outside one passes the empty id that every
+	// non-transactional version stores. The row lock taken here is then the
+	// one the pending version's write already held.
+	ambientTxID := ""
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		ambientTxID = tx.ID
+	}
 	var doc []byte
 	var maxVersion int64
+	var creationDate, lastModified time.Time
+	var replacesPending bool
 	err := s.q.QueryRow(ctx,
-		`SELECT doc, version FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
-		tid, entityID).Scan(&doc, &maxVersion)
+		`SELECT e.doc, e.version, e.creation_date, e.last_modified,
+		        EXISTS (SELECT 1 FROM entity_versions v
+		                 WHERE v.tenant_id = e.tenant_id AND v.entity_id = e.entity_id
+		                   AND v.version = e.version AND $3 <> '' AND v.transaction_id = $3)
+		   FROM entities e
+		  WHERE e.tenant_id = $1 AND e.entity_id = $2 AND NOT e.deleted
+		    FOR UPDATE OF e`,
+		tid, entityID, ambientTxID).Scan(&doc, &maxVersion, &creationDate, &lastModified, &replacesPending)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
 		}
 		return fmt.Errorf("failed to get entity %s for delete: %w", entityID, err)
@@ -429,16 +936,24 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		s.tm.recordWriteIfInTx(ctx, entityID, maxVersion)
 	}
 
-	current, err := unmarshalEntityDoc(doc)
+	current, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal entity for delete: %w", err)
 	}
 
 	nextVersion := maxVersion + 1
+	if replacesPending {
+		nextVersion = maxVersion
+	}
 
-	// Get DB timestamp.
+	// Provisional stamp, corrected to this write's real instant before its
+	// transaction commits — exactly as in saveOn, whose comment on the same
+	// statement carries the reasoning.
 	var dbNow, wallClockTime time.Time
-	if err := s.q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
+	if err := s.q.QueryRow(ctx, `SELECT coalesce($1::pg_catalog.timestamptz,
+		CURRENT_TIMESTAMP), -- realtime: no test clock configured; production's business clock is the database clock, a test clock is passed as $1
+		clock_timestamp() -- realtime: wall_clock_time is the physical insertion time, kept for analysis`,
+		placeholderAtArg(s.clock)).Scan(&dbNow, &wallClockTime); err != nil {
 		return fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
 
@@ -458,48 +973,96 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	current.Meta.ChangeUser = attributed.ID
 	current.Meta.ChangeUserKind = attributed.Kind
 	current.Meta.ChangeExecutor = executor
-	current.Meta.LastModifiedDate = dbNow
+	// current.Meta.LastModifiedDate is deliberately left as read from the
+	// pre-delete row: marshalEntityDoc no longer serializes it (the column is
+	// the source of truth), so stamping it here would be dead Go state with no
+	// observable effect. The real last_modified column is stamped at this
+	// write's commit — stampOwnCommitInstant below, or
+	// TransactionManager.Commit's stamp inside a caller's transaction.
 	// TransactionID: same rationale as attribution above — the tombstone
 	// must record the DELETING transaction's own ID, not carry over the
 	// PRIOR write's (`current` was unmarshaled from the pre-delete doc, so
 	// its TransactionID is stale unless overwritten here). Empty for a
 	// non-transactional delete, matching Save's non-tx convention and
 	// memory's tombstone semantics — GetVersionByTransaction's empty-txID
-	// pre-query rejection means an empty stamp here can never accidentally
-	// match a caller-supplied txID.
-	if tx := spi.GetTransaction(ctx); tx != nil {
-		current.Meta.TransactionID = tx.ID
-	} else {
-		current.Meta.TransactionID = ""
-	}
+	// pre-query rejection means an empty stamp here never matches.
+	//
+	// ambientTxID carries the same value into the entity_versions
+	// transaction_id COLUMN, which the commit phase finds its own rows by —
+	// see saveOn's note on why only a transaction that actually commits these
+	// rows may appear there.
+	current.Meta.TransactionID = ambientTxID
 
-	deleteDoc, err := marshalEntityDoc(current, dbNow, dbNow, wallClockTime, true)
+	deleteDoc, err := marshalEntityDoc(current, true)
 	if err != nil {
 		return fmt.Errorf("failed to marshal delete doc: %w", err)
 	}
 
-	// Insert delete version.
-	_, err = s.q.Exec(ctx,
-		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, doc)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		tid, entityID,
-		current.Meta.ModelRef.EntityName, current.Meta.ModelRef.ModelVersion,
-		nextVersion, dbNow, wallClockTime, deleteDoc)
-	if err != nil {
-		return fmt.Errorf("failed to insert delete version: %w", err)
+	if replacesPending {
+		if err := s.replacePendingVersionRow(ctx, tid, entityID, current.Meta.ModelRef, nextVersion,
+			ambientTxID, deleteDoc, dbNow, wallClockTime); err != nil {
+			return err
+		}
+	} else {
+		// Insert delete version. The entities row lock is already held — taken
+		// by the point-lookup above, before version was read — so this
+		// INSERT's version number cannot collide with a concurrent delete's:
+		// any other writer of this row is still waiting on that earlier
+		// statement.
+		//
+		// creation_date is sourced from the entities row's own creation_date
+		// via a sub-select, exactly as saveOn's version insert does — see that
+		// statement's comment. The tombstone must report when the entity was
+		// CREATED, not when it was deleted.
+		_, err = s.q.Exec(ctx,
+			`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, wall_clock_time, transaction_id, creation_date, doc)
+			 VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8,
+			         (SELECT creation_date FROM entities WHERE tenant_id = $1 AND entity_id = $2),
+			         $9)`,
+			tid, entityID,
+			current.Meta.ModelRef.EntityName, current.Meta.ModelRef.ModelVersion,
+			nextVersion, dbNow, wallClockTime, ambientTxID, deleteDoc)
+		if err != nil {
+			return fmt.Errorf("failed to insert delete version: %w", err)
+		}
 	}
 
-	// Update entities table to mark deleted.
+	// Update entities table to mark deleted — the row lock this statement
+	// would otherwise take is already held (the point-lookup above).
+	// last_modified is set to dbNow — the same provisional value the row
+	// already uses — for the same reason the saveOn upsert's ON CONFLICT DO
+	// UPDATE now does: a delete without it would leave LastModifiedDate
+	// frozen at the entity's creation forever, not merely stale by the
+	// transaction's own lifetime.
 	_, err = s.q.Exec(ctx,
-		`UPDATE entities SET version = $1, deleted = true, doc = $2 WHERE tenant_id = $3 AND entity_id = $4`,
-		nextVersion, deleteDoc, tid, entityID)
+		`UPDATE entities SET version = $1, deleted = true, doc = $2, last_modified = $5 WHERE tenant_id = $3 AND entity_id = $4`,
+		nextVersion, deleteDoc, tid, entityID, dbNow)
 	if err != nil {
 		return fmt.Errorf("failed to mark entity deleted: %w", err)
 	}
 
-	// Release unique-key claims so the freed values can be re-claimed immediately.
-	if err := s.releaseClaims(ctx, entityID); err != nil {
-		return fmt.Errorf("failed to release unique claims: %w", err)
+	// Outside a caller's transaction, release the entity's unique-key claims
+	// in this delete's own transaction. Inside one, record the delete: the
+	// transaction's Commit releases the claims of every entity it wrote
+	// (TransactionManager.commitWrittenClaims). Released here, an uncommitted
+	// delete would make another transaction's commit of the value wait for
+	// this one, where the value is still held by a committed entity.
+	if spi.GetTransaction(ctx) == nil {
+		if err := releaseClaims(ctx, s.q, s.tenantID, []string{entityID}); err != nil {
+			return err
+		}
+	} else if err := s.tm.recordDelete(ctx, entityID); err != nil {
+		return err
+	}
+
+	// Last statement before this delete's own transaction commits — see
+	// stampOwnCommitInstant. isNew is false: a delete never creates an
+	// entity, so neither the entity's nor the tombstone's creation_date may
+	// move.
+	if spi.GetTransaction(ctx) == nil {
+		if err := s.stampOwnCommitInstant(ctx, tid, entityID, nextVersion, false); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -529,22 +1092,17 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 		return fmt.Errorf("row iteration error: %w", err)
 	}
 
+	// Each Delete releases its entity's claims: at once outside a caller's
+	// transaction, at the transaction's commit inside one. There is no
+	// model-wide release: a claim row exists only for an entity whose write
+	// committed it, and a model-wide DELETE would also drop the claims of an
+	// entity saved after the query above, or, inside a transaction, of an
+	// entity a rolled-back savepoint restored.
 	for _, id := range ids {
 		if err := s.Delete(ctx, id); err != nil {
 			return fmt.Errorf("failed to delete entity %s: %w", id, err)
 		}
 	}
-
-	// Belt-and-suspenders: bulk-delete any remaining claim rows for the model.
-	// Individual Delete calls already invoke releaseClaims; this catches any
-	// orphaned rows (e.g. from a previous partial run) and ensures a clean slate.
-	if _, err := s.q.Exec(ctx,
-		`DELETE FROM unique_claims WHERE tenant_id=$1 AND model_name=$2 AND model_version=$3`,
-		tid, modelRef.EntityName, modelRef.ModelVersion,
-	); err != nil {
-		return fmt.Errorf("failed to bulk-release unique claims for model: %w", err)
-	}
-
 	return nil
 }
 
@@ -561,7 +1119,17 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 }
 
 // Deliberately not tracked in readSet: aggregate with no per-row identity. See spec §Known limitation (phantom reads).
-func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
+func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
+	if asAt != nil {
+		// Committed-only, like every instant read: off the ambient transaction.
+		var count int64
+		base, args := s.searchBaseQuery(modelRef.EntityName, modelRef.ModelVersion, asAt)
+		err := s.committedQuerier().QueryRow(ctx, `SELECT count(*) FROM (`+base+`) pit`, args...).Scan(&count)
+		if err != nil {
+			return 0, fmt.Errorf("failed to count entities as at: %w", err)
+		}
+		return count, nil
+	}
 	var count int64
 	err := s.q.QueryRow(ctx,
 		`SELECT count(*) FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`,
@@ -581,27 +1149,44 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 //
 // Deliberately not tracked in readSet: aggregate with no per-row identity. See
 // Count's note on phantom reads.
-func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
+func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
 	}
 
-	args := []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
 	// Entities with no $._meta.state are bucketed under "" rather than dropped,
 	// preserving them for diagnostic visibility. This matches the in-tx Go path
 	// which reads e.Meta.State (also "" if unset).
-	q := `SELECT COALESCE(doc -> '_meta' ->> 'state', '') AS state, COUNT(*)
-	      FROM entities
+	const selectState = `SELECT COALESCE(doc -> '_meta' ->> 'state', '') AS state, COUNT(*) `
+	var (
+		q         string
+		args      []any
+		qr        Querier
+		stateJoin string // how the state filter attaches to the query
+	)
+	if asAt != nil {
+		// At an instant: the version as of asAt per entity, committed-only
+		// (off the ambient transaction), like every instant read.
+		var base string
+		base, args = s.searchBaseQuery(modelRef.EntityName, modelRef.ModelVersion, asAt)
+		q = selectState + `FROM (` + base + `) pit`
+		qr = s.committedQuerier()
+		stateJoin = ` WHERE `
+	} else {
+		args = []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
+		q = selectState + `FROM entities
 	      WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`
-
+		qr = s.q
+		stateJoin = ` AND `
+	}
 	if states != nil {
 		// pgx encodes []string as text[] for the ANY() comparison; no manual casting needed.
 		args = append(args, states)
-		q += ` AND doc -> '_meta' ->> 'state' = ANY($4)`
+		q += stateJoin + fmt.Sprintf(`COALESCE(doc -> '_meta' ->> 'state', '') = ANY($%d)`, len(args))
 	}
 	q += ` GROUP BY state`
 
-	rows, err := s.q.Query(ctx, q, args...)
+	rows, err := qr.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count entities by state: %w", err)
 	}
@@ -676,7 +1261,7 @@ func (s *entityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit,
 // that impossible: any edit here moves the test with it.
 //
 // $1 tenant, $2 model name, $3 model version, $4 limit, $5 offset.
-const getPageCurrentQuery = `SELECT doc FROM entities
+const getPageCurrentQuery = `SELECT doc, creation_date, last_modified FROM entities
 	 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted
 	 ORDER BY entity_id COLLATE "C"
 	 LIMIT $4 OFFSET $5`
@@ -746,28 +1331,36 @@ func (s *entityStore) getPageAsAt(ctx context.Context, modelRef spi.ModelRef, li
 // index usage must plan the query that actually runs, not a copy of it.
 //
 // $1 tenant, $2 entity id, $3 transaction id.
-const getVersionByTransactionQuery = `SELECT doc, version, valid_time FROM entity_versions
-	 WHERE tenant_id = $1 AND entity_id = $2
-	   AND doc->'_meta'->>'transaction_id' = $3
-	   AND (doc->'_meta'->>'deleted')::boolean IS NOT TRUE
-	 ORDER BY version ASC
-	 LIMIT 1`
+const getVersionByTransactionQuery = `SELECT doc, version, valid_time, transaction_time, creation_date FROM entity_versions
+	 WHERE tenant_id = $1 AND transaction_id = $3 AND entity_id = $2
+	   AND (doc->'_meta'->>'deleted')::boolean IS NOT TRUE`
 
-// GetVersionByTransaction returns the earliest (lowest-Version) version of
-// entityID written by transaction txID. DELETED tombstones never match —
-// see spi.EntityStore.GetVersionByTransaction's doc comment — and an empty
-// txID never matches, even a stored-empty one from a non-transactional
-// write, so it is rejected pre-query rather than reaching SQL at all.
+// GetVersionByTransaction returns the version of entityID that transaction
+// txID wrote — a transaction writes at most one version of an entity — once
+// txID has committed. DELETED tombstones never match — see
+// spi.EntityStore.GetVersionByTransaction's doc comment — and an empty txID
+// never matches, even a stored-empty one from a non-transactional write, so
+// it is rejected pre-query rather than reaching SQL at all.
 //
-// The deleted predicate reuses scanEntitiesFilterDeleted's exact _meta
-// probe (doc->'_meta'->>'deleted'), restated in SQL rather than a second,
+// The read is committed-only, like every history read (GetAsAt,
+// GetVersionMetadata): it runs through committedQuerier, so a caller inside
+// a transaction — txID itself included — never sees txID's pending version.
+//
+// The deleted predicate is the same (doc->'_meta'->>'deleted') probe used by
+// the PIT base query's outer filter (search_base.go) and by GetAsAt's
+// post-query check below, restated in SQL rather than a second,
 // possibly-diverging convention.
 //
-// tenant_id/entity_id scope the scan to entity_versions' own PRIMARY KEY
-// partition (tenant_id, entity_id, version) rather than a full table scan
-// — asserted by entity_page_plan_test.go via EXPLAIN over
-// getVersionByTransactionQuery itself. Deliberately not tracked in readSet:
-// historical reads target immutable versions, matching GetAsAt.
+// The lookup is on the transaction_id column, the one the commit phase finds
+// a transaction's rows by: every version row carries the same id there as in
+// its document — the transaction that wrote it, or the empty id of a write
+// outside a transaction — so the column answers exactly as the document
+// would, through idx_ev_transaction (tenant_id, transaction_id, entity_id,
+// version) rather than a scan of the entity's history — asserted by
+// entity_page_plan_test.go via EXPLAIN over getVersionByTransactionQuery
+// itself. A transaction writes one version of an entity, so at most one row
+// matches. Deliberately not tracked in readSet: historical reads target
+// immutable versions, matching GetAsAt.
 func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txID string) (*spi.EntityVersion, error) {
 	if txID == "" {
 		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
@@ -775,17 +1368,17 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 
 	var doc []byte
 	var version int64
-	var validTime time.Time
-	err := s.q.QueryRow(ctx, getVersionByTransactionQuery,
-		string(s.tenantID), entityID, txID).Scan(&doc, &version, &validTime)
+	var validTime, transactionTime, creationDate time.Time
+	err := s.committedQuerier().QueryRow(ctx, getVersionByTransactionQuery,
+		string(s.tenantID), entityID, txID).Scan(&doc, &version, &validTime, &transactionTime, &creationDate)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("GetVersionByTransaction: %w", err)
 	}
 
-	return unmarshalEntityVersion(doc, version, validTime)
+	return unmarshalEntityVersion(doc, version, validTime, transactionTime, creationDate)
 }
 
 // GetVersionMetadata returns entityID's version metadata — no entity
@@ -797,6 +1390,10 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 // spi.EntityStore.GetVersionMetadata's doc comment: this method surfaces
 // audit metadata only.
 //
+// The listing is committed-only, like every history read: both statements run
+// through committedQuerier, so an ambient transaction's own uncommitted
+// versions are not listed.
+//
 // Existence is checked BEFORE the window filter is applied: an entity with
 // a non-empty version history whose versions all fall outside
 // [opts.From, opts.Until] returns an empty slice, not ErrNotFound.
@@ -806,7 +1403,7 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 	tid := string(s.tenantID)
 
 	var exists bool
-	if err := s.q.QueryRow(ctx,
+	if err := s.committedQuerier().QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM entity_versions WHERE tenant_id = $1 AND entity_id = $2)`,
 		tid, entityID).Scan(&exists); err != nil {
 		return nil, fmt.Errorf("GetVersionMetadata: existence check: %w", err)
@@ -831,7 +1428,7 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 		query += fmt.Sprintf(" LIMIT $%d", len(args))
 	}
 
-	rows, err := s.q.Query(ctx, query, args...)
+	rows, err := s.committedQuerier().Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("GetVersionMetadata: query: %w", err)
 	}
@@ -866,54 +1463,22 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 	return result, nil
 }
 
-// scanEntities reads all Entity rows from a result set.
+// scanEntities reads all Entity rows from a result set. The projection is
+// exactly `doc, creation_date, last_modified`, in that order — the same
+// three-column shape searchBaseQuery's two branches and postgresIter.Next
+// share (search_base.go). Reordering the SELECT list here without updating
+// those breaks the scan silently: pgx.Rows.Scan has no column-name
+// cross-check, so a swapped creation_date/last_modified would compile and
+// misreport dates rather than fail.
 func scanEntities(rows pgx.Rows) ([]*spi.Entity, error) {
 	var result []*spi.Entity
 	for rows.Next() {
 		var doc []byte
-		if err := rows.Scan(&doc); err != nil {
+		var creationDate, lastModified time.Time
+		if err := rows.Scan(&doc, &creationDate, &lastModified); err != nil {
 			return nil, fmt.Errorf("failed to scan entity row: %w", err)
 		}
-		ent, err := unmarshalEntityDoc(doc)
-		if err != nil {
-			return nil, fmt.Errorf("failed to unmarshal entity: %w", err)
-		}
-		result = append(result, ent)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("row iteration error: %w", err)
-	}
-	if result == nil {
-		result = []*spi.Entity{}
-	}
-	return result, nil
-}
-
-// scanEntitiesFilterDeleted reads Entity rows and filters out deleted ones.
-func scanEntitiesFilterDeleted(rows pgx.Rows) ([]*spi.Entity, error) {
-	var result []*spi.Entity
-	for rows.Next() {
-		var doc []byte
-		if err := rows.Scan(&doc); err != nil {
-			return nil, fmt.Errorf("failed to scan entity row: %w", err)
-		}
-
-		// Check deleted flag in _meta.
-		var docMap map[string]json.RawMessage
-		if err := json.Unmarshal(doc, &docMap); err != nil {
-			return nil, fmt.Errorf("failed to parse entity doc: %w", err)
-		}
-		if metaRaw, ok := docMap["_meta"]; ok {
-			var meta entityMeta
-			if err := json.Unmarshal(metaRaw, &meta); err != nil {
-				return nil, fmt.Errorf("failed to parse _meta: %w", err)
-			}
-			if meta.Deleted {
-				continue
-			}
-		}
-
-		ent, err := unmarshalEntityDoc(doc)
+		ent, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal entity: %w", err)
 		}

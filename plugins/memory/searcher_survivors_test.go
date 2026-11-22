@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Returned entities are copies: mutating a result must not change what the
 // store returns next. Covers all three branches (non-tx, in-tx PIT, in-tx RYW).
 func TestSearch_ResultsDoNotAliasStore(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-srch"), spi.ModelRef{EntityName: "m-alias", ModelVersion: "1"})
 	ctx := tenantCtx("tenant-srch")
 	ref := spi.ModelRef{EntityName: "m-alias", ModelVersion: "1"}
 	store, _ := f.EntityStore(ctx)

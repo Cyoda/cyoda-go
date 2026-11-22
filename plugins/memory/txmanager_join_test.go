@@ -6,12 +6,13 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 func TestJoinActiveTransaction(t *testing.T) {
-	_, tm := newTxManager(t)
+	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -36,6 +37,7 @@ func TestJoinActiveTransaction(t *testing.T) {
 		Meta: spi.EntityMeta{
 			ID:         "e-join",
 			TenantID:   "tenant-A",
+			ModelRef:   txTestModel,
 			ChangeType: "CREATED",
 		},
 		Data: []byte(`{"joined":true}`),
@@ -145,6 +147,7 @@ func TestJoinTenantMismatch(t *testing.T) {
 func TestJoinConcurrentOperationAndCommit(t *testing.T) {
 	factory, tm := newTxManager(t)
 	ctx := ctxWithTenant("tenant-A")
+	lockModels(t, factory, ctx, txTestModel)
 
 	txID, _, err := tm.Begin(ctx)
 	if err != nil {
@@ -166,21 +169,25 @@ func TestJoinConcurrentOperationAndCommit(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		// Acquire read lock to simulate an in-flight operation.
-		tx.OpMu.RLock()
-		close(operationStarted)
-		// Hold the lock for 100ms to simulate work.
-		time.Sleep(100 * time.Millisecond)
-		// Write entity while holding the lock.
-		tx.Buffer["e-concurrent"] = &spi.Entity{
-			Meta: spi.EntityMeta{
-				ID:         "e-concurrent",
-				TenantID:   "tenant-A",
-				ChangeType: "CREATED",
-			},
-			Data: []byte(`{"concurrent":true}`),
-		}
-		tx.WriteSet["e-concurrent"] = true
-		tx.OpMu.RUnlock()
+		func() {
+			tx.OpMu.RLock()
+			defer tx.OpMu.RUnlock()
+
+			close(operationStarted)
+			// Hold the lock for 100ms to simulate work.
+			time.Sleep(100 * time.Millisecond)
+			// Write entity while holding the lock.
+			tx.Buffer["e-concurrent"] = &spi.Entity{
+				Meta: spi.EntityMeta{
+					ID:         "e-concurrent",
+					TenantID:   "tenant-A",
+					ModelRef:   txTestModel,
+					ChangeType: "CREATED",
+				},
+				Data: []byte(`{"concurrent":true}`),
+			}
+			tx.WriteSet["e-concurrent"] = true
+		}()
 		close(operationDone)
 	}()
 

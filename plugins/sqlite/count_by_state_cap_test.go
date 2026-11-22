@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // Regression tests for the CountByState state-filter cap.
@@ -37,7 +37,7 @@ func TestCountByState_RejectsTooManyStates(t *testing.T) {
 		states[i] = fmt.Sprintf("STATE_%d", i)
 	}
 
-	_, err = store.CountByState(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, states)
+	_, err = store.CountByState(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, states, nil)
 	if err == nil {
 		t.Fatalf("CountByState with %d states: expected error, got nil", len(states))
 	}
@@ -60,7 +60,7 @@ func TestCountByState_AcceptsAtCap(t *testing.T) {
 		states[i] = fmt.Sprintf("STATE_%d", i)
 	}
 
-	_, err = store.CountByState(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, states)
+	_, err = store.CountByState(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, states, nil)
 	if err != nil {
 		t.Fatalf("CountByState with %d states (at cap): got err %v; expected success", len(states), err)
 	}

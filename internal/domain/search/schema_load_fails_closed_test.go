@@ -8,12 +8,14 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // A search validates its condition's field paths against the model's schema.
@@ -34,9 +36,7 @@ import (
 // fails. That is the split this test needs: the request gets far enough to
 // reach path validation, and path validation is what breaks.
 //
-// It deliberately implements neither RefreshAndGet nor SchemaNode, so
-// loadFieldsMap takes its Get + Unmarshal route and the single-refresh retry
-// is not in play.
+// Its SchemaNode and its refresh both parse that same blob.
 type brokenSchemaModelStore struct {
 	ref    spi.ModelRef
 	schema []byte
@@ -48,6 +48,17 @@ func (s *brokenSchemaModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelD
 		State:  spi.ModelLocked,
 		Schema: s.schema,
 	}, nil
+}
+
+func (s *brokenSchemaModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	return s.RefreshSchemaNode(ctx, ref)
+}
+
+func (s *brokenSchemaModelStore) RefreshSchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error) {
+	if len(s.schema) == 0 {
+		return nil, nil
+	}
+	return schema.Unmarshal(s.schema)
 }
 
 func (s *brokenSchemaModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
@@ -80,6 +91,7 @@ func TestSearch_SchemaLoadFails_FailsClosedInsteadOfAnswering(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	factory := &modelStoreFactory{
@@ -87,7 +99,7 @@ func TestSearch_SchemaLoadFails_FailsClosedInsteadOfAnswering(t *testing.T) {
 		modelStore:   &brokenSchemaModelStore{ref: ref, schema: []byte(`{"this is": not valid json`)},
 	}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -108,8 +120,8 @@ func TestSearch_SchemaLoadFails_FailsClosedInsteadOfAnswering(t *testing.T) {
 		t.Errorf("appErr.Status = %d, want 5xx: an unloadable schema is a dependency "+
 			"failure, not client fault", appErr.Status)
 	}
-	// Pin WHICH guard refused. validateConditionTypes loads the same schema
-	// immediately afterwards and now also fails closed, so a test asserting
+	// Pin WHICH guard refused. the type check of ValidateConditionForModel loads
+	// the same schema immediately afterwards and now also fails closed, so a test asserting
 	// only "some error" passes with the path-validation guard reverted — it
 	// would be satisfied by the downstream one and the primary fix would be
 	// unprotected. These two messages are the only thing that tells them
@@ -137,6 +149,7 @@ func TestSearch_ModelCarriesNoSchema_RejectsTheDataPath(t *testing.T) {
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	factory := &modelStoreFactory{
@@ -144,7 +157,7 @@ func TestSearch_ModelCarriesNoSchema_RejectsTheDataPath(t *testing.T) {
 		modelStore:   &brokenSchemaModelStore{ref: ref, schema: nil},
 	}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -181,6 +194,14 @@ func (s *switchableModelStore) Break() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.broken = true
+}
+
+func (s *switchableModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *switchableModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
@@ -235,6 +256,7 @@ func TestAsyncSearch_SchemaBreaksAfterSubmit_JobFails(t *testing.T) {
 
 	ctx := tenantCtx("tenant-async-broken")
 	ref := spi.ModelRef{EntityName: "asyncbroken", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	ms := &switchableModelStore{ref: ref, good: goodStringSchema(t, "name")}
@@ -248,7 +270,7 @@ func TestAsyncSearch_SchemaBreaksAfterSubmit_JobFails(t *testing.T) {
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).WithAsyncPool(pool)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).WithAsyncPool(pool)
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -296,6 +318,7 @@ func TestSearch_LifecycleOnlyCondition_DoesNotNeedTheSchema(t *testing.T) {
 
 	ctx := tenantCtx("tenant-lifecycle-only")
 	ref := spi.ModelRef{EntityName: "lifecycleonly", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, base, ctx, ref) // the entity store needs it; the wrapper serves the schema
 	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
 
 	factory := &modelStoreFactory{
@@ -303,7 +326,7 @@ func TestSearch_LifecycleOnlyCondition_DoesNotNeedTheSchema(t *testing.T) {
 		modelStore:   &brokenSchemaModelStore{ref: ref, schema: []byte(`{"this is": not valid json`)},
 	}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "state",

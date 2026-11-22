@@ -82,7 +82,9 @@ open string annotated with its currently-known values — rather than a closed
 response `enum`, so a new value does not break consumers pinned to the old set.
 Model a discriminated union so that it carries an explicit unknown/default
 variant, so a new variant is an additive change and consumers degrade gracefully
-instead of failing to match.
+instead of failing to match. ADR 0005 applies this decision to the base form the
+client generators read: the unknown/default variant is the empty object a client
+reads for an unknown discriminator value.
 
 **5. Keep error objects open.** Problem-details error responses (RFC 9457) are
 an open content model by that standard: responses may carry problem-specific

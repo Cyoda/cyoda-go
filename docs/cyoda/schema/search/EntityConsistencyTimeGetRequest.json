@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/EntityConsistencyTimeGetRequest.json",
+  "title": "EntityConsistencyTimeGetRequest",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ]
+}

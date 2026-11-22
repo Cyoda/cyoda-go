@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,9 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
 )
 
 // descLogPreviewRunes caps the per-workflow `desc` field in the audit-log
@@ -57,11 +59,16 @@ func truncateForLog(s string, maxRunes int) string {
 type Handler struct {
 	factory spi.StoreFactory
 	engine  *Engine
+	// maxResponseTimeout is the server's upper bound on a callout's
+	// responseTimeoutMs; import refuses a workflow that exceeds it.
+	maxResponseTimeout time.Duration
 }
 
 // New returns a new Handler wired to the given StoreFactory and Engine.
-func New(factory spi.StoreFactory, engine *Engine) *Handler {
-	return &Handler{factory: factory, engine: engine}
+// maxResponseTimeout is the server's upper bound on responseTimeoutMs
+// (app.Config.Callout.ResponseTimeoutMax).
+func New(factory spi.StoreFactory, engine *Engine, maxResponseTimeout time.Duration) *Handler {
+	return &Handler{factory: factory, engine: engine, maxResponseTimeout: maxResponseTimeout}
 }
 
 // workflowImportDef mirrors spi.WorkflowDefinition but uses *bool for Active
@@ -90,20 +97,36 @@ type importRequest struct {
 	Workflows   []workflowImportDef `json:"workflows"`
 }
 
-// attachEntityProbe captures the raw-JSON presence of an omitted attachEntity
-// per transition, for both callout shapes that carry one:
-// schedule.function.attachEntity and each processors[].config.attachEntity.
-// The OpenAPI DTOs document these as "Defaults to true", but the SPI decodes
-// them into plain bool fields, which — decoded straight from the request body
-// as workflowImportDef.States does for the whole state graph — collapse
-// "omitted" and "explicit false" to the same zero value. This probe is a
-// second, non-strict decode of the same request body that declares only the
-// field paths needed to recover the distinction; every other field is ignored.
-type attachEntityProbe struct {
+// presenceProbe records which fields the request body actually sent, where
+// the strict decode into SPI types cannot tell. The SPI decodes manual and
+// attachEntity into plain bool fields and schedule.delayMs into a plain
+// int64, so "omitted" and "explicit zero value" collapse to the same Go
+// value. The probe is a second decode of the same request body that
+// declares only the field paths needed to recover the distinction; names
+// still match exactly and a duplicate is still refused, but every member it
+// does not declare is ignored. It serves three rules:
+//   - a transition's manual is required and is never null — see
+//     checkManualSent;
+//   - an omitted attachEntity defaults to true (the OpenAPI DTOs document
+//     "Defaults to true"), for schedule.function.attachEntity and each
+//     processors[].config.attachEntity — see applyAttachEntityDefaults;
+//   - schedule.delayMs sent in any form beside schedule.function is
+//     refused — see checkDelayBesideFunction.
+type presenceProbe struct {
 	Workflows []struct {
+		Name   string `json:"name"`
 		States map[string]struct {
 			Transitions []struct {
+				Name string `json:"name"`
+				// Manual is a pointer so that an omitted manual reads as
+				// nil; encoding/json sets a pointer to nil for a JSON null
+				// too, and neither is a boolean.
+				Manual   *bool `json:"manual"`
 				Schedule *struct {
+					// DelayMs is raw so that an explicit JSON null counts
+					// as sent: encoding/json hands null to a RawMessage
+					// rather than leaving it nil.
+					DelayMs  json.RawMessage `json:"delayMs"`
 					Function *struct {
 						AttachEntity *bool `json:"attachEntity"`
 					} `json:"function"`
@@ -118,6 +141,48 @@ type attachEntityProbe struct {
 	} `json:"workflows"`
 }
 
+// checkManualSent refuses a transition that omits manual or sends it as
+// null. api/openapi.yaml's TransitionDefinitionDto requires manual and types
+// it boolean, with no default: the author states whether a transition is
+// automatic. The strict decode reads an omitted or null manual as false,
+// which would make the transition automatic; this check reads the raw
+// request instead.
+func checkManualSent(probe presenceProbe) error {
+	for _, wf := range probe.Workflows {
+		for _, stateName := range sortedStateNames(wf.States) {
+			for _, tr := range wf.States[stateName].Transitions {
+				if tr.Manual == nil {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q: manual is required (true or false)",
+						wf.Name, stateName, tr.Name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkDelayBesideFunction refuses a schedule that sends delayMs in any
+// form — 0, null, or any number — beside a function. api/openapi.yaml's
+// TransitionScheduleDto publishes delayMs as minimum 1 and mutually
+// exclusive with function. The structural validator sees delayMs as the
+// SPI's plain int64, so a sent 0 or null reads as omitted there; this
+// check reads the raw request instead.
+func checkDelayBesideFunction(probe presenceProbe) error {
+	for _, wf := range probe.Workflows {
+		for _, stateName := range sortedStateNames(wf.States) {
+			for _, tr := range wf.States[stateName].Transitions {
+				if tr.Schedule != nil && tr.Schedule.Function != nil && tr.Schedule.DelayMs != nil {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q: schedule.delayMs and schedule.function are mutually exclusive; omit delayMs when function is set",
+						wf.Name, stateName, tr.Name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // applyAttachEntityDefaults defaults an omitted attachEntity to true for every
 // callout in every transition — schedule.function.attachEntity and each
 // processors[].config.attachEntity — using probe (decoded from the same raw
@@ -126,7 +191,7 @@ type attachEntityProbe struct {
 // array in the same order); states are matched by map key; transitions and
 // processors within a state are index-aligned (both decoded from the same JSON
 // arrays).
-func applyAttachEntityDefaults(workflows []workflowImportDef, probe attachEntityProbe) {
+func applyAttachEntityDefaults(workflows []workflowImportDef, probe presenceProbe) {
 	for i, w := range workflows {
 		if i >= len(probe.Workflows) {
 			continue
@@ -164,6 +229,28 @@ func applyAttachEntityDefaults(workflows []workflowImportDef, probe attachEntity
 	}
 }
 
+// applyProcessorTypeDefault stores an omitted or empty processor type as
+// ProcessorTypeExternalized, the location the engine runs it in, so the
+// export always carries a value of the published discriminator mapping. It
+// runs after the structural validator, which has refused every other value.
+func applyProcessorTypeDefault(workflows []spi.WorkflowDefinition) {
+	for _, wf := range workflows {
+		for _, state := range wf.States {
+			// state.Transitions and tr.Processors share their backing arrays
+			// with the stored definitions, so writes through the index reach
+			// the value the handler goes on to persist.
+			for j := range state.Transitions {
+				procs := state.Transitions[j].Processors
+				for k := range procs {
+					if procs[k].Type == "" {
+						procs[k].Type = ProcessorTypeExternalized
+					}
+				}
+			}
+		}
+	}
+}
+
 // ImportEntityModelWorkflow handles POST /model/{entityName}/{modelVersion}/workflow/import.
 func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
@@ -173,41 +260,39 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read request body"))
 		return
 	}
+	// The workflow's names reach the state-machine audit trail, which cannot
+	// hold U+0000 (PostgreSQL refuses it in jsonb), and the stores cannot hold
+	// every such text either: refused here, as an entity payload is.
+	if appErr := ingest.RejectUnstorable(data); appErr != nil {
+		common.WriteError(w, r, appErr)
+		return
+	}
 
-	// Strict-decoder boundary: unknown fields in the import-request body —
-	// top-level or nested in the workflow / state / transition / processor
-	// sub-shapes — are rejected with 400 BAD_REQUEST rather than silently
-	// dropped. This catches forward-compat extras and typos (e.g.
-	// `transitionn` for `transitions`) that previously imported as no-op
-	// workflows. Go's decoder emits `json: unknown field "X"` which names
-	// the offending field directly in the response detail.
-	//
-	// Decode consumes exactly one JSON value, so anything after the first
-	// object's closing brace is silently ignored unless we explicitly
-	// check. dec.More() fences that trailing-garbage case — same class of
-	// "client got the shape wrong" failure as an unknown field.
+	// Strict-decoder boundary: a member the import-request body does not
+	// declare — top-level or nested in the workflow / state / transition /
+	// processor sub-shapes — is refused with 400 BAD_REQUEST rather than
+	// silently dropped, as is a case-variant member name and anything after
+	// the request object (a duplicate is refused just above). This catches
+	// typos (e.g. `transitionn` for `transitions`) that would import as
+	// no-op workflows; the response detail names the member and where it is.
 	var req importRequest
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid JSON: %v", err)))
-		return
-	}
-	if dec.More() {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: trailing data after request object"))
+	if err := strictjson.Decode(data, &req); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 
-	// Second, non-strict decode of the same bytes to recover the
-	// "attachEntity omitted" signal the strict decode above collapsed into
-	// the SPI's plain-bool AttachEntity zero value (both on
-	// ScheduleFunction and ProcessorConfig). data was already proven valid
-	// JSON matching this shape by the strict decode, so this unmarshal
-	// cannot fail on a well-formed request; ignoring a defensive error here
-	// just leaves every attachEntity un-defaulted, which is the safe
-	// fallback.
-	var probe attachEntityProbe
-	_ = json.Unmarshal(data, &probe)
+	// Second decode of the same bytes to recover the presence signals the
+	// strict decode above collapsed into the SPI's zero values (see
+	// presenceProbe). The probe reads only some members, so it allows the
+	// rest. It fails only if presenceProbe has drifted from the request
+	// shape; then the import is refused, since a probe read as empty would
+	// pass the manual check vacuously and leave every omitted attachEntity
+	// false instead of its default, true.
+	var probe presenceProbe
+	if err := strictjson.Decode(data, &probe, strictjson.AllowUnknownMembers); err != nil {
+		common.WriteError(w, r, common.Internal("failed to re-decode workflow import request", err))
+		return
+	}
 	applyAttachEntityDefaults(req.Workflows, probe)
 
 	mode := strings.ToUpper(req.ImportMode)
@@ -321,6 +406,29 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
 	}
+	applyProcessorTypeDefault(incoming)
+	// The structural validator above sees manual only as the SPI's bool and
+	// delayMs only as its int64; the raw request says whether each was sent.
+	// An omitted manual reaches it as false, so a structural rule that reads
+	// manual as false must run after checkManualSent, not in that validator.
+	// The probe checks in turn run after it because it caps the names they
+	// copy into the 400 body (maxIdentifierLen).
+	if err := checkManualSent(probe); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
+		return
+	}
+	if err := checkDelayBesideFunction(probe); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
+		return
+	}
+
+	// Callout limits are a server setting, so they are checked here rather
+	// than in the setting-free structural validator. Incoming request only,
+	// like every structural rule.
+	if err := validateCalloutLimits(incoming, h.maxResponseTimeout); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
+		return
+	}
 
 	// Canonicalise and validate client-owned annotations on the incoming
 	// workflows (object-only, compacted, 64 KB per field). Mutates incoming
@@ -358,6 +466,13 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 
 	if err := wfStore.Save(r.Context(), ref, result); err != nil {
 		common.WriteError(w, r, common.Internal("failed to save workflows", err))
+		return
+	}
+
+	// The tasks of transitions that no workflow of the model schedules any
+	// more go now, after the save.
+	if appErr := h.removeUnscheduledTasks(r.Context(), spi.TenantID(common.TenantFromContext(r.Context())), entityName, int(modelVersion), result); appErr != nil {
+		common.WriteError(w, r, appErr)
 		return
 	}
 

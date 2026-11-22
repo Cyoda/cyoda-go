@@ -1,0 +1,10 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineScheduledTransitionFiredDto",
+  "value": {
+    "eventType": "SCHEDULED_TRANSITION_FIRE",
+    "transition": "expire",
+    "sourceState": "PENDING",
+    "workflowName": "orders"
+  }
+}

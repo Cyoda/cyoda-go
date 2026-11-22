@@ -7,9 +7,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/errorcontract"
+	"github.com/cyoda/cyoda-go/e2e/parity"
 )
 
 func init() {
@@ -126,7 +126,7 @@ func RunExternalAPI_12_04_GetEntityAtTimeBeforeCreation(t *testing.T, fixture pa
 		t.Fatalf("lock: %v", err)
 	}
 	// Pin a timestamp clearly before any entity creation.
-	beforeCreate := time.Now().UTC().Add(-1 * time.Hour)
+	beforeCreate := time.Now().UTC().Add(-1 * time.Hour) // realtime: pins an instant before the server clock reads, which a parity run leaves identity
 	if _, err := d.CreateEntity("neg4", 1, `{"k":1}`); err != nil {
 		t.Fatalf("create entity: %v", err)
 	}
@@ -189,10 +189,12 @@ func RunExternalAPI_12_06_GetChangesForMissingEntity(t *testing.T, fixture parit
 }
 
 // RunExternalAPI_12_07_DeleteByConditionTooManyMatches — dictionary 12/neg/07.
-// Skipped pending server-side support — delete-by-condition surface entirely missing.
+// Not applicable: cyoda-go has no entitySearchLimit, so a conditional delete has
+// no match-count limit to exceed. A client that wants the guard counts at an
+// instant (statistics with pointInTime) and deletes at the same pointInTime.
 func RunExternalAPI_12_07_DeleteByConditionTooManyMatches(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending server-side support — DELETE /entity/{name}/{version} ignores both condition body and pointInTime; full delete-by-condition surface is a v0.7.0 server-side gap")
+	t.Skip("not applicable: cyoda-go has no entitySearchLimit; count at pointInTime, then delete at the same pointInTime")
 }
 
 // RunExternalAPI_12_08_UpdateUnknownTransition — dictionary 12/neg/08.

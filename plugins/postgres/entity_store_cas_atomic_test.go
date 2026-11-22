@@ -10,8 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // A non-transactional CompareAndSave must read the current transaction ID and
@@ -21,25 +21,23 @@ import (
 // expected transaction ID can all read it, all pass the check, and all write —
 // each silently clobbering the last instead of getting ErrConflict.
 func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
-	factory := setupEntityTest(t)
+	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("tenant-cas")
 	ref := spi.ModelRef{EntityName: "m-cas", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
 
-	const seedTxID = "tx-seed"
-	if _, err := store.Save(ctx, &spi.Entity{
+	seedTxID := saveCommitted(t, tm, store, ctx, &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-cas", TenantID: "tenant-cas", ModelRef: ref,
-			State: "open", TransactionID: seedTxID,
+			State: "open",
 		},
 		Data: []byte(`{"n":0}`),
-	}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	})
 
 	const racers = 8
 	var wg sync.WaitGroup
@@ -53,7 +51,7 @@ func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 			_, results[i] = store.CompareAndSave(ctx, &spi.Entity{
 				Meta: spi.EntityMeta{
 					ID: "e-cas", TenantID: "tenant-cas", ModelRef: ref,
-					State: "open", TransactionID: "tx-writer",
+					State: "open",
 				},
 				Data: []byte(`{"n":1}`),
 			}, seedTxID)
@@ -80,32 +78,31 @@ func TestNonTxCompareAndSave_ExactlyOneWinner(t *testing.T) {
 
 // The transaction CompareAndSave opens for itself must set app.current_tenant,
 // as every other transaction this plugin opens does (TransactionManager.Begin,
-// ExtendSchema's self-wrap, the async-search scan). The owner role bypasses the
+// the model store's transactions, the async-search scan). The owner role bypasses the
 // RLS policies, so the ordinary fixtures cannot see a missing GUC at all — this
-// test runs the compare-and-save through a dedicated non-superuser role, which
-// is production's stated posture (rls_test.go). With the GUC unset the policies
-// evaluate to NULL: the locking check reads no row and the write is rejected.
+// test runs the compare-and-save through a dedicated non-superuser role — a
+// probe of the setting, not a supported deployment (row-level security is
+// not supported; rls_test.go). With the GUC unset the policies evaluate to NULL: the locking
+// check reads no row and the write is rejected.
 func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
-	factory := setupEntityTest(t)
+	factory, tm := setupEntityTestWithTM(t)
 	const tenant spi.TenantID = "tenant-cas-rls"
 	ctx := ctxWithTenant(tenant)
 	ref := spi.ModelRef{EntityName: "m-cas-rls", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 
 	owner := postgres.PoolForTest(factory)
 	ownerStore, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("owner EntityStore: %v", err)
 	}
-	const seedTxID = "tx-seed"
-	if _, err := ownerStore.Save(ctx, &spi.Entity{
+	seedTxID := saveCommitted(t, tm, ownerStore, ctx, &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-cas-rls", TenantID: tenant, ModelRef: ref,
-			State: "open", TransactionID: seedTxID,
+			State: "open",
 		},
 		Data: []byte(`{"n":0}`),
-	}); err != nil {
-		t.Fatalf("seed Save (as owner: RLS does not apply): %v", err)
-	}
+	})
 
 	const probeRole = "cyoda_cas_rls_probe"
 	for _, stmt := range []string{
@@ -115,7 +112,7 @@ func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
 		// default PUBLIC grants — USAGE must be granted explicitly.
 		`GRANT USAGE ON SCHEMA public TO ` + probeRole,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + probeRole,
-		`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ` + probeRole,
+		`GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ` + probeRole, // UPDATE: cyoda_stamp raises cyoda_stamp_floor with setval
 	} {
 		if _, err := owner.Exec(ctx, stmt); err != nil {
 			t.Fatalf("provision probe role: %v", err)
@@ -130,7 +127,8 @@ func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
 
 	probeURL, err := url.Parse(testDBURL(t))
 	if err != nil {
-		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
+		// errors.Unwrap: *url.Error renders the URL, which carries the password.
+		t.Fatalf("parse CYODA_TEST_DB_URL: %v", errors.Unwrap(err))
 	}
 	probeURL.User = url.UserPassword(probeRole, "probe")
 	probePool, err := pgxpool.New(context.Background(), probeURL.String())
@@ -146,7 +144,7 @@ func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
 	if _, err := probeStore.CompareAndSave(ctx, &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-cas-rls", TenantID: tenant, ModelRef: ref,
-			State: "open", TransactionID: "tx-writer",
+			State: "open",
 		},
 		Data: []byte(`{"n":1}`),
 	}, seedTxID); err != nil {
@@ -161,8 +159,8 @@ func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
 		string(tenant), "e-cas-rls").Scan(&got); err != nil {
 		t.Fatalf("read back entity: %v", err)
 	}
-	if got != "tx-writer" {
-		t.Errorf("stored transaction ID = %q, want %q", got, "tx-writer")
+	if got != "" {
+		t.Errorf("stored transaction ID = %q, want the empty id of a write outside a transaction (the seed's is %q)", got, seedTxID)
 	}
 }
 
@@ -172,27 +170,34 @@ func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
 // second on the lock would otherwise date its own version half a second before
 // the version it just read and superseded, and a point-in-time read would order
 // the two backwards.
+//
+// This test outlives the mechanism it was written for. It used to be satisfied
+// by CompareAndSave alone stamping from statement_timestamp(); that special
+// case is gone, and every write is now dated at the instant its transaction
+// commits (stampOwnCommitInstant for a write with no SPI transaction, which is
+// this one). A commit necessarily happens after the lock wait it queued behind,
+// so commit stamping satisfies this test's intent directly rather than by a
+// rule about one method — and the test still fails if that stamping is removed,
+// because the row would fall back to its transaction's start time.
 func TestNonTxCompareAndSave_StampsAfterTheLockWait(t *testing.T) {
-	factory := setupEntityTest(t)
+	factory, tm := setupEntityTestWithTM(t)
 	const tenant spi.TenantID = "tenant-cas-stamp"
 	ctx := ctxWithTenant(tenant)
 	ref := spi.ModelRef{EntityName: "m-cas-stamp", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	pool := postgres.PoolForTest(factory)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	const seedTxID = "tx-seed"
-	if _, err := store.Save(ctx, &spi.Entity{
+	seedTxID := saveCommitted(t, tm, store, ctx, &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID: "e-cas-stamp", TenantID: tenant, ModelRef: ref,
-			State: "open", TransactionID: seedTxID,
+			State: "open",
 		},
 		Data: []byte(`{"n":0}`),
-	}); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
+	})
 
 	// Hold the row lock the compare-and-save must queue behind.
 	holder, err := pool.Begin(ctx)
@@ -211,7 +216,7 @@ func TestNonTxCompareAndSave_StampsAfterTheLockWait(t *testing.T) {
 		_, err := store.CompareAndSave(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{
 				ID: "e-cas-stamp", TenantID: tenant, ModelRef: ref,
-				State: "open", TransactionID: "tx-writer",
+				State: "open",
 			},
 			Data: []byte(`{"n":1}`),
 		}, seedTxID)
@@ -266,5 +271,93 @@ func TestNonTxCompareAndSave_StampsAfterTheLockWait(t *testing.T) {
 	if validTime.Before(heldUntil) {
 		t.Fatalf("the write that waited on the lock is stamped %v before the lock was released (%v vs %v)",
 			heldUntil.Sub(validTime), validTime, heldUntil)
+	}
+}
+
+// TestNonTxCompareAndSave_OwnTxGuardPreventsSelfDeadlock guards against a
+// regression that shipped and was caught only by a full-suite run hanging
+// until go test's own 10-minute binary timeout: CompareAndSave's non-tx
+// branch opens its own pgx.Tx and calls into save(ctx, ...), but save's
+// non-tx branch used to decide whether to open a transaction using only
+// spi.GetTransaction(ctx) and s.pool — both still read as "no ambient
+// transaction, pool available" on CompareAndSave's txStore, since
+// spi.GetTransaction sees only a transaction the CALLER opened through
+// TransactionManager, never a raw pgx.Tx this plugin holds for itself. So
+// save opened a SECOND transaction on the same pool while the first still
+// held the row lock compareTxID's FOR UPDATE took, and the nested
+// transaction's own upsert queued behind that lock forever: a self-deadlock
+// only the blocked caller could have broken, and never would.
+//
+// The fix is structural rather than a call-site convention: entityStore
+// carries an ownTx flag, set true on CompareAndSave's txStore copy, and
+// save's (and Delete's) own transaction-opening branch checks !s.ownTx
+// before opening one — see ownTx's doc comment on the entityStore struct.
+// CompareAndSave therefore calls txStore.save(...) directly, the exact same
+// method a first, non-transactional Save reaches, and it falls straight
+// through to saveOn instead of reopening a transaction. That makes this
+// call return in milliseconds with no contention at all, so a short context
+// deadline is not needed to make the GOOD case pass — it is here so a
+// REGRESSED case (the ownTx guard removed, or a copy that forgets to set
+// it) fails fast and loud instead of hanging for the better part of ten
+// minutes: the nested transaction's blocked query has its context canceled
+// a few seconds in, and this test reports a clear timeout/cancellation
+// failure instead of silently eating a multi-minute hang.
+//
+// Also reads the write back and checks it landed at the version
+// CompareAndSave returned, so this pins the write itself, not just the
+// absence of a hang.
+func TestNonTxCompareAndSave_OwnTxGuardPreventsSelfDeadlock(t *testing.T) {
+	factory, tm := setupEntityTestWithTM(t)
+	const tenant spi.TenantID = "tenant-cas-no-nested-tx"
+	ctx := ctxWithTenant(tenant)
+	ref := spi.ModelRef{EntityName: "m-cas-no-nested-tx", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
+	pool := postgres.PoolForTest(factory)
+
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	const id = "e-cas-no-nested-tx"
+	seedTxID := saveCommitted(t, tm, store, ctx, &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID: id, TenantID: tenant, ModelRef: ref,
+			State: "open",
+		},
+		Data: []byte(`{"n":0}`),
+	})
+
+	// A few seconds, not the default test binary timeout: bounds a regressed
+	// self-deadlock to a fast, specific failure instead of a multi-minute hang.
+	deadlineCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	version, err := store.CompareAndSave(deadlineCtx, &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID: id, TenantID: tenant, ModelRef: ref,
+			State: "open",
+		},
+		Data: []byte(`{"n":1}`),
+	}, seedTxID)
+	if err != nil {
+		t.Fatalf("compare-and-save did not complete within its deadline — "+
+			"likely reopened a transaction on itself and self-deadlocked: %v", err)
+	}
+	if version != 2 {
+		t.Errorf("CompareAndSave returned version %d, want 2", version)
+	}
+
+	var storedTxID string
+	var storedVersion int64
+	if err := pool.QueryRow(ctx,
+		`SELECT doc->'_meta'->>'transaction_id', version FROM entities WHERE tenant_id = $1 AND entity_id = $2`,
+		string(tenant), id).Scan(&storedTxID, &storedVersion); err != nil {
+		t.Fatalf("read back entity: %v", err)
+	}
+	if storedTxID != "" {
+		t.Errorf("stored transaction ID = %q, want the empty id of a write outside a transaction (the seed's is %q)", storedTxID, seedTxID)
+	}
+	if storedVersion != version {
+		t.Errorf("stored version = %d, want %d (CompareAndSave's return value)", storedVersion, version)
 	}
 }

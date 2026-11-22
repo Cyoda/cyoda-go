@@ -17,7 +17,7 @@ INVALID_FIELD_PATH — a condition's `jsonPath`, or a sort key, is not valid JSO
 
 ## SYNOPSIS
 
-HTTP: `400` `Bad Request`. Retryable: `no` (unless the model schema is then extended via re-import; the request is then valid against the new locked schema).
+HTTP: `400` `Bad Request`. Retryable: `no` (unless the model is then extended — by an entity write its `changeLevel` permits, or by re-import while it is unlocked; the request is then valid against the extended schema).
 
 ## DESCRIPTION
 
@@ -36,7 +36,9 @@ subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit a signed
 
 A **well-formed** array subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid JSON Path and is **accepted** (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`, `$.orders[*].lines[*].sku`); it cannot be pushed into the storage query, so it is evaluated in memory.
 
-Any other bracket spelling is rejected with this code: an unclosed or unmatched bracket (`$.a[`, `$.a[0`, `$.a]`), a subscript with no field name before it (`$.[0]`), an empty subscript (`$.a[]`), a negative or signed index (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), and whitespace inside one (`$.a[ 0]`). A positional index must also fit a signed 32-bit integer: `2147483647` is the largest accepted, and a wider digit run (`$.a[2147483648]`) is rejected with this code rather than truncated or wrapped — no entity array is long enough for such an index to address a real position. Characters after a well-formed subscript are checked too — `$.a[0]b`, `$.a[0];DROP` and `$.a[*]..b` are all rejected. These previously slipped through unvalidated and answered `200` with an empty page (or, on the grouped-stats `condition` and workflow-criterion surfaces, wrong buckets and a criterion that silently never fired).
+Any other bracket spelling is rejected with this code: an unclosed or unmatched bracket (`$.a[`, `$.a[0`, `$.a]`), a subscript with no field name before it (`$.[0]`), an empty subscript (`$.a[]`), a negative or signed index (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), and whitespace inside one (`$.a[ 0]`). A positional index must also fit a signed 32-bit integer: `2147483647` is the largest accepted, and a wider digit run (`$.a[2147483648]`) is rejected with this code rather than truncated or wrapped — no entity array is long enough for such an index to address a real position. Characters after a well-formed subscript are checked too — `$.a[0]b`, `$.a[0];DROP` and `$.a[*]..b` are all rejected. A workflow or transition criterion is held to the same grammar and is rejected at import with `400 VALIDATION_FAILED`.
+
+An `array` clause's path has two more rules. It must end in `[*]`: a bare path (`$.tags`) addresses the array, not its elements. It must contain no other `[*]`: one clause tests the positions of one array, so `$.orders[*].lines[*]` is rejected. To test one inner array, index the outer array: `$.orders[0].lines[*]`.
 
 This check is syntactic and runs on every search-shaped surface regardless of whether a schema is loaded: `/search` (sync and async), conditional delete, and the `condition` of a grouped-statistics query.
 
@@ -46,16 +48,17 @@ A path that is a **pure container** — a known structural interior with substru
 
 A path ending in `[*]` addresses the array's **elements**, so the same rule applies to them: an array of scalars (`$.tags[*]`) and an array whose elements were also observed as bare scalars are comparable, while an array of **pure objects** (`$.items[*]`) is a container — write `$.items[*].sku`.
 
-If any referenced path is unknown, the server performs at most one bounded `RefreshAndGet` against the model store to recover from a stale cached schema. If the path is still unknown after the refresh, the request is rejected with HTTP 400 and `errorCode: "INVALID_FIELD_PATH"`. The response detail names every offending path so clients can correct the request without round-tripping to the support team.
+If any referenced path is unknown, the server reads the model from storage once more, bypassing its cached copy: the model may have been extended since this node cached it, for example by a write that another node served and whose cache invalidation broadcast has not arrived yet. If the path is still unknown after that one read, the request is rejected with HTTP 400 and `errorCode: "INVALID_FIELD_PATH"`. A refusal is not remembered: the next request checks again. The response detail names every offending path so clients can correct the request without round-tripping to the support team.
 
 A condition referencing an unrecognized lifecycle/meta filter field (not one of the known `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave`/`previousTransition`, `transactionId`, `id` fields) is rejected the same way, on both `/search` and the grouped-statistics endpoint (`POST /api/entity/stats/{entityName}/{modelVersion}/query`). Grouped statistics does not have data-model schema access, so it enforces this meta-field check but not the schema-backed data-field-path check described above.
 
-Programmatic clients should branch on `errorCode == "INVALID_FIELD_PATH"` (not on HTTP 400) to distinguish unknown-field-path errors from other 400s such as `BAD_REQUEST` (malformed JSON) or `CONDITION_TYPE_MISMATCH` (incompatible value type).
+Programmatic clients should branch on `errorCode == "INVALID_FIELD_PATH"` (not on HTTP 400) to distinguish unknown-field-path errors from other 400s such as `BAD_REQUEST` (malformed JSON) or `CONDITION_TYPE_MISMATCH` (an operator, or a comparison or range operand, that does not fit the field's types).
 
 Common causes:
 
 - The `$.` leader is missing (`amount` instead of `$.amount`).
 - Bracket-quoted access (`$['amount']`) instead of dotted access (`$.amount`).
+- An `array` clause whose path does not end in `[*]`, or has a `[*]` before the trailing one.
 - The condition references a field that has not been declared in the model schema.
 - The model has been re-imported with a different shape and the client's condition uses an old field name.
 - The path is misspelled (e.g. `$.Name` vs `$.name`).

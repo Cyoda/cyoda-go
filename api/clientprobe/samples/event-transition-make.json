@@ -1,0 +1,11 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineTransitionMadeDto",
+  "value": {
+    "eventType": "TRANSITION_MAKE",
+    "workflowName": "orders",
+    "transition": "approve",
+    "newState": "APPROVED",
+    "functions": []
+  }
+}

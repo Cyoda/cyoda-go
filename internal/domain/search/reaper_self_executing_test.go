@@ -3,9 +3,9 @@ package search_test
 // TestReclaimStaleJobs_SelfExecutingStore_NeverClaimsOrWrites pins that the
 // stale-job reclaim sweep keeps the self-executing-store guard SubmitAsync
 // already has. A self-executing store's jobs never receive an engine
-// heartbeat (SubmitAsync skips its background goroutine for these stores), so
-// ClaimStale's COALESCE(heartbeat_time, created_at) baseline would make every
-// healthy job of theirs look stale after staleAfter by construction — and,
+// heartbeat after the one CreateJob stamps (SubmitAsync skips its background
+// goroutine for these stores), so ClaimStale's heartbeat baseline would make
+// every healthy job of theirs look stale after staleAfter by construction — and,
 // absent this guard, ReclaimStaleJobs would claim them and clear/re-run or
 // FAIL them out from under the store's own recovery pipeline. Fail closed:
 // skip reclaim entirely for a spi.SelfExecutingSearchStore, exactly as
@@ -16,10 +16,11 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // selfExecutingAsyncStore wraps a real spi.AsyncSearchStore, implements
@@ -56,14 +57,14 @@ func TestReclaimStaleJobs_SelfExecutingStore_NeverClaimsOrWrites(t *testing.T) {
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool)
 
-	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, search.StaleClaimBatch)
+	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, search.StaleClaimBatch)
 	if err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if reenq != 0 || failed != 0 {
-		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (0, 0) for a self-executing store", reenq, failed)
+	if reenq != 0 {
+		t.Fatalf("ReclaimStaleJobs re-enqueued %d, want 0 for a self-executing store", reenq)
 	}
 }

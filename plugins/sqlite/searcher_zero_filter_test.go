@@ -6,8 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	sqlite "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	sqlite "github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // A zero-value Filter means "match all". planQuery treats the empty Op as
@@ -40,6 +41,7 @@ func assertMatchAllReturnsEveryRow(t *testing.T, dbName, idPrefix string, filter
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, _ := factory.EntityStore(ctx)
 
 	const rows = 5

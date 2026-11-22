@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,55 +13,59 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
-	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
-	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/auth/oidc"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster"
-	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
-	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
-	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
-	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
-	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/cmd/cyoda/help"
+	internalapi "github.com/cyoda/cyoda-go/internal/api"
+	"github.com/cyoda/cyoda-go/internal/api/middleware"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/callout"
+	"github.com/cyoda/cyoda-go/internal/cluster"
+	clusterdispatch "github.com/cyoda/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda/cyoda-go/internal/cluster/modelcache"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/clusterstatus"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/domain/account"
+	"github.com/cyoda/cyoda-go/internal/domain/audit"
+	"github.com/cyoda/cyoda-go/internal/domain/consistency"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/messaging"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/scheduledtask"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/domain/txjoin"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
+	"github.com/cyoda/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/httpmw"
+	mockiam "github.com/cyoda/cyoda-go/internal/iam/mock"
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/scheduler"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 type App struct {
 	config             Config
 	storeFactory       spi.StoreFactory
 	transactionManager spi.TransactionManager
+	consistency        *consistency.Service
 	authService        contract.AuthenticationService
-	authzService       contract.AuthorizationService
 	authSvc            *auth.AuthService // non-nil only in JWT IAM mode; nil in mock IAM mode
 	workflowEngine     *workflow.Engine
-	txGate             *txgate.Registry // per-tx application gate serialising joined callbacks and the owner's commit
+	coord              txcoord.Coordination // one per process: callouts, callback scopes and processor scopes of every transaction
+	joiner             *txjoin.Joiner       // the join layer both callback doors run a request carrying a pass through
 	searchService      *search.SearchService
-	auditService       contract.AuditService
-	clusterService     contract.ClusterService
 	memberRegistry     *internalgrpc.MemberRegistry
 	grpcServer         *internalgrpc.Server
 	handler            http.Handler
@@ -68,45 +73,48 @@ type App struct {
 	selfNodeID         string
 	nodeRegistry       contract.NodeRegistry
 	scheduler          *scheduler.Service
-	stopSearchReaper   chan struct{}
-	// searchReaperDone is closed by the reaper goroutine when it exits, so
-	// stopSearchReaperLoop can await a clean stop. stopSearchReaperOnce makes
-	// the close idempotent — both Shutdown and Close signal the loop.
-	searchReaperDone     chan struct{}
-	stopSearchReaperOnce sync.Once
+	// stopSearchReapers stops the async-search sweeps and waits for them
+	// (startSearchReapers). stopSearchReapersOnce makes it idempotent — both
+	// Shutdown and Close call it.
+	stopSearchReapers     func()
+	stopSearchReapersOnce sync.Once
+	// stopAuthLoops cancels the auth service's signing-key re-read loop and
+	// waits for it to exit (nil in mock IAM mode, where there is no loop).
+	// stopAuthLoopsOnce makes it idempotent — both Shutdown and Close call it.
+	stopAuthLoops     func()
+	stopAuthLoopsOnce sync.Once
 	// searchPool is the bounded worker pool async-search submissions run
 	// on, sized from cfg.SearchAsync. Shutdown drains it (bounded by
 	// searchDrainBudget) before aborting whatever async jobs are still
 	// registered on this node.
 	searchPool   *search.WorkerPool
 	grpcStopOnce sync.Once
-	// healthFlag starts true and is latched false by the first recovered
-	// panic at any of the four sites that run engine or store work: the HTTP
-	// recovery middleware, the gRPC recovery interceptors, the async-search
-	// goroutine and the scheduler's dispatch goroutine. Notification-callback
-	// recoveries (member-registry onChange, OIDC broadcast) deliberately do
-	// not. Nothing resets it: a node that has panicked has state nothing has
-	// verified. Read by RegisterHealthRoutes (GET /health) and by
-	// ReadinessCheck (/readyz).
-	healthFlag *atomic.Bool
+	// healthLatch trips on the first recovered panic at any of the five sites
+	// that run engine or store work: the HTTP recovery middleware, the gRPC
+	// recovery interceptors, the async-search goroutine, the search reaper
+	// (its snapshot sweep, its stale-job reclaim sweep and that sweep's second
+	// pass) and the scheduler.
+	// Notification-callback recoveries (member-registry onChange, auth
+	// key-store reconcile broadcast) deliberately do not. Nothing resets it: a
+	// node that has panicked has state nothing has verified. Read by
+	// RegisterHealthRoutes (GET /health), by ReadinessCheck (/readyz) and by
+	// the lifecycle, which turns a trip into UNHEALTHY.
+	healthLatch *health.Latch
+
+	// lifecycle derives the node's STARTING/NORMAL/DRAINING/UNHEALTHY state
+	// from the latch and the app's own start and drain steps.
+	lifecycle *lifecycle.Lifecycle
 }
 
 func New(cfg Config) *App {
 	// Invariants this function's own wiring depends on (worker-pool sizing,
-	// heartbeat/stale-after cadence). Checked here rather than only in the
-	// binary so an in-process embedder gets them too — see Config.Validate.
+	// heartbeat/stale-after cadence, IAM mode admitting only "mock" or
+	// "jwt"). Checked here rather than only in the binary so an in-process
+	// embedder gets them too — see Config.Validate.
 	if err := cfg.Validate(); err != nil {
 		slog.Error("startup failure", "phase", "config-validation", "error", err.Error())
 		os.Exit(1)
 	}
-
-	// Validate and normalise bootstrap config before any auth wiring.
-	validatedCfg, err := validateBootstrapConfig(&cfg)
-	if err != nil {
-		slog.Error("invalid bootstrap configuration", "pkg", "app", "err", err)
-		os.Exit(1)
-	}
-	cfg = *validatedCfg
 
 	// Metrics-auth coupled predicate: if CYODA_METRICS_REQUIRE_AUTH=true
 	// the bearer must be set. Refuse to start rather than silently drop
@@ -120,8 +128,8 @@ func New(cfg Config) *App {
 
 	// Created before anything that can latch it: the async-search goroutine
 	// is wired below, well ahead of the HTTP mux and the gRPC server.
-	a.healthFlag = &atomic.Bool{}
-	a.healthFlag.Store(true)
+	a.healthLatch = health.NewLatch()
+	a.lifecycle = lifecycle.New(a.healthLatch)
 
 	common.SetErrorResponseMode(cfg.ErrorResponseMode)
 
@@ -155,6 +163,13 @@ func New(cfg Config) *App {
 		validateClusterConfig(cfg.Cluster)
 		a.selfNodeID = cfg.Cluster.NodeID
 		gossipReg = mustNewGossip(cfg.Cluster)
+		// Peers read this node's lifecycle state from its gossip metadata.
+		// SetState runs under the lifecycle's lock and never blocks.
+		a.lifecycle.OnChange(func(s lifecycle.State) {
+			if err := gossipReg.SetState(s); err != nil {
+				slog.Error("failed to advertise the lifecycle state", "pkg", "cluster", "state", s, "err", err)
+			}
+		})
 	} else {
 		secret = make([]byte, 32)
 		if _, err := rand.Read(secret); err != nil {
@@ -174,6 +189,27 @@ func New(cfg Config) *App {
 		factoryOpts = append(factoryOpts, spi.WithClusterBroadcaster(gossipReg))
 	}
 
+	// clk is the platform clock: one source of business time shared by the
+	// search service, the engine, the scheduler, the domain handlers and the
+	// owner's callout loop, so all agree on "now". It is the real clock unless
+	// clock control is on; then it is one test clock for the process, attached
+	// to gossip's state exchange before the node registers so the join-time
+	// exchange brings the cluster's setting. A change reaches the running
+	// nodes by its push over the peer channel, not by gossip. The storage
+	// plugin gets it (spi.WithClock) only when clock control is on; production
+	// postgres keeps the database clock.
+	var testClock *platformclock.Test
+	clk := platformclock.Real()
+	if cfg.ClockControlEnabled {
+		slog.Warn(clockControlWarning, "pkg", "app")
+		testClock = platformclock.NewTest(a.selfNodeID, nil)
+		clk = testClock
+		factoryOpts = append(factoryOpts, spi.WithClock(testClock))
+		if gossipReg != nil {
+			platformclock.Attach(testClock, gossipReg)
+		}
+	}
+
 	// startupCtx carries a deadline so unreachable infrastructure fails fast
 	// instead of hanging in pgxpool or gocql.
 	startupCtx, cancel := context.WithTimeout(context.Background(), cfg.StartupTimeout)
@@ -188,11 +224,15 @@ func New(cfg Config) *App {
 		os.Exit(1)
 	}
 
-	// Wire the schema.Apply replay function into the plugin factory so
-	// ExtendSchema can fold deltas on read. Postgres uses this to fold
-	// the extension log; SQLite/Memory use it to apply in-place.
-	if setter, ok := factory.(applyFuncSetter); ok {
-		setter.SetApplyFunc(makeSchemaApply())
+	// Wire the schema replay function into the plugin factory. Postgres and
+	// SQLite fold the extension log with it, on read and under an
+	// extension's lock; memory applies each extension in place.
+	if err := wireSchemaApply(factory); err != nil {
+		slog.Error("startup failure",
+			"phase", "wire-schema-apply",
+			"backend", plugin.Name(),
+			"error", err.Error())
+		os.Exit(1)
 	}
 
 	// Wrap the factory in the caching decorator. ModelStore(ctx) now
@@ -248,14 +288,23 @@ func New(cfg Config) *App {
 		a.transactionManager = observability.NewTracingTransactionManager(a.transactionManager, observability.Meter())
 	}
 
+	// One consistency service for the process: it caches the highest
+	// consistency time per tenant and fences every point-in-time read.
+	a.consistency = consistency.New(a.transactionManager)
+
 	// Auth service: JWT or mock mode
-	//
-	// pendingOIDCAdapter and pendingWarmJWKS are populated inside the JWT block
-	// and consumed after server.Account is constructed. They remain nil in mock
-	// IAM mode (OIDC requires real token validation).
-	var pendingOIDCAdapter *account.OidcAdapter
-	var pendingWarmJWKS func()
 	var authSvc *auth.AuthService
+
+	// The platform-wide admin endpoints accept only a platform operator. Mock
+	// mode has one fixed principal, so there the operator check is the admin
+	// check. Config.Validate (run at the top of New, and unconditionally on
+	// every app.New caller) admits only "mock" and "jwt" — no other value
+	// reaches the branch below.
+	operatorGuard := auth.OperatorGuard{}
+	if cfg.IAM.Mode == "mock" {
+		operatorGuard = auth.MockOperatorGuard()
+	}
+
 	if cfg.IAM.Mode == "jwt" {
 		if cfg.IAM.JWTSigningKey == "" {
 			slog.Error("startup failure",
@@ -263,7 +312,8 @@ func New(cfg Config) *App {
 				"error", "CYODA_JWT_SIGNING_KEY is required when IAM mode is jwt")
 			os.Exit(1)
 		}
-		// Create a KV-backed trusted key store for persistence across restarts.
+		// The SYSTEM-tenant KV store holds the cluster's auth state: signing
+		// key pairs, trusted keys and M2M clients.
 		systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
 			UserID:   "system",
 			UserName: "System",
@@ -273,103 +323,59 @@ func New(cfg Config) *App {
 		kvStore, err := a.storeFactory.KeyValueStore(systemCtx)
 		if err != nil {
 			slog.Error("startup failure",
-				"phase", "kv-store-trusted-keys",
+				"phase", "kv-store-system",
 				"error", err.Error())
 			os.Exit(1)
 		}
-		authReconcileMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter())
+		// D7 invariant — broadcaster MUST be non-nil when cluster mode is
+		// enabled. Checked here (before the auth service is constructed) so
+		// the signing-key store is never constructed with a missing
+		// broadcaster in cluster mode.
+		if cfg.Cluster.Enabled && gossipReg == nil {
+			slog.Error("startup failure", "phase", "auth-broadcaster-missing")
+			os.Exit(1)
+		}
+
+		signingMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter(), "auth.signingkeys")
 		if err != nil {
 			slog.Error("startup failure", "phase", "auth-reconcile-metrics-init", "error", err.Error())
 			os.Exit(1)
 		}
-		trustedOpts := []auth.KVTrustedKeyStoreOption{
-			auth.WithMaxTrustedKeys(cfg.IAM.TrustedKeyMaxPerTenant),
-			auth.WithReconcileInterval(cfg.IAM.AuthCacheReconcileInterval),
-			auth.WithReconcileMetrics(authReconcileMetrics),
+		secretCheckMetrics, err := auth.NewOTelSecretCheckMetrics(observability.Meter())
+		if err != nil {
+			slog.Error("startup failure", "phase", "auth-secret-check-metrics-init", "error", err.Error())
+			os.Exit(1)
 		}
+		var authBroadcaster spi.ClusterBroadcaster
 		if gossipReg != nil {
-			// Typed-nil guard: only append when non-nil (same rationale as
+			// Typed-nil guard: only assign when non-nil (same rationale as
 			// cacheBroadcaster above).
-			trustedOpts = append(trustedOpts, auth.WithTrustedKeyBroadcaster(gossipReg))
+			authBroadcaster = gossipReg
 		}
-		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore, trustedOpts...)
-		if err != nil {
-			slog.Error("startup failure",
-				"phase", "kv-trusted-store-bootstrap",
-				"error", err.Error())
-			os.Exit(1)
-		}
-		// Periodic KV-reconcile backstop; systemCtx is process-lifetime, so
-		// the loop runs until exit (same lifecycle as the warmup retry loop).
-		trustedKeyStore.StartReconcileLoop(systemCtx)
+		// authLoopCtx bounds all of the signing-key replica's background
+		// work: NewAuthService's Start runs the periodic loop until it ends,
+		// and a gossip-ping-triggered reconcile checks the same ctx before
+		// touching the store, so cancelling it (stopAuthLoops, below) stops
+		// both — a ping that arrives after teardown (its subscription is
+		// never unsubscribed) sees it already done and makes no store call.
+		// Deliberately not systemCtx: systemCtx is also the context every
+		// other auth store call runs on and must stay uncancelled for the
+		// lifetime of those calls.
+		authLoopCtx, authLoopCancel := context.WithCancel(context.Background())
+		authSvc, err = auth.NewAuthService(authLoopCtx, auth.AuthConfig{
+			SigningKeyPEM:     cfg.IAM.JWTSigningKey,
+			Issuer:            cfg.IAM.JWTIssuer,
+			Audience:          cfg.IAM.JWTAudience,
+			ExpirySeconds:     cfg.IAM.JWTExpiry,
+			IAMFeatures:       cfg.IAM.AuthIAMFeatures(),
+			KV:                kvStore,
+			Broadcaster:       authBroadcaster,
+			ReconcileInterval: cfg.IAM.AuthCacheReconcileInterval,
+			SigningKeyMetrics: signingMetrics,
 
-		// D7 invariant — broadcaster MUST be non-nil when cluster mode is
-		// enabled. Checked here (after KVTrustedKeyStore bootstrap, before OIDC
-		// subsystem init) so the OIDC registry is never constructed with a
-		// missing broadcaster in cluster mode.
-		if cfg.Cluster.Enabled && gossipReg == nil {
-			slog.Error("startup failure", "phase", "oidc-broadcaster-missing")
-			os.Exit(1)
-		}
-
-		// Phase 1: synchronous OIDC bootstrap — blocks until KV load completes.
-		// The HTTP listener must NOT bind before this phase finishes (D8).
-		oidcStore, err := oidc.NewKVProviderStore(systemCtx, kvStore)
-		if err != nil {
-			slog.Error("startup failure", "phase", "oidc-store-bootstrap", "error", err.Error())
-			os.Exit(1)
-		}
-
-		oidcDiscovery := oidc.NewHTTPDiscovery(oidc.DiscoveryConfig{
-			ConnectTimeout:           cfg.IAM.OIDC.ConnectTimeout,
-			SocketTimeout:            cfg.IAM.OIDC.SocketTimeout,
-			ConnectionRequestTimeout: cfg.IAM.OIDC.ConnectionRequestTimeout,
-			AllowPrivateNetworks:     cfg.IAM.OIDC.AllowPrivateNetworks,
-		})
-
-		var oidcBroadcaster spi.ClusterBroadcaster
-		if gossipReg != nil {
-			oidcBroadcaster = gossipReg
-		}
-		oidcMetrics, err := oidc.NewOTelMetrics(observability.Meter())
-		if err != nil {
-			slog.Error("startup failure", "phase", "oidc-metrics-init", "error", err.Error())
-			os.Exit(1)
-		}
-		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidcMetrics, slog.Default(), oidc.RegistryConfig{
-			AllowPrivateNetworks: cfg.IAM.OIDC.AllowPrivateNetworks,
-			ConnectTimeout:       cfg.IAM.OIDC.ConnectTimeout,
-			SocketTimeout:        cfg.IAM.OIDC.SocketTimeout,
-			ReconcileInterval:    cfg.IAM.AuthCacheReconcileInterval,
-		})
-
-		if err := oidcRegistry.LoadProvidersFromKV(systemCtx); err != nil {
-			slog.Error("startup failure", "phase", "oidc-registry-providers-load", "error", err.Error())
-			os.Exit(1)
-		}
-
-		oidcSvc := oidc.NewService(oidcStore, oidcRegistry, slog.Default())
-		pendingOIDCAdapter = account.NewOidcAdapter(
-			oidcSvc,
-			cfg.IAM.OIDC.DefaultRolesClaim,
-			cfg.IAM.OIDC.RequireHTTPS,
-			cfg.IAM.OIDC.AllowPrivateNetworks,
-		)
-		// Phase-2 warm-up is one-shot; the retry loop re-attempts any provider
-		// whose IdP was unreachable at that moment (e.g. cyoda boots ahead of
-		// the IdP), so federated auth recovers without a restart.
-		pendingWarmJWKS = func() {
-			oidcRegistry.WarmJWKS(systemCtx)
-			oidcRegistry.StartWarmupRetryLoop(systemCtx)
-			oidcRegistry.StartReconcileLoop(systemCtx)
-		}
-
-		authSvc, err = auth.NewAuthService(auth.AuthConfig{
-			SigningKeyPEM:   cfg.IAM.JWTSigningKey,
-			Issuer:          cfg.IAM.JWTIssuer,
-			ExpirySeconds:   cfg.IAM.JWTExpiry,
-			TrustedKeyStore: trustedKeyStore,
-			IAMFeatures:     cfg.IAM.AuthIAMFeatures(),
+			TokenRequestsPerMinute:    cfg.IAM.TokenRequestsPerMinute,
+			MaxConcurrentSecretChecks: cfg.IAM.TokenMaxConcurrentSecretChecks,
+			SecretCheckMetrics:        secretCheckMetrics,
 		})
 		if err != nil {
 			slog.Error("startup failure",
@@ -377,51 +383,29 @@ func New(cfg Config) *App {
 				"error", err.Error())
 			os.Exit(1)
 		}
-		// The built-in IAM holds its signing keys in-process, so the validator
-		// reads public keys directly from the local key store. No loopback JWKS
-		// fetch, no HTTP client, no attack surface on that path.
+		// Periodic re-read of the signing-key store (the trusted-key and
+		// M2M client stores keep no node copy, so they need no loop). Start
+		// takes no ctx of its own — it runs on authLoopCtx, the ctx
+		// NewAuthService was just constructed with, so there is one source
+		// of this background work's lifetime, not two. stopAuthLoops
+		// cancels authLoopCtx and waits for both the loop goroutine and any
+		// in-flight ping-triggered reconcile to exit, and Close calls it
+		// before the store factory closes, so no tick and no ping-triggered
+		// re-read reaches a closing store.
+		authSvc.Start()
+		a.stopAuthLoops = func() {
+			authLoopCancel()
+			authSvc.Wait()
+		}
+		// The built-in IAM holds a copy of the cluster's signing keys on every
+		// node, so the validator reads public keys directly from that copy. No
+		// loopback JWKS fetch, no HTTP client, no attack surface on that path.
 		jwksValidator := auth.NewValidatorFromSource(auth.NewLocalKeySource(authSvc.KeyStore()), authSvc.Issuer())
 		if cfg.IAM.JWTAudience != "" {
 			jwksValidator.SetExpectedAudience(cfg.IAM.JWTAudience)
 		}
-		// Build the OIDC validator and chain it after the first-party JWKS
-		// validator. Chain order is normative per spec D3 and §11 row 36:
-		// JWKSValidator FIRST, OIDCValidator SECOND. Reversing would cause a
-		// first-party kid with a foreign iss to reach OIDCValidator before
-		// JWKSValidator has a chance to hard-fail with ErrIssuerMismatch.
-		oidcValidator := oidc.NewValidator(oidcRegistry, cfg.IAM.OIDC.DefaultRolesClaim)
-		chainedValidator := auth.NewChainedValidator(jwksValidator, oidcValidator)
-		a.authService = auth.NewDelegatingAuthenticator(chainedValidator)
+		a.authService = auth.NewDelegatingAuthenticator(jwksValidator)
 		a.authSvc = authSvc
-
-		// Bootstrap M2M client if configured.
-		// validateBootstrapConfig (called above) guarantees that in jwt mode,
-		// ClientID and ClientSecret are coupled: both set or neither set.
-		if cfg.Bootstrap.ClientID != "" {
-			roles := strings.Split(cfg.Bootstrap.Roles, ",")
-			for i := range roles {
-				roles[i] = strings.TrimSpace(roles[i])
-			}
-			if err := authSvc.M2MClientStore().CreateWithSecret(
-				cfg.Bootstrap.ClientID,
-				spi.TenantID(cfg.Bootstrap.TenantID),
-				cfg.Bootstrap.UserID,
-				cfg.Bootstrap.ClientSecret,
-				roles,
-			); err != nil {
-				slog.Error("startup failure",
-					"phase", "bootstrap-m2m-client",
-					"clientId", cfg.Bootstrap.ClientID,
-					"error", err.Error())
-				os.Exit(1)
-			}
-			slog.Info("bootstrap M2M client registered",
-				"pkg", "app",
-				"clientId", cfg.Bootstrap.ClientID,
-				"tenantId", cfg.Bootstrap.TenantID,
-				"roles", roles,
-			)
-		}
 	} else {
 		defaultUser := &spi.UserContext{
 			UserID:   cfg.IAM.MockUserID,
@@ -435,10 +419,24 @@ func New(cfg Config) *App {
 		}
 		a.authService = mockiam.NewAuthenticationService(defaultUser)
 	}
-	a.authzService = mockiam.NewAuthorizationService()
 
 	a.memberRegistry = internalgrpc.NewMemberRegistry()
-	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, common.NewDefaultUUIDGenerator(), a.tokenSigner, a.selfNodeID, cfg.Cluster.TxTokenTTL)
+	// One transaction coordination per process: both callback doors, the
+	// engine, the entity service and every callout judge a callback by the
+	// same state. A backend that coordinates transactions itself gets the
+	// durable one, and its transactions are location-independent: their
+	// passes name no owner, and any pnode serves their callbacks.
+	coord, locationIndependent, err := txcoord.Select(startupCtx, a.storeFactory, a.transactionManager)
+	if err != nil {
+		slog.Error("startup failure",
+			"phase", "transaction-coordination",
+			"backend", plugin.Name(),
+			"error", err.Error())
+		os.Exit(1)
+	}
+	a.coord = coord
+	slog.Info("transaction coordination selected", "pkg", "app", "locationIndependent", locationIndependent)
+	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance, locationIndependent)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
 		slog.Error("startup failure",
@@ -446,62 +444,22 @@ func New(cfg Config) *App {
 			"error", err.Error())
 		os.Exit(1)
 	}
-	// Negative cache for pre-execution field-path validation. Wired
-	// to the descriptor cache via SubscribeLocal: every model
-	// invalidation (local mutation OR gossip-received event) drops
-	// the corresponding negative-cache bucket. This works on
-	// single-node and multi-node alike: subscribing to the descriptor
-	// cache rather than to the broadcaster directly is what makes
-	// single-node deployments, where the broadcaster is nil, receive
-	// invalidations at all. Per-(tenant, ref) bucketed otter caches
-	// isolate cross-tenant eviction.
-	pathValidationCache := search.NewPathValidationCache()
-	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
 	// Bounded async-search worker pool, sized from config (validated by
 	// cfg.Validate at the top of New).
 	a.searchPool = search.NewWorkerPool(cfg.SearchAsync.Workers, cfg.SearchAsync.QueueLen)
 	a.searchService = search.
-		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
-		WithPathValidationCache(pathValidationCache).
+		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency, clk).
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
-		WithHealthFlag(a.healthFlag).
+		WithHealthLatch(a.healthLatch).
 		WithAsyncPool(a.searchPool).
 		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
-		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
+		WithHeartbeat(cfg.SearchJobHeartbeatInterval).
+		WithSnapshotTTL(cfg.SearchSnapshotTTL)
 
-	// Search reapers (use stopSearchReaper/searchReaperDone for graceful
-	// shutdown). Two cadences: the snapshot-TTL sweep on SearchReapInterval,
-	// and the stale-job reclaim sweep on the finer SearchJobHeartbeatInterval,
-	// plus one reclaim sweep at startup.
-	a.stopSearchReaper = make(chan struct{})
-	a.searchReaperDone = make(chan struct{})
-	go func() {
-		defer close(a.searchReaperDone)
-		// Startup sweep: a restarted node reclaims its own released jobs and
-		// any already-stale jobs the moment it can execute, not after the
-		// first interval.
-		reclaimStaleTick(context.Background(), a.searchService, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, a.healthFlag)
-
-		snapTicker := time.NewTicker(cfg.SearchReapInterval)
-		defer snapTicker.Stop()
-		claimTicker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
-		defer claimTicker.Stop()
-		for {
-			select {
-			case <-snapTicker.C:
-				reapExpiredSnapshotsTick(context.Background(), searchStore, cfg.SearchSnapshotTTL, a.healthFlag)
-			case <-claimTicker.C:
-				reclaimStaleTick(context.Background(), a.searchService, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, a.healthFlag)
-			case <-a.stopSearchReaper:
-				return
-			}
-		}
-	}()
-
-	a.auditService = skeleton.NewAuditService()
-	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
-
-	// Cluster components
+	// Cluster membership. The node joins before any background loop starts
+	// (the search reapers and the scheduler below), so with clock control on
+	// it has merged the cluster's clock setting before anything reads the
+	// clock in the background.
 	if cfg.Cluster.Enabled {
 		// gossipReg was created above (before plugin.NewFactory) so the plugin
 		// could subscribe to broadcast topics. Join the cluster now; subscribers
@@ -520,54 +478,72 @@ func New(cfg Config) *App {
 		a.nodeRegistry = registry.NewLocal("local", fmt.Sprintf("localhost:%d", cfg.HTTPPort))
 	}
 
+	// With clock control on and no setting taken from a peer, the node starts
+	// on real time; a store holding later times fails the start.
+	if testClock != nil {
+		if err := checkClockAtStartup(startupCtx, testClock, platformLatestRecordedTime(a.transactionManager), time.Now()); err != nil { // realtime: a restart compares the store with real time
+			slog.Error("startup failure", "phase", "platform-clock", "error", err.Error())
+			os.Exit(1)
+		}
+	}
+
+	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, a.healthLatch)
+
 	// Wire external processing dispatcher
 	var extProc contract.ExternalProcessingService
 	// Peer-auth for inter-node dispatch. AES-256-GCM + HKDF-derived key over
-	// the shared cluster secret. 30-second timestamp skew window. Constructed
-	// once and shared by forwarder and handler so rotation is atomic.
-	var peerAuth clusterdispatch.PeerAuth
+	// the shared cluster secret. 30-second timestamp skew window. This node's
+	// id is what every inbound envelope must have been sealed for. Constructed
+	// once and shared by forwarder and handler so rotation is atomic. The
+	// forwarder carries a callout hand-over and a platform clock push, so it is
+	// built in cluster mode whatever serves external processing.
+	var (
+		peerAuth  clusterdispatch.PeerAuth
+		forwarder *clusterdispatch.HTTPForwarder
+	)
 	if cfg.Cluster.Enabled {
-		auth, err := clusterdispatch.NewAEADPeerAuth(cfg.Cluster.HMACSecret, 30*time.Second)
+		auth, err := clusterdispatch.NewAEADPeerAuth(cfg.Cluster.HMACSecret, a.selfNodeID, 30*time.Second)
 		if err != nil {
 			slog.Error("failed to construct dispatch peer auth", "pkg", "cluster", "err", err)
 			os.Exit(1)
 		}
 		peerAuth = auth
-	}
-	if cfg.ExternalProcessing != nil {
-		extProc = cfg.ExternalProcessing
-	} else if cfg.Cluster.Enabled {
-		forwarder := clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchForwardTimeout)
+		forwarder = clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchConnectTimeout)
 		if cfg.Cluster.DispatchAllowLoopback {
 			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
 			// Never set in production (SSRF guard stays active by default).
 			forwarder = forwarder.AllowLoopbackForTesting()
 		}
-		extProc = clusterdispatch.NewClusterDispatcher(
-			localDispatcher,
-			a.nodeRegistry,
-			cfg.Cluster.NodeID,
-			clusterdispatch.NewRandomSelector(),
-			forwarder,
-			cfg.Cluster.DispatchWaitTimeout,
-			a.tokenSigner,
-			cfg.Cluster.TxTokenTTL,
-		)
+	}
+	if cfg.ExternalProcessing != nil {
+		extProc = cfg.ExternalProcessing
 	} else {
-		extProc = localDispatcher
+		// The owner's loop, in both modes. On a single node it has no peer
+		// router: peers stays a nil interface (a nil *PeerRouter would not be).
+		var peers callout.PeerRouter
+		if cfg.Cluster.Enabled {
+			peerRouter, err := clusterdispatch.NewPeerRouter(a.nodeRegistry, a.selfNodeID,
+				clusterdispatch.NewRandomSelector(), forwarder, observability.Meter())
+			if err != nil {
+				slog.Error("failed to construct the peer router", "pkg", "cluster", "err", err)
+				os.Exit(1)
+			}
+			peers = peerRouter
+		}
+		extProc = callout.New(localDispatcher, a.memberRegistry, peers, a.coord, common.NewDefaultUUIDGenerator(), clk, callout.Config{
+			SelfNodeID:        a.selfNodeID,
+			FixedNumRetries:   cfg.Callout.FixedNumRetries,
+			Patience:          cfg.Cluster.DispatchWaitTimeout,
+			HandoverAllowance: cfg.Callout.HandoverAllowance,
+		})
 	}
 	if cfg.OTelEnabled {
 		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
 	}
-	// schedClock is shared by the engine's scheduled-transition arm/fire math
-	// (reconcileScheduledTasks, FireScheduledTransition) and the scheduler
-	// scan loop below, so both sides of the runtime agree on "now".
-	schedClock := scheduler.NewRealClock()
-	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager,
+	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager, clk,
 		workflow.WithExternalProcessing(extProc),
-		workflow.WithMaxStateVisits(cfg.MaxStateVisits),
-		workflow.WithScheduledClock(schedClock.Now),
-		workflow.WithExpiryGrace(cfg.Scheduler.ExpiryGrace))
+		workflow.WithCoordination(a.coord),
+		workflow.WithMaxStateVisits(cfg.MaxStateVisits))
 
 	// Wire MemberRegistry onChange to gossip tag updates
 	if cfg.Cluster.Enabled {
@@ -583,73 +559,44 @@ func New(cfg Config) *App {
 		})
 	}
 
-	// Scheduled-transition scan loop (Task D4). Constructed and started
-	// unconditionally — cfg.Scheduler.Enabled gates the tick body itself, so
-	// the Service always exists and Shutdown always has something to Stop.
-	schedEngine := cluster.NewSchedulerEngine(a.workflowEngine)
-	var schedulerRPCClient *cluster.SchedulerRPCClient
-	if cfg.Cluster.Enabled {
-		schedulerRPCClient = cluster.NewSchedulerRPCClient(peerAuth, cfg.Cluster.DispatchForwardTimeout)
-		if cfg.Cluster.DispatchAllowLoopback {
-			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
-			// Never set in production (SSRF guard stays active by default).
-			schedulerRPCClient = schedulerRPCClient.AllowLoopbackForTesting()
-		}
-	}
-	clusterExecutor := cluster.NewClusterExecutor(schedEngine, a.selfNodeID, a.nodeRegistry, schedulerRPCClient)
-
-	// Self is forced when cluster mode is off (there are no peers to
-	// distribute to — a.nodeRegistry is a single-member registry.NewLocal
-	// in that case) or when the operator explicitly opted out of
-	// round-robin distribution.
-	var distStrategy scheduler.DistributionStrategy
-	switch {
-	case !cfg.Cluster.Enabled || cfg.Scheduler.Distribution == "self":
-		distStrategy = scheduler.Self{}
-	default:
-		if cfg.Scheduler.Distribution != "round-robin" {
-			slog.Warn("unknown CYODA_SCHEDULER_DISTRIBUTION, defaulting to round-robin",
-				"pkg", "app", "value", cfg.Scheduler.Distribution)
-		}
-		distStrategy = scheduler.NewRoundRobin()
+	// The scheduler: this node claims due scheduled tasks and runs them
+	// itself. A disabled scheduler starts nothing; Shutdown drains it either way.
+	a.scheduler = scheduler.New(scheduler.Config(cfg.Scheduler), scheduler.Deps{
+		Store:              a.storeFactory,
+		TxManager:          a.transactionManager,
+		Coord:              a.coord,
+		Firer:              a.workflowEngine,
+		Clock:              clk,
+		HealthLatch:        a.healthLatch,
+		Meter:              observability.Meter(),
+		CalloutDeadlineMax: schedulerCalloutDeadlineMax(cfg),
+	})
+	if err := a.scheduler.Start(context.Background()); err != nil {
+		slog.Error("startup failure", "phase", "scheduler-start", "error", err.Error())
+		os.Exit(1)
 	}
 
-	var coordStrategy scheduler.CoordinatorStrategy = scheduler.LowestLiveNodeID{}
-	if cfg.Scheduler.Coordinator != "lowest-node-id" {
-		slog.Warn("unknown CYODA_SCHEDULER_COORDINATOR, defaulting to lowest-node-id",
-			"pkg", "app", "value", cfg.Scheduler.Coordinator)
+	// The join layer: every request that carries a pass runs through it, on
+	// either door — joined, in a scope of its own, and holding the
+	// transaction's gate until its scope has ended.
+	joiner, err := txjoin.NewJoiner(a.tokenSigner, a.transactionManager, a.coord,
+		cfg.Callout.JoinedResponseMaxBytes, cfg.Callout.JoinedMaxWaiters, observability.Meter())
+	if err != nil {
+		slog.Error("startup failure", "phase", "joiner-metrics-init", "error", err.Error())
+		os.Exit(1)
 	}
-
-	a.scheduler = scheduler.NewService(
-		scheduler.Config{
-			Enabled:           cfg.Scheduler.Enabled,
-			ScanInterval:      cfg.Scheduler.ScanInterval,
-			RedispatchBackoff: cfg.Scheduler.RedispatchBackoff,
-			BatchSize:         cfg.Scheduler.BatchSize,
-		},
-		scheduler.Deps{
-			Store:        a.storeFactory,
-			Registry:     a.nodeRegistry,
-			Coordinator:  coordStrategy,
-			Distribution: distStrategy,
-			Clock:        schedClock,
-			Executor:     clusterExecutor,
-			SelfID:       a.selfNodeID,
-			HealthFlag:   a.healthFlag,
-		},
-	)
-	a.scheduler.Start()
+	a.joiner = joiner
 
 	// Domain handlers
-	a.txGate = txgate.New()
-	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate)
-	modelHandler := model.New(a.storeFactory)
+	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.coord, a.consistency, clk)
+	modelHandler := model.New(a.storeFactory, clk)
 	server := internalapi.NewServer()
 	server.Entity = entityHandler
 	server.Model = modelHandler
-	server.Workflow = workflow.New(a.storeFactory, a.workflowEngine)
+	server.Workflow = workflow.New(a.storeFactory, a.workflowEngine, a.config.Callout.ResponseTimeoutMax)
 	server.Search = search.NewHandler(a.searchService).WithMaxSortKeys(a.config.SearchMaxSortKeys)
 	server.Audit = audit.New(a.storeFactory)
+	server.ScheduledTasks = scheduledtask.NewHandler(a.storeFactory)
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
 	var accountKeyStore auth.KeyStore
 	var accountTrustedKeyStore auth.TrustedKeyStore
@@ -659,35 +606,55 @@ func New(cfg Config) *App {
 		accountTrustedKeyStore = authSvc.TrustedKeyStore()
 		accountM2MStore = authSvc.M2MClientStore()
 	}
-	accountHandler := account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures())
-	// Wire the OIDC HTTP adapter if the OIDC subsystem was bootstrapped (JWT
-	// IAM mode only). nil is safe — WithOIDCAdapter tolerates nil and leaves
-	// the 7 OIDC stub paths returning 501.
-	if pendingOIDCAdapter != nil {
-		accountHandler.WithOIDCAdapter(pendingOIDCAdapter)
-	}
+	accountHandler := account.New(accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures(), operatorGuard)
 	server.Account = accountHandler
 
-	// Phase 2: asynchronous OIDC warmup launched after all synchronous wiring
-	// is complete (D8). The goroutine fetches discovery + JWKS for every
-	// provider loaded in Phase 1. Tokens for not-yet-warmed providers fall
-	// through the chain as ErrUnknownKID → 401 during the cold-start window.
-	if pendingWarmJWKS != nil {
-		go pendingWarmJWKS()
+	// The platform clock API. With clock control on, POST /platform/clock
+	// changes the test clock: a move polls the store's scheduled tasks, and
+	// each new setting is confirmed before the change goes on. In cluster mode
+	// the setting is pushed to every member of the gossip directory over the
+	// peer channel, and each must echo it within CYODA_PROXY_TIMEOUT.
+	clockState := func() platformclock.State { return platformclock.StateOf(nil, false) }
+	if testClock != nil {
+		confirm := platformclock.SingleNode(a.selfNodeID)
+		if cfg.Cluster.Enabled {
+			confirm = platformclock.Cluster(a.selfNodeID, clockPeers(gossipReg), clockPush(forwarder), cfg.Cluster.ProxyTimeout)
+		}
+		clockSvc := platformclock.NewService(testClock, platformConsistencyTime(a.transactionManager), a.storeFactory.ScheduledTaskStore,
+			confirm, 100*time.Millisecond)
+		clockState = clockSvc.State
+		server.PlatformClock = platformclock.NewHandler(clockSvc, operatorGuard, true)
+	} else {
+		server.PlatformClock = platformclock.NewHandler(nil, operatorGuard, false)
 	}
+
+	// The cluster status read. This node's own status is its lifecycle state,
+	// its store's Ping (bounded by half of CYODA_PROXY_TIMEOUT), its version
+	// and its clock setting. In cluster mode every member of the gossip
+	// directory, this node included, is asked over the sealed peer channel,
+	// each ask bounded by CYODA_PROXY_TIMEOUT; without clustering the one
+	// member, local, is read in process.
+	statusSelf := clusterstatus.NewSelf(a.lifecycle, a.storeFactory, cfg.Version, statusClock(testClock), cfg.Cluster.ProxyTimeout)
+	var statusSvc *clusterstatus.Service
+	if cfg.Cluster.Enabled {
+		statusSvc = clusterstatus.NewService(gossipDirectory{g: gossipReg}, forwarder, cfg.Cluster.ProxyTimeout)
+	} else {
+		statusSvc = clusterstatus.NewService(clusterstatus.LocalDirectory(a.lifecycle), clusterstatus.InProcess(statusSelf), cfg.Cluster.ProxyTimeout)
+	}
+	server.PlatformCluster = clusterstatus.NewHandler(statusSvc, operatorGuard)
 
 	// Build HTTP handler
 	mux := http.NewServeMux()
 
-	// Infrastructure routes (no auth, receives health flag)
-	internalapi.RegisterHealthRoutes(mux, a.healthFlag)
+	// Infrastructure routes (no auth, receives the health latch)
+	internalapi.RegisterHealthRoutes(mux, a.healthLatch)
 
 	// Auth service route registration is split into two strict groups so
 	// nothing administrative leaks into the public surface:
 	//
-	//   PUBLIC (no auth): /.well-known/jwks.json, POST /oauth/token.
-	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
-	//     and must be reachable by unauthenticated callers by protocol.
+	//   PUBLIC (no auth): /.well-known/jwks.json, /tenants/{tenant}/oauth/token.
+	//     These are the JWKS discovery + token-exchange endpoints and must
+	//     be reachable by unauthenticated callers by protocol.
 	//
 	//   ADMIN (authMW + ROLE_ADMIN): served via the chi router (account
 	//     handler). The /account/m2m* legacy mux entries were retired
@@ -696,31 +663,51 @@ func New(cfg Config) *App {
 	// Public auth endpoints (no auth middleware).
 	if authSvc != nil {
 		mux.Handle("/.well-known/", authSvc.Handler())
-		mux.Handle("POST /oauth/token", authSvc.Handler())
+		// Every method: the token handler answers its own 405, so a GET
+		// never falls through to the authenticated catch-all. The auth
+		// service registers the same pattern in the tenant route group.
+		mux.Handle("/tenants/{tenant}/oauth/token", authSvc.Handler())
 	}
+
+	// Every spec operation refuses a query parameter it does not declare, on
+	// the generated routes and on the hand-written one below alike.
+	spec, err := genapi.GetSwagger()
+	if err != nil {
+		slog.Error("failed to load the embedded OpenAPI document", "pkg", "app", "err", err)
+		os.Exit(1)
+	}
+	queryRules := internalapi.NewQueryRules(spec)
 
 	// Admin routes (auth middleware required).
 	authMW := middleware.Auth(a.authService)
 
-	mux.Handle("GET /admin/log-level", authMW(http.HandlerFunc(internalapi.HandleGetLogLevel)))
-	mux.Handle("POST /admin/log-level", authMW(http.HandlerFunc(internalapi.HandleSetLogLevel)))
-	mux.Handle("GET /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleGetTraceSampler)))
-	mux.Handle("POST /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleSetTraceSampler)))
+	adminHandlers := internalapi.NewAdminHandlers(operatorGuard)
+	mux.Handle("GET /admin/log-level", authMW(http.HandlerFunc(adminHandlers.GetLogLevel)))
+	mux.Handle("POST /admin/log-level", authMW(http.HandlerFunc(adminHandlers.SetLogLevel)))
+	mux.Handle("GET /admin/trace-sampler", authMW(http.HandlerFunc(adminHandlers.GetTraceSampler)))
+	mux.Handle("POST /admin/trace-sampler", authMW(http.HandlerFunc(adminHandlers.SetTraceSampler)))
 
-	// Entity transition routes (with auth, outside generated API mux).
-	// TxJoin is nested inside authMW so UserContext is available for tenant checks.
-	txJoinMW := httpmw.TxJoin(a.tokenSigner, a.transactionManager)
-	mux.Handle("GET /entity/{entityId}/transitions", authMW(txJoinMW(http.HandlerFunc(entityHandler.HandleGetTransitions))))
-	mux.Handle("GET /platform-api/entity/fetch/transitions", authMW(txJoinMW(http.HandlerFunc(entityHandler.HandleFetchTransitions))))
+	// The hand-written data route below takes the chain the generated routes
+	// take: TxJoin is nested inside authMW so UserContext is available for
+	// tenant checks; RequireM2M runs before TxJoin, so a caller without
+	// ROLE_M2M joins nothing. Warnings sits outside TxJoin and installs the
+	// request's diagnostics bag: every warning the handler raises, a joined
+	// request's included, and every refusal TxJoin writes go out through it
+	// with Cyoda-Warning headers. The /admin routes above are operator-guarded
+	// instead and raise no warning.
+	txJoinMW := httpmw.TxJoin(a.joiner)
+	dataMW := func(h http.Handler) http.Handler {
+		return authMW(internalapi.RequireM2M(httpmw.Warnings(txJoinMW(h))))
+	}
 
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
 	// the EntityStore and a validated ModelRef for the calling tenant.
-	// The resolver returns ok=false when the model is not registered (after
-	// one bounded cache refresh — closing the multi-node stale-cache race);
-	// the handler maps that to 404 MODEL_NOT_FOUND. Genuine store errors
-	// (non-ErrNotFound from Get or RefreshAndGet) surface as Internal(500)
-	// and are propagated to the 500-with-ticket path.
+	// The resolver returns ok=false when the model is not registered (one Get;
+	// the model cache never holds a not-found, so a model registered on a peer
+	// is found); the handler maps that to 404 MODEL_NOT_FOUND. Genuine store
+	// errors (non-ErrNotFound from Get) surface as Internal(500) and are
+	// propagated to the 500-with-ticket path.
 	storeFactory := a.storeFactory
 	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		ctx := r.Context()
@@ -731,7 +718,7 @@ func New(cfg Config) *App {
 		ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 		if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
 			if appErr.Status == http.StatusNotFound {
-				// Not registered after one bounded refresh → handler emits 404 MODEL_NOT_FOUND.
+				// Not registered → handler emits 404 MODEL_NOT_FOUND.
 				return nil, ref, nil, nil, false, nil
 			}
 			// Genuine store error → propagate to 500-with-ticket path.
@@ -755,58 +742,58 @@ func New(cfg Config) *App {
 		}
 		return entityStore, ref, fields, modelStore, true, nil
 	}
-	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
-	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(txJoinMW(groupedStatsHandler)))
+	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax, a.consistency)
+	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", dataMW(queryRules.Route("POST", "/entity/stats/{entityName}/{modelVersion}/query")(groupedStatsHandler)))
 
 	// Generated API routes (with auth) — uses chi to avoid ServeMux
 	// wildcard-conflict panics in overlapping /model/… paths. Recovery is
-	// applied once, below, to the fully assembled handler.
+	// applied once, below, to the fully assembled handler. The chi mux runs
+	// each route's ROLE_M2M check before Warnings and TxJoin, as dataMW does
+	// above.
 	apiHandler := genapi.HandlerWithOptions(server, genapi.StdHTTPServerOptions{
-		BaseRouter:       internalapi.NewChiMux(),
+		BaseRouter:       internalapi.NewChiMux(queryRules, httpmw.Warnings, txJoinMW),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
 	})
-	if cfg.OTelEnabled {
-		apiHandler = otelhttp.NewMiddleware("cyoda")(apiHandler)
-	}
-	mux.Handle("/", middleware.Auth(a.authService)(txJoinMW(apiHandler)))
+	mux.Handle("/", authMW(apiHandler))
 
 	// Context path — wrap all routes under configurable prefix
 	contextPath := strings.TrimRight(cfg.ContextPath, "/")
+	rootMux := mux
 	if contextPath != "" {
 		outerMux := http.NewServeMux()
 		outerMux.Handle(contextPath+"/", http.StripPrefix(contextPath, mux))
-		// Discovery routes at root (no auth, no context path)
-		internalapi.RegisterDiscoveryRoutes(outerMux, contextPath)
-		// Help routes — unauthenticated, public content embedded in the binary
-		// (OSS base merged with any plugin-registered overlays).
-		internalapi.RegisterHelpRoutes(outerMux, help.BuildTree(), contextPath, cfg.Version)
-		// Internal dispatch routes at root (AEAD-authenticated, not under context path)
-		if cfg.Cluster.Enabled {
-			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
-			dispatchHandler.Register(outerMux)
-			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(outerMux)
-		}
-		a.handler = outerMux
-	} else {
-		// No context path — discovery routes on the main mux
-		internalapi.RegisterDiscoveryRoutes(mux, "")
-		// Help routes — unauthenticated, public content embedded in the binary
-		// (OSS base merged with any plugin-registered overlays).
-		internalapi.RegisterHelpRoutes(mux, help.BuildTree(), "", cfg.Version)
-		// Internal dispatch routes (AEAD-authenticated)
-		if cfg.Cluster.Enabled {
-			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
-			dispatchHandler.Register(mux)
-			cluster.NewSchedulerRPCHandler(schedEngine, peerAuth).Register(mux)
-		}
-		a.handler = mux
+		rootMux = outerMux
 	}
+	// Discovery routes at root (no auth, no context path)
+	internalapi.RegisterDiscoveryRoutes(rootMux, contextPath)
+	// Help routes — unauthenticated, public content embedded in the binary
+	// (OSS base merged with any plugin-registered overlays).
+	internalapi.RegisterHelpRoutes(rootMux, help.BuildTree(), contextPath, cfg.Version)
+	// Internal dispatch routes at root, not under the context path, sealed by
+	// the peer channel: the callout hand-over, the platform clock push and the
+	// status ask. The clock route is served whether clock control is on or
+	// off: with it off (testClock nil) every push is refused, so a change
+	// fails on that node rather than passing it by.
+	if cfg.Cluster.Enabled {
+		clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth).Register(rootMux)
+		clusterdispatch.NewClockHandler(peerAuth, platformclock.NewHolder(testClock)).Register(rootMux)
+		clusterdispatch.NewStatusHandler(peerAuth, statusSelf).Register(rootMux)
+	}
+	a.handler = rootMux
 
 	// Cluster routing sits directly over the mux: a request carrying a
 	// transaction token for another node is forwarded before auth runs here
 	// (auth is applied on the owning node).
 	if cfg.Cluster.Enabled {
-		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback)(a.handler)
+		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback, contextPath)(a.handler)
+	}
+
+	// Every request gets a server span, the hand-registered routes (token,
+	// JWKS, admin, grouped statistics, help, peer routes) as much as the
+	// generated API routes, and a request forwarded to its transaction's owner
+	// as much as one served here.
+	if cfg.OTelEnabled {
+		a.handler = otelhttp.NewMiddleware("cyoda")(a.handler)
 	}
 
 	// CORS sits outside cluster routing so preflights short-circuit at the
@@ -821,16 +808,18 @@ func New(cfg Config) *App {
 	// its headers before calling the next handler, so a recovered 500 keeps
 	// them. Recovery re-raises http.ErrAbortHandler, which is how the reverse
 	// proxy reports a client hang-up, so proxied disconnects stay silent.
-	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
+	a.handler = middleware.Recovery(a.healthLatch)(a.handler)
 
-	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second})
+	// gRPC server — uses inner handler (without context path prefix). The
+	// client store is nil in mock IAM mode, so no member stream is re-checked.
+	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, cfg.Cluster.ProxyTimeout, a.healthLatch, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency, clockState, a.ReadinessCheck)
 
+	a.lifecycle.MarkStarted()
 	return a
 }
 
-// latchOnPanic recovers a panic beneath a reaper sweep and latches healthFlag
-// false, exactly as the async-search executor's own recovery does: a reaper
+// latchOnPanic recovers a panic beneath a reaper sweep and trips healthLatch,
+// exactly as the async-search executor's own recovery does: a reaper
 // goroutine has no HTTP handler above it, so an unrecovered panic takes the
 // process down, and a node that has panicked has state nothing has verified.
 // Recovering also keeps the ticker alive, so one bad tick does not silently
@@ -838,22 +827,75 @@ func New(cfg Config) *App {
 // tick; site names the sweep in the log. No plugin currently returns the
 // shapes that would panic (a nil element from ClaimStale, say), so this is
 // hardening rather than a fix for a live defect.
-func latchOnPanic(healthFlag *atomic.Bool, site string) {
+func latchOnPanic(healthLatch *health.Latch, site string) {
 	if rec := recover(); rec != nil {
 		slog.Error("panic recovered in "+site, "pkg", "search",
 			"err", fmt.Errorf("panic: %v", rec), "stack", string(debug.Stack()))
-		if healthFlag != nil {
-			healthFlag.Store(false)
-		}
+		healthLatch.Trip()
 	}
 }
 
-// reapExpiredSnapshotsTick deletes terminal jobs past the snapshot TTL. Runs
-// on SearchReapInterval. Panic-latches health like the other engine-work sites.
-func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL time.Duration, healthFlag *atomic.Bool) {
-	defer latchOnPanic(healthFlag, "search snapshot reaper")
-	reaped, err := store.ReapExpired(ctx, snapshotTTL)
+// startSearchReapers starts the async-search sweeps and returns the func that
+// stops them and waits for them to exit. Each sweep has a goroutine of its
+// own, so neither waits on the other:
+//   - the snapshot-TTL reap, on SearchReapInterval. Its DELETE shares the
+//     store's main pool with entity transactions and may wait on it.
+//   - the stale-job claim, on the finer SearchJobHeartbeatInterval, plus one
+//     sweep at startup. It never waits on the main pool; the writes it owes
+//     jobs it will not run go to the service's second pass
+//     (search.SearchService.ReclaimStaleJobs).
+//
+// Both run under one context, which stop cancels: a statement still waiting
+// for a connection gives up, and the second pass sends nothing more. stop then
+// waits for both goroutines and for the second pass.
+func startSearchReapers(cfg *Config, svc *search.SearchService, healthLatch *health.Latch) (stop func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		ticker := time.NewTicker(cfg.SearchReapInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				reapExpiredSnapshotsTick(ctx, svc, healthLatch)
+			case <-ctx.Done():
+				return
+			}
+		}
+	})
+	wg.Go(func() {
+		// Startup sweep: a restarted node reclaims its own released jobs and
+		// any already-stale jobs the moment it can execute, not after the
+		// first interval.
+		reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthLatch)
+		ticker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthLatch)
+			case <-ctx.Done():
+				return
+			}
+		}
+	})
+	return func() {
+		cancel()
+		wg.Wait()
+		svc.WaitReclaimSecondPass()
+	}
+}
+
+// reapExpiredSnapshotsTick deletes terminal jobs past the snapshot TTL the
+// service holds, the TTL their expirationDate reports. Runs on
+// SearchReapInterval. Panic-latches health like the other engine-work sites.
+func reapExpiredSnapshotsTick(ctx context.Context, svc *search.SearchService, healthLatch *health.Latch) {
+	defer latchOnPanic(healthLatch, "search snapshot reaper")
+	reaped, err := svc.ReapExpiredSnapshots(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return // the sweeps are stopping
+		}
 		slog.Error("search snapshot reaper error", "pkg", "search", "err", err)
 	} else if reaped > 0 {
 		slog.Info("reaped expired search snapshots", "pkg", "search", "count", reaped)
@@ -861,20 +903,21 @@ func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, s
 }
 
 // reclaimStaleTick claims stale/released RUNNING jobs and re-executes them on
-// this node (or fails those past the attempt cap). Runs on the heartbeat
-// interval — a finer cadence than the snapshot reap — plus once at startup.
-func reclaimStaleTick(ctx context.Context, svc *search.SearchService, staleAfter time.Duration, maxAttempts int, healthFlag *atomic.Bool) {
-	defer latchOnPanic(healthFlag, "search stale-job reaper")
-	reenqueued, failed, err := svc.ReclaimStaleJobs(ctx, staleAfter, maxAttempts)
+// this node; the second pass fails those past the attempt cap. Runs on the
+// heartbeat interval — a finer cadence than the snapshot reap — plus once at
+// startup.
+func reclaimStaleTick(ctx context.Context, svc *search.SearchService, staleAfter time.Duration, maxAttempts int, healthLatch *health.Latch) {
+	defer latchOnPanic(healthLatch, "search stale-job reaper")
+	reenqueued, err := svc.ReclaimStaleJobs(ctx, staleAfter, maxAttempts)
 	if err != nil {
+		if ctx.Err() != nil {
+			return // the sweeps are stopping
+		}
 		slog.Error("stale search job reclaim error", "pkg", "search", "err", err)
 		return
 	}
 	if reenqueued > 0 {
 		slog.Info("re-enqueued stale async search jobs", "pkg", "search", "count", reenqueued)
-	}
-	if failed > 0 {
-		slog.Warn("failed async search jobs past the attempt cap", "pkg", "search", "count", failed)
 	}
 }
 
@@ -882,10 +925,10 @@ func (a *App) Handler() http.Handler { return a.handler }
 
 // ReadinessCheck returns nil when the instance is ready to serve external
 // traffic. Called synchronously by the /readyz admin endpoint on every
-// probe — keep it cheap; both conditions below are a pointer test and an
-// atomic load, and neither performs I/O.
+// probe — keep it cheap; each condition below is a pointer test or a short
+// mutex-guarded read, and none performs I/O.
 //
-// Two conditions fail it independently, and the returned reasons differ so
+// Three conditions fail it independently, and the returned reasons differ so
 // the admin handler's server-side log tells an operator which fired:
 //
 //   - Storage is not initialized. A defensive guard rather than a live
@@ -894,7 +937,11 @@ func (a *App) Handler() http.Handler { return a.handler }
 //     and keeps the check honest for any other caller.
 //   - A panic was recovered on some door. The node's state is then
 //     unverified, so it must stop receiving traffic — fail closed. Nothing
-//     resets the flag.
+//     resets the latch.
+//   - Shutdown has begun and the node is draining. Readiness fails from the
+//     start of the drain so load balancers stop sending new requests;
+//     GET /health stays on the latch alone. When the latch has also tripped,
+//     its reason is returned.
 //
 // What failing readiness achieves is bounded: Kubernetes drops the pod from
 // the client-facing Service, so new client connections stop. Peers resolve
@@ -906,11 +953,31 @@ func (a *App) ReadinessCheck() error {
 	if a.storeFactory == nil {
 		return fmt.Errorf("storage not initialized")
 	}
-	// nil only for an App not built by New(); New() always sets the flag.
-	if a.healthFlag != nil && !a.healthFlag.Load() {
+	if a.healthLatch.Tripped() {
 		return fmt.Errorf("node unhealthy: a panic was recovered and this node's state is unverified")
 	}
+	if a.lifecycle.Draining() {
+		return errors.New("node draining: shutdown has begun")
+	}
 	return nil
+}
+
+// DrainScheduler runs the scheduler's shutdown steps 1-5. The binary calls it
+// on a signal before the servers drain, so runs still in progress keep their
+// compute-node streams and callback routes. Shutdown and Close drain it again;
+// every call after the first does nothing. It also sets the node to DRAINING.
+func (a *App) DrainScheduler(ctx context.Context) {
+	a.lifecycle.BeginDraining()
+	if a.scheduler != nil {
+		a.scheduler.Drain(ctx)
+	}
+}
+
+// schedulerCalloutDeadlineMax is the longest one callout can take: every try
+// at the largest answer limit, the patience and the hand-over allowance.
+func schedulerCalloutDeadlineMax(c Config) time.Duration {
+	return time.Duration(1+c.Callout.FixedNumRetries)*c.Callout.ResponseTimeoutMax +
+		c.Cluster.DispatchWaitTimeout + c.Callout.HandoverAllowance
 }
 
 func (a *App) StoreFactory() spi.StoreFactory             { return a.storeFactory }
@@ -920,24 +987,20 @@ func (a *App) AuthenticationService() contract.AuthenticationService {
 }
 
 // AuthService returns the underlying *auth.AuthService when JWT IAM mode is
-// active, or nil when running in mock IAM mode. Exposed for test-mode seeding
-// of M2M clients across tenants without going through the public HTTP surface.
-func (a *App) AuthService() *auth.AuthService { return a.authSvc }
-func (a *App) AuthorizationService() contract.AuthorizationService {
-	return a.authzService
-}
+// active, or nil when running in mock IAM mode. Exposed for tests that
+// inspect the auth stores.
+func (a *App) AuthService() *auth.AuthService               { return a.authSvc }
 func (a *App) WorkflowEngine() *workflow.Engine             { return a.workflowEngine }
 func (a *App) SearchService() *search.SearchService         { return a.searchService }
-func (a *App) AuditService() contract.AuditService          { return a.auditService }
-func (a *App) ClusterService() contract.ClusterService      { return a.clusterService }
 func (a *App) GRPCServer() *internalgrpc.Server             { return a.grpcServer }
 func (a *App) MemberRegistry() *internalgrpc.MemberRegistry { return a.memberRegistry }
 func (a *App) TokenSigner() *token.Signer                   { return a.tokenSigner }
 func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegistry }
 
 // gRPCGracefulStopBudget is the upper bound on graceful drain at shutdown.
-// Matched to the HTTP server's drain deadline in cmd/cyoda/main.go so a
-// caller can predict total stop time as ~max(http, grpc) drain budgets.
+// Matched to shutdownDrainBudget, the HTTP and admin drain deadline in
+// cmd/cyoda/run.go, so a caller can predict total stop time as
+// ~max(http, admin, grpc) drain budgets.
 const gRPCGracefulStopBudget = 10 * time.Second
 
 // searchDrainBudget bounds how long Shutdown waits for in-flight async
@@ -947,16 +1010,25 @@ const gRPCGracefulStopBudget = 10 * time.Second
 // does not itself abort them; this budget is what actually bounds the wait.
 const searchDrainBudget = 5 * time.Second
 
-// stopSearchReaperLoop signals the reaper goroutine and waits for it to exit.
-// Idempotent: safe to call from both Shutdown and Close (sync.Once guards the
-// close; the done-channel wait is a no-op once the goroutine has already
-// returned).
+// stopSearchReaperLoop stops the async-search sweeps and waits for them to
+// exit. Idempotent: safe to call from both Shutdown and Close (sync.Once runs
+// the stop once, and a second caller waits for it to finish).
 func (a *App) stopSearchReaperLoop() {
-	if a.stopSearchReaper == nil {
+	if a.stopSearchReapers == nil {
 		return
 	}
-	a.stopSearchReaperOnce.Do(func() { close(a.stopSearchReaper) })
-	<-a.searchReaperDone
+	a.stopSearchReapersOnce.Do(a.stopSearchReapers)
+}
+
+// stopAuthLoop cancels the auth service's signing-key re-read loop and waits
+// for it to exit. Idempotent: safe to call from both Shutdown and Close
+// (sync.Once runs the stop once, and a second caller waits for it to
+// finish). A no-op in mock IAM mode, where stopAuthLoops is nil.
+func (a *App) stopAuthLoop() {
+	if a.stopAuthLoops == nil {
+		return
+	}
+	a.stopAuthLoopsOnce.Do(a.stopAuthLoops)
 }
 
 // Close performs graceful shutdown of all backend resources.
@@ -972,9 +1044,15 @@ func (a *App) stopSearchReaperLoop() {
 // so operators can see the budget was hit.
 func (a *App) Close() error {
 	slog.Info("shutting down")
-	// Stop the reaper first so a node whose store is closing does not keep
-	// sweeping on the claim ticker against a store being torn down.
+	// Drain the scheduler before anything is torn down, so a Close without
+	// Shutdown does not leave it claiming and heartbeating against a store
+	// that is closing. After Shutdown this does nothing.
+	a.DrainScheduler(context.Background())
+	// Stop the reaper and the auth re-read loop first so a node whose store
+	// is closing does not keep sweeping or reconciling against a store being
+	// torn down.
 	a.stopSearchReaperLoop()
+	a.stopAuthLoop()
 	var err error
 	if a.storeFactory != nil {
 		err = a.storeFactory.Close()
@@ -1015,9 +1093,17 @@ func (a *App) StopGRPC() {
 // resources. The storeFactory is intentionally NOT closed here — Close()
 // is the single teardown path for that, so callers invoking Shutdown()
 // followed by Close() (the runServers sequence) close the factory
-// exactly once.
+// exactly once. It also sets the node to DRAINING.
 func (a *App) Shutdown() {
+	a.lifecycle.BeginDraining()
+	// A server failed, or the binary did not drain the scheduler first: the
+	// same steps run here, after the servers stopped, with no outside
+	// deadline. After a DrainScheduler this does nothing.
+	if a.scheduler != nil {
+		a.scheduler.Stop()
+	}
 	a.stopSearchReaperLoop()
+	a.stopAuthLoop()
 	if a.searchPool != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), searchDrainBudget)
 		a.searchPool.Drain(drainCtx)
@@ -1030,48 +1116,10 @@ func (a *App) Shutdown() {
 			slog.Info("released in-flight async search jobs for reclaim at shutdown", "pkg", "search", "count", n)
 		}
 	}
-	if a.scheduler != nil {
-		a.scheduler.Stop()
-	}
 	if a.nodeRegistry != nil && a.config.Cluster.Enabled {
 		if err := a.nodeRegistry.Deregister(context.Background(), a.config.Cluster.NodeID); err != nil {
 			slog.Warn("failed to deregister from cluster", "pkg", "cluster", "err", err)
 		}
-	}
-}
-
-// validateBootstrapConfig enforces bootstrap-secret policy:
-//   - jwt mode: CYODA_BOOTSTRAP_CLIENT_SECRET is required (fatal startup error
-//     if unset); the Helm chart always provides it via a Kubernetes Secret, so
-//     auto-generation is never needed in a deployment context.
-//   - mock mode: the secret is irrelevant; zero it to prevent accidental use.
-//
-// Returns a new Config with the policy applied, or an error the caller must
-// surface as a fatal startup failure.
-func validateBootstrapConfig(cfg *Config) (*Config, error) {
-	out := *cfg
-	if out.IAM.Mode != "jwt" {
-		// Mock (or any non-jwt) mode: bootstrap is irrelevant. Zero the secret defensively so
-		// downstream code can't accidentally use it.
-		out.Bootstrap.ClientSecret = ""
-		return &out, nil
-	}
-	idSet := out.Bootstrap.ClientID != ""
-	secretSet := out.Bootstrap.ClientSecret != ""
-	switch {
-	case !idSet && !secretSet:
-		// No bootstrap M2M client configured. System starts without one;
-		// operator authenticates via JWKS / external signing keys.
-		return &out, nil
-	case idSet && secretSet:
-		// Bootstrap M2M client configured. Creation happens in New().
-		return &out, nil
-	case idSet && !secretSet:
-		return nil, fmt.Errorf(
-			"CYODA_BOOTSTRAP_CLIENT_SECRET is required when CYODA_BOOTSTRAP_CLIENT_ID is set in jwt mode")
-	default: // !idSet && secretSet
-		return nil, fmt.Errorf(
-			"CYODA_BOOTSTRAP_CLIENT_ID is required when CYODA_BOOTSTRAP_CLIENT_SECRET is set in jwt mode (secret would otherwise be unused)")
 	}
 }
 
@@ -1110,32 +1158,31 @@ func validateClusterConfig(c cluster.Config) {
 	}
 }
 
-// applyFuncSetter is the wiring surface Run soft-asserts on each plugin
+// applyFuncSetter is the wiring surface Run requires of every storage
 // factory. It uses the raw function signature (not any plugin-local named
-// ApplyFunc type) so a single type-assertion satisfies all plugins
-// uniformly. The assertion is soft: a factory that stops implementing
-// this exact signature would be skipped silently and every fold-on-read
-// of pending deltas would fail — applyfunc_wiring_test.go pins the
-// in-tree factories to this same declaration at compile time.
+// ApplyFunc type) so a single type-assertion satisfies all plugins uniformly.
+// applyfunc_wiring_test.go pins the in-tree factories to this declaration at
+// compile time.
+//
+// The function replays a list of deltas in one call (schema.ApplyMany), so
+// the plugins decode and encode the schema once per fold, not once per
+// delta. The plugin packages do not depend on internal/domain/model/schema;
+// the composition root injects it.
 type applyFuncSetter interface {
-	SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error))
+	SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))
 }
 
-// makeSchemaApply returns the schema-apply replay function the plugin
-// factories use to fold extension-log deltas on read. Defined here so
-// the plugin packages don't depend on internal/domain/model/schema.
-func makeSchemaApply() func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
-		node, err := schema.Unmarshal(base)
-		if err != nil {
-			return nil, fmt.Errorf("apply: unmarshal base: %w", err)
-		}
-		extended, err := schema.Apply(node, delta)
-		if err != nil {
-			return nil, err
-		}
-		return schema.Marshal(extended)
+// wireSchemaApply installs the schema replay function on factory. A factory
+// that does not offer applyFuncSetter could not fold a model's extension log,
+// so it is refused: Run exits rather than serve with every extended model
+// unreadable.
+func wireSchemaApply(factory spi.StoreFactory) error {
+	setter, ok := factory.(applyFuncSetter)
+	if !ok {
+		return errors.New("storage factory does not implement SetApplyFunc(func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))")
 	}
+	setter.SetApplyFunc(schema.ApplyMany)
+	return nil
 }
 
 // mustNewGossip parses the gossip address, creates the memberlist-backed
@@ -1154,14 +1201,16 @@ func mustNewGossip(c cluster.Config) *registry.Gossip {
 		os.Exit(1)
 	}
 	g, err := registry.NewGossip(registry.GossipConfig{
-		NodeID:          c.NodeID,
-		NodeAddr:        c.NodeAddr,
-		GRPCNodeAddr:    c.GRPCNodeAddr,
-		BindAddr:        gossipHost,
-		BindPort:        gossipPort,
-		Seeds:           c.SeedNodes,
-		StabilityWindow: c.StabilityWindow,
-		SecretKey:       c.HMACSecret,
+		NodeID:           c.NodeID,
+		NodeAddr:         c.NodeAddr,
+		GRPCNodeAddr:     c.GRPCNodeAddr,
+		BindAddr:         gossipHost,
+		BindPort:         gossipPort,
+		Seeds:            c.SeedNodes,
+		StabilityWindow:  c.StabilityWindow,
+		SecretKey:        c.HMACSecret,
+		ListScanInterval: registry.ScanIntervalFor(c.DispatchWaitTimeout),
+		Meter:            observability.Meter(),
 	})
 	if err != nil {
 		slog.Error("failed to create gossip registry", "pkg", "cluster", "err", err)

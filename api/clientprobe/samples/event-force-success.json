@@ -1,0 +1,7 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineForcedSuccessDto",
+  "value": {
+    "eventType": "FORCE_SUCCESS"
+  }
+}

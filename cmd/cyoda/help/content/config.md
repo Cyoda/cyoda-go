@@ -12,6 +12,7 @@ see_also:
   - config.schema
   - config.cluster
   - config.scheduler
+  - config.clock
 ---
 
 # config
@@ -30,7 +31,8 @@ All configuration is environment variables prefixed with `CYODA_`. Topics group 
 - `config.grpc` — gRPC listener and compute-node credentials
 - `config.schema` — schema-extension log tuning
 - `config.cluster` — multi-node clustering, gossip, cross-node dispatch
-- `config.scheduler` — scheduled-transition scan-loop cadence, distribution, and expiry grace
+- `config.scheduler` — how each node claims and runs scheduled transitions: cadence, limits, liveness, retries, shutdown
+- `config.clock` — the controllable platform clock, a test feature
 - `config all` — flat listing of every variable (append `--format=json` for the docs-site JSON)
 
 ## DESCRIPTION
@@ -45,14 +47,21 @@ The following variables support the `_FILE` suffix. Setting `CYODA_FOO_FILE=<pat
 
 - `CYODA_JWT_SIGNING_KEY` / `CYODA_JWT_SIGNING_KEY_FILE`
 - `CYODA_HMAC_SECRET` / `CYODA_HMAC_SECRET_FILE`
-- `CYODA_BOOTSTRAP_CLIENT_SECRET` / `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE`
+- `CYODA_POSTGRES_URL` / `CYODA_POSTGRES_URL_FILE` (postgres backend)
 - `CYODA_METRICS_BEARER` / `CYODA_METRICS_BEARER_FILE`
 
 ### Profile loader
 
-`CYODA_PROFILES` is a comma-separated list of profile names. For each name `N`, a file
-`cyoda.N.env` is loaded from the working directory before the process's own environment is
-consulted. This supports local development without exporting many variables.
+`CYODA_PROFILES` is a comma-separated list of profile names. For each name `N`, a file `.env.N` is loaded from the working directory. This supports local development without exporting many variables. `CYODA_PROFILES` selects profile files only when it is set in the process environment.
+
+The server, `cyoda migrate`, `cyoda token` and `cyoda health` load env files in this order, a later file overriding an earlier one:
+
+1. The system config: `/etc/cyoda/cyoda.env` on Linux, `%ProgramData%\cyoda\cyoda.env` on Windows, none on macOS.
+2. The user config, written by `cyoda init`: `$XDG_CONFIG_HOME/cyoda/cyoda.env`, else `~/.config/cyoda/cyoda.env`; on Windows `%AppData%\cyoda\cyoda.env`.
+3. `./.env`.
+4. Each `./.env.N`, in the order `CYODA_PROFILES` names them.
+
+A variable set in the process environment wins over the same variable in any file. Precedence is per variable name: a `CYODA_X_FILE` set in a file still overrides `CYODA_X` set in the process environment (see Precedence above); export `CYODA_X_FILE=` (empty) to block it. A file that is missing, cannot be read, or is not valid env syntax is skipped as a whole.
 
 **Example:**
 
@@ -60,43 +69,43 @@ consulted. This supports local development without exporting many variables.
 CYODA_PROFILES=postgres,otel go run ./cmd/cyoda
 ```
 
-loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
+loads `.env`, `.env.postgres` and `.env.otel` from the working directory.
 
 ### Server options
 
 - `CYODA_HTTP_PORT` (int, default: `8080`) — HTTP listen port.
+- `CYODA_HTTP_BIND_ADDRESS` (string, default: `127.0.0.1`) — HTTP API listener bind address: a bare host, IPv4 or IPv6, without brackets (`::1`, not `[::1]`). The default is loopback, so only processes on the same host reach the API. Set `0.0.0.0` (or `::`) when clients, cluster peers or a container's port mapping must reach it. With `CYODA_IAM_MODE=mock`, a listener that is not on loopback logs a WARN at startup.
 - `CYODA_HTTP_READ_HEADER_TIMEOUT` (duration, default: `10s`) — time allowed to receive a request's headers on the API and admin servers. 0 falls back to `CYODA_HTTP_READ_TIMEOUT`.
 - `CYODA_HTTP_READ_TIMEOUT` (duration, default: `5m`) — time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables.
 - `CYODA_HTTP_WRITE_TIMEOUT` (duration, default: `0s`) — time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests.
 - `CYODA_HTTP_IDLE_TIMEOUT` (duration, default: `2m`) — how long an idle keep-alive connection is held open between requests. 0 falls back to `CYODA_HTTP_READ_TIMEOUT`.
 - `CYODA_CONTEXT_PATH` (string, default: `/api`) — URL prefix for all routes.
-- `CYODA_ERROR_RESPONSE_MODE` (string, default: `sanitized`) — error detail level: `sanitized` (generic message + ticket UUID for 5xx) or `verbose` (internal error detail included in responses; development use only).
+- `CYODA_ERROR_RESPONSE_MODE` (string, default: `sanitized`) — error detail level: `sanitized` (generic message + ticket UUID for an unexpected server error) or `verbose` (internal error detail included in problem responses, never in an error inside a `200` body; development use only).
 - `CYODA_LOG_LEVEL` (string, default: `info`) — accepted: `debug|info|warn|error`.
 - `CYODA_SUPPRESS_BANNER` (bool, default: `false`) — silence startup and mock-auth banners.
 - `CYODA_STARTUP_TIMEOUT` (duration, default: `30s`) — deadline for plugin init, TM init, and (cluster mode) the gossip seed-join retry loop.
-- `CYODA_DEBUG` — reserved; not currently read by the server.
 - `CYODA_MAX_STATE_VISITS` (int, default: `10`) — max visits per state in workflow cascade.
-- `CYODA_MODEL_CACHE_LEASE` (duration, default: `5m`) — model cache lease duration; actual expiry is jittered ±10%.
+- `CYODA_MODEL_CACHE_LEASE` (duration, default: `5m`) — how long a node keeps a locked model in its model cache; actual expiry is jittered ±10%. A node evicts the entry earlier when a model change or schema extension on any node is broadcast, so the lease is the bound only when that broadcast is lost: until then the node can use the older schema or change level (`cyoda help models`, SCHEMA EXTENSION).
 - `CYODA_STATS_GROUP_MAX` (int, default: `10000`) — cardinality ceiling for `POST /api/entity/stats/{entityName}/{modelVersion}/query`. When the grouped-stats result produces more distinct `groupKey` combinations than this value, the request fails with 422 `GROUP_CARDINALITY_EXCEEDED`. Also caps the request `limit` parameter (`limit > max` rejects with 400 `INVALID_LIMIT`). Values `<= 0` are silently clamped to the default (`10000`) — a non-positive cap would disable the ceiling entirely (plugins treat `<= 0` as "unbounded"), defeating the safety net.
 
 ### Admin and metrics
 
 - `CYODA_ADMIN_PORT` (int, default: `9091`) — admin port for health and metrics.
-- `CYODA_ADMIN_BIND_ADDRESS` (string, default: `127.0.0.1`) — admin listener bind address.
+- `CYODA_ADMIN_BIND_ADDRESS` (string, default: `127.0.0.1`) — admin listener bind address: a bare host, IPv4 or IPv6, without brackets (`::1`, not `[::1]`).
 - `CYODA_METRICS_REQUIRE_AUTH` (bool, default: `false`) — require Bearer auth on `/metrics`; startup fails if `true` and `CYODA_METRICS_BEARER` is empty.
 - `CYODA_METRICS_BEARER` (string, default: unset) — static Bearer token for `GET /metrics`. Supports `_FILE` suffix.
 - `CYODA_OTEL_ENABLED` (bool, default: `false`) — enable OpenTelemetry tracing and metrics.
 
 ### Search internals
 
-- `CYODA_SEARCH_SNAPSHOT_TTL` (duration, default: `1h`) — search snapshot TTL.
-- `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`) — search snapshot reap interval: how often terminal jobs older than `CYODA_SEARCH_SNAPSHOT_TTL` are deleted. It no longer drives the stale/reclaim sweep — that runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker instead (see `CYODA_SEARCH_JOB_STALE_AFTER`). This is purely the snapshot-cleanup cadence.
+- `CYODA_SEARCH_SNAPSHOT_TTL` (duration, default: `1h`, must be > 0) — how long a finished async search job stays readable. Its status reports `expirationDate` = finish time + this TTL; from then on its status, results and cancel answer `404 SEARCH_JOB_NOT_FOUND`. Give every node of a cluster the same value: each node reports dates and reaps by its own.
+- `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`, must be > 0) — search snapshot reap interval: how often terminal jobs older than `CYODA_SEARCH_SNAPSHOT_TTL` are deleted. It does not drive the stale/reclaim sweep, which runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (see `CYODA_SEARCH_JOB_STALE_AFTER`). The snapshot reap runs on its own goroutine, so a reap waiting for a database connection never delays the reclaim sweep.
 - `CYODA_SEARCH_MAX_SORT_KEYS` (int, default: `16`) — maximum number of `sort` keys per search request. Requests exceeding this cap are rejected with `400 INVALID_FIELD_PATH`. Values `<= 0` are clamped to the default.
 - `CYODA_SEARCH_ASYNC_WORKERS` (int, default: `8`) — async-search worker pool size. Config is a QA'd artefact: values `< 1` fail startup rather than being clamped.
 - `CYODA_SEARCH_ASYNC_QUEUE` (int, default: `256`) — async-search submit queue capacity beyond the running workers. Once both are exhausted, submission fails with `503 SEARCH_QUEUE_FULL` (retryable). Values `< 0` fail startup.
 - `CYODA_SEARCH_ASYNC_MAX_PER_TENANT` (int, default: `8` — tracks `CYODA_SEARCH_ASYNC_WORKERS`) — maximum async-search jobs one tenant may have in flight (queued or running) on a node. Over-cap submissions get the same retryable `503 SEARCH_QUEUE_FULL`, so one tenant's burst cannot fill the shared queue and lock every other tenant out. A tenant may still occupy every worker; it just cannot hold more than this many queue slots. `0` disables the cap. Values `< 0` fail startup.
 - `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` (duration, default: `15s`) — how often a running async-search executor stamps job liveness and polls for a cross-node cancel/terminal status, starting at submit time (queued or scanning). Config is a QA'd artefact: values `<= 0` fail startup rather than being clamped.
-- `CYODA_SEARCH_JOB_STALE_AFTER` (duration, default: `5m`) — how long a `RUNNING` async-search job may go without a heartbeat before the reaper claims it for reclaim (its owning executor most likely crashed or was killed). Config is a QA'd artefact: values below `4 x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` fail startup rather than being clamped. The stale/reclaim sweep runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (default `15s`) plus once at startup — not on `CYODA_SEARCH_REAP_INTERVAL`, which now drives only the snapshot-TTL reap. A crash therefore hands off within `CYODA_SEARCH_JOB_STALE_AFTER` + one heartbeat interval (~5m15s at defaults); a graceful shutdown or restart releases in-flight jobs immediately, so those hand off within one heartbeat interval — or immediately on the restarted node's own startup sweep. Operational note: on postgres, a node that dies mid-save (inside the `SaveResults` chunk transaction) is reaped by the server's transaction-local idle timeout rather than by this sweep directly, so a mid-save crash's handoff still matches any other crash once that timeout releases the row.
+- `CYODA_SEARCH_JOB_STALE_AFTER` (duration, default: `5m`) — how long a `RUNNING` async-search job may go without a heartbeat before the reaper claims it for reclaim (its owning executor most likely crashed or was killed). Config is a QA'd artefact: values below `4 x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` fail startup rather than being clamped. The stale/reclaim sweep runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (default `15s`) plus once at startup — not on `CYODA_SEARCH_REAP_INTERVAL`, which drives only the snapshot-TTL reap. A crash therefore hands off within `CYODA_SEARCH_JOB_STALE_AFTER` + one heartbeat interval (~5m15s at defaults); a graceful shutdown or restart releases in-flight jobs immediately, so those hand off within one heartbeat interval — or immediately on the restarted node's own startup sweep. Operational note: on postgres, a node that dies mid-save (inside the `SaveResults` chunk transaction) is reaped by the server's transaction-local idle timeout rather than by this sweep directly, so a mid-save crash's handoff still matches any other crash once that timeout releases the row.
 - `CYODA_SEARCH_JOB_MAX_ATTEMPTS` (int, default: `3`) — executions an async-search job may consume before it is failed: the initial run plus one per executor lost without a graceful release. A graceful handoff (release then reclaim) does not count. Config is a QA'd artefact: values `< 1` fail startup rather than being clamped. `1` disables re-execution — a job is failed the first time its executor is lost.
 
 ### Cluster and dispatch
@@ -113,3 +122,5 @@ See `config.cluster` for multi-node clustering, gossip, and cross-node dispatch 
 - config.grpc
 - config.schema
 - config.cluster
+- config.scheduler
+- config.clock

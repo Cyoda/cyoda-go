@@ -3,7 +3,7 @@
 // running the test, because Fatal/FailNow/Skip stop only the calling goroutine.
 //
 // The guard is syntactic and covers `go` statements in package
-// github.com/cyoda-platform/cyoda-go/internal/e2e only. See the doc comment on
+// github.com/cyoda/cyoda-go/internal/e2e only. See the doc comment on
 // TestNoTestingTUseInGoroutines for the exact scope and its known blind spots
 // — a green run means "no `go` statement hands over a t", not "no goroutine
 // anywhere can reach a t".

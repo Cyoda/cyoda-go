@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/testing/localproc"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // setupEngineWithClockAndExtProc is setupEngineWithClock plus an injected
@@ -22,7 +23,7 @@ func setupEngineWithClockAndExtProc(t *testing.T, nowMs int64, extProc contract.
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, WithScheduledClock(fixedClock(nowMs)), WithExternalProcessing(extProc))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, funcClock(fixedClock(nowMs)), WithExternalProcessing(extProc), WithCoordination(txcoord.New(txMgr)))
 	return engine, factory
 }
 
@@ -60,7 +61,7 @@ func TestReconcile_FunctionAbsoluteFireArms(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("abs-fire-e1", modelRef, map[string]any{})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -69,7 +70,7 @@ func TestReconcile_FunctionAbsoluteFireArms(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "abs-fire-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -103,7 +104,7 @@ func TestReconcile_FunctionRelativeFireArms(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("rel-fire-e1", modelRef, map[string]any{})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -112,7 +113,7 @@ func TestReconcile_FunctionRelativeFireArms(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "rel-fire-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestReconcile_FunctionExpiryStoredAsTimeoutMs(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("expiry-e1", modelRef, map[string]any{})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -154,7 +155,7 @@ func TestReconcile_FunctionExpiryStoredAsTimeoutMs(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "expiry-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -198,6 +199,9 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "born-expired-order", ModelVersion: "1.0"}
 	wf := scheduleFunctionWorkflow("BornExpiredWF", "calcFire")
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	// The engine stores the anchor before the schedule function; the commit
+	// needs its model locked.
+	lockTestModel(t, factory, ctx, modelRef)
 
 	txMgr, err := factory.TransactionManager(ctx)
 	if err != nil {
@@ -211,7 +215,7 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 	}
 	entity := makeEntity("born-expired-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID1
-	if _, err := engine.Execute(txCtx1, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx1, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID1); err != nil {
@@ -223,7 +227,7 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
-	if _, found, err := sts.Get(ctx, wantID); err != nil {
+	if _, found, err := sts.Get(ctx, testTenant, wantID); err != nil {
 		t.Fatalf("Get: %v", err)
 	} else if !found {
 		t.Fatalf("expected task %q armed after first Execute", wantID)
@@ -235,14 +239,14 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	entity.Meta.TransactionID = txID2
-	if _, err := engine.Loopback(txCtx2, entity); err != nil {
+	if _, err := engine.Loopback(txCtx2, entity, IfMatch{}); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID2); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	if _, found, err := sts.Get(ctx, wantID); err != nil {
+	if _, found, err := sts.Get(ctx, testTenant, wantID); err != nil {
 		t.Fatalf("Get: %v", err)
 	} else if found {
 		t.Errorf("expected task %q cancelled (born expired), still present", wantID)
@@ -276,9 +280,10 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 // TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult covers §5.2
 // case (c): armViaFunction's Function callout resolves TIMING ONLY
 // (fireAt/fireAfterMs/expireAfterMs) — the result carries no principal, and
-// ArmedBy must come from ctx's resolved chain origin exactly as the static
-// arm path does, not from the service-kind executor that staged the write
-// nor from anything the Function returns.
+// ArmedBy must come from spi.AttributionFor(ctx), exactly as the static arm
+// path does, not from the service-kind executor that staged the write nor
+// from anything the Function returns. A service executor's write inherits
+// the transaction's origin, so that is what this test expects.
 func TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult(t *testing.T) {
 	const nowMs = int64(1_700_000_000_000)
 	const fireAfterMs = int64(4_000)
@@ -293,6 +298,9 @@ func TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "armedby-fn-order", ModelVersion: "1.0"}
 	wf := scheduleFunctionWorkflow("ArmedByFnWF", "calcFire")
 	saveWorkflow(t, factory, ownerCtx, modelRef, []spi.WorkflowDefinition{wf})
+	// The engine stores the anchor before the schedule function; the commit
+	// needs its model locked.
+	lockTestModel(t, factory, ownerCtx, modelRef)
 
 	txMgr, err := factory.TransactionManager(ownerCtx)
 	if err != nil {
@@ -311,7 +319,7 @@ func TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult(t *testing.T) {
 
 	entity := makeEntity("armedby-fn-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = ownerTxID
-	if _, err := engine.Execute(joinedCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(joinedCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ownerTxCtx, ownerTxID); err != nil {
@@ -323,7 +331,7 @@ func TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "armedby-fn-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ownerCtx, wantID)
+	task, found, err := sts.Get(ownerCtx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -336,8 +344,8 @@ func TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult(t *testing.T) {
 		t.Errorf("ScheduledTime = %d, want %d", task.ScheduledTime, nowMs+fireAfterMs)
 	}
 	// Attribution did NOT come from the Function result (which carries none)
-	// nor from the service executor that staged the write — only from the
-	// chain origin.
+	// nor from the service executor's own identity — the service executor's
+	// write inherits the transaction's origin.
 	wantOrigin := spi.Principal{ID: "origin-user", Kind: spi.PrincipalUser}
 	if task.ArmedBy != wantOrigin {
 		t.Errorf("ArmedBy = %+v, want tx origin %+v", task.ArmedBy, wantOrigin)
@@ -345,6 +353,76 @@ func TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult(t *testing.T) {
 	notWant := spi.Principal{ID: "arm-fn-service", Kind: spi.PrincipalService}
 	if task.ArmedBy == notWant {
 		t.Error("ArmedBy must not be the service executor — the Function result affects timing only, never attribution")
+	}
+}
+
+// TestReconcile_FunctionArmedByIsTheWritesAttributedUser covers §5.1/§7.4 at
+// the Function-schedule arm site (armViaFunction): ArmedBy is the write's
+// attributed principal (spi.AttributionFor), not the transaction's origin
+// (spi.ResolveOrigin). TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult
+// above cannot catch a regression to spi.ResolveOrigin at this site: its
+// service-kind executor joined into a user's transaction gets the SAME
+// answer (the tx origin) from both functions. A user-kind caller is the one
+// shape that distinguishes them — alice writes inside a transaction bob
+// began, and the arm must stamp alice, the write's own attributed user, not
+// bob.
+func TestReconcile_FunctionArmedByIsTheWritesAttributedUser(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	const fireAfterMs = int64(4_000)
+
+	lp := localproc.New()
+	lp.RegisterFunction("calcFire", func(_ context.Context, _ *spi.Entity, _ spi.ScheduleFunction) (contract.FunctionResult, error) {
+		return contract.FunctionResult{Kind: "Schedule", Value: json.RawMessage(fmt.Sprintf(`{"fireAfterMs":%d}`, fireAfterMs))}, nil
+	})
+
+	engine, factory := setupEngineWithClockAndExtProc(t, nowMs, lp)
+	bobCtx := armOriginUserCtx("bob")
+	modelRef := spi.ModelRef{EntityName: "armedby-fn-attr-order", ModelVersion: "1.0"}
+	wf := scheduleFunctionWorkflow("ArmedByFnAttrWF", "calcFire")
+	saveWorkflow(t, factory, bobCtx, modelRef, []spi.WorkflowDefinition{wf})
+	// The engine stores the anchor before the schedule function; the commit
+	// needs its model locked.
+	lockTestModel(t, factory, bobCtx, modelRef)
+
+	txMgr, err := factory.TransactionManager(bobCtx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	bobTxID, bobTxCtx, err := txMgr.Begin(bobCtx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	alice := *spi.GetUserContext(armOriginUserCtx("alice"))
+	joinedCtx, err := txMgr.Join(spi.WithUserContext(context.Background(), &alice), bobTxID)
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+
+	entity := makeEntity("armedby-fn-attr-e1", modelRef, map[string]any{})
+	entity.Meta.TransactionID = bobTxID
+	if _, err := engine.Execute(joinedCtx, entity); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if err := txMgr.Commit(bobTxCtx, bobTxID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	sts, err := factory.ScheduledTaskStore(bobCtx)
+	if err != nil {
+		t.Fatalf("ScheduledTaskStore: %v", err)
+	}
+	wantID := taskID(testTenant, "armedby-fn-attr-e1", "OPEN", "AutoClose")
+	task, found, err := sts.Get(bobCtx, testTenant, wantID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected task %q armed", wantID)
+	}
+	want := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
+	if task.ArmedBy != want {
+		t.Errorf("ArmedBy = %+v, want %+v (the write's own attributed user, not bob's transaction origin)", task.ArmedBy, want)
 	}
 }
 
@@ -363,7 +441,7 @@ func TestReconcile_FunctionDispatchFailureFailsWrite(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("dispatch-fail-e1", modelRef, map[string]any{})
-	if _, err := engine.Execute(ctx, entity, ""); err == nil {
+	if _, err := engine.Execute(ctx, entity); err == nil {
 		t.Fatal("expected error from failing Function dispatch")
 	}
 
@@ -372,7 +450,7 @@ func TestReconcile_FunctionDispatchFailureFailsWrite(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "dispatch-fail-e1", "OPEN", "AutoClose")
-	if _, found, err := sts.Get(ctx, wantID); err != nil {
+	if _, found, err := sts.Get(ctx, testTenant, wantID); err != nil {
 		t.Fatalf("Get: %v", err)
 	} else if found {
 		t.Error("dispatch failure must not arm a task")
@@ -394,7 +472,7 @@ func TestReconcile_FunctionWrongResultKindIs500(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("wrong-kind-e1", modelRef, map[string]any{})
-	_, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	assertScheduleFunctionInvalidResult(t, err)
 }
 
@@ -414,7 +492,7 @@ func TestReconcile_FunctionMalformedResultIs500(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("malformed-e1", modelRef, map[string]any{})
-	_, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	assertScheduleFunctionInvalidResult(t, err)
 }
 

@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // TestClassifyValidateOrExtendErr_ChangeLevelViolation_GetsValidationFailed
@@ -32,7 +32,7 @@ func TestClassifyValidateOrExtendErr_ChangeLevelViolation_GetsValidationFailed(t
 }
 
 // TestClassifyValidateOrExtendErr_InternalSentinel_Is5xx — an error
-// wrapping ingest.ErrInternalSchema (codec/diff/store failures in validateOrExtend)
+// wrapping ingest.ErrInternalSchema (codec/diff/store failures in ValidateOrExtend)
 // classifies as 5xx regardless of its message text. This is the contract
 // that replaces the prior fragile string-matching classifier: if a future
 // refactor renames a wrap like "failed to compute schema delta" to

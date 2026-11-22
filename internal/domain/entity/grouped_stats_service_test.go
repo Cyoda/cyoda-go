@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // fakeIterable serves Iterate and nothing else, and genuinely applies the Filter
@@ -164,7 +164,7 @@ func newStreamingStatsFixture(t *testing.T, iterErr error) (
 	req *entity.ValidatedGroupedStatsRequest,
 ) {
 	t.Helper()
-	svc = entity.NewGroupedStatsService(10000)
+	svc = entity.NewGroupedStatsService(10000, newFixedConsistency())
 	ctx = context.Background()
 	store = &fakeIterable{iterErr: iterErr}
 	model = spi.ModelRef{}
@@ -180,7 +180,7 @@ func TestQueryGroupedStats_FallsBackToStreaming(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 		{Meta: spi.EntityMeta{State: "allocated"}, Data: []byte(`{}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -212,7 +212,7 @@ func TestQueryGroupedStats_PrefersPushdownWhenAvailable(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "should-not-be-seen"}, Data: []byte(`{}`)},
 	}}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -239,7 +239,7 @@ func TestQueryGroupedStats_PushdownNotPushdownableFallsBackToStreaming(t *testin
 		{Meta: spi.EntityMeta{State: "allocated"}, Data: []byte(`{}`)},
 	}}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -262,7 +262,7 @@ func TestQueryGroupedStats_PushdownArbitraryErrorPropagates(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -286,7 +286,7 @@ func TestQueryGroupedStats_PushdownArbitraryErrorPropagates(t *testing.T) {
 // silently missed and the query returned success. Reordering to read Err()
 // after Close() runs surfaces it.
 func TestQueryGroupedStats_CloseOnlySurfacedErrorFailsQuery(t *testing.T) {
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -311,7 +311,7 @@ func TestQueryGroupedStats_InTransactionSkipsPushdown(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -337,7 +337,7 @@ func TestQueryGroupedStats_CardinalityExceeded(t *testing.T) {
 			Data: []byte(`{}`),
 		})
 	}
-	svc := entity.NewGroupedStatsService(3) // ceiling = 3
+	svc := entity.NewGroupedStatsService(3, newFixedConsistency()) // ceiling = 3
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -360,10 +360,10 @@ func TestQueryGroupedStats_StreamingWithFilterPushdown(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	// fakeIterable genuinely applies the pushed Filter (spi.Prepare(flt).Match),
 	// and the pushdown Filter's Declared type comes from fields: an EQUALS leaf
@@ -419,10 +419,10 @@ func TestQueryGroupedStats_WildcardArrayPathConditionPushesDown(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"items":[{"name":"drop"}]}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	// The pushed Filter's Declared type comes from fields: an EQUALS leaf
 	// with no declared type degrades to non-match in the shared kernel.
@@ -470,10 +470,10 @@ func TestQueryGroupedStats_TallyTrustsTheTranslatedFilter(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"blue"}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	// The pushdown Filter's Declared type comes from fields: an EQUALS leaf
 	// with no declared type degrades to non-match in the shared kernel, so
@@ -500,10 +500,10 @@ func TestQueryGroupedStats_FunctionConditionFailsClosed(t *testing.T) {
 	rows := []*spi.Entity{
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	if _, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req); err == nil {
 		t.Fatal("expected a function condition to fail closed, got nil")
@@ -516,7 +516,7 @@ func TestQueryGroupedStats_AggregationsViaStreaming(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"v":20}`)},
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"v":30}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 		Aggregations: []entity.AggregationExprValidated{
@@ -547,7 +547,7 @@ func TestQueryGroupedStats_GroupByNumberProducesMultipleBuckets(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"tier":1}`)},
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"tier":2}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{Path: "$.tier"}},
 	}
@@ -579,7 +579,7 @@ func TestQueryGroupedStats_GroupByBoolProducesMultipleBuckets(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"premium":true}`)},
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"premium":false}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{Path: "$.premium"}},
 	}
@@ -606,7 +606,7 @@ func TestQueryGroupedStats_NonScalarRuntimeValueCoercesToNull(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"variantId":{"x":1}}`)},
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"variantId":[1,2,3]}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{Path: "$.variantId"}},
 	}
@@ -633,7 +633,7 @@ func TestQueryGroupedStats_PushdownPropagatesCardinalityError(t *testing.T) {
 	agg := &fakeAggregator{err: spi.ErrGroupCardinalityExceeded}
 	iter := &fakeIterable{}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -653,7 +653,7 @@ func TestQueryGroupedStats_InvalidFilterPathMapsTo400(t *testing.T) {
 	agg := &fakeAggregator{err: fmt.Errorf("plugin detail: %w", spi.ErrInvalidFilterPath)}
 	iter := &fakeIterable{}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -671,166 +671,6 @@ func TestQueryGroupedStats_InvalidFilterPathMapsTo400(t *testing.T) {
 	}
 }
 
-// TestQueryGroupedStats_MalformedRegexRejected is a regression test for a
-// fail-open bug: the plugin residual filter evaluators
-// (plugins/sqlite/post_filter.go evaluateFilter, plugins/postgres/grouped_stats.go
-// evalPostFilter) delegate to the error-free spi.PreparedFilter.Match kernel,
-// which returns false (non-match) rather than erroring on a malformed MATCHES_PATTERN
-// regex. Without upstream validation this silently under-includes buckets
-// instead of rejecting the request. QueryGroupedStats must reject a
-// malformed regex before dispatching to any backend, the same way the
-// search path already does.
-func TestQueryGroupedStats_MalformedRegexRejected(t *testing.T) {
-	cond := json.RawMessage(`{
-		"type": "simple",
-		"jsonPath": "$.color",
-		"operatorType": "MATCHES_PATTERN",
-		"value": "["
-	}`)
-	rows := []*spi.Entity{
-		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
-	}
-	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
-	req := &entity.ValidatedGroupedStatsRequest{
-		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
-	}
-	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
-	if !errors.Is(err, entity.ErrInvalidCondition) {
-		t.Fatalf("want ErrInvalidCondition for malformed regex, got %v", err)
-	}
-}
-
-// TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected is a
-// regression test for the validation-consistency gap: /search rejects a
-// type-unsound temporal/lifecycle condition (400), but grouped-stats
-// previously accepted the same malformed condition and silently degraded to
-// an empty result (the condition doesn't translate to a pushdown filter and
-// never matches anything via match.Prepare either). QueryGroupedStats must
-// reject a temporal comparison operand that parses into no temporal type,
-// the same way search.ValidateConditionValueTypes does.
-func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
-	// Parse-based (spec §6): a comparison operand that parses into no temporal
-	// type is rejected; a string operator like CONTAINS is now accepted, so a
-	// genuinely-unparseable operand drives this rejection.
-	cond := json.RawMessage(`{
-		"type": "lifecycle",
-		"field": "creationDate",
-		"operatorType": "GREATER_THAN",
-		"value": "not-a-date"
-	}`)
-	rows := []*spi.Entity{
-		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
-	}
-	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
-	req := &entity.ValidatedGroupedStatsRequest{
-		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
-	}
-	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
-	if err == nil {
-		t.Fatal("expected error for non-temporal operand against temporal field creationDate, got nil (previously silently degraded to empty result)")
-	}
-	if !errors.Is(err, search.ErrConditionTypeMismatch) {
-		t.Fatalf("want search.ErrConditionTypeMismatch (parity with /search's CONDITION_TYPE_MISMATCH), got %v", err)
-	}
-}
-
-// TestQueryGroupedStats_LifecycleTemporalStringOpRejected is the fifth
-// defect this batch closes: a string or pattern operator on a temporal meta
-// field (creationDate, lastUpdateTime) previously produced two different
-// answers depending on the query plan — the SPI kernel's pushdown re-check
-// bridges the field to RFC3339 text and matches CONTAINS lexically, while
-// internal/match's residual route guarded the same case to a never-match.
-// classifyGroupedStatsError must classify the shared boundary's rejection as
-// search.ErrInvalidCondition (400 INVALID_CONDITION), the same code /search
-// now answers for the identical condition.
-func TestQueryGroupedStats_LifecycleTemporalStringOpRejected(t *testing.T) {
-	cond := json.RawMessage(`{
-		"type": "lifecycle",
-		"field": "creationDate",
-		"operatorType": "CONTAINS",
-		"value": "2021"
-	}`)
-	rows := []*spi.Entity{
-		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
-	}
-	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
-	req := &entity.ValidatedGroupedStatsRequest{
-		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
-	}
-	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
-	if err == nil {
-		t.Fatal("expected error for CONTAINS against temporal field creationDate, got nil")
-	}
-	if !errors.Is(err, search.ErrInvalidCondition) {
-		t.Fatalf("want search.ErrInvalidCondition (parity with /search's INVALID_CONDITION), got %v", err)
-	}
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("want *common.AppError, got %T: %v", err, err)
-	}
-	if appErr.Code != common.ErrCodeInvalidCondition {
-		t.Fatalf("got code %s, want %s", appErr.Code, common.ErrCodeInvalidCondition)
-	}
-}
-
-// TestQueryGroupedStats_MalformedBetweenArityRejected is a regression test
-// for the same validation-consistency gap: a BETWEEN condition with the
-// wrong number of operands must be rejected up front (search.ValidateCondition),
-// not silently mistranslated by the filter/match layers downstream.
-func TestQueryGroupedStats_MalformedBetweenArityRejected(t *testing.T) {
-	cond := json.RawMessage(`{
-		"type": "simple",
-		"jsonPath": "$.price",
-		"operatorType": "BETWEEN",
-		"value": [10]
-	}`)
-	rows := []*spi.Entity{
-		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"price":10}`)},
-	}
-	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
-	req := &entity.ValidatedGroupedStatsRequest{
-		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
-	}
-	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
-	if !errors.Is(err, entity.ErrInvalidCondition) {
-		t.Fatalf("want ErrInvalidCondition for malformed-arity BETWEEN, got %v", err)
-	}
-}
-
-// TestQueryGroupedStats_UnknownMetaFieldRejected is a regression test for
-// the same gap: an unrecognized meta filter field name must be rejected as
-// INVALID_FIELD_PATH parity with /search, not silently treated as
-// never-matching.
-func TestQueryGroupedStats_UnknownMetaFieldRejected(t *testing.T) {
-	cond := json.RawMessage(`{
-		"type": "lifecycle",
-		"field": "bogus",
-		"operatorType": "EQUALS",
-		"value": "x"
-	}`)
-	rows := []*spi.Entity{
-		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
-	}
-	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
-	req := &entity.ValidatedGroupedStatsRequest{
-		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
-	}
-	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
-	if !errors.Is(err, search.ErrInvalidFieldPath) {
-		t.Fatalf("want search.ErrInvalidFieldPath (parity with /search's INVALID_FIELD_PATH), got %v", err)
-	}
-}
-
 // TestQueryGroupedStats_ValidTemporalConditionStillSucceeds guards against
 // an over-broad fix: a well-formed temporal lifecycle condition (valid
 // comparison operator + offset-bearing RFC3339 operand) must still succeed.
@@ -845,10 +685,10 @@ func TestQueryGroupedStats_ValidTemporalConditionStillSucceeds(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
 	if err != nil {
@@ -858,8 +698,9 @@ func TestQueryGroupedStats_ValidTemporalConditionStillSucceeds(t *testing.T) {
 
 // TestQueryGroupedStats_ValidDataConditionStillSucceeds guards against an
 // over-broad fix: a well-formed data-field condition must still succeed
-// even though grouped-stats now runs search.ValidateConditionValueTypes with
-// a nil model (data-field checks are gracefully skipped without a schema).
+// even though grouped-stats' service layer runs
+// search.ValidateConditionValueTypes with a nil fields map (data-field checks
+// are skipped without one).
 func TestQueryGroupedStats_ValidDataConditionStillSucceeds(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "simple",
@@ -871,10 +712,10 @@ func TestQueryGroupedStats_ValidDataConditionStillSucceeds(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	// fakeIterable genuinely applies the pushed Filter, whose Declared type
 	// comes from fields: an EQUALS leaf with no declared type degrades to
@@ -905,10 +746,10 @@ func TestQueryGroupedStats_ValidRegexStillSucceeds(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
 	if err != nil {
@@ -917,4 +758,14 @@ func TestQueryGroupedStats_ValidRegexStillSucceeds(t *testing.T) {
 	if len(buckets) != 1 || buckets[0].Count != 1 {
 		t.Fatalf("buckets = %+v, want one bucket count=1", buckets)
 	}
+}
+
+// mustParseCond parses a request condition the way request validation does.
+func mustParseCond(t *testing.T, raw []byte) predicate.Condition {
+	t.Helper()
+	c, err := predicate.ParseCondition(raw)
+	if err != nil {
+		t.Fatalf("parse condition: %v", err)
+	}
+	return c
 }

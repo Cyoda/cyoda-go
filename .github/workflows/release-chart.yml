@@ -50,7 +50,7 @@ jobs:
             exit 1
           fi
 
-      - uses: azure/setup-helm@v5.0.1
+      - uses: azure/setup-helm@v5.1.0
         with:
           version: v4.1.4
 
@@ -91,10 +91,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Run chart-releaser
-        uses: helm/chart-releaser-action@v1.7.0
+        uses: helm/chart-releaser-action@v1.9.0
         with:
           charts_dir: deploy/helm
           skip_existing: false
-          mark_as_latest: true
+          # The chart's GitHub release must never be "Latest": install.sh and
+          # every /releases/latest/download/ URL (install.sh, .deb, .rpm,
+          # SHA256SUMS) resolve through that mark, and the chart release
+          # holds only the chart archive.
+          mark_as_latest: false
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"

@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // Every read entry point refuses a committed transaction's context with
@@ -19,6 +20,7 @@ func TestTx_ClosedTransaction_RefusesEveryRead(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-closed-read", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-closed-read", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -75,11 +77,11 @@ func TestTx_ClosedTransaction_RefusesEveryRead(t *testing.T) {
 			return it.Err()
 		}},
 		{"Count", func(c context.Context) error {
-			_, err := store.Count(c, ref)
+			_, err := store.Count(c, ref, nil)
 			return err
 		}},
 		{"CountByState", func(c context.Context) error {
-			_, err := store.CountByState(c, ref, nil)
+			_, err := store.CountByState(c, ref, nil, nil)
 			return err
 		}},
 	}

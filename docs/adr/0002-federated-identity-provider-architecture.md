@@ -1,6 +1,6 @@
 # 0002. Federated Identity Provider Architecture
 
-**Status:** Accepted
+**Status:** Superseded by 0004
 **Date:** 2026-06-16
 
 ## Context

@@ -24,9 +24,9 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/testing/localproc"
 )
 
 // pgCeilingIdleLimit is the idle-in-transaction ceiling these scenarios run
@@ -57,7 +57,7 @@ func pgCeilingPipelineWF(name string, procs ...string) string {
 	defs := make([]string, 0, len(procs))
 	for _, p := range procs {
 		defs = append(defs, fmt.Sprintf(
-			`{"type": "calculator", "name": %q, "executionMode": "SYNC",
+			`{"type": "externalized", "name": %q, "executionMode": "SYNC",
 			  "config": {"attachEntity": true, "calculationNodesTags": ""}}`, p))
 	}
 	return fmt.Sprintf(`{

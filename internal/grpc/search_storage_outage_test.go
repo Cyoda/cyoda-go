@@ -24,11 +24,12 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // storageOutageError stands in for what a storage plugin returns when its pool
@@ -61,7 +62,7 @@ func newOutageSearchEnv(t *testing.T) (*CloudEventsServiceImpl, *search.Handler,
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svcSearch := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), &outageSearchStore{AsyncSearchStore: base})
+	svcSearch := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), &outageSearchStore{AsyncSearchStore: base}, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "test-user",
@@ -138,7 +139,7 @@ func TestSearchStorageOutage_BothDoorsAgree(t *testing.T) {
 func TestBuildErrorFields_RawStorageUnavailableMarker(t *testing.T) {
 	raw := fmt.Errorf("failed to get result IDs: %w", &storageOutageError{detail: storageOutageDetail})
 
-	code, message, retryable := buildErrorFields(raw)
+	code, message, retryable := buildErrorFields(context.Background(), raw)
 	if code != "CLIENT_ERROR" {
 		t.Errorf("code = %q, want CLIENT_ERROR", code)
 	}
@@ -163,8 +164,49 @@ func TestBuildErrorFields_RawStorageUnavailableMarker(t *testing.T) {
 	}
 
 	// An unmarked raw error keeps the ticketed SERVER_ERROR path.
-	plainCode, _, plainRetryable := buildErrorFields(errors.New("something unclassified"))
+	plainCode, _, plainRetryable := buildErrorFields(context.Background(), errors.New("something unclassified"))
 	if plainCode != "SERVER_ERROR" || plainRetryable != nil {
 		t.Errorf("unmarked raw error = %q/retryable=%v, want SERVER_ERROR/nil", plainCode, plainRetryable)
+	}
+}
+
+// TestBuildErrorFields_RawEpochMismatch — a raw store error reporting a lost
+// shard answers the same retryable EPOCH_MISMATCH on gRPC as on HTTP.
+func TestBuildErrorFields_RawEpochMismatch(t *testing.T) {
+	raw := fmt.Errorf("commit aborted: shard revoked: %w", spi.ErrEpochMismatch)
+	code, message, retryable := buildErrorFields(context.Background(), raw)
+	if code != "CLIENT_ERROR" {
+		t.Errorf("code = %q, want CLIENT_ERROR", code)
+	}
+	if !strings.HasPrefix(message, common.ErrCodeEpochMismatch+":") {
+		t.Errorf("message = %q, want the %s domain code", message, common.ErrCodeEpochMismatch)
+	}
+	if retryable == nil || !*retryable {
+		t.Errorf("retryable = %v, want true", retryable)
+	}
+	if strings.Contains(message, "shard revoked") {
+		t.Errorf("message leaks the store's wording: %q", message)
+	}
+}
+
+// TestBuildErrorFields_RawSentinelsMatchHTTP — a raw error carrying a store
+// sentinel answers on gRPC with the code the HTTP door gives the same error
+// (common.Internal), not a ticketed SERVER_ERROR.
+func TestBuildErrorFields_RawSentinelsMatchHTTP(t *testing.T) {
+	for name, raw := range map[string]error{
+		"conflict":           fmt.Errorf("commit: %w", spi.ErrConflict),
+		"unique violation":   fmt.Errorf("save: %w", spi.ErrUniqueViolation),
+		"partial unique key": fmt.Errorf("save: %w", spi.ErrPartialUniqueKey),
+	} {
+		t.Run(name, func(t *testing.T) {
+			httpErr := common.Internal("op failed", raw)
+			code, message, retryable := buildErrorFields(context.Background(), raw)
+			if code != "CLIENT_ERROR" || !strings.HasPrefix(message, httpErr.Code+":") {
+				t.Fatalf("gRPC = %q/%q, want CLIENT_ERROR with the HTTP door's %s", code, message, httpErr.Code)
+			}
+			if httpErr.Retryable != (retryable != nil && *retryable) {
+				t.Fatalf("retryable = %v, HTTP door says %v", retryable, httpErr.Retryable)
+			}
+		})
 	}
 }

@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // TestGetVersionMetadata_EmptyWindow_ReturnsEmptyNotNotFound verifies that
@@ -19,6 +20,7 @@ import (
 func TestGetVersionMetadata_EmptyWindow_ReturnsEmptyNotNotFound(t *testing.T) {
 	factory, _ := newAttrFactory(t)
 	ctx := attrCtx("tenant-pgdel", "u1", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, factory, ctx, spi.ModelRef{EntityName: "m-window", ModelVersion: "1"})
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

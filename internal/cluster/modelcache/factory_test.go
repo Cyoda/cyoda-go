@@ -2,12 +2,13 @@ package modelcache_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/cluster/modelcache"
 )
 
 // stubFactory is a minimal spi.StoreFactory whose ModelStore returns
@@ -15,7 +16,7 @@ import (
 // it easy to assert "N calls to factory.ModelStore(ctx) produced only
 // M inner.Get calls" across independent adapters.
 type stubFactory struct {
-	store *stubStore
+	store spi.ModelStore
 }
 
 func (f *stubFactory) ModelStore(_ context.Context) (spi.ModelStore, error) {
@@ -37,7 +38,8 @@ func (f *stubFactory) ScheduledTaskStore(context.Context) (spi.ScheduledTaskStor
 func (f *stubFactory) TransactionManager(context.Context) (spi.TransactionManager, error) {
 	return nil, nil
 }
-func (f *stubFactory) Close() error { return nil }
+func (f *stubFactory) Close() error               { return nil }
+func (f *stubFactory) Ping(context.Context) error { return nil }
 
 func TestCachingStoreFactory_SharesCacheAcrossRequests(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
@@ -187,7 +189,8 @@ func (f *recordingFactory) TransactionManager(context.Context) (spi.TransactionM
 	f.bump("TransactionManager")
 	return nil, nil
 }
-func (f *recordingFactory) Close() error { return nil }
+func (f *recordingFactory) Close() error               { return nil }
+func (f *recordingFactory) Ping(context.Context) error { return nil }
 
 // capableInnerFactory wraps stubFactory and implements spi.CompositeUniqueKeyCapable.
 type capableInnerFactory struct {
@@ -236,4 +239,85 @@ func TestCachingStoreFactory_ForwardsCompositeUniqueKeyCapable(t *testing.T) {
 			t.Error("expected SupportsCompositeUniqueKeys=false when inner does not implement the interface")
 		}
 	})
+}
+
+type pingFactory struct {
+	stubFactory
+	err error
+	got context.Context
+}
+
+func (f *pingFactory) Ping(ctx context.Context) error { f.got = ctx; return f.err }
+
+func TestCachingStoreFactory_PingForwards(t *testing.T) {
+	sentinel := errors.New("ping sentinel")
+	inner := &pingFactory{err: sentinel}
+	factory := modelcache.NewCachingStoreFactory(inner, nil, &manualClock{now: time.Now()}, time.Hour)
+
+	type ctxKey struct{}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "marker")
+	if err := factory.Ping(ctx); !errors.Is(err, sentinel) {
+		t.Fatalf("Ping error = %v, want sentinel", err)
+	}
+	if inner.got != ctx {
+		t.Fatal("Ping did not pass the caller's ctx to the inner factory")
+	}
+}
+
+// coordinatingFactory is an inner factory that offers the optional
+// transaction-coordination capability.
+type coordinatingFactory struct {
+	stubFactory
+	co  spi.TransactionCoordinator
+	err error
+	got context.Context
+}
+
+func (f *coordinatingFactory) TransactionCoordinator(ctx context.Context) (spi.TransactionCoordinator, error) {
+	f.got = ctx
+	return f.co, f.err
+}
+
+// stubCoordinator is a coordinator the tests compare by identity only.
+type stubCoordinator struct{ spi.TransactionCoordinator }
+
+// TestCachingFactory_ForwardsCoordinator: the caching wrapper hands on the
+// inner factory's coordinator, its error and the caller's context, rather
+// than hiding the capability.
+func TestCachingFactory_ForwardsCoordinator(t *testing.T) {
+	co := &stubCoordinator{}
+	sentinel := errors.New("coordinator sentinel")
+	inner := &coordinatingFactory{co: co, err: sentinel}
+	f := modelcache.NewCachingStoreFactory(inner, nil, &manualClock{now: time.Now()}, time.Hour)
+
+	capable, ok := any(f).(spi.TransactionCoordinationCapable)
+	if !ok {
+		t.Fatal("CachingStoreFactory must implement TransactionCoordinationCapable")
+	}
+	type ctxKey struct{}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "marker")
+	got, err := capable.TransactionCoordinator(ctx)
+	if got != co {
+		t.Errorf("coordinator = %v; want the inner factory's", got)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("error = %v; want the inner factory's", err)
+	}
+	if inner.got != ctx {
+		t.Error("TransactionCoordinator did not pass the caller's ctx to the inner factory")
+	}
+}
+
+// TestCachingFactory_NotCapableReturnsNilNil: over an inner factory without
+// the capability, the wrapper answers (nil, nil), which is "not capable".
+func TestCachingFactory_NotCapableReturnsNilNil(t *testing.T) {
+	f := modelcache.NewCachingStoreFactory(&stubFactory{}, nil, &manualClock{now: time.Now()}, time.Hour)
+	capable, ok := any(f).(spi.TransactionCoordinationCapable)
+	if !ok {
+		t.Fatal("CachingStoreFactory must implement TransactionCoordinationCapable")
+	}
+	got, err := capable.TransactionCoordinator(context.Background())
+	if got != nil || err != nil {
+		t.Fatalf("TransactionCoordinator = (%v, %v); want (nil, nil)", got, err)
+	}
 }

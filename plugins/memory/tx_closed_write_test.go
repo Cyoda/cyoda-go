@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Every write entry point refuses a committed transaction's context with
@@ -17,6 +17,7 @@ import (
 // .claude/rules/correctness-over-availability.md).
 func TestTx_ClosedTransaction_RefusesEveryWrite(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-closed-write"), spi.ModelRef{EntityName: "m-closed-write", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-closed-write"))
 	ref := spi.ModelRef{EntityName: "m-closed-write", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)

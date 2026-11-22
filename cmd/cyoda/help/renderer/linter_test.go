@@ -18,6 +18,14 @@ func TestFindUnsupported_NestedListDetected(t *testing.T) {
 	}
 }
 
+func TestFindUnsupported_NestedNumberedListDetected(t *testing.T) {
+	for _, src := range []string{"- a\n  1. nested\n", "- a\n\t2. nested\n", "- a\n  10. nested\n"} {
+		if len(FindUnsupported([]byte(src))) == 0 {
+			t.Errorf("nested numbered list must be flagged: %q", src)
+		}
+	}
+}
+
 func TestFindUnsupported_HTMLBlockDetected(t *testing.T) {
 	issues := FindUnsupported([]byte("<div>x</div>\n"))
 	if len(issues) == 0 {

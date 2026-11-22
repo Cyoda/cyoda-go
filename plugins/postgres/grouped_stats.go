@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // This file implements spi.EntityStore.Iterate and spi.GroupedAggregator on
@@ -26,14 +26,12 @@ import (
 //     native SQL GROUP BY. Unlike sqlite (D9 opts out of stdev because the
 //     one-pass formula is numerically unsafe), postgres's STDDEV_SAMP is
 //     numerically stable, so the request shape is always pushable as long
-//     as no residual and no PIT are involved.
+//     as no residual is involved. At a point in time the same GROUP BY runs
+//     over the lateral base searchBaseQuery builds, committed-only.
 //
-// Decline cases (return spi.ErrAggregationNotPushdownable):
+// Decline case (return spi.ErrAggregationNotPushdownable):
 //   - Filter has a residual (post-aggregation residual application can't
 //     reconstruct per-bucket counts safely).
-//   - opts.PointInTime is set (PIT GROUP BY would need a DISTINCT ON wrapper;
-//     out of scope for v1 — service layer falls through to streaming tally
-//     over Iterate, which DOES support PIT).
 //
 // Cardinality detection (D17): LIMIT MaxBuckets+1 and surface
 // ErrGroupCardinalityExceeded the moment we observe MaxBuckets+1 rows.
@@ -51,11 +49,12 @@ var _ spi.GroupedAggregator = (*entityStore)(nil)
 // filter parts go into SQL WHERE; the residual is applied inside Next() via
 // evalPostFilter.
 //
-// PointInTime (when non-nil) walks entity_versions at the requested snapshot
-// using DISTINCT ON to surface only the latest visible version per entity,
-// then excludes deletion-marker versions. It is committed-only — it ignores any
-// ambient transaction and runs through committedQuerier (search_base.go), like
-// GetAsAt/GetPage(asAt) and Search with a PointInTime.
+// PointInTime (when non-nil) follows entities: a lateral join probes
+// entity_versions once per row in entities to surface the latest version
+// visible at the requested snapshot, then excludes deletion-marker versions.
+// It is committed-only — it ignores any ambient transaction and runs through
+// committedQuerier (search_base.go), like GetAsAt/GetPage(asAt) and Search
+// with a PointInTime.
 //
 // Ordering: empty OrderBy means unspecified (a deterministic entity_id
 // COLLATE "C" order is still emitted — a conformant, if stronger-than-
@@ -306,11 +305,12 @@ func (it *postgresIter) Next() bool {
 			return false
 		}
 		var doc []byte
-		if err := it.rows.Scan(&doc); err != nil {
+		var creationDate, lastModified time.Time
+		if err := it.rows.Scan(&doc, &creationDate, &lastModified); err != nil {
 			it.err = fmt.Errorf("scan iterate row: %w", err)
 			return false
 		}
-		e, err := unmarshalEntityDoc(doc)
+		e, err := unmarshalEntityDoc(doc, creationDate, lastModified)
 		if err != nil {
 			it.err = fmt.Errorf("unmarshal iterate row: %w", err)
 			return false
@@ -370,7 +370,7 @@ func (it *postgresIter) Close() error {
 
 // GroupedAggregate implements spi.GroupedAggregator. Returns
 // ErrAggregationNotPushdownable for request shapes the SQL path cannot
-// safely cover (residual filter / point-in-time); the caller is expected
+// safely cover (residual filter); the caller is expected
 // to fall back to Iterate-driven streaming tally.
 func (s *entityStore) GroupedAggregate(
 	ctx context.Context,
@@ -379,12 +379,6 @@ func (s *entityStore) GroupedAggregate(
 	filter spi.Filter,
 	opts spi.GroupedAggregationsOptions,
 ) ([]spi.GroupedAggregateBucket, error) {
-	// PIT pushdown is out of scope for v1 — streaming tally over Iterate
-	// (which does support PIT) handles it without per-query SQL plumbing.
-	if opts.PointInTime != nil {
-		return nil, spi.ErrAggregationNotPushdownable
-	}
-
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
@@ -440,12 +434,33 @@ func (s *entityStore) GroupedAggregate(
 	}
 
 	q := "SELECT " + strings.Join(selectParts, ", ")
-	q += " FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted"
-	args := []any{string(s.tenantID), model.EntityName, model.ModelVersion}
-	if plan.where != "" {
-		shifted := shiftPlaceholders(plan.where, len(args))
-		q += " AND (" + shifted + ")"
-		args = append(args, plan.args...)
+	var args []any
+	var qr Querier = s.q
+	if opts.PointInTime != nil {
+		// At an instant: group over the version each entity had as of the
+		// instant (the lateral base every point-in-time read shares), run
+		// committed-only off any ambient transaction. The filter attaches to
+		// the base itself, at the level of its `latest` derived table — as
+		// Search does — not around it: that level exposes entity_id, version
+		// and the model columns a filter may resolve to (a meta "id" filter is
+		// the entity_id column), which the base's own three-column projection
+		// does not. The group and aggregate expressions read only doc, which
+		// the projection carries.
+		base, baseArgs := s.searchBaseQuery(model.EntityName, model.ModelVersion, opts.PointInTime)
+		args = baseArgs
+		if plan.where != "" {
+			base += " AND (" + shiftPlaceholders(plan.where, len(args)) + ")"
+			args = append(args, plan.args...)
+		}
+		q += " FROM (" + base + ") pit"
+		qr = s.committedQuerier()
+	} else {
+		q += " FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted"
+		args = []any{string(s.tenantID), model.EntityName, model.ModelVersion}
+		if plan.where != "" {
+			q += " AND (" + shiftPlaceholders(plan.where, len(args)) + ")"
+			args = append(args, plan.args...)
+		}
 	}
 	if len(groupExprs) > 0 {
 		// GROUP BY uses full expressions (not aliases) for portability — D17.
@@ -463,7 +478,7 @@ func (s *entityStore) GroupedAggregate(
 		args = append(args, limit)
 	}
 
-	rows, err := s.q.Query(ctx, q, args...)
+	rows, err := qr.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("grouped aggregate query: %w", err)
 	}

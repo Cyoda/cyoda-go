@@ -3,9 +3,11 @@
   "$id": "https://cyoda.com/cloud/event/processing/EventAckResponse.json",
   "title": "EventAckResponse",
   "type": "object",
-  "extends": {
-    "$ref": "../common/BaseEvent.json"
-  },
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
   "properties": {
     "sourceEventId": {
       "type": "string",

@@ -5,7 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // Every write entry point refuses a committed transaction's context with
@@ -18,6 +19,7 @@ func TestTx_ClosedTransaction_RefusesEveryWrite(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-closed-write", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-closed-write", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

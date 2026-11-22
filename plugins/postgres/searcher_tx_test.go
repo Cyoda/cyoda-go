@@ -33,8 +33,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 var searchTxModel = spi.ModelRef{EntityName: "txperson", ModelVersion: "1"}
@@ -55,6 +55,7 @@ func setupSearchTx(t *testing.T, seed map[string]string) (*postgres.StoreFactory
 	t.Helper()
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("searchtx-tenant")
+	lockModels(t, factory, ctx, searchTxModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore (seed): %v", err)
@@ -369,6 +370,7 @@ func TestSearchTxPIT_CommittedOnlyMatchesIterateAsAt(t *testing.T) {
 	)
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant(tenant)
+	lockModels(t, factory, ctx, searchTxModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -478,6 +480,7 @@ func TestSearchTxPIT_TrackingReadNoConflictOnConcurrentWrite(t *testing.T) {
 	)
 	factory, tm := setupFCWTest(t)
 	baseCtx := ctxWithTenant(tenant)
+	lockModels(t, factory, baseCtx, searchTxModel)
 	seedStore, err := factory.EntityStore(baseCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (seed): %v", err)

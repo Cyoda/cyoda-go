@@ -7,12 +7,13 @@ import (
 	"sync/atomic"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // --- Task E4.1: RED tests for the streamed delete selection ---
@@ -129,8 +130,8 @@ func newDeleteStreamCtx(t *testing.T, factory spi.StoreFactory, ref spi.ModelRef
 // buildDeleteBatchedHandler (service_delete_batched_test.go).
 func buildDeleteStreamHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager) *Handler {
 	t.Helper()
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	engine := wfengine.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	return New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 }
 
 // seedKind creates n entities of ref's model with {"kind": kind} and returns
@@ -180,7 +181,7 @@ func TestDeleteEntitiesConditional_SingleTx_StreamsSelection(t *testing.T) {
 	decoyIDs := seedKind(t, h, ctx, ref, decoys, "keep")
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.kind","operatorType":"EQUALS","value":"drop"}`)
-	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, ref.ModelVersion, cond, nil, false, 0)
+	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, 1, cond, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -230,7 +231,7 @@ func TestDeleteBatched_StreamsSelectionInCycles(t *testing.T) {
 	beginsBefore := rtm.beginCount()
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.kind","operatorType":"EQUALS","value":"drop"}`)
-	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, ref.ModelVersion, cond, nil, false, batchSize)
+	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, 1, cond, nil, false, batchSize)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestDeleteAllEntities_StreamsSelection(t *testing.T) {
 	const n = 250
 	ids := seedKind(t, h, ctx, ref, n, "whatever")
 
-	result, err := h.DeleteAllEntities(ctx, ref.EntityName, ref.ModelVersion)
+	result, err := h.DeleteAllEntities(ctx, ref.EntityName, 1)
 	if err != nil {
 		t.Fatalf("DeleteAllEntities: %v", err)
 	}
@@ -347,7 +348,7 @@ func TestDeleteEntitiesConditional_SingleTx_WildcardPathConditionStreams(t *test
 		]
 	}`)
 
-	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, ref.ModelVersion, cond, nil, false, 0)
+	result, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, 1, cond, nil, false, 0)
 	if err != nil {
 		t.Fatalf("DeleteEntitiesConditional: %v", err)
 	}

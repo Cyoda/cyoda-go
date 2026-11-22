@@ -2,18 +2,20 @@ package common_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 func TestOperationalError(t *testing.T) {
@@ -202,13 +204,91 @@ func TestWriteError_OperationalLogsCause(t *testing.T) {
 	}
 }
 
+// TestWriteError_OperationalCarriesItsLogLevel — a site that sets the level
+// of an operational error's line (WithLogLevel) gets that one line at that
+// level, and no INFO line besides.
+func TestWriteError_OperationalCarriesItsLogLevel(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+
+	common.WriteError(w, r, common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is not available").
+		WithCause(errors.New("node-2 is not live")).WithLogLevel(slog.LevelWarn))
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"level":"WARN"`) || !strings.Contains(lines[0], "node-2 is not live") {
+		t.Errorf("log = %q, want one WARN line carrying the cause", lines)
+	}
+}
+
+// TestReportError_LogsOnceAndReturnsTheClientText — an error answered outside
+// a problem response (an error element in a 200 body) is logged exactly as
+// WriteError logs it, and the client gets what WriteError would give: the
+// message of an operational error, the generic ticketed text of an internal
+// one, its ticket naming the one ERROR line.
+func TestReportError_LogsOnceAndReturnsTheClientText(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	t.Run("operational", func(t *testing.T) {
+		buf := captureSlog(t)
+		refusal := common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound, "MODEL_NOT_FOUND: model m.1 not found")
+		refusal.Detail = "engine text"
+		if got := common.ReportError(context.Background(), refusal, "chunkIndex", 2); got != refusal.Message {
+			t.Errorf("client text = %q, want the message", got)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], `"level":"INFO"`) || !strings.Contains(lines[0], `"chunkIndex":2`) || !strings.Contains(lines[0], "engine text") {
+			t.Errorf("log = %q, want one INFO line with the attrs and the detail", lines)
+		}
+	})
+	t.Run("internal", func(t *testing.T) {
+		buf := captureSlog(t)
+		got := common.ReportError(context.Background(), common.Internal("workflow segment boundary failed", errors.New("pgx: commit failed")))
+		m := regexp.MustCompile(`^SERVER_ERROR: internal error \[ticket: ([0-9a-f-]{36})\]$`).FindStringSubmatch(got)
+		if m == nil {
+			t.Fatalf("client text = %q, want the generic ticketed text", got)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], `"level":"ERROR"`) || !strings.Contains(lines[0], m[1]) || !strings.Contains(lines[0], "pgx: commit failed") {
+			t.Errorf("log = %q, want one ERROR line under the ticket with the detail", lines)
+		}
+	})
+}
+
+// TestReportError_IsSanitizedInVerboseMode — an error answered inside a 2xx
+// body (a chunk element, a per-id delete map, which gRPC sends as it is)
+// never carries an internal error's Detail, in any error-response mode.
+func TestReportError_IsSanitizedInVerboseMode(t *testing.T) {
+	common.SetErrorResponseMode("verbose")
+	t.Cleanup(func() { common.SetErrorResponseMode("sanitized") })
+	captureSlog(t)
+	got := common.ReportError(context.Background(), common.Internal("entity delete failed", errors.New("pg: connection to host db-1 refused")))
+	if strings.Contains(withoutUUIDs(got), "db-1") || !strings.HasPrefix(got, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("client text = %q, want the generic ticketed text", got)
+	}
+}
+
+// TestWriteError_LeavesTheErrorsPropsUntouched — writing an error adds its
+// code and retry flag to the response's properties, not to the error, which
+// may be shared.
+func TestWriteError_LeavesTheErrorsPropsUntouched(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	appErr := common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
+	appErr.Props = map[string]any{"entityId": "e-1"}
+	common.WriteError(httptest.NewRecorder(), httptest.NewRequest("GET", "/test", nil), appErr)
+	if len(appErr.Props) != 1 {
+		t.Errorf("Props = %v, want the error's own entityId only", appErr.Props)
+	}
+}
+
 // captureSlog redirects the default logger into a buffer for the duration of
-// the test.
+// the test. DEBUG and above are captured so a test can assert a log line was
+// (or was not) emitted at DEBUG.
 func captureSlog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	return &buf
 }
@@ -250,14 +330,15 @@ func TestWriteErrorSanitizedDoesNotLeakSecrets(t *testing.T) {
 	common.WriteError(w, r, appErr)
 
 	body := w.Body.String()
+	clean := withoutUUIDs(body)
 	// The response body must NOT contain the connection string.
-	if strings.Contains(body, "admin@host") {
+	if strings.Contains(clean, "admin@host") {
 		t.Error("sanitized response leaked connection string")
 	}
-	if strings.Contains(body, "5432") {
+	if strings.Contains(clean, "5432") {
 		t.Error("sanitized response leaked port number")
 	}
-	if strings.Contains(body, "sslmode") {
+	if strings.Contains(clean, "sslmode") {
 		t.Error("sanitized response leaked connection parameter")
 	}
 	// Should contain the ticket-based generic message.
@@ -279,12 +360,12 @@ func TestSetErrorResponseModeConcurrent(t *testing.T) {
 			common.SetErrorResponseMode("sanitized")
 		}()
 	}
-	// Concurrent readers via SanitizeErrorMessage (which reads the mode)
+	// Concurrent readers via WriteError (which reads the mode)
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = common.SanitizeErrorMessage(errors.New("test"))
+			common.WriteError(httptest.NewRecorder(), httptest.NewRequest("GET", "/test", nil), common.Internal("test", errors.New("test")))
 		}()
 	}
 	wg.Wait()
@@ -292,17 +373,25 @@ func TestSetErrorResponseModeConcurrent(t *testing.T) {
 }
 
 func TestSetErrorResponseModeRoundTrip(t *testing.T) {
+	captureSlog(t)
+	detail := func() string {
+		w := httptest.NewRecorder()
+		common.WriteError(w, httptest.NewRequest("GET", "/test", nil), common.Internal("failed", errors.New("raw detail")))
+		var pd common.ProblemDetail
+		if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return pd.Detail
+	}
 	common.SetErrorResponseMode("verbose")
-	// In verbose mode, SanitizeErrorMessage should return the raw error.
-	msg := common.SanitizeErrorMessage(errors.New("raw detail"))
-	if msg != "raw detail" {
-		t.Errorf("expected 'raw detail' in verbose mode, got %q", msg)
+	// In verbose mode, a problem response carries an internal error's detail.
+	if got := detail(); got != "raw detail" {
+		t.Errorf("expected 'raw detail' in verbose mode, got %q", got)
 	}
 
 	common.SetErrorResponseMode("sanitized")
-	msg = common.SanitizeErrorMessage(errors.New("raw detail"))
-	if msg != "SERVER_ERROR: internal server error" {
-		t.Errorf("expected generic message in sanitized mode, got %q", msg)
+	if got := detail(); !strings.HasPrefix(got, "SERVER_ERROR: internal error [ticket: ") {
+		t.Errorf("expected the generic ticketed text in sanitized mode, got %q", got)
 	}
 }
 
@@ -336,12 +425,6 @@ func TestErrCodeSearchJobNotFound(t *testing.T) {
 func TestErrCodeSearchJobAlreadyTerminal(t *testing.T) {
 	if common.ErrCodeSearchJobAlreadyTerminal != "SEARCH_JOB_ALREADY_TERMINAL" {
 		t.Errorf("got %q", common.ErrCodeSearchJobAlreadyTerminal)
-	}
-}
-
-func TestErrCodeSearchShardTimeout(t *testing.T) {
-	if common.ErrCodeSearchShardTimeout != "SEARCH_SHARD_TIMEOUT" {
-		t.Errorf("got %q", common.ErrCodeSearchShardTimeout)
 	}
 }
 
@@ -473,10 +556,8 @@ func TestOperational_NotRetryableByDefault(t *testing.T) {
 // TestOperational_AsRetryable_FlipsRetryableBit pins the contract:
 // the three axes (status, code, retryable) are independent and any
 // 4xx with any code can be flagged retryable via the fluent
-// AsRetryable() opt-in. A retryable conflict with a specific
-// dictionary code (e.g. retryable TX_CONFLICT — distinct from the
-// generic CONFLICT) was previously unreachable without bare-field
-// mutation; AsRetryable() closes that gap.
+// AsRetryable() opt-in, so a code other than the generic CONFLICT can
+// be answered retryable without setting the field directly.
 func TestOperational_AsRetryable_FlipsRetryableBit(t *testing.T) {
 	err := common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 	if err.Status != http.StatusConflict {
@@ -566,3 +647,224 @@ func TestAppError_WithCause_PreservesErrorsIs(t *testing.T) {
 		t.Errorf("got status=%d code=%q, want 400/SOME_CODE", ae.Status, ae.Code)
 	}
 }
+
+// clientGone is the coordination's own "the request ended while it queued for
+// the transaction's gate", as internal/txcoord marks it. It is the one cause a
+// door's funnel may file as a departed client.
+func clientGone() error {
+	return fmt.Errorf("%w: %w", common.ErrClientGone, context.Canceled)
+}
+
+// TestWriteError_ClientGoneCancellation_LogsDebugNoTicket: a client that
+// disconnects while its request is in flight is not a server fault. Nothing
+// was wrong, there is nobody to quote a ticket to, and this is exactly the
+// moment (a compute member failing over) an operator wants a clean log.
+func TestWriteError_ClientGoneCancellation_LogsDebugNoTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel()
+	r = r.WithContext(ctx)
+
+	appErr := common.Internal("joined request ended while it queued for the transaction's gate", clientGone())
+	common.WriteError(w, r, appErr)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d — the door writes the same status it writes today", w.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a client disconnect must not log at ERROR: %s", buf.String())
+	}
+	if strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("a client disconnect must not mint or log a ticket: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"level":"DEBUG"`) {
+		t.Errorf("a client disconnect must log at DEBUG: %s", buf.String())
+	}
+	// The gRPC funnel logs this same event; the two must collate, so they carry
+	// the same fields. The path is the HTTP door's own addition.
+	for _, field := range []string{`"code"`, `"message"`, `"detail"`, `"path"`} {
+		if !strings.Contains(buf.String(), field) {
+			t.Errorf("the client-gone line is missing %s, so it does not collate with the gRPC funnel's: %s", field, buf.String())
+		}
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] != nil {
+		t.Errorf("the response must not carry a ticket nobody can be quoted: %v", pd["ticket"])
+	}
+}
+
+// TestWriteError_InternalFailureWrappingACancellation_KeepsItsTicket is the
+// regression that matters: a joined request is deliberately detached from its
+// client (txjoin uses context.WithoutCancel), so work that outlives its caller
+// can fail with an internal error that merely wraps an unrelated
+// context.Canceled — classifyWorkflowError wraps any such cause as Internal —
+// while the request's own context is long since done. Filing that as a departed
+// client would log a genuine fault at DEBUG with no ticket, below the default
+// level: the fault would leave no trace at all.
+func TestWriteError_InternalFailureWrappingACancellation_KeepsItsTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel() // the client has gone — but that is not what went wrong
+	r = r.WithContext(ctx)
+
+	appErr := common.Internal("workflow aborted by context cancellation",
+		fmt.Errorf("failed to join transaction: %w", context.Canceled))
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a genuine fault must log at ERROR even when the client has also gone: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("a genuine fault must mint a ticket: %s", buf.String())
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] == nil || pd["ticket"] == "" {
+		t.Error("expected a ticket in the response")
+	}
+}
+
+// TestWriteError_ClientGoneCancellation_VerboseModeKeepsDetailNoTicket covers
+// the verbose arm of the client-gone branch, which the sanitized-mode test
+// above does not exercise: verbose mode still shows appErr.Detail (as it does
+// for every other internal error) and still omits the ticket — there is
+// nobody to quote it to regardless of response mode.
+func TestWriteError_ClientGoneCancellation_VerboseModeKeepsDetailNoTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("verbose")
+	defer common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel()
+	r = r.WithContext(ctx)
+
+	cause := clientGone()
+	appErr := common.Internal("joined request ended while it queued for the transaction's gate", cause)
+	common.WriteError(w, r, appErr)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a client disconnect must not log at ERROR, even in verbose mode: %s", buf.String())
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] != nil {
+		t.Errorf("verbose mode must still omit the ticket nobody can be quoted: %v", pd["ticket"])
+	}
+	detail, _ := pd["detail"].(string)
+	if detail != cause.Error() {
+		t.Errorf("detail = %q, want appErr.Detail (%q) in verbose mode", detail, cause.Error())
+	}
+}
+
+// TestWriteError_OrdinaryInternalError_StillLogsErrorWithTicket pins the
+// regression this task must not cause: an internal error on a request whose
+// context is NOT done still mints a ticket and logs at ERROR.
+func TestWriteError_OrdinaryInternalError_StillLogsErrorWithTicket(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil) // context is live, not cancelled
+
+	appErr := common.Internal("something broke", errors.New("db connection failed"))
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("an ordinary internal error must still log at ERROR: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("an ordinary internal error must still mint a ticket: %s", buf.String())
+	}
+	var pd map[string]any
+	json.NewDecoder(w.Body).Decode(&pd)
+	if pd["ticket"] == nil || pd["ticket"] == "" {
+		t.Error("expected a ticket in the response")
+	}
+}
+
+// TestWriteError_FeatureDeadlineTimeout_Untouched: a request whose own
+// feature deadline expired carries context.DeadlineExceeded, not
+// context.Canceled, and must not be caught by the client-gone rule even
+// though the request's context is also done.
+func TestWriteError_FeatureDeadlineTimeout_Untouched(t *testing.T) {
+	buf := captureSlog(t)
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/test", nil)
+	ctx, cancel := context.WithTimeout(r.Context(), 0) // already expired
+	defer cancel()
+	<-ctx.Done()
+	r = r.WithContext(ctx)
+
+	appErr := common.Internal("workflow aborted by context cancellation", context.DeadlineExceeded)
+	common.WriteError(w, r, appErr)
+
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Errorf("a DeadlineExceeded cause must still log at ERROR, not be treated as a client disconnect: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"ticket"`) {
+		t.Errorf("a DeadlineExceeded cause must still mint a ticket: %s", buf.String())
+	}
+}
+
+func TestTxAbortedConflict(t *testing.T) {
+	cause := fmt.Errorf("store: %w", spi.ErrTxAborted)
+	appErr := common.TxAbortedConflict(cause)
+	if appErr == nil || appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeConflict || !appErr.Retryable {
+		t.Fatalf("common.TxAbortedConflict(%v) = %+v, want a retryable 409 %s", cause, appErr, common.ErrCodeConflict)
+	}
+	if !errors.Is(appErr, spi.ErrTxAborted) {
+		t.Fatal("the cause is not attached")
+	}
+	if got := common.TxAbortedConflict(fmt.Errorf("cas: %w", spi.ErrConflict)); got != nil {
+		t.Fatalf("a plain conflict — a precondition that was evaluated — was answered %+v", got)
+	}
+	if got := common.TxAbortedConflict(nil); got != nil {
+		t.Fatalf("nil was answered %+v", got)
+	}
+}
+
+// TestInternal_EpochMismatchIsARetryable409 — a store that lost ownership of a
+// shard mid-transaction (spi.ErrEpochMismatch) has rolled the transaction back,
+// so the same request can succeed on a fresh attempt. It must not reach the
+// caller as an opaque 500, and the store's own wording stays in the log.
+func TestInternal_EpochMismatchIsARetryable409(t *testing.T) {
+	cause := fmt.Errorf("transactional save aborted: shard revoked: %w", spi.ErrEpochMismatch)
+	e := common.Internal("failed to save entity", cause)
+
+	if e.Status != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", e.Status)
+	}
+	if e.Code != common.ErrCodeEpochMismatch {
+		t.Fatalf("code = %q, want %q", e.Code, common.ErrCodeEpochMismatch)
+	}
+	if !e.Retryable {
+		t.Fatal("EPOCH_MISMATCH must be retryable")
+	}
+	if e.Level != common.LevelOperational {
+		t.Fatalf("level = %v, want Operational", e.Level)
+	}
+	if e.Err == nil {
+		t.Fatal("the cause was dropped from the log")
+	}
+	if strings.Contains(e.Message, "shard revoked") {
+		t.Fatalf("the client-facing message leaked the store's wording: %q", e.Message)
+	}
+}
+
+// uuidText matches a UUID, such as an error's ticket.
+var uuidText = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// withoutUUIDs removes every UUID from s. A leak check removes them first: a
+// random ticket can contain a short marker such as a port number by chance.
+func withoutUUIDs(s string) string { return uuidText.ReplaceAllString(s, "") }

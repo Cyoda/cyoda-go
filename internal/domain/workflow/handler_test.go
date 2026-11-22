@@ -8,11 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
 )
 
 // newTestServer creates an App with default config and returns an httptest.Server.
@@ -48,6 +49,41 @@ func doWorkflowImport(t *testing.T, base, entityName string, version int, body s
 		t.Fatalf("workflow import request failed: %v", err)
 	}
 	return resp
+}
+
+// TestImport_ResponseTimeoutBound_FollowsServerSetting pins the wiring from
+// the server setting to the import handler: the same payload is accepted or
+// refused depending on the bound the App was built with.
+func TestImport_ResponseTimeoutBound_FollowsServerSetting(t *testing.T) {
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = ""
+	cfg.Callout.ResponseTimeout = 5 * time.Second
+	cfg.Callout.ResponseTimeoutMax = 5 * time.Second
+	srv := httptest.NewServer(app.New(cfg).Handler())
+	t.Cleanup(srv.Close)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := func(ms int) string {
+		return `{"importMode":"REPLACE","workflows":[{
+			"version":"1.1","name":"bound-wf","initialState":"S1","active":true,
+			"states":{"S1":{"transitions":[{"name":"go","next":"S2","manual":true,
+				"processors":[{"type":"externalized","name":"p","executionMode":"SYNC",
+					"config":{"calculationNodesTags":"workers","responseTimeoutMs":` + strconv.Itoa(ms) + `}}]}]},
+				"S2":{}}}]}`
+	}
+
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body(5000))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("responseTimeoutMs at the bound: expected 200, got %d", resp.StatusCode)
+	}
+
+	resp = doWorkflowImport(t, srv.URL, "Order", 1, body(5001))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("responseTimeoutMs over the bound: expected 400, got %d", resp.StatusCode)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeValidationFailed)
 }
 
 func doWorkflowExport(t *testing.T, base, entityName string, version int) *http.Response {
@@ -364,7 +400,7 @@ func TestImportFullWorkflow(t *testing.T) {
 								"next": "VALIDATED",
 								"manual": false,
 								"processors": [
-									{"name": "validate-payment", "type": "FUNCTION"}
+									{"name": "validate-payment", "type": "externalized"}
 								]
 							}
 						]
@@ -390,7 +426,7 @@ func TestImportFullWorkflow(t *testing.T) {
 								"next": "PROCESSED",
 								"manual": false,
 								"processors": [
-									{"name": "execute-payment", "type": "EXTERNAL_API"}
+									{"name": "execute-payment", "type": "externalized"}
 								]
 							}
 						]
@@ -1351,39 +1387,12 @@ func TestImport_MalformedJSONBody_Returns400(t *testing.T) {
 	}
 }
 
-// TestImport_TrailingData_Returns400 fences the json.Decoder gotcha:
-// Decode consumes exactly one JSON value and would otherwise silently
-// drop anything after the first object's closing brace. Same class of
-// "client shape mistake" as an unknown field — and the strict-decoder
-// boundary needs to surface it loudly rather than hide it behind a 200.
-func TestImport_TrailingData_Returns400(t *testing.T) {
-	srv := newTestServer(t)
-	importModel(t, srv.URL, "Order", 1)
-
-	// Valid request object followed by trailing JSON garbage. The first
-	// object would decode cleanly; the trailing `{"junk":1}` must trip
-	// the post-decode tail check.
-	body := `{"importMode":"MERGE","workflows":[]}{"junk":1}`
-	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		b, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 400 for trailing JSON content, got %d: %s", resp.StatusCode, b)
-	}
-	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
-	respBody := readJSON(t, resp)
-	detail, _ := respBody["detail"].(string)
-	if !strings.Contains(detail, "trailing") {
-		t.Errorf("expected detail to mention 'trailing', got: %s", detail)
-	}
-}
-
 // TestImport_UnknownField_TopLevel_Returns400 covers the strict-decoder
 // boundary: unknown fields at the top of the import-request body (e.g.
 // forward-compat extras, typos) must be rejected at the wire boundary
-// with 400 BAD_REQUEST. Without DisallowUnknownFields the field is
-// silently dropped and the request proceeds, hiding shape errors from
-// the client.
+// with 400 BAD_REQUEST. A decoder that ignored it would drop the field
+// silently and let the request proceed, hiding shape errors from the
+// client.
 func TestImport_UnknownField_TopLevel_Returns400(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)
@@ -1398,8 +1407,8 @@ func TestImport_UnknownField_TopLevel_Returns400(t *testing.T) {
 	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
 	respBody := readJSON(t, resp)
 	detail, _ := respBody["detail"].(string)
-	// Go's decoder emits `json: unknown field "futureField"` — the field
-	// name in the detail is what makes the error actionable to the caller.
+	// The decoder names the member (`unknown member name "futureField"`) —
+	// the name in the detail is what makes the error actionable to the caller.
 	if !strings.Contains(detail, "futureField") {
 		t.Errorf("expected detail to name the unknown field 'futureField', got: %s", detail)
 	}
@@ -1440,10 +1449,10 @@ func TestImport_UnknownField_Typo_Returns400(t *testing.T) {
 // TestImport_KnownSPIFields_StillAccepted is the coordination fence for
 // the strict-decoder switch: SPI fields that legitimately exist on
 // ProcessorConfig (asyncResult, retryPolicy, context,
-// calculationNodesTags, startNewTxOnDispatch, ...) must NOT be rejected
-// as unknown. If a future SPI tag drops or renames any of these on the
-// wire, this test fails loudly instead of silently breaking import for
-// clients sending the fields.
+// calculationNodesTags, ...) and on the processor (startNewTxOnDispatch)
+// must NOT be rejected as unknown. If a future SPI tag drops or renames
+// any of these on the wire, this test fails loudly instead of silently
+// breaking import for clients sending the fields.
 //
 // crossoverToAsyncMs is exercised in the reject-at-import e2e tests
 // (TestE2E_CrossoverToAsyncMsRejectedAtImport in async_result_import_reject_test.go);
@@ -1458,11 +1467,11 @@ func TestImport_KnownSPIFields_StillAccepted(t *testing.T) {
 	// asyncResult=false + crossoverToAsyncMs omitted is the validator-
 	// accepted combination (see validate_import_test.go); both live on
 	// ProcessorConfig (the processor's `config` sub-shape). Other
-	// ProcessorConfig fields — retryPolicy, context, calculationNodesTags,
-	// startNewTxOnDispatch — are exercised here at their valid defaults
-	// (startNewTxOnDispatch=true requires COMMIT_BEFORE_DISPATCH, so the
-	// fence uses false with SYNC) so the strict decoder must pass them
-	// through unchanged.
+	// ProcessorConfig fields — retryPolicy, context, calculationNodesTags —
+	// and the processor's startNewTxOnDispatch are exercised here at their
+	// valid defaults (startNewTxOnDispatch=true requires
+	// COMMIT_BEFORE_DISPATCH, so the fence uses false with SYNC) so the
+	// strict decoder must pass them through unchanged.
 	body := `{
 		"importMode":"REPLACE",
 		"workflows":[{
@@ -1472,12 +1481,12 @@ func TestImport_KnownSPIFields_StillAccepted(t *testing.T) {
 					"name":"go","next":"S2","manual":true,
 					"processors":[{
 						"type":"externalized","name":"p","executionMode":"SYNC",
+						"startNewTxOnDispatch":false,
 						"config":{
 							"asyncResult":false,
 							"retryPolicy":"NONE",
 							"context":"tenant-scoped",
-							"calculationNodesTags":"workers",
-							"startNewTxOnDispatch":false
+							"calculationNodesTags":"workers"
 						}
 					}]
 				}]},
@@ -1795,4 +1804,279 @@ func semanticJSONEqual(t *testing.T, a, b json.RawMessage) bool {
 		return string(out)
 	}
 	return norm(a) == norm(b)
+}
+
+// TestImportExport_CalloutFields_RoundTrip pins that idempotent on a processor
+// and retryPolicy on a schedule function are accepted by the strict decoder,
+// stored, and exported, and that a workflow which never mentions them exports
+// without them.
+func TestImportExport_CalloutFields_RoundTrip(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+
+	body := `{"importMode":"REPLACE","workflows":[{
+		"version":"1.5","name":"callout-fields-wf","initialState":"S1","active":true,
+		"states":{
+			"S1":{"transitions":[
+				{"name":"go","next":"S2","manual":true,
+				 "processors":[
+					{"type":"externalized","name":"safe","executionMode":"SYNC",
+					 "config":{"calculationNodesTags":"workers","idempotent":true,"retryPolicy":"FIXED"}},
+					{"type":"externalized","name":"plain","executionMode":"SYNC",
+					 "config":{"calculationNodesTags":"workers"}}]},
+				{"name":"later","next":"S2","manual":false,
+				 "schedule":{"function":{"name":"computeFire","resultKind":"Schedule",
+					"calculationNodesTags":"scheduler","retryPolicy":"NONE"}}}]},
+			"S2":{}}}]}`
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import: expected 200, got %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+
+	exp := doWorkflowExport(t, srv.URL, "Order", 1)
+	defer exp.Body.Close()
+	raw, err := io.ReadAll(exp.Body)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	var out struct {
+		Workflows []struct {
+			Version string `json:"version"`
+			States  map[string]struct {
+				Transitions []struct {
+					Name       string `json:"name"`
+					Processors []struct {
+						Name   string         `json:"name"`
+						Config map[string]any `json:"config"`
+					} `json:"processors"`
+					Schedule *struct {
+						Function map[string]any `json:"function"`
+					} `json:"schedule"`
+				} `json:"transitions"`
+			} `json:"states"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode export: %v; raw: %s", err, raw)
+	}
+	if len(out.Workflows) != 1 || out.Workflows[0].Version != "1.5" {
+		t.Fatalf("export must stamp 1.5; raw: %s", raw)
+	}
+	trs := out.Workflows[0].States["S1"].Transitions
+	if len(trs) != 2 || len(trs[0].Processors) != 2 {
+		t.Fatalf("unexpected export shape: %s", raw)
+	}
+	if got := trs[0].Processors[0].Config["idempotent"]; got != true {
+		t.Errorf(`processor "safe": idempotent = %v, want true`, got)
+	}
+	if _, present := trs[0].Processors[1].Config["idempotent"]; present {
+		t.Errorf(`processor "plain": idempotent must be omitted when never set; raw: %s`, raw)
+	}
+	if trs[1].Schedule == nil || trs[1].Schedule.Function["retryPolicy"] != "NONE" {
+		t.Errorf("schedule.function.retryPolicy lost on round-trip; raw: %s", raw)
+	}
+}
+
+// TestImport_ScheduleDelayMsBesideFunction_Rejected pins the published
+// TransitionScheduleDto contract (api/openapi.yaml): delayMs has minimum 1
+// and is mutually exclusive with function. The SPI decodes delayMs into a
+// plain int64, so a `delayMs: 0` or `delayMs: null` beside a function reads
+// the same as an omitted one to the structural validator; the import must
+// still refuse it, because the client sent a value the schema forbids.
+func TestImport_ScheduleDelayMsBesideFunction_Rejected(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		delayMs string
+	}{
+		{"zero", "0"},
+		{"null", "null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			importModel(t, srv.URL, "Order", 1)
+
+			body := `{
+				"importMode": "REPLACE",
+				"workflows": [{
+					"version": "1.1",
+					"name": "fn-schedule-flow",
+					"initialState": "NEW",
+					"states": {
+						"NEW": {"transitions": [{
+							"name": "AUTO_CLOSE", "next": "CLOSED", "manual": false,
+							"schedule": {
+								"delayMs": ` + tc.delayMs + `,
+								"function": {"name": "computeNextFireTime", "resultKind": "Schedule", "calculationNodesTags": "billing"}
+							}
+						}]},
+						"CLOSED": {"transitions": []}
+					}
+				}]
+			}`
+			resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
+			}
+			for _, want := range []string{"VALIDATION_FAILED", "schedule.delayMs and schedule.function are mutually exclusive", "fn-schedule-flow", "NEW", "AUTO_CLOSE"} {
+				if !strings.Contains(string(b), want) {
+					t.Errorf("response must contain %q, got: %s", want, b)
+				}
+			}
+		})
+	}
+}
+
+// TestImport_TransitionManualMissingOrNull_Rejected pins the published
+// TransitionDefinitionDto contract (api/openapi.yaml): manual is required and
+// is a boolean. The SPI decodes manual into a plain bool, so an omitted or
+// null manual reads as false to the structural validator, which would make
+// the transition automatic; the import must refuse it instead.
+func TestImport_TransitionManualMissingOrNull_Rejected(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		manual string
+	}{
+		{"omitted", ""},
+		{"null", `"manual": null,`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			importModel(t, srv.URL, "Order", 1)
+
+			body := `{
+				"importMode": "REPLACE",
+				"workflows": [{
+					"version": "1.1",
+					"name": "approval-flow",
+					"initialState": "NEW",
+					"states": {
+						"NEW": {"transitions": [{` + tc.manual + `"name": "APPROVE", "next": "DONE"}]},
+						"DONE": {"transitions": []}
+					}
+				}]
+			}`
+			resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
+			}
+			for _, want := range []string{"VALIDATION_FAILED", "manual is required", "approval-flow", `state \"NEW\"`, `transition \"APPROVE\"`} {
+				if !strings.Contains(string(b), want) {
+					t.Errorf("response must contain %q, got: %s", want, b)
+				}
+			}
+		})
+	}
+}
+
+// TestImport_RefusalNamesFirstStateInOrder pins that an import refused by a
+// rule that two states break names the same state on every request: the
+// first in lexicographic order. The states sit in a JSON object, a Go map
+// after decoding, and a check that walks the map in its iteration order
+// would name either state at random.
+func TestImport_RefusalNamesFirstStateInOrder(t *testing.T) {
+	// states builds the states A and B, each holding the transition tr
+	// (a JSON object whose name is NAME), and the target state DONE.
+	states := func(tr string) string {
+		return `"A": {"transitions": [` + strings.ReplaceAll(tr, "NAME", "ta") + `]},
+			"B": {"transitions": [` + strings.ReplaceAll(tr, "NAME", "tb") + `]},
+			"DONE": {"transitions": []}`
+	}
+	for _, tc := range []struct {
+		name, states, want string
+	}{
+		{"manual omitted",
+			states(`{"name": "NAME", "next": "DONE"}`),
+			"manual is required"},
+		{"delayMs beside function",
+			states(`{"name": "NAME", "next": "DONE", "manual": false,
+				"schedule": {"delayMs": 0, "function": {"name": "f", "resultKind": "Schedule", "calculationNodesTags": "t"}}}`),
+			"schedule.delayMs and schedule.function are mutually exclusive"},
+		{"processor executionMode",
+			states(`{"name": "NAME", "next": "DONE", "manual": true,
+				"processors": [{"name": "p", "executionMode": "BOGUS", "config": {"calculationNodesTags": "t"}}]}`),
+			"unknown executionMode"},
+		{"startNewTxOnDispatch outside COMMIT_BEFORE_DISPATCH",
+			states(`{"name": "NAME", "next": "DONE", "manual": true,
+				"processors": [{"name": "p", "executionMode": "SYNC", "startNewTxOnDispatch": true, "config": {"calculationNodesTags": "t"}}]}`),
+			"startNewTxOnDispatch=true is only valid"},
+		{"state annotations",
+			`"A": {"annotations": [], "transitions": []},
+			"B": {"annotations": [], "transitions": []}`,
+			"annotations must be a JSON object"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			importModel(t, srv.URL, "Order", 1)
+			body := `{"importMode": "REPLACE", "workflows": [{
+				"version": "1.1", "name": "wf", "initialState": "A",
+				"states": {` + tc.states + `}}]}`
+			for i := range 40 {
+				resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+				b, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), tc.want) {
+					t.Fatalf("request %d: expected 400 containing %q, got %d: %s", i, tc.want, resp.StatusCode, b)
+				}
+				if !strings.Contains(string(b), `state \"A\"`) {
+					t.Fatalf("request %d: the refusal must name state A, the first in order; got: %s", i, b)
+				}
+			}
+		})
+	}
+}
+
+// TestImport_StartNewTxOnDispatch_IsAProcessorMember: startNewTxOnDispatch
+// qualifies executionMode, so the contract places it beside it on the
+// processor. There it is accepted and exported in the same place; inside
+// config it is a member config does not declare, and is refused.
+func TestImport_StartNewTxOnDispatch_IsAProcessorMember(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+	wf := func(processor string) string {
+		return `{"importMode": "REPLACE", "workflows": [{
+			"version": "1.1", "name": "wf", "initialState": "A",
+			"states": {"A": {"transitions": [{"name": "go", "next": "B", "manual": true,
+				"processors": [` + processor + `]}]}, "B": {"transitions": []}}}]}`
+	}
+
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, wf(`{"name": "p", "executionMode": "COMMIT_BEFORE_DISPATCH",
+		"startNewTxOnDispatch": true, "config": {"calculationNodesTags": "t"}}`))
+	if b, _ := io.ReadAll(resp.Body); resp.StatusCode != http.StatusOK {
+		t.Fatalf("on the processor: %d %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+	exp := doWorkflowExport(t, srv.URL, "Order", 1)
+	exported, _ := io.ReadAll(exp.Body)
+	exp.Body.Close()
+	var out struct {
+		Workflows []struct {
+			States map[string]struct {
+				Transitions []struct {
+					Processors []map[string]json.RawMessage `json:"processors"`
+				} `json:"transitions"`
+			} `json:"states"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(exported, &out); err != nil || len(out.Workflows) != 1 {
+		t.Fatalf("export: %v %s", err, exported)
+	}
+	proc := out.Workflows[0].States["A"].Transitions[0].Processors[0]
+	if string(proc["startNewTxOnDispatch"]) != "true" || strings.Contains(string(proc["config"]), "startNewTxOnDispatch") {
+		t.Errorf("exported processor: %s", exported)
+	}
+
+	resp = doWorkflowImport(t, srv.URL, "Order", 1, wf(`{"name": "p", "executionMode": "COMMIT_BEFORE_DISPATCH",
+		"config": {"calculationNodesTags": "t", "startNewTxOnDispatch": true}}`))
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), `unknown member name \"startNewTxOnDispatch\"`) {
+		t.Errorf("inside config: %d %s; want 400 naming the member", resp.StatusCode, b)
+	}
 }

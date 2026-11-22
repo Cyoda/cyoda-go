@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // --- Test 3.1: Concurrent entity creates (same model) ---
@@ -138,7 +138,7 @@ func TestTransaction_RollbackOnProcessorFailure(t *testing.T) {
 			"version": "1.1", "name": "tx3-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "tx-fail", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "tx-fail", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {}

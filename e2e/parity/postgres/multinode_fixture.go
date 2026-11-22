@@ -8,32 +8,64 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/multinode"
-	"github.com/cyoda-platform/cyoda-go/internal/testpg"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/e2e/parity/multinode"
+	"github.com/cyoda/cyoda-go/internal/testpg"
 )
 
 // pgMultiNode implements multinode.MultiNodeFixture for the postgres backend.
 type pgMultiNode struct {
 	baseURLs []string
 	keySet   *fixtureutil.JWTKeySet
-	nodeLogs []*fixtureutil.SyncBuffer
+	// computeCreds holds the M2M client of each tenant a further compute
+	// client joins under; the nodes share one store, so one client serves
+	// every node.
+	computeCreds *fixtureutil.ComputeCredentials
+	// computeClientID is the M2M client the fixture's own compute client
+	// authenticates as.
+	computeClientID string
+	nodeLogs        []*fixtureutil.SyncBuffer
 	// killNode SIGKILLs node i (see fixtureutil.ClusterLaunchResult.KillNode).
 	// Exposed via the KillNode method, off the shared MultiNodeFixture
 	// interface — a crash test type-asserts for it.
 	killNode func(i int)
+	// signalNode and awaitNodeExit back SignalNode and AwaitNodeExit (see
+	// fixtureutil.ClusterLaunchResult); off the shared interface, like killNode.
+	signalNode    func(i int, sig syscall.Signal) error
+	awaitNodeExit func(i int, within time.Duration) error
+	// containerID is the PostgreSQL container, for PauseDatabase.
+	containerID string
 	// connStr is the shared Postgres connection string every node uses. Exposed
 	// via the ConnString method so a crash test can open its own read-only pgx
 	// handle and assert on persisted job state (e.g. claim epoch), which is
 	// invisible at the HTTP data plane. Off the shared interface for the same
 	// reason as KillNode/NodeLogs.
 	connStr string
+	// computeBin and grpcEndpoints back the optional ComputeClientCapable
+	// capability: a further compute client attached to a chosen pnode.
+	computeBin    string
+	grpcEndpoints []string
+}
+
+var _ multinode.ComputeClientCapable = (*pgMultiNode)(nil)
+
+// StartComputeClient implements multinode.ComputeClientCapable.
+func (f *pgMultiNode) StartComputeClient(t *testing.T, node int, spec parity.ComputeClientSpec) parity.ComputeClient {
+	t.Helper()
+	if node < 0 || node >= len(f.baseURLs) || node >= len(f.grpcEndpoints) {
+		t.Fatalf("StartComputeClient: pnode %d out of range (cluster has %d)", node, len(f.baseURLs))
+	}
+	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoints[node], f.baseURLs[node], spec)
 }
 
 // BaseURLs implements multinode.MultiNodeFixture.
@@ -62,6 +94,12 @@ func (f *pgMultiNode) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
+// PlatformOperator implements multinode.MultiNodeFixture.
+func (f *pgMultiNode) PlatformOperator(t *testing.T) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintPlatformOperatorJWT(t, f.keySet)
+}
+
 // ComputeUser mints a USER-kind JWT (caas_user_id == userID) scoped to the
 // compute-test-client's tenant — a human origin whose cascades still dispatch
 // to the registered gRPC member. Used by cross-node attribution scenarios that
@@ -73,15 +111,37 @@ func (f *pgMultiNode) ComputeUser(t *testing.T, userID string, roles ...string) 
 	return fixtureutil.MintComputeUserJWT(t, f.keySet, userID, roles...)
 }
 
+// ComputeServiceID is the M2M client the fixture's own compute client
+// authenticates as — the executor id of its callbacks. Part of the optional
+// attribution capability, like ComputeUser.
+func (f *pgMultiNode) ComputeServiceID() string { return f.computeClientID }
+
+var _ parity.SchedulerWaitFixture = (*pgMultiNode)(nil)
+
+// AwaitScheduler implements parity.SchedulerWaitFixture over the nodes that
+// run a scheduler, known by its start line (fixtureutil.IncarnationFromLog):
+// the first of them allowed to act sets the deadline. A node with its
+// scheduler off is left out, since it never logs a failed heartbeat and would
+// pin the deadline to the start.
+func (f *pgMultiNode) AwaitScheduler(t *testing.T, slack time.Duration, what string, check func() (bool, string)) {
+	t.Helper()
+	var schedulers []*fixtureutil.SyncBuffer
+	for _, l := range f.nodeLogs {
+		if l == nil {
+			continue
+		}
+		if _, err := fixtureutil.IncarnationFromLog(l.String()); err == nil {
+			schedulers = append(schedulers, l)
+		}
+	}
+	fixtureutil.AwaitNodeScheduler(t, slack, what, check, schedulers...)
+}
+
 // NodeLogs returns node idx's captured combined stdout+stderr as a string
-// snapshot. Part of the optional cross-node attribution capability (alongside
-// ComputeUser) the shared multinode attribution scenarios type-assert: it lets
-// the scheduled-fire scenario positively prove a task fired on a PEER node
-// (the peer-RPC fire path emits a distinctive log line) rather than passing
-// vacuously if scheduler distribution ever collapsed to self. Returns "" for
-// an out-of-range index. Not part of the MultiNodeFixture interface — a backend
-// that has not wired attribution simply does not implement it and the scenarios
-// skip (pending).
+// snapshot. Scenarios read lines from it as data, such as the scheduler's
+// start line (Incarnation), its failed heartbeats (a HeartbeatGate's
+// deadline) and cluster membership lines. Returns "" for an out-of-range
+// index. Not part of the MultiNodeFixture interface.
 func (f *pgMultiNode) NodeLogs(idx int) string {
 	if idx < 0 || idx >= len(f.nodeLogs) || f.nodeLogs[idx] == nil {
 		return ""
@@ -91,7 +151,7 @@ func (f *pgMultiNode) NodeLogs(idx int) string {
 
 // KillNode SIGKILLs node i's process group and reaps it. Part of the optional
 // crash-testing capability — NOT on the shared MultiNodeFixture interface (a
-// crash test type-asserts for it, like NodeLogs/ComputeUser), since the crash
+// crash test type-asserts for it, like ComputeUser), since the crash
 // scenario is postgres-first and the shared scenario registry must not gain a
 // kill. Killing is permanent for the fixture's life; the node is not restarted.
 func (f *pgMultiNode) KillNode(i int) {
@@ -99,6 +159,53 @@ func (f *pgMultiNode) KillNode(i int) {
 		return
 	}
 	f.killNode(i)
+}
+
+// SignalNode sends sig to node i (SIGTERM, SIGSTOP, SIGCONT). Off the shared
+// interface, like KillNode: a scheduler scenario type-asserts for it.
+func (f *pgMultiNode) SignalNode(i int, sig syscall.Signal) error { return f.signalNode(i, sig) }
+
+// AwaitNodeExit waits up to within for node i to exit.
+func (f *pgMultiNode) AwaitNodeExit(i int, within time.Duration) error {
+	return f.awaitNodeExit(i, within)
+}
+
+// PauseDatabase freezes the PostgreSQL container: every pnode's statements
+// hang until UnpauseDatabase, as in a network partition from the database.
+func (f *pgMultiNode) PauseDatabase(t *testing.T) {
+	t.Helper()
+	dc, err := testcontainers.NewDockerClientWithOpts(context.Background())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer dc.Close()
+	if _, err := dc.ContainerPause(context.Background(), f.containerID, client.ContainerPauseOptions{}); err != nil {
+		t.Fatalf("pause the database container: %v", err)
+	}
+}
+
+// UnpauseDatabase resumes the PostgreSQL container.
+func (f *pgMultiNode) UnpauseDatabase(t *testing.T) {
+	t.Helper()
+	dc, err := testcontainers.NewDockerClientWithOpts(context.Background())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer dc.Close()
+	if _, err := dc.ContainerUnpause(context.Background(), f.containerID, client.ContainerUnpauseOptions{}); err != nil {
+		t.Fatalf("unpause the database container: %v", err)
+	}
+}
+
+// Incarnation returns the scheduler incarnation node i announced at start,
+// polling its captured log for up to 10s.
+func (f *pgMultiNode) Incarnation(t *testing.T, i int) uuid.UUID {
+	t.Helper()
+	id, err := fixtureutil.AwaitIncarnation(func() string { return f.NodeLogs(i) }, 10*time.Second)
+	if err != nil {
+		t.Fatalf("node %d: %v", i, err)
+	}
+	return id
 }
 
 // ConnString returns the shared Postgres connection string every node uses, so
@@ -129,14 +236,24 @@ func MustSetupMultiNode(t *testing.T, n int) (multinode.MultiNodeFixture, func()
 // entries are "KEY=value" strings; nil means the default env only.
 func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinode.MultiNodeFixture, func()) {
 	t.Helper()
+	return MustSetupMultiNodeWithOpts(t, n, extraEnv, fixtureutil.LaunchOpts{})
+}
+
+// MustSetupMultiNodeWithOpts is MustSetupMultiNodeWithEnv with launch options
+// for the cluster — e.g. LaunchOpts.NodeEnv, environment for one node only.
+func MustSetupMultiNodeWithOpts(t *testing.T, n int, extraEnv []string, launch fixtureutil.LaunchOpts) (multinode.MultiNodeFixture, func()) {
+	t.Helper()
 	ctx := context.Background()
 
 	// 1. Start PostgreSQL container.
 	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("cyoda_parity_multinode"),
 		tcpostgres.WithUsername("testuser"),
-		tcpostgres.WithPassword("testpass"),
 	}, testpg.HardenedOptions()...)
+	// Up to six pnodes, each with a main pool (25), a scheduler pool (10), a
+	// heartbeat connection (1) and a model pool (8), plus the test's own
+	// reader: 6 x 44 + 1, above the default of 100.
+	opts = append(opts, testcontainers.WithCmdArgs("-c", "max_connections=400"))
 	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine", opts...)
 	if err != nil {
 		t.Fatalf("failed to start postgres container: %v", err)
@@ -161,14 +278,15 @@ func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinod
 
 	// 3. Launch n cyoda-go subprocesses + one compute-test-client.
 	//    Auto-migrate handling (leader-only) is in the fixtureutil helper.
-	//    extraEnv is appended after the standard backend env so a caller can
-	//    override cadences (e.g. search-job heartbeat/stale) per node.
+	//    extraEnv comes last so a caller can override any of the above,
+	//    including the tuned cluster patience.
 	launchEnv := append([]string{
 		"CYODA_STORAGE_BACKEND=postgres",
 		fmt.Sprintf("CYODA_POSTGRES_URL=%s", connStr),
 		"CYODA_POSTGRES_AUTO_MIGRATE=true",
-	}, extraEnv...)
-	result, processCleanup, err := fixtureutil.LaunchCyodaClusterAndCompute(ks, n, launchEnv)
+	}, fixtureutil.TunedClusterEnv()...)
+	launchEnv = append(launchEnv, extraEnv...)
+	result, processCleanup, err := fixtureutil.LaunchCyodaClusterAndCompute(ks, n, launchEnv, launch)
 	if err != nil {
 		containerCleanup()
 		t.Fatalf("failed to launch cyoda-go cluster: %v", err)
@@ -180,10 +298,17 @@ func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinod
 	}
 
 	return &pgMultiNode{
-		baseURLs: result.BaseURLs,
-		keySet:   ks,
-		nodeLogs: result.NodeLogs,
-		killNode: result.KillNode,
-		connStr:  connStr,
+		baseURLs:        result.BaseURLs,
+		keySet:          ks,
+		computeCreds:    fixtureutil.NewComputeCredentials(ks),
+		computeClientID: result.ComputeClientID,
+		nodeLogs:        result.NodeLogs,
+		killNode:        result.KillNode,
+		signalNode:      result.SignalNode,
+		awaitNodeExit:   result.AwaitNodeExit,
+		containerID:     pgContainer.GetContainerID(),
+		connStr:         connStr,
+		computeBin:      result.ComputeBin,
+		grpcEndpoints:   result.GRPCEndpoints,
 	}, cleanup
 }

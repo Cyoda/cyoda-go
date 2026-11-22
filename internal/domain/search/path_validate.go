@@ -4,17 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // extractFieldPaths walks a predicate.Condition tree and collects every
-// JSONPath expression that names a data field. Lifecycle, function and
-// nil sub-conditions are skipped — they do not address user-defined
-// schema paths.
+// JSONPath expression that names a data field. Lifecycle and nil
+// sub-conditions are skipped — they do not address user-defined schema
+// paths.
 //
 // Returned paths are normalised so they line up with the FieldsMap keys
 // produced by *schema.ModelNode.FieldsMap (paths begin with "$." and use
@@ -48,10 +47,8 @@ func walkConditionPaths(cond predicate.Condition, seen map[string]struct{}, out 
 		for _, child := range c.Conditions {
 			walkConditionPaths(child, seen, out)
 		}
-	case *predicate.LifecycleCondition, *predicate.FunctionCondition:
-		// Lifecycle conditions match metadata fields; function conditions
-		// are evaluated dynamically. Neither participates in schema-path
-		// validation.
+	case *predicate.LifecycleCondition:
+		// A lifecycle condition matches a metadata field, not a schema path.
 		return
 	}
 }
@@ -138,17 +135,12 @@ func pathOrContainerKnown(p string, fields map[string]schema.FieldDescriptor) bo
 // permissive CONDITION-path test.
 //
 // A sort key must denote a single scalar leaf (resolveOrderBy rejects a
-// container or an array path with errUnknownSortField), so the negative
-// cache resolveSortKeys populates from this result must agree with that
-// exactly. Using findUnknownPaths/isPathKnown here instead — as this
-// function replaced — silently no-ops the cache for those two shapes: a
-// sort key naming an interior node ("$.address" when only
-// "$.address.street" is declared) or an array container ("$.tags" when the
-// schema records only the wildcard leaf "$.tags[*]") is "known" under the
-// condition-path predicate's prefix matching, so the computed missing set
-// is empty, markPathsAbsent is a no-op, and every repeat request pays a
-// full authoritative model-store read plus a schema re-parse instead of
-// short-circuiting on the negative cache.
+// container or an array path with errUnknownSortField), so the set this
+// returns must agree with that exactly. isPathKnown's prefix matching would
+// call an interior node ("$.address" when only "$.address.street" is declared)
+// or an array container ("$.tags" when the schema records only "$.tags[*]")
+// known, and the refresh check would then accept a map in which the sort key
+// still does not resolve.
 func findUnknownSortPaths(paths []string, fields map[string]schema.FieldDescriptor) []string {
 	var unknown []string
 	for _, p := range paths {
@@ -177,23 +169,6 @@ func isSortPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 	return false
 }
 
-// FindUnknownFieldPaths returns the data-field JSONPaths cond references
-// that are absent from fields (typically obtained via LoadFieldsMap).
-// Exported so a caller outside this package that selects entities via its
-// own Iterate drain instead of Search — currently entity.Handler's
-// delete paths, which reuse the search condition primitive per design §6.1
-// but cannot call Search's unexported validateConditionPaths directly —
-// can still reject a condition naming an unknown schema field before
-// ConditionToFilter would otherwise silently under-match it (see
-// ConditionToFilter's doc comment on why an unknown path degrades instead
-// of erroring). Mirrors validateConditionPaths' path-existence check
-// without its negative-cache/refresh-retry optimisation, which is a
-// Search-hot-path concern; a caller that also needs the refresh-retry
-// behaviour should route through Search instead.
-func FindUnknownFieldPaths(cond predicate.Condition, fields map[string]schema.FieldDescriptor) []string {
-	return findUnknownPaths(extractFieldPaths(cond), fields)
-}
-
 // LoadFieldsMap is the exported entry point that resolves a model's declared
 // field-type map (path → FieldDescriptor). In-process predicate evaluators
 // (the workflow engine's criterion matcher, the grouped-stats streaming
@@ -204,7 +179,9 @@ func FindUnknownFieldPaths(cond predicate.Condition, fields map[string]schema.Fi
 //
 // The returned map may be owned by the model-descriptor cache and shared with
 // every other reader holding the same lease. It is read-only — do not mutate it.
-func LoadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
+func LoadFieldsMap(
+	ctx context.Context, store spi.ModelStore, ref spi.ModelRef,
+) (map[string]schema.FieldDescriptor, error) {
 	return loadFieldsMap(ctx, store, ref)
 }
 
@@ -217,112 +194,101 @@ func LoadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // what decides whether a condition's paths exist, so proceeding without it
 // answers with a filter whose comparison leaves annihilate while its string
 // leaves keep matching (see spi.ConditionToFilter).
-func loadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, error) {
-	// Prefer the cached derived parse when the store offers one. Rebuilding it
-	// per call is 80-99% of a criterion evaluation and scales with schema size;
-	// FieldsMap() off an already-parsed node is effectively free. Stores that
-	// do not implement the interface (tests, plain in-memory stores) keep the
-	// original behaviour.
-	if p, ok := store.(schemaNodeProvider); ok {
-		node, err := p.SchemaNode(ctx, ref)
-		if err != nil {
-			return nil, err
-		}
-		if node == nil {
-			return nil, nil
-		}
-		return node.FieldsMap(), nil
+func loadFieldsMap(
+	ctx context.Context, store spi.ModelStore, ref spi.ModelRef,
+) (map[string]schema.FieldDescriptor, error) {
+	// The store hands back the parse it already holds: rebuilding it per call is
+	// 80-99% of a criterion evaluation and scales with schema size, while
+	// FieldsMap() off an already-parsed node is effectively free. Every store
+	// that reaches here is the model cache's request-scoped store; one that is
+	// not is a wiring defect, and the schema is not read some other way.
+	p, ok := store.(schemaNodeProvider)
+	if !ok {
+		return nil, fmt.Errorf("model store %T cannot provide the parsed schema of %s/%s",
+			store, ref.EntityName, ref.ModelVersion)
 	}
-	desc, err := store.Get(ctx, ref)
+	node, err := p.SchemaNode(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
-	return fieldsFromDescriptor(desc)
-}
-
-// schemaNodeProvider is the optional capability a caching model store exposes to
-// hand back the schema it has already parsed, instead of the bytes to parse
-// again. Same optional-interface shape as the RefreshAndGet probe below.
-type schemaNodeProvider interface {
-	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
-}
-
-// RefreshFieldsMap is the exported entry point for refreshFieldsMap, mirroring
-// LoadFieldsMap's exported-wrapper pattern. Callers outside this package that
-// reuse the search condition primitive on their own Iterate drain
-// (currently entity.Handler's delete path) need the same bounded
-// single-refresh-then-fail behaviour validateConditionPaths gives Search,
-// rather than declaring a field unknown against a possibly-stale cached
-// descriptor — see FindUnknownFieldPaths' doc comment for why the caller
-// can't reach validateConditionPaths directly. Returns (nil, false, nil)
-// when the store has no refresh capability; the caller should then treat the
-// pre-refresh unknown-paths result as authoritative, exactly as
-// validateConditionPaths does.
-func RefreshFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, bool, error) {
-	return refreshFieldsMap(ctx, store, ref)
-}
-
-// refreshFieldsMap forces a cache refresh via RefreshAndGet (when the
-// store implements it) and returns the refreshed FieldsMap. Returns
-// (nil, false, nil) when the store has no refresh capability — callers
-// should treat that as "no further authority to consult".
-func refreshFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, bool, error) {
-	refresher, ok := store.(interface {
-		RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error)
-	})
-	if !ok {
-		return nil, false, nil
-	}
-	desc, err := refresher.RefreshAndGet(ctx, ref)
-	if err != nil {
-		return nil, true, err
-	}
-	// RefreshAndGet repopulates the cache entry, parsed node included, so read
-	// the parse back rather than re-deriving it from the bytes we just caused
-	// to be cached — that reparse is exactly what the cache exists to remove.
-	if p, ok := store.(schemaNodeProvider); ok {
-		node, nerr := p.SchemaNode(ctx, ref)
-		if nerr != nil {
-			return nil, true, nerr
-		}
-		if node == nil {
-			return nil, true, nil
-		}
-		return node.FieldsMap(), true, nil
-	}
-	fm, err := fieldsFromDescriptor(desc)
-	if err != nil {
-		return nil, true, err
-	}
-	return fm, true, nil
-}
-
-// fieldsFromDescriptor unmarshals desc.Schema and returns its FieldsMap.
-// A nil descriptor OR a descriptor with no schema bound (empty Schema bytes)
-// is treated as "no schema to type against" and yields a nil map without error
-// — the (nil,nil) case callers degrade on. This mirrors loadModelNode's
-// `len(desc.Schema) == 0` guard, so the two schema-load entry points agree on
-// what counts as "no schema" versus a genuine parse error (non-empty but
-// unparseable bytes), which still surfaces so callers can fail closed.
-func fieldsFromDescriptor(desc *spi.ModelDescriptor) (map[string]schema.FieldDescriptor, error) {
-	if desc == nil || len(desc.Schema) == 0 {
+	if node == nil {
 		return nil, nil
-	}
-	node, err := schema.Unmarshal(desc.Schema)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal model schema: %w", err)
 	}
 	return node.FieldsMap(), nil
 }
 
+// schemaNodeProvider is the capability a model store must offer to hand back
+// the schema it has already parsed, instead of the bytes to parse again.
+type schemaNodeProvider interface {
+	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
+}
+
+// schemaNodeRefresher is the capability a model store must offer for a refresh:
+// it re-reads storage and hands back the parse of what it read. The request
+// scoped store the model cache hands out implements it; every store that
+// reaches a field-path check is one of those.
+type schemaNodeRefresher interface {
+	RefreshSchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
+}
+
+// refreshOnUnknownPaths is the one bounded refresh every field-path check runs
+// when a path is absent from the schema it first read. It refreshes the model
+// once through the store's RefreshSchemaNode (which reads storage) and reports
+// which of the paths check still finds unknown against the refreshed map.
+//
+// It returns the refreshed map and the still-unknown paths. A caller that
+// refuses does so against the refreshed schema, so a refusal never names a path
+// the model has: when still is empty every path resolved and fresh is the map
+// to use. The map is nil, with no error, when the miss stands on the schema the
+// caller already read: the model is gone, or the refreshed descriptor carries
+// no schema. A refresh that fails for any other reason is returned wrapping
+// [ErrPathRefreshInfra]: it cannot tell a genuinely undeclared path from a
+// stale read, so it is not the client's fault. A store that cannot refresh at
+// all is a wiring defect and fails the same way: the check cannot be made
+// correctly, so it is not made.
+//
+// The refresh is the correctness half of a refusal, not an optimisation: the
+// schema a node first read may predate an extension that has since landed, and
+// refusing a field the model has would answer the same request differently
+// depending on which node's cache was warm. It is bounded to one attempt, and
+// no refusal is remembered between requests: the next request reads again.
+func refreshOnUnknownPaths(
+	ctx context.Context,
+	store spi.ModelStore,
+	ref spi.ModelRef,
+	paths []string,
+	check func(fields map[string]schema.FieldDescriptor) []string,
+) (fresh map[string]schema.FieldDescriptor, still []string, err error) {
+	if len(paths) == 0 {
+		return nil, nil, nil
+	}
+	refresher, ok := store.(schemaNodeRefresher)
+	if !ok {
+		return nil, nil, fmt.Errorf("%w: model store %T cannot refresh the schema of %s/%s",
+			ErrPathRefreshInfra, store, ref.EntityName, ref.ModelVersion)
+	}
+	node, err := refresher.RefreshSchemaNode(ctx, ref)
+	switch {
+	case errors.Is(err, spi.ErrNotFound):
+		return nil, nil, nil
+	case err != nil:
+		return nil, nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
+			ErrPathRefreshInfra, ref.EntityName, ref.ModelVersion, err)
+	case node == nil:
+		return nil, nil, nil
+	}
+	fresh = node.FieldsMap()
+	return fresh, check(fresh), nil
+}
+
 // ConditionFieldPaths returns every data-field JSONPath cond names, normalised
-// to the FieldsMap key convention. Lifecycle, function and nil sub-conditions
+// to the FieldsMap key convention. Lifecycle and nil sub-conditions
 // contribute nothing. Duplicates are folded out.
 //
-// Exported so a caller outside this package can assemble a path set spanning
-// more than a condition — grouped stats also holds its groupBy paths and
-// aggregate fields to the model — and hand the whole set to
-// [ValidateKnownPaths] in one call.
+// Exported so a caller outside this package can hand a condition's paths to
+// [ValidateKnownPaths]. A request that also names paths outside its condition
+// passes them to [ValidateConditionForModel], which checks the whole set in
+// one call.
 func ConditionFieldPaths(cond predicate.Condition) []string {
 	return extractFieldPaths(cond)
 }
@@ -330,8 +296,8 @@ func ConditionFieldPaths(cond predicate.Condition) []string {
 // ValidateKnownPaths holds every path in paths to the fields the model
 // declares, returning the fields map they validated against.
 //
-// A path absent from fields triggers exactly ONE RefreshAndGet before the
-// request is refused, and the recheck decides. That refresh is the correctness
+// A path absent from fields triggers exactly ONE refresh (RefreshSchemaNode) before
+// the request is refused, and the recheck decides. That refresh is the correctness
 // half, not an optimisation: on a cluster, node A can extend a model with a new
 // field while node B's cached descriptor still predates the schema-change
 // event, and without it node B answers 400 for a field the model genuinely has
@@ -363,43 +329,26 @@ func ValidateKnownPaths(
 		return fields, nil
 	}
 
-	freshFields, refreshed, refreshErr := RefreshFieldsMap(ctx, modelStore, ref)
+	fresh, still, err := refreshOnUnknownPaths(ctx, modelStore, ref, unknown,
+		func(f map[string]schema.FieldDescriptor) []string {
+			return findUnknownPaths(unknown, f)
+		})
+	if err != nil {
+		return nil, err
+	}
 	switch {
-	case !refreshed:
-		// No cache layer to refresh — the miss is authoritative.
-	case refreshErr != nil && errors.Is(refreshErr, spi.ErrNotFound):
-		// The model was deleted between the two reads, so there is no
-		// schema authority left and the miss stands.
-	case refreshErr != nil:
-		// A refresh failure that is NOT "the model is gone" means we cannot
-		// tell "this field is genuinely undeclared" from "the cache is
-		// merely stale and we couldn't confirm which" — the two are
-		// indistinguishable without a successful refresh. Per
-		// correctness-over-availability this is infrastructure, not a
-		// client fault, and must not fold into the same 400
-		// INVALID_FIELD_PATH the genuine-unknown-path case gets below: a
-		// caller that did that would report a model-store outage as the
-		// caller's own mistake, in exactly the peer-added-field window this
-		// refresh exists to serve.
-		slog.Warn("schema refresh failed during field-path validation; reporting infra, not a client fault",
-			"pkg", "search", "entityName", ref.EntityName,
-			"modelVersion", ref.ModelVersion, "error", refreshErr)
-		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
-			ErrPathRefreshInfra, ref.EntityName, ref.ModelVersion, refreshErr)
-	case freshFields != nil:
-		unknown = findUnknownPaths(unknown, freshFields)
-		fields = freshFields
-	}
-	if len(unknown) > 0 {
+	case fresh == nil:
 		return nil, invalidPathError(unknown)
+	case len(still) > 0:
+		return nil, invalidPathError(still)
 	}
-	return fields, nil
+	return fresh, nil
 }
 
 // ErrPathRefreshInfra marks a failed bounded schema refresh inside
-// [ValidateKnownPaths]: RefreshAndGet itself errored (for any reason other
-// than [spi.ErrNotFound], which means the model was legitimately deleted
-// between the two reads). A caller must classify this as a server-side
+// [refreshOnUnknownPaths], which every field-path check runs: the refresh
+// itself errored (for any reason other than [spi.ErrNotFound], which means
+// the model was legitimately deleted between the two reads). A caller must classify this as a server-side
 // infrastructure failure (5xx), not fold it into the client-facing 400
 // INVALID_FIELD_PATH the genuine-unknown-path case returns — the whole point
 // of the bounded refresh is to tell "genuinely undeclared" apart from "cache

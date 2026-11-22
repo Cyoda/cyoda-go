@@ -24,10 +24,10 @@ Credentials (retrieve chart-managed secrets):
   kubectl get secret {{ include "cyoda.metricsBearerSecretName" . }} -n {{ .Release.Namespace }} \
     -o jsonpath='{.data.{{ .Values.monitoring.metricsBearer.existingSecretKey }}}' | base64 -d
 {{- end }}
-{{- if and .Values.bootstrap.clientId (not .Values.bootstrap.clientSecret.existingSecret) }}
-  kubectl get secret {{ include "cyoda.bootstrapSecretName" . }} -n {{ .Release.Namespace }} \
-    -o jsonpath='{.data.{{ .Values.bootstrap.clientSecret.existingSecretKey }}}' | base64 -d
-{{- end }}
+
+To get a first admin token (the pod holds the signing key):
+  kubectl exec -n {{ .Release.Namespace }} {{ include "cyoda.fullname" . }}-0 -- /cyoda token --tenant <tenant>
+Use it to create M2M clients: POST /api/clients.
 
 /metrics auth:
   The chart forces CYODA_METRICS_REQUIRE_AUTH=true — /metrics on port
@@ -35,7 +35,7 @@ Credentials (retrieve chart-managed secrets):
     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cyoda.fullname" . }} 9091:metrics &
     BEARER=$(kubectl -n {{ .Release.Namespace }} get secret {{ include "cyoda.metricsBearerSecretName" . }} \
       -o jsonpath='{.data.{{ .Values.monitoring.metricsBearer.existingSecretKey }}}' | base64 -d)
-    curl -H "Authorization: Bearer $BEARER" http://localhost:9091/metrics | head
+    curl -H @- http://localhost:9091/metrics <<<"Authorization: Bearer $BEARER" | head
 {{- if .Values.monitoring.serviceMonitor.enabled }}
   Prometheus scrapes via the rendered ServiceMonitor, which references
   Secret {{ include "cyoda.metricsBearerSecretName" . }} via bearerTokenSecret — no
@@ -51,10 +51,10 @@ credentials and the cluster identity / tuning vars:
   CYODA_POSTGRES_URL / CYODA_POSTGRES_URL_FILE
   CYODA_JWT_SIGNING_KEY / CYODA_JWT_SIGNING_KEY_FILE
   CYODA_HMAC_SECRET / CYODA_HMAC_SECRET_FILE
-  CYODA_BOOTSTRAP_CLIENT_SECRET / CYODA_BOOTSTRAP_CLIENT_SECRET_FILE
   CYODA_METRICS_BEARER / CYODA_METRICS_BEARER_FILE
   CYODA_METRICS_REQUIRE_AUTH
   CYODA_ADMIN_BIND_ADDRESS, CYODA_ADMIN_PORT
+  CYODA_HTTP_BIND_ADDRESS, CYODA_GRPC_BIND_ADDRESS
   CYODA_NODE_ID, CYODA_NODE_ADDR, CYODA_GOSSIP_ADDR, CYODA_SEED_NODES
   CYODA_STORAGE_BACKEND, CYODA_POSTGRES_AUTO_MIGRATE
   CYODA_IAM_MODE, CYODA_REQUIRE_JWT

@@ -1,156 +1,130 @@
 package auth_test
 
 import (
-	"bytes"
-	"log/slog"
-	"strings"
+	"errors"
 	"testing"
-	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
-// TestBootstrapKey_DefaultValiditySet verifies that the bootstrap signing key
-// is saved with the configured audience and a ValidTo derived from
-// IAMFeatures.KeypairDefaultValidityDays.
-func TestBootstrapKey_DefaultValiditySet(t *testing.T) {
+// TestBootstrapKey_HasNoWindow: the bootstrap signing key comes from
+// CYODA_JWT_SIGNING_KEY and lives as long as that configuration. It has no
+// ValidTo, and no ValidFrom that a node's clock could ever be before — a
+// window counted from each node's start would differ per node, reset on every
+// restart, and stop a long-running node from verifying the cluster's tokens.
+func TestBootstrapKey_HasNoWindow(t *testing.T) {
 	pem := generateTestPEM(t)
-
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc := newTestAuthService(t, auth.AuthConfig{
 		SigningKeyPEM: pem,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 		IAMFeatures: auth.IAMFeatures{
 			KeypairDefaultValidityDays: 90,
-			BootstrapAudience:          "client",
 			TrustedKeyMaxPerTenant:     10,
 			TrustedKeyMaxValidityDays:  365,
 			TrustedKeyMaxJWKProperties: 20,
 		},
 	})
+
+	kp, err := svc.KeyStore().Current()
 	if err != nil {
-		t.Fatalf("NewAuthService: %v", err)
+		t.Fatalf("bootstrap key does not sign: %v", err)
 	}
-
-	kid := svc.SigningKID()
-	ks := svc.KeyStore()
-
-	pairs := ks.ListForVerification()
-
-	var found *auth.KeyPair
-	for _, kp := range pairs {
-		if kp.KID == kid {
-			found = kp
-			break
-		}
+	if kp.KID != pemKID(t, pem) || !kp.Bootstrap {
+		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, pemKID(t, pem))
 	}
-	if found == nil {
-		t.Fatalf("bootstrap key KID=%q not found in key store", kid)
+	if kp.ValidTo != nil {
+		t.Errorf("ValidTo = %v, want none", kp.ValidTo)
 	}
-
-	// Audience should be set from IAMFeatures.BootstrapAudience.
-	if found.Audience != "client" {
-		t.Errorf("audience = %q, want %q", found.Audience, "client")
-	}
-
-	// ValidTo must be set and approximately 90 days from now.
-	if found.ValidTo == nil {
-		t.Fatal("bootstrap key ValidTo is nil; expected non-nil")
-	}
-	wantApprox := found.ValidFrom.Add(90 * 24 * time.Hour)
-	diff := found.ValidTo.Sub(wantApprox)
-	if diff < -time.Minute || diff > time.Minute {
-		t.Errorf("ValidTo = %v, want ~%v (diff %v)", found.ValidTo, wantApprox, diff)
+	if !kp.ValidFrom.IsZero() {
+		t.Errorf("ValidFrom = %v, want the zero time (no start bound)", kp.ValidFrom)
 	}
 }
 
-// TestBootstrapKey_WarnOnNearExpiry verifies that NewAuthService emits a
-// slog.Warn when the configured KeypairDefaultValidityDays is below 30 days.
-func TestBootstrapKey_WarnOnNearExpiry(t *testing.T) {
-	pem := generateTestPEM(t)
-
-	var buf bytes.Buffer
-	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
-	old := slog.Default()
-	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(old) })
-
-	_, err := auth.NewAuthService(auth.AuthConfig{
-		SigningKeyPEM: pem,
+// TestBootstrapKey_ConfiguredIAMFeaturesKept: only a wholly unset
+// IAMFeatures takes the defaults; one that is set is used as given, so a
+// field it sets is not overwritten back to the default. Proven here with
+// M2MClientMaxPerTenant, a field NewAuthService actually reads (unlike
+// KeypairDefaultValidityDays, which only the key-pair issue adapter
+// consults): a cap of 1 refuses a tenant's second client.
+func TestBootstrapKey_ConfiguredIAMFeaturesKept(t *testing.T) {
+	features := auth.DefaultIAMFeatures()
+	features.M2MClientMaxPerTenant = 1
+	svc := newTestAuthService(t, auth.AuthConfig{
+		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
-		IAMFeatures: auth.IAMFeatures{
-			KeypairDefaultValidityDays: 1, // <30 days — should WARN
-			BootstrapAudience:          "client",
-			TrustedKeyMaxPerTenant:     10,
-			TrustedKeyMaxValidityDays:  365,
-			TrustedKeyMaxJWKProperties: 20,
-		},
+		IAMFeatures:   features,
 	})
-	if err != nil {
-		t.Fatalf("NewAuthService: %v", err)
+	store := svc.M2MClientStore()
+	if _, err := store.Create(systemCtx(), "tenant-a", "CLIENT1", []string{"ROLE_M2M"}, false); err != nil {
+		t.Fatalf("first client: %v", err)
 	}
-
-	logged := buf.String()
-	if !strings.Contains(logged, "bootstrap signing key expires within 30 days") {
-		t.Errorf("expected WARN about near-expiry bootstrap key; got log:\n%s", logged)
+	if _, err := store.Create(systemCtx(), "tenant-a", "CLIENT2", []string{"ROLE_M2M"}, false); !errors.Is(err, auth.ErrM2MClientCapReached) {
+		t.Fatalf("second client with M2MClientMaxPerTenant=1: err = %v, want ErrM2MClientCapReached", err)
 	}
 }
 
-// TestBootstrapKey_NoWarnOnFarExpiry verifies no WARN is emitted when the key
-// validity is well beyond 30 days.
-func TestBootstrapKey_NoWarnOnFarExpiry(t *testing.T) {
-	pem := generateTestPEM(t)
-
-	var buf bytes.Buffer
-	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
-	old := slog.Default()
-	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(old) })
-
-	_, err := auth.NewAuthService(auth.AuthConfig{
-		SigningKeyPEM: pem,
+// TestNewAuthService_RejectsInvalidIAMFeatures: a partly set IAMFeatures is
+// validated, not silently used — a zero TrustedKeyMaxValidityDays (among
+// other fields that must be > 0) fails startup rather than being silently
+// accepted.
+func TestNewAuthService_RejectsInvalidIAMFeatures(t *testing.T) {
+	_, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		KV:            mustNewMemoryKV(t, systemCtx()),
+		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
-		IAMFeatures: auth.IAMFeatures{
-			KeypairDefaultValidityDays: 365, // well beyond 30 days
-			BootstrapAudience:          "client",
-			TrustedKeyMaxPerTenant:     10,
-			TrustedKeyMaxValidityDays:  365,
-			TrustedKeyMaxJWKProperties: 20,
-		},
+		IAMFeatures:   auth.IAMFeatures{M2MAdminRoleEnabled: true},
 	})
-	if err != nil {
-		t.Fatalf("NewAuthService: %v", err)
-	}
-
-	logged := buf.String()
-	if strings.Contains(logged, "bootstrap signing key expires within 30 days") {
-		t.Errorf("unexpected WARN for far-expiry bootstrap key; got log:\n%s", logged)
+	if err == nil {
+		t.Fatal("NewAuthService accepted an invalid partly set IAMFeatures")
 	}
 }
 
-// TestBootstrapKey_DefaultIAMFeaturesApplied verifies that when IAMFeatures
-// is zero-value, defaults are applied so KeypairDefaultValidityDays > 0
-// and the key gets a non-nil ValidTo.
+// TestBootstrapKey_DefaultIAMFeaturesApplied: a zero-value IAMFeatures takes
+// the defaults, so the bootstrap key signs.
 func TestBootstrapKey_DefaultIAMFeaturesApplied(t *testing.T) {
 	pem := generateTestPEM(t)
-
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc := newTestAuthService(t, auth.AuthConfig{
 		SigningKeyPEM: pem,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 		// IAMFeatures deliberately omitted — should use DefaultIAMFeatures().
 	})
-	if err != nil {
-		t.Fatalf("NewAuthService: %v", err)
-	}
 
-	pairs := svc.KeyStore().ListForVerification()
-	if len(pairs) == 0 {
-		t.Fatal("expected at least one key pair")
+	kp, err := svc.KeyStore().Current()
+	if err != nil {
+		t.Fatalf("bootstrap key does not sign: %v", err)
 	}
-	if pairs[0].ValidTo == nil {
-		t.Error("ValidTo is nil when IAMFeatures is zero-value; expected default to apply")
+	if kp.KID != pemKID(t, pem) || !kp.Bootstrap {
+		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, pemKID(t, pem))
 	}
+}
+
+// TestNewAuthService_RequiresKV: the key stores live in the KV store, so a
+// service without one is a wiring error, reported rather than panicking.
+func TestNewAuthService_RequiresKV(t *testing.T) {
+	_, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		SigningKeyPEM: generateTestPEM(t),
+		Issuer:        "cyoda",
+		ExpirySeconds: 3600,
+	})
+	if err == nil {
+		t.Fatal("NewAuthService accepted a config with no KV store")
+	}
+}
+
+// pemKID is the KID of the bootstrap key a PEM configures.
+func pemKID(t *testing.T, pem string) string {
+	t.Helper()
+	k, err := auth.ParseRSAPrivateKeyFromPEM([]byte(pem))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kid, err := auth.DeriveKID(&k.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kid
 }

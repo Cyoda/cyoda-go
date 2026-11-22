@@ -18,7 +18,9 @@ operations (`create`, `createCollection`, `updateCollection`,
 `patchSingleWithLoopback`). It asked for a guarantee cyoda-go gives
 unconditionally, so it could toggle nothing; keeping it would have been
 advertised behaviour that does not exist. A request that still carries the
-parameter, with any value, is accepted and the parameter is ignored. No gRPC
+parameter is refused with `400 BAD_REQUEST: unknown query parameter
+"waitForConsistencyAfter"`, as any query parameter an operation does not
+declare is (`strict-member-names.md`), and the write is not made. No gRPC
 event ever carried an equivalent field.
 
 On Cloud the flag exists because a new transaction reads at the consistency

@@ -6,16 +6,17 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // search_unevaluable_leaf_test.go covers the gRPC entry point for Task 5's
@@ -35,7 +36,7 @@ import (
 // newTestEnv/importAndLockModel do for everything else.
 func newTestEnvWithFactory(t *testing.T) (*CloudEventsServiceImpl, context.Context, *memory.StoreFactory) {
 	t.Helper()
-	factory := memory.NewStoreFactory(memory.WithApplyFunc(testSchemaApply))
+	factory := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
 	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := factory.GetTransactionManager()
 
@@ -46,11 +47,11 @@ func newTestEnvWithFactory(t *testing.T) (*CloudEventsServiceImpl, context.Conte
 		Roles:    []string{"ADMIN"},
 	}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
-	modelHandler := model.New(factory)
+	searchService := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cachedFactory(factory), platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -189,5 +190,36 @@ func TestRPC_DirectSearch_UnevaluableLeaf_ValidTypedField_200(t *testing.T) {
 	validateResponse(t, stream.sent[0], &typed)
 	if !typed.Success {
 		t.Fatalf("expected success=true for a declared-type field, got error: %v", typed.Error)
+	}
+}
+
+// The refusal of a condition leaf the backend cannot evaluate is one log
+// line — the funnel's INFO line, carrying the evaluator's error as its cause —
+// and not a DEBUG line from the search service besides.
+func TestRPC_DirectSearch_UnevaluableLeaf_LoggedOnce(t *testing.T) {
+	svc, ctx, factory := newTestEnvWithFactory(t)
+	saveBareLeafModelGRPC(t, ctx, factory, "widget", "1", "score")
+	logs := captureLogs(t)
+
+	stream := &mockEntityStream{ctx: ctx}
+	if err := svc.EntitySearchCollection(makeCE(EntitySearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "widget", "version": 1},
+		"condition": map[string]any{
+			"type": "simple", "jsonPath": "$.score", "operatorType": "EQUALS", "value": 5,
+		},
+	}), stream); err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if got := logs.lines("DEBUG"); len(got) != 0 {
+		for _, l := range got {
+			if strings.Contains(l, "leaf rejected") {
+				t.Errorf("the search service logged the refusal itself: %s", l)
+			}
+		}
+	}
+	got := logs.lines("INFO")
+	if len(got) != 1 || !strings.Contains(got[0], "operational error") || !strings.Contains(got[0], "cause=") {
+		t.Errorf("INFO lines = %q, want the funnel's one line with the cause", got)
 	}
 }

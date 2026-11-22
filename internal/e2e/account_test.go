@@ -6,7 +6,7 @@ import (
 )
 
 func TestAccount_Get(t *testing.T) {
-	token := getToken(t, "testclient", "testsecret")
+	token := suiteToken(t)
 	req, err := e2eNewRequest(t, "GET", serverURL+"/api/account", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)

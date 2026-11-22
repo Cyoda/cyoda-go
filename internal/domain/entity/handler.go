@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"strconv"
@@ -13,14 +14,15 @@ import (
 	"github.com/google/uuid"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
-	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/consistency"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
+	"github.com/cyoda/cyoda-go/internal/domain/pagination"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // maxEntityBodySize is the maximum allowed request body size for entity operations (10 MB).
@@ -44,7 +46,9 @@ type Handler struct {
 	txMgr   spi.TransactionManager
 	uuids   spi.UUIDGenerator
 	engine  *wfengine.Engine
-	gate    *txgate.Registry
+	coord   txcoord.Coordination
+	cons    *consistency.Service
+	clock   spi.Clock
 	// maxDeleteCycles overrides deleteCycleBudget's built-in bound on how
 	// many selection cycles one streamed batched delete may run. Zero (the
 	// normal case) means the built-in default; tests lower it so the
@@ -82,8 +86,17 @@ func (h *Handler) deleteCycleBudget() int {
 	return defaultMaxDeleteCycles
 }
 
-func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry) *Handler {
-	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate}
+func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, coord txcoord.Coordination, cons *consistency.Service, clock spi.Clock) *Handler {
+	if cons == nil {
+		panic("entity.New: nil consistency service")
+	}
+	if clock == nil {
+		panic("entity.New: nil clock")
+	}
+	if coord == nil {
+		panic("entity.New: nil transaction coordination")
+	}
+	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, coord: coord, cons: cons, clock: clock}
 }
 
 // beginOrJoin decides whether this inbound request OWNS a fresh transaction or
@@ -95,41 +108,26 @@ func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDG
 // Begin — the write lands in the shared buffer for the owner to commit. When
 // there is no joined tx (the normal inbound case) we Begin our own tx and
 // return owned=true. The txCtx returned in the joined case is the caller's ctx
-// unchanged (it already carries the TransactionState); in the owned case it is
-// the Begin-derived context.
+// marked as having joined the transaction (it already carries the
+// TransactionState); in the owned case it is the Begin-derived context.
+//
+// The mark is what the workflow engine reads to refuse a
+// COMMIT_BEFORE_DISPATCH processor on a joined call before the transaction is
+// flushed or committed:
+// a participant never commits, and the handler's commit rule (commitOwned) and
+// the engine's refusal answer that from this one decision.
 func (h *Handler) beginOrJoin(ctx context.Context) (string, context.Context, bool, error) {
 	if tx := spi.GetTransaction(ctx); tx != nil {
-		return tx.ID, ctx, false, nil
+		return tx.ID, wfengine.MarkJoinedTransaction(ctx), false, nil
 	}
 	txID, txCtx, err := h.txMgr.Begin(ctx)
 	return txID, txCtx, true, err
 }
 
-// acquireJoinedGate acquires the per-tx gate for a joined (owned==false) call
-// and installs a suspendable handle on txCtx so the engine can release the gate
-// across a blocking external dispatch (SYNC processor / FUNCTION criterion) and
-// re-acquire it afterward. This generalises the owner's H3 invariant — "never
-// hold the gate across engine.Execute" — to the joined-callback path: without
-// it, a depth-2 cascade (a joined callback whose own SYNC processor drives a
-// further joined write on the same tx) hold-and-waits on the non-reentrant gate
-// and deadlocks until the 30s dispatch timeout.
-//
-// It returns the ctx to pass to engine.Execute and a release func the caller
-// MUST defer. Both the returned release closure and the installed handle alias
-// the same release variable, so a mid-dispatch Suspend/resume that re-acquires
-// the gate is observed by the caller's deferred release.
-func (h *Handler) acquireJoinedGate(txCtx context.Context, txID string) (context.Context, func()) {
-	release := h.gate.Acquire(txID)
-	txCtx, _ = txgate.WithHeld(txCtx, h.gate, txID, &release)
-	return txCtx, func() { release() }
-}
-
 // commitOwned commits the transaction only when this request owns it. For a
 // joined callback (owned==false) the owner is responsible for the commit, so
-// this is a no-op. Callers gate the whole final Save+Commit critical section
-// (see the per-flow finalize blocks): the gate is acquired by the flow around
-// the final buffer mutation and released after this commit, so commitOwned
-// itself must NOT touch the gate (the gate is a non-reentrant per-tx mutex).
+// this is a no-op. The flow has sealed the transaction (txScope.Seal) before
+// its final writes, so no joined request runs beside them or this commit.
 //
 // The commit runs shielded via common.ShieldedCommit — WithoutCancel plus its
 // own bounded budget — so a client-requested deadline or disconnect on ctx
@@ -151,64 +149,10 @@ func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) erro
 	})
 }
 
-// validateOrExtend validates parsedData against the model schema. When
-// changeLevel is set, it computes an additive schema delta via schema.Diff
-// and appends it to the model's extension log via ModelStore.ExtendSchema.
-// That call participates in the ambient entity transaction, so visibility
-// is commit-bound. Writes whose data already fits the schema (nil delta —
-// the steady state) touch no "models" row and cannot contend; writes that
-// genuinely extend the same model serialise per (tenant, model) inside the
-// plugin, and a concurrent extender surfaces a retryable conflict rather
-// than folding a savepoint over a delta it cannot yet see.
-// Returns an error on validation or extension failure.
-// ValidateWithRefresh runs strict schema validation with a bounded
-// refresh-on-stale safety net. One refresh attempt, only on unknown-
-// schema-element errors — the signal that our cached schema is behind
-// a peer's ExtendSchema. Other validation failures surface directly.
-// Stores that don't implement RefreshAndGet (no caching layer) skip
-// the refresh and return the original errors. See spec §4.3.
-//
-// Both model-store reads are marked with ingest.ErrInternalSchema on failure.
-// Callers classify this function's errors with classifyValidateOrExtendErr,
-// whose catch-all is a 400 BAD_REQUEST carrying err.Error() verbatim: unmarked,
-// a store outage would be reported to the caller as a fault in THEIR payload,
-// with the driver's own text and SQLSTATE in the response body. Neither read
-// can fail for a reason the caller caused, so both are 5xx-with-a-ticket.
-func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, data any) error {
-	desc, err := modelStore.Get(ctx, ref)
-	if err != nil {
-		return fmt.Errorf("%w: load model %s/%s: %w", ingest.ErrInternalSchema, ref.EntityName, ref.ModelVersion, err)
-	}
-	errs := ingest.ValidateDescriptor(desc, data)
-	if errs == nil {
-		return nil
-	}
-	if !schema.HasUnknownSchemaElement(errs) {
-		return ingest.ValidationErrorsToError(errs)
-	}
-	refresher, ok := modelStore.(interface {
-		RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error)
-	})
-	if !ok {
-		return ingest.ValidationErrorsToError(errs) // plugin has no cache
-	}
-	freshDesc, rErr := refresher.RefreshAndGet(ctx, ref)
-	if rErr != nil {
-		return fmt.Errorf("%w: refresh model %s/%s: %w", ingest.ErrInternalSchema, ref.EntityName, ref.ModelVersion, rErr)
-	}
-	if errs2 := ingest.ValidateDescriptor(freshDesc, data); errs2 != nil {
-		return ingest.ValidationErrorsToError(errs2)
-	}
-	return nil
-}
-
-// classifyBeginErr maps a transaction-Begin failure to a status code.
-//
-// common.Internal now recognises the storage-unavailability marker itself, so
-// this is no longer the only thing standing between a 503 and an opaque 500. It
-// is kept as the named entry point every Begin site calls, and because the
-// message it would otherwise pass — "failed to begin transaction" — is not what
-// a transient pool outage should be reported as.
+// classifyBeginErr maps a transaction-Begin failure to a status code. It is
+// the named entry point every Begin site calls; a transient pool outage keeps
+// its own 503 rather than the "failed to begin transaction" message
+// common.Internal would otherwise give it.
 func classifyBeginErr(err error) *common.AppError {
 	if appErr := common.StorageUnavailable(err); appErr != nil {
 		return appErr
@@ -216,7 +160,7 @@ func classifyBeginErr(err error) *common.AppError {
 	return common.Internal("failed to begin transaction", err)
 }
 
-// classifyValidateOrExtendErr determines whether a validateOrExtend error is
+// classifyValidateOrExtendErr determines whether an ingest.ValidateOrExtend error is
 // internal (5xx) or operational (4xx) and returns the appropriate AppError.
 //
 // Classification is sentinel-based to keep it robust against wording drift
@@ -225,7 +169,10 @@ func classifyBeginErr(err error) *common.AppError {
 //   - *ingest.IncompatibleTypeError  → 4xx INCOMPATIBLE_TYPE with structured Props
 //     (fieldPath, expectedType, actualType) — Cloud's
 //     FoundIncompatibleTypeWithEntityModelException equivalent
-//   - ingest.ErrInternalSchema       → 5xx with logged ticket (codec/diff/store failure)
+//   - ingest.ErrInternalSchema       → common.Internal: a 5xx with a logged
+//     ticket for a codec, diff or store failure, except for the store errors
+//     common.Internal routes itself, such as a storage outage, which is 503
+//     STORAGE_UNAVAILABLE
 //   - anything else           → 4xx VALIDATION_FAILED (change-level violation,
 //     other validation failure, malformed walk input)
 //
@@ -239,13 +186,11 @@ func classifyBeginErr(err error) *common.AppError {
 // body, bad transactionWindow, unstorable bytes).
 //
 // The catch-all puts err.Error() in the response body verbatim — a 4xx carries
-// full domain detail by contract. That makes it a leak the moment a feeder
-// hands it something infrastructural, so every feeder marks its store failures
-// with ErrInternalSchema: validateOrExtend does, and so does ValidateWithRefresh
-// (a ready-to-use wrapper with no production call site yet — the marking is what
-// lets it be wired to a door without re-opening the hole).
+// full domain detail by contract. An infrastructural error reaching it would
+// leak, so every feeder marks its store failures with ErrInternalSchema, as
+// ingest.ValidateOrExtend does.
 func classifyValidateOrExtendErr(err error) *common.AppError {
-	// Pass-through: validateOrExtend may return a *common.AppError directly
+	// Pass-through: ingest.ValidateOrExtend may return a *common.AppError directly
 	// for pre-classified operational errors (e.g. unique-key widening guard).
 	var preClassified *common.AppError
 	if errors.As(err, &preClassified) {
@@ -282,7 +227,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 	// Resolve transactionWindow up-front so an out-of-range value rejects
 	// before we burn any I/O. Mirrors CreateCollection — see the array-body
 	// branch below for where the window is actually applied.
-	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	window, paramErr := resolveTransactionWindow(r.Context(), params.TransactionWindow)
 	if paramErr != nil {
 		common.WriteError(w, r, paramErr)
 		return
@@ -405,8 +350,20 @@ func (h *Handler) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId 
 	common.WriteJSON(w, http.StatusOK, resp)
 }
 
+// GetConsistencyTime implements GET /entity/consistency-time. The instant is
+// rendered by encoding/json as RFC 3339 with the store's full precision, never
+// rounded, so a client can pass it back verbatim as pointInTime.
+func (h *Handler) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
+	c, err := h.cons.Fresh(r.Context())
+	if err != nil {
+		common.WriteError(w, r, classifyError(err))
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, genapi.ConsistencyTimeDto{ConsistencyTime: c})
+}
+
 func (h *Handler) GetEntityStatistics(w http.ResponseWriter, r *http.Request, params genapi.GetEntityStatisticsParams) {
-	stats, err := h.GetStatistics(r.Context())
+	stats, err := h.GetStatistics(r.Context(), params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -436,7 +393,7 @@ func (h *Handler) GetEntityStatisticsByState(w http.ResponseWriter, r *http.Requ
 			fmt.Sprintf("states filter has %d entries; maximum is %d", len(*params.States), maxStatesFilterSize)))
 		return
 	}
-	stats, err := h.GetStatisticsByState(r.Context(), params.States)
+	stats, err := h.GetStatisticsByState(r.Context(), params.States, params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -467,7 +424,7 @@ func (h *Handler) GetEntityStatisticsByStateForModel(w http.ResponseWriter, r *h
 			fmt.Sprintf("states filter has %d entries; maximum is %d", len(*params.States), maxStatesFilterSize)))
 		return
 	}
-	stats, err := h.GetStatisticsByStateForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), params.States)
+	stats, err := h.GetStatisticsByStateForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), params.States, params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -487,7 +444,7 @@ func (h *Handler) GetEntityStatisticsByStateForModel(w http.ResponseWriter, r *h
 }
 
 func (h *Handler) GetEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.GetEntityStatisticsForModelParams) {
-	stat, err := h.GetStatisticsForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion))
+	stat, err := h.GetStatisticsForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -572,6 +529,7 @@ func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityN
 		batchSize = int(*params.TransactionSize)
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	condBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read request body"))
@@ -579,7 +537,7 @@ func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityN
 	}
 
 	verbose := params.Verbose != nil && *params.Verbose
-	result, err := h.DeleteEntitiesConditional(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), condBody, params.PointInTime, verbose, batchSize)
+	result, err := h.DeleteEntitiesConditional(r.Context(), entityName, int(modelVersion), condBody, params.PointInTime, verbose, batchSize)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCondition) {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()))
@@ -592,7 +550,8 @@ func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityN
 	// StreamDeleteResult: single object with entityModelClassId, deleteResult,
 	// and optional ids (verbose). numberOfEntitites = matched, ...Removed =
 	// actually deleted (decoupled — a condition may match more than it removes
-	// if a per-id delete fails). Reconciled to the per-finding policy (design §2).
+	// when an entity is gone or changed since selection, or in a failed
+	// batch). Reconciled to the per-finding policy (design §2).
 	deleteResult := map[string]any{
 		"idToError":                result.IDToError,
 		"numberOfEntitites":        result.MatchedCount,
@@ -661,10 +620,29 @@ const (
 	collectionMaxWindow     = 1000
 )
 
+// wholeRequest is the window of a collection request that must not be split:
+// the chunk loops' end clamps it to the item count, so the request runs as one
+// chunk. start is 0 on the only iteration, so start+window cannot overflow.
+const wholeRequest = math.MaxInt
+
 // resolveTransactionWindow returns the effective window for a collection
 // request. Returns 400 BAD_REQUEST when the client supplies a value
 // outside (0, collectionMaxWindow].
-func resolveTransactionWindow(window *int32) (int, *common.AppError) {
+//
+// A window is a commit after every so many items. A request that joined an
+// open transaction commits nothing — the transaction's owner does — so it has
+// no window: an explicit transactionWindow is refused, as transactionSize and
+// transactionTimeoutMillis are, and without one the request runs as one chunk.
+// Chunked, a failure in a later chunk would answer 200 with chunk results
+// claiming that the earlier chunks were committed.
+func resolveTransactionWindow(ctx context.Context, window *int32) (int, *common.AppError) {
+	if spi.GetTransaction(ctx) != nil {
+		if window != nil {
+			return 0, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"transactionWindow is not supported on a request that joins an open transaction")
+		}
+		return wholeRequest, nil
+	}
 	if window == nil {
 		return collectionDefaultWindow, nil
 	}
@@ -756,7 +734,9 @@ type collectionChunkItemErr struct {
 //
 //   - (results, nil) — the full per-chunk result array. May contain an
 //     error element on a later-chunk failure (committed chunks before it
-//     are durable; subsequent chunks are NOT attempted).
+//     are durable; subsequent chunks are NOT attempted). A joined request is
+//     never split (resolveTransactionWindow), so it never gets here with an
+//     error element.
 //   - (nil, appErr)  — the FIRST chunk failed, no durable progress was
 //     made; the caller writes the conventional 4xx error envelope.
 //
@@ -806,7 +786,7 @@ func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, 
 				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
 					Code:       appErr.Code,
-					Message:    appErr.Message,
+					Message:    common.ReportError(ctx, appErr, "pkg", "entity", "chunkIndex", chunkIdx),
 					ChunkIndex: chunkIdx,
 				},
 			})
@@ -821,7 +801,7 @@ func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, 
 }
 
 func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, format genapi.CreateCollectionParamsFormat, params genapi.CreateCollectionParams) {
-	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	window, paramErr := resolveTransactionWindow(r.Context(), params.TransactionWindow)
 	if paramErr != nil {
 		common.WriteError(w, r, paramErr)
 		return
@@ -841,6 +821,14 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read body"))
 		return
 	}
+	// Text no store can hold anywhere in the body is refused before any item
+	// runs, as on update collection; each payload is still checked on its own
+	// below, since it is a JSON-encoded string whose escapes this check
+	// cannot see.
+	if appErr := ingest.RejectUnstorable(bodyBytes); appErr != nil {
+		common.WriteError(w, r, appErr)
+		return
+	}
 
 	var rawItems []struct {
 		Model struct {
@@ -849,8 +837,8 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 		} `json:"model"`
 		Payload string `json:"payload"`
 	}
-	if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON array"))
+	if err := strictjson.Decode(bodyBytes, &rawItems); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 
@@ -900,7 +888,7 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		return
 	}
 
-	window, paramErr := resolveTransactionWindow(params.TransactionWindow)
+	window, paramErr := resolveTransactionWindow(r.Context(), params.TransactionWindow)
 	if paramErr != nil {
 		common.WriteError(w, r, paramErr)
 		return
@@ -919,6 +907,14 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read body"))
 		return
 	}
+	// An item's `ifMatch` and `transition` reach its audit events, which cannot
+	// hold U+0000 (PostgreSQL refuses it in jsonb): refused here, before any
+	// item runs. Each payload is still checked on its own below, since it is a
+	// JSON-encoded string whose escapes this outer check cannot see.
+	if appErr := ingest.RejectUnstorable(bodyBytes); appErr != nil {
+		common.WriteError(w, r, appErr)
+		return
+	}
 
 	// Per docs: `payload` is a JSON-encoded STRING (not a nested object).
 	// Match CreateCollection's wire contract exactly. Optional per-item
@@ -929,8 +925,8 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		Transition string `json:"transition"`
 		IfMatch    string `json:"ifMatch"`
 	}
-	if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON array (payload must be a JSON-encoded string)"))
+	if err := strictjson.Decode(bodyBytes, &rawItems); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 
@@ -996,7 +992,7 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 				EntityIDs: make([]string, 0),
 				Error: &collectionChunkError{
 					Code:       appErr.Code,
-					Message:    appErr.Message,
+					Message:    common.ReportError(opCtx, appErr, "pkg", "entity", "path", r.URL.Path, "chunkIndex", chunkIdx),
 					ChunkIndex: chunkIdx,
 				},
 			})
@@ -1124,7 +1120,7 @@ func (h *Handler) PatchSingle(w http.ResponseWriter, r *http.Request, format gen
 }
 
 // patch is the shared PATCH implementation. Error precedence: media-type/format
-// (415) -> If-Match presence (428) -> transactionTimeoutMillis validation (400) ->
+// (415) -> If-Match presence, empty counting as absent (428) -> transactionTimeoutMillis validation (400) ->
 // service (404/412/409/501/4xx).
 func (h *Handler) patch(w http.ResponseWriter, r *http.Request, format string, entityId openapi_types.UUID, transition string, ifMatchHeader *string, millis *int64) {
 	if format != "JSON" {
@@ -1137,9 +1133,9 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request, format string, e
 			"unsupported Content-Type; use application/merge-patch+json or application/json-patch+json"))
 		return
 	}
-	if ifMatchHeader == nil {
+	if ifMatchHeader == nil || *ifMatchHeader == "" {
 		common.WriteError(w, r, common.Operational(http.StatusPreconditionRequired, common.ErrCodePreconditionRequired,
-			"missing If-Match: send If-Match: <transactionId> from your last GET of this entity to patch safely, or If-Match: * to explicitly accept last-writer-wins"))
+			"missing or empty If-Match: send If-Match: <transactionId> from your last GET of this entity to patch safely, or If-Match: * to explicitly accept last-writer-wins"))
 		return
 	}
 	opCtx, cancelTimeout, paramErr := resolveRequestTimeout(r.Context(), millis)

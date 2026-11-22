@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // procOutputEngine builds an engine whose single processor returns procData,
@@ -37,7 +39,7 @@ func procOutputEngine(
 			return &spi.Entity{Data: []byte(procData)}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "procout-" + mode, ModelVersion: "1.0"}
@@ -73,7 +75,7 @@ func runProcOutput(t *testing.T, engine *Engine, txMgr spi.TransactionManager, c
 		},
 		Data: []byte(`{"x":1}`),
 	}
-	_, err = engine.Execute(txCtx, entity, "")
+	_, err = engine.Execute(txCtx, entity)
 	return entity, err
 }
 
@@ -184,10 +186,15 @@ func TestProcessorOutput_FailsClosedWhenTheModelCannotBeRead(t *testing.T) {
 	})
 
 	t.Run("model not registered", func(t *testing.T) {
-		// nil modelFields — no descriptor is saved for this model.
+		// nil modelFields — no descriptor is saved for this model, so the
+		// model read answers not-found and the output check refuses on that.
 		engine, _, txMgr, ctx, ref := procOutputEngine(t, ExecutionModeSync, nil, `{"x":1}`, nil)
-		if _, err := runProcOutput(t, engine, txMgr, ctx, ref); !errors.Is(err, ErrProcessorOutputInfra) {
+		_, err := runProcOutput(t, engine, txMgr, ctx, ref)
+		if !errors.Is(err, ErrProcessorOutputInfra) {
 			t.Errorf("err = %v; want ErrProcessorOutputInfra", err)
+		}
+		if !errors.Is(err, spi.ErrNotFound) {
+			t.Errorf("err = %v; want it to wrap spi.ErrNotFound: the refusal is for the missing model", err)
 		}
 	})
 }
@@ -213,7 +220,7 @@ func TestProcessorOutput_DescriptorResolvedOnceAcrossThePipeline(t *testing.T) {
 			return &spi.Entity{Data: []byte(fmt.Sprintf(`{"x":%d}`, calls))}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock), WithCoordination(txcoord.New(txMgr)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "procout-memo", ModelVersion: "1.0"}

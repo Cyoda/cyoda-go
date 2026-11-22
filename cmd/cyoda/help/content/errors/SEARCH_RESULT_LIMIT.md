@@ -5,7 +5,6 @@ stability: stable
 see_also:
   - errors
   - errors.SEARCH_JOB_NOT_FOUND
-  - errors.SEARCH_SHARD_TIMEOUT
 ---
 
 # errors.SEARCH_RESULT_LIMIT
@@ -28,4 +27,3 @@ Not retryable with the same parameters. Narrow the condition, raise `limit` (up 
 
 - errors
 - errors.SEARCH_JOB_NOT_FOUND
-- errors.SEARCH_SHARD_TIMEOUT

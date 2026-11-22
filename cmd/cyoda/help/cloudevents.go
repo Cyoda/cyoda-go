@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	cyodaschemas "github.com/cyoda-platform/cyoda-go/docs/cyoda/schema"
+	cyodaschemas "github.com/cyoda/cyoda-go/docs/cyoda/schema"
 )
 
 // emitCloudEventsJSON is the CLI action for `cyoda help cloudevents json`.

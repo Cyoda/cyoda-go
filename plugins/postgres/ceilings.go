@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	spi "github.com/cyoda/cyoda-go-spi"
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -113,7 +114,7 @@ func newAcquireContext(ctx context.Context, timeout time.Duration) (context.Cont
 type acquireTimeoutError struct{ cause error }
 
 func (e *acquireTimeoutError) Error() string {
-	return "could not acquire a database connection within the configured timeout: " + e.cause.Error()
+	return "could not acquire a database connection within CYODA_POSTGRES_ACQUIRE_TIMEOUT: " + e.cause.Error()
 }
 func (e *acquireTimeoutError) Unwrap() error            { return e.cause }
 func (e *acquireTimeoutError) StorageUnavailable() bool { return true }
@@ -126,7 +127,7 @@ func (e *acquireTimeoutError) StorageUnavailable() bool { return true }
 //
 // It is package-level, and every acquire in this plugin goes through it, because
 // the sites that open a transaction on the pool — TransactionManager.Begin,
-// ExtendSchema's self-wrap, the async-search scan's own-ceiling transaction and
+// the model store's transactions, the async-search scan's own-ceiling transaction and
 // a non-transactional compare-and-save's row-lock transaction — contend for the
 // same connections and must therefore say the same thing about running out of
 // them. When only Begin classified, a saturated pool answered a
@@ -164,6 +165,9 @@ func (e *idleInTxAbortError) Error() string {
 }
 func (e *idleInTxAbortError) Unwrap() error            { return e.cause }
 func (e *idleInTxAbortError) StorageUnavailable() bool { return true }
+
+// Is makes a reclaimed transaction read as a transaction that no longer exists.
+func (e *idleInTxAbortError) Is(target error) bool { return target == spi.ErrTxNotFound }
 
 // isIdleInTxAbort reports whether err is PostgreSQL reclaiming a transaction
 // that sat idle past the ceiling.

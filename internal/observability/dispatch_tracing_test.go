@@ -6,11 +6,14 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/observability"
+	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type fakeDispatcher struct {
@@ -205,7 +208,7 @@ func TestTracingDispatch_DurationHasExplicitBuckets(t *testing.T) {
 	if err := reader.Collect(context.Background(), &rm); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	want := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+	want := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300}
 	for _, sm := range rm.ScopeMetrics {
 		for _, md := range sm.Metrics {
 			if md.Name != "cyoda.dispatch.duration" {
@@ -225,4 +228,39 @@ func TestTracingDispatch_DurationHasExplicitBuckets(t *testing.T) {
 		}
 	}
 	t.Fatal("cyoda.dispatch.duration not found")
+}
+
+// A processor with no configured execution mode runs as SYNC; its span says so.
+func TestDispatchSpan_EmptyModeIsSync(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prev)
+	})
+
+	traced := observability.NewTracingExternalProcessingService(&fakeDispatcher{}, sdkmetric.NewMeterProvider().Meter("test"))
+	for _, p := range []spi.ProcessorDefinition{{Name: "unset"}, {Name: "async", ExecutionMode: "ASYNC_NEW_TX"}} {
+		if _, err := traced.DispatchProcessor(context.Background(), &spi.Entity{}, p, "wf", "tr", "tx"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 2 {
+		t.Fatalf("spans = %d, want 2", len(spans))
+	}
+	for i, want := range []string{"SYNC", "ASYNC_NEW_TX"} {
+		var got string
+		for _, kv := range spans[i].Attributes {
+			if kv.Key == observability.AttrProcessorMode {
+				got = kv.Value.AsString()
+			}
+		}
+		if got != want {
+			t.Errorf("span %d %s = %q, want %q", i, observability.AttrProcessorMode, got, want)
+		}
+	}
 }

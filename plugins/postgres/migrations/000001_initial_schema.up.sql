@@ -4,9 +4,9 @@
 -- This file is the consolidated, net-result schema for a fresh install.
 -- Pre-release greenfield: there are no deployments to carry forward, so the
 -- original 000001..000005 migration chain has been collapsed into this one
--- file. Application-level WHERE tenant_id = $1 is the primary isolation
--- mechanism; RLS is enabled but NOT forced (activates automatically when the
--- application connects as a non-owner role or sets app.current_tenant).
+-- file. Application-level WHERE tenant_id = $1 is the isolation. Row-level
+-- security is not supported: RLS is enabled but NOT forced, so the policies
+-- take no effect for the table owner cyoda connects as.
 
 -- entities: current state, one row per entity
 CREATE TABLE IF NOT EXISTS entities (
@@ -89,7 +89,9 @@ CREATE TABLE IF NOT EXISTS messages (
 -- search_jobs: async search job metadata
 -- PK is composite (tenant_id, id) so the same job ID may be reused across
 -- tenants (the conformance harness uses fixed IDs like "j1" in fresh tenants).
--- condition and point_in_time are nullable — they are optional on spi.SearchJob.
+-- condition is nullable: CreateJob writes NULL for an empty spi.SearchJob.Condition.
+-- point_in_time is NOT NULL since 000015; it was declared nullable here on the
+-- mistaken note that it was optional on spi.SearchJob, which it never was.
 CREATE TABLE IF NOT EXISTS search_jobs (
     id            TEXT        NOT NULL,
     tenant_id     TEXT        NOT NULL,
@@ -124,11 +126,10 @@ CREATE TABLE IF NOT EXISTS search_job_results (
 
 CREATE INDEX IF NOT EXISTS idx_search_job_results_tenant ON search_job_results(tenant_id, job_id);
 
--- Row-Level Security (defense-in-depth).
--- RLS is enabled but NOT forced — the table owner bypasses policies. Enforcement
--- activates when (a) the application connects as a non-owner role, or (b) the
--- transaction sets app.current_tenant via SET LOCAL. Application-level
--- WHERE tenant_id = $1 is the primary isolation mechanism.
+-- Row-level security policies. Row-level security is not supported: RLS is
+-- enabled but NOT forced, so the table owner cyoda connects as bypasses every
+-- policy, whatever app.current_tenant holds. Application-level
+-- WHERE tenant_id = $1 is the isolation.
 ALTER TABLE entities ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation_entities ON entities
     USING (tenant_id = current_setting('app.current_tenant', true));

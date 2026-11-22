@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // occupyWriterConnection checks out the writer pool's single connection by
@@ -35,6 +36,7 @@ func seedVersionReadFixture(t *testing.T) (*sqlite.StoreFactory, context.Context
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-vr", "alice", spi.PrincipalUser)
 	modelRef := spi.ModelRef{EntityName: "m-vr", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, modelRef)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {

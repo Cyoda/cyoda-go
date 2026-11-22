@@ -5,11 +5,12 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // Fix B — gRPC search bypasses all condition-type validation.
@@ -29,7 +30,7 @@ import (
 
 // registerModelWithSchema saves a LOCKED model descriptor with the given
 // data fields and returns its ModelRef, so EnsureModelRegistered succeeds
-// and validateConditionTypes has a real schema to build a *schema.ModelNode
+// and the type step of ValidateConditionForModel has a real schema to build a *schema.ModelNode
 // from (a nil/empty schema would make ValidateConditionValueTypes a no-op).
 func registerModelWithSchema(t *testing.T, factory *memory.StoreFactory, entityName string, fields ...string) spi.ModelRef {
 	t.Helper()
@@ -42,6 +43,9 @@ func registerModelWithSchema(t *testing.T, factory *memory.StoreFactory, entityN
 	desc := buildSearchDescriptor(t, ref, fields...)
 	if err := ms.Save(ctx, desc); err != nil {
 		t.Fatalf("Save model: %v", err)
+	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock model: %v", err)
 	}
 	return ref
 }
@@ -77,7 +81,7 @@ func TestDirectSearch_LifecycleBadTemporalOperand_RejectsAtServiceBoundary(t *te
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "creationDate",
@@ -99,7 +103,7 @@ func TestDirectSearch_UnknownMetaField_RejectsAtServiceBoundary(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "notARealMetaField",
@@ -124,7 +128,7 @@ func TestSubmitAsyncSearch_BadTemporalOperand_RejectsAtServiceBoundary(t *testin
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "creationDate",
@@ -155,7 +159,7 @@ func TestSubmitAsyncSearch_BadTemporalOperand_RejectsAtServiceBoundary(t *testin
 
 // TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary verifies
 // that DirectSearch rejects a lifecycle BETWEEN condition whose value is a
-// bare scalar (not a 2-element array) with a 400 BAD_REQUEST AppError.
+// bare scalar (not a 2-element array) with a 400 INVALID_CONDITION AppError.
 func TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
@@ -163,7 +167,7 @@ func TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	// The exact C1 repro condition: a scalar RFC3339 operand against a
 	// temporal lifecycle field's BETWEEN operator.
@@ -174,12 +178,12 @@ func TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T
 	}
 
 	_, err := svc.DirectSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{Limit: 10})
-	assertAppErrorCode(t, err, common.ErrCodeBadRequest)
+	assertAppErrorCode(t, err, common.ErrCodeInvalidCondition)
 }
 
 // TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary
 // verifies that SubmitAsyncSearch rejects the same malformed BETWEEN
-// condition with a 400 BAD_REQUEST AppError, and that no job is created
+// condition with a 400 INVALID_CONDITION AppError, and that no job is created
 // before the rejection.
 func TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T) {
 	factory := memory.NewStoreFactory()
@@ -188,7 +192,7 @@ func TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *test
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.age",
@@ -197,7 +201,7 @@ func TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *test
 	}
 
 	jobID, err := svc.SubmitAsyncSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{Limit: 10})
-	assertAppErrorCode(t, err, common.ErrCodeBadRequest)
+	assertAppErrorCode(t, err, common.ErrCodeInvalidCondition)
 	if jobID != "" {
 		t.Errorf("jobID = %q, want empty (no job created before rejection)", jobID)
 	}

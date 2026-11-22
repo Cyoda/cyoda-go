@@ -3,7 +3,7 @@ package memory_test
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // In-tx counts reflect the transaction's own view for every buffer shape:
@@ -11,6 +11,7 @@ import (
 // a delete then Save, a state change, and after DeleteAll.
 func TestTxCount_EveryBufferShape(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-it"), spi.ModelRef{EntityName: "m-cnt", ModelVersion: "1"})
 	ctx := tenantCtx("tenant-it")
 	ref := spi.ModelRef{EntityName: "m-cnt", ModelVersion: "1"}
 	store, _ := f.EntityStore(ctx)
@@ -32,14 +33,14 @@ func TestTxCount_EveryBufferShape(t *testing.T) {
 	}
 	check := func(step string, wantTotal int64, wantByState map[string]int64) {
 		t.Helper()
-		got, err := store.Count(txCtx, ref)
+		got, err := store.Count(txCtx, ref, nil)
 		if err != nil {
 			t.Fatalf("%s: Count: %v", step, err)
 		}
 		if got != wantTotal {
 			t.Fatalf("%s: Count = %d, want %d", step, got, wantTotal)
 		}
-		by, err := store.CountByState(txCtx, ref, nil)
+		by, err := store.CountByState(txCtx, ref, nil, nil)
 		if err != nil {
 			t.Fatalf("%s: CountByState: %v", step, err)
 		}

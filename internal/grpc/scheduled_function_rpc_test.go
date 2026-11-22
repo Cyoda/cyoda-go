@@ -11,17 +11,18 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // scheduled_function_rpc_test.go is Task 9.3's gRPC envelope coverage layer
@@ -50,7 +51,10 @@ import (
 // processor/criterion dispatch actually runs (rather than failing with "no
 // external processing configured") and tests can register a member to answer
 // requests, or leave the registry empty to exercise the no-member path.
-func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
+// newTestEnvWithOwner wires the production callout path: a real
+// ProcessorDispatcher over the returned service's own MemberRegistry, and over
+// it the owner's loop, which is what the workflow engine calls.
+func newTestEnvWithOwner(t *testing.T, answerLimitDefault, answerLimitMax time.Duration, owner OwnerTestConfig) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
 	t.Helper()
 
 	factory := memory.NewStoreFactory()
@@ -70,14 +74,19 @@ func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 	if err != nil {
 		t.Fatalf("token.NewSigner: %v", err)
 	}
-	dispatcher := NewProcessorDispatcher(registry, common.NewDefaultUUIDGenerator(), signer, "node-test", time.Minute)
+	dispatcher := NewProcessorDispatcher(registry, NewRoundRobinSelector(registry), signer, answerLimitDefault, answerLimitMax, 30*time.Second, false)
+	if NewOwnerForTest == nil {
+		t.Fatal("owner_wiring_test.go did not set NewOwnerForTest")
+	}
+	coord := txcoord.New(txMgr)
+	extProc := NewOwnerForTest(dispatcher, registry, coord, owner)
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(dispatcher))
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(extProc), workflow.WithCoordination(coord))
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
-	modelHandler := model.New(factory)
-	workflowHandler := workflow.New(factory, engine)
+	searchService := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, coord, newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cachedFactory(factory), platformclock.Real())
+	workflowHandler := workflow.New(factory, engine, 60*time.Second)
 
 	svc := &CloudEventsServiceImpl{
 		registry:      registry,
@@ -91,9 +100,21 @@ func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 	return svc, workflowHandler, ctx
 }
 
+// newTestEnvWithDispatchLimits is newTestEnvWithOwner with the default number
+// of tries and no patience: a callout with no cnode fails at once.
+func newTestEnvWithDispatchLimits(t *testing.T, answerLimitDefault, answerLimitMax time.Duration) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
+	t.Helper()
+	return newTestEnvWithOwner(t, answerLimitDefault, answerLimitMax, OwnerTestConfig{FixedNumRetries: 3})
+}
+
+func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Handler, context.Context) {
+	t.Helper()
+	return newTestEnvWithDispatchLimits(t, 30*time.Second, 60*time.Second)
+}
+
 // testTenant is the tenant ID every test in this file registers gRPC
 // compute members under — it must match newTestEnvWithDispatch's
-// spi.UserContext.Tenant.ID ("test-tenant") for MemberRegistry.FindByTags
+// spi.UserContext.Tenant.ID ("test-tenant") for MemberRegistry.Candidates
 // to resolve them.
 const testTenant = spi.TenantID("test-tenant")
 
@@ -400,7 +421,7 @@ func TestRPC_ProcessorNoMember_Returns503Envelope(t *testing.T) {
 			"version": "1.1", "name": "proc-nomember-wf", "initialState": "Open", "active": true,
 			"states": {
 				"Open": {"transitions": [{"name": "init", "next": "Closed", "manual": false,
-					"processors": [{"type": "calculator", "name": "tag-with-foo", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "tag-with-foo", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": "no-such-tag"}}]
 				}]},
 				"Closed": {}

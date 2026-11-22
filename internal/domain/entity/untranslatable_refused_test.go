@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // TestQueryGroupedStats_FunctionCondition_Is400 pins the BOUNDARY that stands
@@ -40,12 +40,12 @@ import (
 func TestQueryGroupedStats_FunctionCondition_Is400(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "function",
-		"function": {"name": "isWeekend", "args": {}}
+		"function": {"name": "isWeekend"}
 	}`)
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	store := &fakeIterable{entities: nil}
 

@@ -4,22 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/domain/txjoin"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // --- test doubles -----------------------------------------------------------
@@ -45,8 +53,11 @@ func (f fakeRouteRegistry) List(_ context.Context) ([]contract.NodeInfo, error) 
 	return nodes, nil
 }
 func (f fakeRouteRegistry) Deregister(context.Context, string) error { return nil }
+func (f fakeRouteRegistry) Changed() <-chan struct{}                 { return nil }
 
-// fakeJoinTM satisfies spi.TransactionManager, injecting a joined tx into ctx.
+// fakeJoinTM satisfies spi.TransactionManager, injecting a joined tx into ctx,
+// and taking and ending the savepoint of a joined request's scope without doing
+// anything.
 type fakeJoinTM struct {
 	spi.TransactionManager
 }
@@ -55,8 +66,13 @@ func (fakeJoinTM) Join(ctx context.Context, txID string) (context.Context, error
 	return spi.WithTransaction(ctx, &spi.TransactionState{ID: txID}), nil
 }
 
+func (fakeJoinTM) Savepoint(context.Context, string) (string, error)         { return "sp", nil }
+func (fakeJoinTM) ReleaseSavepoint(context.Context, string, string) error    { return nil }
+func (fakeJoinTM) RollbackToSavepoint(context.Context, string, string) error { return nil }
+func (fakeJoinTM) LostRace(context.Context, string) (bool, error)            { return false, nil }
+
 // fakeErrTM satisfies spi.TransactionManager, failing Join with a fixed error so
-// the local-join path exercises JoinFromToken's error mapping in the interceptor.
+// the local-join path exercises the join layer's error mapping in the interceptor.
 type fakeErrTM struct {
 	spi.TransactionManager
 	err error
@@ -66,11 +82,21 @@ func (f fakeErrTM) Join(context.Context, string) (context.Context, error) {
 	return nil, f.err
 }
 
-// fakeServerStream is a minimal googlegrpc.ServerStream double.
+// fakeServerStream is a minimal googlegrpc.ServerStream double. request is the
+// one request message of a server-streaming RPC (recv is the same queue, for
+// tests that read like a sequence); onRecv and onSend observe each end of the
+// stream as it is used.
 type fakeServerStream struct {
-	ctx  context.Context
-	recv []*cepb.CloudEvent // queued messages RecvMsg will yield
-	sent []*cepb.CloudEvent // messages SendMsg captured
+	ctx     context.Context
+	request *cepb.CloudEvent   // the single request message, yielded once
+	recv    []*cepb.CloudEvent // queued messages RecvMsg will yield
+	sent    []*cepb.CloudEvent // messages SendMsg captured
+	onRecv  func()
+	onSend  func()
+}
+
+func newFakeServerStream(ctx context.Context) *fakeServerStream {
+	return &fakeServerStream{ctx: ctx}
 }
 
 func (s *fakeServerStream) SetHeader(metadata.MD) error  { return nil }
@@ -78,10 +104,21 @@ func (s *fakeServerStream) SendHeader(metadata.MD) error { return nil }
 func (s *fakeServerStream) SetTrailer(metadata.MD)       {}
 func (s *fakeServerStream) Context() context.Context     { return s.ctx }
 func (s *fakeServerStream) SendMsg(m any) error {
+	if s.onSend != nil {
+		s.onSend()
+	}
 	s.sent = append(s.sent, m.(*cepb.CloudEvent))
 	return nil
 }
 func (s *fakeServerStream) RecvMsg(m any) error {
+	if s.onRecv != nil {
+		s.onRecv()
+	}
+	if s.request != nil {
+		proto.Merge(m.(*cepb.CloudEvent), s.request)
+		s.request = nil
+		return nil
+	}
 	if len(s.recv) == 0 {
 		return io.EOF
 	}
@@ -104,6 +141,67 @@ func (c *fakeClientStream) Recv() (*cepb.CloudEvent, error) {
 	f := c.frames[c.idx]
 	c.idx++
 	return f, nil
+}
+
+// testResponseMax is the joined-answer ceiling these tests build a Joiner with.
+// It is the shipped default's shape at a size a test sends past in a few
+// frames, so the ceiling's behaviour is pinned without holding megabytes to do
+// it.
+const testResponseMax = 64 << 10
+
+// testMaxWaiters is the queue cap these tests build a Joiner with — the shipped
+// default of CYODA_CALLOUT_JOINED_MAX_WAITERS, high enough that no test reaches
+// it by accident. The tests that mean to reach it say so.
+const testMaxWaiters = 128
+
+// newCoord returns a transaction coordination that knows no callout.
+func newCoord() txcoord.Coordination { return txcoord.New(fakeJoinTM{}) }
+
+// mustJoiner builds the Joiner the interceptor takes, over signer, txMgr and
+// the coordination c. A nil meter (the no-op meter).
+func mustJoiner(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, c txcoord.Coordination) *txjoin.Joiner {
+	t.Helper()
+	return mustJoinerCapped(t, s, txMgr, c, testMaxWaiters)
+}
+
+// mustJoinerCapped is mustJoiner with the queue cap the test wants to reach.
+func mustJoinerCapped(t *testing.T, s *token.Signer, txMgr spi.TransactionManager, c txcoord.Coordination, maxWaiters int) *txjoin.Joiner {
+	t.Helper()
+	j, err := txjoin.NewJoiner(s, txMgr, c, testResponseMax, maxWaiters, nil)
+	if err != nil {
+		t.Fatalf("NewJoiner: %v", err)
+	}
+	return j
+}
+
+// noCalloutJoiner is the join layer over a coordination that knows no callout.
+func noCalloutJoiner(t *testing.T, s *token.Signer, txMgr spi.TransactionManager) *txjoin.Joiner {
+	t.Helper()
+	return mustJoiner(t, s, txMgr, newCoord())
+}
+
+// liveRouteFence returns a coordination on which the callout of txID is in
+// progress at major 1, and the pass claims that name it.
+func liveRouteFence(t *testing.T, txID string) (txcoord.Coordination, token.Claims) {
+	t.Helper()
+	c := newCoord()
+	calloutID := "req-" + txID
+	_, end := c.BeginCallout(context.Background(), txID, calloutID)
+	t.Cleanup(end)
+	c.Advance(calloutID, 1)
+	return c, token.Claims{NodeID: "local", TxRef: txID, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: calloutID, Major: 1}
+}
+
+// holdGate keeps the transaction's gate, as a request of the live callout of
+// txID in progress, until the returned func is called.
+func holdGate(t *testing.T, c txcoord.Coordination, txID string) func() {
+	t.Helper()
+	s, _, err := c.Enter(context.Background(), txID, []txcoord.Pair{{Callout: "req-" + txID, Major: 1}}, txcoord.Outside, 0)
+	if err != nil {
+		t.Fatalf("holdGate: %v", err)
+	}
+	var once sync.Once
+	return func() { once.Do(func() { s.End(nil) }) }
 }
 
 func entityManageInfo() *googlegrpc.UnaryServerInfo {
@@ -164,8 +262,9 @@ func decodeEntityRespCE(t *testing.T, ce *cepb.CloudEvent) events.EntityResponse
 // A valid self-node token results in a joined ctx handed to the handler.
 func TestTxRouteInterceptor_LocalJoin(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-1", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	f, claims := liveRouteFence(t, "tx-1")
+	tok, _ := s.Issue(claims)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeJoinTM{}, f), 9090, true, testProxyTimeout)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	var sawTx string
@@ -186,8 +285,9 @@ func TestTxRouteInterceptor_LocalJoin(t *testing.T) {
 // within its still-open transaction must observe its own uncommitted writes.
 func TestTxRouteInterceptor_SearchLocalJoin(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-search-1", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	f, claims := liveRouteFence(t, "tx-search-1")
+	tok, _ := s.Issue(claims)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeJoinTM{}, f), 9090, true, testProxyTimeout)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	var sawTx string
@@ -207,10 +307,13 @@ func TestTxRouteInterceptor_SearchLocalJoin(t *testing.T) {
 // the stream context, symmetric with EntityManageCollection.
 func TestTxRouteInterceptor_SearchStreamLocalJoin(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-search-7", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	f, claims := liveRouteFence(t, "tx-search-7")
+	tok, _ := s.Issue(claims)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeJoinTM{}, f), 9090, true, testProxyTimeout)
 	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
-	ss := &fakeServerStream{ctx: baseCtx}
+	// The interceptor receives the one request message before it takes the
+	// transaction's gate, and replays it to the handler.
+	ss := &fakeServerStream{ctx: baseCtx, request: &cepb.CloudEvent{Id: "req-s7"}}
 
 	var sawTx string
 	handler := func(_ any, stream googlegrpc.ServerStream) error {
@@ -232,11 +335,11 @@ func TestTxRouteInterceptor_SearchStreamLocalJoin(t *testing.T) {
 // peer-owned transaction's reads execute on the owner (where T is live).
 func TestTxRouteInterceptor_SearchForeignProxies(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-search-9", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-search-9", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-search-9", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 
 	var gotAddr string
 	writeForwardCalled := false
@@ -272,11 +375,11 @@ func TestTxRouteInterceptor_SearchForeignProxies(t *testing.T) {
 // the owner via the search stream forward seam and copies frames back.
 func TestTxRouteInterceptor_SearchStreamForeignProxies(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-search-11", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-search-11", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-search-11", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 
 	var gotAddr string
 	ic.forwardStream = func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
@@ -310,7 +413,7 @@ func TestTxRouteInterceptor_SearchStreamForeignProxies(t *testing.T) {
 // never reaches the handler — the loud-fail contract, symmetric with writes.
 func TestTxRouteInterceptor_SearchBadTokenEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-sx"}, entitySearchInfo(), func(context.Context, any) (any, error) {
@@ -336,7 +439,7 @@ func TestTxRouteInterceptor_SearchBadTokenEnvelope(t *testing.T) {
 // envelope frame (EntityResponse), never a raw gRPC status.
 func TestTxRouteInterceptor_SearchStreamBadTokenEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
 	ss := &fakeServerStream{ctx: baseCtx}
 
@@ -363,11 +466,11 @@ func TestTxRouteInterceptor_SearchStreamBadTokenEnvelope(t *testing.T) {
 // When the peer has no explicit GRPCAddr, the addr is derived from its HTTP host + local gRPC port.
 func TestTxRouteInterceptor_ForeignProxies(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-9", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-9", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-9", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 
 	var gotAddr string
 	ic.forwardUnary = func(_ context.Context, _ *proxy.ClientPool, addr string, ce *cepb.CloudEvent) (*cepb.CloudEvent, error) {
@@ -398,11 +501,11 @@ func TestTxRouteInterceptor_ForeignProxies(t *testing.T) {
 // A token for a peer that advertises an explicit GRPCAddr uses it verbatim.
 func TestTxRouteInterceptor_ForeignProxiesAdvertisedGRPCAddr(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-10", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-10", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-10", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", GRPCAddr: "node-b:19090", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 
 	var gotAddr string
 	ic.forwardUnary = func(_ context.Context, _ *proxy.ClientPool, addr string, _ *cepb.CloudEvent) (*cepb.CloudEvent, error) {
@@ -427,7 +530,7 @@ func TestTxRouteInterceptor_ForeignProxiesAdvertisedGRPCAddr(t *testing.T) {
 // gRPC status, and never reaches the handler.
 func TestTxRouteInterceptor_BadTokenEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
 
 	handler := func(context.Context, any) (any, error) {
@@ -458,6 +561,11 @@ func TestTxRouteInterceptor_BadTokenEnvelope(t *testing.T) {
 // failure whose operational code (rendered as the "CODE: detail" message prefix
 // on the CLIENT_ERROR class) matches wantCode. Covers the gRPC entry point's
 // loud-fail contract for one callback-token error class.
+//
+// Unlike assertRefusalEnvelope, which reads the fields both envelope shapes
+// share, this one decodes as EntityTransactionResponseJson and so also pins the
+// write RPCs' response shape: a refusal that came back in some other shape
+// fails here rather than passing on its code alone.
 func assertEnvelopeCode(t *testing.T, resp any, wantReqID, wantCode string) {
 	t.Helper()
 	ce, ok := resp.(*cepb.CloudEvent)
@@ -483,8 +591,8 @@ func assertEnvelopeCode(t *testing.T, resp any, wantReqID, wantCode string) {
 // TRANSACTION_EXPIRED (mapped from token.ErrTokenExpired), never a raw status.
 func TestTxRouteInterceptor_ExpiredEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-exp", time.Now().Add(-time.Second))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-exp", ExpiresAt: time.Now().Add(-time.Second).Unix(), Callout: "req-tx-exp", Major: 1})
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-exp"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -501,8 +609,8 @@ func TestTxRouteInterceptor_ExpiredEnvelope(t *testing.T) {
 func TestTxRouteInterceptor_ForgedEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
 	forger, _ := token.NewSigner([]byte("forged-secret-key-at-least-32-byte!"))
-	tok, _ := forger.Issue("local", "tx-forged", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	tok, _ := forger.Issue(token.Claims{NodeID: "local", TxRef: "tx-forged", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-forged", Major: 1})
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-forged"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -516,11 +624,11 @@ func TestTxRouteInterceptor_ForgedEnvelope(t *testing.T) {
 }
 
 // A valid self-node token whose transaction is unknown/closed yields
-// TRANSACTION_NOT_FOUND (mapped from spi.ErrTxNotFound in JoinFromToken).
+// TRANSACTION_NOT_FOUND (mapped from spi.ErrTxNotFound by the join layer).
 func TestTxRouteInterceptor_NotFoundEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-gone", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeErrTM{err: spi.ErrTxNotFound}, 9090, true)
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-gone", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-gone", Major: 1})
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeErrTM{err: spi.ErrTxNotFound}), 9090, true, testProxyTimeout)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-nf"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -542,11 +650,11 @@ func TestTxRouteInterceptor_NotFoundEnvelope(t *testing.T) {
 // than a raw gRPC error. Covers classifyRouteErr's proxy.ErrNodeUnavailable arm.
 func TestTxRouteInterceptor_DeadNodeUnavailableEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-owner", "tx-owner-down", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-owner", TxRef: "tx-owner-down", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-owner-down", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-owner": {NodeID: "node-owner", Addr: "http://node-owner:8080", Alive: false},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "local", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, reg, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-down"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -559,12 +667,39 @@ func TestTxRouteInterceptor_DeadNodeUnavailableEnvelope(t *testing.T) {
 	assertEnvelopeCode(t, resp, "req-down", "TRANSACTION_NODE_UNAVAILABLE")
 }
 
+// A valid token naming a peer the registry does not list at all — exactly what
+// registry.Gossip.List yields for a member whose gossip metadata does not
+// parse (internal/cluster/registry/gossip_badmeta_internal_test.go covers the
+// HTTP door for the same condition) — also yields TRANSACTION_NODE_UNAVAILABLE
+// (503) in the envelope. This exercises ResolveNodeInfo's fall-through when the
+// token's node is missing from List entirely, distinct from
+// TestTxRouteInterceptor_DeadNodeUnavailableEnvelope above, where the node is
+// listed but marked not-Alive.
+func TestTxRouteInterceptor_NodeMissingFromRegistryUnavailableEnvelope(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-ghost", TxRef: "tx-ghost", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-ghost", Major: 1})
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-other": {NodeID: "node-other", Addr: "http://node-other:8080", Alive: true},
+	}}
+	ic := newTxRouteInterceptor(s, reg, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-ghost"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		t.Fatal("handler must not run when the token names a node the registry does not list")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("expected envelope response, got gRPC err: %v", err)
+	}
+	assertEnvelopeCode(t, resp, "req-ghost", "TRANSACTION_NODE_UNAVAILABLE")
+}
+
 // A valid self-node token for a transaction owned by a different tenant yields
-// FORBIDDEN (mapped from spi.ErrTxTenantMismatch in JoinFromToken).
+// FORBIDDEN (mapped from spi.ErrTxTenantMismatch by the join layer).
 func TestTxRouteInterceptor_TenantMismatchEnvelope(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-other-tenant", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeErrTM{err: spi.ErrTxTenantMismatch}, 9090, true)
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-other-tenant", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-other-tenant", Major: 1})
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeErrTM{err: spi.ErrTxTenantMismatch}), 9090, true, testProxyTimeout)
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 
 	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-tenant"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -577,11 +712,161 @@ func TestTxRouteInterceptor_TenantMismatchEnvelope(t *testing.T) {
 	assertEnvelopeCode(t, resp, "req-tenant", "FORBIDDEN")
 }
 
+// A pass presented by the wrong tenant is answered FORBIDDEN on this door too,
+// whatever the fence knows about the callout it names — current, superseded or
+// never registered — so a stolen pass tells another tenant nothing about which
+// callouts exist.
+func TestTxRouteInterceptor_TenantMismatchIsOneAnswerWhateverTheFenceKnows(t *testing.T) {
+	for name, setup := range map[string]func(*testing.T) (txcoord.Coordination, token.Claims){
+		"callout current": func(t *testing.T) (txcoord.Coordination, token.Claims) {
+			return liveRouteFence(t, "tx-1")
+		},
+		"callout superseded": func(t *testing.T) (txcoord.Coordination, token.Claims) {
+			f, claims := liveRouteFence(t, "tx-1")
+			f.Advance(claims.Callout, 2)
+			return f, claims
+		},
+		"callout unknown": func(t *testing.T) (txcoord.Coordination, token.Claims) {
+			f := newCoord()
+			return f, token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := token.NewSigner(make32(t))
+			f, claims := setup(t)
+			tok, _ := s.Issue(claims)
+			ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeErrTM{err: spi.ErrTxTenantMismatch}, f), 9090, true, testProxyTimeout)
+			ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+			resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-stolen"}, entityManageInfo(), func(context.Context, any) (any, error) {
+				t.Fatal("handler must not run for a cross-tenant token")
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatalf("expected envelope response, got gRPC err: %v", err)
+			}
+			assertEnvelopeCode(t, resp, "req-stolen", "FORBIDDEN")
+		})
+	}
+}
+
+// envelopeRefusal is the shape-agnostic view of an error envelope: the write
+// RPCs answer with the transaction envelope and the search RPCs with the
+// entity-response envelope, and both carry these fields alike.
+type envelopeRefusal struct {
+	Success   bool   `json:"success"`
+	RequestID string `json:"requestId"`
+	Error     *struct {
+		Code      string `json:"code"`
+		Message   string `json:"message"`
+		Retryable *bool  `json:"retryable"`
+	} `json:"error"`
+}
+
+// assertRefusalEnvelope asserts ce is a failure envelope of either shape whose
+// operational code (the "CODE: detail" message prefix of the CLIENT_ERROR
+// class) is wantCode, and that it is not retryable.
+func assertRefusalEnvelope(t *testing.T, ce *cepb.CloudEvent, wantReqID, wantCode string) {
+	t.Helper()
+	_, payload, err := ParseCloudEvent(ce)
+	if err != nil {
+		t.Fatalf("ParseCloudEvent: %v", err)
+	}
+	var env envelopeRefusal
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Success {
+		t.Fatal("expected Success=false")
+	}
+	if env.RequestID != wantReqID {
+		t.Fatalf("RequestID = %q; want %q", env.RequestID, wantReqID)
+	}
+	if env.Error == nil || !strings.HasPrefix(env.Error.Message, wantCode+":") {
+		t.Fatalf("Error = %+v; want %q prefix", env.Error, wantCode)
+	}
+	if env.Error.Retryable != nil && *env.Error.Retryable {
+		t.Fatalf("%s must not be retryable", wantCode)
+	}
+}
+
+// assertStreamEnvelopeCode asserts the stream carries exactly one refusal
+// envelope with wantCode, echoing wantReqID. A refusal taken before the request
+// message was read — a token the interceptor cannot resolve at all — has no
+// request id; a joined request is refused after its one message has been
+// received, so its refusal names it.
+func assertStreamEnvelopeCode(t *testing.T, ss *fakeServerStream, wantReqID, wantCode string) {
+	t.Helper()
+	if len(ss.sent) != 1 {
+		t.Fatalf("expected 1 envelope frame, got %d", len(ss.sent))
+	}
+	assertRefusalEnvelope(t, ss.sent[0], wantReqID, wantCode)
+}
+
+// Owner gave the work to a second cnode of its own: the first cnode's callback
+// is refused at once, while the callout is still in progress — on the write
+// RPC and on the read RPC.
+func TestTxRouteInterceptor_SupersededWhileCalloutInProgress(t *testing.T) {
+	for name, info := range map[string]*googlegrpc.UnaryServerInfo{
+		"EntityManage (write)": entityManageInfo(),
+		"EntitySearch (read)":  {FullMethod: cyodapb.CloudEventsService_EntitySearch_FullMethodName},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := token.NewSigner(make32(t))
+			f, claims := liveRouteFence(t, "tx-1")
+			tok, _ := s.Issue(claims)
+			f.Advance(claims.Callout, 2)
+			ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeJoinTM{}, f), 9090, true, testProxyTimeout)
+			ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+			resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-late"}, info, func(context.Context, any) (any, error) {
+				t.Fatal("handler must not run for a cnode that was replaced")
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatalf("expected envelope response, got gRPC err: %v", err)
+			}
+			ce, ok := resp.(*cepb.CloudEvent)
+			if !ok {
+				t.Fatalf("expected *cepb.CloudEvent, got %T", resp)
+			}
+			assertRefusalEnvelope(t, ce, "req-late", "CALLOUT_SUPERSEDED")
+		})
+	}
+}
+
+// Late callback after the callout ended, on both server-streaming RPCs.
+func TestTxRouteInterceptor_SupersededAfterCalloutEnded_Stream(t *testing.T) {
+	for name, method := range map[string]string{
+		"EntityManageCollection": cyodapb.CloudEventsService_EntityManageCollection_FullMethodName,
+		"EntitySearchCollection": cyodapb.CloudEventsService_EntitySearchCollection_FullMethodName,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := token.NewSigner(make32(t))
+			f := newCoord()
+			_, end := f.BeginCallout(context.Background(), "tx-1", "req-tx-1")
+			f.Advance("req-tx-1", 1)
+			end()
+			tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
+			ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeJoinTM{}, f), 9090, true, testProxyTimeout)
+			ss := &fakeServerStream{ctx: metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)),
+				request: &cepb.CloudEvent{Id: "req-late"}}
+			err := ic.stream()(nil, ss, &googlegrpc.StreamServerInfo{FullMethod: method}, func(any, googlegrpc.ServerStream) error {
+				t.Fatal("handler must not run once the callout has ended")
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("expected an envelope on the stream, got gRPC err: %v", err)
+			}
+			assertStreamEnvelopeCode(t, ss, "req-late", "CALLOUT_SUPERSEDED")
+		})
+	}
+}
+
 // A non-routed unary method (EntityModelManage) passes through untouched (no
 // token processing), even with a bad token present.
 func TestTxRouteInterceptor_NonEntityManagePassThrough(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 	// A bad token present, but on a method we don't route: must be ignored.
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
 
@@ -605,10 +890,11 @@ func TestTxRouteInterceptor_NonEntityManagePassThrough(t *testing.T) {
 // A valid self-node token joins the tx onto the stream context.
 func TestTxRouteInterceptor_StreamLocalJoin(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("local", "tx-7", time.Now().Add(time.Minute))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	f, claims := liveRouteFence(t, "tx-7")
+	tok, _ := s.Issue(claims)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoiner(t, s, fakeJoinTM{}, f), 9090, true, testProxyTimeout)
 	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
-	ss := &fakeServerStream{ctx: baseCtx}
+	ss := &fakeServerStream{ctx: baseCtx, request: &cepb.CloudEvent{Id: "req-7"}}
 
 	var sawTx string
 	handler := func(_ any, stream googlegrpc.ServerStream) error {
@@ -629,7 +915,7 @@ func TestTxRouteInterceptor_StreamLocalJoin(t *testing.T) {
 // untouched — no routing, no envelope, handler invoked directly.
 func TestTxRouteInterceptor_StreamNonEntityManagePassThrough(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 	baseCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", "garbage.token"))
 	ss := &fakeServerStream{ctx: baseCtx}
 
@@ -657,11 +943,11 @@ func TestTxRouteInterceptor_StreamNonEntityManagePassThrough(t *testing.T) {
 // (derived from HTTP host + local gRPC port) and copies frames back to the caller's stream.
 func TestTxRouteInterceptor_StreamForeignProxies(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-11", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-11", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-11", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 
 	var gotAddr string
 	ic.forwardStream = func(_ context.Context, _ *proxy.ClientPool, addr string, _ *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
@@ -691,11 +977,11 @@ func TestTxRouteInterceptor_StreamForeignProxies(t *testing.T) {
 // gRPC status), and the envelope must echo the original RequestID.
 func TestTxRouteInterceptor_ForeignProxiesForwardErr(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-99", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-99", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-99", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 	ic.forwardUnary = func(_ context.Context, _ *proxy.ClientPool, _ string, _ *cepb.CloudEvent) (*cepb.CloudEvent, error) {
 		return nil, errors.New("peer unreachable")
 	}
@@ -725,11 +1011,11 @@ func TestTxRouteInterceptor_ForeignProxiesForwardErr(t *testing.T) {
 // of the already-consumed inbound message (not empty from a second RecvMsg).
 func TestTxRouteInterceptor_StreamForwardErrPreservesRequestID(t *testing.T) {
 	s, _ := token.NewSigner(make32(t))
-	tok, _ := s.Issue("node-B", "tx-88", time.Now().Add(time.Minute))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-88", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-88", Major: 1})
 	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-B": {NodeID: "node-B", Addr: "http://node-b:8080", Alive: true},
 	}}
-	ic := newTxRouteInterceptor(s, reg, "node-A", fakeJoinTM{}, 9090, true)
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
 	ic.forwardStream = func(_ context.Context, _ *proxy.ClientPool, _ string, _ *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
 		return nil, errors.New("peer unreachable")
 	}
@@ -752,5 +1038,698 @@ func TestTxRouteInterceptor_StreamForwardErrPreservesRequestID(t *testing.T) {
 	}
 	if r.RequestID != "stream-req-42" {
 		t.Fatalf("expected RequestID stream-req-42, got %q", r.RequestID)
+	}
+}
+
+// --- the transaction's gate on this door -------------------------------------
+
+// joinedRouteInterceptor returns an interceptor whose join layer has the callout
+// of txID in progress at major 1, the gate the transaction's gate comes from,
+// and the pass that names the callout.
+func joinedRouteInterceptor(t *testing.T, txID string) (*txRouteInterceptor, txcoord.Coordination, string) {
+	t.Helper()
+	return joinedRouteInterceptorCapped(t, txID, testMaxWaiters)
+}
+
+// joinedRouteInterceptorCapped is joinedRouteInterceptor with the queue cap the
+// test wants to reach.
+func joinedRouteInterceptorCapped(t *testing.T, txID string, maxWaiters int) (*txRouteInterceptor, txcoord.Coordination, string) {
+	t.Helper()
+	s, err := token.NewSigner(make32(t))
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	f, claims := liveRouteFence(t, txID)
+	tok, err := s.Issue(claims)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", mustJoinerCapped(t, s, fakeJoinTM{}, f, maxWaiters), 9090, true, testProxyTimeout)
+	return ic, f, tok
+}
+
+// waitForCapacity waits until maxWaiters callers are queued for txID.
+func waitForCapacity(t *testing.T, gate txcoord.Coordination, txID string, maxWaiters int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if gate.AtCapacity(txID, maxWaiters) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d callers to queue for %s", maxWaiters, txID)
+}
+
+// lockFreeOn reports whether txID's gate is free right now: a request of the
+// live callout of txID (major 1) takes it within 50ms. A request refused after
+// it took the gate (a marked transaction) also reads as free.
+func lockFreeOn(gate txcoord.Coordination, txID string) func() bool {
+	return func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		s, _, err := gate.Enter(ctx, txID, []txcoord.Pair{{Callout: "req-" + txID, Major: 1}}, txcoord.Outside, 0)
+		if err != nil {
+			return !errors.Is(err, common.ErrClientGone)
+		}
+		s.End(nil)
+		return true
+	}
+}
+
+// A compute node that goes away while its call queues for the transaction's
+// lock is answered by gRPC itself — codes.Canceled — not with an error envelope
+// naming an internal failure: nothing was touched, and there is nobody to read
+// an envelope. Both routed doors, unary and server-streaming.
+func TestTxRouteInterceptor_ClientGoesAwayWhileQueued_IsCancelled_NoEnvelope(t *testing.T) {
+	t.Run("unary", func(t *testing.T) {
+		ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+		holder := holdGate(t, gate, "tx-1") // another call of the same compute node
+		defer holder()
+		ctx, disconnect := context.WithCancel(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+		defer disconnect()
+
+		ran := false
+		type result struct {
+			resp any
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+				func(context.Context, any) (any, error) { ran = true; return "ok", nil })
+			done <- result{resp, err}
+		}()
+		waitForCapacity(t, gate, "tx-1", 1) // queued for the gate
+		disconnect()
+
+		var got result
+		select {
+		case got = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the door stayed parked on the lock after its client went away")
+		}
+		if ran {
+			t.Error("the handler ran for a client that had gone")
+		}
+		if got.resp != nil {
+			t.Errorf("resp = %v; want nothing: an envelope is for a client that is still there", got.resp)
+		}
+		if status.Code(got.err) != codes.Canceled {
+			t.Errorf("status = %v (%v); want codes.Canceled", status.Code(got.err), got.err)
+		}
+	})
+	t.Run("server-streaming", func(t *testing.T) {
+		ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+		holder := holdGate(t, gate, "tx-1")
+		defer holder()
+		ctx, disconnect := context.WithCancel(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+		defer disconnect()
+		ss := newFakeServerStream(ctx)
+		ss.request = &cepb.CloudEvent{Id: "req-1"}
+
+		ran := false
+		done := make(chan error, 1)
+		go func() {
+			done <- ic.stream()(nil, ss, entityManageCollectionInfo(),
+				func(any, googlegrpc.ServerStream) error { ran = true; return nil })
+		}()
+		time.Sleep(50 * time.Millisecond) // the request is in, now queued for the lock
+		disconnect()
+
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the door stayed parked on the lock after its client went away")
+		}
+		if ran {
+			t.Error("the handler ran for a client that had gone")
+		}
+		if len(ss.sent) != 0 {
+			t.Errorf("sent %d messages; want none: nothing to answer and nobody to answer to", len(ss.sent))
+		}
+		if status.Code(err) != codes.Canceled {
+			t.Errorf("status = %v (%v); want codes.Canceled", status.Code(err), err)
+		}
+	})
+}
+
+// A join that FAILS with an internal error which merely wraps a cancellation is
+// not a departed client: the client is still there, waiting for an answer. It
+// must get the RPC's error envelope with a ticket on it, not the bare
+// codes.Canceled a departed client gets — which would leave the fault with no
+// trace at all.
+func TestTxRouteInterceptor_JoinFailureWrappingACancellation_IsAnEnvelopeWithATicket(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue(token.Claims{NodeID: "local", TxRef: "tx-1", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-1", Major: 1})
+	joinFailed := fmt.Errorf("resolve transaction: %w", context.Canceled)
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local",
+		noCalloutJoiner(t, s, fakeErrTM{err: joinFailed}), 9090, true, testProxyTimeout)
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) {
+			t.Error("the handler of a failed join ran")
+			return nil, nil
+		})
+	if err != nil {
+		t.Fatalf("unary = %v; a client that is still there is answered with the RPC's envelope", err)
+	}
+	assertEnvelopeCode(t, resp, "req-1", "SERVER_ERROR")
+	r := decodeTxResp(t, resp.(*cepb.CloudEvent))
+	if !strings.Contains(r.Error.Message, "ticket") {
+		t.Errorf("Error.Message = %q; want a ticket — a genuine fault must be traceable", r.Error.Message)
+	}
+}
+
+// gRPC server-streaming: the handler's sends are held until the lock is
+// released, and the request message is received before the lock is taken.
+func TestTxRouteInterceptor_StreamSendsAreHeldUntilTheLockIsReleased(t *testing.T) {
+	ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+	lockFree := lockFreeOn(gate, "tx-1")
+
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+	ss.onRecv = func() {
+		if !lockFree() {
+			t.Error("the request message was received under the transaction's gate")
+		}
+	}
+	ss.onSend = func() {
+		if !lockFree() {
+			t.Error("a response frame was sent under the transaction's gate")
+		}
+	}
+	err := ic.stream()(nil, ss, entitySearchCollectionInfo(),
+		func(_ any, stream googlegrpc.ServerStream) error {
+			var req cepb.CloudEvent
+			if err := stream.RecvMsg(&req); err != nil || req.Id != "req-1" {
+				t.Errorf("handler RecvMsg = %v, id %q; want the request replayed", err, req.Id)
+			}
+			if lockFree() {
+				t.Error("the handler ran without the transaction's gate")
+			}
+			for _, id := range []string{"f-1", "f-2"} {
+				if err := stream.SendMsg(&cepb.CloudEvent{Id: id}); err != nil {
+					return err
+				}
+			}
+			if len(ss.sent) != 0 {
+				t.Error("a frame reached the client before the handler returned")
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(ss.sent) != 2 || ss.sent[0].Id != "f-1" || ss.sent[1].Id != "f-2" {
+		t.Fatalf("sent %+v; want f-1, f-2, in order, after the handler returned", ss.sent)
+	}
+}
+
+// The request of a server-streaming RPC is one message: once it has been
+// replayed the held stream is at its end, and a second RecvMsg says so without
+// asking the compute node — nothing the handler does may make the transaction's
+// lock wait on it.
+func TestTxRouteInterceptor_HeldStreamSecondRecvIsEOF_WithoutAskingTheClient(t *testing.T) {
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+	recvs := 0
+	ss.onRecv = func() { recvs++ }
+
+	err := ic.stream()(nil, ss, entitySearchCollectionInfo(),
+		func(_ any, stream googlegrpc.ServerStream) error {
+			var first, second cepb.CloudEvent
+			if err := stream.RecvMsg(&first); err != nil || first.Id != "req-1" {
+				t.Errorf("first RecvMsg = %v, id %q; want the request replayed", err, first.Id)
+			}
+			if err := stream.RecvMsg(&second); !errors.Is(err, io.EOF) {
+				t.Errorf("second RecvMsg = %v; want io.EOF", err)
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if recvs != 1 {
+		t.Errorf("the client was asked for %d messages; want the one the interceptor took before the lock", recvs)
+	}
+}
+
+// A joined request answers all of its frames or only its failure: a chunked
+// collection that fails at chunk n is discarded whole, so the answers of chunks
+// 1…n-1 would describe writes that were not kept. The handler's error is the
+// stream's outcome, and no held frame is sent.
+func TestTxRoute_StreamHandlerErrorDropsHeldFrames(t *testing.T) {
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+
+	chunkFailed := errors.New("chunk 3 failed")
+	err := ic.stream()(nil, ss, entityManageCollectionInfo(),
+		func(_ any, stream googlegrpc.ServerStream) error {
+			for _, id := range []string{"chunk-1", "chunk-2"} {
+				if err := stream.SendMsg(&cepb.CloudEvent{Id: id}); err != nil {
+					return err
+				}
+			}
+			return chunkFailed
+		})
+	if !errors.Is(err, chunkFailed) {
+		t.Fatalf("stream err = %v; want the handler's error", err)
+	}
+	if len(ss.sent) != 0 {
+		t.Fatalf("sent %+v; a failed request's frames must not be sent", ss.sent)
+	}
+}
+
+// Review Focus 2: a streaming read that fails after some frames — its error
+// envelope built by the shared funnel — answers the error envelope alone.
+func TestTxRoute_StreamReadFailsMidway_OnlyErrorSent(t *testing.T) {
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+
+	err := ic.stream()(nil, ss, entitySearchCollectionInfo(),
+		func(_ any, stream googlegrpc.ServerStream) error {
+			for _, id := range []string{"entity-1", "entity-2"} {
+				if err := stream.SendMsg(&cepb.CloudEvent{Id: id}); err != nil {
+					return err
+				}
+			}
+			errCE, ceErr := entityResponseError(stream.Context(), "req-1",
+				common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity-3 is gone"))
+			if ceErr != nil {
+				return ceErr
+			}
+			return stream.SendMsg(errCE)
+		})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d frames; want exactly one, the error envelope", len(ss.sent))
+	}
+	assertRefusalEnvelope(t, ss.sent[0], "req-1", "ENTITY_NOT_FOUND")
+}
+
+// When the scope's end rewrites the answer — here the callout moved on while
+// the handler ran — the stream answers the rewritten error alone: the frames
+// the handler produced describe work that was discarded.
+func TestTxRoute_RewriteDropsHeldFrames(t *testing.T) {
+	ic, c, tok := joinedRouteInterceptor(t, "tx-1")
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+	advanced := make(chan struct{})
+	err := ic.stream()(nil, ss, entityManageCollectionInfo(),
+		func(_ any, stream googlegrpc.ServerStream) error {
+			if err := stream.SendMsg(&cepb.CloudEvent{Id: "kept-1"}); err != nil {
+				return err
+			}
+			go func() { defer close(advanced); c.Advance("req-tx-1", 2) }()
+			deadline := time.Now().Add(5 * time.Second)
+			for !errors.Is(txcoord.Check(stream.Context()), txcoord.ErrSuperseded) {
+				if time.Now().After(deadline) {
+					t.Error("the pass never read superseded")
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			return stream.SendMsg(&cepb.CloudEvent{Id: "kept-2"})
+		})
+	<-advanced
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d frames; want the rewritten error alone", len(ss.sent))
+	}
+	assertRefusalEnvelope(t, ss.sent[0], "req-1", "CALLOUT_SUPERSEDED")
+}
+
+// The unary door: a rewritten answer replaces the handler's.
+func TestTxRoute_UnaryRewriteReplacesTheAnswer(t *testing.T) {
+	ic, c, tok := joinedRouteInterceptor(t, "tx-1")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	advanced := make(chan struct{})
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(), func(hctx context.Context, _ any) (any, error) {
+		go func() { defer close(advanced); c.Advance("req-tx-1", 2) }()
+		deadline := time.Now().Add(5 * time.Second)
+		for !errors.Is(txcoord.Check(hctx), txcoord.ErrSuperseded) {
+			if time.Now().After(deadline) {
+				t.Error("the pass never read superseded")
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		return &cepb.CloudEvent{Id: "kept"}, nil
+	})
+	<-advanced
+	if err != nil {
+		t.Fatalf("unary: %v", err)
+	}
+	assertEnvelopeCode(t, resp, "req-1", "CALLOUT_SUPERSEDED")
+}
+
+// A raw status error from a joined write is a failure the door reads itself:
+// the scope is discarded and its parent marked, so the next request is
+// refused 409 TRANSACTION_ROLLBACK_ONLY.
+func TestTxRoute_RawHandlerErrorMarks(t *testing.T) {
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	_, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		return nil, status.Error(codes.InvalidArgument, "invalid payload")
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("err = %v; want the handler's own status", err)
+	}
+	for name, info := range map[string]*googlegrpc.UnaryServerInfo{"write": entityManageInfo(), "read": entitySearchInfo()} {
+		resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-2"}, info, func(context.Context, any) (any, error) {
+			t.Errorf("%s: a request under a marked scope ran", name)
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("%s: expected an envelope, got %v", name, err)
+		}
+		ce, _ := resp.(*cepb.CloudEvent)
+		assertRefusalEnvelope(t, ce, "req-2", "TRANSACTION_ROLLBACK_ONLY")
+	}
+}
+
+// The frames a joined server-streaming handler produces are held in memory
+// while the transaction's gate is held, so they have a ceiling of their own.
+// Past it the call fails with an envelope naming the ceiling and no frame is
+// sent: a collection answered in part would be a wrong answer.
+func TestTxRouteInterceptor_HeldFramesOverTheCeiling_FailWithoutSendingAny(t *testing.T) {
+	ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+	lockFree := lockFreeOn(gate, "tx-1")
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+	chunk := strings.Repeat("a", 8<<10)
+
+	err := ic.stream()(nil, ss, entityManageCollectionInfo(),
+		func(_ any, stream googlegrpc.ServerStream) error {
+			for held := 0; held <= testResponseMax; held += len(chunk) {
+				if serr := stream.SendMsg(&cepb.CloudEvent{Id: "f", Data: &cepb.CloudEvent_TextData{TextData: chunk}}); serr != nil {
+					return serr
+				}
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("stream: %v; the refusal travels as the RPC's error envelope", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d messages; want the error envelope alone", len(ss.sent))
+	}
+	assertEnvelopeCode(t, ss.sent[0], "req-1", "JOINED_RESPONSE_TOO_LARGE")
+	if !lockFree() {
+		t.Error("the transaction's gate was not released")
+	}
+}
+
+// A collection whose held frames stay under the ceiling is answered whole: the
+// ceiling refuses an answer, it never trims one.
+func TestTxRouteInterceptor_HeldFramesUnderTheCeiling_AreAllSent(t *testing.T) {
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+	frame := &cepb.CloudEvent{Id: "f", Data: &cepb.CloudEvent_TextData{TextData: strings.Repeat("a", 8<<10)}}
+	want := testResponseMax / proto.Size(frame) // every one of these fits under the ceiling
+
+	err := ic.stream()(nil, ss, entityManageCollectionInfo(),
+		func(_ any, stream googlegrpc.ServerStream) error {
+			for i := 0; i < want; i++ {
+				if serr := stream.SendMsg(proto.Clone(frame).(*cepb.CloudEvent)); serr != nil {
+					return serr
+				}
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(ss.sent) != want {
+		t.Fatalf("sent %d frames; want all %d", len(ss.sent), want)
+	}
+}
+
+// gRPC server-streaming: past the cap on callbacks queued for one transaction
+// the call is refused with the retryable 503 envelope — and refused before the
+// request message is taken off the stream, so the refusal costs the node no
+// buffer.
+func TestTxRouteInterceptor_StreamPastTheWaiterCap_IsRefusedBeforeTheRequestIsRead(t *testing.T) {
+	ic, gate, tok := joinedRouteInterceptorCapped(t, "tx-1", 1)
+	holder := holdGate(t, gate, "tx-1") // a callback already has the transaction
+	// Released explicitly below; the defer is so that a failing assertion does
+	// not leave the queued callback parked and hang the package.
+	defer holder()
+
+	queued := make(chan error, 1)
+	go func() {
+		qss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+		qss.request = &cepb.CloudEvent{Id: "req-queued"}
+		queued <- ic.stream()(nil, qss, entityManageCollectionInfo(),
+			func(any, googlegrpc.ServerStream) error { return nil })
+	}()
+	waitForCapacity(t, gate, "tx-1", 1)
+
+	ss := newFakeServerStream(metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok)))
+	ss.request = &cepb.CloudEvent{Id: "req-1"}
+	recvs := 0
+	ss.onRecv = func() { recvs++ }
+
+	err := ic.stream()(nil, ss, entityManageCollectionInfo(),
+		func(any, googlegrpc.ServerStream) error {
+			t.Error("the refused callback's handler ran")
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("stream: %v; the refusal travels as the RPC's error envelope", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d messages; want the error envelope alone", len(ss.sent))
+	}
+	// No request id: the request was never taken off the stream.
+	assertEnvelopeCode(t, ss.sent[0], "", "TOO_MANY_JOINED_REQUESTS")
+	if recvs != 0 {
+		t.Errorf("the client was asked for %d messages; a callback refused for capacity must cost no buffer", recvs)
+	}
+
+	holder()
+	select {
+	case qerr := <-queued:
+		if qerr != nil {
+			t.Fatalf("the callback already queued was refused: %v", qerr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback already queued never ran")
+	}
+}
+
+// gRPC unary: the answer of a joined call has the same ceiling as the HTTP
+// door's buffered response and the server-streaming door's held frames. Past it
+// the call fails with JOINED_RESPONSE_TOO_LARGE and the answer is not sent —
+// one contract, the same answer on all three doors.
+func TestTxRouteInterceptor_UnaryAnswerOverTheCeiling_IsRefused(t *testing.T) {
+	ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+	lockFree := lockFreeOn(gate, "tx-1")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	answer := &cepb.CloudEvent{Id: "resp-1", Data: &cepb.CloudEvent_TextData{TextData: strings.Repeat("a", testResponseMax+1)}}
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) { return answer, nil })
+	if err != nil {
+		t.Fatalf("unary: %v; the refusal travels as the RPC's error envelope", err)
+	}
+	assertEnvelopeCode(t, resp, "req-1", "JOINED_RESPONSE_TOO_LARGE")
+	if !lockFree() {
+		t.Error("the transaction's gate was not released")
+	}
+}
+
+// A unary answer under the ceiling is handed back exactly as the handler built
+// it: the ceiling refuses an answer, it never trims one.
+func TestTxRouteInterceptor_UnaryAnswerUnderTheCeiling_IsUntouched(t *testing.T) {
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	answer := &cepb.CloudEvent{Id: "resp-1", Data: &cepb.CloudEvent_TextData{TextData: strings.Repeat("a", 8<<10)}}
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) { return answer, nil })
+	if err != nil {
+		t.Fatalf("unary: %v", err)
+	}
+	if resp != any(answer) {
+		t.Fatalf("resp = %v; want the handler's own answer", resp)
+	}
+}
+
+// An unjoined call on a routed method carries no pass, so the joined-answer
+// ceiling does not govern it — it is an ordinary request that happens to use an
+// RPC callbacks also use.
+func TestTxRouteInterceptor_UnjoinedAnswerOverTheCeiling_IsUntouched(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	ic := newTxRouteInterceptor(s, fakeRouteRegistry{}, "local", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, testProxyTimeout)
+	answer := &cepb.CloudEvent{Id: "resp-1", Data: &cepb.CloudEvent_TextData{TextData: strings.Repeat("a", testResponseMax+1)}}
+
+	resp, err := ic.unary()(context.Background(), &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) { return answer, nil })
+	if err != nil {
+		t.Fatalf("unary: %v", err)
+	}
+	if resp != any(answer) {
+		t.Fatalf("resp = %v; want the handler's own answer — the ceiling is the joined door's, not every door's", resp)
+	}
+}
+
+// gRPC unary: the message is complete before the interceptor runs, so there is
+// nothing to save by refusing earlier — the cap is applied at the gate, and the
+// envelope carries the same code.
+func TestTxRouteInterceptor_UnaryPastTheWaiterCap_IsRefused(t *testing.T) {
+	ic, gate, tok := joinedRouteInterceptorCapped(t, "tx-1", 1)
+	holder := holdGate(t, gate, "tx-1")
+	defer holder() // see above: a failing assertion must not park the queued callback
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	queued := make(chan error, 1)
+	go func() {
+		_, qerr := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-queued"}, entityManageInfo(),
+			func(context.Context, any) (any, error) { return "ok", nil })
+		queued <- qerr
+	}()
+	waitForCapacity(t, gate, "tx-1", 1)
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) {
+			t.Error("the refused callback's handler ran")
+			return nil, nil
+		})
+	if err != nil {
+		t.Fatalf("unary: %v; the refusal travels as the RPC's error envelope", err)
+	}
+	assertEnvelopeCode(t, resp, "req-1", "TOO_MANY_JOINED_REQUESTS")
+
+	holder()
+	select {
+	case qerr := <-queued:
+		if qerr != nil {
+			t.Fatalf("the callback already queued was refused: %v", qerr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback already queued never ran")
+	}
+}
+
+// gRPC unary: the handler runs under the transaction's gate, which is free once
+// the interceptor has returned. The message is already complete, so nothing is
+// read ahead of the lock.
+func TestTxRouteInterceptor_UnaryHandlerRunsUnderTheLock(t *testing.T) {
+	ic, gate, tok := joinedRouteInterceptor(t, "tx-1")
+	lockFree := lockFreeOn(gate, "tx-1")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(),
+		func(context.Context, any) (any, error) {
+			if lockFree() {
+				t.Error("the handler ran without the transaction's gate")
+			}
+			return "ok", nil
+		})
+	if err != nil || resp != "ok" {
+		t.Fatalf("unary = %v, %v; want ok, nil", resp, err)
+	}
+	if !lockFree() {
+		t.Fatal("the transaction's gate is still held after the interceptor returned")
+	}
+}
+
+// testProxyTimeout is the CYODA_PROXY_TIMEOUT these tests build the
+// interceptor with: the shipped default, long enough that no test reaches it
+// by accident. The tests that mean to reach it set a short one.
+const testProxyTimeout = 30 * time.Second
+
+// A rewritten answer is the request's one log line, on the gRPC door as on the
+// HTTP door: the handler's envelope failed, 500, with a cause saying the
+// transaction's session has ended, and the scope's end answers 404
+// TRANSACTION_NOT_FOUND instead. The handler's failure is folded into the 404's
+// line at its ERROR level, not logged on its own under a ticket the client is
+// never given.
+func TestTxRoute_RewrittenFailure_LoggedOnce(t *testing.T) {
+	logs := captureLogs(t)
+	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(), func(joined context.Context, _ any) (any, error) {
+		return entityTransactionError(joined, "req-1", common.Internal("store read failed", fmt.Errorf("session gone: %w", spi.ErrTxNotFound)))
+	})
+	if err != nil {
+		t.Fatalf("expected an envelope, got %v", err)
+	}
+	ce, _ := resp.(*cepb.CloudEvent)
+	assertRefusalEnvelope(t, ce, "req-1", "TRANSACTION_NOT_FOUND")
+	if lines := logs.lines("ERROR"); len(lines) != 1 || !strings.Contains(lines[0], "TRANSACTION_NOT_FOUND") || !strings.Contains(lines[0], "store read failed") {
+		t.Fatalf("ERROR lines = %q; want the one line of the 404, carrying the handler's failure", lines)
+	}
+	if lines := logs.lines("INFO"); len(lines) != 0 {
+		t.Fatalf("INFO lines = %q; want none", lines)
+	}
+}
+
+// A callback whose transaction has a scope paused for a callout of its own,
+// and that is not one of that callout's callbacks, is refused with the
+// TRANSACTION_BUSY envelope: Success=false, the code, and retryable, since the
+// callback may be sent again once the paused scope's callout is answered. The
+// envelope's code is the class; the code is the message's prefix. Its handler
+// never runs.
+func TestTxRouteInterceptor_SiblingOfPausedScope_BusyEnvelope(t *testing.T) {
+	ic, coord, tok := joinedRouteInterceptor(t, "tx-1")
+	held, hctx, err := coord.Enter(context.Background(), "tx-1", []txcoord.Pair{{Callout: "req-tx-1", Major: 1}}, txcoord.Write, 0)
+	if err != nil {
+		t.Fatalf("Enter: %v", err)
+	}
+	_, endNested := coord.BeginCallout(hctx, "tx-1", "nested")
+	resume := txcoord.Pause(hctx)
+	t.Cleanup(func() {
+		endNested()
+		_ = resume()
+		held.End(nil)
+	})
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+	resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-sibling"}, entityManageInfo(), func(context.Context, any) (any, error) {
+		t.Error("the refused callback's handler ran")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("unary: %v; the refusal travels as the RPC's error envelope", err)
+	}
+	ce, ok := resp.(*cepb.CloudEvent)
+	if !ok {
+		t.Fatalf("expected *cepb.CloudEvent, got %T", resp)
+	}
+	_, payload, err := ParseCloudEvent(ce)
+	if err != nil {
+		t.Fatalf("ParseCloudEvent: %v", err)
+	}
+	var env envelopeRefusal
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Success {
+		t.Fatal("expected Success=false")
+	}
+	if env.RequestID != "req-sibling" {
+		t.Fatalf("RequestID = %q; want req-sibling", env.RequestID)
+	}
+	if env.Error == nil || env.Error.Code != "CLIENT_ERROR" {
+		t.Fatalf("Error = %+v; want the CLIENT_ERROR class", env.Error)
+	}
+	if !strings.HasPrefix(env.Error.Message, common.ErrCodeTransactionBusy+":") {
+		t.Fatalf("Error.Message = %q; want %s prefix", env.Error.Message, common.ErrCodeTransactionBusy)
+	}
+	if env.Error.Retryable == nil || !*env.Error.Retryable {
+		t.Fatalf("Error.Retryable = %v; want true", env.Error.Retryable)
 	}
 }

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // countingSchemaStore implements the optional SchemaNode capability and counts
@@ -70,57 +70,4 @@ func TestLoadFieldsMap_NilNodeIsNotAnError(t *testing.T) {
 	if fm != nil {
 		t.Errorf("expected a nil fields map, got %v", fm)
 	}
-}
-
-// loadModelNode takes the same route.
-func TestLoadModelNode_UsesCachedParseWhenOffered(t *testing.T) {
-	store := &countingSchemaStore{node: testNode(t)}
-	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-
-	node, err := loadModelNode(context.Background(), store, ref)
-	if err != nil {
-		t.Fatalf("loadModelNode: %v", err)
-	}
-	if node == nil {
-		t.Fatal("expected a node")
-	}
-	if store.getCalls != 0 {
-		t.Errorf("loadModelNode fetched the raw descriptor %d times", store.getCalls)
-	}
-}
-
-// A store without the capability keeps the original descriptor-parsing path,
-// so nothing that supplies a plain ModelStore changes behaviour.
-func TestLoadFieldsMap_FallsBackWhenCapabilityAbsent(t *testing.T) {
-	root := testNode(t)
-	raw, err := schema.Marshal(root)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	plain := &plainModelStore{desc: &spi.ModelDescriptor{
-		Ref:    spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
-		State:  spi.ModelLocked,
-		Schema: raw,
-	}}
-	fm, err := loadFieldsMap(context.Background(), plain, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
-	if err != nil {
-		t.Fatalf("loadFieldsMap: %v", err)
-	}
-	if _, ok := fm["$.amount"]; !ok {
-		t.Fatalf("expected $.amount, got %v", fm)
-	}
-	if plain.getCalls != 1 {
-		t.Errorf("expected exactly 1 descriptor fetch on the fallback path, got %d", plain.getCalls)
-	}
-}
-
-type plainModelStore struct {
-	spi.ModelStore
-	desc     *spi.ModelDescriptor
-	getCalls int
-}
-
-func (s *plainModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
-	s.getCalls++
-	return s.desc, nil
 }

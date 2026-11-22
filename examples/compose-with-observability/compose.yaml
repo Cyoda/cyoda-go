@@ -33,6 +33,8 @@ services:
     environment:
       CYODA_STORAGE_BACKEND: postgres
       CYODA_POSTGRES_URL: postgres://minicyoda:minicyoda@postgres:5432/minicyoda?sslmode=disable
+      CYODA_HTTP_BIND_ADDRESS: 0.0.0.0
+      CYODA_GRPC_BIND_ADDRESS: 0.0.0.0
       CYODA_ADMIN_BIND_ADDRESS: 0.0.0.0
       CYODA_OTEL_ENABLED: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-backend:4318

@@ -3,9 +3,11 @@
   "$id": "https://cyoda.com/cloud/event/entity/EntityUpdateRequest.json",
   "title": "EntityUpdateRequest",
   "type": "object",
-  "extends": {
-    "$ref": "../common/BaseEvent.json"
-  },
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
   "properties": {
     "payload": {
       "$ref": "./EntityUpdatePayload.json",

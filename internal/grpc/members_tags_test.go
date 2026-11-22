@@ -2,10 +2,74 @@ package grpc
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 )
+
+// awaitTags returns the first published snapshot in which tenant t advertises
+// marker — the change the test made last, and therefore the newest membership.
+func awaitTags(t *testing.T, published <-chan map[string][]string, marker string) []string {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case tags := <-published:
+			if slices.Contains(tags["t"], marker) {
+				got := slices.Clone(tags["t"])
+				slices.Sort(got)
+				return got
+			}
+		case <-deadline:
+			t.Fatalf("no snapshot advertising %q was published", marker)
+		}
+	}
+}
+
+// The tag lists this pnode tells the cluster about answer the same question
+// Candidates does — can this node serve these tags — so a member that has been
+// evicted counts for nothing in them either. Its registration is removed a
+// moment later; until then its tags would invite a hand-over to a cnode that is
+// already gone.
+func TestMemberRegistry_AnEvictedMembersTagsAreNotAdvertised(t *testing.T) {
+	tests := []struct {
+		name     string
+		alsoHere bool // a second member holds the same tag
+		want     []string
+	}{
+		{"the evicted member held the tag alone", false, []string{"marker"}},
+		{"another member holds the same tag", true, []string{"marker", "shared"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := NewMemberRegistry()
+			published := make(chan map[string][]string, 16)
+			reg.SetOnChange(func(tags map[string][]string) error {
+				published <- tags
+				return nil
+			})
+			gone := reg.Register("m-gone", "t", []string{"shared"}, noopSend, nil)
+			t.Cleanup(func() { reg.Unregister(gone) })
+			if tt.alsoHere {
+				here := reg.Register("m-here", "t", []string{"shared"}, noopSend, nil)
+				t.Cleanup(func() { reg.Unregister(here) })
+			}
+
+			gone.Evict(errors.New("stream dropped")) // evicted, not unregistered
+
+			// Eviction is not a membership change and publishes nothing of its
+			// own; the next change does, and its snapshot is what the cluster is
+			// told this node can serve.
+			marker := reg.Register("m-marker", "t", []string{"marker"}, noopSend, nil)
+			t.Cleanup(func() { reg.Unregister(marker) })
+
+			if got := awaitTags(t, published, "marker"); !slices.Equal(got, tt.want) {
+				t.Errorf("advertised tags = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 // An older snapshot never overwrites a newer one: whatever ends up published
 // last is the newest membership, even when an earlier snapshot's publish

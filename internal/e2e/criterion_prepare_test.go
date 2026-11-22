@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ---------------------------------------------------------------------------
@@ -41,9 +41,9 @@ import (
 // though — it only makes an unsupported operator harder to reach. A stored
 // workflow is never re-validated (path-grammar.md's own rationale for
 // checking a criterion only at import: "A stored workflow is not
-// re-checked"), and workflow/engine.go calls match.Prepare on every save
-// with no revalidation — the same fact that keeps internal/match's
-// prepareLifecycle guard unconditional (see prepared.go). A criterion
+// re-checked"), and workflow/criterion_eval.go (prepareLocalUnits) does not re-run the import-time
+// operator check on a save — match.Prepare's own refusal of an operator it
+// cannot evaluate is what fails it. A criterion
 // imported before a validation tightening, or through any future gap in the
 // operator mapping, still reaches that path today.
 // TestCriterion_LegacyUnevaluableCriterion_FailsSaveAndRollsBack pins that
@@ -179,7 +179,7 @@ func countEntitiesInModel(t *testing.T, entityName string, modelVersion int) int
 	return len(results)
 }
 
-// legacyStorageTenantCtx builds a background context carrying the bootstrap
+// legacyStorageTenantCtx builds a background context carrying the suite
 // tenant's user context, matching the tenant the HTTP client's M2M token
 // authenticates as, so a workflow saved directly through this context is
 // visible to a subsequent HTTP-driven save against the same model.
@@ -248,9 +248,9 @@ func seedLegacyUnevaluableCriterionWorkflow(t *testing.T, entityName, wfName str
 // property TestCriterion_UnevaluableOperator_RejectedAtImport's import-time
 // rejection does NOT retire: a stored workflow is never re-validated
 // (path-grammar.md: "A stored workflow is not re-checked"), and
-// workflow/engine.go calls match.Prepare on every save with no
-// revalidation — the same fact that keeps internal/match's prepareLifecycle
-// guard unconditional. A criterion imported before a validation tightening,
+// workflow/criterion_eval.go (prepareLocalUnits) does not re-run the import-time operator check on a
+// save — match.Prepare's own refusal is what fails it. A criterion imported
+// before a validation tightening,
 // or through any future gap in the operator-name mapping, still reaches
 // that path today and must still fail closed with a full rollback, exactly
 // as it did before the import-time check existed.

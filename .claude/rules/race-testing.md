@@ -4,21 +4,23 @@ paths:
 ---
 # Race Detector Discipline
 
-`go test -race` is a sanity check at the end of a deliverable, not a continuous-iteration
-gate. Run it once before creating a PR — not at every intermediate step.
+`go test -race` is not a local gate. CI's `race` job runs `make race` on every PR
+push; that is the race check. Do not run it locally as well (CLAUDE.md Gate 5).
 
-Use `make race` (defined in `Makefile`) so local and CI run exactly the same scope.
+Use `make race` (defined in `Makefile`) when you do run it, so local and CI run
+exactly the same scope.
 
 ## Rules
 
 - **During iteration** (subagent dispatch, single-task verification, between commits):
   use a scoped run like `go test ./internal/foo/...`, or `make test` for the
-  full iteration tier (unit + cross-backend parity, ~90s cold and ~13s warm). No `-race`.
+  full iteration tier (unit + cross-backend parity; `make help` shows current timings). No `-race`.
   Do NOT reach for `go test -short ./...`: it reports `ok` for the parity
   suites and `internal/e2e` while running none of them, so its green means
   less than it appears to. See `scripts/testreport`.
-- **Before PR creation** (and only then): run `make race` once as a sanity check.
-  CI invokes the same target, so a local pass strongly predicts a CI pass.
+- **Before and after PR creation**: push and let CI's `race` job run. Run
+  `make race` locally only to reproduce a race CI reported, or before a change
+  lands without a PR (a direct push to a release branch).
 - **If a race-related bug is suspected**: run `-race` on the specific package
   while debugging, then drop it once the fix lands.
 - **If you touch `internal/e2e`** and want race coverage on the change:
@@ -31,7 +33,7 @@ Use `make race` (defined in `Makefile`) so local and CI run exactly the same sco
 `internal/e2e` (the full HTTP-stack E2E suite). Excluded because race
 instrumentation pushes that single package past Go's default 10m per-package
 timeout, and the production code paths it covers (engine cascade, cluster
-dispatch, store mutexes, OIDC/model caches) are also exercised by the
+dispatch, store mutexes, model caches) are also exercised by the
 workflow / cluster / plugin unit tests — which retain race coverage. The
 unique-coverage loss is the narrow class of races reachable only through HTTP
 ordering between concurrent inbound requests, and no current E2E test fans
@@ -50,4 +52,4 @@ production code directly (faster, narrower, gets race coverage from
 `-race` instrumentation makes tests 2-10x slower per the documented overhead.
 Running it at every step burns wall-clock time without finding new bugs —
 races that exist after a small change were almost certainly there before. The
-end-of-deliverable run catches what matters.
+run CI makes on every PR push catches what matters.

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
+	"github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema/gentree"
 )
 
 // TestPermutationInvariance — I5: every permutation of 3 deltas applied
@@ -50,7 +50,7 @@ func TestPermutationInvariance(t *testing.T) {
 			for idx, p := range perms {
 				cur := base
 				for _, j := range p {
-					next, err := schema.Apply(cur, deltas[j])
+					next, err := applyDelta(cur, deltas[j])
 					if err != nil {
 						t.Fatal(err)
 					}

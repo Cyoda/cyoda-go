@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // TestValidateSimpleConditionType_MismatchTruncatesLargeOperand is the M2(b)
@@ -25,7 +25,7 @@ func TestValidateSimpleConditionType_MismatchTruncatesLargeOperand(t *testing.T)
 		Value:        bigOperand,
 	}
 
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err == nil {
 		t.Fatal("want a condition type mismatch error for a non-numeric operand on a DOUBLE field")
 	}
@@ -51,7 +51,7 @@ func TestValidateSimpleConditionType_ArrayMismatchTruncatesLargeOperand(t *testi
 		Value:        []any{bigOperand, "irrelevant"},
 	}
 
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err == nil {
 		t.Fatal("want a condition type mismatch error for a non-numeric BETWEEN bound on a DOUBLE field")
 	}

@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // pgProxy forwards TCP to PostgreSQL and can cut every live connection on
@@ -143,17 +143,14 @@ func newTornHarness(t *testing.T) *tornHarness {
 		// connection that was torn.
 		t.Setenv("CYODA_POSTGRES_MAX_CONNS", "1")
 		t.Setenv("CYODA_POSTGRES_MIN_CONNS", "0")
-		// The scan loop would reconnect the pool between the cut and the probe.
-		cfg.Scheduler.Enabled = false
-		// Same rationale: the stale-job reclaim sweep runs on the heartbeat
-		// interval (default 15s), and a background loop that reconnects the
-		// torn pool between cut and probe would mask the 503 — the probe's
-		// GetJob would land on a healthy connection. Push the sweep out of the
-		// test window (staleAfter must be >= 4x interval for Config.Validate).
+		// The stale-job reclaim sweep runs on the heartbeat interval (default
+		// 15s), and a background loop that reconnects the torn pool between cut
+		// and probe would mask the 503 — the probe's GetJob would land on a
+		// healthy connection. Push the sweep out of the test window (staleAfter
+		// must be >= 4x interval for Config.Validate).
 		// The one-shot startup sweep still runs, harmlessly, before any probe.
 		cfg.SearchJobHeartbeatInterval = time.Hour
 		cfg.SearchJobStaleAfter = 4 * time.Hour
-		cfg.IAM.TrustedKeyRegistrationEnabled = true
 	})
 	return &tornHarness{callbackHarness: h, proxy: proxy}
 }
@@ -271,7 +268,8 @@ func TestE2E_TornConnection_AsyncSearchLookups503(t *testing.T) {
 }
 
 // TestE2E_TornConnection_AuditAndTrustedKeys503 covers the other three:
-// getStateMachineFinishedEvent and the trusted-key mutations. Their stores are
+// getStateMachineFinishedEvent and the trusted-key mutations — and the read of
+// one entity, whose 503 the saturated-pool test cannot reach. Their stores are
 // built on the context-resolving querier, so they reach the classifier already.
 func TestE2E_TornConnection_AuditAndTrustedKeys503(t *testing.T) {
 	h := newTornHarness(t)
@@ -295,6 +293,11 @@ func TestE2E_TornConnection_AuditAndTrustedKeys503(t *testing.T) {
 	auditCall := h.get(fmt.Sprintf("/api/audit/entity/%s/workflow/%s/finished", entityID, txID))
 	t.Run("finishedEvent", func(t *testing.T) {
 		probeTorn(t, h, auditCall, auditCall)
+	})
+
+	t.Run("getOneEntity", func(t *testing.T) {
+		getCall := h.get("/api/entity/" + entityID)
+		probeTorn(t, h, getCall, getCall)
 	})
 
 	const kid = "torn-trusted-key"

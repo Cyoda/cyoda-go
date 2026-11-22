@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-reset dev-ps dev-logs dev-run dev-test build test test-root test-full preflight race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins
+.PHONY: dev-up dev-down dev-reset dev-ps dev-logs dev-run dev-test build test test-root test-root-packages test-full preflight race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins client-probe
 
 # Recipes need pipefail: a `go test | testreport` pipeline must fail on the
 # LEFT side too, or a compile error in the test binary reports as success.
@@ -114,30 +114,33 @@ comma := ,
 PARITY_SUITES  := $(subst $(space),$(comma),$(strip $(PARITY_PKGS)))
 PARITY_ARGS    := $(addprefix ./,$(PARITY_PKGS))
 # An anchored alternation for filtering `go list ./...` output.
-PARITY_EXCLUDE := $(subst $(space),|,$(strip $(patsubst %,github.com/cyoda-platform/cyoda-go/%,$(PARITY_PKGS))))
+PARITY_EXCLUDE := $(subst $(space),|,$(strip $(patsubst %,github.com/cyoda/cyoda-go/%,$(PARITY_PKGS))))
 
 preflight:             ## Verify Docker can actually serve the test suites
 	@./scripts/preflight-docker.sh
 
 test: preflight        ## Iteration tier: unit + cross-backend parity (~115s cold, ~85s warm — parity always re-runs). Excludes internal/e2e and plugin submodules.
 	@echo "==> unit — NOT in this tier: internal/e2e, plugin submodules (see test-full)"
-	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda-platform/cyoda-go/internal/e2e$$' | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
+	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda/cyoda-go/internal/e2e$$' | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
 	go test -json -timeout 20m $$pkgs | go run ./scripts/testreport
 	@echo "==> cross-backend parity (uncached — the fixture builds the server outside the cache's view)"
 	@go test -json -count=1 -timeout 20m $(PARITY_ARGS) | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
 
-# test-root is test-full's root-module half, split out so CI can run exactly
-# it: CI runs the plugin submodules in steps of their own (each needs its own
-# working directory, and the postgres one needs the job's database service),
-# so it must not also run test-full's plugin loop. Splitting keeps the parity
-# package list stated once, here, rather than hand-copied into the workflow —
-# where it silently drifts and a suite drops out of -must-run unnoticed.
-test-root: preflight   ## test-full's root-module half (CI runs this; plugin submodules are separate steps)
+# test-root is test-full's root-module half: every root package, internal/e2e
+# included, then the parity suites. CI runs its first half alone
+# (test-root-packages): the parity suites run in CI's race job instead, under
+# `make race`, which checks everything a plain parity run checks. The plugin
+# submodules are CI's plugins job. Keeping the package and parity lists here,
+# once, stops them drifting in the workflow, where a suite could drop out of
+# -must-run unnoticed.
+test-root: test-root-packages   ## test-full's root-module half: root packages (internal/e2e included), then parity
+	@echo "==> cross-backend parity (uncached — the fixture builds the server outside the cache's view)"
+	@go test -json -count=1 -timeout 30m $(PARITY_ARGS) | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
+
+test-root-packages: preflight   ## Root packages including internal/e2e, without the parity suites (CI's test job)
 	@echo "==> root module, including internal/e2e"
 	@pkgs=$$(go list ./... | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
 	go test -json -timeout 30m $$pkgs | go run ./scripts/testreport -must-run 'internal/e2e'
-	@echo "==> cross-backend parity (uncached — the fixture builds the server outside the cache's view)"
-	@go test -json -count=1 -timeout 30m $(PARITY_ARGS) | go run ./scripts/testreport -must-run '$(PARITY_SUITES)'
 
 test-full: test-root   ## End-of-deliverable: everything, root + every plugin submodule (~15 min)
 	@rpt=$$(mktemp -t testreport); go build -o "$$rpt" ./scripts/testreport; \
@@ -153,7 +156,7 @@ test-full: test-root   ## End-of-deliverable: everything, root + every plugin su
 # also exercised by the workflow/cluster/plugin unit tests below — those keep race
 # coverage. CI invokes this same target so local and CI stay in lock-step.
 race:                  ## Run race detector on race-sensitive packages (CI parity; excludes internal/e2e)
-	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda-platform/cyoda-go/internal/e2e$$' | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
+	@pkgs=$$(go list ./... | grep -v '^github.com/cyoda/cyoda-go/internal/e2e$$' | grep -Ev '^($(PARITY_EXCLUDE))$$'); \
 	echo "race-testing $$(echo "$$pkgs" | wc -l | tr -d ' ') packages, plus the parity suites"; \
 	go test -json -race -timeout=15m $$pkgs | go run ./scripts/testreport
 	@echo "==> cross-backend parity (uncached — the fixture builds the server outside the cache's view)"
@@ -185,6 +188,9 @@ repin-plugins:         ## Pseudo-version-pin plugin submodules to the current (p
 check-codegen:         ## Verify api/generated.go is in sync with api/openapi.yaml (go generate is up to date)
 	@./scripts/check-generated-in-sync.sh
 
+client-probe:          ## Generate Cloud's Kotlin and the Java client from api/openapi.yaml and round-trip the samples (needs Java 21 + Maven; CI: openapi-client-generation)
+	mvn -B -f api/clientprobe/pom.xml verify
+
 check-gofmt:           ## Verify all Go files are gofmt-clean (root + plugin submodules)
 	@# `gofmt -l .` walks into .claude/worktrees/, so any feature worktree
 	@# checked out there fails this gate with files that are neither in the
@@ -194,9 +200,14 @@ check-gofmt:           ## Verify all Go files are gofmt-clean (root + plugin sub
 	@# git add), while .gitignore's .claude/worktrees/ entry excludes the
 	@# nested worktrees. It still covers the plugin submodules: separate Go
 	@# modules, same git repository.
-	@dirty="$$(gofmt -l $$(git ls-files -c -o --exclude-standard '*.go'))"; \
+	@# The toolchain's own gofmt, not the first one on PATH: gofmt's layout
+	@# changes between Go releases, so another release's gofmt passes files
+	@# CI's refuses.
+	@gofmt="$$(go env GOROOT)/bin/gofmt"; \
+	[ -x "$$gofmt" ] || { echo "no gofmt at $$gofmt"; exit 1; }; \
+	dirty="$$("$$gofmt" -l $$(git ls-files -c -o --exclude-standard '*.go'))"; \
 	if [ -n "$$dirty" ]; then \
-		echo "gofmt-dirty files (run 'gofmt -w .'):"; echo "$$dirty"; exit 1; \
+		echo "gofmt-dirty files (run '$$gofmt -w' on them):"; echo "$$dirty"; exit 1; \
 	fi; \
 	echo "OK: all Go files are gofmt-clean."
 

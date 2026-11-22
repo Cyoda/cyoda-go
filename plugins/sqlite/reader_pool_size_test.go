@@ -55,12 +55,11 @@ func TestReaderPoolSize_ConfiguredFromEnv(t *testing.T) {
 // cache.
 func TestReadDB_HonoursConfiguredReaderPoolSize(t *testing.T) {
 	cfg := config{
-		Path:                   filepath.Join(t.TempDir(), "reader_pool_size.db"),
-		AutoMigrate:            true,
-		BusyTimeout:            5 * time.Second,
-		CacheSizeKiB:           64000,
-		SchemaExtendMaxRetries: 8,
-		ReaderPoolSize:         2,
+		Path:           filepath.Join(t.TempDir(), "reader_pool_size.db"),
+		AutoMigrate:    true,
+		BusyTimeout:    5 * time.Second,
+		CacheSizeKiB:   64000,
+		ReaderPoolSize: 2,
 	}
 	f, err := newStoreFactory(context.Background(), cfg)
 	if err != nil {
@@ -84,11 +83,10 @@ func TestReadDB_HonoursConfiguredReaderPoolSize(t *testing.T) {
 // pool — and with it the page-cache ceiling. The factory normalises instead.
 func TestReadDB_ZeroConfiguredPoolIsNotUnlimited(t *testing.T) {
 	cfg := config{
-		Path:                   filepath.Join(t.TempDir(), "reader_pool_zero.db"),
-		AutoMigrate:            true,
-		BusyTimeout:            5 * time.Second,
-		CacheSizeKiB:           64000,
-		SchemaExtendMaxRetries: 8,
+		Path:         filepath.Join(t.TempDir(), "reader_pool_zero.db"),
+		AutoMigrate:  true,
+		BusyTimeout:  5 * time.Second,
+		CacheSizeKiB: 64000,
 		// ReaderPoolSize deliberately left at its zero value.
 	}
 	f, err := newStoreFactory(context.Background(), cfg)

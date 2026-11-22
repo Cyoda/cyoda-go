@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // decodeProblemErrorCode pulls properties.errorCode out of the RFC 9457
@@ -33,7 +33,7 @@ func decodeProblemErrorCode(t *testing.T, body []byte) string {
 // newHandlerWithoutResolver builds a handler with a nil resolver, used for
 // the early-rejection tests (body-size, malformed JSON, validation).
 func newHandlerWithoutResolver() *entity.GroupedStatsHandler {
-	return entity.NewGroupedStatsHandler(nil, 10000)
+	return entity.NewGroupedStatsHandler(nil, 10000, newFixedConsistency())
 }
 
 func TestGroupedStatsHandler_Returns400OnMissingGroupBy(t *testing.T) {
@@ -78,7 +78,7 @@ func TestGroupedStatsHandler_RejectsMalformedJSON(t *testing.T) {
 }
 
 func TestGroupedStatsHandler_RejectsUnknownTopLevelField(t *testing.T) {
-	// DisallowUnknownFields contract: garbage top-level field => 400 MALFORMED_REQUEST.
+	// Strict decode: an undeclared top-level member => 400 MALFORMED_REQUEST.
 	h := newHandlerWithoutResolver()
 	body := strings.NewReader(`{"groupBy":["state"],"nope":1}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
@@ -97,7 +97,7 @@ func TestGroupedStatsHandler_Returns404OnUnknownModel(t *testing.T) {
 	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return nil, spi.ModelRef{}, nil, nil, false, nil
 	}
-	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
 	body := strings.NewReader(`{"groupBy":["state"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
 	req.SetPathValue("entityName", "X")
@@ -122,7 +122,7 @@ func TestGroupedStatsHandler_GroupCardinalityExceededReturns422(t *testing.T) {
 	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
-	h := entity.NewGroupedStatsHandler(resolver, 1)
+	h := entity.NewGroupedStatsHandler(resolver, 1, newFixedConsistency())
 	body := strings.NewReader(`{"groupBy":["state"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
 	req.SetPathValue("entityName", "X")
@@ -145,7 +145,7 @@ func TestGroupedStatsHandler_InvalidConditionReturns400(t *testing.T) {
 	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
-	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
 	// Condition with bogus "type" — predicate.ParseCondition rejects it.
 	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"bogus"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
@@ -161,6 +161,25 @@ func TestGroupedStatsHandler_InvalidConditionReturns400(t *testing.T) {
 	}
 }
 
+// A refusal inside the condition names its location from the top of the
+// request body, /condition included.
+func TestGroupedStatsHandler_ConditionRefusalNamesItsLocation(t *testing.T) {
+	store := &fakeIterable{}
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
+	}
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
+	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"simple","JsonPath":"$.a","operatorType":"EQUALS","value":1}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
+	req.SetPathValue("entityName", "X")
+	req.SetPathValue("modelVersion", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if want := `invalid JSON at \"/condition\": unknown member name \"JsonPath\"`; rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("status %d body %s; want 400 containing %s", rec.Code, rec.Body.String(), want)
+	}
+}
+
 func TestGroupedStatsHandler_LifecycleTemporalTypeMismatchReturns400(t *testing.T) {
 	rows := []*spi.Entity{
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
@@ -169,7 +188,7 @@ func TestGroupedStatsHandler_LifecycleTemporalTypeMismatchReturns400(t *testing.
 	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
-	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
 	// Parse-based (spec §6): a comparison operand that parses into no temporal
 	// type against the temporal creationDate meta field is a
 	// CONDITION_TYPE_MISMATCH — parity with /search.
@@ -195,7 +214,7 @@ func TestGroupedStatsHandler_UnknownMetaFieldReturns400(t *testing.T) {
 	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
-	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
 	// "bogus" is not a recognized meta filter field — parity with /search's
 	// INVALID_FIELD_PATH.
 	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"lifecycle","field":"bogus","operatorType":"EQUALS","value":"x"}}`)
@@ -220,7 +239,7 @@ func TestGroupedStatsHandler_MalformedBetweenArityReturns400(t *testing.T) {
 	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
-	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
 	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"simple","jsonPath":"$.price","operatorType":"BETWEEN","value":[10]}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
 	req.SetPathValue("entityName", "X")
@@ -245,7 +264,7 @@ func TestGroupedStatsHandler_HappyPathReturns200(t *testing.T) {
 	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
 	}
-	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
 	body := strings.NewReader(`{"groupBy":["state"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
 	req.SetPathValue("entityName", "X")
@@ -275,7 +294,7 @@ func TestGroupedStatsHandler_ResolverError_Returns500(t *testing.T) {
 	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return nil, spi.ModelRef{}, nil, nil, false, errors.New("boom")
 	}
-	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
 	body := strings.NewReader(`{"groupBy":["state"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
 	req.SetPathValue("entityName", "X")
@@ -303,8 +322,8 @@ var _ entity.StoreResolver = func(_ *http.Request, _, _ string) (spi.EntityStore
 // numbers came back looking like a real answer.
 
 // declaredFieldsModelStore serves a descriptor declaring the given String
-// leaves. It implements no RefreshAndGet: the cached miss is authoritative,
-// which is the same shape validateConditionPaths treats as final.
+// leaves. Its refresh finds the same schema, so a miss on the cached read is
+// confirmed by the refresh and the path is refused.
 type declaredFieldsModelStore struct {
 	ref    spi.ModelRef
 	fields []string
@@ -324,6 +343,18 @@ func (s *declaredFieldsModelStore) Get(context.Context, spi.ModelRef) (*spi.Mode
 		return nil, err
 	}
 	return &spi.ModelDescriptor{Ref: s.ref, State: spi.ModelLocked, Schema: raw}, nil
+}
+
+func (s *declaredFieldsModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	return s.RefreshSchemaNode(ctx, ref)
+}
+
+func (s *declaredFieldsModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *declaredFieldsModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
@@ -356,7 +387,7 @@ func groupedStatsPathReq(t *testing.T, body string) *httptest.ResponseRecorder {
 	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return &fakeIterable{}, ref, fields, ms, true, nil
 	}
-	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", strings.NewReader(body))
 	req.SetPathValue("entityName", "X")
 	req.SetPathValue("modelVersion", "1")
@@ -425,7 +456,7 @@ func TestGroupedStatsHandler_ConditionTypeMismatch_Rejected(t *testing.T) {
 
 // refreshFailingModelStore serves a warm-but-stale cached descriptor (Get
 // always succeeds, declaring only "name") and always FAILS its
-// RefreshAndGet — modelling a genuine model-store outage discovered while
+// RefreshSchemaNode — modelling a genuine model-store outage discovered while
 // confirming a possibly-stale field-path miss.
 type refreshFailingModelStore struct {
 	ref spi.ModelRef
@@ -441,8 +472,24 @@ func (s *refreshFailingModelStore) Get(context.Context, spi.ModelRef) (*spi.Mode
 	return &spi.ModelDescriptor{Ref: s.ref, State: spi.ModelLocked, Schema: raw}, nil
 }
 
-func (s *refreshFailingModelStore) RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
+func (s *refreshFailingModelStore) refreshDescriptor(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
 	return nil, errors.New("connection refused")
+}
+
+func (s *refreshFailingModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
+}
+
+func (s *refreshFailingModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.refreshDescriptor(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *refreshFailingModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
@@ -465,7 +512,7 @@ var _ spi.ModelStore = (*refreshFailingModelStore)(nil)
 // TestGroupedStatsHandler_SchemaRefreshFailure_Returns5xxNot400 pins the
 // review-round finding that grouped stats shares the same 400→5xx flip as
 // /search/direct and conditional DELETE: a condition naming a field absent
-// from the cached schema, whose confirming RefreshAndGet call itself FAILS,
+// from the cached schema, whose confirming RefreshSchemaNode call itself FAILS,
 // must be reported as infrastructure — not folded into the same 400
 // INVALID_FIELD_PATH TestGroupedStatsHandler_UnknownConditionPath_Rejected
 // pins for a genuinely-unknown path.
@@ -478,7 +525,7 @@ func TestGroupedStatsHandler_SchemaRefreshFailure_Returns5xxNot400(t *testing.T)
 	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		return &fakeIterable{}, ref, fields, ms, true, nil
 	}
-	h := entity.NewGroupedStatsHandler(resolver, 10000)
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
 	body := `{"groupBy":["state"],"condition":{"type":"simple","jsonPath":"$.zz","operatorType":"EQUALS","value":"x"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", strings.NewReader(body))
 	req.SetPathValue("entityName", "X")
@@ -491,5 +538,35 @@ func TestGroupedStatsHandler_SchemaRefreshFailure_Returns5xxNot400(t *testing.T)
 	}
 	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got == "INVALID_FIELD_PATH" {
 		t.Errorf("errorCode=%s, must NOT be INVALID_FIELD_PATH — that is the genuine-unknown-path classification", got)
+	}
+}
+
+// The condition is validated by the one sequence every surface shares, so a
+// fault the service layer used to catch on its own is answered here.
+func TestGroupedStatsHandler_ConditionFaults_ClassifiedLikeSearch(t *testing.T) {
+	for _, tc := range []struct{ name, cond, code string }{
+		{"malformed regex", `{"type":"simple","jsonPath":"$.color","operatorType":"MATCHES_PATTERN","value":"["}`, "INVALID_CONDITION"},
+		{"string operator on a temporal meta field", `{"type":"lifecycle","field":"creationDate","operatorType":"CONTAINS","value":"2021"}`, "CONDITION_TYPE_MISMATCH"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeIterable{entities: []*spi.Entity{{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)}}}
+			fields := map[string]schema.FieldDescriptor{"$.color": {Types: []spi.DataType{spi.String}}}
+			resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+				return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, fields, nil, true, nil
+			}
+			h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
+			req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query",
+				strings.NewReader(`{"groupBy":["state"],"condition":`+tc.cond+`}`))
+			req.SetPathValue("entityName", "X")
+			req.SetPathValue("modelVersion", "1")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+			}
+			if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != tc.code {
+				t.Fatalf("errorCode=%s, want %s (body: %s)", got, tc.code, rec.Body.String())
+			}
+		})
 	}
 }

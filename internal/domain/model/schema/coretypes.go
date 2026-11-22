@@ -1,6 +1,6 @@
 package schema
 
-import spi "github.com/cyoda-platform/cyoda-go-spi"
+import spi "github.com/cyoda/cyoda-go-spi"
 
 // The precise type-comparison core (DataType, Decimal, numeric classifiers,
 // TypeSet, assignability) now lives in the SPI so the search leaf-comparison
@@ -17,7 +17,7 @@ import spi "github.com/cyoda-platform/cyoda-go-spi"
 // union's payload carried, so a predicate on a dropped path declared no type
 // and matched nothing.
 //
-// What stays here is the WRITE side — Merge, Extend, Diff, Apply, Validate,
+// What stays here is the WRITE side — Merge, Extend, Diff, ApplyMany, Validate,
 // the op catalog, unique-key derivation. Only the engine decides what a
 // model's schema becomes; the SPI's mutators exist so the engine can build one.
 type ModelNode = spi.ModelNode

@@ -4,34 +4,40 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
-// testTenantB is a second tenant distinct from testTenant, used only by the
-// tenant-mismatch security test below: it plays the role of the attacker-
-// asserted tenant in a forged dispatch payload (task.TenantID), while
-// testTenant plays the victim whose real task/entity rows must be
+// testTenantB is a second tenant distinct from testTenant. It plays the
+// tenant of a run guard that names testTenant's task, whose rows must be
 // unaffected.
 const testTenantB = spi.TenantID("test-tenant-b")
 
 // seedFireEntity saves entity id directly to the EntityStore in state,
 // bypassing engine.Execute/reconcile entirely — FireScheduledTransition
 // reads the entity from the store, not from any in-memory reference, so
-// tests exercising it need a durably-saved row. transactionID is stamped on
-// the entity before saving so it becomes the row's "last committed" txID —
-// the value FireScheduledTransition's guard captures as its CAS precondition.
-func seedFireEntity(t *testing.T, factory spi.StoreFactory, ctx context.Context, id string, modelRef spi.ModelRef, state, transactionID string, data map[string]any) *spi.Entity {
+// tests exercising it need a durably-saved row. committed seeds it in a
+// transaction of its own, so the row carries that transaction's id as its
+// "last committed" txID — the value FireScheduledTransition captures as its
+// CAS precondition. Otherwise it is an auto-commit write, which records no
+// transaction id.
+func seedFireEntity(t *testing.T, factory spi.StoreFactory, ctx context.Context, id string, modelRef spi.ModelRef, state string, committed bool, data map[string]any) *spi.Entity {
 	t.Helper()
 	entity := makeEntity(id, modelRef, data)
 	entity.Meta.State = state
 	entity.Meta.TenantID = testTenant
-	entity.Meta.TransactionID = transactionID
+	if committed {
+		entity.Meta.TransactionID = saveCommittedEntity(t, factory, ctx, entity)
+		return entity
+	}
 	es, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -42,33 +48,31 @@ func seedFireEntity(t *testing.T, factory spi.StoreFactory, ctx context.Context,
 	return entity
 }
 
-// armTask directly Upserts a ScheduledTask row, bypassing the engine's
-// reconcile so each test can set exactly the ScheduledTime/TimeoutMs it
-// needs to exercise a specific guard/grace-band branch.
-func armTask(t *testing.T, factory spi.StoreFactory, ctx context.Context, task spi.ScheduledTask) {
+// saveCommittedEntity saves entity in a transaction of its own, commits it
+// and returns that transaction's id, the id the stored entity carries. A
+// write outside a transaction records none.
+func saveCommittedEntity(t *testing.T, factory spi.StoreFactory, ctx context.Context, entity *spi.Entity) string {
 	t.Helper()
-	sts, err := factory.ScheduledTaskStore(ctx)
+	tm, err := factory.TransactionManager(ctx)
 	if err != nil {
-		t.Fatalf("ScheduledTaskStore: %v", err)
+		t.Fatalf("TransactionManager: %v", err)
 	}
-	if err := sts.Upsert(ctx, task); err != nil {
-		t.Fatalf("Upsert task: %v", err)
-	}
-}
-
-// getTask reads back a ScheduledTask by id (test helper: fails the test on
-// a store error, but returns found=false as a normal, assertable result).
-func getTask(t *testing.T, factory spi.StoreFactory, ctx context.Context, id string) (*spi.ScheduledTask, bool) {
-	t.Helper()
-	sts, err := factory.ScheduledTaskStore(ctx)
+	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
-		t.Fatalf("ScheduledTaskStore: %v", err)
+		t.Fatalf("Begin seed transaction: %v", err)
 	}
-	task, found, err := sts.Get(ctx, id)
+	es, err := factory.EntityStore(txCtx)
 	if err != nil {
-		t.Fatalf("Get task: %v", err)
+		t.Fatalf("EntityStore: %v", err)
 	}
-	return task, found
+	if _, err := es.Save(txCtx, entity); err != nil {
+		_ = tm.Rollback(txCtx, txID)
+		t.Fatalf("Save seed entity: %v", err)
+	}
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit seed transaction: %v", err)
+	}
+	return txID
 }
 
 // getEntityState reads back an entity's current state from the store.
@@ -123,7 +127,8 @@ func TestFireScheduled_FiresOnTime(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "fire-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, factory, ctx, modelRef)
+	seedFireEntity(t, factory, ctx, "fire-e1", modelRef, "OPEN", true, map[string]any{})
 
 	id := taskID(testTenant, "fire-e1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -134,12 +139,12 @@ func TestFireScheduled_FiresOnTime(t *testing.T) {
 
 	advance(delayMs) // lateness == 0
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("outcome = %v, want Fired", r.Outcome)
 	}
 
 	if got := getEntityState(t, factory, ctx, "fire-e1"); got != "CLOSED" {
@@ -148,8 +153,9 @@ func TestFireScheduled_FiresOnTime(t *testing.T) {
 	if _, found := getTask(t, factory, ctx, id); found {
 		t.Error("expected task deleted after fire")
 	}
-	if n := countAuditEvents(t, factory, ctx, "fire-e1", spi.SMEventScheduledTransitionFired); n != 1 {
-		t.Errorf("SCHEDULED_TRANSITION_FIRE events = %d, want 1", n)
+	fired := onlyEvent(t, allEvents(t, factory, ctx, "fire-e1"), spi.SMEventScheduledTransitionFired)
+	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN", "workflowName": "FireWF"}; !reflect.DeepEqual(fired.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_FIRE data = %v, want %v", fired.Data, want)
 	}
 	// Finding #2 guard: the fired task must not also collect a spurious
 	// SCHEDULED_TRANSITION_CANCEL from reconcile treating its own
@@ -181,7 +187,7 @@ func TestFireScheduled_DeclineOnCriterionFalse(t *testing.T) {
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"flag": schema.Boolean})
-	seedFireEntity(t, factory, ctx, "decline-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{"flag": false})
+	seedFireEntity(t, factory, ctx, "decline-e1", modelRef, "OPEN", true, map[string]any{"flag": false})
 
 	id := taskID(testTenant, "decline-e1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -192,12 +198,12 @@ func TestFireScheduled_DeclineOnCriterionFalse(t *testing.T) {
 
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeDeclined {
-		t.Fatalf("outcome = %v, want Declined", outcome)
+	if r.Outcome != OutcomeDeclined {
+		t.Fatalf("outcome = %v, want Declined", r.Outcome)
 	}
 
 	if got := getEntityState(t, factory, ctx, "decline-e1"); got != "OPEN" {
@@ -208,113 +214,6 @@ func TestFireScheduled_DeclineOnCriterionFalse(t *testing.T) {
 	}
 	if n := countAuditEvents(t, factory, ctx, "decline-e1", spi.SMEventTransitionCriterionNoMatch); n != 1 {
 		t.Errorf("criterion-no-match events = %d, want 1", n)
-	}
-}
-
-func TestFireScheduled_ExpireBeyondGrace(t *testing.T) {
-	const armMs = int64(1_700_000_000_000)
-	const delayMs = int64(1000)
-	const timeoutMs = int64(500)
-	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "expire-order", ModelVersion: "1.0"}
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "ExpireWF", InitialState: "OPEN", Active: true,
-		States: map[string]spi.StateDefinition{
-			"OPEN": {Transitions: []spi.TransitionDefinition{
-				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs, TimeoutMs: ptrInt64(timeoutMs)}},
-			}},
-			"CLOSED": {},
-		},
-	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "expire-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
-
-	id := taskID(testTenant, "expire-e1", "OPEN", "AutoClose")
-	scheduledTime := armMs + delayMs
-	armTask(t, factory, ctx, spi.ScheduledTask{
-		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
-		ScheduledTime: scheduledTime, TimeoutMs: ptrInt64(timeoutMs),
-		EntityID: "expire-e1", ModelName: modelRef.EntityName,
-		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
-	})
-
-	grace := defaultExpiryGraceMs
-	// now = scheduledTime + timeout + 2*grace: past timeout+grace, so Expired.
-	advance(delayMs + timeoutMs + 2*grace)
-
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
-	}
-	if outcome != OutcomeExpired {
-		t.Fatalf("outcome = %v, want Expired", outcome)
-	}
-
-	if got := getEntityState(t, factory, ctx, "expire-e1"); got != "OPEN" {
-		t.Errorf("entity state = %q, want OPEN (unchanged)", got)
-	}
-	if _, found := getTask(t, factory, ctx, id); found {
-		t.Error("expected task deleted after expiry")
-	}
-	if n := countAuditEvents(t, factory, ctx, "expire-e1", spi.SMEventScheduledTransitionExpired); n != 1 {
-		t.Errorf("SCHEDULED_TRANSITION_EXPIRE events = %d, want exactly 1 (delete-gated)", n)
-	}
-}
-
-func TestFireScheduled_DropInGraceBand(t *testing.T) {
-	const armMs = int64(1_700_000_000_000)
-	const delayMs = int64(1000)
-	const timeoutMs = int64(500)
-	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "graceband-order", ModelVersion: "1.0"}
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "GraceWF", InitialState: "OPEN", Active: true,
-		States: map[string]spi.StateDefinition{
-			"OPEN": {Transitions: []spi.TransitionDefinition{
-				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs, TimeoutMs: ptrInt64(timeoutMs)}},
-			}},
-			"CLOSED": {},
-		},
-	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "grace-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
-
-	id := taskID(testTenant, "grace-e1", "OPEN", "AutoClose")
-	scheduledTime := armMs + delayMs
-	armTask(t, factory, ctx, spi.ScheduledTask{
-		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
-		ScheduledTime: scheduledTime, TimeoutMs: ptrInt64(timeoutMs),
-		EntityID: "grace-e1", ModelName: modelRef.EntityName,
-		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
-	})
-
-	grace := defaultExpiryGraceMs
-	// lateness = timeout + grace/2: strictly inside (timeout, timeout+grace].
-	advance(delayMs + timeoutMs + grace/2)
-
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
-	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
-	}
-
-	if got := getEntityState(t, factory, ctx, "grace-e1"); got != "OPEN" {
-		t.Errorf("entity state = %q, want OPEN (unchanged)", got)
-	}
-	if _, found := getTask(t, factory, ctx, id); !found {
-		t.Error("expected task to remain in the grace band")
-	}
-	if n := countAuditEvents(t, factory, ctx, "grace-e1", spi.SMEventScheduledTransitionExpired); n != 0 {
-		t.Errorf("SCHEDULED_TRANSITION_EXPIRE events = %d, want 0 (grace band must not expire)", n)
-	}
-	if n := countAuditEvents(t, factory, ctx, "grace-e1", spi.SMEventScheduledTransitionFired); n != 0 {
-		t.Errorf("SCHEDULED_TRANSITION_FIRE events = %d, want 0", n)
 	}
 }
 
@@ -334,10 +233,11 @@ func TestFireScheduled_GuardEntityMovedOn(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 	// Entity has already moved on to CLOSED by some other path — the stale
 	// OPEN task below simulates a race where the reconcile hasn't (yet, or
 	// ever will) clean it up.
-	seedFireEntity(t, factory, ctx, "movedon-e1", modelRef, "CLOSED", "seed-tx-1", map[string]any{})
+	seedFireEntity(t, factory, ctx, "movedon-e1", modelRef, "CLOSED", true, map[string]any{})
 
 	id := taskID(testTenant, "movedon-e1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -348,12 +248,12 @@ func TestFireScheduled_GuardEntityMovedOn(t *testing.T) {
 
 	advance(1) // due
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
+	if r.Outcome != OutcomeCancelled {
+		t.Fatalf("outcome = %v, want Cancelled", r.Outcome)
 	}
 
 	if got := getEntityState(t, factory, ctx, "movedon-e1"); got != "CLOSED" {
@@ -362,160 +262,18 @@ func TestFireScheduled_GuardEntityMovedOn(t *testing.T) {
 	if _, found := getTask(t, factory, ctx, id); found {
 		t.Error("expected stale task deleted")
 	}
-	// Silent drop: no Cancelled/Expired/Fired/Declined audit event.
+	// Removed silently: no Cancelled/Expired/Fired/Declined audit event.
 	for _, et := range []spi.StateMachineEventType{
 		spi.SMEventScheduledTransitionCancelled, spi.SMEventScheduledTransitionExpired,
 		spi.SMEventScheduledTransitionFired, spi.SMEventTransitionCriterionNoMatch,
 	} {
 		if n := countAuditEvents(t, factory, ctx, "movedon-e1", et); n != 0 {
-			t.Errorf("event %v: got %d, want 0 (silent drop)", et, n)
+			t.Errorf("event %v: got %d, want 0 (silent removal)", et, n)
 		}
 	}
 }
 
-// TestFireScheduled_TenantMismatch_DropsWithoutDeletingVictimTask is the
-// Gate-3 security regression: a forged dispatch whose task.ID is real (it
-// names a genuine pending task belonging to testTenant, the "victim") but
-// whose task.TenantID asserts a different tenant (testTenantB, the
-// "attacker's" asserted identity) must have ZERO effect on the victim's
-// row.
-//
-// This mirrors the real dispatch shape exactly: the ctx is built via
-// common.SystemUserContext(task.TenantID) — precisely what both
-// LocalExecutor.Execute and the peer RPC handler do with the (here,
-// attacker-controlled) task.TenantID field — scoping every tenant-aware
-// store the engine opens (EntityStore, WorkflowStore, ...) to testTenantB.
-// Only task.ID is authoritative; ScheduledTaskStore.Get is tenant-agnostic
-// by design (see plugins/memory/store_factory.go's ScheduledTaskStore
-// godoc), so it returns the VICTIM's real row (cur.TenantID == testTenant)
-// even though the surrounding ctx/task assert testTenantB.
-//
-// Before the fix: cur.TenantID is never compared to task.TenantID, so the
-// subsequent es.Get(txCtx, cur.EntityID) — scoped to testTenantB — misses
-// the victim's entity (it lives under testTenant) and returns
-// spi.ErrNotFound. That trips the "entity hard-deleted, self-heal" branch,
-// which unconditionally deletes the task by ID — destroying the victim's
-// live, legitimate pending task — and reports a silent OutcomeDropped, nil
-// with no audit trail.
-//
-// After the fix: the tenant mismatch must be caught immediately after the
-// task re-read, before the entity is ever touched, and must never invoke
-// sts.Delete.
-func TestFireScheduled_TenantMismatch_DropsWithoutDeletingVictimTask(t *testing.T) {
-	const armMs = int64(1_700_000_000_000)
-	const delayMs = int64(1000)
-	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
-	victimCtx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "tenant-mismatch-order", ModelVersion: "1.0"}
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "TenantMismatchWF", InitialState: "OPEN", Active: true,
-		States: map[string]spi.StateDefinition{
-			"OPEN": {Transitions: []spi.TransitionDefinition{
-				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs}},
-			}},
-			"CLOSED": {},
-		},
-	}
-	saveWorkflow(t, factory, victimCtx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, victimCtx, "victim-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
-
-	// The victim's real task ID, keyed off the victim's real tenant.
-	id := taskID(testTenant, "victim-e1", "OPEN", "AutoClose")
-	armTask(t, factory, victimCtx, spi.ScheduledTask{
-		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
-		ScheduledTime: armMs + delayMs, EntityID: "victim-e1", ModelName: modelRef.EntityName,
-		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
-	})
-
-	advance(delayMs) // due
-
-	// Forged dispatch: real task.ID, but task.TenantID asserts testTenantB.
-	// The ctx is built exactly as the real dispatch paths build it — scoped
-	// to the (attacker-controlled) task.TenantID.
-	forgedCtx := common.SystemUserContext(testTenantB)
-	forgedTask := spi.ScheduledTask{ID: id, TenantID: testTenantB}
-
-	outcome, err := engine.FireScheduledTransition(forgedCtx, forgedTask)
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
-	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
-	}
-
-	// The victim's task row must survive untouched — read back using the
-	// victim's own context (ScheduledTaskStore is tenant-agnostic, so any
-	// ctx would do, but the victim's is the natural choice here).
-	if _, found := getTask(t, factory, victimCtx, id); !found {
-		t.Error("expected victim's real task to survive a tenant-mismatched forged dispatch")
-	}
-	// The victim's entity must not have fired.
-	if got := getEntityState(t, factory, victimCtx, "victim-e1"); got != "OPEN" {
-		t.Errorf("entity state = %q, want OPEN (unchanged by forged cross-tenant dispatch)", got)
-	}
-	// No audit trail should be attributed to the victim's entity for this
-	// forged, silently-dropped request.
-	for _, et := range []spi.StateMachineEventType{
-		spi.SMEventScheduledTransitionCancelled, spi.SMEventScheduledTransitionExpired,
-		spi.SMEventScheduledTransitionFired, spi.SMEventTransitionCriterionNoMatch,
-	} {
-		if n := countAuditEvents(t, factory, victimCtx, "victim-e1", et); n != 0 {
-			t.Errorf("event %v: got %d, want 0 (silent drop)", et, n)
-		}
-	}
-}
-
-func TestFireScheduled_GuardReArmedToFuture(t *testing.T) {
-	const armMs = int64(1_700_000_000_000)
-	const delayMs = int64(1000)
-	engine, factory, _ := setupEngineWithSteppableClock(t, armMs)
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "rearmed-order", ModelVersion: "1.0"}
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "RearmedWF", InitialState: "OPEN", Active: true,
-		States: map[string]spi.StateDefinition{
-			"OPEN": {Transitions: []spi.TransitionDefinition{
-				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs}},
-			}},
-			"CLOSED": {},
-		},
-	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "rearmed-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
-
-	id := taskID(testTenant, "rearmed-e1", "OPEN", "AutoClose")
-	armTask(t, factory, ctx, spi.ScheduledTask{
-		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
-		ScheduledTime: armMs + delayMs, // due in the future relative to "now" below
-		EntityID:      "rearmed-e1", ModelName: modelRef.EntityName,
-		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
-	})
-
-	// Do NOT advance the clock — "now" (armMs) is before ScheduledTime.
-
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
-	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
-	}
-
-	if got := getEntityState(t, factory, ctx, "rearmed-e1"); got != "OPEN" {
-		t.Errorf("entity state = %q, want OPEN (unchanged)", got)
-	}
-	task, found := getTask(t, factory, ctx, id)
-	if !found {
-		t.Fatal("expected re-armed task to remain")
-	}
-	if task.ScheduledTime != armMs+delayMs {
-		t.Errorf("ScheduledTime = %d, want %d (untouched)", task.ScheduledTime, armMs+delayMs)
-	}
-}
-
-func TestFireScheduled_OrphanedTransitionDropped(t *testing.T) {
+func TestFireScheduled_OrphanedTransitionCancelled(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
 	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
@@ -532,7 +290,8 @@ func TestFireScheduled_OrphanedTransitionDropped(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "orphan-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, factory, ctx, modelRef)
+	seedFireEntity(t, factory, ctx, "orphan-e1", modelRef, "OPEN", true, map[string]any{})
 
 	id := taskID(testTenant, "orphan-e1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -554,13 +313,14 @@ func TestFireScheduled_OrphanedTransitionDropped(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{reimported})
+	lockTestModel(t, factory, ctx, modelRef)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
+	if r.Outcome != OutcomeCancelled {
+		t.Fatalf("outcome = %v, want Cancelled", r.Outcome)
 	}
 
 	if got := getEntityState(t, factory, ctx, "orphan-e1"); got != "OPEN" {
@@ -568,6 +328,11 @@ func TestFireScheduled_OrphanedTransitionDropped(t *testing.T) {
 	}
 	if _, found := getTask(t, factory, ctx, id); found {
 		t.Error("expected orphaned task deleted")
+	}
+	// The selected workflow is known here, so the cancel names it.
+	cancelled := onlyEvent(t, allEvents(t, factory, ctx, "orphan-e1"), spi.SMEventScheduledTransitionCancelled)
+	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN", "workflowName": "OrphanWF"}; !reflect.DeepEqual(cancelled.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL data = %v, want %v", cancelled.Data, want)
 	}
 }
 
@@ -597,7 +362,8 @@ func TestFireScheduled_CascadeAfterFire(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "casc-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, factory, ctx, modelRef)
+	seedFireEntity(t, factory, ctx, "casc-e1", modelRef, "OPEN", true, map[string]any{})
 
 	openTaskID := taskID(testTenant, "casc-e1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -609,12 +375,12 @@ func TestFireScheduled_CascadeAfterFire(t *testing.T) {
 	advance(delayMs)
 	fireNowMs := armMs + delayMs
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: openTaskID, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, openTaskID)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("outcome = %v, want Fired", r.Outcome)
 	}
 
 	// Cascade must have carried the entity all the way to DONE (MID's
@@ -670,7 +436,8 @@ func TestFireScheduled_SiblingScheduledTaskStillCancelled(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "sib-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, factory, ctx, modelRef)
+	seedFireEntity(t, factory, ctx, "sib-e1", modelRef, "OPEN", true, map[string]any{})
 
 	closeID := taskID(testTenant, "sib-e1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -687,12 +454,12 @@ func TestFireScheduled_SiblingScheduledTaskStillCancelled(t *testing.T) {
 
 	advance(delayMs) // only AutoClose is due
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: closeID, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, closeID)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("outcome = %v, want Fired", r.Outcome)
 	}
 
 	if got := getEntityState(t, factory, ctx, "sib-e1"); got != "CLOSED" {
@@ -792,7 +559,8 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 	}
 	setupCtx := ctxWithTenant(testTenant)
 	saveWorkflow(t, factory, setupCtx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, setupCtx, "attr-user-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, factory, setupCtx, modelRef)
+	seedFireEntity(t, factory, setupCtx, "attr-user-e1", modelRef, "OPEN", true, map[string]any{})
 
 	id := taskID(testTenant, "attr-user-e1", "OPEN", "AutoClose")
 	armTask(t, factory, setupCtx, spi.ScheduledTask{
@@ -804,16 +572,16 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 
 	advance(delayMs)
 
-	// The real dispatch ctx carries no user identity at all — just the
-	// synthesised system UserContext scheduler.LocalExecutor/the peer RPC
-	// handler build. Attribution must come from the durable row, not ctx.
-	dispatchCtx := common.SystemUserContext(testTenant)
-	outcome, err := engine.FireScheduledTransition(dispatchCtx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	// A scheduled run's context carries no user identity at all: only a
+	// system UserContext synthesised for the task's tenant. Attribution must
+	// come from the durable row, not ctx.
+	dispatchCtx := commontest.SystemUserContext(testTenant)
+	r := fireDue(t, engine, dispatchCtx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("outcome = %v, want Fired", r.Outcome)
 	}
 	if got := getEntityState(t, factory, setupCtx, "attr-user-e1"); got != "DONE" {
 		t.Fatalf("entity state = %q, want DONE (cascade past MID)", got)
@@ -852,140 +620,11 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 	}
 }
 
-// TestFireScheduled_LegacyZeroArmedBy_AttributesToSystem_NeverSchedulerString
-// covers the legacy-row fallback: a task armed before ArmedBy existed (zero
-// Principal) must attribute to the system principal — never the bare
-// string "scheduler", which was never a valid PrincipalKind/identity.
-func TestFireScheduled_LegacyZeroArmedBy_AttributesToSystem_NeverSchedulerString(t *testing.T) {
-	const armMs = int64(1_700_000_000_000)
-	const delayMs = int64(1000)
-	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "attr-legacy-order", ModelVersion: "1.0"}
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "AttrLegacyWF", InitialState: "OPEN", Active: true,
-		States: map[string]spi.StateDefinition{
-			"OPEN": {Transitions: []spi.TransitionDefinition{
-				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs}},
-			}},
-			"CLOSED": {},
-		},
-	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "attr-legacy-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
-
-	id := taskID(testTenant, "attr-legacy-e1", "OPEN", "AutoClose")
-	// No ArmedBy set — the zero Principal, exactly as a pre-attribution
-	// legacy row would have persisted.
-	armTask(t, factory, ctx, spi.ScheduledTask{
-		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
-		ScheduledTime: armMs + delayMs, EntityID: "attr-legacy-e1", ModelName: modelRef.EntityName,
-		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
-	})
-
-	advance(delayMs)
-
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
-	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired", outcome)
-	}
-
-	es, err := factory.EntityStore(ctx)
-	if err != nil {
-		t.Fatalf("EntityStore: %v", err)
-	}
-	entity, err := es.Get(ctx, "attr-legacy-e1")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if entity.Meta.ChangeUser != common.SystemPrincipal().ID {
-		t.Errorf("ChangeUser = %q, want %q", entity.Meta.ChangeUser, common.SystemPrincipal().ID)
-	}
-	if entity.Meta.ChangeUser == "scheduler" {
-		t.Error("ChangeUser must never be the bare string \"scheduler\"")
-	}
-	if entity.Meta.ChangeUserKind != spi.PrincipalSystem {
-		t.Errorf("ChangeUserKind = %v, want %v", entity.Meta.ChangeUserKind, spi.PrincipalSystem)
-	}
-	if entity.Meta.ChangeExecutor != common.SystemPrincipal() {
-		t.Errorf("ChangeExecutor = %+v, want %+v", entity.Meta.ChangeExecutor, common.SystemPrincipal())
-	}
-}
-
-// TestFireScheduled_ForgedTaskArgArmedByIgnored_DurableRowWins is the
-// negative regression for the trust contract (§9): the RPC-deserialized
-// task ARGUMENT's ArmedBy must never be consulted — only the durable row,
-// re-read by task.ID, is trusted. A forged argument asserting a different
-// principal must have zero effect on attribution.
-func TestFireScheduled_ForgedTaskArgArmedByIgnored_DurableRowWins(t *testing.T) {
-	const armMs = int64(1_700_000_000_000)
-	const delayMs = int64(1000)
-	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "attr-forged-order", ModelVersion: "1.0"}
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "AttrForgedWF", InitialState: "OPEN", Active: true,
-		States: map[string]spi.StateDefinition{
-			"OPEN": {Transitions: []spi.TransitionDefinition{
-				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs}},
-			}},
-			"CLOSED": {},
-		},
-	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "attr-forged-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
-
-	id := taskID(testTenant, "attr-forged-e1", "OPEN", "AutoClose")
-	armTask(t, factory, ctx, spi.ScheduledTask{
-		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
-		ScheduledTime: armMs + delayMs, EntityID: "attr-forged-e1", ModelName: modelRef.EntityName,
-		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
-		ArmedBy: spi.Principal{ID: "real-user", Kind: spi.PrincipalUser},
-	})
-
-	advance(delayMs)
-
-	// Forged dispatch: the argument's ArmedBy asserts a DIFFERENT principal
-	// than the durable row's. Only task.ID is trusted from this argument.
-	forgedTask := spi.ScheduledTask{
-		ID: id, TenantID: testTenant,
-		ArmedBy: spi.Principal{ID: "attacker", Kind: spi.PrincipalUser},
-	}
-
-	outcome, err := engine.FireScheduledTransition(ctx, forgedTask)
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
-	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired", outcome)
-	}
-
-	es, err := factory.EntityStore(ctx)
-	if err != nil {
-		t.Fatalf("EntityStore: %v", err)
-	}
-	entity, err := es.Get(ctx, "attr-forged-e1")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if entity.Meta.ChangeUser != "real-user" {
-		t.Errorf("ChangeUser = %q, want %q (the durable row's ArmedBy, not the forged argument)", entity.Meta.ChangeUser, "real-user")
-	}
-	if entity.Meta.ChangeUser == "attacker" {
-		t.Error("ChangeUser must never be the forged task-argument ArmedBy")
-	}
-}
-
 // raceInjectingScheduledTaskStore wraps a real spi.ScheduledTaskStore. Get
 // fires a caller-supplied hook once — the FIRST time it is called for the
 // target ID, right after fetching (and before returning) the pre-race
-// snapshot — simulating a concurrent re-arm landing in the window between
-// FireScheduledTransition's pre-Begin point-read and its in-tx re-read.
+// snapshot — simulating a concurrent re-arm that commits just after the
+// run's first re-read.
 type raceInjectingScheduledTaskStore struct {
 	spi.ScheduledTaskStore
 	targetID string
@@ -993,8 +632,8 @@ type raceInjectingScheduledTaskStore struct {
 	fired    bool
 }
 
-func (s *raceInjectingScheduledTaskStore) Get(ctx context.Context, id string) (*spi.ScheduledTask, bool, error) {
-	task, found, err := s.ScheduledTaskStore.Get(ctx, id)
+func (s *raceInjectingScheduledTaskStore) Get(ctx context.Context, tenant spi.TenantID, id string) (*spi.ScheduledTask, bool, error) {
+	task, found, err := s.ScheduledTaskStore.Get(ctx, tenant, id)
 	if err == nil && found && id == s.targetID && !s.fired {
 		s.fired = true
 		if s.hook != nil {
@@ -1029,13 +668,13 @@ func (f *raceInjectingTaskFactory) ScheduledTaskStore(ctx context.Context) (spi.
 	return f.store, nil
 }
 
-// TestFireScheduled_VerifyOrAbort_ArmedByChangedConcurrently is the
-// verify-or-abort regression: the arming principal changes (a concurrent
-// re-arm) between FireScheduledTransition's pre-Begin point-read (which
-// seeds the ambient origin) and its in-tx re-read. The fire must fail
-// closed — abort with an error, commit nothing — rather than silently
-// attribute the fire to the now-stale seeded principal.
-func TestFireScheduled_VerifyOrAbort_ArmedByChangedConcurrently(t *testing.T) {
+// TestFireScheduled_ReArmedAtReRead_Superseded: another principal re-arms the
+// task in a transaction of its own that commits just after the run's first
+// re-read. The run proceeds on the life it claimed, so its final commit
+// conflicts on the task row; the re-read that does not join the transaction
+// then sees the new life, and the run is superseded. Nothing of the run
+// commits, and the fire is never attributed to the other life's principal.
+func TestFireScheduled_ReArmedAtReRead_Superseded(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	realFactory := memory.NewStoreFactory()
 	t.Cleanup(func() { realFactory.Close() })
@@ -1054,10 +693,11 @@ func TestFireScheduled_VerifyOrAbort_ArmedByChangedConcurrently(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, realFactory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, realFactory, ctx, "race-armedby-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, realFactory, ctx, modelRef)
+	seedFireEntity(t, realFactory, ctx, "race-armedby-e1", modelRef, "OPEN", true, map[string]any{})
 
 	id := taskID(testTenant, "race-armedby-e1", "OPEN", "AutoClose")
-	armTask(t, realFactory, ctx, spi.ScheduledTask{
+	armed := armTask(t, realFactory, ctx, spi.ScheduledTask{
 		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
 		ScheduledTime: armMs, EntityID: "race-armedby-e1", ModelName: modelRef.EntityName,
 		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
@@ -1066,49 +706,63 @@ func TestFireScheduled_VerifyOrAbort_ArmedByChangedConcurrently(t *testing.T) {
 
 	racingFactory := &raceInjectingTaskFactory{StoreFactory: realFactory, targetID: id}
 	racingFactory.hook = func() {
-		// A concurrent re-arm: some OTHER path (a racing loopback save)
-		// changes the arming principal between the point-read and the
-		// in-tx re-read, independent of the fire in progress. Upserted with
-		// a plain (non-tx) ctx, so it applies immediately — matching a
-		// genuinely concurrent writer's already-committed change.
-		armTask(t, realFactory, ctx, spi.ScheduledTask{
-			ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
-			ScheduledTime: armMs, EntityID: "race-armedby-e1", ModelName: modelRef.EntityName,
-			Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
-			ArmedBy: spi.Principal{ID: "racer-user", Kind: spi.PrincipalUser},
-		})
+		// A concurrent client write re-arms the task under another
+		// principal, in its own transaction that commits.
+		rearmTx, rearmCtx, err := txMgr.Begin(ctx)
+		if err != nil {
+			t.Errorf("Begin re-arm: %v", err)
+			return
+		}
+		sts := taskStore(t, realFactory, ctx)
+		next := armable(armed)
+		next.ArmedBy = spi.Principal{ID: "new-user", Kind: spi.PrincipalUser}
+		if _, err := sts.ReconcileForEntity(rearmCtx, spi.ReconcileRequest{
+			TenantID: testTenant, EntityID: armed.EntityID, CurrentState: armed.SourceState,
+			Arm: []spi.ScheduledTask{next},
+		}); err != nil {
+			_ = txMgr.Rollback(ctx, rearmTx)
+			t.Errorf("re-arm: %v", err)
+			return
+		}
+		if err := txMgr.Commit(ctx, rearmTx); err != nil {
+			t.Errorf("Commit re-arm: %v", err)
+		}
 	}
 
-	engine := NewEngine(racingFactory, uuids, txMgr, WithScheduledClock(fixedClock(armMs)))
+	engine := NewEngine(cachedFactory(racingFactory), uuids, txMgr, funcClock(fixedClock(armMs)))
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err == nil {
-		t.Fatal("expected FireScheduledTransition to return an error (arming principal changed concurrently)")
-	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
+	r := fireDue(t, engine, ctx, id)
+	if r.Outcome != OutcomeSuperseded || r.Err != nil {
+		t.Fatalf("report = %+v, want superseded", r)
 	}
 
-	// Nothing committed: the entity never fired.
-	if got := getEntityState(t, realFactory, ctx, "race-armedby-e1"); got != "OPEN" {
-		t.Errorf("entity state = %q, want OPEN (unchanged; verify-or-abort must commit nothing)", got)
+	es, err := realFactory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
 	}
-	// The task itself survives (the racer's concurrent re-arm stands,
-	// untouched by the aborted fire) for the next scan to retry against the
-	// now-current ArmedBy.
+	entity, err := es.Get(ctx, "race-armedby-e1")
+	if err != nil {
+		t.Fatalf("Get entity: %v", err)
+	}
+	if entity.Meta.State != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN (the superseded run commits nothing)", entity.Meta.State)
+	}
+	if entity.Meta.ChangeUser == "new-user" {
+		t.Error("ChangeUser = new-user: the fire must never be attributed to another life's principal")
+	}
 	task, found := getTask(t, realFactory, ctx, id)
 	if !found {
-		t.Fatal("expected task to remain for retry after the aborted fire")
+		t.Fatal("expected the new life to remain")
 	}
-	wantArmedBy := spi.Principal{ID: "racer-user", Kind: spi.PrincipalUser}
-	if task.ArmedBy != wantArmedBy {
-		t.Errorf("task.ArmedBy = %+v, want %+v (the racer's concurrent re-arm, untouched by the aborted fire)", task.ArmedBy, wantArmedBy)
+	wantArmedBy := spi.Principal{ID: "new-user", Kind: spi.PrincipalUser}
+	if task.ArmedBy != wantArmedBy || task.ArmToken == armed.ArmToken || task.Status != spi.ScheduledTaskWaiting {
+		t.Errorf("task = %+v, want the new WAITING life armed by %+v", task, wantArmedBy)
 	}
 }
 
-// --- Exact grace-band boundary tests (design §5.5's strict ">" comparisons) ---
+// --- Deadline boundary (the strict ">" comparison) ---
 
-func TestFireScheduled_GraceBoundary_LatenessEqualsTimeout_Fires(t *testing.T) {
+func TestFireScheduled_FirstAttemptAtDeadline_Fires(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
 	const timeoutMs = int64(500)
@@ -1126,7 +780,8 @@ func TestFireScheduled_GraceBoundary_LatenessEqualsTimeout_Fires(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "eq-timeout-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, factory, ctx, modelRef)
+	seedFireEntity(t, factory, ctx, "eq-timeout-e1", modelRef, "OPEN", true, map[string]any{})
 
 	id := taskID(testTenant, "eq-timeout-e1", "OPEN", "AutoClose")
 	scheduledTime := armMs + delayMs
@@ -1137,119 +792,18 @@ func TestFireScheduled_GraceBoundary_LatenessEqualsTimeout_Fires(t *testing.T) {
 		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
 	})
 
-	// lateness == timeoutMs exactly: NOT > timeoutMs, so the grace-band gate
-	// falls through to fire (design's strict ">" comparisons).
+	// now == deadline exactly: NOT > deadline, so a first attempt fires.
 	advance(delayMs + timeoutMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired (lateness == timeout is not '>' timeout)", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("outcome = %v, want Fired (lateness == timeout is not '>' timeout)", r.Outcome)
 	}
 	if got := getEntityState(t, factory, ctx, "eq-timeout-e1"); got != "CLOSED" {
 		t.Errorf("entity state = %q, want CLOSED", got)
-	}
-}
-
-func TestFireScheduled_GraceBoundary_LatenessEqualsTimeoutPlusGrace_DropsAndWaits(t *testing.T) {
-	const armMs = int64(1_700_000_000_000)
-	const delayMs = int64(1000)
-	const timeoutMs = int64(500)
-	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "boundary-eq-grace", ModelVersion: "1.0"}
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "BoundaryEqGraceWF", InitialState: "OPEN", Active: true,
-		States: map[string]spi.StateDefinition{
-			"OPEN": {Transitions: []spi.TransitionDefinition{
-				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs, TimeoutMs: ptrInt64(timeoutMs)}},
-			}},
-			"CLOSED": {},
-		},
-	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "eq-grace-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
-
-	id := taskID(testTenant, "eq-grace-e1", "OPEN", "AutoClose")
-	scheduledTime := armMs + delayMs
-	armTask(t, factory, ctx, spi.ScheduledTask{
-		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
-		ScheduledTime: scheduledTime, TimeoutMs: ptrInt64(timeoutMs),
-		EntityID: "eq-grace-e1", ModelName: modelRef.EntityName,
-		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
-	})
-
-	grace := defaultExpiryGraceMs
-	// lateness == timeout+grace exactly: NOT > timeout+grace (expire gate),
-	// but IS > timeout (grace-band gate) -> drop-and-wait, row remains.
-	advance(delayMs + timeoutMs + grace)
-
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
-	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped (lateness == timeout+grace is not '>' timeout+grace)", outcome)
-	}
-	if got := getEntityState(t, factory, ctx, "eq-grace-e1"); got != "OPEN" {
-		t.Errorf("entity state = %q, want OPEN (unchanged)", got)
-	}
-	if _, found := getTask(t, factory, ctx, id); !found {
-		t.Error("expected task to remain at the exact timeout+grace boundary")
-	}
-	if n := countAuditEvents(t, factory, ctx, "eq-grace-e1", spi.SMEventScheduledTransitionExpired); n != 0 {
-		t.Errorf("SCHEDULED_TRANSITION_EXPIRE events = %d, want 0 at the boundary", n)
-	}
-}
-
-func TestFireScheduled_GraceBoundary_LatenessEqualsTimeoutPlusGracePlusOne_Expires(t *testing.T) {
-	const armMs = int64(1_700_000_000_000)
-	const delayMs = int64(1000)
-	const timeoutMs = int64(500)
-	engine, factory, advance := setupEngineWithSteppableClock(t, armMs)
-	ctx := ctxWithTenant(testTenant)
-	modelRef := spi.ModelRef{EntityName: "boundary-past-grace", ModelVersion: "1.0"}
-
-	wf := spi.WorkflowDefinition{
-		Version: "1.1", Name: "BoundaryPastGraceWF", InitialState: "OPEN", Active: true,
-		States: map[string]spi.StateDefinition{
-			"OPEN": {Transitions: []spi.TransitionDefinition{
-				{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: delayMs, TimeoutMs: ptrInt64(timeoutMs)}},
-			}},
-			"CLOSED": {},
-		},
-	}
-	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "past-grace-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
-
-	id := taskID(testTenant, "past-grace-e1", "OPEN", "AutoClose")
-	scheduledTime := armMs + delayMs
-	armTask(t, factory, ctx, spi.ScheduledTask{
-		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
-		ScheduledTime: scheduledTime, TimeoutMs: ptrInt64(timeoutMs),
-		EntityID: "past-grace-e1", ModelName: modelRef.EntityName,
-		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
-	})
-
-	grace := defaultExpiryGraceMs
-	// lateness == timeout+grace+1: strictly > timeout+grace -> Expired.
-	advance(delayMs + timeoutMs + grace + 1)
-
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
-	}
-	if outcome != OutcomeExpired {
-		t.Fatalf("outcome = %v, want Expired (lateness == timeout+grace+1 is '>' timeout+grace)", outcome)
-	}
-	if _, found := getTask(t, factory, ctx, id); found {
-		t.Error("expected task deleted after expiry")
-	}
-	if n := countAuditEvents(t, factory, ctx, "past-grace-e1", spi.SMEventScheduledTransitionExpired); n != 1 {
-		t.Errorf("SCHEDULED_TRANSITION_EXPIRE events = %d, want 1", n)
 	}
 }
 
@@ -1303,6 +857,14 @@ func (t *txLeakTracker) Join(ctx context.Context, txID string) (context.Context,
 	return t.inner.Join(ctx, txID)
 }
 
+func (t *txLeakTracker) ConsistencyTime(ctx context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("not used by this test")
+}
+
+func (t *txLeakTracker) LatestRecordedTime(ctx context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("not used by this test")
+}
+
 func (t *txLeakTracker) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
 	return t.inner.GetSubmitTime(ctx, txID)
 }
@@ -1319,6 +881,10 @@ func (t *txLeakTracker) ReleaseSavepoint(ctx context.Context, txID string, savep
 	return t.inner.ReleaseSavepoint(ctx, txID, savepointID)
 }
 
+func (t *txLeakTracker) LostRace(ctx context.Context, txID string) (bool, error) {
+	return t.inner.LostRace(ctx, txID)
+}
+
 // setupEngineForCBDFire builds an engine wired to a leak-tracking tx manager
 // and the given mock external-processing dispatcher, with a steppable clock
 // starting at initialMs. maxStateVisits, when > 0, overrides the engine's
@@ -1332,11 +898,11 @@ func setupEngineForCBDFire(t *testing.T, initialMs int64, mock *mockExternalProc
 	rawTxMgr := factory.NewTransactionManager(uuids)
 	tracker := newTxLeakTracker(rawTxMgr)
 	clock, advance := steppableClock(initialMs)
-	opts := []EngineOption{WithScheduledClock(clock), WithExternalProcessing(mock)}
+	opts := []EngineOption{WithExternalProcessing(mock), WithCoordination(txcoord.New(tracker))}
 	if maxStateVisits > 0 {
 		opts = append(opts, WithMaxStateVisits(maxStateVisits))
 	}
-	engine := NewEngine(factory, uuids, tracker, opts...)
+	engine := NewEngine(cachedFactory(factory), uuids, tracker, funcClock(clock), opts...)
 	return engine, factory, tracker, advance
 }
 
@@ -1376,7 +942,7 @@ func TestFireScheduled_CBDSegmentedFire_HappyPath(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "cbd-fire-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	seedFireEntity(t, factory, ctx, "cbd-fire-e1", modelRef, "OPEN", true, map[string]any{})
 
 	id := taskID(testTenant, "cbd-fire-e1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -1387,12 +953,12 @@ func TestFireScheduled_CBDSegmentedFire_HappyPath(t *testing.T) {
 
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("outcome = %v, want Fired", r.Outcome)
 	}
 	if got := getEntityState(t, factory, ctx, "cbd-fire-e1"); got != "MID" {
 		t.Errorf("entity state = %q, want MID (segmented persist must land)", got)
@@ -1417,7 +983,7 @@ func TestFireScheduled_CBDSegmentedFire_HappyPath(t *testing.T) {
 // processor failure, so that safety net does not apply). Before the fix,
 // FireScheduledTransition's deferred rollback only ever targeted the entry
 // txID (already committed as TX_pre, so the rollback silently no-ops) and
-// TX_post leaked. Asserts OutcomeDropped, a non-nil error, and — critically —
+// TX_post leaked. Asserts OutcomeFailed, a non-nil error, and — critically —
 // that the tx manager has no open transaction left afterward.
 func TestFireScheduled_CBDSegmentedFire_ErrorAfterTXPre_NoLeak(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
@@ -1453,7 +1019,8 @@ func TestFireScheduled_CBDSegmentedFire_ErrorAfterTXPre_NoLeak(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "cbd-leak-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, factory, ctx, modelRef)
+	seedFireEntity(t, factory, ctx, "cbd-leak-e1", modelRef, "OPEN", true, map[string]any{})
 
 	id := taskID(testTenant, "cbd-leak-e1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -1464,12 +1031,12 @@ func TestFireScheduled_CBDSegmentedFire_ErrorAfterTXPre_NoLeak(t *testing.T) {
 
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err == nil {
+	r := fireDue(t, engine, ctx, id)
+	if r.Err == nil {
 		t.Fatal("expected FireScheduledTransition to return an error (cascade abort after segmenting)")
 	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
+	if r.Outcome != OutcomeFailed {
+		t.Fatalf("outcome = %v, want Failed", r.Outcome)
 	}
 
 	// The entity was never persisted past TX_pre — the state advance to MID
@@ -1478,9 +1045,8 @@ func TestFireScheduled_CBDSegmentedFire_ErrorAfterTXPre_NoLeak(t *testing.T) {
 	if got := getEntityState(t, factory, ctx, "cbd-leak-e1"); got != "OPEN" {
 		t.Errorf("entity state = %q, want OPEN (segmented cascade never persisted)", got)
 	}
-	// The task was never explicitly deleted (that only happens after a
-	// successful cascade, before reconcile) and the abort's tx rolled back,
-	// so it remains for the next scan to retry.
+	// The task's removal lived only in the rolled-back TX_post, so it
+	// remains for a retry.
 	if _, found := getTask(t, factory, ctx, id); !found {
 		t.Error("expected task to remain for retry after the aborted fire")
 	}
@@ -1531,6 +1097,7 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, ctx, modelRef)
 
 	// Pre-seed the entity stamped with a DISTINCT prior committer's
 	// attribution — exactly the "stale Meta the previous committer left"
@@ -1543,16 +1110,13 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 	seeded := makeEntity(entityID, modelRef, map[string]any{})
 	seeded.Meta.State = "OPEN"
 	seeded.Meta.TenantID = testTenant
-	seeded.Meta.TransactionID = "seed-tx-1"
 	seeded.Meta.ChangeUser = priorCommitter.ID
 	seeded.Meta.ChangeUserKind = priorCommitter.Kind
 	seeded.Meta.ChangeExecutor = priorCommitter
+	saveCommittedEntity(t, factory, ctx, seeded)
 	es, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
-	}
-	if _, err := es.Save(ctx, seeded); err != nil {
-		t.Fatalf("Save seed entity: %v", err)
 	}
 
 	id := taskID(testTenant, entityID, "OPEN", "AutoClose")
@@ -1566,40 +1130,34 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	r := fireDue(t, engine, ctx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("outcome = %v, want Fired", r.Outcome)
 	}
 
 	versionMetas := chronologicalVersionMetas(t, es, ctx, entityID)
 	// [0] = the pre-seeded prior-committer version; [1] = the CBD TX_pre
 	// flush (mid-cascade — entity still in OPEN, the state BEFORE the
 	// transition's Next is applied — its own segmented transaction);
-	// [2] = executeCommitBeforeDispatch's CompareAndSave applying the
-	// processor's returned entity back in the post-dispatch transaction
-	// (engine_processors.go) — still OPEN, since Meta.State only advances
-	// to Next afterward, back in fireTransition (engine.go); [3] = the
-	// terminal post-cascade persist (state MID, fire_scheduled.go). [2]
-	// and [3] land as separate rows, not one: every Save/CompareAndSave
-	// call inside a transaction gets its own version — same-tx multiple
-	// saves are never coalesced into one (Postgres has always behaved
-	// this way; the in-memory store's txmanager.go documents this as a
-	// deliberate backend-parity fix, supersededSaves). The defect this
+	// [2] = the post-dispatch transaction's one version. That transaction
+	// writes the entity twice — executeCommitBeforeDispatch's
+	// CompareAndSave applying the processor's returned entity
+	// (engine_processors.go), then the terminal post-cascade persist (state
+	// MID, fire_scheduled.go) — and an entity has at most one version per
+	// transaction, carrying the transaction's last write. The defect this
 	// test guards against lived in [1]: before the fix it carried the
 	// prior committer's stale attribution instead of the arming
 	// principal's.
-	if len(versionMetas) != 4 {
-		t.Fatalf("versions = %d, want 4 (seed, CBD TX_pre flush, CBD post-dispatch apply, terminal)", len(versionMetas))
+	if len(versionMetas) != 3 {
+		t.Fatalf("versions = %d, want 3 (seed, CBD TX_pre flush, CBD post-dispatch transaction)", len(versionMetas))
 	}
 	intermediate := versionMetas[1]
 	// GetVersionMetadata carries no Entity payload; GetVersionByTransaction
-	// does — fetched by the intermediate write's own TransactionID, whose
-	// contract ("earliest version written by txID") resolves to exactly
-	// this write even if the terminal write shares the same transaction
-	// (the CBD TX_pre flush is, by construction, the earlier of the two).
+	// does — fetched by the intermediate write's own TransactionID, which
+	// wrote exactly this one version.
 	intermediateEntity, err := es.GetVersionByTransaction(ctx, entityID, intermediate.TransactionID)
 	if err != nil {
 		t.Fatalf("GetVersionByTransaction (intermediate): %v", err)
@@ -1616,39 +1174,30 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 	if intermediate.AttributedKind != armingUser.Kind {
 		t.Errorf("intermediate version AttributedKind = %v, want %v", intermediate.AttributedKind, armingUser.Kind)
 	}
-	if intermediate.Executor != systemPrincipal {
-		t.Errorf("intermediate version Executor = %+v, want %+v (system: the scheduler performs the fire, not the arming principal)", intermediate.Executor, systemPrincipal)
+	if intermediate.Executor != common.SystemPrincipal() {
+		t.Errorf("intermediate version Executor = %+v, want %+v (system: the scheduler performs the fire, not the arming principal)", intermediate.Executor, common.SystemPrincipal())
 	}
 	if intermediate.User == priorCommitter.ID {
 		t.Error("intermediate version must never carry the stale prior-committer attribution")
 	}
 
-	// [2]: the post-dispatch CompareAndSave applying the processor's
-	// returned entity, inside the SAME transaction as the terminal write
-	// [3]. GetVersionByTransaction resolves to [2] here — not [3] — because
-	// its contract is "the EARLIEST version written by txID", and [2] is
-	// chronologically first within that shared transaction.
-	postDispatchApply := versionMetas[2]
-	postDispatchEntity, err := es.GetVersionByTransaction(ctx, entityID, postDispatchApply.TransactionID)
+	// [2]: the post-dispatch transaction's one version is its last write,
+	// the terminal persist in MID — not the processor's returned entity in
+	// OPEN, which the same transaction wrote first.
+	terminal := versionMetas[2]
+	if terminal.TransactionID == intermediate.TransactionID {
+		t.Fatalf("terminal version shares the CBD TX_pre flush's transaction %q; want the post-dispatch transaction's own", terminal.TransactionID)
+	}
+	terminalByTx, err := es.GetVersionByTransaction(ctx, entityID, terminal.TransactionID)
 	if err != nil {
-		t.Fatalf("GetVersionByTransaction (post-dispatch apply): %v", err)
+		t.Fatalf("GetVersionByTransaction (post-dispatch transaction): %v", err)
 	}
-	if postDispatchEntity == nil || postDispatchEntity.Entity == nil {
-		t.Fatalf("post-dispatch apply version has no Entity")
+	if terminalByTx == nil || terminalByTx.Entity == nil {
+		t.Fatalf("post-dispatch transaction's version has no Entity")
 	}
-	if got := postDispatchEntity.Entity.Meta.State; got != "OPEN" {
-		t.Fatalf("post-dispatch apply version state = %q, want OPEN (Meta.State advances to Next only after this write, in fireTransition)", got)
+	if got := terminalByTx.Entity.Meta.State; got != "MID" {
+		t.Fatalf("post-dispatch transaction's version state = %q, want MID (its last write, the terminal persist)", got)
 	}
-	if postDispatchApply.User != armingUser.ID || postDispatchApply.AttributedKind != armingUser.Kind || postDispatchApply.Executor != systemPrincipal {
-		t.Errorf("post-dispatch apply version attribution = {%q %v %+v}, want {%q %v %+v} — this write must not carry the stale prior-committer attribution either",
-			postDispatchApply.User, postDispatchApply.AttributedKind, postDispatchApply.Executor,
-			armingUser.ID, armingUser.Kind, systemPrincipal)
-	}
-
-	// The terminal version is simply the entity's current state — no
-	// history lookup needed for its payload (and GetVersionByTransaction
-	// could not distinguish it from [2] above; both share one transaction
-	// and that lookup always resolves to the earliest of the two).
 	terminalEntity, err := es.Get(ctx, entityID)
 	if err != nil {
 		t.Fatalf("Get (terminal): %v", err)
@@ -1656,11 +1205,10 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 	if terminalEntity.Meta.State != "MID" {
 		t.Fatalf("terminal version state = %q, want MID", terminalEntity.Meta.State)
 	}
-	terminal := versionMetas[3]
-	if terminal.User != armingUser.ID || terminal.AttributedKind != armingUser.Kind || terminal.Executor != systemPrincipal {
+	if terminal.User != armingUser.ID || terminal.AttributedKind != armingUser.Kind || terminal.Executor != common.SystemPrincipal() {
 		t.Errorf("terminal version attribution = {%q %v %+v}, want {%q %v %+v}",
 			terminal.User, terminal.AttributedKind, terminal.Executor,
-			armingUser.ID, armingUser.Kind, systemPrincipal)
+			armingUser.ID, armingUser.Kind, common.SystemPrincipal())
 	}
 }
 
@@ -1753,7 +1301,7 @@ func TestFireScheduled_SiblingEntityWrite_AttributesToArmingUser_ViaAmbientOrigi
 		},
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, factory, ctx, "sibling-anchor-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	seedFireEntity(t, factory, ctx, "sibling-anchor-e1", modelRef, "OPEN", true, map[string]any{})
 
 	id := taskID(testTenant, "sibling-anchor-e1", "OPEN", "AutoClose")
 	armingUser := spi.Principal{ID: "arm-user", Kind: spi.PrincipalUser}
@@ -1769,13 +1317,13 @@ func TestFireScheduled_SiblingEntityWrite_AttributesToArmingUser_ViaAmbientOrigi
 	// Dispatch ctx carries no user identity at all, exactly like the real
 	// scheduler dispatch (common.SystemUserContext) — attribution must
 	// come entirely from the ambient origin seeded from the durable row.
-	dispatchCtx := common.SystemUserContext(testTenant)
-	outcome, err := engine.FireScheduledTransition(dispatchCtx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err != nil {
-		t.Fatalf("FireScheduledTransition: %v", err)
+	dispatchCtx := commontest.SystemUserContext(testTenant)
+	r := fireDue(t, engine, dispatchCtx, id)
+	if r.Err != nil {
+		t.Fatalf("FireScheduledTransition: %v", r.Err)
 	}
-	if outcome != OutcomeFired {
-		t.Fatalf("outcome = %v, want Fired", outcome)
+	if r.Outcome != OutcomeFired {
+		t.Fatalf("outcome = %v, want Fired", r.Outcome)
 	}
 
 	es, err := factory.EntityStore(ctx)
@@ -1848,16 +1396,16 @@ func (f *raceInjectingFactory) EntityStore(ctx context.Context) (spi.EntityStore
 	return f.store, nil
 }
 
-// TestFireScheduled_GuardCASRace_DropsWithoutTornWrite simulates a
-// concurrent write landing between FireScheduledTransition's re-read guard
+// TestFireScheduled_GuardCASRace_SafeFailureWithoutTornWrite simulates a
+// concurrent write landing between FireScheduledTransition's entity read
 // (which captures expectedTxID) and its final CompareAndSave: a competing,
 // already-committed write bumps the entity's TransactionID and state via a
 // hook fired right after the guard's Get. The fire proceeds on its
 // now-stale snapshot, so its terminal CompareAndSave must lose the CAS —
-// asserting OutcomeDropped, a conflict error, the entity reflecting the
+// asserting OutcomeFailed, a conflict error, the entity reflecting the
 // competing write (not a torn/partial write), and the task surviving for
 // retry.
-func TestFireScheduled_GuardCASRace_DropsWithoutTornWrite(t *testing.T) {
+func TestFireScheduled_GuardCASRace_SafeFailureWithoutTornWrite(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
 	realFactory := memory.NewStoreFactory()
@@ -1877,7 +1425,8 @@ func TestFireScheduled_GuardCASRace_DropsWithoutTornWrite(t *testing.T) {
 		},
 	}
 	saveWorkflow(t, realFactory, ctx, modelRef, []spi.WorkflowDefinition{wf})
-	seedFireEntity(t, realFactory, ctx, "race-e1", modelRef, "OPEN", "seed-tx-1", map[string]any{})
+	lockTestModel(t, realFactory, ctx, modelRef)
+	seedFireEntity(t, realFactory, ctx, "race-e1", modelRef, "OPEN", true, map[string]any{})
 
 	id := taskID(testTenant, "race-e1", "OPEN", "AutoClose")
 	armTask(t, realFactory, ctx, spi.ScheduledTask{
@@ -1891,20 +1440,20 @@ func TestFireScheduled_GuardCASRace_DropsWithoutTornWrite(t *testing.T) {
 		// A competing, already-committed write: some OTHER path advances
 		// the entity to a different state under a different txID, entirely
 		// independent of the fire in progress.
-		seedFireEntity(t, realFactory, ctx, "race-e1", modelRef, "RACED", "racer-tx-1", map[string]any{"racer": true})
+		seedFireEntity(t, realFactory, ctx, "race-e1", modelRef, "RACED", true, map[string]any{"racer": true})
 	}
 
-	engine := NewEngine(racingFactory, uuids, txMgr, WithScheduledClock(fixedClock(armMs)))
+	engine := NewEngine(cachedFactory(racingFactory), uuids, txMgr, funcClock(fixedClock(armMs)))
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if err == nil {
+	r := fireDue(t, engine, ctx, id)
+	if r.Err == nil {
 		t.Fatal("expected FireScheduledTransition to return a CAS-conflict error")
 	}
-	if !errors.Is(err, spi.ErrConflict) {
-		t.Errorf("err = %v, want errors.Is(err, spi.ErrConflict)", err)
+	if !errors.Is(r.Err, spi.ErrConflict) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrConflict)", r.Err)
 	}
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
+	if r.Outcome != OutcomeFailed {
+		t.Fatalf("outcome = %v, want Failed", r.Outcome)
 	}
 
 	// No torn write: the entity reflects exactly the competing writer's
@@ -1912,13 +1461,13 @@ func TestFireScheduled_GuardCASRace_DropsWithoutTornWrite(t *testing.T) {
 	if got := getEntityState(t, realFactory, ctx, "race-e1"); got != "RACED" {
 		t.Errorf("entity state = %q, want RACED (the competing write, untouched by the losing fire)", got)
 	}
-	// The task survives for the next scan to retry against the new state.
+	// The task survives for a retry against the new state.
 	if _, found := getTask(t, realFactory, ctx, id); !found {
 		t.Error("expected task to remain for retry after losing the CAS race")
 	}
 }
 
-// TestFireScheduled_UnstampedEntity_RefusesBeforeFiring pins the guard on the
+// TestFireScheduled_UnstampedEntity_Cancelled pins the guard on the
 // one engine caller that derives its compare-and-save precondition from
 // stored data rather than a client If-Match. CompareAndSave rejects an empty
 // expectedTxID outright, so an entity whose last committed version carries no
@@ -1931,7 +1480,7 @@ func TestFireScheduled_GuardCASRace_DropsWithoutTornWrite(t *testing.T) {
 // leaving the entity advanced by a fire that was refused. The dispatch
 // counter is the discriminating assertion — the entity's state and audit
 // trail alone cannot tell "never ran" from "ran and rolled back".
-func TestFireScheduled_UnstampedEntity_RefusesBeforeFiring(t *testing.T) {
+func TestFireScheduled_UnstampedEntity_Cancelled(t *testing.T) {
 	const armMs = int64(1_700_000_000_000)
 	const delayMs = int64(1000)
 
@@ -1963,7 +1512,7 @@ func TestFireScheduled_UnstampedEntity_RefusesBeforeFiring(t *testing.T) {
 	// No transaction ID on the stored row: a store's non-transactional Save
 	// keeps whatever the caller supplied, so a writer that never stamps one
 	// produces exactly this shape.
-	seedFireEntity(t, factory, ctx, "unstamped-e1", modelRef, "OPEN", "", map[string]any{})
+	seedFireEntity(t, factory, ctx, "unstamped-e1", modelRef, "OPEN", false, map[string]any{})
 
 	id := taskID(testTenant, "unstamped-e1", "OPEN", "AutoClose")
 	armTask(t, factory, ctx, spi.ScheduledTask{
@@ -1974,15 +1523,13 @@ func TestFireScheduled_UnstampedEntity_RefusesBeforeFiring(t *testing.T) {
 
 	advance(delayMs)
 
-	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
-	if outcome != OutcomeDropped {
-		t.Fatalf("outcome = %v, want Dropped", outcome)
+	r := fireDue(t, engine, ctx, id)
+	if r.Outcome != OutcomeCancelled {
+		t.Fatalf("outcome = %v, want Cancelled", r.Outcome)
 	}
-	// Dropped with no error: nothing in the machinery failed, and the
-	// executor's own "local fire failed" ERROR on top of the guard's would
-	// double-log a condition the guard already reports, on every scan.
-	if err != nil {
-		t.Fatalf("expected a clean drop, got %v", err)
+	// Cancelled with no error: nothing in the machinery failed.
+	if r.Err != nil {
+		t.Fatalf("expected a clean cancel, got %v", r.Err)
 	}
 	if dispatches != 0 {
 		t.Errorf("processor dispatches = %d, want 0 — the fire must refuse before running the transition", dispatches)
@@ -1993,22 +1540,135 @@ func TestFireScheduled_UnstampedEntity_RefusesBeforeFiring(t *testing.T) {
 	if n := countAuditEvents(t, factory, ctx, "unstamped-e1", spi.SMEventScheduledTransitionFired); n != 0 {
 		t.Errorf("fired audit events = %d, want 0", n)
 	}
-	// The task is deleted, not left for the next scan. Nothing rewrites a
-	// stored transaction ID on its own, so leaving the row would re-dispatch
-	// and re-refuse it on every scan for as long as the entity sits
-	// untouched — and any write that WOULD make it fireable runs reconcile,
-	// which re-arms this transition out of the entity's current state.
+	// The task is removed, not left for a retry. Nothing rewrites a stored
+	// transaction ID on its own, so every retry would refuse again for as
+	// long as the entity sits untouched — and any write that WOULD make it
+	// fireable runs reconcile, which re-arms this transition out of the
+	// entity's current state.
 	if _, found := getTask(t, factory, ctx, id); found {
-		t.Error("expected the unfireable task deleted, not left to be re-dispatched every scan")
+		t.Error("expected the unfireable task removed, not left to be retried")
 	}
-	// Audited, not silent — the same rule the obsolete-task drop above it
+	// Audited, not silent — the same rule the obsolete-task cancel above it
 	// follows. A scheduled transition is often a time-based control, and a
 	// timer this destroys permanently must be attributable to something an
 	// operator can find after the fact; a log line on one node is not that.
-	if n := countAuditEvents(t, factory, ctx, "unstamped-e1", spi.SMEventScheduledTransitionCancelled); n != 1 {
-		t.Errorf("cancelled audit events = %d, want 1", n)
+	cancelled := onlyEvent(t, allEvents(t, factory, ctx, "unstamped-e1"), spi.SMEventScheduledTransitionCancelled)
+	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN", "workflowName": "UnstampedWF"}; !reflect.DeepEqual(cancelled.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL data = %v, want %v (the selected workflow is known)", cancelled.Data, want)
 	}
 	if n := tracker.openCount(); n != 0 {
 		t.Errorf("open transactions = %d, want 0", n)
+	}
+}
+
+// A scheduled fire whose function criterion declines writes no version: the
+// attribution stamp is metadata only, so the save before the criterion
+// callout finds nothing to save. A client's If-Match with the id the entity
+// carried before the fire still holds.
+func TestFireScheduled_DeclineAfterCriterion_NoVersion_IfMatchStillValid(t *testing.T) {
+	calls := 0
+	probe := &calloutProbe{criterion: func(context.Context, *spi.Entity, string, string, string) (bool, string, error) {
+		calls++
+		return false, "not yet", nil
+	}}
+	env := newRunEnv(t, probe)
+	wf := oneHopWF("DONE", nil, nil)
+	open := wf.States["OPEN"]
+	open.Transitions[0].Criterion = fnCriterion("ready")
+	wf.States["OPEN"] = open
+	claimed := env.claimed(t, "decl-fn-1", wf)
+
+	es, err := env.factory.EntityStore(env.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	before, err := es.Get(env.ctx, "decl-fn-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	versionsBefore := len(chronologicalVersionMetas(t, es, env.ctx, "decl-fn-1"))
+
+	r, _ := env.run(claimed)
+	if r.Outcome != OutcomeDeclined {
+		t.Fatalf("report = %+v, want declined", r)
+	}
+	if calls != 1 {
+		t.Fatalf("criterion callouts = %d, want 1", calls)
+	}
+	if n := len(chronologicalVersionMetas(t, es, env.ctx, "decl-fn-1")); n != versionsBefore {
+		t.Errorf("versions = %d, want %d: a declined fire writes none", n, versionsBefore)
+	}
+	after, err := es.Get(env.ctx, "decl-fn-1")
+	if err != nil {
+		t.Fatalf("Get after the fire: %v", err)
+	}
+	if after.Meta.TransactionID != before.Meta.TransactionID {
+		t.Errorf("transactionId = %q, want the one before the fire, %q", after.Meta.TransactionID, before.Meta.TransactionID)
+	}
+
+	txID, txCtx, err := env.txMgr.Begin(env.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	txES, err := env.factory.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	after.Data = []byte(`{"x":1}`)
+	if _, err := txES.CompareAndSave(txCtx, after, before.Meta.TransactionID); err != nil {
+		_ = env.txMgr.Rollback(env.ctx, txID)
+		t.Fatalf("If-Match with the id before the fire: %v", err)
+	}
+	if err := env.txMgr.Commit(env.ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+}
+
+// The fire's attribution stamp reaches the first save of the anchor: a save
+// before a processor callout stores the anchor attributed to the arming
+// principal and executed by the system, so a callback read of it sees that
+// attribution.
+func TestFireScheduled_SaveBeforeCalloutCarriesArmingAttribution(t *testing.T) {
+	var env *runEnv
+	var second *spi.Entity
+	var secondErr error
+	probe := &calloutProbe{processor: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+		if proc.Name == "p1" {
+			return &spi.Entity{Data: []byte(`{"x":1}`)}, nil
+		}
+		second, secondErr = readUnderToken(ctx, env.factory, entity.Meta.ID)
+		return nil, nil
+	}}
+	env = newRunEnv(t, probe)
+	model := spi.ModelRef{EntityName: "attribution-order", ModelVersion: "1.0"}
+	registerModelFields(t, env.ctx, env.factory, model, map[string]schema.DataType{"x": schema.Integer})
+	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{oneHopWF("CLOSED", []spi.ProcessorDefinition{
+		safeProc("p1", ExecutionModeSync), safeProc("p2", ExecutionModeSync),
+	}, nil)})
+	lockTestModel(t, env.factory, env.ctx, model)
+	seedFireEntity(t, env.factory, env.ctx, "attr-e1", model, "OPEN", true, map[string]any{})
+	armed := spi.Principal{ID: "arm-user", Kind: spi.PrincipalUser}
+	now := env.nowMs()
+	armTask(t, env.factory, env.ctx, spi.ScheduledTask{
+		ID: taskID(testTenant, "attr-e1", "OPEN", "AutoClose"), TenantID: testTenant,
+		Type: spi.ScheduledTaskFireTransition, ScheduledTime: now, EntityID: "attr-e1",
+		ModelName: model.EntityName, ModelVersion: 1, Transition: "AutoClose", SourceState: "OPEN",
+		ArmedAt: now, ArmedBy: armed,
+	})
+	claimed := env.claimOne(t, testOwner, false)
+
+	r, _ := env.run(claimed)
+	if r.Outcome != OutcomeFired || r.Err != nil {
+		t.Fatalf("report = %+v, want fired", r)
+	}
+	if secondErr != nil {
+		t.Fatalf("p2's callback read: %v", secondErr)
+	}
+	if second.Meta.ChangeUser != armed.ID || second.Meta.ChangeUserKind != armed.Kind {
+		t.Errorf("p2's read: anchor attributed to %q (%v), want the arming principal %q (%v)",
+			second.Meta.ChangeUser, second.Meta.ChangeUserKind, armed.ID, armed.Kind)
+	}
+	if second.Meta.ChangeExecutor != common.SystemPrincipal() {
+		t.Errorf("p2's read: executor = %+v, want %+v", second.Meta.ChangeExecutor, common.SystemPrincipal())
 	}
 }

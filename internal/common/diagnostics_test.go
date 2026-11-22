@@ -21,20 +21,6 @@ func TestAddWarning_GetWarnings(t *testing.T) {
 	}
 }
 
-func TestAddError_GetErrors(t *testing.T) {
-	ctx := WithDiagnostics(context.Background())
-	AddError(ctx, "e1")
-	AddError(ctx, "e2")
-
-	got := GetDiagnostics(ctx).GetErrors()
-	if len(got) != 2 {
-		t.Fatalf("expected 2 errors, got %d", len(got))
-	}
-	if got[0] != "e1" || got[1] != "e2" {
-		t.Fatalf("unexpected errors: %v", got)
-	}
-}
-
 func TestGetDiagnostics_NilContext(t *testing.T) {
 	ctx := context.Background()
 	d := GetDiagnostics(ctx)
@@ -47,7 +33,6 @@ func TestAddWarning_NilContext(t *testing.T) {
 	// Must not panic when diagnostics is absent from context.
 	ctx := context.Background()
 	AddWarning(ctx, "should not panic")
-	AddError(ctx, "should not panic either")
 }
 
 func TestGetWarnings_NilReceiver(t *testing.T) {
@@ -58,14 +43,6 @@ func TestGetWarnings_NilReceiver(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected empty slice, got %v", got)
-	}
-
-	gotErr := d.GetErrors()
-	if gotErr == nil {
-		t.Fatal("expected non-nil empty slice from nil receiver")
-	}
-	if len(gotErr) != 0 {
-		t.Fatalf("expected empty slice, got %v", gotErr)
 	}
 }
 

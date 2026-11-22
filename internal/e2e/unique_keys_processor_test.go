@@ -4,13 +4,14 @@ package e2e_test
 // composite unique-key enforcement on the POST-MERGE document, i.e. after a
 // workflow processor has mutated the key field.
 //
-// The composite-unique-key feature enforces keys store-side, computing claims
-// from the LIVE entity.Data. The pre-engine check (Handler.withUniqueKeys)
-// runs ComputeClaims on the INPUT only — a fast partial-key reject. The real
-// uniqueness/over-bound enforcement happens when the cascade's final Save
-// computes claims from the processor-mutated data, and the resulting
-// spi.ErrUniqueViolation / spi.ErrPartialUniqueKey is routed by
-// classifyWorkflowError → 409 UNIQUE_VIOLATION / 422 INVALID_UNIQUE_KEY.
+// The store checks composite unique keys when the transaction commits,
+// computing claims from the final entity data against the unique-key
+// definitions of the stored model. The pre-engine check (checkUniqueKeys)
+// runs ComputeClaims on the INPUT only — a fast partial-key reject. The
+// uniqueness and over-bound checks run at the commit, on the
+// processor-mutated data, and the resulting spi.ErrUniqueViolation /
+// spi.ErrPartialUniqueKey answers 409 UNIQUE_VIOLATION / 422
+// INVALID_UNIQUE_KEY.
 //
 // Every existing unique-key e2e uses a no-processor auto-transition, so the
 // processor-mutated path (the entire design rationale) was untested on a
@@ -29,7 +30,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ukProcWorkflowOneStep builds a NONE -init(processor)-> CREATED workflow whose
@@ -41,7 +42,7 @@ func ukProcWorkflowOneStep(model, procName string) string {
 			"version": "1.1", "name": "%s-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":    {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "%s", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "%s", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {}
@@ -139,7 +140,7 @@ func TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409(t *testing.T) {
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "%s", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "%s", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"APPROVED": {}
@@ -293,7 +294,7 @@ func TestUniqueKeys_ProcessorDeletesAndReclaims_SameTx(t *testing.T) {
 			"states": {
 				"NONE":    {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING": {"transitions": [{"name": "reclaim", "next": "DONE", "manual": true,
-					"processors": [{"type": "calculator", "name": "%s", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "%s", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"DONE":    {}

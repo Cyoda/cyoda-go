@@ -10,29 +10,19 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/logging"
 )
 
-// setUniqueKeysPayload is the CloudEvent payload for EntityModelSetUniqueKeysRequest.
-type setUniqueKeysPayload struct {
-	ID         string               `json:"id"`
-	Model      events.ModelSpecJson `json:"model"`
-	UniqueKeys []uniqueKeyPayload   `json:"uniqueKeys"`
-}
-
-// uniqueKeyPayload is a single unique key definition in the CloudEvent payload.
-type uniqueKeyPayload struct {
-	ID     string   `json:"id"`
-	Fields []string `json:"fields"`
-}
-
 // EntityModelManage handles unary model management CloudEvents (import, export,
-// lock/unlock, delete, get all) by calling model service methods directly.
+// lock/unlock, delete, get all, set unique keys) by calling model service
+// methods directly.
 func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb.CloudEvent) (*cepb.CloudEvent, error) {
 	ctx = common.WithDiagnostics(ctx)
 
@@ -41,7 +31,18 @@ func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb
 		return nil, status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entityModelManage", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
+
+	// Model and workflow administration never runs inside a transaction. A
+	// request that carries a transaction token and would change a model is
+	// refused here, before its payload is read and before anything is
+	// written; the token itself is not consulted. The read-only requests are
+	// not administration and pass. (This RPC is not tx-routed, so the token
+	// joins nothing here either way; see txRouteInterceptor.)
+	if envelope, changesState := modelAdministration[eventType]; changesState && proxy.ExtractGRPCToken(ctx) != "" {
+		return envelope(ctx, ce.Id, common.ModelAdminInJoinedTransaction())
+	}
 
 	switch eventType {
 	case EntityModelImportRequest:
@@ -53,7 +54,7 @@ func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb
 	case EntityModelDeleteRequest:
 		return s.handleModelDelete(ctx, ce.Id, eventType, payload)
 	case EntityModelGetAllRequest:
-		return s.handleModelGetAll(ctx, ce.Id, eventType)
+		return s.handleModelGetAll(ctx, ce.Id, eventType, payload)
 	case EntityModelSetUniqueKeysRequest:
 		return s.handleModelSetUniqueKeys(ctx, ce.Id, eventType, payload)
 	default:
@@ -62,25 +63,26 @@ func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb
 	}
 }
 
+// modelAdministration is every EntityModelManage request that changes a model
+// or its workflows, with the error envelope its refusal is rendered in. A
+// request type absent here is read-only.
+var modelAdministration = map[string]envelopeFn{
+	EntityModelImportRequest:        modelImportError,
+	EntityModelTransitionRequest:    modelTransitionError,
+	EntityModelDeleteRequest:        modelDeleteError,
+	EntityModelSetUniqueKeysRequest: modelSetUniqueKeysError,
+}
+
 func (s *CloudEventsServiceImpl) handleModelImport(ctx context.Context, ceID string, eventType string, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.EntityModelImportRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
 	dataFormat := string(req.DataFormat)
-	if dataFormat == "" {
-		dataFormat = "JSON"
-	}
 	converter := string(req.Converter)
-	if converter == "" {
-		converter = "SAMPLE_DATA"
-	}
 
-	dataBytes, err := json.Marshal(req.Payload)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to marshal payload: %v", err)
-	}
+	dataBytes, _ := json.Marshal(req.Payload) // decoded from JSON, so it encodes: cannot fail
 
 	result, err := s.modelHandler.ImportModel(ctx, model.ImportModelInput{
 		EntityName:   req.Model.Name,
@@ -90,7 +92,6 @@ func (s *CloudEventsServiceImpl) handleModelImport(ctx context.Context, ceID str
 		Data:         dataBytes,
 	})
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelImportError(ctx, ceID, err)
 	}
 
@@ -107,18 +108,14 @@ func (s *CloudEventsServiceImpl) handleModelImport(ctx context.Context, ceID str
 
 func (s *CloudEventsServiceImpl) handleModelExport(ctx context.Context, ceID string, eventType string, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.EntityModelExportRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
 	converter := string(req.Converter)
-	if converter == "" {
-		converter = "JSON_SCHEMA"
-	}
 
 	result, err := s.modelHandler.ExportModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), converter)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelExportError(ctx, ceID, err)
 	}
 
@@ -141,7 +138,7 @@ func (s *CloudEventsServiceImpl) handleModelExport(ctx context.Context, ceID str
 
 func (s *CloudEventsServiceImpl) handleModelTransition(ctx context.Context, ceID string, eventType string, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.EntityModelTransitionRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -161,7 +158,6 @@ func (s *CloudEventsServiceImpl) handleModelTransition(ctx context.Context, ceID
 	}
 
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelTransitionError(ctx, ceID, err)
 	}
 
@@ -179,12 +175,11 @@ func (s *CloudEventsServiceImpl) handleModelTransition(ctx context.Context, ceID
 
 func (s *CloudEventsServiceImpl) handleModelDelete(ctx context.Context, ceID string, eventType string, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.EntityModelDeleteRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
 	if err := s.modelHandler.DeleteModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version)); err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelDeleteError(ctx, ceID, err)
 	}
 
@@ -198,10 +193,13 @@ func (s *CloudEventsServiceImpl) handleModelDelete(ctx context.Context, ceID str
 	return NewCloudEvent(EntityModelDeleteResponse, resp)
 }
 
-func (s *CloudEventsServiceImpl) handleModelGetAll(ctx context.Context, ceID string, eventType string) (*cepb.CloudEvent, error) {
+func (s *CloudEventsServiceImpl) handleModelGetAll(ctx context.Context, ceID string, eventType string, payload json.RawMessage) (*cepb.CloudEvent, error) {
+	var req events.EntityModelGetAllRequestJson
+	if err := strictjson.Decode(payload, &req); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+	}
 	models, err := s.modelHandler.ListModels(ctx)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelGetAllError(ctx, ceID, err)
 	}
 
@@ -227,8 +225,8 @@ func (s *CloudEventsServiceImpl) handleModelGetAll(ctx context.Context, ceID str
 }
 
 func (s *CloudEventsServiceImpl) handleModelSetUniqueKeys(ctx context.Context, ceID string, eventType string, payload json.RawMessage) (*cepb.CloudEvent, error) {
-	var req setUniqueKeysPayload
-	if err := json.Unmarshal(payload, &req); err != nil {
+	var req events.EntityModelSetUniqueKeysRequestJson
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -239,12 +237,11 @@ func (s *CloudEventsServiceImpl) handleModelSetUniqueKeys(ctx context.Context, c
 
 	result, err := s.modelHandler.SetUniqueKeys(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), keys)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())
 		return modelSetUniqueKeysError(ctx, ceID, err)
 	}
 
 	diag := common.GetDiagnostics(ctx)
-	resp := events.EntityModelTransitionResponseJson{
+	resp := events.EntityModelSetUniqueKeysResponseJson{
 		ID:       ceID,
 		Success:  true,
 		Warnings: diag.GetWarnings(),

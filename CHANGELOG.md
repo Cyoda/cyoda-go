@@ -2,6 +2,2928 @@
 
 All notable changes to Cyoda-Go are documented here. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions and [Semantic Versioning](https://semver.org/) — pre-1.0, where the minor component signals a breaking change and new features ship in patches (see [README — Versioning](./README.md#versioning)).
 
+## [0.9.0] — 2026-11-22
+
+### Breaking
+
+- **The Go module paths are `github.com/cyoda/...`.** `github.com/cyoda-platform/cyoda-go`
+  (and its `plugins/memory`, `plugins/postgres`, `plugins/sqlite`) and
+  `github.com/cyoda-platform/cyoda-go-spi` named the GitHub organization's
+  earlier name, which no account owns any more: GitHub only redirects it, and
+  whoever registered it would serve new versions of those paths. They are now
+  `github.com/cyoda/cyoda-go`, `github.com/cyoda/cyoda-go/plugins/...` and
+  `github.com/cyoda/cyoda-go-spi`. No release before v0.9.0 exists under the
+  new paths, so a storage plugin or any other importer changes its imports, its
+  `require` lines and its versions in one change; `go install
+  github.com/cyoda/cyoda-go/cmd/cyoda@latest` installs the binary. Versions
+  published under the old paths are unchanged. `GOPRIVATE` needs only
+  `github.com/cyoda/cyoda-go-cassandra`, the one private module. Remove a
+  lower-case `github.com/cyoda-platform/*` entry if you have one: it fetches
+  the old paths directly, without the proxy and the checksum check. The
+  capitalised `github.com/Cyoda-platform/*` that earlier versions of
+  `CONTRIBUTING.md` gave matches no module path (Go compares module paths
+  case-sensitively) and can be removed too. The
+  OpenTelemetry instrumentation scope names of cyoda's own instrumentation
+  change with the paths (`github.com/cyoda/cyoda-go`,
+  `github.com/cyoda/cyoda-go/workflow`,
+  `github.com/cyoda/cyoda-go/plugins/postgres`): a dashboard or alert that
+  filters OTLP-pushed traces or metrics (`CYODA_OTEL_ENABLED=true`) by scope
+  needs the new names. The `:9091/metrics` scrape carries no scope label.
+
+- **Helm chart: Gateway API routing needs a Gateway.** With
+  `gateway.enabled=true`, the default, the chart's schema refuses an empty,
+  null or missing `gateway.parentRefs`, and an entry with no `name` or an
+  empty one, so the install fails. Before, it rendered an
+  `HTTPRoute` and a `GRPCRoute` attached to no Gateway and the install
+  succeeded unrouted. Set `gateway.parentRefs`, or `gateway.enabled=false`.
+
+- **A callback read returns the entity as the workflow has it, and a callout
+  never writes the entity it runs for.** Before every callout that carries
+  the transaction token, other than a `COMMIT_BEFORE_DISPATCH` processor's, the engine reads the entity in the
+  transaction and writes it into the transaction (not committed) when that
+  read finds nothing (a create) or the stored data or state differ from the engine's copy,
+  so a callback read (get, search, count, page) returns the current data,
+  including the changes earlier processors returned; on a create it is
+  found, and during a processor it is in its source state. On PostgreSQL a
+  transaction that has written the entity holds its row lock until the
+  transaction ends (or until a rollback to a savepoint undoes the write), so during a callout another writer of the entity, and
+  another transaction that read it, wait until then. A processor, a function
+  criterion and a schedule function never write or delete the entity they run
+  for, with or without the token; a processor changes it only through the data
+  it returns, and the engine no longer adopts such a write. Writing other
+  entities through the token is unchanged.
+- **A callout payload's `meta.transactionId` is the callout's
+  `transactionId`.** While a workflow runs, the entity carries the id of the
+  transaction it runs in, so a callout that carries a `transactionId` carries
+  the same id in its payload, and a `lifecycle` criterion on `transactionId`
+  sees it. Before, a scheduled fire's entity carried the id of its last
+  committed version until a write, and a `COMMIT_BEFORE_DISPATCH` processor
+  with `startNewTxOnDispatch: true` carried the id of the transaction that
+  committed before its callout. A callout without a `transactionId` carries
+  the `transactionId` of the stored version it describes.
+- **One version per entity per transaction, on every backend.** A later write
+  of an entity the transaction already wrote replaces its pending version.
+  `GET /entity/{id}?transactionId=X` returns X's final entity and reads
+  committed versions only (`404 ENTITY_NOT_FOUND` inside X, where PostgreSQL
+  returned X's first uncommitted write); `/entity/{id}/changes` and the
+  `EntityChange` audit events carry one entry per transaction. Delete then
+  recreate in one transaction is one version on PostgreSQL too. A savepoint
+  rollback restores the pending version, and a rollback of a create frees the id's model. An
+  entity's model stays fixed within a transaction after a same-transaction
+  delete. An auto-commit write ignores a transaction id and change type the
+  caller supplies, and a pending read in a transaction carries store-assigned
+  metadata.
+- **Unique keys are checked at commit, on the final entities.** The store
+  reads the unique-key definitions from its own stored model;
+  `spi.WithUniqueKeys` and `spi.UniqueKeysFromContext` are removed. Two entities that swap key values,
+  a chain of moves, and a value freed by re-keying and claimed in one
+  transaction now commit on every backend (memory answered `409` on a swap
+  or a re-key; sqlite `409` or a commit, by map order; PostgreSQL `409`
+  unless the writes freed first). A key a joined callback's write breaks, or a
+  partial key its processors' returned data leaves, is now found at the
+  owner's commit on PostgreSQL (`409 UNIQUE_VIOLATION`, `422
+  INVALID_UNIQUE_KEY`), not on the callback request, as on memory and sqlite.
+  Two commits on PostgreSQL that claim each other's values and deadlock
+  (`40P01`) answer a retryable `409 CONFLICT`. A scheduled fire follows the
+  final entity's keys (memory dropped them, the others kept stale claims) and
+  a fire that breaks a key fails at commit.
+- **`DELETE /model/...` no longer answers `MODEL_HAS_ENTITIES`.** A model
+  with entities is `LOCKED`, and delete answers `MODEL_ALREADY_LOCKED`. The
+  model rules are the API's checks. Change a model's state
+  or its unique-key definitions only while no transaction that will write
+  entities of that model is open.
+- **A scheduled fire seals after its schedule functions.** Their callbacks are
+  admitted; before, every one was refused `410`. A fire refused at commit on
+  a unique key records the doors' text (for example `UNIQUE_VIOLATION:
+  ...`) in the task's `lastError`, logged at warn level.
+- **SPI.** `WithUniqueKeys` and `UniqueKeysFromContext` are removed.
+  New conformance cases: `OneVersionPerTx/*`, `Unique/*`, `Save/ModelReference*`, `Save/NonTx*`,
+  `Save/PendingReadCarriesStoreMetadata` and `Save/InTxIgnoresCallerChangeType`;
+  `Save/UpdateDoesNotRestampCreationDate` is tightened. A storage plugin that
+  does not meet them fails its conformance run.
+
+- **A schema extension commits on its own, never conflicts, and stays when
+  the write fails.** A write that extends a model under its `changeLevel`
+  (entity create and update, collection create and update, data a workflow
+  processor returns; HTTP and gRPC) now commits the extension in a short
+  transaction of its own before its entity changes commit, on every backend.
+  Two writes that extend the same model both succeed: on PostgreSQL the
+  second of two transactions that extended one model in an update,
+  collection update or transition was answered `409 CONFLICT` (a transition
+  `500`), and the extending transaction held a lock on the model for its
+  whole length, callouts included. The extension is visible when the write
+  returns, on the node that served it, and may be visible to others earlier;
+  other nodes have it when the model cache invalidation broadcast arrives
+  (`CYODA_MODEL_CACHE_LEASE` bounds a lost broadcast). It stays if the write
+  fails or rolls back — before, PostgreSQL discarded it on its in-transaction
+  paths while the other backends kept it. An extension the schema already
+  holds writes nothing. A write whose data fills a composite unique key only
+  in part, or puts a non-scalar value in a key's field, is refused with
+  `422 INVALID_UNIQUE_KEY` before it extends the model. A collection create
+  checks every item's key before any item's schema; a collection update
+  checks each item's key before that item's schema, so an extension an
+  earlier item made stays if a later item is refused, as for any failed
+  write. Before, create, collection create and update checked the
+  key after extending, and a create that gave a keyed field an object or
+  array was answered `422 INVALID_UNIQUE_KEY_DEFINITION`. PATCH checks the
+  key before its strict validation, so a PATCH with both a partial key and an
+  undeclared field answers `422 INVALID_UNIQUE_KEY`, not `400
+  VALIDATION_FAILED`. Every door's `422 INVALID_UNIQUE_KEY` now carries the
+  message the store uses, "one or more unique key fields are null or
+  invalid" (prefixed with the item's index in a collection). A
+  storage failure while extending for processor-returned data answers the
+  retryable `503 STORAGE_UNAVAILABLE`, not `500`. A `changeLevel` change on
+  a locked model takes effect on each node as its model cache picks it up.
+  The SPI's `ModelStore.ExtendSchema` and `ModelStore.Get` contracts change
+  to match (`ExtendSchema` never joins the caller's transaction, and the
+  caller extends only a `LOCKED` model; `Get` ignores the caller's
+  transaction), and
+  an out-of-tree storage plugin must follow them. A storage factory must
+  also offer `SetApplyFunc` taking a list of deltas
+  (`func(base []byte, deltas []SchemaDelta) ([]byte, error)`; the SPI
+  conformance suite installs it the same way); cyoda-go refuses to start on
+  a factory without it. See `cyoda help models`
+  (SCHEMA EXTENSION), `docs/CONSISTENCY.md` §3a and
+  `docs/cloud-parity/schema-extensions.md`.
+
+- **`CYODA_SCHEMA_EXTEND_MAX_RETRIES` is removed.** The SQLite backend
+  retries a busy write lock during a schema extension until the request
+  ends, with no budget, and never answers the contention as an error. The
+  variable is no longer read; remove it from deployments.
+
+- **`CYODA_SCHEMA_SAVEPOINT_INTERVAL` counts one model's extensions.** On
+  PostgreSQL the interval measured a sequence shared by all models, so on a
+  busy system nearly every extension also wrote a savepoint; it now counts
+  the deltas of the model since its latest savepoint, as SQLite already did.
+  Locking a model no longer writes a savepoint.
+
+- **The negative field-path cache is removed.** A search, conditional
+  delete or criterion path check on a path the node's cached schema does
+  not hold reads the model once more and then answers
+  `400 INVALID_FIELD_PATH` if the path is still unknown; no refusal is
+  remembered between requests. Before, a refusal was cached without a
+  lease, and could refuse the initiator's own new field on the node that
+  served its write.
+
+- **Each callback is all-or-nothing, and a failed callback write fails the
+  operation.** A compute member's callback — a request carrying a transaction
+  token — now runs in a scope of its own: either all its writes become part of
+  the transaction, or none do, and a `2xx` is sent only for a callback whose
+  writes were kept. A callback that fails keeps nothing but a schema
+  extension it made. Before, a failed
+  callback's writes stayed in the transaction, and the operation could commit
+  them. A callback answered with a retryable error leaves the transaction
+  usable, so it can be sent again in it. A callback write answered with an
+  error that is not retryable makes the transaction rollback-only: the callout
+  it was made under is stopped, and the operation fails with `409
+  TRANSACTION_ROLLBACK_ONLY` whatever the compute member answers (a lost write
+  race still answers the retryable `409 CONFLICT`). Under an `ASYNC_NEW_TX`
+  processor the mark stops at the processor: it fails, with everything its
+  callbacks wrote to entities, and the operation goes on. A callback read that answers a
+  `4xx` keeps what it read and marks nothing. An `ASYNC_NEW_TX` processor's
+  rollback no longer undoes the acknowledged write of a callback that was not
+  under it. A callback whose write reaches a `COMMIT_BEFORE_DISPATCH` processor
+  (`409 COMMIT_IN_JOINED_TRANSACTION`) is such a failed write, so its owner now
+  fails where before it could commit what the refused workflow had done; so is
+  a joined conditional delete that fails, and a joined write whose answer
+  passes `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`. Every commit and rollback
+  of the operation's transaction refuses later callbacks; on the in-tree
+  backends it first waits for the callbacks still in progress, and on a
+  backend with location-independent transactions a callback still in
+  progress is refused completion instead. See `cyoda help cluster` and
+  `docs/cloud-parity/callback-scopes.md`.
+
+- **New error code `TRANSACTION_ROLLBACK_ONLY` (`409`, not retryable).** The
+  operation that owns a transaction gets it when a callback's write failed;
+  the message names the code that callback was answered with. A callback under
+  the failed part of the transaction gets it too, before it runs, reads
+  included. Over gRPC it is the message prefix of the `CLIENT_ERROR` envelope.
+  See `cyoda help errors TRANSACTION_ROLLBACK_ONLY`.
+
+- **New error code `TRANSACTION_BUSY` (`503`, retryable).** On the in-tree
+  backends a callback whose write runs a workflow with a callout of its own
+  pauses while that callout is out, and only that callout's callbacks are
+  admitted then. Any other callback of the transaction is refused at once with
+  this code, having run nothing; one already queued is refused when the pause
+  begins. Before, it waited for the whole of the inner callout. Send the
+  callbacks of one transaction in series. See `cyoda help errors
+  TRANSACTION_BUSY`.
+
+- **Three callback answers change.** A callback still in progress when its
+  callout moved on — the work went to another compute member, or the callout
+  ended — is discarded and answered `410 CALLOUT_SUPERSEDED`; before, it was
+  waited for, kept and answered normally. A callback whose PostgreSQL session
+  ended under it (the connection was lost, or the idle-in-transaction ceiling
+  reclaimed the transaction) is answered `404 TRANSACTION_NOT_FOUND`, not
+  retryable, where it was the retryable `503 STORAGE_UNAVAILABLE`; the
+  operation that owns the transaction keeps the retryable `503`. A callback
+  that fails in a transaction which has lost a write race is answered `409
+  CONFLICT` with `retryable` false, since a retry in that transaction cannot
+  succeed; the owning operation keeps the retryable `409`. A joined
+  server-streaming gRPC call that fails sends its error alone, never the frames
+  before it.
+
+- **`503 TRANSACTION_NODE_UNAVAILABLE` is retryable when the request was not
+  sent to the node that owns the transaction:** that node is not live, the
+  peer address guard refused its address, or the connection to it could not be
+  opened (on gRPC: the call failed before any of its headers went out). Nothing
+  ran, so sending the request again is safe. Once the request may have been
+  sent — the connection failed later, or no answer came within
+  `CYODA_PROXY_TIMEOUT` — the answer stays not retryable: the outcome of a
+  write is unknown. Before, every `TRANSACTION_NODE_UNAVAILABLE` was not
+  retryable. See `cyoda help errors TRANSACTION_NODE_UNAVAILABLE`.
+
+- **PostgreSQL: a message saved under a transaction token is no longer part
+  of that transaction,** as on memory and SQLite. It survives the rollback of
+  the operation the callback joined. Before, on PostgreSQL only, it was rolled
+  back with it.
+
+- **An async search's `expirationDate` is when it stops being readable, and
+  it stops then.** The status answered `createTime + 24h`, while the job was
+  deleted `CYODA_SEARCH_SNAPSHOT_TTL` (default `1h`) after it finished, so a
+  client that trusted the date got `404 SEARCH_JOB_NOT_FOUND` for up to 23
+  hours of its advertised life. `expirationDate` is now `finishTime` +
+  `CYODA_SEARCH_SNAPSHOT_TTL`, and a lower bound (`createTime` + the TTL)
+  while the job is `RUNNING`. From that instant on the job's status, results
+  and cancel answer `404 SEARCH_JOB_NOT_FOUND` on every backend, whether or
+  not the reap (every `CYODA_SEARCH_REAP_INTERVAL`) has deleted it yet;
+  before, a job stayed readable until the next reap. The reap and the date
+  read one TTL. The gRPC snapshot status now carries `expirationDate` too
+  (it was never set). `CYODA_SEARCH_SNAPSHOT_TTL` and
+  `CYODA_SEARCH_REAP_INTERVAL` must be > 0: a zero or negative value is a
+  startup error (a zero TTL made every finished job reapable at once; a zero
+  interval crashed the server once it started). cyoda-go never answers the
+  `NOT_FOUND` status; the docs no longer say it does on some backends.
+
+- **A conditional delete without `transactionSize` is atomic on every
+  backend.** When deleting one matched entity failed (other than a write
+  conflict, or the entity being already gone), PostgreSQL aborted the
+  transaction and the request was retried and answered a retryable `409
+  CONFLICT`, while memory and SQLite deleted the other entities and answered
+  `200` with the failure in `idToError`. Every backend now fails the request
+  with that failure's own error and deletes nothing. A `pointInTime`
+  selection's already-gone entity is still reported in `idToError`. With
+  `transactionSize` each batch is atomic the same way (PostgreSQL answered
+  every later id of the batch a spurious failure, or retried the batch as a
+  conflict): a failed batch deletes nothing, its error is reported for each
+  of its other entities (an entity gone or changed keeps its own entry), and
+  the other batches still run. A `pointInTime`
+  batched delete whose read of a matched entity's current version fails
+  (other than the entity being gone) fails the request before any batch
+  runs; it answered a per-id failure. In a request that joins another
+  request's transaction, the delete commits and rolls back nothing itself:
+  the owner's transaction commits or rolls back as a whole. A joined delete
+  that fails keeps nothing, and when its error is not retryable it makes the
+  owner's transaction rollback-only (`409 TRANSACTION_ROLLBACK_ONLY`). On memory, a
+  transaction that deletes an entity another transaction deleted after its
+  snapshot now loses a write race, as
+  on SQLite and PostgreSQL, rather than answering it as already gone; on
+  SQLite, a failed read inside a transaction is no longer reported as the
+  entity being gone. On memory and SQLite, an entity a transaction already
+  deleted is gone to it, as on PostgreSQL: deleting it again is "not found"
+  (a joined `pointInTime` delete reports it in `idToError`, where it was
+  counted as removed), and a delete-all in that transaction leaves its first
+  delete, and the user it names, as it was.
+
+- **gRPC: a `SnapshotCancelRequest` for a snapshot that has already ended is
+  refused,** as `PUT /search/async/{jobId}/cancel` refuses it: `success`
+  false, `error.code` `CLIENT_ERROR` with a `SEARCH_JOB_ALREADY_TERMINAL:`
+  message, and `status` the snapshot's own full status (`failureReason` for
+  a `FAILED` snapshot). Before, it answered `success` true. On both doors, a
+  job that finishes while the cancel is landing is answered the same way;
+  before, HTTP answered it as cancelled (`CANCELLED`) while the job's status
+  said `SUCCESSFUL` or `FAILED`, and gRPC answered `success` true.
+
+- **A change to the entity during a `COMMIT_BEFORE_DISPATCH` callout answers
+  `412 ENTITY_MODIFIED` on every write route.** Another transaction changing
+  the entity between the processor's segment commit and the application of
+  its result now answers create and create collection (HTTP and gRPC) and
+  the HTTP update collection as it answers a single update: `412
+  ENTITY_MODIFIED`, not retryable, `properties.entityId` naming the entity,
+  and a fixed message. Before, those answered `400 WORKFLOW_FAILED` with the
+  engine's text, which named internal transaction ids. A collection request
+  still fails whole.
+
+- **`CYODA_PROXY_TIMEOUT` must be greater than zero;** startup fails
+  otherwise. It also bounds a platform clock confirmation round and each
+  status ask of `GET /platform/cluster`.
+
+- **`memory.NewAsyncSearchStore` is removed** from the memory plugin module;
+  the async search store comes from the store factory.
+
+- **Storage plugins: three new obligations for the platform clock.**
+  `ScheduledTaskStore.SchedulerActivity` returns the earliest waiting task's
+  `NextAttemptTime` and whether any task is running, across all tenants.
+  `TransactionManager.LatestRecordedTime` returns the store's floor without
+  raising it (zero on a fresh store). `CreateJob` stamps `HeartbeatTime` from
+  the store's physical clock, and stale-job reclaim no longer falls back to
+  `CreateTime`. Out-of-tree plugins must implement the first two and follow
+  the third; see `COMPATIBILITY.md`.
+
+- **Storage plugins: a transaction's own delete is its latest state.**
+  `Delete` answers `ErrNotFound` for an entity the transaction already
+  deleted, and `DeleteAll` leaves an entity whose latest state in the
+  transaction is deleted, with its delete and the attribution recorded with
+  it, as it is; the `spitest` cases
+  `Transaction/DeleteThenDelete`, `Transaction/DeleteThenDeleteAll` and
+  `Transaction/DeleteSaveDelete` check it. Out-of-tree plugins must pass
+  them; see `COMPATIBILITY.md`.
+
+- **Storage plugins: `StoreFactory.Ping(ctx) error`.** It reports whether the
+  store answers, returns within `ctx` (an error once `ctx` is done) and
+  returns an error after `Close`. `GET /platform/cluster` reads it as each
+  node's `database` check. The memory plugin fails it only on a done `ctx` or
+  after `Close`, sqlite pings its read handle and postgres its main pool.
+  Out-of-tree plugins must implement it; see `COMPATIBILITY.md`.
+
+- **`/readyz` fails from the start of shutdown.** On SIGTERM a node answers
+  `503` on `/readyz` at once, while it drains, so a load balancer stops
+  sending it new requests; before, readiness held until the admin listener
+  closed. It still fails after a recovered panic. `GET /health` is unchanged:
+  it reflects the recovered panic only and stays `200` while the node
+  drains. `/livez` is unconditional, as before.
+
+- **Only M2M clients reach cyoda-go; an application acts for its users
+  through an on-behalf-of client.** cyoda-go has no per-user permissions: an
+  on-behalf-of client exchanges a user assertion its application signed for
+  a token with the client's roles, and every change, audit event, callout
+  and message records the user and the client. Application teams start with
+  `cyoda help auth integration` — the step-by-step integration guide, with a
+  section on moving from OIDC and forwarded identity-provider tokens — and
+  `docs/access-to-the-cyoda-api.html`; the entries below give each change.
+
+- **`POST /message` no longer reads `X-User-ID`; a message records the
+  attributed user and the executor of the request, returned as `userId`,
+  `attributedKind` and `executedBy`.** For a direct client request the
+  executor equals the attributed user; for an on-behalf-of request `userId`
+  is the user and `executedBy` is the on-behalf-of client.
+
+- **Callouts: `authid`/`authtype` name the attributed principal (the user an
+  on-behalf-of request is for, a transaction's origin for a write-back, the
+  arming user for a scheduled fire); new `authexecid`/`authexectype` name the
+  executor; `authclaims` are the executor's roles. `authctx.Require` gates on
+  the executor being a service.** The node that dispatches a callout computes
+  both principals once; a callout handed over to another node carries them
+  and is sent with them as received. A callout is not sent when either
+  principal has no id or an unset or unrecognized kind. A compute node that
+  read `authid` as the request's caller reads `authexecid`; `authctx` adds
+  `ExecutorType` and `ExecutorID`, and `Require` no longer admits a user
+  executor.
+
+- **A callback authenticated with an on-behalf-of token may join only a
+  transaction begun for the same user (`403 FORBIDDEN` otherwise).** The
+  transaction token binds no caller, and an on-behalf-of write records its own
+  user; a compute node presenting one user's transaction token with another
+  user's on-behalf-of token is refused (`403 FORBIDDEN`, "an on-behalf-of
+  request may join only its own user's transaction"; over gRPC, the RPC's
+  error envelope with that message). A compute client's own token joins as
+  before, and its writes record the transaction's user, executed by the
+  compute client. An on-behalf-of write records the user (`attributedKind`
+  `user`) with the on-behalf-of client as `executedBy`.
+
+- **Every API operation requires `ROLE_M2M`, except `GET /account`,
+  `GET /platform/clock` and the operations guarded by their admin or operator
+  rule: client, trusted-key and key-pair operations, `POST /platform/clock`,
+  `GET /platform/cluster` and `/admin`.** The exempt account operation is
+  `GET /account` alone; `GET /account/subscriptions` requires the role. A
+  caller without it gets `403 FORBIDDEN` ("this operation requires
+  ROLE_M2M") before the operation runs, and before a transaction token it
+  presents is read; every gRPC method and stream answers `PermissionDenied`,
+  except the health `Check`, which needs no token.
+  Every M2M client holds `ROLE_M2M`. A `cyoda token` carries only the roles
+  it is signed with: the default `ROLE_ADMIN` reaches the admin operations,
+  `--roles ROLE_ADMIN,ROLE_M2M` also reaches data. The OpenAPI document lists
+  `403` on every operation the rule covers.
+
+- **A compute node must connect with its own client-credentials token (kind
+  service, `ROLE_M2M`); an on-behalf-of token cannot open a stream or
+  administer. A token whose client is deleted or reset cannot open a stream,
+  and a stream closes within a minute after its client is deleted or its
+  secret reset.** `startStreaming` with any other token — an on-behalf-of
+  token, a `cyoda token`, a token without `ROLE_M2M` — is
+  `codes.PermissionDenied`. A stream reads its client once before the member
+  joins and then every 60 s, and is refused or closed with
+  `codes.Unauthenticated` when the client is gone or its secret generation
+  changed, and with `codes.Unavailable` when the client store cannot be read
+  or the read does not answer within 60 s; the opening token's expiry does
+  not end a stream. The
+  tenant admin routes (`/clients*`, `/oauth/keys/trusted*`) and the platform
+  operator routes answer an on-behalf-of token with `403 FORBIDDEN`
+  ("on-behalf-of tokens cannot administer"), whatever its roles.
+
+- **`POST /tenants/{tenant}/oauth/token`: the token exchange is for on-behalf-of clients only
+  and client credentials for the others (`400 unauthorized_client`); exchange
+  failures answer `invalid_request` (was `invalid_grant`); the assertion must
+  carry `aud` = the cyoda issuer and `exp − iat` ≤ 300 s; the issued token
+  carries the client's roles, never the assertion's; `expires_in` is the
+  token's remaining life; client tokens carry `cgen`.** Also: the exchange
+  refuses the RFC 8693 parameters `actor_token`, `actor_token_type`,
+  `resource`, `audience`, `scope` and `requested_token_type`, even empty
+  (`400 invalid_request`); the token's `exp` is the earlier of the
+  assertion's `exp` and now + `CYODA_JWT_EXPIRY_SECONDS`; the only accepted
+  `subject_token_type` is `urn:ietf:params:oauth:token-type:jwt`; a client
+  store that is unavailable answers `503 temporarily_unavailable` with
+  `Retry-After` (was `500`); a `401` carries `WWW-Authenticate: Basic realm="cyoda"`; a
+  method other than `POST` is the endpoint's OAuth-shaped
+  `405 method_not_allowed` with `Allow: POST` (a `GET` used to fall through to the
+  authenticated API and answer `401`); `grant_type`, `subject_token` and
+  `subject_token_type` are read from the form body only, never the query
+  string; a request whose `Content-Type` is not
+  `application/x-www-form-urlencoded` (a `charset` parameter is accepted)
+  is `400 invalid_request` before the client authenticates, and its body is
+  never read; a form body over 1 MiB or one that does not parse is
+  `400 invalid_request`. Error descriptions are fixed and never repeat the
+  user id, tenant or key id. `ErrorResponseDto.error` drops `invalid_grant`
+  (no longer sent) and `invalid_scope` (never sent) and adds
+  `temporarily_unavailable`.
+
+- **The OIDC provider endpoints (`/oauth/oidc/providers*`), their error codes
+  and the `CYODA_OIDC_*` settings are removed.** Users reach cyoda-go only
+  through an application's M2M client; see `auth.tokens`.
+
+- **The user id `system` (any letter case) is reserved and refused everywhere
+  a user id is accepted.** It is the platform principal that executes
+  scheduled firings. The check is part of the one user-id rule (see the
+  user-identifier entry below).
+
+- **`CYODA_IAM_MODE` must be `mock` or `jwt`.** Any other value used to start
+  the server with mock authentication, so every request ran as the mock
+  admin, and without the mock-mode warning. The server now refuses to start.
+  This is enforced in `app.New` itself, so every binary built on it — not
+  only the `cyoda` binary's own startup checks — is covered. `CYODA_REQUIRE_JWT`
+  and the CORS allowlist settings are now enforced there too.
+
+- **The bootstrap M2M client is removed; `cyoda token` signs the first admin
+  token.** `CYODA_BOOTSTRAP_CLIENT_ID`, `CYODA_BOOTSTRAP_CLIENT_SECRET`,
+  `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE`, `CYODA_BOOTSTRAP_TENANT_ID`,
+  `CYODA_BOOTSTRAP_USER_ID` and `CYODA_BOOTSTRAP_ROLES` are gone, and so are
+  the Helm chart's `bootstrap.*` values, its bootstrap Secret and the
+  matching ConfigMap keys. A leftover variable is ignored like any unknown
+  one; a token request that relied on the client it created fails with
+  `401`. Whoever holds `CYODA_JWT_SIGNING_KEY` can already sign any admin
+  token, so the client was a second root credential, weaker than the first.
+  Use `cyoda token --tenant <tenant>` instead: it signs a short-lived admin
+  token offline with the signing key. In Kubernetes run
+  `kubectl exec <pod> -- /cyoda token --tenant <tenant>`, in Docker Compose
+  `docker compose exec <service> /cyoda token --tenant <tenant>`; the
+  container already holds the key. Create the M2M clients that applications
+  and compute nodes use with that token (`POST /clients`). With the variables
+  gone, a tenant id enters cyoda-go from outside it only through the
+  `caas_org_id` claim, the token URL's `{tenant}` segment and
+  `cyoda token --tenant`. See `cyoda help cli token`.
+
+- **`CYODA_JWT_EXPIRY_SECONDS` must be an integer from 1 to 3600, and now
+  defaults to 300 (was 3600).** The server used to replace a non-numeric
+  value with 3600 and accept 0, a negative value, or anything up to 31622400
+  (366 days), issuing tokens that had already expired or lived for up to a
+  year; it now refuses to start, and `cyoda token` exits 1, for any value
+  outside 1–3600; unset or empty means 300. A revoked M2M client's issued
+  tokens therefore now end within at most an hour, down from up to a year.
+  The Helm chart's `jwt.expirySeconds` has the same default and upper bound.
+
+- **An empty `CYODA_JWT_ISSUER` is refused.** The server used to start with
+  it and issue tokens with an empty `iss`; it now refuses to start, and
+  `cyoda token` exits 1. Unset still means the default `cyoda`. The Helm
+  chart's schema refuses an empty `jwt.issuer`.
+
+- **A rotation no longer ends the signing key from `CYODA_JWT_SIGNING_KEY`,
+  and an invalidated key pair verifies until the end of its grace period.**
+  `invalidateCurrent` on `POST /oauth/keys/keypair` ends issued key pairs
+  only, the first rotation included; it used to invalidate the bootstrap key
+  too. The bootstrap key stays active and signs again whenever no issued key
+  pair is active and inside its window, so `cyoda token`
+  keeps working through routine key management. Only an invalidate or
+  `DELETE` that names its key id ends it, and the node that takes the call
+  logs a WARN that tokens from `cyoda token` are refused once any grace
+  period ends. A rotation therefore does not end a leaked token that the
+  bootstrap key signed: revoke the key pair named by the `kid` in the
+  token's header. An invalidated key pair, issued or the bootstrap key,
+  never signs again unless reactivated, but tokens it signed keep verifying
+  until the end of its grace period (`gracePeriodSec`, or
+  `invalidateGracePeriodSec` on a rotation; never past its `validTo`).
+  Before, it stopped verifying at once and the grace period only kept its
+  public key in JWKS. The default grace period is still 0, which ends
+  verification at once; invalidating again with 0, or `DELETE`, cuts a
+  running grace period short. See `cyoda help config auth`
+  ("JWT signing keypair rotation") and
+  `docs/cloud-parity/signing-key-window.md`.
+
+- **A key pair's invalidation grace period is at most 3600 s, the longest
+  token lifetime (was 366 days).** `gracePeriodSec` on
+  `POST /oauth/keys/keypair/{keyId}/invalidate` and
+  `invalidateGracePeriodSec` on `POST /oauth/keys/keypair` over 3600 are
+  `400 BAD_REQUEST`; the OpenAPI maximum of both is 3600. No token outlives
+  3600 s, so a longer grace only kept a revoked key verifying.
+
+- **Signing key pairs have no audience: `audience` is removed from key-pair
+  issue and from `GET /oauth/keys/keypair/current`, and
+  `CYODA_JWT_BOOTSTRAP_AUDIENCE` is removed.** The newest active key pair
+  signs every token.
+
+- **Trusted keys: key ids are unique per tenant (the cross-tenant `409
+  KEY_OWNED_BY_DIFFERENT_TENANT` is gone); `audience` and the invalidation
+  grace period are removed — invalidating a key ends it at once and the
+  invalidate request has no body; every token exchange reads the key from the
+  store; `GET /oauth/keys/trusted` can answer `500`/`503`.** See `cyoda help
+  auth trusted-keys`.
+
+- **Trusted-key registration refuses a JWK with a private member or a small
+  modulus, and stores only the public members.** A JWK that carries `d`,
+  `p`, `q`, `dp`, `dq`, `qi` or `oth` is `400 BAD_REQUEST`, and the detail
+  names the member; an RSA modulus under 2048 bits is `400 BAD_REQUEST`; a
+  non-string `alg` or `use` is `400 BAD_REQUEST`. Before, the request's JWK
+  was stored as sent and returned by register and list, private members
+  included. Now register and list return, and the store holds, only `kty`,
+  `kid` (the `keyId`), `n` and `e`, plus `alg` and `use` when sent.
+
+- **Tokens are mapped strictly: a token with both `scopes` and `user_roles`,
+  or with `act` but no `scopes`, is refused. `CYODA_IAM_MOCK_KIND` defaults
+  to `service`, and any value but `user`, `service` or `system` refuses to
+  start.** A token with `act` is a user acting through the client
+  named in `act.sub`, which must be an object holding a client id; a token
+  with `scopes` and no `act` is a client; a token with `user_roles` is the
+  operator's `cyoda token`. A `cgen` claim must be a non-negative integer.
+  The token exchange now issues OBO tokens with the M2M client's roles in
+  `scopes`; the subject token's roles are ignored.
+
+- **Signing key pairs are shared and persisted by the cluster.** See
+  `cyoda help config auth` ("JWT signing keypair rotation") and
+  `docs/cloud-parity/signing-key-pairs.md`.
+  - JWT signing key pairs (`/oauth/keys/keypair*`) and the bootstrap key's
+    invalidate/reactivate/delete state now live in the SYSTEM-tenant KV store.
+    Every node keeps a copy, updated by a change message on every write and
+    re-read from the store periodically as a backstop.
+  - They survive a restart on a persistent backend (not on the memory
+    backend).
+  - Token verification now depends on that store. A node that
+    cannot read it for 10 reconcile intervals fails closed and refuses every
+    key: `401` on verification, `503` with `Retry-After` on JWKS. It does not
+    serve a stale answer.
+  - Before, `current`, `invalidate`, `reactivate` and `delete` mapped every
+    failure of the store call to `404`. `POST /oauth/keys/keypair` already
+    answered `500` for a store or key-generation failure.
+  - All five endpoints now answer `500` with a ticket for an ordinary store or
+    vault failure.
+  - `issue`, `invalidate`, `reactivate` and `delete` read or write the store
+    directly. They answer `503 STORAGE_UNAVAILABLE` when the store reports
+    itself unavailable.
+  - `current` and JWKS never touch the store on this path. They answer
+    `503 STORAGE_UNAVAILABLE` only when their node copy is stale (JWKS: with
+    `Retry-After`).
+  - `404` is reserved for a key pair that is not found, retired, a foreign
+    bootstrap record or a deleted bootstrap key.
+  - `invalidate` and `reactivate` also answer `404` for an undecodable record.
+    `delete` always succeeds on one (`200`): it replaces the record with a
+    deleted bootstrap-state record. A record at a key that cannot be a key id
+    is ignored and logged; it does not block signing.
+  - `delete`, `invalidate` and `reactivate` answer `400 BAD_REQUEST` for a
+    `keyId` that is not 32 lowercase hex characters (was `404`). Every issued
+    and bootstrap key id has that form.
+  - A broken (unopenable) key pair still answers `200` on `invalidate`,
+    `reactivate` and `delete`. It fails only on `current`, with `500` not
+    `404`, if it wins signer selection.
+  - `POST /tenants/{tenant}/oauth/token`'s existing `500 server_error` has new causes: a broken
+    selected key pair, any undecodable record, or a stale store. An
+    undecodable record blocks all signing, not only its own key's.
+  - A restart no longer restores a revoked bootstrap key. Invalidating,
+    reactivating or deleting it through the API is now durable.
+  - Deleting the bootstrap key is permanent for that key. Replacing
+    `CYODA_JWT_SIGNING_KEY` afterwards starts a fresh bootstrap key with no
+    stored state; it does not undelete the old one.
+  - Replacing `CYODA_JWT_SIGNING_KEY` retires every key pair the old key
+    owned: they stop signing, verifying and appearing in JWKS. A private key
+    is sealed at rest under a key derived from the bootstrap key, so the new
+    key cannot open them. Restoring the old key brings them back.
+
+- **M2M clients are stored and shared by the cluster.** A client created with
+  `POST /clients` existed only in the memory of the node that created it: it
+  could get a token from that node only, and a restart lost it. Clients now
+  live in the SYSTEM-tenant KV store, and every call reads the store. A
+  create, reset or delete takes effect on every node when it returns, and
+  clients survive a restart on a persistent backend (not on the memory
+  backend). See `cyoda help auth clients`.
+  - `POST /tenants/{tenant}/oauth/token` answers `500 server_error` with a
+    ticket when the client store fails, or holds a record for the client id
+    that does not decode. It used to answer `401 invalid_client`. A client id
+    that does not match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` is
+    `401 invalid_client` without a store read.
+  - `DELETE /clients/{clientId}` and `PUT /clients/{clientId}/secret` answer
+    `500` with a ticket when the store fails, or `503 STORAGE_UNAVAILABLE`
+    when it reports itself unavailable. They used to answer
+    `404 M2M_CLIENT_NOT_FOUND`. `GET /clients` can answer `500` or `503` the
+    same way.
+  - A record that does not decode is left out of `GET /clients` and logged at
+    ERROR, and still counts toward the cap; `DELETE` removes it, and a reset
+    of it answers `500`.
+  - Creates and secret resets are conditional writes (as is the clean-up
+    after a failed one), so concurrent changes resolve without a lost
+    update; a delete is not, and always wins. Of two creates of one client
+    id exactly one succeeds and the other answers `409 M2M_CLIENT_EXISTS`.
+    A secret reset that loses a race with another change answers
+    `409 CONFLICT`, which is retryable. The cap is checked on each node
+    before the write, so concurrent creates on several nodes can exceed it by
+    one client per node.
+
+- **Model and workflow administration never runs inside a transaction.** A
+  request carrying a transaction token — the `X-Tx-Token` header a compute
+  member echoes on a callback — was joined to that transaction on every
+  route, so a processor could import a workflow, or import, lock, unlock,
+  delete, change the level of or set the unique keys of a model, inside the
+  running transition's transaction; over gRPC, `entityModelManage` ignored
+  the `tx-token` metadata and ran the change in a transaction of its own.
+  Each of those requests is now refused when it carries a token, with the
+  new `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` (not retryable): on HTTP by
+  the node that receives the request, before the token is verified — so in
+  a cluster before the request would be routed to the transaction's owner,
+  and in the join layer before any transaction lock is taken — and nothing
+  is read or written; on gRPC in the request's own response envelope. The read-only model and workflow operations are
+  unaffected, and every entity operation still joins. A workflow import
+  therefore always owns its transaction: the joined-import case — its
+  removal of unscheduled tasks running unretried in the owner's transaction
+  — is gone from the import's `409 CONFLICT`. A compute member that needs to
+  administer a model makes the request without the token. See
+  `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION` and
+  `docs/cloud-parity/model-administration-not-joined.md`.
+
+- **Workflow import refuses a `schedule.delayMs` sent beside a
+  `schedule.function`, whatever its value.** `TransitionScheduleDto`
+  publishes `delayMs` as `minimum: 1` and mutually exclusive with
+  `function`, but import accepted `"delayMs": 0` and `"delayMs": null`
+  beside a function and ignored them: the decoded delay is a plain integer,
+  so a sent `0` or `null` looked the same as an omitted field. Import now
+  reads the raw request and answers `400 VALIDATION_FAILED`, naming the
+  workflow, state and transition. The v0.8.3 and v0.8.4 exporters wrote
+  `"delayMs": 0` beside every `function`, so their exports no longer import
+  unchanged: remove the `delayMs` field and import again. Recorded as a
+  tightening of schema 1.5 in `docs/workflow-schema-versioning.md`; no
+  workflow schema version change. See `cyoda help workflows`.
+
+- **Reactivating a trusted key is held to the per-tenant cap**
+  (`400 TRUSTED_KEY_CAP_REACHED`, which reactivation could not return
+  before). The cap counts every active key whose `validTo` has not passed;
+  an invalidated key frees its slot at once, and a registration with
+  `invalidatePrevious` is never refused by it. A reactivation that succeeded
+  before can now be refused: delete or invalidate an old key first.
+
+- **A tenant identifier has a grammar:
+  `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`.** 1 to 100 bytes, the first an ASCII
+  letter or digit, the rest letters, digits, `.`, `_` and `-`; case is
+  preserved and significant. It is enforced at each place a tenant id
+  enters cyoda-go from outside it: the `caas_org_id` JWT claim, which covers
+  every authenticated HTTP request and every authenticated gRPC method,
+  since gRPC delegates to the same authenticator; the `{tenant}` segment of
+  the token URL; and `cyoda token --tenant`, before it signs. A token whose claim falls
+  outside the grammar is an **ordinary `401`** with the uniform RFC 9457
+  problem detail, indistinguishable from any other bad token; over gRPC it
+  is `codes.Unauthenticated`. Every tenant either tier ships or uses today is
+  admitted: `SYSTEM`, `CYODA`, `mock-tenant`,
+  `riskblocs`, `tenant-abc-123`, canonical UUIDs, 32-character hex ids and
+  bare numerics. One further operator-facing tenant value, the non-JWT IAM
+  mode's `MockTenantID`, is covered by a test rather than by the check: it
+  has no environment binding, so it is a compiled-in default rather than an
+  ingress, and a unit test pins it — with every other shipped tenant
+  constant — against the grammar. No new error code. The contract, the
+  evidence behind the
+  charset and the 100-byte cap, and the Cloud-side action item (**CP-3968**
+  — Cloud constrains `caas_org_id` nowhere today, so a Cloud-issued token
+  outside the grammar becomes a silent `401` rather than a diagnosable
+  rejection) are recorded in `docs/cloud-parity/tenant-id-grammar.md`.
+
+- **A user identifier must be valid UTF-8, 1 to 255 characters, with no
+  control character (U+0000–U+001F, U+007F–U+009F), no noncharacter and no
+  U+FFFD.** Characters, not bytes; any other character is admitted and
+  nothing is normalised. The excluded characters are those the CloudEvents
+  spec forbids in a string attribute — the user id is sent to compute nodes
+  as `authid` — plus U+FFFD, which a JSON decoder puts in place of every
+  invalid byte, so two different claims can no longer name one user; and
+  the user id `system` is reserved. The rule applies at every place a
+  principal's user id enters cyoda-go from outside it, through one check,
+  `common.ValidateUserID`. A token's `caas_user_id` claim (or `sub` when
+  `caas_user_id` is absent) outside the rule is an **ordinary `401`** with the uniform
+  problem detail, and `codes.Unauthenticated` over gRPC; the server log gives
+  the reason, never the value. A `caas_user_id` that is present but empty,
+  not a string, or outside the rule is rejected; it no longer falls back to
+  `sub`. A user assertion whose `sub` is outside the rule is refused by the
+  token exchange with **`400 invalid_request`** — before, it was exchanged for
+  a token that every later request rejected. `cyoda token --user` checks the rule too before
+  it signs. No new error code. The
+  contract and the Cloud comparison are in
+  `docs/cloud-parity/user-id-rule.md`. (#594, from a contribution in #597.)
+
+- **A criterion and a scheduled transition's `function` are tried on another
+  compute member when an answer is lost — with no opt-in.** Both are repeat-safe
+  by rule: they must have no effects. One that does have effects can now run
+  twice for a single callout, possibly at the same time on two members. A
+  processor is repeated only when its `config` declares the new
+  `idempotent: true`. Move a criterion or a schedule function that has effects
+  into a processor, and declare `idempotent` on a processor only when a repeat
+  is safe everywhere it reaches — in cyoda-go and in every system it touches.
+  See `docs/cloud-parity/callout-failover.md`.
+
+- **A criteria answer that omits `matches` is refused instead of read as
+  `false`.** A compute member that reports no failure and gives no verdict
+  gave no answer to the criterion, and a criterion decides a transition: the
+  callout now ends as an answer that could not be read (`400 WORKFLOW_FAILED`,
+  not retryable) where it used to block the transition as if the member had said
+  `false`. A member of another node's was already refused this way; both sides
+  now agree. A compute member that relied on omitting the field must send it, and
+  the published schema tree (`cyoda help cloudevents json`) states the
+  requirement, so a generated SDK carries it.
+  The member's `reason` is kept to its first 2048 characters, marked with `…`
+  when cut — its own wider allowance, unlike every other piece of a member's
+  free text, since the reason is the criterion's business explanation for
+  refusing a transition rather than a diagnostic. See `cyoda help grpc` and
+  `docs/cloud-parity/callout-failover.md`.
+
+- **A callout with no compute member waits before it fails, on a single node
+  too.** `CYODA_DISPATCH_WAIT_TIMEOUT` (default `5s`) was a cluster-only poll;
+  it is the one way a callout waits for a compute member to exist — once per
+  callout, in total, woken by a member attaching rather than polled, whatever
+  the `retryPolicy` and whatever the execution mode. A single node with no
+  matching member attached answered `503 NO_COMPUTE_MEMBER_FOR_TAG` at once and
+  answers it after five seconds. The wait costs no try. Set the value to `0` for
+  the old behaviour. See `docs/cloud-parity/callout-failover.md`.
+
+- **A client may see the new `503 CALLOUT_FAILED` (retryable).** It is what a
+  callout answers once more than one of its tries failed, and it lists them. A
+  callout that made exactly one try still answers that try's own code —
+  `DISPATCH_TIMEOUT`, `COMPUTE_MEMBER_DISCONNECTED` or
+  `DISPATCH_FORWARD_FAILED`, for example. A client that switches on the code
+  should treat it as it treats those. See `cyoda help errors CALLOUT_FAILED`.
+
+- **A client's own timeout ending a callout answers `408 TRANSACTION_TIMEOUT`,
+  not a retryable `503 DISPATCH_FORWARD_FAILED`.** A request cancelled by its
+  client during a cross-node callout ends with the request's own cancellation
+  rather than with the callout's. A client that retried on the `503` should read
+  the `408` instead. See `docs/cloud-parity/callout-failover.md`.
+
+- **A request carrying a transaction token is accepted only while the callout it
+  was issued for is still that compute member's.** Until now it was accepted
+  until the transaction closed. The refusals are decided in this order, and the
+  first that applies is the answer: `401` for a token that does not verify, or
+  that names no callout because an earlier version minted it;
+  `410 TRANSACTION_EXPIRED` past the token's own life — so an expired token on a
+  transaction that has also ended reads `410`, not `404`; `403` for a token
+  presented by another tenant; `404 TRANSACTION_NOT_FOUND` once the transaction
+  has ended, as before; and `410 CALLOUT_SUPERSEDED` (not retryable) once
+  cyoda-go has given the work to another compute member or the callout has
+  ended. A compute member that is refused must stop working on that callout:
+  nothing further it sends under that token is accepted, and an answer it does
+  send for the callout is discarded. A refused joined gRPC server-streaming
+  request now carries the request id in its error envelope where it used to
+  carry none: the request message is received before the token is judged, so
+  the `403`, the `404` and the `410 CALLOUT_SUPERSEDED` name it. The two
+  decided before the message is read at all — the `401` and the
+  `410 TRANSACTION_EXPIRED` — carry no id. See
+  `docs/cloud-parity/callout-failover.md`.
+
+- **`CYODA_TX_TOKEN_TTL` is removed.** The transaction token given to a compute
+  member no longer has a fixed life: it is minted per try and lives for that
+  try's answer limit plus `CYODA_CALLOUT_PASS_ALLOWANCE` (default `30s`). The
+  variable is ignored if set; remove it from deployment configuration.
+
+- **On the in-tree backends, every request that joins a transaction holds that
+  transaction's lock — a read as much as a write.** Two callbacks of one transaction used to run at
+  once; on the in-tree backends they are served one at a time, so a compute member that parallelises its
+  callbacks for speed gains nothing by it. The pass is verified before the
+  request is read, the request is read whole before the lock is taken and its
+  response is sent after the lock is released, and a joined request that holds
+  the lock is not cancelled by its client going away: a deadline a compute
+  member sets on its own callback no longer abandons work already under way. A
+  callback still waiting for the lock, which has touched nothing, is dropped
+  when its member goes away. An over-size joined body is refused with `413`, the
+  same as an unjoined one; a pass that fails verification is refused before the
+  body is read; and a joined answer over
+  `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB), held in memory
+  while the lock is, fails the request with `413 JOINED_RESPONSE_TOO_LARGE`
+  rather than being sent in part. The lock is
+  still given up for the length of any callout the callback itself makes.
+  See `docs/cloud-parity/callout-failover.md`.
+
+- **Every node of a cluster must run this version, and every node needs its own
+  `CYODA_NODE_ID`.** The message by which one node hands a callout to another
+  changed: requests are bound to their direction and to the id of the node they
+  are sealed for, the answer is sealed for the one request it answers and for
+  that same node, and the payload states the outcome explicitly. The node id is
+  not sent — the sender names the node whose address it looked up, the receiver
+  names itself — so a hand-over opens only on the node it was meant for, and two
+  nodes sharing one id would open each other's. The entity's payload travels
+  base64-encoded, byte for byte in both directions, so that what a compute member
+  is handed and what the platform persists are the bytes the store holds. A
+  mixed-version cluster cannot hand a callout over: a node of this version
+  treats an answer it cannot authenticate as lost, and an older node cannot read
+  what this one sends. Stop the cluster to upgrade it; there is no rolling
+  upgrade across this change. A node of an earlier version also fires scheduled
+  tasks without claiming them, so in a mixed cluster a task can run twice. See
+  `docs/cloud-parity/callout-failover.md` and
+  `docs/cloud-parity/scheduled-transitions.md`.
+
+- **A node whose identity does not fit the cluster's membership metadata refuses
+  to start.** The metadata carries `CYODA_NODE_ID`, `CYODA_NODE_ADDR` and
+  `CYODA_GRPC_NODE_ADDR`, and the membership library caps it at 512 bytes; a
+  node that could not publish them used to start and be invisible to its peers
+  (see Fixed). Shorten whichever of the three is long — the startup error names
+  the three and the byte counts.
+
+- **Workflow import refuses three things it used to accept**, under every schema
+  version: a `retryPolicy` other than `NONE`, `FIXED` or empty on a
+  `function`-type criterion and on a scheduled transition's `function` (both
+  were accepted and ignored; a processor's was already refused), and a
+  `responseTimeoutMs` — on a processor, a criterion function or a schedule
+  function — that is negative or above `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`
+  (default `60000`). Each answers `400 VALIDATION_FAILED` naming the workflow,
+  state, transition and callout. The bound is a server setting: a workflow
+  exported from one deployment can be refused by another with a lower bound.
+  See `docs/workflow-schema-versioning.md`.
+
+- **An audit-events cursor from before this change no longer decodes and
+  answers `400 BAD_REQUEST`.** `nextCursor` is now the sort key (see the
+  Changed entry below) of the last event on the page, not an offset into a
+  list rebuilt per request. Until now an unparsable cursor was silently
+  read as offset 0, restarting the walk from the first page. There are no
+  production instances, so no cursor issued before this change needs to
+  keep working. See `cyoda help audit`.
+
+- **Every scheduled run has one owner, and the scheduler never runs a processor
+  twice unless it is declared `idempotent`.** Every node claims due scheduled
+  transitions from storage and runs them itself. A claimed task has one owner at
+  a time, every write of the run is checked against that claim, and another node
+  takes a task over only after the owner's heartbeats have stopped for
+  `CYODA_SCHEDULER_STALE_AFTER` (default `2m`). Before, one node scanned and
+  handed tasks round robin to its peers, and a task still running after 30
+  seconds was started a second time, so its processors could run twice. Now,
+  before a processor that is not declared `idempotent` is sent to a compute
+  member, the owner marks the task; if that processor may have reached a member
+  and the run does not commit, the task ends `FAILED` and is not run again. A
+  run that failed with nothing unsafe handed off is retried, with a delay that
+  doubles from `CYODA_SCHEDULER_RETRY_DELAY` (`30s`) up to
+  `CYODA_SCHEDULER_RETRY_DELAY_MAX` (`15m`), until the transition's `timeoutMs`
+  passes, or without end when it has none. **A scheduled processor that is safe
+  to repeat must now declare `idempotent: true` to be retried.** See
+  `cyoda help workflows` and `docs/cloud-parity/scheduled-transitions.md`.
+
+- **A scheduled task can end `FAILED`, and a failed task never moves its
+  entity.** The reasons are `UNSAFE_WORK_NOT_COMPLETED`,
+  `STOPPED_AFTER_PARTIAL_COMMIT`, `EXPIRED_AFTER_FAILED_ATTEMPTS`,
+  `OWNER_LOST_REPEATEDLY` (after `CYODA_SCHEDULER_MAX_LOST_OWNERS`, default `3`)
+  and `RUN_PANICKED`. A `FAILED` task is kept, listed by the new
+  `GET /scheduled-tasks` (see Added), counted in `cyoda.scheduler.runs`, logged
+  at ERROR with a ticket, and recorded on the entity as the new audit event
+  `SCHEDULED_TRANSITION_FAIL`. An entity write in the source state arms it
+  afresh; leaving the state, a workflow import that stops scheduling it, or
+  deleting the entity removes it. Lateness changes with it: a task picked up
+  after its deadline on its first attempt is still expired
+  (`SCHEDULED_TRANSITION_EXPIRE`), but one that had already failed or lost an
+  owner now ends `FAILED` (`EXPIRED_AFTER_FAILED_ATTEMPTS`) instead of being
+  dropped, and the grace band above `timeoutMs` is gone. A client that reads the
+  audit event type must accept the new value. See
+  `docs/cloud-parity/scheduled-transitions.md`.
+
+- **One scheduled transition of an entity runs at a time.** While one of an
+  entity's scheduled transitions is running, its others are not claimed; they
+  run after it ends. See `cyoda help workflows` and `docs/plugins/POSTGRES.md`.
+
+- **Entity writes, deletes and workflow imports remove scheduled tasks, and can
+  answer a retryable `409 CONFLICT` when they race the scheduler.** A write that
+  re-binds an entity to a workflow that does not schedule a pending transition
+  now removes the task at the write, recorded as `SCHEDULED_TRANSITION_CANCEL`;
+  before, the task stayed until it came due. Deleting entities removes their
+  tasks in the same transaction, and a workflow import removes the model's tasks
+  that no workflow schedules any more. When the scheduler has written one of
+  those task rows after the client's write began, the write fails with a
+  retryable `409 CONFLICT` — the answer a write racing the fire itself already
+  got. Deletes and imports retry on the server three times first; a batched
+  conditional delete reports the conflict per entity instead of `409`. Two
+  operations can now answer `409` and declare it:
+  `DELETE /entity/{entityId}` and
+  `POST /model/{entityName}/{modelVersion}/workflow/import`; repeating the same
+  import completes it. The conditional and delete-all
+  `DELETE /entity/{entityName}/{modelVersion}` can now answer `CONFLICT` under
+  its existing `409`, which before was only `DELETE_NOT_CONVERGED`. See
+  `cyoda help errors CONFLICT` and
+  `docs/cloud-parity/scheduled-transitions.md`.
+
+- **A write race lost inside a transaction answers a retryable `409 CONFLICT`,
+  whatever the transaction did after it, on every backend.** On PostgreSQL a
+  statement that loses a write race (serialization failure or deadlock) aborts
+  the transaction, and every later statement in it is refused. Those later
+  refusals were read as faults of their own: a ticketed `500`; a
+  `400 WORKFLOW_FAILED` when a processor's joined callback had lost the race and
+  the processor then failed on it; or `412 ENTITY_MODIFIED` when the statement
+  that met the aborted transaction was the engine's `If-Match` compare. Each is
+  now the retryable `409 CONFLICT` — after a failed processor the engine probes
+  the transaction to tell the two apart — and so it is inside an `ASYNC_NEW_TX`
+  processor. `412` is kept for a request whose own `If-Match` precondition does
+  not hold. Memory and SQLite, which find a lost race only at commit, answered
+  `400 WORKFLOW_FAILED` when a `SYNC`, `ASYNC_SAME_TX` or
+  `COMMIT_BEFORE_DISPATCH` (`startNewTxOnDispatch`) processor failed after its
+  joined callback's write had lost a race; they now answer the same `409`. The
+  engine asks the new required SPI method `TransactionManager.LostRace` after a
+  failed dispatch, and keeps the processor's failure attached to the error.
+  Needs the matching cyoda-go-spi release: new `ScheduledTaskStore` contract,
+  `TransactionManager.LostRace`, fenced `AsyncSearchStore.ClearResults`,
+  `ErrTaskBusy`/`ErrStaleClaim`/`ErrMarkedByAnotherClaim` (`ErrStaleClaim`
+  existed; the scheduled-task store and `ClearResults` now return it too).
+  Rolling back an `ASYNC_NEW_TX` processor's savepoint no longer
+  forgets a race that a write inside it had already lost, to an entity or to a
+  scheduled task's row: the transaction fails with the same `409`, even when
+  the processor then failed and its savepoint was rolled back, where before it
+  committed — on PostgreSQL, memory and SQLite alike. A write that another
+  transaction commits after the rollback does not conflict. A client that took
+  those `500`, `400` and `412` answers as final should retry on the `409`. See
+  `cyoda help errors CONFLICT` and `cyoda help workflows`.
+
+- **`If-Match` states the version an update starts from, and is checked once,
+  when the update's transition starts.** This holds on `PUT` and `PATCH` of
+  one entity, for each item of a collection `PUT` and for the gRPC
+  `EntityPatchRequest`. The server compares the value with the entity as the
+  update's transaction reads it, before any criterion or processor runs. A
+  write to the entity later in the same transaction no longer fails it: an
+  update whose processor wrote the entity through a callback that joined the
+  transaction answered `412 ENTITY_MODIFIED` on every backend, although
+  nobody else had written the entity; it now succeeds and keeps that write. A
+  change that another transaction commits after the update's read is a lost
+  race and answers the retryable `409 CONFLICT` on every backend, where it
+  could answer `412` before; a collection with such an item now fails whole
+  with `409` instead of listing the item in `failed[]`. A stale `If-Match`
+  on a collection item now keeps `STATE_MACHINE_START` and
+  `TRANSITION_ABORTED` in the audit log and none of the transition's other
+  audit events; on the single-update doors the transaction rolls back and
+  keeps no event, as before. See `cyoda help errors ENTITY_MODIFIED`
+  and `docs/cloud-parity/entity-if-match.md`.
+
+- **Scheduler settings are replaced.** No longer read:
+  `CYODA_SCHEDULER_DISTRIBUTION`, `CYODA_SCHEDULER_COORDINATOR`,
+  `CYODA_SCHEDULER_REDISPATCH_BACKOFF`, `CYODA_SCHEDULER_BATCH_SIZE`,
+  `CYODA_SCHEDULER_EXPIRY_GRACE` and `CYODA_DISPATCH_FORWARD_TIMEOUT` (the
+  node-to-node call that delegated a scheduled transition is gone). New:
+  `CYODA_SCHEDULER_MAX_RUNS` (`8`), `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` (`4`),
+  `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` (`15s`), `CYODA_SCHEDULER_STALE_AFTER`
+  (`2m`, at least `50s + 3 ×` the heartbeat interval, the same on every node),
+  `CYODA_SCHEDULER_MAX_LOST_OWNERS` (`3`), `CYODA_SCHEDULER_RETRY_DELAY`
+  (`30s`), `CYODA_SCHEDULER_RETRY_DELAY_MAX` (`15m`),
+  `CYODA_SCHEDULER_SHUTDOWN_DRAIN` (`20s`) and, on PostgreSQL,
+  `CYODA_POSTGRES_SCHEDULER_CONNS` (`10`, at least `2`) — a second pool, so a
+  node uses up to eleven more connections. `CYODA_SCHEDULER_SCAN_INTERVAL` must
+  now be `> 0`. An invalid value fails startup. See
+  `cyoda help config scheduler`.
+
+- **A node can take more than six minutes to shut down, and the Helm chart
+  gives it 390 seconds.** On a signal the scheduler drains its runs before the
+  servers drain, and a run with a processor in flight that is not declared
+  `idempotent` is allowed to finish rather than be cut and end `FAILED`. The
+  worst case from signal to exit is
+  `max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10s, callout deadline) + 100s`, where
+  the callout deadline is `(1 + CYODA_RETRY_FIXED_NUM_RETRIES) ×
+  CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS + CYODA_DISPATCH_WAIT_TIMEOUT +
+  CYODA_CALLOUT_HANDOVER_ALLOWANCE` — 375 s at the defaults, and 130 s when no
+  such processor is in flight. The chart (`0.9.0`) sets
+  `terminationGracePeriodSeconds: 390`, where Kubernetes' default is 30. Raise
+  it when you raise those settings. See `cyoda help run` and
+  `cyoda help helm`.
+
+- **Platform-wide admin endpoints need a platform operator.** The signing
+  key-pair endpoints (`/oauth/keys/keypair*`), `/admin/log-level` and
+  `/admin/trace-sampler` accept only `ROLE_ADMIN` in the tenant `PLATFORM`;
+  an admin of any other tenant gets `403 FORBIDDEN`. Get an operator token
+  with `cyoda token --tenant PLATFORM`, or create an admin M2M client in
+  `PLATFORM`. Before this, any tenant's admin could revoke the signing key
+  for the whole cluster. See `cyoda help cli token`.
+
+- **`POST /admin/log-level` silently substituted `info` for an unrecognised
+  level.** It now answers `400 BAD_REQUEST` naming the accepted values
+  (`debug`, `info`, `warn` (alias `warning`), `error`), and the level is left
+  unchanged. Both
+  `/admin` POST bodies (`log-level`, `trace-sampler`) are now also limited to
+  1 MiB.
+
+- **The token endpoint is `POST /api/tenants/{tenant}/oauth/token`;
+  `/api/oauth/token` is gone.** An M2M client id is unique within its tenant,
+  so an application puts its client's tenant in the URL. A request to the old
+  path answers as any unknown path does. A tenant segment that is not an API
+  tenant is `400 invalid_request`. Operators put their per-source rate limit
+  on the new path (`cyoda help auth tokens`).
+
+- **Client ids are unique within a tenant and can be chosen:
+  `POST /clients?clientId=` creates the client with that id, and a taken id
+  answers `409 M2M_CLIENT_EXISTS`.** The client-id grammar is the tenant
+  grammar (`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`, case significant), and
+  `system` in any letter case is reserved. A new client's secret generation
+  starts at a random number instead of 1, so a token of a deleted client
+  cannot open a compute stream of a client later created under the same id.
+  Clients are read and written by (tenant, id); the global client-id index is
+  gone.
+
+- **A secret reset that loses a race with another change to the same client
+  answers `409 CONFLICT` (retryable).** Before, two concurrent resets both
+  answered `200` and one secret was lost.
+
+- **`SYSTEM`, in any letter case, is refused as a token tenant: as the
+  `caas_org_id` of an inbound token, by `cyoda token --tenant`, and as the
+  `{tenant}` of a tenant route.**
+
+- **A `401 invalid_client` that the store decided takes at least 500 ms.**
+  With chosen ids and the tenant in the URL, the answer time must not show
+  whether a tenant holds a client.
+
+- **`cmd/compute-test-client` reads its tenant from the new
+  `CYODA_COMPUTE_TENANT_ID`, required with the client credentials.**
+
+- **SPI: `KeyValueStore` gains `PutIfAbsent`, `CompareAndPut` and
+  `DeleteIfEqual`, and no key-value operation joins a transaction.**
+  Out-of-tree storage plugins must implement the three methods and apply
+  every key-value call when it returns, whatever transaction the context
+  carries.
+
+- **A read at a `pointInTime` later than the consistency time is refused
+  (`400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME`, with the current consistency
+  time in `properties.consistencyTime` and in the message).** The consistency
+  time is the latest instant at which a read is final: it includes every save
+  confirmed before it on any node, and no later save can land at or before
+  it. Every read that takes `pointInTime` is fenced, on HTTP and gRPC:
+  - get by id
+  - get all
+  - direct search
+  - async search submit
+  - conditional delete
+  - the four stats reads
+  - grouped stats
+  - change history
+  - transitions, where a `transactionId` is fenced at that transaction's commit
+
+  There is no waiting. A client that sent "now" from its own clock takes the
+  instant from `GET /entity/consistency-time` instead; a read at a time
+  returned there is never refused, on any node. Reads without `pointInTime`
+  stay current-state reads. The fenced reads and the new endpoint can also
+  answer `503 CONSISTENCY_TIME_UNAVAILABLE` (retryable) when the store cannot
+  certify the consistency time in its wait budget. See
+  `cyoda help errors POINT_IN_TIME_AFTER_CONSISTENCY_TIME` and
+  `cyoda help crud`.
+
+- **The stats reads and gRPC get-all honour `pointInTime`.** Before, these
+  reads accepted `pointInTime` and ignored it:
+  - `GET /entity/stats` and `/entity/stats/{entityName}/{modelVersion}`
+  - `GET /entity/stats/states` and `/entity/stats/states/{entityName}/{modelVersion}`
+  - gRPC `EntityStatsGetRequest`, `EntityStatsByStateGetRequest` and `EntityGetAllRequest`
+
+  They now count or list at that instant: committed data only, inside a
+  transaction too.
+
+- **SPI: the consistency time.** `TransactionManager.ConsistencyTime` is
+  required, `EntityStore.Count` and `CountByState` take `asAt`, and
+  `GetVersionMetadata` reads committed data only inside a transaction (see
+  `COMPATIBILITY.md`). Out-of-tree storage plugins must implement all three
+  and pass the new `spitest` cases.
+
+- **The HTTP and gRPC listeners bind `127.0.0.1` by default, set by the new
+  `CYODA_HTTP_BIND_ADDRESS` and `CYODA_GRPC_BIND_ADDRESS`.** Before, both
+  bound every interface and nothing could change that, so a node in mock
+  IAM, where every caller has `ROLE_ADMIN`, was reachable from the whole
+  network. The default is loopback in every IAM mode, as for
+  `CYODA_ADMIN_BIND_ADDRESS`. A deployment that clients, compute nodes or
+  cluster peers reach from other hosts, and every container, sets both to
+  `0.0.0.0` (or `::`); the Helm chart and the bundled compose files now do.
+  In mock IAM, a listener bound to an address that is not loopback logs a
+  WARN at startup; it is not refused, because a container in mock mode must
+  bind `0.0.0.0` for its port mapping to reach it. The startup banner shows
+  each listener's host and port.
+
+- **A condition whose operator does not apply to the field's type is refused
+  with `400 CONDITION_TYPE_MISMATCH`.** A string or pattern operator
+  (`CONTAINS`, `LIKE`, `MATCHES_PATTERN`, `IEQUALS`, the `NOT_*` and `INOT_*`
+  forms, …) needs a text field (`STRING` or `CHARACTER`); an ordering operator
+  needs a number, text or a date/time; a range operator a number, `STRING` or
+  a date/time, with both bounds in the same one. A comparison or range
+  operand must fit a type the operator applies to. Before, on a number or a
+  boolean such a condition was evaluated: a positive operator answered an
+  empty result, and a negated one matched every entity holding a value
+  there — on conditional
+  delete, `NOT_CONTAINS` on a numeric field deleted them all. **A string
+  operator on a date, time or UUID field used to match its stored text**
+  (`STARTS_WITH "2024"` on a date); it is now refused, because those values
+  compare by their own type — query a date with `GREATER_OR_EQUAL "2024"` and
+  `LESS_THAN "2025"`. A boolean or UUID has no order. A range whose two bounds
+  fit no single type, and a range on a `CHARACTER` field, used to fail as
+  `400 INVALID_CONDITION` when evaluated; they are now refused up front as
+  `CONDITION_TYPE_MISMATCH`. The rule holds on direct and async search,
+  conditional delete, grouped stats and over gRPC. A workflow criterion is
+  checked when it is evaluated, so a criterion that used to read as "not
+  satisfied" now aborts the save with `400 WORKFLOW_FAILED`. A string or
+  pattern operator on `creationDate` or `lastUpdateTime` moves from
+  `400 INVALID_CONDITION` to `400 CONDITION_TYPE_MISMATCH`.
+
+- **An `array` condition carries a required `operatorType`, applied at every
+  tested position.** `{"type":"array","jsonPath":"$.scores[*]","operatorType":"GREATER_THAN","values":[50,null,70]}`
+  means `scores[0] > 50` and `scores[2] > 70`. A clause without an operator,
+  or that tests no position (`values` missing, empty or all `null`), is `400
+  INVALID_CONDITION`. Before, a clause without an operator compared with
+  `EQUALS`, and a clause that tested no position matched every entity — a
+  conditional delete with all-`null` `values` deleted the whole model. A
+  path with a wildcard before its trailing `[*]` is `400 INVALID_FIELD_PATH`.
+  Workflow import answers `400 VALIDATION_FAILED` for each. `ArrayConditionDto`
+  in the OpenAPI spec is `{type, jsonPath, operatorType, values}`, and the
+  operator enums of the condition DTOs list only the 26 operators the server
+  accepts.
+  Migration: add `"operatorType":"EQUALS"` to existing array clauses.
+
+- **Workflow import refuses a criterion that is not a valid condition
+  (`400 VALIDATION_FAILED`).** This covers an unknown or missing `type`, a
+  member of the wrong JSON type, and a body that is not a condition. Before,
+  such a criterion was imported and then failed each time it was evaluated.
+
+- **An array operand is `400 INVALID_CONDITION` under every operator other
+  than `BETWEEN` and `BETWEEN_INCLUSIVE`,** on a `simple` or `lifecycle`
+  clause's `value` and on an `array` clause's entry, on every search surface,
+  conditional delete, grouped stats and gRPC search; workflow import answers
+  `400 VALIDATION_FAILED`. No other operator takes a set of values. Before,
+  it was accepted and the backends answered differently: on a text field
+  `NOT_EQUAL ["a","b"]` matched every entity on some backends, so a
+  conditional delete removed nearly the whole model.
+
+- **A `BETWEEN` or `BETWEEN_INCLUSIVE` whose value is not a two-element
+  array is `400 INVALID_CONDITION` on every search surface and every clause
+  type.** Before, direct and async search and conditional delete answered
+  `400 BAD_REQUEST` for a `simple` or `lifecycle` clause, while grouped stats
+  already answered `INVALID_CONDITION`. The status stays `400`; only the
+  code changes.
+
+- **A search condition that does not parse is `400 INVALID_CONDITION` on
+  direct and async search**, as it already was on conditional delete and
+  grouped stats. This covers an unknown or missing `type`, a field of the
+  wrong JSON type, and a body that is not a condition. Before, search
+  answered `400 BAD_REQUEST`. Over gRPC nothing changes: a condition that
+  does not parse is still the transport status `InvalidArgument`.
+
+- **A `BETWEEN` or `BETWEEN_INCLUSIVE` pair must hold two non-null scalar
+  bounds. A `null`, object or array bound is `400 INVALID_CONDITION`;
+  workflow import answers `400 VALIDATION_FAILED` for it.** Before, a `null`
+  bound was accepted and the backends answered differently. An object or
+  array bound made PostgreSQL answer `500`, and inside `NOT` the in-memory
+  evaluator compared against the bound's printed form, so a conditional
+  delete removed the entities that comparison chose.
+
+- **A missing or `null` operand is `400 INVALID_CONDITION` under every
+  operator other than `IS_NULL` and `NOT_NULL`,** on a `simple` or
+  `lifecycle` clause, on every search surface, conditional delete, grouped
+  stats and gRPC search; workflow import answers `400 VALIDATION_FAILED`, for
+  a criterion and a pre-check alike. Only `IS_NULL` and `NOT_NULL` may omit
+  the operand. Before, the request answered `200` and the field was compared
+  with an empty string: `EQUALS` matched `""`, and `CONTAINS` or
+  `STARTS_WITH` matched every string, so a conditional delete removed every
+  entity with a string at the path.
+
+- **SPI: one operand rule, `ValidateOperand`, refused by the SPI itself.**
+  `cyoda-go-spi` now refuses a missing operand, an object, an array outside
+  a range and a range that is not two scalar bounds in `ConditionToFilter`
+  and `Prepare`, for every backend, with errors that wrap
+  `ErrInvalidOperand` ([spi#69](https://github.com/Cyoda/cyoda-go-spi/pull/69)).
+  A `Filter` whose range pair is only in `Value`, or a binary leaf with a
+  nil `Value`, no longer prepares. A plugin author who builds a `Filter` in
+  Go must also keep each operand, and each range bound, in the scalar set
+  (string, bool, `json.Number`, the integer and float types): `Prepare` and
+  `ConditionToFilter` refuse any other Go value, such as a `time.Time`, a
+  `uuid.UUID` or a pointer, with `ErrOperandNotScalar` (a bound with
+  `ErrBetweenNonScalarBound`). cyoda-go's own checks now call this
+  rule, so it is defined once; the input cyoda-go accepts is unchanged. See
+  `COMPATIBILITY.md`.
+
+- **A condition tests at most 10,000 entries; a larger one is
+  `400 INVALID_CONDITION`, and workflow import answers
+  `400 VALIDATION_FAILED`.** Each entry in an `array` clause's `values`
+  counts one, `null` entries included, a `function` clause counts one plus
+  the entries of its pre-check, and every other clause counts one. The count
+  is taken before the condition is expanded, on search (sync and
+  async, HTTP and gRPC), conditional delete, grouped statistics and workflow
+  import. The limit bounds the expansion: an `array` clause expands into one
+  clause per entry, and each check expands it again. It does not bound the
+  total cost of a request, just as a group of simple pattern clauses does
+  not.
+
+- **Search, conditional delete and grouped statistics check a condition in
+  one order — structure, then patterns, then the model's paths, then types
+  — so one malformed condition gets the same code on each.** A bad pattern
+  on an undeclared path is now `400 INVALID_CONDITION` on search; it was
+  `400 INVALID_FIELD_PATH`. On grouped statistics an object operand is now
+  `400 INVALID_CONDITION`; it was `400 CONDITION_TYPE_MISMATCH`. A
+  structural fault on an undeclared path, such as a missing `operatorType`,
+  is now `400 INVALID_CONDITION` there too; it was `400 INVALID_FIELD_PATH`.
+
+- **Sync and async search answer `404 MODEL_NOT_FOUND` for an unknown model,
+  before checking a condition that parses.** A malformed condition on an
+  unknown model was `400`. A body that does not parse is still
+  `400 INVALID_CONDITION`, because it is refused before the model is looked up.
+
+- **A function condition's pre-check (`function.criterion`) is evaluated
+  before the function is called. When it does not match, the function is not
+  called and the function condition is false.** Before, the pre-check was
+  ignored and the function was always called. A pre-check holds only local
+  conditions (`simple`, `lifecycle`, `array`, and `group` of those): workflow
+  import refuses, with `400 VALIDATION_FAILED`, a pre-check that holds a
+  function condition at any depth, and a pre-check that breaks a check the
+  rest of the criterion is held to (path grammar, operator and operand shape,
+  patterns); the entry limit (10,000) and the depth limit (50) count through
+  every pre-check. The message names the position of the condition as a JSON
+  Pointer into the criterion, such as `/conditions/1/function/criterion`.
+
+- **Workflow import refuses a function condition without a `function` object
+  or without a `function.name` (`400 VALIDATION_FAILED`), at any depth of a
+  criterion.** Before, it imported and then failed every dispatch.
+
+- **The state-machine audit `data` gains `functions` when a criterion holds a
+  function condition.** `WORKFLOW_SKIP` and `TRANSITION_NOT_MATCH_CRITERION`
+  add it to the `data` they carry, and so do `WORKFLOW_FOUND` and
+  `TRANSITION_MAKE` (see the typed-data entry below). Each entry is one
+  function condition the evaluation reached, in order: `path`, `name`,
+  `called`, and when present `preCheck`, `preCheckMatched`, `matches` and
+  `reason`. `data.reason` then lists every entry —
+  `<name> at <path>: pre-check did not match, not called` or
+  `<name> at <path>: answered <true|false>[: <reason>]`, joined with `; ` —
+  except for a criterion that is one function condition that was called,
+  which keeps the member's reason. A manual transition refused by such a
+  criterion answers `transition "<name>" criterion not matched: <that reason>`,
+  and the bare `transition "<name>" criterion not matched` when the reason is
+  the default `criterion did not match`. See
+  `cyoda help workflows` and `docs/cloud-parity/function-conditions-in-criteria.md`.
+
+- **gRPC search with a function condition whose pre-check is malformed
+  answers with an `InvalidArgument` transport status instead of the
+  `INVALID_CONDITION` error envelope.** The pre-check is now parsed with the
+  condition, so the condition fails to parse before the function condition is
+  refused. HTTP is unchanged: `400 INVALID_CONDITION`.
+
+- **Every state-machine audit event carries typed `data`, never `null`, with
+  the event's `eventType` inside it.** `data` is a `StateMachineEventDto`, the
+  base whose mapping names one schema per event type; its `eventType` repeats
+  the outer `eventType` and selects the schema. A field is present only when
+  the engine knows its value. New fields: `STATE_MACHINE_START` `state`
+  (absent on create); `STATE_MACHINE_FINISH` `state` and `stopReason`
+  (`{type, description, rejectedTransitions}`: `COMPLETED_NO_AUTO_TRANSITIONS`,
+  `COMPLETED_ALL_CRITERIA_REJECTED` with the refusals of the last pass, or
+  `FORCE_SUCCESS`); `CANCEL` `reason`, which moves out of `details`;
+  `WORKFLOW_FOUND` `workflowName`; `TRANSITION_MAKE` `workflowName`,
+  `transition` and `newState`; `TRANSITION_NOT_FOUND` `workflowName` and
+  `transition`; `PAUSE_FOR_PROCESSING` `workflowName`, `transition` and
+  `processNames`; `SCHEDULED_TRANSITION_FIRE` `transition`, `sourceState` and
+  `workflowName`; `SCHEDULED_TRANSITION_EXPIRE` `transition` and
+  `sourceState`; `SCHEDULED_TRANSITION_CANCEL` `transition`, `sourceState`,
+  and `workflowName` when the task is cancelled as it comes due.
+  `GET /audit/entity/{entityId}/workflow/{transactionId}/finished` returns the
+  same typed `data`, and answers `404 ENTITY_NOT_FOUND` for a scheduled fire's
+  transaction, which records no `STATE_MACHINE_FINISH`. See
+  `cyoda help audit`.
+
+- **`TRANSITION_ABORTED` names the transition in `data.transition`, not
+  `transitionName`; on a loopback the field is absent.** Before, a loopback
+  recorded the literal `"loopback"`.
+
+- **`STATE_PROCESS_RESULT` carries `processorName`, `executionMode`, `success`
+  and, when the compute member itself sent failure text, `failReason`; one
+  record per failed processor.** `stateProcessId`, `stateProcessClassName`,
+  `stateProcessType` and the schema `StateProcessIdDto` are removed, and so is
+  the `mode` field the server sent. A processor configured with no execution
+  mode is recorded as `SYNC`, the mode it runs in. A failed pipeline no longer
+  records a second `STATE_PROCESS_RESULT` `{success: false}` with the error
+  text in `details`; the failed processor's own record says
+  `Processor "<name>" failed`. `failReason` is the member's text only: the
+  platform's sentence for a member that sent none, and every other failure,
+  record no `failReason`. A `success: false` answer with no text gives the
+  client `processor returned failure` whichever node the member is connected
+  to.
+
+- **Text holding U+0000 never reaches a state-machine audit event.**
+  PostgreSQL refuses U+0000 in `jsonb`, so such an event used to abort the
+  operation there, while memory and SQLite stored it. Every text an event
+  carries is now refused where it enters, with nothing recorded:
+  - a compute member's answer whose reason or failure text holds it is
+    unreadable (`400 WORKFLOW_FAILED`, not retryable, where its failure fails
+    the operation), on a local try and through a hand-over;
+  - a workflow import whose body holds text no backend can store (U+0000, an
+    unpaired surrogate, invalid UTF-8) is refused with `400 BAD_REQUEST`, as an
+    entity payload is, and so is a collection update whose body holds such text
+    outside an item's payload (an `ifMatch`, a `transition`), before any item
+    runs;
+  - a transition name or an If-Match value holding U+0000 is refused with `400
+    BAD_REQUEST` before the run records anything, on every door, a joined
+    write included.
+
+- **Every polymorphic type in the OpenAPI document is a base with a
+  discriminator mapping, and every condition is a `QueryConditionDto`.**
+  `AbstractConditionDto` and `CriterionGroupConditionDto` are removed: every
+  condition position — the search, async-search, grouped-stats and
+  conditional-delete bodies, a workflow or transition `criterion`, a group's
+  `conditions`, a function's pre-check — is a `$ref` to `QueryConditionDto`,
+  whose mapping is `array`, `function`, `group`, `lifecycle`, `simple`; one
+  `GroupConditionDto` remains. `AuditEventDto` gains the mapping
+  `EntityChange`, `StateMachine`, `System`, and the audit page's `items` are
+  uses of it. `TransitionDefinitionDto.processors` items are a `$ref` to
+  `ProcessorDefinitionDto`. A client generated from the document gets
+  different class and type names. Where a `function` condition is valid is
+  stated by each position's description and enforced by the server, as
+  before.
+
+- **Scalar values and polymorphic bodies are schemas with no `type`, and two
+  enums are named.** `SimpleConditionDto.value`, `LifecycleConditionDto.value`
+  and each entry of `ArrayConditionDto.values` accept a string, number,
+  boolean, `null` or a `[low, high]` pair of scalars, stated with `not`,
+  `minItems`, `maxItems` and `items` rather than a `oneOf`;
+  `GroupKeyEntry.value` accepts any value that is not an object or an array;
+  the entity-create and model-import bodies accept an object or an array of
+  objects. The accepted values are unchanged. `AuditEventDto.severity` is the
+  named enum `AuditEventSeverity` and `GroupConditionDto.operator` is
+  `GroupOperator`, so the generated constant names change.
+
+- **The outer `eventType` of a state-machine audit event is a plain string,
+  not an `enum`; its known values are the keys of `data`'s mapping. A client
+  reads an audit kind or an event type it does not know, if it ignores unknown
+  fields and unknown discriminator values.** An audit event of an unknown kind
+  reads as an empty entry in `items`, and an event of an unknown type reads
+  with its `eventType` and empty `data`. `data` is not in `required` so that a
+  client can do this; the server sends it on every event. For a Jackson client
+  this takes `FAIL_ON_UNKNOWN_PROPERTIES` and `FAIL_ON_INVALID_SUBTYPE`, both
+  disabled. From this release the contract grows by addition only: a field, a
+  member of a base and an event type can be added; nothing published is
+  renamed or removed; adding a value to a response `enum` is declared as a
+  breaking change. See `cyoda help openapi` and
+  `docs/adr/0005-openapi-client-generation.md`.
+
+- **`TechnicalUserCredentialsDto.grant_type` gains the value
+  `urn:ietf:params:oauth:grant-type:token-exchange`**, which `POST /clients`
+  and `PUT /clients/{clientId}/secret` answer for an on-behalf-of client. A
+  value added to a response `enum` is a breaking change: a client generated
+  from the v0.8.4 document cannot read it. Regenerate the client.
+
+- **Workflow import refuses a processor `type` other than `externalized`
+  (`400 VALIDATION_FAILED`), `internalized` included, and stores an omitted or
+  empty `type` as `externalized`.** Before, any value was imported and stored
+  as given; `internalized` was refused at dispatch with `400 WORKFLOW_FAILED`
+  and every other value ran as `externalized`. An export now always carries
+  `externalized`. See `docs/workflow-schema-versioning.md`.
+
+- **Workflow import refuses a transition that omits `manual` or sends it as
+  `null` (`400 VALIDATION_FAILED`).** The OpenAPI document always listed
+  `manual` as required, but import read the omission as `false` and stored an
+  automatic transition. `manual` has no default: send `"manual": false` where
+  the omission meant an automatic transition. See
+  `docs/workflow-schema-versioning.md`.
+
+- **Typed JSON from a client must spell its member names exactly, once.**
+  Every HTTP request body, the `data` of every gRPC request event, a compute
+  member's answer, every condition and every paging cursor is decoded with
+  `encoding/json/v2` under one rule (the SPI's `strictjson`): a name that
+  differs from a declared member only in case, an undeclared member and a
+  duplicate member are each refused, as is anything after the value. Before,
+  `encoding/json` matched names ignoring case and Unicode folding, let a
+  duplicate replace or merge into the first value, and on most bodies ignored
+  an undeclared member, so one body could mean two things: a workflow import
+  holding `"transitions"` and `"Transitions"` stored a transition sent without
+  `manual` as automatic, a processor payload's `"Data"` was applied as the
+  entity's data, and a compute answer that misspelt `success` was read as a
+  success.
+
+  HTTP answers `400` with the endpoint's code, gRPC `InvalidArgument`, and a
+  compute answer that breaks the rule is unreadable and fails the callout. The
+  message names the location as a JSON Pointer (`invalid JSON at
+  "/workflows/0": unknown member name "Name"`) and no longer the server's Go
+  types. A gRPC entity write runs the unstorable check on the whole event
+  before the decode, as the HTTP collection endpoints do, so text no store can
+  hold — a member written twice included — is answered by the event's error
+  response (`CLIENT_ERROR`, `BAD_REQUEST: …`), not `InvalidArgument`.
+
+  Some refusals are named in words: a condition leaf that writes its operator
+  twice (two of `operatorType`, `operator`, `operation`) is refused naming the
+  two members and the leaf's place, and a condition whose `type` is written in
+  another case is refused as having no `type`. A criterion function member
+  placed beside `config` instead of in it is refused; before, it was ignored
+  and left the callout untagged. A JWK keeps members of its own, but its
+  `kty`, `n` and `e` are read by their exact names: a trusted key sent with
+  `"N"` and `"E"` is refused (`missing n or e`), where before it registered.
+  Invalid UTF-8 and a lone surrogate escape in a string are refused
+  (`encoding/json` replaced them with U+FFFD). A date-time member of a body or
+  event (`pointInTime` in a gRPC event and in grouped stats, a key's
+  `validFrom` and `validTo`) is read as RFC 3339, which separates fractional
+  seconds with `.` only, has two-digit hours and bounds the offset:
+  `03:04:05,5Z`, `T3:04:05Z` and `+24:00`, which `encoding/json` accepted, are
+  refused. The date-time query parameters (`pointInTime`, `fromUtcTime`,
+  `toUtcTime`) are read by the same rule, on the operations that declare them:
+  they refuse the comma too, a one-digit hour (`T3:04:05Z`) and the offset
+  `+24:00`, as they refuse a bare date (`2024-01-02`), which the generated
+  routes accepted; each is `400 BAD_REQUEST`. An empty value
+  (`?pointInTime=`), which the generated routes bound as the year 0001, is
+  refused too. The spec's descriptions of these parameters say RFC 3339, where
+  they said ISO 8601.
+
+  On gRPC, an event whose `data` is `null` is refused as missing its
+  required members, and in a request event a required member whose schema
+  states a type is refused when it is `null` (`field name: must not be
+  null`); before, a `null` event read as a zero event, and a `null` string,
+  number or array member as its zero value. The entity `data`, the `patch`
+  and the model-import `payload` hold any JSON value: a `null` entity `data`,
+  merge `patch` or import `payload` is left to the operation, which refuses
+  it with `VALIDATION_FAILED`, as on HTTP. The `EntityModelGetAllRequest`
+  data is now decoded: an event without `id`, or whose data is not its JSON
+  object, is `InvalidArgument`, where before the data was ignored.
+  `joinedLegalEntityId` on
+  `CalculationMemberJoinEvent` (documented, not in the schema) and `pageSize`
+  on `EntityDeleteAllRequest` (no effect; Cloud's client may send it) are
+  declared in the event schemas.
+
+  `audience` on a key-pair or trusted-key request, `invalidateGracePeriodSec`
+  on a trusted-key registration and any member in a trusted-key invalidate
+  body (which has none; `gracePeriodSec` was ignored before) are refused like
+  any undeclared member: key pairs and trusted keys have no audience, and
+  trusted keys no grace period, so accepting them would drop what the client
+  asked for.
+
+  Entity and message payload contents are not typed JSON — no member there is
+  unknown, and `"a"` and `"A"` are two fields — but a payload has one reading:
+  a member written twice in one object is refused in a message payload and in
+  model-import sample data (on both doors, which also refuse anything after
+  the sample value), as it already was in an entity payload, and makes a
+  compute member's processor answer unreadable. The model validate endpoint
+  reads its data as entity create does, so it no longer calls valid what
+  create refuses, and create collection refuses unstorable text anywhere in
+  the body, as update collection does. See
+  `docs/cloud-parity/strict-member-names.md` and
+  `docs/workflow-schema-versioning.md`.
+
+- **Every HTTP operation refuses a query parameter it does not declare.**
+  A query parameter is read by its exact name, as a body member is; before,
+  any other name was ignored, so a misspelt parameter silently changed the
+  request. `DELETE /entity/{entityName}/{modelVersion}?PointInTime=…` with no
+  body deleted every current entity of the model, where `pointInTime` deletes
+  the entities as they were at that instant; the gRPC delete-all already
+  refuses the misspelling. The retired `waitForConsistencyAfter` is refused
+  the same way on the seven entity writes, where since v0.8.4 it was accepted
+  and ignored; the write is not made. Now such a request is `400 BAD_REQUEST:
+  unknown query parameter "PointInTime"`, with `properties.parameter` naming
+  it. A query string that does not parse is refused whole (`400 BAD_REQUEST:
+  malformed query string`), as is a parameter other than an array given more
+  than once (`query parameter "…" is given more than once`): `url.Values`
+  drops a pair it cannot parse, and the binding read the first of repeated
+  values, so both changed a request without a word. This holds on every
+  operation cyoda-go serves, checked before the parameters are bound, so a
+  refusal reads the same on every route; grouped stats, the one hand-written
+  route, is checked too, and every served operation's OpenAPI responses
+  declare the 400. The two transitions operations (`GET
+  /entity/{entityId}/transitions`, `GET
+  /platform-api/entity/fetch/transitions`) are now served by the generated
+  routes: a malformed `pointInTime` is `invalid value for parameter
+  'pointInTime'` (it was `invalid pointInTime format`), an empty one is
+  refused (it read as absent), and an `entityId` or `transactionId` that is
+  not a UUID is `400 invalid value for parameter '…'` (an `entityId` was
+  looked up and answered 404). The token endpoint declares none and refuses
+  any query parameter with `400 invalid_request`, `unsupported parameter`, so
+  a credential never travels in a URL. See
+  `docs/cloud-parity/strict-member-names.md`.
+
+- **A conditional delete whose body is only non-JSON white space no longer
+  deletes every entity of the model.**
+  A body of a vertical tab, a form feed or a no-break space read as "no
+  condition" and deleted the whole model; it is now an invalid condition (`400
+  INVALID_CONDITION`) and nothing is deleted. Only an empty body, or one of
+  JSON white space (space, tab, CR, LF), means no condition.
+
+- **A processor's `startNewTxOnDispatch` is read beside `executionMode`, on
+  the processor, where the OpenAPI document and `cyoda help workflows`
+  place it** — not inside `config`. Before, import refused the documented
+  placement as an unknown field and accepted the member only inside
+  `config`; export wrote it there. Now the documented placement is accepted
+  and exported, and inside `config` it is refused as an unknown member
+  (`400 BAD_REQUEST`). Move the member out of `config`. See
+  `docs/workflow-schema-versioning.md`.
+
+- **Go 1.27.4 is required to build** (`go 1.26.9` → `go 1.27.4` in the root,
+  the three plugin modules and `go.work`), for `encoding/json/v2`, for the
+  `crypto/x509` fix of GO-2026-6809 (distrust of compromised intermediate
+  certificates) and for the `net/http` fix of GO-2026-6859. An out-of-tree
+  plugin raises its own `go` directive with its cyoda-go bump.
+
+- **Setting a model's unique keys without `uniqueKeys` is refused; it no
+  longer removes every key.** The keys sent replace the model's keys. A
+  request without `uniqueKeys`, or with `"uniqueKeys": null`, was accepted
+  as "no keys" and removed them all, on both doors. Now `PUT
+  /model/{entityName}/{modelVersion}/unique-keys` answers `400 BAD_REQUEST`
+  and gRPC `InvalidArgument`, and nothing changes. Send `"uniqueKeys": []` to
+  remove the keys.
+
+- **An entity's data is a JSON object at every change level.** With a
+  change level set, a write whose data did not fit the model proposed a
+  schema change instead of being refused: at `TYPE` a `null` entity made the
+  model's root nullable and was stored with no data, and at `STRUCTURAL` a
+  `null`, scalar or array replaced the document. Create, update and the
+  collection writes now refuse it with `VALIDATION_FAILED: validation
+  failed: expected object, got …` — `400` on HTTP, `CLIENT_ERROR` in the
+  gRPC response envelope — as a model without a change level does (and as
+  patch already did), and neither the model nor the entity changes. A
+  collection update on HTTP on a model with unique keys answered a scalar
+  or array root with a 500; it answers the same `VALIDATION_FAILED`. A
+  processor that returns a scalar or an array as the entity's data fails
+  the transition, as processor output that does not fit the model does;
+  `null` data from a processor still means no change. Below `STRUCTURAL` the
+  refusal no longer names a change level as the remedy.
+
+- **`EntityModelSetUniqueKeysRequest` and `EntityModelSetUniqueKeysResponse`
+  have schemas in the published CloudEvent tree, and the request is read
+  through the type generated from its schema.** The event's `id`, `model`
+  and `uniqueKeys` are required, and so are `id` and `fields` on each key;
+  none may be `null`. A `"success": null` and an `error` without `code` or
+  `message` are refused as on every other event. The
+  response is typed as `EntityModelSetUniqueKeysResponse`; its members are
+  those it had (`modelId`, `state`). `common/CloudEventType.json` now lists
+  every event type the server accepts or sends: these two, and
+  `EntityPatchRequest`, `EntityFunctionCalculationRequest` and
+  `EntityFunctionCalculationResponse`, which had schemas but were missing
+  from the enum. See `docs/cloud-parity/cloudevent-type-coverage.md`.
+
+- **An empty `If-Match` on PATCH is `428 PRECONDITION_REQUIRED`, as an absent
+  one is.** An empty value names no version, but HTTP passed it on and the
+  patch was applied as last-writer-wins. Only `If-Match: *` accepts
+  last-writer-wins. The gRPC `EntityPatchRequest` already refused an empty
+  `ifMatch`. See `cyoda help errors.PRECONDITION_REQUIRED`.
+
+### Added
+
+- **Every release is installed the way users install it, after it is
+  published.** The `Verify release` workflow runs after the release and the
+  chart release, and weekly. For every release: `install.sh` with
+  signatures required, the `.deb` and `.rpm` in clean containers, the signed
+  image by digest, the help asset's version. For the newest stable release
+  also: GitHub's Latest mark, `/releases/latest/download/` `SHA256SUMS` and
+  `install.sh`, the unpinned `install.sh`, the image tag `latest` and
+  Homebrew. For a chart release: the Helm repository serves the chart with
+  its appVersion, and the chart downloads and renders. Every run also checks
+  that GitHub's Latest mark is on the newest stable release.
+  `scripts/verify-release.sh` runs the same checks by hand, except Homebrew
+  and the Latest-mark check for a tag other than the newest.
+  `SHA256SUMS` now lists `install.sh`, so the signature covers the
+  installer too.
+- **`cyoda help install` and `cyoda help design`.** `install` gives every
+  way to install and upgrade the binary (Homebrew, the install script and its
+  settings, `.deb`/`.rpm`, the container image, `go install`). `design` gives
+  practices for entity models and workflows, each pointing to the reference
+  topic that states the rule.
+
+- **`CYODA_POSTGRES_MODEL_CONNS` (default `8`, at least `2`).** The
+  PostgreSQL model store — model reads, schema extensions and model
+  administration — runs on a pool of its own, apart from the main pool, so
+  entity transactions cannot starve it. Extensions hold at most half its
+  connections, so model reads always have the rest; a smaller or malformed
+  value fails startup. Each node opens up to this many more PostgreSQL
+  connections. The pool reports through `cyoda.storage.pool.connections`
+  under `pool="model"`. See `cyoda help config database`.
+
+- **Location-independent transactions through an optional storage-plugin
+  capability.** A storage plugin can supply the coordination of its
+  transactions itself, through the SPI's optional
+  `TransactionCoordinationCapable` on its store factory. cyoda-go asks for it
+  once at start-up and logs the choice at INFO (`transaction coordination
+  selected`, `locationIndependent`); an error from the backend fails start-up.
+  On such a backend the pass a compute member receives names no owning node,
+  also for a callout handed over to another node, and every node serves a
+  callback where it lands, with no proxy hop. The callbacks of one transaction
+  may then run at the same time: of two that wrote the same entity from the
+  same version, one keeps nothing but a schema extension it made and is
+  answered a retryable `409 CONFLICT`. The
+  scope rules and the answers are otherwise the same. None of the in-tree
+  backends (memory, SQLite, PostgreSQL) offers the capability. See `cyoda help
+  cluster` (TRANSACTION ROUTING).
+
+- **An async search that failed says why.** The async search status carries
+  an optional `failureReason`, present only when the status is `FAILED`:
+  `failureReason` on HTTP `GET /search/async/{jobId}/status`, and
+  `status.failureReason` on the gRPC `SnapshotGetStatusRequest` answer. A
+  failure the request caused carries the client error a direct search would
+  answer, error code first; a server-side failure carries
+  `SERVER_ERROR: internal error [ticket: <uuid>]`, its detail logged under the
+  ticket; a known cause carries a fixed text (for example `search
+  abandoned: executor lost repeatedly`). Before, a
+  caller saw `FAILED` and no reason. See `cyoda help search`.
+
+- **HTTP responses carry warnings in `Cyoda-Warning` headers.** A warning a
+  request raises — the default-workflow fallback, a compute member's warning,
+  prefixed with the callout's kind and name — was returned only in the gRPC
+  `warnings` array; an HTTP response now carries each one in a
+  `Cyoda-Warning` response header field line, in the order raised, on
+  success and error responses alike. A value is percent-encoded UTF-8 (a
+  control character is sent as a space), so a compute member's text cannot
+  end the header line. At most 16 warnings, 512 bytes per value and 2048
+  bytes in all; a cut value ends with an encoded `…`, and one more value,
+  `further warnings were omitted`, marks a cut set. A warning raised after
+  the response has started is not sent. A request forwarded to its
+  transaction's owner carries the owner's headers, and CORS exposes the
+  header (`Access-Control-Expose-Headers: Cyoda-Warning`). See
+  `cyoda help errors`.
+
+- **A controllable platform clock, a test feature (off by default).** With
+  `CYODA_CLOCK_CONTROL_ENABLED=true`, a platform operator can set the clock
+  to a past or future time, change its rate, or move it forward through
+  `POST /platform/clock`; `GET /platform/clock` (and the gRPC
+  `PlatformClockGetRequest`) read it. Revision, audit, consistency and
+  scheduled times follow the clock, and a move fires each scheduled
+  transition at its due time. Callout requests carry, in the CloudEvent
+  `time` attribute, the platform time at which the owning node took the
+  callout up, the same on every try and every node. Authentication,
+  timeouts and leases stay on real time. The clock is instance-wide. A
+  change answers only once every node of a cluster holds the new setting;
+  the answer lists the nodes, and a node that does not confirm fails the
+  change with `503 CLOCK_NOT_CONFIRMED`. See `cyoda help clock`.
+
+- **`GET /platform/cluster` lists the cluster's nodes and says whether the
+  cluster is operational.** For a platform operator only. Every member of
+  the cluster, the serving node included, is asked for its status over the
+  sealed peer channel, each ask bounded by `CYODA_PROXY_TIMEOUT`. Each node
+  is listed with its reachability (`UP`, `DOWN`) and lifecycle state and,
+  when it answered, its database check, version and clock setting. The
+  answer is `200` when every node is `UP` and `NORMAL` with its database
+  check passing and all share one version and one clock setting, and `503`
+  otherwise, with the same body. `waitForNodes` (1 to 1000) waits, up to
+  `timeoutMs` (1 to 600000, default 30000), for that many `UP`/`NORMAL`
+  nodes. A bad parameter is `400 BAD_REQUEST` naming it in
+  `properties.parameter`. Without clustering the one node is `local`. See
+  `cyoda help cluster` and `docs/cloud-parity/cluster-status.md`.
+
+- **Node lifecycle states in the gossip metadata.** Every node publishes its
+  state: `STARTING` until it has finished building, `NORMAL`, `DRAINING`
+  from the start of shutdown (gossiped before the node leaves), and
+  `UNHEALTHY` after a recovered panic; the precedence is `UNHEALTHY` >
+  `DRAINING` > `STARTING` > `NORMAL`, and no transition is undone. The
+  state takes room in the 512-byte metadata: `CYODA_NODE_ID`,
+  `CYODA_NODE_ADDR` and `CYODA_GRPC_NODE_ADDR` together have 406 bytes.
+
+- **`grpc.health.v1.Health/Check` without a token.** The gRPC listener serves
+  the standard health service for probes such as `grpc_health_probe` and
+  Kubernetes `grpc` probes: `Check` for the empty service name answers
+  `SERVING` while `/readyz` answers `200` and `NOT_SERVING` otherwise; any
+  other name is `NOT_FOUND`. `Watch` and `List` require a token and
+  `ROLE_M2M` and answer `UNIMPLEMENTED`. See `cyoda help grpc`.
+
+- **`cyoda.cluster.member.count`**, an observable gauge of the live cluster
+  members, this node included, per lifecycle state, labelled
+  `cyoda.cluster.member.state` (`starting`, `normal`, `draining`,
+  `unhealthy`; `0` for a state no member holds). Exposed in cluster mode
+  regardless of `CYODA_OTEL_ENABLED`. See `cyoda help telemetry`.
+
+- **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server
+  error (500) already carried it (a UUID, also written to the server log with
+  the failure); the schema now types it for generated clients. No other
+  response carries one, the 503s included.
+
+- **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
+  return a fresh consistency time** for the caller's tenant, as
+  `{"consistencyTime": "…"}`: RFC 3339 at the store's full precision, never
+  rounded. It requires `ROLE_M2M`. A transaction token does not change the
+  answer. `cyoda help crud` shows how to read a list in consistent pages:
+  take the consistency time once and pass it as `pointInTime` on every page.
+
+- **gRPC change history carries the attributed kind and the executor.**
+  `EntityChangesMetadataGetRequest` answers each change's `changeMeta` with
+  `attributedKind` and `executedBy` `{id, kind}`, as
+  `GET /entity/{entityId}/changes` does; both are absent on a change recorded
+  without attribution. The CloudEvents schema `common/EntityChangeMeta.json`
+  gains the two optional properties.
+
+- **`cyoda help auth integration`: the application integration guide.** Step
+  by step for a backend acting for its users, background jobs, compute nodes
+  and the tenant admin: the exact requests, claims and settings, the
+  attributes a compute node receives and a segregation-of-duties recipe, every
+  `/tenants/{tenant}/oauth/token` error description with its retry rule, secret and key
+  rotation, an incident playbook, mock mode, a local end-to-end on-behalf-of
+  recipe, and the move from OIDC. `docs/access-to-the-cyoda-api.html` carries
+  the same guide with its scenario diagrams.
+
+- **`cyoda token` signs a short-lived admin token offline.**
+  `cyoda token --tenant <tenant> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]`
+  signs a person token (`user_roles`, default `ROLE_ADMIN`; user `operator`;
+  lifetime `15m`, or `CYODA_JWT_EXPIRY_SECONDS` when that is shorter; an
+  explicit `--ttl` is at most `CYODA_JWT_EXPIRY_SECONDS`) with
+  `CYODA_JWT_SIGNING_KEY` and prints it, and nothing else, on stdout. It opens
+  no store and makes no network call. The token carries `aud` when
+  `CYODA_JWT_AUDIENCE` is set, serves HTTP and unary gRPC calls, and verifies
+  while the signing key verifies on the cluster. Exit codes: `0` success (and
+  `-h`/`--help`), `1` key or configuration error, `2` flag error. See
+  `cyoda help cli token`.
+
+- **A per-tenant cap on M2M clients.** `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT`
+  (default `100`; `0` means no cap; a negative value refuses to start).
+  `POST /clients` in a tenant that already holds that many clients answers
+  `400 M2M_CLIENT_CAP_REACHED` and creates nothing; deleting a client frees a
+  slot. Creates on several nodes at the same moment can each pass the check,
+  so a tenant can exceed the cap by at most one client per node. See
+  `cyoda help errors M2M_CLIENT_CAP_REACHED` and
+  `docs/cloud-parity/m2m-clients.md`.
+
+- **Callout failover: a processor, criterion or function request that is not
+  delivered, or not answered, is given to another compute member.** The dividing
+  line is the hand-off — the moment the work is on a member's connection. Work
+  that never got there is always tried elsewhere. Work that did, and then got no
+  answer or lost its connection, is tried elsewhere only when a repeat is safe:
+  every criterion, every scheduled transition's function, and a processor whose
+  `config` declares the new **`idempotent: true`** (default `false`) — the
+  author's statement that running it more than once, possibly at the same time
+  on two members, equals running it once, in cyoda-go and in every system it
+  touches. A member that answers `success: false` ends the callout, whatever its
+  `retryable` says, and so does an answer that cannot be read. `retryPolicy`
+  selects the number of tries (`NONE`: one; `FIXED` or unset: one plus
+  `CYODA_RETRY_FIXED_NUM_RETRIES`, default `3`) and is honoured on a scheduled
+  transition's `function` too. In a cluster the node holding the transaction
+  tries its own compute members and then offers the callout to one peer node
+  after another; a node that receives it runs with the owner's tries left and
+  the owner's answer limit, tries its own members, and never passes it on — the
+  bound on `responseTimeoutMs` is the owner's to apply. The number of tries is
+  the normal number, while the time is the hard limit: `tries × answer limit +
+  CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`, 155 s at the
+  defaults. Every try carries the same `requestId`, so a compute member that
+  de-duplicates on it recognises a repeat. When more than one try failed the
+  client gets the new **`503 CALLOUT_FAILED`**, listing them. What a processor
+  does outside cyoda-go is not undone by a rollback and is repeated by a repeat;
+  that stays the application's to design for. See `cyoda help workflows`,
+  `cyoda help cluster` and `docs/cloud-parity/callout-failover.md`.
+
+- **Callout settings.** `CYODA_RETRY_FIXED_NUM_RETRIES` (default `3`),
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` (default `30000`, until now a constant),
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`),
+  `CYODA_DISPATCH_CONNECT_TIMEOUT` (default `2s`),
+  `CYODA_CALLOUT_HANDOVER_ALLOWANCE` (default `30s`) and
+  `CYODA_CALLOUT_PASS_ALLOWANCE` (default `30s`). Out-of-range values are
+  startup errors. `CYODA_DISPATCH_WAIT_TIMEOUT` is validated for the first time
+  (a negative value now fails startup). See
+  `cyoda help config grpc` and `cyoda help config cluster`.
+
+- **Workflow schema 1.5.** `idempotent` (boolean, default false) on a
+  processor's `config`, and `retryPolicy` (`NONE` / `FIXED`) on
+  `schedule.function`. 1.1 through 1.4 stay accepted. Needs the matching
+  `cyoda-go-spi` release (`ProcessorConfig.Idempotent`,
+  `ScheduleFunction.RetryPolicy`); no storage backend changes.
+
+- **Six instruments for callouts and for the cluster's tag lists.**
+  `cyoda.callout.tries` (by `type` and `outcome`), `cyoda.callout.wait.duration`
+  (by `type`), `cyoda.callout.handovers` and `cyoda.callout.superseded` (each by
+  `outcome`), `cyoda.cluster.tags.send_failures` and
+  `cyoda.cluster.tags.lists_outstanding`; and the span attributes
+  `callout.tries`, `callout.handover` and `callout.waited_ms`. None of them
+  carries a tenant, a callout, a member or a node. See `cyoda help telemetry`.
+
+- **`GET /scheduled-tasks` lists the tenant's scheduled tasks.** Filters:
+  `status` (repeatable: `WAITING`, `RUNNING`, `FAILED`), `modelName` with an
+  optional `modelVersion`, and `entityId`; ordered by scheduled time, paged by
+  an opaque `cursor` with `limit` 1–1000 (default 20). Each item gives the
+  task's status, times, attempts, lost owners, last error and, for a `FAILED`
+  task, its reason. Any authenticated user of the tenant may call it; there is
+  no gRPC counterpart. The last error is client-safe text: a run that lost a
+  write race reads `CONFLICT: a concurrent write changed the entity or its
+  task`, and one that found its task row held by another transaction reads
+  `CONFLICT: the task is being written by another transaction` — a retried
+  conflict, not an internal error with a ticket. A task is not armed with a
+  fire time, or an expiry, outside the years `0000`–`9999`, which an RFC 3339
+  timestamp cannot carry: a `Schedule` Function result that overflows or
+  falls outside that range fails with the existing
+  `500 SCHEDULE_FUNCTION_INVALID_RESULT`, and a static `delayMs` or
+  `timeoutMs` that does the same fails the write. See
+  `cyoda help scheduled-tasks`.
+
+- **Six scheduler instruments.** `cyoda.scheduler.runs` and
+  `cyoda.scheduler.run.duration` (by `outcome`),
+  `cyoda.scheduler.runs.in_progress`, `cyoda.scheduler.claims` (by `reason`:
+  `due`, `owner_lost`), `cyoda.scheduler.heartbeat.failures` and
+  `cyoda.scheduler.bookkeeping.retries`; and a `scheduler.run` span. None
+  carries a tenant. See `cyoda help telemetry`.
+
+- **`ENTITY_MODEL_MISMATCH` (`400`).** An entity's model reference — its
+  model name and version — is fixed at creation and never changes for the
+  life of the entity ID, including across delete and recreate. A save that
+  names a different model is rejected with this code instead of silently
+  rewriting which model the entity's history belongs to. All three in-tree
+  backends enforce it (they all overwrote before), and the SPI conformance
+  suite obliges every backend to. Rewriting the reference stranded the
+  entity's earlier-model history: a point-in-time read issued under the
+  original model lost the entity entirely, with no error. No current
+  request can construct such a write — creating an entity mints a fresh ID
+  and updating one carries the stored model forward — so the code should
+  never appear in a real response; see `cyoda help errors
+  ENTITY_MODEL_MISMATCH`, and `docs/cloud-parity/entity-model-is-immutable.md`
+  for the Cloud-facing contract.
+
+- **Durable transaction submit times (PostgreSQL).** The commit instant is
+  recorded in a new `submit_times` table inside the committing transaction,
+  alongside the existing in-process map. `GetSubmitTime` — and therefore
+  `GET /entity/{id}/transitions?transactionId=`, its only server-side
+  caller — now answers on **any node** and after a restart, not only on the
+  node that committed. (`GET /entity/{id}?transactionId=` resolves through
+  `GetVersionByTransaction` instead and was never node-local.) The
+  1-hour retention is unchanged; pruning runs after commit rather than
+  inside it.
+
+- **Two nodes sharing one `CYODA_NODE_ID` are no longer silent.** The id
+  seals a hand-over and its answer for the node they are sent to, so two
+  nodes holding one id open each other's hand-overs. Until now a duplicate
+  joined happily: the membership layer dropped the conflicting record on
+  both sides, the node served traffic while being invisible to every peer,
+  and the library's own conflict line reached `slog` at DEBUG. A node that
+  sees one id claimed from two addresses now logs it at **ERROR** with the
+  id and both addresses, once per address. A node that has not finished
+  starting also refuses to start on it, which is how two nodes starting at
+  the same instant are caught — the join exchange carries no record of the
+  other yet, but the gossip that follows does, and a node can tell that the
+  contested record is its own. A node that is **already serving** only logs:
+  it refuses the exchange that would establish the duplicate, keeping the
+  second record out of its own view, and carries on. Two clusters that each
+  started healthily under overlapping ids and only later meet therefore give
+  ERROR lines and two nodes serving under one id; watch for the line, fix
+  the id and restart. See `cyoda help cluster` and
+  `cyoda help config.cluster`.
+
+- **`CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default `10485760`, 10 MiB)
+  sets the ceiling on the answer to a compute member's callback.** That answer
+  is built in memory and sent only once the transaction has been let go of, so
+  everything waiting on the transaction — the end of the callout included —
+  waits behind those bytes; the ceiling is what bounds that wait. It was a
+  compiled-in 10 MiB, which a joined get-all or search at the documented
+  maximum page size passes over ordinary entities. An operator whose compute
+  members legitimately read that much in one callback now raises it, at the
+  cost of memory held on the owning node. Zero or negative refuses to start.
+  It governs neither ordinary, unjoined requests nor the callback's own request
+  body, which keeps its fixed 10 MiB cap.
+
+- **`CYODA_CALLOUT_JOINED_MAX_WAITERS` (default `128`) bounds how many of a
+  compute member's callbacks may queue for one transaction**, and a new
+  retryable `503` `TOO_MANY_JOINED_REQUESTS` is what the member is told past
+  it. On the in-tree backends the callbacks of one transaction are served one
+  at a time, so firing many at once buys a member no speed — but each one
+  waiting held its whole request in memory for as long as the callout lasted,
+  with nothing bounding how many there could be. The refusal comes before the
+  request body is read where the door allows that, and touches neither the
+  transaction nor the callbacks already queued. On it, back off and send the
+  callback again; a processor that lets it escape fails its callout, and the
+  operation is rolled back. Zero or negative refuses to start — an unbounded
+  queue is what the cap exists to prevent. A paused callback's resume is never
+  refused.
+
+- **The published API document declares the transaction routing token and the
+  statuses a joined request is answered with.** `X-Tx-Token` is a new optional
+  header parameter (`components.parameters.TxToken`) on the thirty entity,
+  search, message, audit and platform-api operations a compute member's
+  callback may reach. Fifty-five operations, those thirty among them, declare
+  `401`, `403`, `404`, `409`, `410`, `413` and `503`, the statuses the join
+  layer answers a joined request with; four new shared response components
+  carry them where an operation has no answer of its own for the status:
+  `TransactionNotFound`, `TransactionGone`, `TransactionRollbackOnly` and
+  `JoinedPayloadTooLarge`. `410` appeared nowhere in the document before, so a
+  client generated from it had no way to send a callback and no way to read
+  the refusal, and an operation declaring no `default` response could not
+  describe one at all. The `410` response names both codes that share the
+  status, `TRANSACTION_EXPIRED` and `CALLOUT_SUPERSEDED`;
+  `properties.errorCode` tells them apart. The seven model and workflow
+  administration operations carry neither the parameter nor `410` or `413`:
+  they refuse a request carrying the header with `400
+  MODEL_ADMIN_IN_JOINED_TRANSACTION` before the token is read — changing a
+  model or a workflow from inside a callout is not supported. Nothing existing
+  changed: the parameter is optional and the responses are additions.
+
+- **Audit events carry `version` (entity change) or `eventId` (state
+  machine).** `EntityChangeAuditEventDto.version` is the entity's version
+  number for that change, strictly increasing over the entity's whole
+  history including across delete and recreate — `(entityId, version)`
+  identifies the event. `StateMachineAuditEventDto.eventId` is a time-based
+  UUID the server assigns when it records the event, the same on every
+  read, returned by the search endpoint and by
+  `.../workflow/{transactionId}/finished` alike. Until now two entity
+  change events of one transaction were identical on the wire and could not
+  be told apart. See `cyoda help audit`.
+
+- **Function conditions in criteria groups.** A workflow or transition
+  criterion can hold function conditions at any depth: as members of `AND`,
+  `OR` and `NOT` groups, nested to any depth, as well as the whole criterion.
+  Group members are evaluated in declaration order, and a group stops as soon
+  as its value is known — `AND` at the first false member, `OR` at the first
+  true one — so a function condition that evaluation does not reach makes no
+  callout. The whole criterion, every pre-check included, is checked against
+  the model before the first callout, and a failed callout fails the
+  operation. Before, a function condition inside a group imported and then
+  failed every evaluation. The OpenAPI document adds
+  `CriterionGroupConditionDto` for the group of a criterion. See
+  `cyoda help workflows` (*Function conditions*).
+
+### Changed
+
+- **`CYODA_DEBUG` is removed from `cyoda help config`.** The help listed it
+  as reserved; the server never read it.
+
+- **Seven error codes the server never answers are removed** from the
+  code set and from `cyoda help errors`: `TX_REQUIRED`, `TX_CONFLICT`,
+  `TX_COORDINATOR_NOT_CONFIGURED`, `TX_NO_STATE`,
+  `CLUSTER_NODE_NOT_REGISTERED`, `IDEMPOTENCY_CONFLICT` and
+  `SEARCH_SHARD_TIMEOUT`. No response carried any of them.
+
+- OpenAPI: `TokenResponseDto` no longer declares `refresh_token` or `scope`,
+  which `POST /tenants/{tenant}/oauth/token` never sends; `expires_in` has the maximum 3600
+  and `issued_token_type` the one value it takes,
+  `urn:ietf:params:oauth:token-type:jwt`. The trusted-key operations state
+  the `keyId` rule (`^[A-Za-z0-9._-]{1,128}$`), the setting that enables them
+  (`CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`) and the default `validTo`
+  (`validFrom` plus `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` days).
+  `TechnicalUserCredentialsDto` no longer declares `client_id_issued_at`,
+  which is never sent; `client_secret` is declared as the 64 lower-case hex
+  characters the server generates, and the `roles` examples are arrays.
+  `POST /tenants/{tenant}/oauth/token` marks `grant_type` required (a request without it was
+  always `400 unsupported_grant_type`) and says `subject_token` and
+  `subject_token_type` are required for the exchange; `POST /clients`
+  describes `withAdminRole` and `onBehalfOf` as they behave; the trusted-key
+  register `400` list, `jwk`, `issuers`, `active` and `validTo` descriptions
+  match the server (modulus 2048–4096 bits, `kid` = `keyId`, member cap,
+  `active` unaffected by expiry).
+
+- A scheduled transition records as `armedBy` the attributed principal of the
+  write that armed it.
+
+- Audit events: `actor` gains `kind`, and entity-change and state-machine
+  events carry `executedBy`; state-machine events now carry `actor`.
+
+- The compute test client (`cmd/compute-test-client`) authenticates with
+  `CYODA_COMPUTE_CLIENT_ID` / `CYODA_COMPUTE_CLIENT_SECRET` (the
+  `client_credentials` grant, refreshing its token before it expires)
+  instead of `CYODA_COMPUTE_TOKEN`.
+
+- `POST /tenants/{tenant}/oauth/token` bounds concurrent secret checks per node
+  (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`, default the number of CPUs
+  the process may use (GOMAXPROCS); `503` when busy) and limits each client
+  per node (`CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE`, default 600;
+  `429 slow_down`). The same bound covers the secret hashing of
+  `POST /clients` and `PUT /clients/{clientId}/secret`, which answer
+  `503 SERVER_BUSY` with `Retry-After: 1` when busy (new error code).
+  Refusals are counted in `cyoda.auth.secret_checks.refused`.
+
+- **The `NOT_FOUND` error code is removed.** No endpoint returned it; each
+  resource has its own not-found code (for example `KEYPAIR_NOT_FOUND`,
+  `TRUSTED_KEY_NOT_FOUND`, `MODEL_NOT_FOUND`). The `errors.NOT_FOUND` help
+  topic is removed with it. The async search-job status value `NOT_FOUND` is
+  a different thing and is unchanged.
+
+- **PostgreSQL migration `000015` and SQLite `000010`: `search_jobs.point_in_time`
+  is `NOT NULL`.** Every search job has a point in time and the stores have
+  always written one; the column was declared nullable on a mistaken note that
+  it was optional. The database now refuses a row without it. SQLite rebuilds
+  the table for the change, inside the migration's transaction; the SQLite
+  store also stops mapping a zero `PointInTime` to `NULL` and persists the
+  instant as PostgreSQL always has.
+
+- **memory and sqlite plugins: `WithClock` sets the physical clock** (liveness
+  and timeouts), and the new `WithBusinessClock` sets the business clock
+  (stamps and retention), which defaults to the physical one, so a caller that
+  sets only `WithClock` sees no change.
+
+- **The search reapers start after the cluster join,** so the snapshot-TTL
+  and stale-job sweeps never run before the node has its peers' settings.
+
+- **SQLite `Begin` reads the clock for a snapshot time after it takes the
+  commit gate,** not before waiting for it, so the recorded snapshot time is
+  the reading at that moment and can be later by the gate wait.
+
+- **PostgreSQL migration `000017`, SQLite `000012` and `000013`: storage
+  follows the platform clock.**
+  - PostgreSQL `000017`:
+    - re-creates `cyoda_stamp` and `cyoda_consistency_time` with an optional
+      time argument; with none they read the database clock as before.
+      Re-creating them gives `PUBLIC` its default `EXECUTE` again, so a
+      deployment that revoked it re-applies its revoke after migrating;
+    - drops the column defaults on `entities.creation_date`,
+      `entities.last_modified`, `entity_versions.transaction_time`,
+      `entity_versions.creation_date` and `search_jobs.created_at` (every
+      insert writes them);
+    - backfills `search_jobs.heartbeat_time` from `created_at` and makes it
+      `NOT NULL`;
+    - drops the unused `model_schema_extensions.created_at`.
+  - SQLite `000012` drops `model_schema_extensions.created_at`, and `000013`
+    backfills `search_jobs.heartbeat_time` from `create_time`.
+
+- **A client that goes away mid-request is logged at DEBUG, with no ticket** —
+  on HTTP (`common.WriteError`) and in gRPC (`buildErrorFields`), the two
+  funnels every error response and envelope goes through. Nothing was wrong
+  with the server and there is nobody to quote a ticket to; a compute member
+  failing over used to produce one `ERROR` line and one minted ticket per
+  queued callback, exactly when an operator wants a clean log. The status
+  written is unchanged — a request whose own feature deadline expired is
+  unaffected and still classified to `408`.
+
+- **The published schema's `retryable` description now states cyoda-go's own
+  behaviour.** `docs/cyoda/schema/common/BaseEvent.json`'s `error.retryable`
+  said cyoda "should retry the calculation request" on it — cyoda-go never
+  does; it passes the verdict on to the client and does not give the work to
+  another compute member because of it (Cloud does retry on it, which is a
+  recorded departure). See `docs/cloud-parity/callout-failover.md`.
+
+- **A node whose `CYODA_NODE_ID` is already held refuses to start.** A node
+  that sees its own id on a live node at another address — in an exchange
+  with a seed, in one a peer started with it, or in the membership gossip
+  that follows — keeps trying for the whole of `CYODA_STARTUP_TIMEOUT` and
+  exits if the id is still held when that budget runs out. The message names
+  `CYODA_NODE_ID`, the address the id was found at and, where there is one,
+  the seed it was learned from. The node already holding the id keeps
+  serving. A restart under the id of a node that left or died is unaffected,
+  and so is a node with no seeds. A node that **crashed** and comes back at
+  another address is refused at first, because its peers still hold the
+  record of its previous life and nothing tells that record apart from a
+  second node's — that record is what the budget is for: the peers reap it
+  within seconds, and the attempt made after that admits the node. The check
+  is a startup check only; what happens when a serving node's id is
+  contested is in the entry above.
+
+- **A callout picks among a tenant's matching compute members round robin.**
+  The member picked longest ago goes next; one that has just joined goes first.
+  Until now the choice was whatever a Go map iteration returned first.
+
+- **A compute member's failure reaches the client whole.**
+  `400 WORKFLOW_FAILED` reads `processor <name> failed: <the member's message>`,
+  for a criterion `failed to evaluate transition criterion: <the member's
+  message>`, and for a scheduled transition's function `schedule function <name>
+  failed: <the member's message>`; the inner `processor dispatch failed:`
+  segment is gone. It carries `retryable: true` exactly when the member's own
+  `error.retryable` said so, on HTTP and in the gRPC envelope — the verdict was
+  read and dropped. The member's warnings arrive too. All of it holds from
+  whichever node the member was attached to: across nodes the message, the
+  verdict and the warnings were replaced by `peer dispatch failed` on the way.
+  Each piece of a member's own free text is cut to 512 characters where it
+  becomes client text, ending with `…` so that a shortened message is
+  recognisable, and one try's response carries at most 32 of its warnings. See
+  `docs/cloud-parity/callout-failover.md`.
+
+- **A stored answer limit above the server's bound is not clamped.** Import
+  bounds `responseTimeoutMs` by `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`, but a
+  workflow stored before a deployment lowered that bound keeps its value; its
+  callout fails with `400 WORKFLOW_FAILED`, the message naming
+  `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`, rather than running under a limit
+  nobody asked for. No try is made.
+
+- `cyoda.dispatch.duration` measures a whole callout, all its tries, waits and
+  hand-overs included; its buckets stopped at 10 s — below a single answer
+  limit — and run to 300 s.
+
+- **A write is dated at the instant its transaction commits, not at the
+  instant it started.** This changes the timestamps PostgreSQL-backed
+  deployments report. `CURRENT_TIMESTAMP` is fixed at transaction start, so
+  a transaction that opened at T0 and committed at T0+30s previously dated
+  its writes T0; they are now dated T0+30s. The change covers `valid_time`,
+  `transaction_time`, the reported `creationDate` / `lastUpdateTime`, the
+  recorded submit time, and audit-event timestamps, and every row a
+  transaction writes shares one instant. sqlite already dated every one of
+  those values at commit, and memory all but one (see the `creationDate`
+  fix below), so this brings PostgreSQL into line with a contract the other
+  in-tree backends substantially already met rather than introducing a new
+  one — but a client that compared a stored `creationDate` against its own
+  clock will see the value move later.
+  `wall_clock_time` is unchanged: it stays the physical moment of
+  insertion. `docs/CONSISTENCY.md` §1a states the rule and its one
+  residual window.
+
+- **PostgreSQL migrations `000011`, `000012` and `000013`, and SQLite
+  `000008`.** On PostgreSQL: the model index on `entities` is rebuilt
+  without its partial predicate (a point-in-time read must see entities
+  deleted since the instant); `entity_versions` and `entities` gain the
+  temporal and transaction-id columns, backfilled from the documents;
+  `entity_versions` gains a foreign key to `entities`, so a version row
+  can no longer outlive the entity row a point-in-time read finds it
+  through; `submit_times` is created; and both backends index audit events
+  by `(tenant_id, transaction_id)`. **Operators: schedule a maintenance
+  window** — the index builds block writers, and the column backfill
+  scales with history. See `docs/plugins/POSTGRES.md`.
+
+- **A callback's answer over the ceiling is refused with `413`
+  `JOINED_RESPONSE_TOO_LARGE`, not a ticketed `500`.** The refusal names the
+  ceiling in bytes and tells the member to page the read, which is the one
+  thing it can act on; a ticket told it nothing about a page size it chose
+  itself. Not retryable — the same request builds the same answer again. Both
+  doors answer the same code, the gRPC one through its error envelope. The
+  answer is still never truncated: the request fails.
+
+- **Audit events of one instant now come back in a fixed order.** The merged
+  entity-change / state-machine list sorts by `utcTime` newest first, then
+  `EntityChange` before `StateMachine`, then `version` descending for entity
+  change events or `eventId` descending for state machine events. Until now
+  events of one instant were sorted by `utcTime` alone with an unstable
+  sort, so their relative order could change between identical requests and
+  an offset-based cursor walk over them could repeat or skip rows. See
+  `cyoda help audit`.
+
+- **`POST /clients?onBehalfOf=true` creates an on-behalf-of client; client
+  DTOs carry `onBehalfOf`.**
+
+### Fixed
+
+- **`install.sh` verifies signatures again.** With `cosign` on `PATH` the
+  script refused every install, and with `CYODA_COSIGN_VERIFY=required` no
+  install could succeed: it treated GitHub's redirect for the `.sig` file as
+  an error, passed `cosign` a flag it does not have, and expected the owner
+  `cyoda` where the certificate says `Cyoda`. It now follows the redirect,
+  pins the exact tag being installed, and matches the certificate. Without
+  `CYODA_VERSION` it finds the Latest release through
+  `github.com/.../releases/latest` instead of the GitHub API, which allows
+  only 60 unauthenticated calls an hour per address. A
+  release-smoke job installs a signed release with signatures required. An
+  unknown `CYODA_COSIGN_VERIFY` value now stops the script instead of
+  falling back to auto mode. v0.7.0 and v0.7.1, signed under the GitHub
+  organization's earlier name, do not verify. The README and
+  `cyoda help install` verify a `.deb`/`.rpm` package and the container
+  image against the signature of the exact release.
+- **A chart release no longer becomes GitHub's "Latest" release.** The
+  chart workflow marked its release (`cyoda-X.Y.Z`, which holds only the
+  chart archive) as latest, so after a chart release `install.sh` resolved
+  the chart's tag and every `/releases/latest/download/` URL — `install.sh`,
+  the `.deb` and `.rpm` packages, `SHA256SUMS` — answered 404. The binary
+  release keeps the mark.
+- **The available-transitions list holds only transitions a client can
+  name.** `GET /entity/{entityId}/transitions` and
+  `GET /platform-api/entity/fetch/transitions` listed every transition of the
+  current state, disabled and scheduled ones included, though naming either
+  on a save is refused with `TRANSITION_NOT_FOUND`. They now list the
+  transitions that are not disabled and have no schedule, whatever their
+  `manual`, as Cyoda Cloud does.
+- **Help and deploy guidance that did not match the server.** The Helm chart
+  is published (`cyoda/cyoda` from `https://cyoda.github.io/cyoda-go`); the
+  install examples in `cyoda help helm` and `cyoda help run` render, and a
+  chart upgrade uses `--reset-then-reuse-values`, which takes a newer chart's
+  defaults for values you did not set (`--reuse-values` dropped them). The
+  Ingress-to-Gateway migration guide reads the live Ingress objects
+  (`helm template` has no `--reuse-values`). A `PUT` with an empty body is
+  refused with `400`; use `PATCH` with `{}` to fire a transition without
+  changing data. A save can name any transition that is not disabled and has
+  no schedule, whatever its `manual`. A workflow export posted back unchanged
+  is refused; re-import its `workflows`. A replayed `COMMIT_BEFORE_DISPATCH`
+  processor carries a new `requestId`. `$.items.0` in a `groupBy` names a
+  field called `0`. The `migrate.postgres.*` chart values are documented.
+  The compose file's production hint and `deploy/docker/README.md` mount the
+  signing key as a file, and the production-shaped `docker run` reads the
+  key and the Postgres DSN from files. The install script's settings go on
+  `sh`, after the pipe (`curl … | CYODA_VERSION=v0.9.0 sh`): written before
+  `curl`, as the README showed, they never reached the script. Shell
+  examples paste into interactive zsh as written: no comment line runs a
+  command, opens a quote or redirects, and no comment follows a command.
+
+- **gRPC: a snapshot the caller does not have, or results of one that has
+  not finished, is the caller's error,** as it is on HTTP. A
+  `SnapshotGetStatusRequest`, `SnapshotGetRequest` or `SnapshotCancelRequest`
+  for an unknown snapshot answers `CLIENT_ERROR` with a
+  `SEARCH_JOB_NOT_FOUND:` message (HTTP `404`), and a `SnapshotGetRequest`
+  for a snapshot that has not finished `SUCCESSFUL` answers `CLIENT_ERROR`
+  with `BAD_REQUEST:` (HTTP `400`). Before, both answered a ticketed
+  `SERVER_ERROR`. A failed request is also logged once, on both doors, at
+  its class's level: a client error one INFO line, a server-side failure one
+  ERROR line with its ticket. Where the site that refused knows the event is
+  more or less notable (an unreachable transaction owner at ERROR, a tenant at
+  its async cap, a node that is not live, an owner address the peer address
+  guard forbids or a search condition a backend and the request boundary
+  disagree on at WARN), that one line is at its level instead, and no second
+  line is written. On gRPC the line names the request (`rpc`, `type`,
+  `ceId`). Before, gRPC logged a client error at ERROR, or not at all when it
+  carried no cause, and a server-side failure twice; a write the workflow
+  engine refused (a 412, a 409, a superseded chain) logged an ERROR before the
+  funnel's line, and the refusals above logged two lines on both doors. An
+  error answered inside a 200 body — a failed later chunk of a chunked HTTP
+  collection, a per-id delete failure — is logged the same way. Before, such
+  a chunk was logged only when the workflow engine refused it, a per-id
+  delete failure only when it was a storage outage or a server-side failure,
+  and a server-side failure in a chunk answered its internal message; it now
+  answers the generic text with its ticket.
+
+- **A schema extension is kept on every backend when its model is unlocked,
+  re-imported or deleted.** On PostgreSQL, unlocking a model discarded the
+  fields its entities had added while it was locked: the model's schema went
+  back to the imported one. On SQLite, unlocking kept them, but a later
+  import could be ignored (after a second lock and unlock, the export showed
+  the schema from before the import), and a model imported under the name and
+  version of a deleted model got the deleted model's added fields. Now, on
+  every backend, unlocking keeps the schema the model had while locked, an
+  import gives exactly the merged schema, and a deleted model leaves nothing
+  behind. The in-memory backend already worked this way.
+
+- **A gRPC request answers a store's conflict or unique-key refusal as HTTP
+  does.** A lost write race, a unique-key violation or a unique-key field
+  that is null, reported on a raw error, answered gRPC with a ticketed
+  `SERVER_ERROR` while HTTP answered `409 CONFLICT` (retryable),
+  `409 UNIQUE_VIOLATION` or `422 INVALID_UNIQUE_KEY`. gRPC now gives the same
+  code.
+
+- **A gRPC call forwarded to its transaction's owner answers `503
+  TRANSACTION_NODE_UNAVAILABLE` when the owner cannot be reached, as HTTP
+  does.** A dial or transport failure answered a ticketed `SERVER_ERROR`, and
+  an owner that never answered held the call until the caller gave up.
+  `CYODA_PROXY_TIMEOUT` now bounds the wait on gRPC as on HTTP: a unary call's
+  response, or a streamed call's first message. The owner's own refusals
+  reach the caller unchanged; any other failure of the hop answers a
+  ticketed `SERVER_ERROR`. A forwarded answer larger than 4 MiB, which the
+  owner may send up to `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`, no longer
+  fails on the hop.
+
+- **A storage backend that loses a transaction's shard answers `409
+  EPOCH_MISMATCH`, retryable.** The commercial cassandra plugin reports it
+  when the shard a transaction ran on changes owner, after rolling the
+  transaction back. It reached the caller as a ticketed `500`, or inside a
+  workflow as `400 WORKFLOW_FAILED` with the store's text. The stock backends
+  never report it.
+
+- **A gRPC `EntityTransitionRequest` no longer writes an older copy of the
+  entity's data over a concurrent write.** It read the data outside the
+  transition's transaction, then wrote that copy back. A write committed
+  between the two was lost, and the transition reported success. The
+  transition now starts from the stored data, read inside its own transaction
+  and not re-encoded; its processors may still change it. A write committed
+  after that read fails the transition: with a retryable `CONFLICT`, or with
+  `ENTITY_MODIFIED` when it lands after a `COMMIT_BEFORE_DISPATCH` segment has
+  committed. The `404 ENTITY_NOT_FOUND` of a transition, PUT or PATCH of an
+  unknown entity names the entity in its message and in `properties.entityId`
+  (PUT and PATCH named neither before). See `cyoda help grpc`.
+
+- **A search fails when stored entity data does not decode, as a get does.**
+  HTTP direct search and async results returned such an entity with
+  `data: null`, and gRPC direct search and snapshot results left it out with
+  a WARN. Both were wrong answers. Every search writer now decodes every
+  result before it sends the first one, and fails the request with a 5xx (gRPC:
+  one `SERVER_ERROR` envelope) without sending part of the result.
+
+- **A PATCH over stored data that does not decode is a 5xx, as a get is, not
+  `400 BAD_REQUEST`.** The merge base was read with the request-body decoder,
+  so a server-side fault read as the caller's error, and stored data that a
+  get reads (content after the first value) refused every patch. The merge
+  base is now read as a get reads stored data.
+
+- **A model import no longer saves over a stored model when reading it fails.**
+  The import reads the model first, to refuse re-importing a locked one with
+  `409 MODEL_ALREADY_LOCKED`. Any read error counted as "no model", so a store
+  failure skipped that refusal and saved a fresh descriptor over a locked
+  model, without its unique keys. Only not-found means no model now; any other
+  read error fails the import with a 5xx and saves nothing.
+
+- **A workflow import that breaks one rule in several states is refused naming
+  the same state every time.** The checks walked the states in Go's random map
+  order, so the `400 VALIDATION_FAILED` named any one of them. They now walk
+  the states in sorted order and name the first. The refusal of
+  `startNewTxOnDispatch` outside `COMMIT_BEFORE_DISPATCH` now names the state
+  too, as every other refusal of a processor or transition already did.
+
+- **A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary
+  committed has its `STATE_PROCESS_RESULT` in the audit trail.** The record
+  was written in the transaction the boundary had already committed, every
+  backend refused it, and the trail showed `PAUSE_FOR_PROCESSING` with nothing
+  after it, as for a cascade that stopped. The engine now writes the record in
+  a transaction of its own, with `success: false`, the member's own
+  `failReason`, the cascade's transaction id and the request's principal. The
+  operation still fails as before. A boundary that itself fails still leaves
+  no record: it is rolled back with the segment, or, when the segment's commit
+  was interrupted and its outcome is in doubt, not kept. See `cyoda help audit`.
+
+- **SQLite and PostgreSQL: a number in a state-machine audit event's `data`
+  reads back with every digit it was recorded with.** These backends read it
+  back as a 64-bit float, so a number such as `12345678901234567890` lost
+  digits; the memory backend kept it exactly.
+
+- **OpenAPI: a condition's `value` is described as the server accepts it,
+  and each condition union selects its member by `type`.** `value` on
+  `SimpleConditionDto` and `LifecycleConditionDto` was typed as an object and
+  required. The server accepts a string, a number or a boolean, or a
+  `[low, high]` pair of those for `BETWEEN` and `BETWEEN_INCLUSIVE`, and
+  accepts `null` or no `value` only for `IS_NULL` and `NOT_NULL`; the schema
+  now says so. Every condition `oneOf` (criteria, the pre-check, search)
+  carries a discriminator mapping `type` to its member, so a validator checks
+  only that member. The wire is unchanged.
+
+- **Helm chart: `CYODA_NODE_ADDR` names the HTTP port.** It named the gRPC
+  port `9090`, so on more than one replica a request proxied to the node
+  that owns its transaction, and a callout handed over to another node,
+  reached that node's gRPC server instead of its HTTP API.
+
+- **An async search submitted without `pointInTime` no longer misses
+  confirmed saves.** Before, it ran at the receiving node's clock, which can
+  run ahead of saves still committing or behind another node's. It now runs
+  at a fresh consistency time, recorded on the job, so a submit can now
+  answer `503 CONSISTENCY_TIME_UNAVAILABLE`.
+
+- **PostgreSQL: the change history read inside a transaction lists committed
+  versions only**, as the other backends already did. Before, it also listed
+  the transaction's own uncommitted versions.
+
+- **`POST /tenants/{tenant}/oauth/token` in mock IAM mode answers `501 NOT_IMPLEMENTED`.**
+  Mock mode issues no token; the endpoint answered `500` with a ticket and
+  logged a routing error. It now answers `501` with the detail "token
+  issuance requires JWT IAM mode", like the client and trusted-key
+  endpoints, and logs nothing. JWT mode is unchanged.
+
+- **Responses that carry a credential are never cached.** Every
+  `POST /tenants/{tenant}/oauth/token` response (both grants, success and error) and the
+  plaintext secret from `POST /clients` and `PUT /clients/{clientId}/secret`
+  now come with `Cache-Control: no-store` and `Pragma: no-cache`, as
+  RFC 6749 §5.1 requires of a token response.
+
+- **An out-of-range grace period on key-pair issue names the field the
+  request carries.** `POST /oauth/keys/keypair` answered `400` with
+  "gracePeriodSec must be …" for an out-of-range
+  `invalidateGracePeriodSec`; the detail now names
+  `invalidateGracePeriodSec`. The key-pair invalidate endpoint, whose field
+  is `gracePeriodSec`, is unchanged.
+
+- **Tokens from `/tenants/{tenant}/oauth/token` carry `aud` when `CYODA_JWT_AUDIENCE` is
+  set.** Both grants, `client_credentials` and token exchange, issued tokens
+  without an `aud` claim, while the validator requires it whenever
+  `CYODA_JWT_AUDIENCE` is set, so a server configured with an audience
+  refused its own tokens with `401`. Issued tokens now carry the configured
+  audience; with `CYODA_JWT_AUDIENCE` empty they carry no `aud`, as before.
+
+- **Deleting a key that is absent is not an error on any storage backend.**
+  The storage SPI now requires `Delete` of an absent key — on the KV, message
+  and workflow stores — and `DeleteBatch` to return no error, and its
+  conformance suite tests it. The cassandra backend returned not-found
+  instead, so a `DELETE /message` batch that named an absent id answered
+  `500` on cassandra and `200` on the other backends. The cassandra plugin
+  conforms from the release that pins this SPI; see `COMPATIBILITY.md`.
+
+- **A runtime-issued signing key pair only worked on the node that issued
+  it.** In a cluster, a token signed with one was rejected by every other
+  node, and the key pair itself did not survive a restart. Key pairs are now
+  stored in the SYSTEM-tenant KV store and shared by every node of the
+  cluster (see Breaking).
+
+- **A trusted-key admin write could act on a stale copy, miss a rotation's
+  sibling, or leave a failed rotation half done.** An invalidate or
+  reactivate read the node's cache rather than the store, so a node that had
+  not yet received an earlier delete could write the deleted record back; a
+  rotation (`invalidatePrevious`) listed siblings from that cache too, so it
+  could miss one registered on another node; and a sibling write that failed
+  partway left the rest as they were. Trusted keys now have no node copy:
+  every call reads and writes the store, a rotation lists the tenant's keys
+  from it, ends the previous keys first and writes the new key last, so a
+  failure partway never leaves a key the admin asked to end still verifying,
+  and a retry completes it. Signing key-pair admin writes take a store
+  mutex, read the current records from KV rather than the node copy, and
+  apply the result to the copy only after the KV write succeeds, so
+  verification never waits on KV; a multi-record write that fails partway
+  tries to restore every record it already wrote — a restore that itself
+  fails is logged at ERROR naming the records left changed, and a crash
+  between writes can still leave the new record active alongside old
+  siblings, for the admin to repeat.
+
+- **A key's timestamp could make its stored record unreadable.** An offset
+  timestamp such as `9999-12-31T23:59:59-05:00` is in year 10000 in UTC, and
+  a stored record cannot hold that year in a form it can read back. Issuing
+  or reactivating a key pair, and registering or reactivating a trusted key,
+  stored it anyway: an unreadable trusted-key record stopped every node from
+  starting after a restart, and an unreadable key-pair record blocked all
+  signing. A `validFrom` or `validTo` (the default included) whose
+  UTC year is outside 1–9999 is now refused with `400 BAD_REQUEST`, and
+  neither store writes one. A trusted-key record that cannot be read no
+  longer stops a node starting: it is skipped with an ERROR, which refuses
+  only that key, and `DELETE` removes it.
+
+- **A scheduled transition could run twice at the same time.** A task still
+  running after `CYODA_SCHEDULER_REDISPATCH_BACKOFF` (30 s) was dispatched again,
+  to the same or another node, while the first run went on. Only one run could
+  commit, but both ran their processors, and a slow callout alone takes 30 s. A
+  task now has one owner, and another node takes it over only once the owner
+  has stopped heartbeating (see Breaking).
+
+- **A node that had recovered a panic kept its share of scheduled work.** The
+  round-robin distribution did not read node health, so a node taken out of the
+  Service by `/readyz` still received its share of every scan. A node latched by
+  a panic anywhere — in an HTTP or gRPC request, in async search or in the
+  scheduler itself — now claims nothing. Its runs in progress go on unless the
+  panic was inside the scheduler, and it keeps heartbeating so they are not
+  taken over while they may still commit. See `cyoda help run` and
+  `docs/cloud-parity/scheduled-transitions.md`.
+
+- **A write a processor made through its own callback is kept when the
+  processor answers with no payload.** The documented way for a processor to
+  change its entity itself — write it through a joined callback and return no
+  mutations — did not work: the engine went on with the entity as it had
+  dispatched it and saved that over the callback's write. An answer with no
+  `payload` now leaves the entity as the callback left it, and so does
+  `{"data": null}`, which is no data rather than a null payload. This holds
+  under `SYNC`, `ASYNC_SAME_TX` and `COMMIT_BEFORE_DISPATCH` with
+  `startNewTxOnDispatch: true`, and for a callout handed to another node, whose
+  answer now states that there was no payload. An answer that carries data
+  still replaces the entity's data, the callback's write included. An update
+  that carries `If-Match` keeps the callback's write too (see Breaking). See
+  `cyoda help grpc` and `cyoda help workflows`.
+
+- **An async search job could be run twice, or lose its results, when the
+  PostgreSQL main pool was busy.** A job's heartbeat and the claim of a stale
+  job waited for a connection of the pool that entity transactions use, so a
+  busy pool made a healthy job look stale and another node took it over while
+  it still ran; the sweep that claims stale jobs could itself wait on that pool
+  behind the snapshot-expiry reap. Heartbeats and stale-job claims now run on
+  the scheduler pool (`CYODA_POSTGRES_SCHEDULER_CONNS`) and never wait on the
+  main pool; the writes the sweep owes jobs it will not run go to a separate
+  pass, and snapshot expiry has a goroutine of its own. Clearing a job's
+  results is fenced by the claim it was made under, like its heartbeat and its
+  release, on every backend and whether or not the pool is busy: a late clear
+  from a node that has lost the job deletes nothing. See
+  `cyoda help config database` and `docs/plugins/POSTGRES.md`.
+
+- **A collection write that joined an open transaction is no longer split
+  into `transactionWindow` chunks.** A compute node's callback made with the
+  transaction token commits nothing — the transaction's owner does — yet a
+  joined collection larger than the window (default 100) was split, and a
+  failure in a later chunk answered `200` with chunk results claiming the
+  earlier chunks were committed. The owner could then commit those items
+  while the compute node read the answer as partial success. A joined
+  collection now runs as one unit, so a failure in any item fails the
+  request, and an explicit `transactionWindow` on a joined request is
+  rejected with `400 BAD_REQUEST`, as `transactionSize` and
+  `transactionTimeoutMillis` already are — also on a single-object create,
+  where it used to be ignored, and on the gRPC collection events
+  (`CLIENT_ERROR` `BAD_REQUEST`), which used to accept and ignore it. See
+  `docs/cloud-parity/transaction-control-params.md`.
+
+- **A compute node's callback never commits the transaction it joined.** A
+  callback runs in the transaction of the operation that called the compute
+  node out. When the callback's write — a create, an update or a transition,
+  one entity or a collection, over HTTP or gRPC — ran a workflow that reached
+  a `COMMIT_BEFORE_DISPATCH` processor, that processor committed the calling
+  operation's transaction part-way through the operation, dispatched itself,
+  and only then was the callback refused with a `500`. The calling operation
+  carried on in a transaction that no longer existed. The write is now refused
+  at that processor, before the transaction is flushed or committed and before
+  the processor is dispatched, with the new `409 COMMIT_IN_JOINED_TRANSACTION`
+  (not retryable), which names the workflow and the processor. The calling
+  operation's transaction stays open for it to commit or roll back; what the
+  refused workflow had already done in it — its audit events, and the effects
+  of earlier steps — is the calling operation's to keep or discard, as with
+  any failed callback. Both values of `startNewTxOnDispatch` are refused. A
+  compute node that needs such a write makes it as an independent request,
+  without the transaction token.
+  See `docs/cloud-parity/commit-in-joined-transaction.md`.
+
+- **A signing key pair signs and verifies only inside its validity window.**
+  A key pair still marked active kept verifying bearer tokens after its
+  `validTo`, and a key pair issued with a future `validFrom` was used to sign
+  at once. Tokens are now signed only with a key pair inside its window, and a
+  token whose key pair is outside it is an ordinary `401`. JWKS still
+  publishes a key pair ahead of its window. Issuing a key pair is now
+  `400 BAD_REQUEST` for a future `validFrom` together with
+  `invalidateCurrent` (once the bootstrap key is revoked, it can leave no key
+  to sign until the new window opens) and for a `validTo` that is not in the future
+  (the key pair could never sign). Reactivating a key pair with a future
+  `validFrom` is `400` too: it would put the key pair outside its own window
+  at once. Invalidating the last key pair that can sign stays allowed, since
+  revocation must always work. When two key pairs share the latest
+  `validFrom`, the one with the greater key id signs, instead of an arbitrary
+  one. See `docs/cloud-parity/signing-key-window.md`.
+
+  The bootstrap signing key no longer has a window: it used to expire
+  `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` after each node's start, which
+  differed per node and reset on every restart; it now lasts as long as
+  `CYODA_JWT_SIGNING_KEY` supplies it, and the startup warning about its
+  expiry is gone.
+
+- **Token exchange accepts only a trusted key registered in the exchanging
+  client's own tenant.** The grant found the key that verifies a subject
+  token by `kid` across every tenant, and bound the result to a tenant only
+  through the subject token's own `caas_org_id` claim, which the key holder
+  writes. A holder of a key registered in one tenant, with the credentials of
+  any M2M client of another, could get a token for that other tenant with any
+  user id and roles. The key is now looked up in the client's tenant only; a
+  key from another tenant is `400 invalid_request` ("unknown or inactive
+  trusted key"), like an unknown one. The lookup reads that tenant's key from
+  the store instead of scanning every tenant's keys. See
+  `docs/cloud-parity/trusted-key-tenant.md`.
+
+- **A grace period no longer lengthens a signing key pair's window.**
+  Invalidating a key pair, directly or by rotation, sets its `validTo` to now
+  plus the grace period or its existing `validTo`, whichever is earlier.
+  Before, invalidating an expired or already revoked key pair with a grace
+  period made it valid again.
+
+- **`cyoda help auth trusted-keys` described a feature cyoda-go does not
+  have.** It said a JWT signed with a trusted key could be sent as a bearer
+  token on API calls. A trusted key verifies only the subject token of the
+  token-exchange grant; the topic, `auth.tokens`, `auth` and the README now
+  say so. The topic's registration and reactivation examples also match the
+  API now (`jwk` on registration; `validTo` on reactivation).
+
+- **An answer that arrives and cannot be read ends its callout at once, instead
+  of being waited out.** A member's answer whose fields do not have the types
+  the schema declares — `"success": "yes"`, a non-boolean `matches` — failed to
+  decode, and nothing then told the callout the answer had come: it waited out
+  its answer limit, spent a try, and reported a retryable `503` about a member
+  that had in fact answered. It now ends as what it is, an answer that could not
+  be read (`400 WORKFLOW_FAILED`, not retryable), on the same path an explicit
+  `"success": null` takes. An answer that is not JSON at all names no
+  `requestId`, so nothing identifies the callout it belongs to and the answer
+  limit remains the only bound on it.
+
+- **Every answer the server cannot read now says why.** The `400` carried a
+  bare "the compute member's response could not be read" for a missing
+  `matches` and for a payload that is not an object, while an explicit
+  `"success": null` named its key. All of them now end with the reason — the
+  key that was missing, the part that did not decode — in this node's own
+  fixed words, never a member's. The error code is unchanged.
+
+- **A compute member's answer that omits `success` is read as success, as the
+  published schema says it is.** `success` is declared optional with the default
+  `true` (`docs/cyoda/schema/common/BaseEvent.json`), and cyoda-go read an absent
+  key as `false`: a processor, criterion or function response that left the key
+  out ended the operation with `400 WORKFLOW_FAILED` and the message `… returned
+  failure`, although the member had reported nothing of the kind. The same
+  payload meant the opposite on Cyoda Cloud, which applied the default. All three
+  responses now apply it. **A compute member reporting a failure must send
+  `success: false` explicitly** — an empty or partial response is not a failure
+  report, and neither is an `error` object on its own: a response carrying an
+  `error` and no `success: false` succeeds, and its message reaches nobody.
+  What this widens, plainly: a processor answering
+  `{"id": "…", "requestId": "…", "entityId": "…"}` — the three identifying
+  fields the published schema requires, and nothing else — now succeeds, leaves
+  the entity as it was and lets the transition continue, where before it ended
+  the operation. A member whose framework emits
+  a bare or truncated response on a crash therefore no longer fails the
+  operation by accident — it must report the failure itself. The default fills
+  in the flag, never a verdict, so what actually decides something is unchanged:
+  a criteria answer that omits `matches` is still refused as an answer that
+  could not be read, and a processor payload that cannot be read still fails the
+  callout. The criteria response schema now requires `matches` on any response
+  but an explicit `success: false` one, where it used to require it only of an
+  explicit `success: true` one. The default belongs to an absent key alone: an
+  explicit `"success": null` is not a boolean, so it is neither the default nor
+  a flag, and an answer carrying it is refused as one that could not be read —
+  for all three callouts alike, so a criterion answering
+  `{"success": null, "matches": true}` decides no transition. **Nothing at all
+  is read out of an answer the server could not read**, and that is now one
+  rule for every such answer rather than two: a member's `warnings` are
+  surfaced only from an answer that could be read, so an answer refused for a
+  null `success`, for a `payload` that is not an object, or for a criterion
+  with no `matches` no longer has its warnings passed on to the client either.
+  A member that reports a failure has been read perfectly well and its warnings
+  still reach the client beside its message. Cyoda Cloud fails on those same bytes rather than reading success
+  out of them. See `cyoda help grpc` and
+  `docs/cloud-parity/callout-failover.md`.
+
+- **A callout is never given to a compute member that has already gone.** A
+  compute member whose stream drops is failed and detached the instant the
+  drop is noticed; its registration is removed a moment later, when its stream
+  handler returns. In between it was still eligible, so a callout could be
+  routed to a member every request against which already failed — answering
+  `503 COMPUTE_MEMBER_DISCONNECTED` although another compute member for the
+  same tags was connected and ready. A member that has been detached is no
+  longer a candidate, so the callout goes to a live one, and none of a
+  callout's tries is spent on a member already known to be gone — nor is such
+  a try reported to the client as an attempt. Its tags are no longer advertised
+  to the other nodes either, so a node stops inviting work it cannot serve.
+  Where the leaving member was the only one matching the callout's
+  `calculationNodesTags`, the callout now waits for a compute member to appear —
+  for `CYODA_DISPATCH_WAIT_TIMEOUT`, as it does whenever there is none — and
+  answers `503 NO_COMPUTE_MEMBER_FOR_TAG` if none does, instead of spending a
+  try on the member that had gone and answering
+  `503 COMPUTE_MEMBER_DISCONNECTED` at once. The one remaining instant — the
+  member leaving between being chosen and the request being registered against
+  it — still ends that try, as `cyoda help errors
+  COMPUTE_MEMBER_DISCONNECTED` describes, and the callout moves on to the next
+  member.
+
+- **A compute member that had been given up on could still write into the
+  transaction — last.** Its callbacks were accepted until the transaction
+  closed, so the write of a slow member could land after its replacement had
+  answered and after later processors of the same transition had run; under
+  `ASYNC_NEW_TX` the write of a processor that *failed* could land after its
+  savepoint was undone, and be committed. A replaced member is now fenced, and
+  the engine waits for a callback in progress before it carries the callout on.
+  See `docs/cloud-parity/callout-failover.md`.
+
+- **Two callbacks at once on one transaction crashed the node, or failed the
+  operation.** Only entity writes were serialised. On the memory and SQLite
+  backends two parallel reads by one compute member were enough to stop the
+  process for every tenant (`concurrent map writes`); on PostgreSQL the second
+  user of the operation's connection failed with `conn busy`. Every joined
+  request now takes the transaction's lock in the join layer, with no change to
+  any storage plugin.
+
+- **A compute member that disconnected in the middle of a callback destroyed the
+  operation's PostgreSQL connection.** The cancelled statement made the driver
+  close the connection the owning operation was running on, and the operation
+  failed with it. A joined request is no longer cancelled by its client.
+
+- **A savepoint failure in `ASYNC_NEW_TX` passed as a processor failure.** A
+  savepoint that could not be undone was a warning — the failed processor's
+  writes were committed; one that could not be created or released was counted
+  as the processor's own, non-fatal failure, silently skipping it. Each now
+  fails the operation with a ticketed `5xx`, and the PostgreSQL plugin's
+  savepoint errors are classified like its other statements instead of reaching
+  a `400` body raw. A write race lost inside the savepoint is the retryable
+  `409 CONFLICT` of the Breaking entry, not a savepoint failure.
+
+- **A callout whose transaction token could not be minted was sent without
+  one**, so the compute member's callbacks would have run outside the
+  transaction. It now fails before anything is sent.
+
+- **A callout handed to another node and broken off mid-way was tried on the
+  next node regardless**, which for a processor could run it twice. A lost
+  answer counts as a try and is followed by another only when a repeat is safe.
+
+- **A node whose dispatch replay cache is full no longer fails callouts handed
+  to it**; it answers that it took no work, and the next node is asked.
+
+- **A callout may not run as one tenant over another's entity.** A hand-over
+  carries two tenants — its own, which becomes the user context, and the
+  entity metadata's, which is handed to the local dispatcher — and nothing
+  compared them. A mismatch is now answered, under seal, as a `terminal`
+  refusal with no try made, and so is an absent entity tenant: every callout
+  kind — processor, criteria and function alike — is built from a live
+  stored entity whose tenant is always set, so an empty one can only come
+  from a hand-crafted peer body. The owner reports a ticketed `500`.
+
+- **A node's answer to another node's call could be replaced by anyone on the
+  network path.** The answer to a handed-over callout was not authenticated, nor
+  was the answer to the call that delegated a scheduled transition, so speaking
+  for the answering node took no cluster key: a forged success silenced the
+  `peer forward failed` warning while the transition never fired on that peer —
+  the task itself was not lost, a later scan redispatched it, but nothing said
+  so. A hand-over's answer is sealed for the one request it answers (see
+  Breaking), and the scheduled-transition call no longer exists; an answer
+  that cannot be opened is a lost answer. Calls between nodes follow no
+  redirect.
+
+- **A node's own internal error text no longer reaches a client in a callout
+  failure.** A request the node could not build, and a member's answer it could
+  not read, put the underlying error's text into a `400` body, where it could
+  quote bytes of the tenant's own entity payload. The client reads
+  `internal error` with a ticket, and the cause is logged by shape, never by
+  text.
+
+- **A node hosting compute members of more than a handful of tenants vanished
+  from the cluster.** Tenants and tags rode in the membership layer's node
+  metadata, which the library caps at 512 bytes — the eighth tenant with a
+  36-character id, or the fourth with a 100-character one. Past it the node
+  published empty metadata: every peer dropped it, no callout was handed to it
+  for any of its tenants, a callback routed through a peer could not find the
+  transaction's owner, the scheduler gave it no work, and it dropped out of its
+  own view; nothing reported it beyond one warning line. The metadata now
+  carries identity and a list version only; the lists travel over the membership
+  layer's reliable channel, and a node that is behind fetches them. A node whose
+  identity cannot fit the metadata refuses to start (see Breaking), and the
+  channel has two instruments of its own (see Added).
+
+- **A transaction routed to a node whose membership metadata cannot be read
+  answers `503 TRANSACTION_NODE_UNAVAILABLE`**, as for any other node that is
+  not available. It answered `500`.
+
+- **A workflow export of a function-driven scheduled transition carried
+  `"delayMs": 0`, which the API's own schema rejects.** The exporter
+  marshalled the schedule's wire type directly, and its delay field had no
+  `omitempty`, so a schedule fired by a Function callout — which has no
+  static delay at all — still emitted a meaningless zero delay alongside
+  `function`, violating the published schema's `minimum: 1` and its
+  documented mutual exclusion between `delayMs` and `function`. The key is
+  now omitted when there is no static delay. Import now refuses the old
+  export's `"delayMs": 0` beside a function; see **Breaking** above.
+
+- **A point-in-time read costs what the model costs, not what the history
+  costs (PostgreSQL).** The point-in-time base query resolved the latest
+  revision per entity with `DISTINCT ON (entity_id)` over
+  `entity_versions`, so the planner walked every revision of every entity
+  up to the instant and applied the caller's condition afterwards — a
+  point-in-time search, an async snapshot scan and grouped statistics at an
+  instant all scaled with the length of the history. The query now
+  enumerates the model's entities and probes each one's revision through a
+  lateral join into the bi-temporal index. On 10,000 entities of 250
+  revisions, a search whose condition matches one entity went from 4.9 s to
+  178 ms; an unbounded scan from 2.0 s to 150 ms. Results are unchanged.
+
+- **Two reads at the same point in time can no longer disagree
+  (PostgreSQL).** Because a write was dated when its transaction started, a
+  read at an instant between a transaction's start and its commit missed
+  its writes while the same read after the commit found them — the past
+  changed after it had been served. Dating at commit closes that window
+  down to the commit itself.
+
+- **An audit event reports its transaction's commit instant on every
+  backend.** memory and sqlite reported the clock of whichever process
+  recorded the event, so an entity's audit trail could drift from — or
+  invert against — its own version history. A cross-backend parity
+  scenario now pins the two together. Events the engine labels with a
+  cascade entry's transaction rather than the recording one keep the
+  recording process's clock; they were never stamped before either.
+
+- **A caller-supplied `creationDate` is ignored on every backend (memory).**
+  An entity's creation date belongs to the store, but the memory backend
+  kept a non-zero value supplied on the entity and only substituted its own
+  clock for a zero one. The engine always supplies one — it builds the
+  entity from its own clock before the transaction is even opened — so a
+  created entity reported a `creationDate` dated at the *start* of the
+  write, the gap being the whole transaction lifetime including processor
+  callouts. That is the same defect this release removes from PostgreSQL,
+  left standing on the one backend nothing checked. sqlite and postgres
+  already ignored the caller. A new SPI conformance case,
+  `Save/CallerCreationDateIgnored`, pins it on every backend and covers the
+  transactional and non-transactional write paths separately.
+
+- **A non-transactional `Save` and `Delete` are each one transaction
+  (PostgreSQL).** Both ran as separate auto-committed statements: `Save`
+  inserted the `entities` row with a `'null'::jsonb` placeholder before
+  updating it, so a concurrent reader could observe `doc = 'null'` and a
+  process death could leave `entities` updated without its version row;
+  `Delete` could leave a tombstone version recorded for a delete the
+  `entities` table never applied. Each now runs in a transaction of its
+  own. A concurrent non-transactional `Save` and `Delete` on the same
+  entity can now deadlock on opposite lock orders; PostgreSQL breaks the
+  cycle and the loser gets the same retryable `409 CONFLICT` any other lock
+  conflict produces — a new failure mode, not a new outcome.
+
+- **`transitions?transactionId=` resolves a `CompareAndSave` write.** The
+  endpoint derives a point in time from the transaction's submit time;
+  because `CompareAndSave` dated its version after that submit time, the
+  lookup could miss its own write.
+
+- **Two tenants whose ids differ only in case no longer share a blob
+  directory (memory).** The in-memory backend built a message blob's path
+  from the raw tenant id and message id, so on a case-insensitive
+  filesystem — APFS and Windows, both release targets — `tenant-a` and
+  `tenant-A` were one directory: the second `Save` overwrote the first, and
+  a `Get` by one tenant could return the other's bytes. The in-memory
+  backend is what an unconfigured binary runs. Both segments are now
+  hex-encoded under an `os.Root`, so a traversing, colliding, case-folding,
+  empty or reserved name is **unrepresentable** rather than rejected, and
+  the hand-rolled path check it replaces is gone. Encoding doubles each
+  segment: a tenant is capped at 100 bytes where it enters the engine, and
+  a message id — server-generated, 36 bytes — is usable to 127 before the
+  filename limit, beyond which an over-long id is an ordinary write error.
+
+- **`Save` and `Get` pair a blob with its own metadata (memory).** `Save`
+  renamed the blob into place and inserted its metadata as two separate
+  steps, so two concurrent saves of one id could leave one writer's blob
+  paired with the other's header; `Get` had the same split on the read
+  side, copying the header under the read lock and opening the blob after
+  releasing it. Both are now single critical sections. The payload copy
+  stays outside the lock. Unreachable over HTTP, where message ids are
+  server-generated, but the SPI admits any id.
+
+- **A `500` from `POST /tenants/{tenant}/oauth/token` carries a ticket.** The endpoint's
+  four `server_error` paths emitted the bare RFC 6749 §5.2 pair and logged
+  nothing correlatable, so an operator had no way to tie a caller's report
+  to a log record. The ticket now rides in `error_description` as
+  `server_error [ticket: <uuid>]` — the RFC fixes the body shape and has no
+  dedicated field — and the same ticket is logged with the underlying
+  cause, which stays out of the response. No OpenAPI change:
+  `error_description` is already a declared string.
+  ([#588](https://github.com/cyoda/cyoda-go/issues/588))
+
+- **A shutdown signal that arrives during startup is a clean exit.** The
+  goroutine that serves gRPC and the one that stops it on `SIGTERM` /
+  `SIGINT` start side by side, so a signal landing before the gRPC server
+  had begun serving stopped it first; grpc-go then reports
+  `the server has been stopped` from `Serve`, and cyoda-go took that for a
+  serve failure — logging `server group exited with error` and exiting with
+  status `1` after a shutdown that had in fact drained normally. An
+  orchestrator that reads the exit status (a Kubernetes rollout replacing a
+  pod that was still starting, a systemd unit) saw a crash where there was
+  none. That outcome is now the clean shutdown it always was, exit status
+  `0`, the same as a stop that lands once the server is serving. A gRPC
+  server that genuinely cannot serve still fails the process, and still
+  brings the HTTP and admin listeners down with it rather than leaving them
+  up with no gRPC server behind them.
+
+- **A port that cannot be bound fails startup before anything is served.**
+  Only the gRPC port was bound up front; the HTTP and admin ports were bound
+  by their servers as they started, so a conflict on either surfaced after
+  the gRPC server was already accepting, as a `server group exited with
+  error` from a process that had briefly been up. All three sockets are now
+  bound before any server starts. A conflict is a `listen failed` log naming
+  the listener (`http listener: listen tcp :8080: bind: address already in
+  use`) and exit status `1`, with nothing having served a request — and the
+  node is torn down on the way out, so a clustered node deregisters from its
+  peers instead of leaving them to find out by failure detection. The gRPC
+  bind failure, which already failed fast, skipped that teardown; it no
+  longer does. Bind addresses are unchanged: the application and gRPC
+  surfaces on every interface, the admin surface on
+  `CYODA_ADMIN_BIND_ADDRESS`. That value is now a bare host: an IPv6
+  literal is written `::1`, which used to be rejected as a malformed
+  address, and the bracketed `[::1]`, which used to be the only spelling
+  that worked, no longer is one. Two log lines read
+  differently: the HTTP and admin `server starting` lines carry the address
+  actually bound (`[::]:8080`, not `:8080`), and the line after a drain is
+  `shutdown requested, servers stopped`.
+
+- **Telemetry is flushed when a port cannot be bound or a server fails.**
+  Both ended the process with `os.Exit`, which skips deferred calls, so the
+  OTel flush registered at startup never ran and the spans and metrics
+  describing the failure were the ones most likely to be lost. The serving
+  path now returns its exit status to `main` instead. Two exits still flush
+  nothing: a startup failure inside `app.New` (configuration, bootstrap, the
+  storage backend), which exits directly, and the hard exit forced by a
+  second signal (status `2`), which is meant to. The flush is also bounded
+  now, on every exit including a clean one: it gets 10 seconds, the same
+  budget as a server drain, where it used to run on the exporter's own
+  timeouts — about 30 seconds against a collector that accepts and never
+  answers, longer than the default Kubernetes termination grace period
+  leaves once the drains are done. A flush cut short is reported by the
+  existing `OTel meter provider shutdown error` / `OTel trace provider
+  shutdown error` warnings.
+
+- The help index claimed gRPC responses carry `errorCode` and `retryable` in
+  trailer metadata, and showed an envelope `code` that is never sent. Neither
+  was true; `errors` now shows the envelope as it is.
+
+- **The published event schemas now assert the composition they always appeared
+  to.** Every document in `docs/cyoda/schema/` declares JSON Schema Draft
+  2020-12, and the 47 that build on `BaseEvent` composed with `extends` — a
+  draft-03 keyword, dropped in draft-04 and replaced by `allOf`. Under 2020-12
+  an unrecognised keyword is ignored, so those documents were valid and
+  asserted nothing about the base: a criteria response validated as its own
+  three fields, with nothing checking `success`'s declared boolean type,
+  nothing applying `BaseEvent`'s `required` list and nothing checking the
+  `error` object's shape. `{"success": "yes", "matches": true}` validated.
+  They now compose with `allOf`, and those three things are decided. **No wire
+  type and no runtime behaviour changed**: nothing in cyoda-go validates a
+  payload against this tree — it decodes in Go, from types generated from it —
+  and `api/grpc/events/types.go` regenerates byte-identically, because the
+  generator already inlined the base's fields and required list (it now keys
+  that off `allOf`). This is the published contract catching up with what the
+  code already did. Anyone validating a compute member's answer against the
+  tree gets the checks the composition always implied: a calculation response
+  owes its own `id`, and sends `error` as an object or not at all. Payloads the
+  server accepted before are still accepted — but `cyoda help grpc` showed
+  response examples without an `id` and with an explicit `"error": null`, which
+  would not have validated, and those are corrected here. Cyoda Cloud's copy of
+  the tree still uses the old keyword, so the two are not byte-identical until
+  it follows; see `docs/cloud-parity/event-schema-composition.md`.
+
+  The same change removes `"type": "any"` from the ten properties that carried
+  it. That is the `jsonschema2pojo` spelling of "any value", not a JSON Schema
+  type name, and a conformant validator does not read it permissively — it
+  refuses to compile the document, and with it every clause the document does
+  state. Sixteen of the sixty-six schemas were unusable that way, including
+  `common/DataPayload.json` and the six that reach it, so the composition above
+  bought those sixteen nothing until this was resolved. 2020-12 spells "any
+  value" by omitting `type`, which is what the tree now does; the sibling
+  `existingJavaType` stays, being the generator extension Cloud's copy needs.
+  `api/grpc/events/types.go` regenerates byte-identically here too. Cloud's
+  copy still carries the construct.
+
+- **The reference compute member sent a function answer the published tree
+  refuses.** `cmd/compute-test-client`'s function response omitted `entityId`,
+  which all three calculation responses require and which its processor and
+  criteria responses both send. A customer copying it as the worked example got
+  an answer that would not validate. It now names the entity it answers about,
+  on the successful and the failure path alike.
+
+- **A failed state machine audit read answers `503`/`500` instead of a trail
+  with those events silently missing.** The audit search endpoint swallowed a
+  `StateMachineAuditStore` factory or read failure and answered `200` with the
+  state machine events left out — the same failure already answered `503` on
+  the workflow-finished endpoint. It now answers `503 STORAGE_UNAVAILABLE` on
+  a storage outage or a generic `500` with a ticket id otherwise, matching the
+  finished endpoint. A request filtered to `EntityChange` only is unaffected.
+
+- **The memory backend no longer reuses a version number after a delete and a
+  recreate.** It numbered a new version from the last non-tombstone row, so
+  create → delete → save gave the recreate the deleted row's own version
+  number instead of the next one. It now counts from the last row of any
+  kind, matching postgres, sqlite and the commercial backend.
+
+- **sqlite's default id generator returned random (version 4) UUIDs for
+  transaction and savepoint ids, against the SPI's time-ordered contract.**
+  It now returns time-based (version 1) ids, and the same generator now
+  mints state machine event ids too.
+
+- **`GET .../workflow/{transactionId}/finished` could return either of a
+  transaction's two `STATE_MACHINE_FINISH` events on postgres/sqlite.** A
+  second `FINISH` event arises when a joined callback updates an entity
+  whose workflow already ran earlier in the same transaction; the endpoint
+  returned whichever one the store happened to list first. It now returns
+  the one that sorts first in the audit order (normally the last one
+  recorded).
+
+- **Workflow import now refuses a `schedule.timeoutMs` below `0` or a
+  `schedule.delayMs` below `1`, matching the minimums `TransitionScheduleDto`
+  already published.** Neither was enforced: a negative `timeoutMs` was
+  accepted outright, and a negative `delayMs` alongside a `function` was
+  accepted and silently ignored — the delayMs/function XOR check reads any
+  non-positive `delayMs` as "absent", so it saw only the function and
+  passed. Both are now rejected at import (`400 VALIDATION_FAILED`), naming
+  the workflow, state, transition and field. See `cyoda help workflows`.
+
+- **`cyoda help` accepts a topic's dotted id as a single argument** (e.g.
+  `cyoda help auth.tokens`), matching the form every `see_also` list and the
+  HTTP help endpoint already use. Previously only the space-separated form
+  (`cyoda help auth tokens`) resolved.
+
+### Security
+
+- Bumped `github.com/klauspost/compress` `v1.19.1` → `v1.20.2` (root; the
+  postgres plugin from `v1.18.7`) to clear GO-2026-6865, a panic on
+  two-block frames that govulncheck reaches from the HTTP stack.
+
+- **Conditional delete (`DELETE /entity/{entityName}/{modelVersion}`) reads
+  at most 10 MiB of condition body**, as every other entity write endpoint
+  does; a larger body is `400 BAD_REQUEST` and deletes nothing. Before, the
+  body was read whole with no limit, so one request could exhaust a node's
+  memory.
+
+- Bumped the Go toolchain `go 1.26.7` → `go 1.26.9` (root, all three plugin
+  modules and `go.work`) and `golang.org/x/net` `v0.58.0` → `v0.60.0` to clear
+  twelve reachable govulncheck advisories published with go1.26.9, in
+  `net/http` (HTTP/2 included, five of them also in `x/net`), `crypto/tls`,
+  `mime/multipart`, `os` and `html/template`: GO-2026-6599, -6600, -6603,
+  -6604, -6605, -6607, -6608, -6610, -6611, -6612, -6613 and -6617.
+  The `x/net` bump moves the other `golang.org/x` modules with it; the plugin
+  modules carry the same versions as the root.
+
+- Bumped the Go toolchain `go 1.27.3` → `go 1.27.4` (root, all three plugin
+  modules and `go.work`) to clear GO-2026-6859, an HTTP/1 server crash in
+  `net/http` from a `MaxBytesReader` header race, fixed in go1.27.4.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking
@@ -922,7 +3844,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`transactionTimeoutMs` on the equivalent CloudEvent requests) honors the
   same semantics, returning a `CLIENT_ERROR` envelope prefixed
   `TRANSACTION_TIMEOUT: …`. `cyoda help errors TRANSACTION_TIMEOUT`.
-  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+  ([#379](https://github.com/cyoda/cyoda-go/issues/379))
 
 - **`transactionSize` is now honored on `deleteEntities` and `deleteMessages`.**
   Set, matching ids/messages are deleted in independent batches of that size
@@ -937,7 +3859,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `EntityDeleteAllRequest.transactionSize` mirror is honored the same way when
   explicitly sent, and its response's `errorsById` is now populated with
   per-id batch failures.
-  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+  ([#379](https://github.com/cyoda/cyoda-go/issues/379))
 
 - **`searchEntities` regains `timeoutMillis` and `408 SEARCH_TIMEOUT`,**
   completing the intent recorded when the previous, unenforced version of this
@@ -946,7 +3868,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   partial results returned; rejected with **400** on a request that joins an
   open transaction. Enforced uniformly across memory, sqlite and postgres.
   `cyoda help errors SEARCH_TIMEOUT`.
-  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+  ([#379](https://github.com/cyoda/cyoda-go/issues/379))
 
 - **`POST /api/search/async/{entityName}/{modelVersion}` now runs on a
   bounded worker pool instead of one goroutine per submission**, with a
@@ -1179,7 +4101,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   model's `changeLevel` set, or the field declared in the model. This applies to
   every ingress that runs a cascade, including scheduled transitions and
   peer-forwarded dispatch.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **The sqlite plugin now numbers a new entity's first version 1, matching
   memory and postgres.** It previously started at 0, which was
@@ -1724,7 +4646,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   request: the criterion is evaluated against the payload of the request being served,
   so where definitions differ in what they permit, the selection field is a security
   control.
-  ([#465](https://github.com/Cyoda-platform/cyoda-go/issues/465))
+  ([#465](https://github.com/cyoda/cyoda-go/issues/465))
 
 - **`GET /entity/{entityId}/transitions` no longer answers from the wrong workflow when
   a selection criterion cannot be evaluated, and no longer writes to the audit trail.**
@@ -1735,7 +4657,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   empty transaction id, despite intending not to; it now records nothing. A criterion
   that merely does not *match* still resolves to the default workflow, which is
   selection working as documented.
-  ([#465](https://github.com/Cyoda-platform/cyoda-go/issues/465))
+  ([#465](https://github.com/cyoda/cyoda-go/issues/465))
 
 - **A payload that repeats a name within one object is now rejected with 400.**
   A duplicated name was read as the *last* occurrence by schema validation, the `GET`
@@ -1747,7 +4669,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   criterion runs against the request bytes before any store normalisation. Names
   repeated in sibling objects, across array elements or at different depths are
   ordinary JSON and remain accepted. RFC 8259 permits rejecting duplicate names.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **A number outside PostgreSQL's `numeric` range is now rejected with 400 instead of
   failing inside the store.** Beyond 131072 digits before the decimal point or 16383
@@ -1757,7 +4679,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   having one fraction digit and an in-range exponent, while `0.0001e131075` is accepted
   because leading zeros are not significant. It is purely lexical — deciding that
   `1e1000000` is too large never builds a million-digit value.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **A processor returning `{"data":null}` no longer panics and leaks a database
   connection.** The literal `null` is non-empty, so it passed the empty-payload check
@@ -1767,7 +4689,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   nor rolled back and its pooled connection was never returned. Repeated, that exhausts
   the pool and the node stops serving. The plugin now returns a clean error, so the
   normal error path runs and the transaction is released.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **An empty entity payload no longer makes the entity — and its whole model's
   listing — permanently unreadable on PostgreSQL.** `{}` was accepted with 200 and
@@ -1779,7 +4701,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   remained, leaving no data to decode. An empty payload now round-trips as `{}`, while
   a DELETED version — which legitimately carries no domain data — still reports none.
   The memory and sqlite stores were unaffected, so this was also a backend divergence.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **Unpaired UTF-16 surrogates and invalid UTF-8 in an HTTP entity payload are now
   rejected with 400 on every backend.** Both are accepted by Go's JSON parser and
@@ -1796,8 +4718,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   client never sent — and collapsed duplicate keys instead of rejecting them. All
   five gRPC entity write events (create, update, patch, create-collection,
   update-collection) now enforce the full guard set, matching HTTP.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25),
-  [#468](https://github.com/Cyoda-platform/cyoda-go/issues/468))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25),
+  [#468](https://github.com/cyoda/cyoda-go/issues/468))
 
 - **An entity payload containing a NUL (U+0000) is now rejected with 400 on every
   backend.** `{"name":"a\u0000b"}` is valid JSON and passes schema validation, but
@@ -1808,7 +4730,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   paths (create, batch-array create, collection create, update, collection update)
   now reject it at the boundary with 400 `BAD_REQUEST`, naming the offending field
   path. (NUL survives the gRPC ingress's decode, so it is caught there too.) Covered by a cross-backend parity scenario.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **A request body with trailing content after a valid JSON value now returns
   400, not 500.** `POST /entity/{format}/{name}/{version}` accepted a body such as
@@ -1817,7 +4739,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   malformed — bytes went on to be persisted, surfacing the client's input error as
   a storage failure with a support ticket. Entity payload decoding now requires the
   body to hold exactly one JSON value, matching `json.Unmarshal`.
-  ([#25](https://github.com/Cyoda-platform/cyoda-go/issues/25))
+  ([#25](https://github.com/cyoda/cyoda-go/issues/25))
 
 - **Point-in-time tests no longer compare two clocks.** `TestParity/GetAllEntitiesAsAt`
   flaked on postgres: it built its `pointInTime` from the test process's clock and
@@ -1828,7 +4750,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   parity suite, `internal/e2e`, the postgres plugin's own as-at tests (which had 2 ms,
   10 ms and zero-margin variants), and the SPI conformance harness, whose `Harness.Now`
   now reads the database clock.
-  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
+  ([#460](https://github.com/cyoda/cyoda-go/issues/460))
 
 - **`GET /entity/{id}/transitions` no longer 404s an existing entity when the
   database clock runs ahead of the application.** With no `pointInTime` supplied, the
@@ -1838,7 +4760,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   missing, so a request for the current state got **404 ENTITY_NOT_FOUND** for an
   entity that exists. A request with no point in time now reads the current version.
   Same fix in `GetAvailableTransitions`, behind `/platform-api/entity/fetch/transitions`.
-  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
+  ([#460](https://github.com/cyoda/cyoda-go/issues/460))
 
 - **Scheduled-transition e2e tests no longer race an HTTP round-trip against the
   timer.** `TestE2E_ScheduledTransition_FiresThroughHTTPStack` and `_LoopbackDefersTimer`
@@ -1847,7 +4769,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   assert from the server's audit trail: the transition was *armed* with its delay applied,
   and the fire did not precede the armed time. `getSMAuditEvents` gained an explicit page
   size — the default 20-item page silently truncated the history one of them reasons about.
-  ([#460](https://github.com/Cyoda-platform/cyoda-go/issues/460))
+  ([#460](https://github.com/cyoda/cyoda-go/issues/460))
 
 - **A late compute-node reply no longer leaves a dangling gRPC dispatch
   entry.** `internal/grpc/dispatch.go` removed a pending request from its
@@ -1856,7 +4778,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   failure all abandoned their request without cleaning up its map entry — a
   bounded per-request leak, hottest on a reachable write deadline. All three
   paths now run through one deferred cleanup.
-  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+  ([#379](https://github.com/cyoda/cyoda-go/issues/379))
 
 - **SQLite's message batch-delete no longer fails outright on a large id
   list.** `MessageStore.DeleteBatch` built one `IN (?,…)` clause for the
@@ -1865,7 +4787,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   size well under that limit; message delete was already documented as
   non-transactional, so the chunking is not user-visible beyond no longer
   failing.
-  ([#379](https://github.com/Cyoda-platform/cyoda-go/issues/379))
+  ([#379](https://github.com/cyoda/cyoda-go/issues/379))
 
 - **An async search job whose owning node crashed no longer stays `RUNNING`
   forever with stale partial results.** Nothing previously reclaimed an
@@ -2013,7 +4935,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `CYODA_SCHEDULER_BATCH_SIZE`, `CYODA_SCHEDULER_DISTRIBUTION`,
   `CYODA_SCHEDULER_COORDINATOR`, `CYODA_SCHEDULER_REDISPATCH_BACKOFF`,
   `CYODA_SCHEDULER_EXPIRY_GRACE`.
-  ([#251](https://github.com/Cyoda-platform/cyoda-go/issues/251))
+  ([#251](https://github.com/cyoda/cyoda-go/issues/251))
 
   **Per-entity firing time via a `schedule.function` compute-node callout.**
   A scheduled transition's `schedule` may now carry `function` instead of a
@@ -2040,7 +4962,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   1.3+ schedule (a pre-1.3 exported workflow always has it). This is an
   intentional, schema-version-gated contract change, allowlisted in the
   oasdiff breaking-change gate.
-  ([#419](https://github.com/Cyoda-platform/cyoda-go/issues/419))
+  ([#419](https://github.com/cyoda/cyoda-go/issues/419))
 
   **Uniform compute-infra `503`s across processor/criterion/function
   callouts.** `NO_COMPUTE_MEMBER_FOR_TAG`, `DISPATCH_TIMEOUT`,
@@ -2049,7 +4971,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   kinds triggered the dispatch — previously some of these paths
   (e.g. no matching compute member) fell through to a misleading
   `400 WORKFLOW_FAILED`. No new error codes.
-  ([#251](https://github.com/Cyoda-platform/cyoda-go/issues/251))
+  ([#251](https://github.com/cyoda/cyoda-go/issues/251))
 
 - **Follow-on workflow actions are attributed to the originating principal.**
   A cascaded write (a processor reacting to a user's transition and writing
@@ -2070,7 +4992,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   New compute-node SDK helper `api/grpc/authctx` exposes `Type`/`ID`/`Roles`
   plus `Require(ce, role)`, a fail-closed role gate. See the `authtype` wire
   change under **Changed**.
-  ([#430](https://github.com/Cyoda-platform/cyoda-go/issues/430))
+  ([#430](https://github.com/cyoda/cyoda-go/issues/430))
 
 - **Bounded-search failures now surface as `400`, not `500`** — a storage backend
   (`Searcher` or grouped-stats aggregator) that detects a matched result set
@@ -2080,7 +5002,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   ticket on every transport. sqlite raises `SCAN_BUDGET_EXHAUSTED` on direct
   search today; the commercial backend's index-driven searcher is expected to
   raise `SEARCH_RESULT_LIMIT`. New error code: `SCAN_BUDGET_EXHAUSTED` (400).
-  ([#433](https://github.com/Cyoda-platform/cyoda-go/issues/433))
+  ([#433](https://github.com/cyoda/cyoda-go/issues/433))
 
 - **Tx-aware search pushdown + `trackingRead`** — an in-transaction search no
   longer falls back to a full `GetAll` scan plus in-memory filtering; the
@@ -2099,7 +5021,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   footprint than before. See `docs/CONSISTENCY.md` §3c for the updated fence
   guidance. Async search does not expose the flag (it runs detached, outside
   any transaction). No new error codes.
-  ([#420](https://github.com/Cyoda-platform/cyoda-go/issues/420))
+  ([#420](https://github.com/cyoda/cyoda-go/issues/420))
 
 - **Criterion stoppage reason** — a criteria compute node's `EntityCriteriaCalculationResponse`
   may now carry an optional `reason` string on `matches: false`, explaining why a passage was
@@ -2111,7 +5033,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and `WORKFLOW_SKIP`'s carries `{workflowName, reason}`. A manual rejection's own audit event is
   not forced durable (it rolls back with the no-op transaction, same as before). Reason is capped
   at 2 KiB; an omitted reason defaults to `"criterion did not match"`. No new error codes.
-  ([#413](https://github.com/Cyoda-platform/cyoda-go/issues/413))
+  ([#413](https://github.com/cyoda/cyoda-go/issues/413))
 
 - **Polymorphic temporal type detection** — the schema classifier now recognises
   `LOCAL_DATE`, `LOCAL_DATE_TIME`, `LOCAL_TIME`, `ZONED_DATE_TIME`, `YEAR`, and
@@ -2119,7 +5041,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   simple-view exporter reports them. Beyond classification fidelity this is what
   lets a backend build range indexes on temporal fields. Ships as part of the
   shared type-directed kernel (see **Changed**).
-  ([#137](https://github.com/Cyoda-platform/cyoda-go/issues/137))
+  ([#137](https://github.com/cyoda/cyoda-go/issues/137))
 
 - **Storage plugins can contribute `cyoda help` topics.** `help.RegisterOverlay(fs.FS)`
   lets a plugin hand its embedded `content/` tree to the help loader from `init()`,
@@ -2128,7 +5050,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   fresh paths are added; collisions follow the loader's existing "later wins" plus
   `see_also` union semantics, and front-matter validation applies identically to
   overlay content. OSS-only behaviour is unchanged when no overlay is registered.
-  ([#439](https://github.com/Cyoda-platform/cyoda-go/issues/439))
+  ([#439](https://github.com/cyoda/cyoda-go/issues/439))
 
 - **`cyoda help config all` and two new config subtopics.** `config all` prints
   every `CYODA_*` variable as a table (`--format=json` for the machine-consumable
@@ -2140,7 +5062,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   of prose in the parent topic. A completeness test asserts the registry covers
   every `CYODA_*` variable scanned from the root and in-tree plugin sources, and a
   default-drift test binds each registry default to `DefaultConfig()`.
-  ([#395](https://github.com/Cyoda-platform/cyoda-go/issues/395))
+  ([#395](https://github.com/cyoda/cyoda-go/issues/395))
 
 - **gRPC entity PATCH documented, with an event-type parity guard** — the `grpc`
   help topic's entity-management event-type catalogue was missing
@@ -2149,7 +5071,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   making them invisible to every downstream consumer of the help artefacts. Both
   are now documented, and a parity test pins the catalogue against the registered
   event-type constants so it cannot drift again. Documentation only — no runtime
-  change. ([#401](https://github.com/Cyoda-platform/cyoda-go/issues/401))
+  change. ([#401](https://github.com/cyoda/cyoda-go/issues/401))
 
 ### Changed
 
@@ -2167,7 +5089,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `Searcher.Search` must fail rather than truncate, `MergePage` is renamed
   `MergeBounded` (drops its `offset` parameter), and `SearchOptions.Offset` is
   removed outright. See `docs/cloud-parity/direct-search-bounded-or-fail.md`.
-  ([#437](https://github.com/Cyoda-platform/cyoda-go/issues/437))
+  ([#437](https://github.com/cyoda/cyoda-go/issues/437))
 
 - **Search/criteria predicate evaluation is now type-directed and same-type
   only**, aligning cyoda-go with Cyoda Cloud's evaluation model (see
@@ -2204,7 +5126,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `spi.MatchFilter`) now delegate to one shared kernel in the SPI, so the
   fallback and pushdown paths cannot drift; the SQL planners mirror it and stay
   guarded by the cross-backend parity suite.
-  ([#431](https://github.com/Cyoda-platform/cyoda-go/issues/431))
+  ([#431](https://github.com/cyoda/cyoda-go/issues/431))
 
 - **Processor `config.attachEntity` now defaults to `true`.** A processor whose
   `config` omits `attachEntity` is imported with `attachEntity: true`, so the
@@ -2214,7 +5136,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   workflows that omit the field and re-import (e.g. export → import) will start
   attaching the entity payload; compute nodes that ignore the payload are
   unaffected.
-  ([#421](https://github.com/Cyoda-platform/cyoda-go/issues/421))
+  ([#421](https://github.com/cyoda/cyoda-go/issues/421))
 
 - **CloudEvent `authtype` values are now `user`/`service`/`system` (breaking).**
   The Auth Context extension attribute previously emitted `user` or
@@ -2223,13 +5145,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   attribute is always present and faithful — an unset or unrecognized kind fails
   the callout dispatch rather than emitting a normalized value. Compute nodes
   switching on the old string must be updated.
-  ([#430](https://github.com/Cyoda-platform/cyoda-go/issues/430))
+  ([#430](https://github.com/cyoda/cyoda-go/issues/430))
 
 ### Fixed
 
 - **Conditional delete forwards a classified 4xx from its delete-selection
   search** instead of surfacing an opaque `500`.
-  ([#437](https://github.com/Cyoda-platform/cyoda-go/issues/437))
+  ([#437](https://github.com/cyoda/cyoda-go/issues/437))
 
 - **Direct search now applies the documented default limit** — omitting `limit`
   on `POST /api/search/direct/{entityName}/{modelVersion}` (and the gRPC
@@ -2238,7 +5160,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `GetAll`+match fallback branch, while the `Searcher` pushdown branch used by
   all three OSS backends (memory/sqlite/postgres) treated an omitted limit as
   unbounded, returning the entire matched set.
-  ([#432](https://github.com/Cyoda-platform/cyoda-go/issues/432))
+  ([#432](https://github.com/cyoda/cyoda-go/issues/432))
 
 - **`creationDate`/`lastUpdateTime` meta filters now compare chronologically, not
   lexically** — search conditions and workflow criteria on these fields compare
@@ -2251,7 +5173,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `400 CONDITION_TYPE_MISMATCH`, and an unknown meta filter field is rejected
   `400 INVALID_FIELD_PATH`. (The offset-mandatory rule was subsequently relaxed
   by the type-directed kernel — see **Changed**.)
-  ([#423](https://github.com/Cyoda-platform/cyoda-go/issues/423))
+  ([#423](https://github.com/cyoda/cyoda-go/issues/423))
 
 - **Depth-2 nested joined cascade no longer deadlocks the transaction** — when a
   joined compute-node callback ran a transition whose own SYNC processor drove a
@@ -2269,7 +5191,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   local buffer and is the one place a descendant callback can re-enter, so the
   release is safe for concurrent same-tx siblings. Covers both HTTP and gRPC entry
   points (both funnel through the same entity handler).
-  ([#410](https://github.com/Cyoda-platform/cyoda-go/issues/410))
+  ([#410](https://github.com/cyoda/cyoda-go/issues/410))
 
 - **Compute-node callback transaction-join now covers the gRPC search RPCs** — a
   processor/criteria callback that presented a valid `tx-token` on `EntitySearch` /
@@ -2286,7 +5208,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   envelope (`EntityResponse`, `Success=false`) rather than a raw gRPC status, and
   a token-less search is unchanged (no join). The HTTP entity API already joined
   reads (route-agnostic `X-Tx-Token` middleware) and was unaffected.
-  ([#402](https://github.com/Cyoda-platform/cyoda-go/issues/402))
+  ([#402](https://github.com/cyoda/cyoda-go/issues/402))
 
 - **gRPC server no longer echoes member keep-alives** — the streaming receive loop
   replied with a keep-alive to every inbound member keep-alive while also sending
@@ -2294,7 +5216,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   delay-free feedback loop that pinned both the server and the compute node at
   ~100% CPU indefinitely, with no INFO-level log output. An inbound keep-alive is
   now liveness-only (`UpdateLastSeen`), removing the storm class regardless of
-  client behaviour. ([#417](https://github.com/Cyoda-platform/cyoda-go/issues/417))
+  client behaviour. ([#417](https://github.com/cyoda/cyoda-go/issues/417))
 
 - **Malformed criterion regexes are rejected at workflow import** — a
   `MATCHES_PATTERN` criterion carrying a non-compiling pattern (e.g. `"["`)
@@ -2303,7 +5225,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   uses, so the failure surfaces at registration as `400 VALIDATION_FAILED`
   instead of at runtime. No schema-version bump: a non-compiling regex was never
   a working criterion, so no valid config is newly rejected. Eval-time behaviour
-  is untouched. ([#425](https://github.com/Cyoda-platform/cyoda-go/issues/425))
+  is untouched. ([#425](https://github.com/cyoda/cyoda-go/issues/425))
 
 - **Boolean search conditions on postgres no longer 500** — a `simple` search
   condition comparing a JSON path to a boolean (`{"operatorType":"EQUALS","value":true}`)
@@ -2313,7 +5235,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   operand is now rendered as its text form (`"true"`/`"false"`), matching the lexicographic
   text comparison already used for strings and the memory/sqlite backends. Affected normal
   searches and grouped-stats queries alike (shared query planner); memory and sqlite were
-  never affected. ([#399](https://github.com/Cyoda-platform/cyoda-go/issues/399))
+  never affected. ([#399](https://github.com/cyoda/cyoda-go/issues/399))
 
 ### Security
 
@@ -2339,8 +5261,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `.github/codeql-config.yml` with a test pinning the rationale: `slog`'s
   `TextHandler` quotes injected newlines, so the protection is a property of the
   handler rather than of each call site.
-  ([#449](https://github.com/Cyoda-platform/cyoda-go/issues/449),
-  [#450](https://github.com/Cyoda-platform/cyoda-go/issues/450))
+  ([#449](https://github.com/cyoda/cyoda-go/issues/449),
+  [#450](https://github.com/cyoda/cyoda-go/issues/450))
 
 ## [0.8.2] — 2026-07-08
 
@@ -2357,7 +5279,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   even in an extend-permitting mode. Under a named transition the merge is applied first, then the
   transition's processors run on the merged state. New error codes: `PRECONDITION_REQUIRED` (428),
   `UNSUPPORTED_MEDIA_TYPE` (415).
-  ([#341](https://github.com/Cyoda-platform/cyoda-go/issues/341))
+  ([#341](https://github.com/cyoda/cyoda-go/issues/341))
 
 - **Renderer annotations on processors & criteria** — the engine-ignored `annotations` bag now
   extends to the two workflow elements that lacked it: processors carry an embedded `annotations`
@@ -2369,7 +5291,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   never interpreted by the engine; processor annotations are stripped before dispatch and never
   reach compute members. Additive schema change: the workflow schema moves to **1.2** and every
   existing 1.1 payload remains valid (dual-shape). No new error codes.
-  ([#384](https://github.com/Cyoda-platform/cyoda-go/issues/384))
+  ([#384](https://github.com/cyoda/cyoda-go/issues/384))
 
 - **Composite unique keys** — entity models can declare one or more composite unique keys via
   `PUT /model/{entityName}/{modelVersion}/unique-keys` (UNLOCKED models only). Each key is an
@@ -2467,7 +5389,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   pagination done in the database — not a JSON-path-index speedup; adding
   indexes on queried paths remains a separate operational step. SQLite already
   did this; the memory backend keeps filtering in memory by design.
-  ([#37](https://github.com/Cyoda-platform/cyoda-go/issues/37))
+  ([#37](https://github.com/cyoda/cyoda-go/issues/37))
 
 - **Unknown model → `404 MODEL_NOT_FOUND` (uniform)** — all model-scoped read
   operations (`getAllEntities`, `getEntityStatisticsForModel`,
@@ -2495,7 +5417,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the rest of the API's JSON naming. The former kebab-case `meta-data` key is no longer honored;
   its contents are ignored. Breaking input change, shipped in a patch because edge messages have
   no known consumers. A new `cyoda help messages` topic documents the full edge-message API.
-  ([#386](https://github.com/Cyoda-platform/cyoda-go/issues/386))
+  ([#386](https://github.com/cyoda/cyoda-go/issues/386))
 
 ### Removed
 
@@ -2538,7 +5460,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   time up to the next millisecond (over-including later same-millisecond
   versions), and sqlite used a strict `<` bound — so different backends, and
   different read paths within one backend, could disagree at sub-millisecond
-  boundaries. ([#349](https://github.com/Cyoda-platform/cyoda-go/issues/349))
+  boundaries. ([#349](https://github.com/cyoda/cyoda-go/issues/349))
 
 ### Security
 
@@ -2567,14 +5489,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - New help topic `workflows.schema-version` documenting the wire-format contract.
 - New help action `cyoda help workflows schema-version versions` emitting the supported-version manifest as JSON.
 - HTTP help-action mirror: `GET /help/<topic>/<action>` now reachable for every registered action (`grpc proto/json`, `openapi json/yaml/tags`, `cloudevents json`, `workflows.schema-version versions`) with declared `Content-Type`.
-- OIDC provider per-tenant registry with 7 REST endpoints under `/oauth/oidc/providers` (register, list, get, update, invalidate, reactivate, delete, reload). Closes [#284](https://github.com/Cyoda-platform/cyoda-go/issues/284).
+- OIDC provider per-tenant registry with 7 REST endpoints under `/oauth/oidc/providers` (register, list, get, update, invalidate, reactivate, delete, reload). Closes [#284](https://github.com/cyoda/cyoda-go/issues/284).
 - Chained multi-issuer JWT validator: `JWKSValidator` (local issuer) first, `OIDCValidator` (registered OIDC providers) second — per ADR 0002 decision D3.
 - Per-provider configurable fields: `issuers` (accepted `iss` values), `expectedAudiences`, `rolesClaim` (overrides the global default per-provider).
 - Cluster broadcast for OIDC cache eviction: when a provider record is mutated or reloaded, a fire-and-forget message on `oidc-providers.invalidate` evicts the JWKS cache on every peer node — consistent with the model-cache invalidation pattern (single topic, no ACK required per ADR 0002 D7).
 - 6 new env vars: `CYODA_OIDC_REQUIRE_HTTPS`, `CYODA_OIDC_CONNECT_TIMEOUT_MS`, `CYODA_OIDC_SOCKET_TIMEOUT_MS`, `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS`, `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS`, `CYODA_OIDC_ROLES_CLAIM`.
 - 4 new error codes: `OIDC_PROVIDER_DUPLICATE`, `OIDC_PROVIDER_NOT_FOUND`, `OIDC_PROVIDER_INACTIVE`, `OIDC_SSRF_BLOCKED`. (5 additional error codes are wire-stubbed for future bearer-auth translation.)
 - ADR 0002 — Federated Identity Provider Architecture (`docs/adr/0002-federated-identity-provider-architecture.md`).
-- `/oauth/keys/keypair/*` and `/oauth/keys/trusted/*` — 10 admin endpoints now conform to the OpenAPI surface via chi-routed adapters in `internal/domain/account/`. ([#281](https://github.com/Cyoda-platform/cyoda-go/issues/281), sub-issue of [#194](https://github.com/Cyoda-platform/cyoda-go/issues/194))
+- `/oauth/keys/keypair/*` and `/oauth/keys/trusted/*` — 10 admin endpoints now conform to the OpenAPI surface via chi-routed adapters in `internal/domain/account/`. ([#281](https://github.com/cyoda/cyoda-go/issues/281), sub-issue of [#194](https://github.com/cyoda/cyoda-go/issues/194))
 - `/clients` OpenAPI surface — `GET /clients`, `POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret`. M2M client management is now reachable at the spec-conformant paths with the spec-conformant DTOs.
 - 6 new error codes: `FEATURE_DISABLED`, `KEY_OWNED_BY_DIFFERENT_TENANT`, `KEYPAIR_NOT_FOUND`, `TRUSTED_KEY_CAP_REACHED`, `UNSUPPORTED_ALGORITHM`, `UNSUPPORTED_KEY_TYPE`.
 - Error code `M2M_CLIENT_NOT_FOUND` (HTTP 404) emitted by the `/clients` admin operations on unknown or cross-tenant `clientId`.
@@ -2583,8 +5505,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
-- **Cross-tenant OIDC routing is now deterministic and safe.** When two tenants register the same `wellKnownConfigUri` (same physical IdP), tokens are no longer routed non-deterministically via Go's randomized map iteration. Resolution now uses a two-layer disambiguation: (1) audience-based routing — if the JWT's `aud` claim uniquely matches one tenant's `ExpectedAudiences`, that provider is selected; (2) if no unique audience match exists (both providers have empty or overlapping `ExpectedAudiences`), the token is rejected with `401 UNAUTHORIZED` (`ErrAmbiguousProvider`). Operators sharing an IdP across tenants MUST set distinct `expectedAudiences` on each registration. A `WARN` log (`oidc.cross_tenant_audience_overlap`) is emitted at Register-time when audience overlap is detected. ([#284](https://github.com/Cyoda-platform/cyoda-go/issues/284))
-- **OIDC pinned `issuers` are now enforced at discovery-fetch time.** When a provider's `issuers` list is non-empty, the discovery document's `issuer` field must match one of the pinned values; a mismatch refuses to install the provider source (logged at `WARN` with SHA-256 hashes of the issuer values, never raw strings) and the provider remains in the Phase-2-pending state until the admin reconciles. This is defence-in-depth: the runtime `issMatches` already enforces the pin at token-resolution time, but enforcing it at fetch time prevents the registry from caching an attacker-controlled `discoveryDoc.Issuer` value that could be silently trusted by future diagnostics or metrics code. ([#284](https://github.com/Cyoda-platform/cyoda-go/issues/284))
+- **Cross-tenant OIDC routing is now deterministic and safe.** When two tenants register the same `wellKnownConfigUri` (same physical IdP), tokens are no longer routed non-deterministically via Go's randomized map iteration. Resolution now uses a two-layer disambiguation: (1) audience-based routing — if the JWT's `aud` claim uniquely matches one tenant's `ExpectedAudiences`, that provider is selected; (2) if no unique audience match exists (both providers have empty or overlapping `ExpectedAudiences`), the token is rejected with `401 UNAUTHORIZED` (`ErrAmbiguousProvider`). Operators sharing an IdP across tenants MUST set distinct `expectedAudiences` on each registration. A `WARN` log (`oidc.cross_tenant_audience_overlap`) is emitted at Register-time when audience overlap is detected. ([#284](https://github.com/cyoda/cyoda-go/issues/284))
+- **OIDC pinned `issuers` are now enforced at discovery-fetch time.** When a provider's `issuers` list is non-empty, the discovery document's `issuer` field must match one of the pinned values; a mismatch refuses to install the provider source (logged at `WARN` with SHA-256 hashes of the issuer values, never raw strings) and the provider remains in the Phase-2-pending state until the admin reconciles. This is defence-in-depth: the runtime `issMatches` already enforces the pin at token-resolution time, but enforcing it at fetch time prevents the registry from caching an attacker-controlled `discoveryDoc.Issuer` value that could be silently trusted by future diagnostics or metrics code. ([#284](https://github.com/cyoda/cyoda-go/issues/284))
 - OIDC provider registration now requires the calling tenant to be UUID-shaped.
   Bootstrap deployments using the literal `default-tenant` string for
   `CYODA_BOOTSTRAP_TENANT_ID` must migrate to a real tenant UUID before
@@ -2597,10 +5519,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - Trusted-key per-tenant cap counts only currently-valid keys (matches Cyoda Cloud).
 - `withAdminRole` query parameter on `POST /clients` tightened from `string` to `boolean` in `api/openapi.yaml`. This is a deliberate divergence from the upstream Cyoda Cloud OpenAPI declaration.
 - `auth.M2MClient.TenantID` promoted from `string` to `spi.TenantID`. `M2MClient` now carries `CreatedAt` and `UpdatedAt` timestamps.
-- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now rejects structurally broken workflows with `400 VALIDATION_FAILED` instead of accepting them and degrading silently at runtime. New rules: empty workflow name, duplicate workflow names within a single request, empty `initialState`, `initialState` not declared in `states`, empty state-map key, transition `next` not declared in `states`, empty or duplicate transition names within a state, empty processor name, workflow / state / transition / processor name length > 256 chars, and unknown `executionMode` values. OpenAPI schema updated with matching `minLength: 1` + `maxLength: 256` on identifier fields and `propertyNames` on the `states` map. See ⚠️ Breaking changes below. ([#255](https://github.com/Cyoda-platform/cyoda-go/issues/255))
-- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now honours an explicit `"active": false` on each incoming `WorkflowDefinition`. The handler previously force-overrode every incoming `active` to `true`; it now defaults to `true` only when the field is absent (or explicitly `null`) and passes explicit `true` / `false` through unchanged. This restores export → REPLACE re-import idempotency and lets operators stage inactive workflows. See ⚠️ Breaking changes below. ([#256](https://github.com/Cyoda-platform/cyoda-go/issues/256))
-- Workflow engine: substitution of the embedded default workflow now emits a `slog.Warn` line in addition to the existing response-body warning. Log fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `entityId`, `reason` ∈ {`no_workflows_imported`, `no_criterion_matched`}. The body warning text is corrected per cause — `"no workflows imported for model — using default workflow"` for the cold paths in `Execute` / `ManualTransition` / `Loopback`, `"no imported workflow matched entity — using default workflow"` for `selectWorkflow`. Operators driving large fleets can now detect models silently running on the embedded default. ([#256](https://github.com/Cyoda-platform/cyoda-go/issues/256))
-- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now decodes the request body with `DisallowUnknownFields`. Unknown fields — at the top level *or* nested in the workflow / state / transition / processor sub-shapes — are rejected with `400 BAD_REQUEST` and the offending field name surfaced in the response detail (Go's decoder emits `json: unknown field "X"`). Typos like `"transitionn"` for `"transitions"` no longer silently import as a no-op. See ⚠️ Breaking changes below. The broader `DisallowUnknownFields` sweep across entity / cluster / auth boundaries remains in [#145](https://github.com/Cyoda-platform/cyoda-go/issues/145). ([#264](https://github.com/Cyoda-platform/cyoda-go/issues/264))
+- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now rejects structurally broken workflows with `400 VALIDATION_FAILED` instead of accepting them and degrading silently at runtime. New rules: empty workflow name, duplicate workflow names within a single request, empty `initialState`, `initialState` not declared in `states`, empty state-map key, transition `next` not declared in `states`, empty or duplicate transition names within a state, empty processor name, workflow / state / transition / processor name length > 256 chars, and unknown `executionMode` values. OpenAPI schema updated with matching `minLength: 1` + `maxLength: 256` on identifier fields and `propertyNames` on the `states` map. See ⚠️ Breaking changes below. ([#255](https://github.com/cyoda/cyoda-go/issues/255))
+- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now honours an explicit `"active": false` on each incoming `WorkflowDefinition`. The handler previously force-overrode every incoming `active` to `true`; it now defaults to `true` only when the field is absent (or explicitly `null`) and passes explicit `true` / `false` through unchanged. This restores export → REPLACE re-import idempotency and lets operators stage inactive workflows. See ⚠️ Breaking changes below. ([#256](https://github.com/cyoda/cyoda-go/issues/256))
+- Workflow engine: substitution of the embedded default workflow now emits a `slog.Warn` line in addition to the existing response-body warning. Log fields: `pkg=workflow`, `tenant`, `entityName`, `modelVersion`, `entityId`, `reason` ∈ {`no_workflows_imported`, `no_criterion_matched`}. The body warning text is corrected per cause — `"no workflows imported for model — using default workflow"` for the cold paths in `Execute` / `ManualTransition` / `Loopback`, `"no imported workflow matched entity — using default workflow"` for `selectWorkflow`. Operators driving large fleets can now detect models silently running on the embedded default. ([#256](https://github.com/cyoda/cyoda-go/issues/256))
+- Workflow import (`POST /model/{entityName}/{modelVersion}/workflow/import`) now decodes the request body with `DisallowUnknownFields`. Unknown fields — at the top level *or* nested in the workflow / state / transition / processor sub-shapes — are rejected with `400 BAD_REQUEST` and the offending field name surfaced in the response detail (Go's decoder emits `json: unknown field "X"`). Typos like `"transitionn"` for `"transitions"` no longer silently import as a no-op. See ⚠️ Breaking changes below. The broader `DisallowUnknownFields` sweep across entity / cluster / auth boundaries remains in [#145](https://github.com/cyoda/cyoda-go/issues/145). ([#264](https://github.com/cyoda/cyoda-go/issues/264))
 
 ### Removed
 
@@ -2609,20 +5531,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### ⚠️ Breaking changes
 
-- **Reactivate semantics changed.** `POST /oauth/keys/keypair/{keyId}/reactivate` and `POST /oauth/keys/trusted/{keyId}/reactivate` now require a `ReactivateKeyRequestDto` body with `validTo > now` (and `> validFrom` if supplied). Previously these endpoints had no request body. Cyoda Cloud's behaviour of clearing `validTo` to nil (zombie key) is intentionally not adopted; see [#281](https://github.com/Cyoda-platform/cyoda-go/issues/281) spec for rationale.
+- **Reactivate semantics changed.** `POST /oauth/keys/keypair/{keyId}/reactivate` and `POST /oauth/keys/trusted/{keyId}/reactivate` now require a `ReactivateKeyRequestDto` body with `validTo > now` (and `> validFrom` if supplied). Previously these endpoints had no request body. Cyoda Cloud's behaviour of clearing `validTo` to nil (zombie key) is intentionally not adopted; see [#281](https://github.com/cyoda/cyoda-go/issues/281) spec for rationale.
 - **Trusted-key registration is disabled by default.** Set `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` to enable. Customers using `/oauth/keys/trusted/*` through the legacy mux must opt in.
 - **Bootstrap signing key now has finite validity.** Defaults to 365 days (configurable via `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS`). Long-running deployments must rotate before expiry; the startup banner emits a `WARN` if the active key expires within 30 days.
 - **Algorithm scope.** cyoda-go v0.8.0 signs and verifies `RS256` only. The OpenAPI declares the full enum (`RS*`, `PS*`, `ES*`, `EdDSA`); non-`RS256` values are rejected with `400 UNSUPPORTED_ALGORITHM`. Trusted-key registration accepts only `kty=RSA` JWKs (`kty=EC`/`OKP` rejected with `400 UNSUPPORTED_KEY_TYPE`). v0.8.1 follow-up tracks multi-algorithm + non-RSA `kty` support.
-- **Workflow-import structural validation tightened.** Imports that previously succeeded with structurally broken shapes (typo'd `executionMode`, empty/dangling `initialState`, transitions pointing at undeclared states, duplicate workflow names within a request, duplicate transition names within a state, empty workflow / state / transition / processor names, identifiers longer than 256 characters) now fail with `400 VALIDATION_FAILED`. These new H4/H6 structural rules apply to the **incoming request only** — existing stored workflows are not retroactively re-validated against them, so an in-place upgrade does not invalidate previously-imported configurations. The pre-existing cycle-detection and `startNewTxOnDispatch` flag-coherence checks continue to run against the merged result and so still catch regressions in stored workflows, preserving pre-v0.8.0 semantics for those specific invariants. ([#255](https://github.com/Cyoda-platform/cyoda-go/issues/255))
-- **Workflow-import `active` field is no longer force-overridden.** Previously, every incoming workflow's `active` was unconditionally set to `true`, so a client sending `"active": false` was silently re-activated. The handler now passes explicit `true` / `false` through unchanged and only defaults to `true` when the field is absent. Clients that were relying on the force-override (knowingly or not) to coerce inactive workflows to active on import must update their payloads to send `"active": true` explicitly (or omit the field). ([#256](https://github.com/Cyoda-platform/cyoda-go/issues/256))
-- **Workflow-import `workflows: []` is rejected in `REPLACE` / `ACTIVATE` modes.** Previously these modes accepted an empty workflows array, silently wiping or deactivating all stored workflows for the model and falling back to the embedded default at runtime — HTTP 200 hid the destruction. Both modes now return `400 VALIDATION_FAILED` with detail `"empty workflows array not allowed in REPLACE/ACTIVATE mode — use MERGE if you intended a no-op"`. The `workflows` key being absent entirely is equivalent to `[]` under JSON unmarshal semantics and is rejected the same way. `MERGE` with an empty array remains a legitimate no-op. ([#256](https://github.com/Cyoda-platform/cyoda-go/issues/256))
-- **Workflow-import body is strict-decoded.** The `POST /model/{entityName}/{modelVersion}/workflow/import` handler now rejects any unknown JSON field anywhere in the import-request body — at the top level, on a workflow, on a state, on a transition, on a processor, or on a processor's `config` — with `400 BAD_REQUEST`. The handler also rejects trailing JSON content after the request object (a body like `{...valid request...}{junk}`), which `json.Decoder.Decode` would otherwise silently drop. Clients that previously relied on the silent-drop behaviour (e.g. sending forward-compat extras intended for a future cyoda-cloud version, or with typo'd field names) must clean their payloads before upgrading. The trade-off is intentional: typos like `"transitionn"` for `"transitions"` used to import as a no-op workflow with zero transitions, hiding the configuration error from operators. The response detail names the offending field verbatim so the fix is trivial. ([#264](https://github.com/Cyoda-platform/cyoda-go/issues/264))
+- **Workflow-import structural validation tightened.** Imports that previously succeeded with structurally broken shapes (typo'd `executionMode`, empty/dangling `initialState`, transitions pointing at undeclared states, duplicate workflow names within a request, duplicate transition names within a state, empty workflow / state / transition / processor names, identifiers longer than 256 characters) now fail with `400 VALIDATION_FAILED`. These new H4/H6 structural rules apply to the **incoming request only** — existing stored workflows are not retroactively re-validated against them, so an in-place upgrade does not invalidate previously-imported configurations. The pre-existing cycle-detection and `startNewTxOnDispatch` flag-coherence checks continue to run against the merged result and so still catch regressions in stored workflows, preserving pre-v0.8.0 semantics for those specific invariants. ([#255](https://github.com/cyoda/cyoda-go/issues/255))
+- **Workflow-import `active` field is no longer force-overridden.** Previously, every incoming workflow's `active` was unconditionally set to `true`, so a client sending `"active": false` was silently re-activated. The handler now passes explicit `true` / `false` through unchanged and only defaults to `true` when the field is absent. Clients that were relying on the force-override (knowingly or not) to coerce inactive workflows to active on import must update their payloads to send `"active": true` explicitly (or omit the field). ([#256](https://github.com/cyoda/cyoda-go/issues/256))
+- **Workflow-import `workflows: []` is rejected in `REPLACE` / `ACTIVATE` modes.** Previously these modes accepted an empty workflows array, silently wiping or deactivating all stored workflows for the model and falling back to the embedded default at runtime — HTTP 200 hid the destruction. Both modes now return `400 VALIDATION_FAILED` with detail `"empty workflows array not allowed in REPLACE/ACTIVATE mode — use MERGE if you intended a no-op"`. The `workflows` key being absent entirely is equivalent to `[]` under JSON unmarshal semantics and is rejected the same way. `MERGE` with an empty array remains a legitimate no-op. ([#256](https://github.com/cyoda/cyoda-go/issues/256))
+- **Workflow-import body is strict-decoded.** The `POST /model/{entityName}/{modelVersion}/workflow/import` handler now rejects any unknown JSON field anywhere in the import-request body — at the top level, on a workflow, on a state, on a transition, on a processor, or on a processor's `config` — with `400 BAD_REQUEST`. The handler also rejects trailing JSON content after the request object (a body like `{...valid request...}{junk}`), which `json.Decoder.Decode` would otherwise silently drop. Clients that previously relied on the silent-drop behaviour (e.g. sending forward-compat extras intended for a future cyoda-cloud version, or with typo'd field names) must clean their payloads before upgrading. The trade-off is intentional: typos like `"transitionn"` for `"transitions"` used to import as a no-op workflow with zero transitions, hiding the configuration error from operators. The response detail names the offending field verbatim so the fix is trivial. ([#264](https://github.com/cyoda/cyoda-go/issues/264))
 - **Workflow-import `version` field is now strictly validated** as semver `MAJOR.MINOR`, and v0.8.0 bumps the supported set from `1.0` to `1.1`. Previously accepted values like `"1"` are rejected with `400 WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`. `"1.0"` (the schema shipped on `release/v0.7.x`) is also rejected — v0.8.0's import surface adds enough strictness (structural validation #255, active semantics #256, asyncResult/crossover rejection #261, retryPolicy enum #262, strict-decoder #264, scheduled-transition shape) that staying on `1.0` would conflate two distinct contracts. v0.7.x clients must regenerate workflow payloads against `"1.1"`. Authoritative supported set: `GET /help/workflows/schema-version/versions` or `cyoda help workflows schema-version versions`. Bump rules and per-version notes: `docs/workflow-schema-versioning.md`.
 
 ### Fixed
 
-- **Workflow audit-log `desc` preview is rune-aware.** The `truncateForLog` helper used by the workflow-import audit logger previously measured byte length and sliced byte offsets, splitting multi-byte UTF-8 characters (CJK, emoji, accented Latin) mid-codepoint and emitting invalid UTF-8 into the audit log. The helper now counts runes and cuts on rune boundaries, matching its documented contract. The cap is renamed `descLogPreviewRunes` to remove the bytes-vs-runes ambiguity. Surfaced by the [#264](https://github.com/Cyoda-platform/cyoda-go/issues/264) security review.
-- **Workflow cycle-detection error reporting is deterministic.** `validateWorkflowLoops` previously iterated `wf.States` in Go map order, so a workflow with two or more disjoint unguarded automated cycles reported a different cycle path per run. The detector now sorts state names before iteration so the lexicographically-first cycle is reported. Surfaced by the [#264](https://github.com/Cyoda-platform/cyoda-go/issues/264) security review.
+- **Workflow audit-log `desc` preview is rune-aware.** The `truncateForLog` helper used by the workflow-import audit logger previously measured byte length and sliced byte offsets, splitting multi-byte UTF-8 characters (CJK, emoji, accented Latin) mid-codepoint and emitting invalid UTF-8 into the audit log. The helper now counts runes and cuts on rune boundaries, matching its documented contract. The cap is renamed `descLogPreviewRunes` to remove the bytes-vs-runes ambiguity. Surfaced by the [#264](https://github.com/cyoda/cyoda-go/issues/264) security review.
+- **Workflow cycle-detection error reporting is deterministic.** `validateWorkflowLoops` previously iterated `wf.States` in Go map order, so a workflow with two or more disjoint unguarded automated cycles reported a different cycle path per run. The detector now sorts state names before iteration so the lexicographically-first cycle is reported. Surfaced by the [#264](https://github.com/cyoda/cyoda-go/issues/264) security review.
 
 ### Known limitations
 
@@ -2671,10 +5593,10 @@ The OpenAPI spec at `api/openapi.yaml` has been reconciled with the actual serve
 ### Added
 
 #### API + observability
-- **`COMMIT_BEFORE_DISPATCH` processor execution mode** ([#27](https://github.com/Cyoda-platform/cyoda-go/issues/27)) — per-processor saga semantics for long-running cascades. Marking a processor with `executionMode: COMMIT_BEFORE_DISPATCH` (CBD) tells the engine to commit `TX_pre` before the processor runs and start `TX_post` for follow-on work, breaking the all-or-nothing dependency between the cascade-entry transaction and external dispatch. Engine surface gains `EngineResult.FinalCtx` / `FinalTxID` / `Segmented` so callers can commit the engine's final segment instead of the original (already-committed for CBD) entry transaction. New engine entry-points `ManualTransitionWithIfMatch` / `LoopbackWithIfMatch` plumb the caller's `If-Match` expected-txID via a single-shot context slot and apply `CompareAndSave` instead of `Save` at the FIRST CBD segment-flush, so a stale precondition aborts BEFORE any external dispatch fires (spec §4.1).
-- **Per-item `ifMatch` on `PUT /api/entity/{format}` (bulk update)** ([#228](https://github.com/Cyoda-platform/cyoda-go/issues/228)) — same cross-request optimistic-concurrency precondition the single-item PUT endpoints support via `If-Match`, scoped per item on the bulk endpoint. Routing mirrors single `UpdateEntity`'s post-#27 flow: for CBD cascades the engine consumes the precondition at the first segment-flush; for non-segmenting cascades the handler applies `CompareAndSave` post-engine. Per-item `ENTITY_MODIFIED` conflicts are isolated to a new optional per-chunk `failed[]` array — the chunk still commits its remaining successful items rather than rolling everything back. Other per-item failures (missing entity, validation, non-conflict engine errors) continue to roll the chunk back, matching the pre-#228 [#92](https://github.com/Cyoda-platform/cyoda-go/issues/92) contract. When every item in a chunk fails its precondition, the chunk still commits as a zero-write transaction so the surfaced `transactionId` remains meaningful for audit correlation. Wire-format additions on `EntityTransactionResponse`: optional `failed[]` with `{entityId, error: {code, message, itemIndex}}`. `failed` uses JSON `omitempty` — fully-successful chunks keep the pre-#228 shape unchanged.
-- **`TRANSITION_ABORTED` audit event** ([#228](https://github.com/Cyoda-platform/cyoda-go/issues/228) reviewer S1) — whenever a stale `ifMatch` precondition rejects an in-flight transition (engine CBD first-segment flush or handler-side post-engine `CompareAndSave`), the engine emits a paired `TRANSITION_ABORTED` event into the state-machine audit log alongside the entry-side `STATE_MACHINE_START` so consumers see a self-consistent entry+abort sequence. Payload carries `{reason: "ENTITY_MODIFIED", transitionName, expectedTxId, actualTxId}`. Applies to single `UpdateEntity` stale-`If-Match` and to the new `UpdateEntityCollection` per-item-isolated path. New constant added to `StateMachineAuditEventDto.eventType` enum.
-- **API-wide CORS support** ([#196](https://github.com/Cyoda-platform/cyoda-go/issues/196)). New CORS middleware at `internal/api/middleware/cors.go` wraps the entire handler chain. Loopback-by-default mode (`http(s)://localhost`, `127.0.0.1`, `[::1]` on any port) — zero-config dev ergonomics, secure-by-default in production. Wildcard requires explicit `CYODA_CORS_ALLOWED_ORIGINS=*` (with startup WARN). Allowlist mode for production. Master switch `CYODA_CORS_ENABLED`. `/_internal/*` excluded from CORS; cluster proxy strips `Origin` and `Access-Control-Request-*` headers on outbound peer-to-peer requests (defence-in-depth).
+- **`COMMIT_BEFORE_DISPATCH` processor execution mode** ([#27](https://github.com/cyoda/cyoda-go/issues/27)) — per-processor saga semantics for long-running cascades. Marking a processor with `executionMode: COMMIT_BEFORE_DISPATCH` (CBD) tells the engine to commit `TX_pre` before the processor runs and start `TX_post` for follow-on work, breaking the all-or-nothing dependency between the cascade-entry transaction and external dispatch. Engine surface gains `EngineResult.FinalCtx` / `FinalTxID` / `Segmented` so callers can commit the engine's final segment instead of the original (already-committed for CBD) entry transaction. New engine entry-points `ManualTransitionWithIfMatch` / `LoopbackWithIfMatch` plumb the caller's `If-Match` expected-txID via a single-shot context slot and apply `CompareAndSave` instead of `Save` at the FIRST CBD segment-flush, so a stale precondition aborts BEFORE any external dispatch fires (spec §4.1).
+- **Per-item `ifMatch` on `PUT /api/entity/{format}` (bulk update)** ([#228](https://github.com/cyoda/cyoda-go/issues/228)) — same cross-request optimistic-concurrency precondition the single-item PUT endpoints support via `If-Match`, scoped per item on the bulk endpoint. Routing mirrors single `UpdateEntity`'s post-#27 flow: for CBD cascades the engine consumes the precondition at the first segment-flush; for non-segmenting cascades the handler applies `CompareAndSave` post-engine. Per-item `ENTITY_MODIFIED` conflicts are isolated to a new optional per-chunk `failed[]` array — the chunk still commits its remaining successful items rather than rolling everything back. Other per-item failures (missing entity, validation, non-conflict engine errors) continue to roll the chunk back, matching the pre-#228 [#92](https://github.com/cyoda/cyoda-go/issues/92) contract. When every item in a chunk fails its precondition, the chunk still commits as a zero-write transaction so the surfaced `transactionId` remains meaningful for audit correlation. Wire-format additions on `EntityTransactionResponse`: optional `failed[]` with `{entityId, error: {code, message, itemIndex}}`. `failed` uses JSON `omitempty` — fully-successful chunks keep the pre-#228 shape unchanged.
+- **`TRANSITION_ABORTED` audit event** ([#228](https://github.com/cyoda/cyoda-go/issues/228) reviewer S1) — whenever a stale `ifMatch` precondition rejects an in-flight transition (engine CBD first-segment flush or handler-side post-engine `CompareAndSave`), the engine emits a paired `TRANSITION_ABORTED` event into the state-machine audit log alongside the entry-side `STATE_MACHINE_START` so consumers see a self-consistent entry+abort sequence. Payload carries `{reason: "ENTITY_MODIFIED", transitionName, expectedTxId, actualTxId}`. Applies to single `UpdateEntity` stale-`If-Match` and to the new `UpdateEntityCollection` per-item-isolated path. New constant added to `StateMachineAuditEventDto.eventType` enum.
+- **API-wide CORS support** ([#196](https://github.com/cyoda/cyoda-go/issues/196)). New CORS middleware at `internal/api/middleware/cors.go` wraps the entire handler chain. Loopback-by-default mode (`http(s)://localhost`, `127.0.0.1`, `[::1]` on any port) — zero-config dev ergonomics, secure-by-default in production. Wildcard requires explicit `CYODA_CORS_ALLOWED_ORIGINS=*` (with startup WARN). Allowlist mode for production. Master switch `CYODA_CORS_ENABLED`. `/_internal/*` excluded from CORS; cluster proxy strips `Origin` and `Access-Control-Request-*` headers on outbound peer-to-peer requests (defence-in-depth).
 - **OpenAPI runtime conformance validator** (`internal/e2e/openapivalidator/`) — every E2E response is matched against the spec via `kin-openapi`. Drift fails the build. Documented in [ADR 0001](./docs/adr/0001-openapi-server-spec-conformance.md).
 - **2 previously-undocumented customer endpoints declared in the spec:**
   - `getEntityTransitions` (GET `/entity/{entityId}/transitions`)
@@ -2683,42 +5605,42 @@ The OpenAPI spec at `api/openapi.yaml` has been reconciled with the actual serve
 - **4 shared response fragments** in `components/responses/`: `Unauthorized`, `Forbidden`, `InternalServerError`, `NotImplemented`.
 
 #### Supply chain
-- **Cosign keyless signatures** on release archives and `SHA256SUMS` ([#47](https://github.com/Cyoda-platform/cyoda-go/issues/47)). Sigstore + GitHub Actions OIDC; signing identity bound to `release.yml@refs/tags/v…` (push-trigger only). `scripts/install.sh` auto-verifies when `cosign` is on PATH; opt-out via `CYODA_COSIGN_VERIFY=false`; force-fail-without-cosign via `CYODA_COSIGN_VERIFY=required`.
-- **`install.sh` published as a release asset at a stable URL** ([#49](https://github.com/Cyoda-platform/cyoda-go/issues/49)). The canonical install URL is now `https://github.com/cyoda-platform/cyoda-go/releases/latest/download/install.sh` — pinned per release, not a moving target on `main`.
+- **Cosign keyless signatures** on release archives and `SHA256SUMS` ([#47](https://github.com/cyoda/cyoda-go/issues/47)). Sigstore + GitHub Actions OIDC; signing identity bound to `release.yml@refs/tags/v…` (push-trigger only). `scripts/install.sh` auto-verifies when `cosign` is on PATH; opt-out via `CYODA_COSIGN_VERIFY=false`; force-fail-without-cosign via `CYODA_COSIGN_VERIFY=required`.
+- **`install.sh` published as a release asset at a stable URL** ([#49](https://github.com/cyoda/cyoda-go/issues/49)). The canonical install URL is now `https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh` — pinned per release, not a moving target on `main`.
 
 #### SPI + cluster
-- **`modelcache.CachingModelStore.SubscribeLocal`** ([#174](https://github.com/Cyoda-platform/cyoda-go/issues/174)) — in-process invalidation hook that fires for every model invalidation regardless of cluster topology. The path-validation cache wires through this so single-node and multi-node deployments alike react to schema changes immediately.
-- **`fixtureutil.LaunchCyodaClusterAndComputeWithBinaries`** ([#157](https://github.com/Cyoda-platform/cyoda-go/issues/157)) — caller-supplied-binary variant of the cluster launcher, mirroring the single-node `…WithBinaries` symmetry. Out-of-tree backend plugins (e.g. `cyoda-go-cassandra`) can now drive the shared parity scenario suite against their own `cmd/cyoda` binary.
-- **`AsRetryable()` fluent helper on `*AppError`** ([#140](https://github.com/Cyoda-platform/cyoda-go/issues/140)) — separates the (status, code, retryable) axes that were previously bundled into specialised `Conflict` / `RetryableConflict` constructors. Permits retryable 4xx with a specific dictionary code (previously unreachable). The deprecated constructors are removed; all callers migrated.
+- **`modelcache.CachingModelStore.SubscribeLocal`** ([#174](https://github.com/cyoda/cyoda-go/issues/174)) — in-process invalidation hook that fires for every model invalidation regardless of cluster topology. The path-validation cache wires through this so single-node and multi-node deployments alike react to schema changes immediately.
+- **`fixtureutil.LaunchCyodaClusterAndComputeWithBinaries`** ([#157](https://github.com/cyoda/cyoda-go/issues/157)) — caller-supplied-binary variant of the cluster launcher, mirroring the single-node `…WithBinaries` symmetry. Out-of-tree backend plugins (e.g. `cyoda-go-cassandra`) can now drive the shared parity scenario suite against their own `cmd/cyoda` binary.
+- **`AsRetryable()` fluent helper on `*AppError`** ([#140](https://github.com/cyoda/cyoda-go/issues/140)) — separates the (status, code, retryable) axes that were previously bundled into specialised `Conflict` / `RetryableConflict` constructors. Permits retryable 4xx with a specific dictionary code (previously unreachable). The deprecated constructors are removed; all callers migrated.
 
 #### Documentation
-- **Chart docs**: `deploy/helm/cyoda/docs/migrating-from-ingress.md` ([#57](https://github.com/Cyoda-platform/cyoda-go/issues/57)) — six-step Ingress2Gateway 1.0 walkthrough; `deploy/helm/cyoda/docs/gateway-api-policies.md` ([#58](https://github.com/Cyoda-platform/cyoda-go/issues/58)) — concrete `BackendTrafficPolicy` (rate limiting) and `SecurityPolicy` (JWT, CORS) YAML for Envoy Gateway, plus Cilium and Contour reference patterns.
-- **Concurrency model** at `docs/CONCURRENCY.md` ([#199](https://github.com/Cyoda-platform/cyoda-go/issues/199) PR-C3) — per-node lock and state inventory, the SPI tx-state locking contract, cluster-routing failure modes; complements `docs/CONSISTENCY.md` (isolation contract) and `docs/ARCHITECTURE.md` (cluster routing).
+- **Chart docs**: `deploy/helm/cyoda/docs/migrating-from-ingress.md` ([#57](https://github.com/cyoda/cyoda-go/issues/57)) — six-step Ingress2Gateway 1.0 walkthrough; `deploy/helm/cyoda/docs/gateway-api-policies.md` ([#58](https://github.com/cyoda/cyoda-go/issues/58)) — concrete `BackendTrafficPolicy` (rate limiting) and `SecurityPolicy` (JWT, CORS) YAML for Envoy Gateway, plus Cilium and Contour reference patterns.
+- **Concurrency model** at `docs/CONCURRENCY.md` ([#199](https://github.com/cyoda/cyoda-go/issues/199) PR-C3) — per-node lock and state inventory, the SPI tx-state locking contract, cluster-routing failure modes; complements `docs/CONSISTENCY.md` (isolation contract) and `docs/ARCHITECTURE.md` (cluster routing).
 
 ### Fixed
 
 #### API correctness
-- **Collection endpoints now match the documented `transactionWindow` chunking + engine-routing contract** ([#227](https://github.com/Cyoda-platform/cyoda-go/issues/227)) — four pieces:
+- **Collection endpoints now match the documented `transactionWindow` chunking + engine-routing contract** ([#227](https://github.com/cyoda/cyoda-go/issues/227)) — four pieces:
   - `CreateEntityCollection` now routes every item through the workflow engine. Pre-fix the handler hard-coded `State="CREATED"` and called `entityStore.SaveAll` directly, so the workflow's `initialState` was ignored, automated cascade transitions never fired during create, and no `STATE_MACHINE_*` audit events were emitted for collection-created entities. Now mirrors single `CreateEntity`'s engine flow per item.
   - `CreateCollection` and `UpdateCollection` handlers honor `transactionWindow` and chunk per the documented contract (default 100, max 1000, validated to (0, 1000]). Pre-fix `CreateCollection` ignored the param entirely and `UpdateCollection` rejected oversize batches with 400. Both now split the batch into chunks of size `window`, commit each chunk in its own transaction in commit order, and emit one `EntityTransactionResponse` element per committed chunk. Each chunk remains all-or-nothing internally, and chunks committed before any later failure stay durable.
   - Single-create endpoint `POST /api/entity/{format}/{entityName}/{modelVersion}` array-body path now chunks too. The handler auto-detects a JSON-array body and previously delegated the whole batch to `CreateEntityCollection` in one transaction, silently ignoring the advertised `transactionWindow` query param. It now applies the same chunking + per-chunk-array response shape as `CreateCollection`. Single-object (non-array) body behaviour is unchanged. Shared chunking primitive `Handler.runChunkedCreate` extracted so the wire contract lives in one place.
   - Wire format on partial-success: HTTP 200 with the per-chunk array, where the failed chunk appears as an `error` element carrying `{code, message, chunkIndex}` instead of `{transactionId, entityIds}`. The first-chunk-fail case (no durable progress) keeps the existing 4xx `application/problem+json` envelope. The `EntityTransactionResponse` schema is relaxed accordingly: `entityIds` is no longer required, and the optional `error` sub-object is declared.
-- **`transactionTimeoutMillis` and `waitForConsistencyAfter` documented as Cloud-parity gaps** ([#227](https://github.com/Cyoda-platform/cyoda-go/issues/227)) — these query params on all five entity-mutation endpoints (single create, single update, single update-loopback, collection create, collection update) are advertised by the spec but not honored by the cyoda-go open-source storage plugins. Param descriptions now carry the same vendor-neutral "storage-engine-plugin dependent" caveat established in [#223](https://github.com/Cyoda-platform/cyoda-go/issues/223) for `asyncResult`/`crossoverToAsyncMs`. No Go code change; the params are still parsed-and-ignored.
-- `GetOneEntity` now propagates the `transactionId` query parameter ([#150](https://github.com/Cyoda-platform/cyoda-go/issues/150)) — previously silently dropped, returning the latest entity instead of the at-tx snapshot. Bogus `transactionId` returns `ENTITY_NOT_FOUND@404` matching the dictionary contract (parity scenario `12_05` unblocked).
-- `GetEntityChangesMetadata` now propagates `pointInTime` ([#152](https://github.com/Cyoda-platform/cyoda-go/issues/152)) — previously dropped; full history truncated to `timeOfChange ≤ pointInTime` as the dictionary requires.
-- `messaging.GetMessage` content field — JSON-in-string defect (the original [#21](https://github.com/Cyoda-platform/cyoda-go/issues/21) confirmed defect for messaging).
+- **`transactionTimeoutMillis` and `waitForConsistencyAfter` documented as Cloud-parity gaps** ([#227](https://github.com/cyoda/cyoda-go/issues/227)) — these query params on all five entity-mutation endpoints (single create, single update, single update-loopback, collection create, collection update) are advertised by the spec but not honored by the cyoda-go open-source storage plugins. Param descriptions now carry the same vendor-neutral "storage-engine-plugin dependent" caveat established in [#223](https://github.com/cyoda/cyoda-go/issues/223) for `asyncResult`/`crossoverToAsyncMs`. No Go code change; the params are still parsed-and-ignored.
+- `GetOneEntity` now propagates the `transactionId` query parameter ([#150](https://github.com/cyoda/cyoda-go/issues/150)) — previously silently dropped, returning the latest entity instead of the at-tx snapshot. Bogus `transactionId` returns `ENTITY_NOT_FOUND@404` matching the dictionary contract (parity scenario `12_05` unblocked).
+- `GetEntityChangesMetadata` now propagates `pointInTime` ([#152](https://github.com/cyoda/cyoda-go/issues/152)) — previously dropped; full history truncated to `timeOfChange ≤ pointInTime` as the dictionary requires.
+- `messaging.GetMessage` content field — JSON-in-string defect (the original [#21](https://github.com/cyoda/cyoda-go/issues/21) confirmed defect for messaging).
 - `messaging.NewMessage` — dead-code branch in `json.Compact` fallback removed; replaced with explicit invariant-broken 500.
 - `audit.GetStateMachineFinishedEvent` — missing `microsTime` field added.
 - `search.cancelAsyncSearch` 400 path — uses `WriteError` (proper Content-Type) instead of raw `WriteJSON`.
 - `account` stub handlers — error code corrected to `NOT_IMPLEMENTED`.
 
 #### Concurrency + tenant isolation
-- **`tx.OpMu` locking discipline rolled out across `plugins/memory`** ([#176](https://github.com/Cyoda-platform/cyoda-go/issues/176)) — `Get`, `GetAll`, `Delete`, `DeleteAll`, `Exists`, `Count` now follow the `tx.OpMu.RLock()` + `defer tx.OpMu.RUnlock()` pattern that PR #153 established for `Save`/`CompareAndSave`. Six new race-conditional regression tests (one per method) green under `-race`.
-- **`tx.OpMu` coverage gap on Savepoint/RollbackToSavepoint/Join** closed across the memory and sqlite plugins ([#199](https://github.com/Cyoda-platform/cyoda-go/issues/199) PR-A, PR-C1) and SPI v0.6.1 formalises the contract godoc + `.claude/rules/tx-state-locking.md` (PR-B).
-- **Tenant-isolation hardening across plugin transaction-manager surfaces** ([#199](https://github.com/Cyoda-platform/cyoda-go/issues/199) PR-A, PR-C1, PR-C2) — every TM lifecycle method (`Commit`, `Rollback`, `Join`, `Savepoint`, `RollbackToSavepoint`, `ReleaseSavepoint`) on memory, sqlite, and postgres now verifies `uc.Tenant.ID == txState.tenantID` before any state mutation. Postgres was uniquely missing these checks despite RLS — RLS is row-level by design and does not extend to transaction-lifecycle commands.
-- **Path-validation cache: single-node invalidation lost on schema-change** ([#174](https://github.com/Cyoda-platform/cyoda-go/issues/174)) — pre-fix the cache subscribed to the cluster broadcaster directly, so single-node deployments (where the broadcaster is nil) never received invalidations. Now wired through `modelcache.SubscribeLocal` so local mutations and gossip events alike reach the cache.
-- **Path-validation cache: cross-tenant noisy-neighbor eviction** ([#175](https://github.com/Cyoda-platform/cyoda-go/issues/175)) — pre-fix a single global otter cache (10000 entries) allowed a flooding tenant to S3-FIFO-evict another tenant's entries. Restructured into per-`(tenant, ref)` bucket map of bounded otter caches. Cross-tenant flooding is contained to the attacker's own bucket.
-- **Path-validation cache: bucket-map size cap with LRU eviction** ([#218](https://github.com/Cyoda-platform/cyoda-go/issues/218)) — bucket map now caps at 10000 buckets total with LRU eviction. Bounds memory under adversarial workloads (a tenant with model-creation privilege at scale).
+- **`tx.OpMu` locking discipline rolled out across `plugins/memory`** ([#176](https://github.com/cyoda/cyoda-go/issues/176)) — `Get`, `GetAll`, `Delete`, `DeleteAll`, `Exists`, `Count` now follow the `tx.OpMu.RLock()` + `defer tx.OpMu.RUnlock()` pattern that PR #153 established for `Save`/`CompareAndSave`. Six new race-conditional regression tests (one per method) green under `-race`.
+- **`tx.OpMu` coverage gap on Savepoint/RollbackToSavepoint/Join** closed across the memory and sqlite plugins ([#199](https://github.com/cyoda/cyoda-go/issues/199) PR-A, PR-C1) and SPI v0.6.1 formalises the contract godoc + `.claude/rules/tx-state-locking.md` (PR-B).
+- **Tenant-isolation hardening across plugin transaction-manager surfaces** ([#199](https://github.com/cyoda/cyoda-go/issues/199) PR-A, PR-C1, PR-C2) — every TM lifecycle method (`Commit`, `Rollback`, `Join`, `Savepoint`, `RollbackToSavepoint`, `ReleaseSavepoint`) on memory, sqlite, and postgres now verifies `uc.Tenant.ID == txState.tenantID` before any state mutation. Postgres was uniquely missing these checks despite RLS — RLS is row-level by design and does not extend to transaction-lifecycle commands.
+- **Path-validation cache: single-node invalidation lost on schema-change** ([#174](https://github.com/cyoda/cyoda-go/issues/174)) — pre-fix the cache subscribed to the cluster broadcaster directly, so single-node deployments (where the broadcaster is nil) never received invalidations. Now wired through `modelcache.SubscribeLocal` so local mutations and gossip events alike reach the cache.
+- **Path-validation cache: cross-tenant noisy-neighbor eviction** ([#175](https://github.com/cyoda/cyoda-go/issues/175)) — pre-fix a single global otter cache (10000 entries) allowed a flooding tenant to S3-FIFO-evict another tenant's entries. Restructured into per-`(tenant, ref)` bucket map of bounded otter caches. Cross-tenant flooding is contained to the attacker's own bucket.
+- **Path-validation cache: bucket-map size cap with LRU eviction** ([#218](https://github.com/cyoda/cyoda-go/issues/218)) — bucket map now caps at 10000 buckets total with LRU eviction. Bounds memory under adversarial workloads (a tenant with model-creation privilege at scale).
 
 #### Internal hygiene
 - Pre-existing tag-list test stale entry (`CQL Execution Statistics` removed).
@@ -2726,15 +5648,15 @@ The OpenAPI spec at `api/openapi.yaml` has been reconciled with the actual serve
 
 ### Refactored
 
-- **`AppError` 4xx constructors** ([#140](https://github.com/Cyoda-platform/cyoda-go/issues/140)) — `Conflict()` and `RetryableConflict()` removed; replaced by `Operational(status, code, msg).AsRetryable()` chain. Wire shape unchanged at every existing call site; the change is purely API ergonomics.
+- **`AppError` 4xx constructors** ([#140](https://github.com/cyoda/cyoda-go/issues/140)) — `Conflict()` and `RetryableConflict()` removed; replaced by `Operational(status, code, msg).AsRetryable()` chain. Wire shape unchanged at every existing call site; the change is purely API ergonomics.
 
 ### Process / Documentation
 
 - ADR 0001 added: chose runtime validation via `kin-openapi` over compile-time strict typing (oapi-codegen strict-server, ogen, goa all evaluated).
 - Conformance audit table at `docs/superpowers/audits/2026-04-29-openapi-conformance-audit.md` — one row per operationId, dispositioned with commit SHA. Carried forward as the starting point for future external-spec reconciliation work.
 - Per-plugin tx-locking audit docs landed at `docs/audits/2026-05-{memory,sqlite,postgres}-plugin-tx-locking.md`.
-- Issue [#194](https://github.com/Cyoda-platform/cyoda-go/issues/194) filed for the 22 stub-implemented IAM/OAuth/OIDC/account endpoints (deferred per the A+C policy of the OpenAPI conformance ADR).
-- Issue [#200](https://github.com/Cyoda-platform/cyoda-go/issues/200) filed for SPI sentinel error types (rolled-back / closed / commit-in-progress) — deferred to v0.8.0.
+- Issue [#194](https://github.com/cyoda/cyoda-go/issues/194) filed for the 22 stub-implemented IAM/OAuth/OIDC/account endpoints (deferred per the A+C policy of the OpenAPI conformance ADR).
+- Issue [#200](https://github.com/cyoda/cyoda-go/issues/200) filed for SPI sentinel error types (rolled-back / closed / commit-in-progress) — deferred to v0.8.0.
 
 ### Versioning policy
 
@@ -2744,4 +5666,4 @@ The OpenAPI spec at `api/openapi.yaml` has been reconciled with the actual serve
 
 ## [0.6.3] — 2026-04-28 and earlier
 
-For releases prior to 0.7.0, see the [Releases page](https://github.com/Cyoda-platform/cyoda-go/releases) and the git history. This is the first release with a maintained CHANGELOG.
+For releases prior to 0.7.0, see the [Releases page](https://github.com/cyoda/cyoda-go/releases) and the git history. This is the first release with a maintained CHANGELOG.

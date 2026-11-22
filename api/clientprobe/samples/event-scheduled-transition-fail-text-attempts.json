@@ -1,0 +1,12 @@
+{
+  "schema": "StateMachineEventDto",
+  "valid": false,
+  "value": {
+    "eventType": "SCHEDULED_TRANSITION_FAIL",
+    "transition": "expire",
+    "sourceState": "PENDING",
+    "reason": "OWNER_LOST_REPEATEDLY",
+    "attempts": "0",
+    "lostOwners": 3
+  }
+}

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // TestAsyncResult_RoundTrip_PointerStates covers the JSON round-trip

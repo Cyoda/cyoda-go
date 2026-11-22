@@ -4,7 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // In-tx DeleteAll stages every committed id of the model and every buffered
@@ -14,7 +15,9 @@ func TestTxDeleteAll_StagesCommittedAndBuffered(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-dall", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	other := spi.ModelRef{EntityName: "m-keep", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, other)
 	store, _ := f.EntityStore(ctx)
 	seedN(t, store, ctx, ref, 3)
 	if _, err := store.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "k00", TenantID: "tenant-ovl", ModelRef: other}, Data: []byte(`{}`)}); err != nil {
@@ -26,7 +29,7 @@ func TestTxDeleteAll_StagesCommittedAndBuffered(t *testing.T) {
 	if err := store.DeleteAll(txCtx, ref); err != nil {
 		t.Fatalf("DeleteAll: %v", err)
 	}
-	if n, _ := store.Count(txCtx, ref); n != 0 {
+	if n, _ := store.Count(txCtx, ref, nil); n != 0 {
 		t.Fatalf("in-tx Count after DeleteAll = %d, want 0", n)
 	}
 	if err := tm.Commit(txCtx, txID); err != nil {

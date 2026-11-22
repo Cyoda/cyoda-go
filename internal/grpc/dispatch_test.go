@@ -9,14 +9,27 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 const testTenantID = spi.TenantID("tenant-1")
+
+// make32 returns a 32-byte secret for token signing in tests.
+func make32(t *testing.T) []byte {
+	t.Helper()
+	b := make([]byte, 32)
+	for i := range b {
+		b[i] = byte(i + 1)
+	}
+	return b
+}
 
 func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, string, chan *cepb.CloudEvent) {
 	t.Helper()
@@ -26,10 +39,128 @@ func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, s
 		sentCh <- ce
 		return nil
 	}, nil)
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher := newTestDispatcher(t, registry)
 	return dispatcher, registry, member.ID, sentCh
+}
+
+// newTestDispatcher builds a dispatcher over registry the way app.go does, with
+// node id "node-test".
+func newTestDispatcher(t *testing.T, registry *MemberRegistry) *ProcessorDispatcher {
+	t.Helper()
+	return newTestDispatcherWith(t, registry, NewRoundRobinSelector(registry))
+}
+
+// newTestDispatcherWith is newTestDispatcher with a selector of the test's own.
+func newTestDispatcherWith(t *testing.T, registry *MemberRegistry, selector MemberSelector) *ProcessorDispatcher {
+	t.Helper()
+	signer, err := token.NewSigner(make32(t))
+	if err != nil {
+		t.Fatalf("token.NewSigner: %v", err)
+	}
+	return NewProcessorDispatcher(registry, selector, signer, 30*time.Second, 60*time.Second, 3*time.Second, false)
+}
+
+// testCalloutAt is the platform time a test arms a callout with, as an owner
+// would when it takes the callout up.
+var testCalloutAt = time.Date(2015, 3, 1, 9, 30, 0, 0, time.UTC)
+
+// oneTry is the local procedure with one try, armed the way an owner arms a
+// callout: what these tests pin is what one try sends and how its answer is
+// read.
+func oneTry(d *ProcessorDispatcher, ctx context.Context, call Callout) (CalloutResult, error) {
+	limit, failure := d.ResolveAnswerLimit(call.ResponseTimeoutMs)
+	if failure != nil {
+		return CalloutResult{}, failure
+	}
+	call.RequestID = uuid.NewString()
+	call.AnswerLimit = limit
+	call.OwnerNodeID = "node-test"
+	call.Number = &countingNumberer{}
+	call.Identity = IdentityFrom(ctx)
+	call.At = testCalloutAt
+	res := d.RunLocal(ctx, call, 1)
+	return res.Result, res.Err()
+}
+
+func dispatchProcessor(d *ProcessorDispatcher, ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName, transitionName, txID string) (*spi.Entity, error) {
+	res, err := oneTry(d, ctx, NewProcessorCallout(spi.MustGetUserContext(ctx).Tenant.ID, entity, processor, workflowName, transitionName, txID))
+	if err != nil {
+		return nil, err
+	}
+	return res.Entity, nil
+}
+
+func dispatchCriteria(d *ProcessorDispatcher, ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string) (bool, string, error) {
+	call, failure := NewCriteriaCallout(spi.MustGetUserContext(ctx).Tenant.ID, entity, criterion, target, workflowName, transitionName, processorName, txID)
+	if failure != nil {
+		return false, "", failure
+	}
+	res, err := oneTry(d, ctx, call)
+	if err != nil {
+		return false, "", err
+	}
+	return res.Matches, res.Reason, nil
+}
+
+func dispatchFunction(d *ProcessorDispatcher, ctx context.Context, entity *spi.Entity, fn spi.ScheduleFunction, workflowName, transitionName, txID string) (contract.FunctionResult, error) {
+	res, err := oneTry(d, ctx, NewFunctionCallout(spi.MustGetUserContext(ctx).Tenant.ID, entity, fn, workflowName, transitionName, txID))
+	if err != nil {
+		return contract.FunctionResult{}, err
+	}
+	return res.Function, nil
+}
+
+func testProcessor(tags string, responseTimeoutMs int64) spi.ProcessorDefinition {
+	return spi.ProcessorDefinition{
+		Name:   "my-proc",
+		Config: spi.ProcessorConfig{CalculationNodesTags: tags, ResponseTimeoutMs: responseTimeoutMs},
+	}
+}
+
+// tryOnce makes one try against member with a raw payload carrying only the
+// request id, and folds the three outcomes of a try into (response, error) —
+// the shape the tests of the single try were written against. timeoutMs is the
+// answer limit. The callout's identity is computed from ctx, as the owner
+// computes it.
+func tryOnce(d *ProcessorDispatcher, ctx context.Context, member *Member, requestID, txID string, timeoutMs int64) (*ProcessingResponse, error) {
+	return tryOnceAs(d, ctx, member, IdentityFrom(ctx), requestID, txID, timeoutMs)
+}
+
+// tryOnceAs is tryOnce with the callout's identity given rather than computed
+// from ctx, as on a pnode that received the callout in a hand-over.
+func tryOnceAs(d *ProcessorDispatcher, ctx context.Context, member *Member, id CalloutIdentity, requestID, txID string, timeoutMs int64) (*ProcessingResponse, error) {
+	var got *ProcessingResponse
+	call := Callout{
+		Identity:    id,
+		Kind:        ProcessorCallout,
+		Name:        "my-proc",
+		TenantID:    member.TenantID,
+		TxID:        txID,
+		RequestID:   requestID,
+		AnswerLimit: time.Duration(timeoutMs) * time.Millisecond,
+		OwnerNodeID: "node-test",
+		At:          testCalloutAt,
+		eventType:   EntityProcessorCalculationRequest,
+		buildRequest: func(id string) any {
+			return map[string]any{"requestId": id}
+		},
+		mapResponse: func(resp *ProcessingResponse) (CalloutResult, error) {
+			got = resp
+			return CalloutResult{}, nil
+		},
+	}
+	pass, err := d.mintPass(call, 1, 0)
+	if err != nil {
+		return nil, err
+	}
+	_, failure, _, ctxErr := d.dispatchCalloutToMember(ctx, member, call, pass)
+	switch {
+	case ctxErr != nil:
+		return nil, ctxErr
+	case failure != nil:
+		return nil, failure
+	}
+	return got, nil
 }
 
 func testContext() context.Context {
@@ -160,7 +291,7 @@ func TestDispatchProcessor_HappyPath(t *testing.T) {
 		})
 	}()
 
-	result, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1")
+	result, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,9 +310,7 @@ func TestDispatchProcessor_HappyPath(t *testing.T) {
 
 func TestDispatchProcessor_NoMember(t *testing.T) {
 	registry := NewMemberRegistry()
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher := newTestDispatcher(t, registry)
 	ctx := testContext()
 	entity := testEntity()
 
@@ -192,12 +321,12 @@ func TestDispatchProcessor_NoMember(t *testing.T) {
 		},
 	}
 
-	_, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1")
+	_, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1")
 	if err == nil {
 		t.Fatal("expected error for missing member")
 	}
-	if !errors.Is(err, ErrNoMatchingMember) {
-		t.Errorf("expected ErrNoMatchingMember, got: %s", err)
+	if !errors.Is(err, contract.ErrNoMatchingMember) {
+		t.Errorf("expected contract.ErrNoMatchingMember, got: %s", err)
 	}
 }
 
@@ -218,7 +347,7 @@ func TestDispatchProcessor_Timeout(t *testing.T) {
 		},
 	}
 
-	_, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1")
+	_, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1")
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -276,13 +405,13 @@ func TestDispatchProcessor_NoAttachEntity(t *testing.T) {
 		})
 	}()
 
-	result, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1")
+	result, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// With no payload in response, original entity is returned.
-	if result != entity {
-		t.Error("expected original entity when response has no payload")
+	// No payload in the response: no entity, never the one dispatched.
+	if result != nil {
+		t.Errorf("result = %+v; want nil when the response has no payload", result)
 	}
 }
 
@@ -292,11 +421,14 @@ func TestDispatchCriteria_MatchesTrue(t *testing.T) {
 	entity := testEntity()
 
 	criterion := json.RawMessage(`{
-		"name": "my-criteria",
-		"config": {
-			"calculationNodesTags": "python",
-			"attachEntity": true,
-			"responseTimeoutMs": 5000
+		"type": "function",
+		"function": {
+			"name": "my-criteria",
+			"config": {
+				"calculationNodesTags": "python",
+				"attachEntity": true,
+				"responseTimeoutMs": 5000
+			}
 		}
 	}`)
 
@@ -319,7 +451,7 @@ func TestDispatchCriteria_MatchesTrue(t *testing.T) {
 		})
 	}()
 
-	result, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1")
+	result, _, err := dispatchCriteria(dispatcher, ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -334,10 +466,13 @@ func TestDispatchCriteria_MatchesFalse(t *testing.T) {
 	entity := testEntity()
 
 	criterion := json.RawMessage(`{
-		"name": "my-criteria",
-		"config": {
-			"calculationNodesTags": "python",
-			"responseTimeoutMs": 5000
+		"type": "function",
+		"function": {
+			"name": "my-criteria",
+			"config": {
+				"calculationNodesTags": "python",
+				"responseTimeoutMs": 5000
+			}
 		}
 	}`)
 
@@ -358,7 +493,7 @@ func TestDispatchCriteria_MatchesFalse(t *testing.T) {
 		})
 	}()
 
-	result, reason, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1")
+	result, reason, err := dispatchCriteria(dispatcher, ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -449,7 +584,7 @@ func TestDispatchProcessor_ContextSurfacesAsParametersString(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true})
 	}()
 
-	if _, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
+	if _, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -488,7 +623,7 @@ func TestDispatchProcessor_EmptyContextOmitsParameters(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true})
 	}()
 
-	if _, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
+	if _, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -544,7 +679,7 @@ func TestDispatchCriteria_ContextSurfacesAsParametersString(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Matches: &matchesTrue})
 	}()
 
-	if _, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
+	if _, _, err := dispatchCriteria(dispatcher, ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -585,7 +720,7 @@ func TestDispatchCriteria_EmptyContextOmitsParameters(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Matches: &matchesTrue})
 	}()
 
-	if _, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
+	if _, _, err := dispatchCriteria(dispatcher, ctx, entity, criterion, "transition", "wf1", "t1", "proc1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -637,7 +772,7 @@ func TestDispatchProcessor_AnnotationsNotSentToMember(t *testing.T) {
 	}()
 
 	// Dispatch should succeed (no error path) despite the processor carrying annotations.
-	_, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf", "t", "tx-1")
+	_, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf", "t", "tx-1")
 	if err != nil {
 		t.Fatalf("DispatchProcessor: %v", err)
 	}
@@ -670,8 +805,7 @@ func TestDispatchCalloutToMember_SuccessAndTimeout(t *testing.T) {
 		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Payload: json.RawMessage(`{"data":{}}`)})
 	}()
 
-	req := map[string]any{"requestId": "req-success"}
-	resp, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-success", "tx-1", 5000, "processor", "my-proc")
+	resp, err := tryOnce(dispatcher, ctx, member, "req-success", "tx-1", 5000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -680,8 +814,7 @@ func TestDispatchCalloutToMember_SuccessAndTimeout(t *testing.T) {
 	}
 
 	// Timeout: nobody answers the second request.
-	req2 := map[string]any{"requestId": "req-timeout"}
-	_, err = dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req2, "req-timeout", "tx-1", 20, "processor", "my-proc")
+	_, err = tryOnce(dispatcher, ctx, member, "req-timeout", "tx-1", 20)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -717,8 +850,7 @@ func TestDispatchCalloutToMember_MemberDisconnects(t *testing.T) {
 		member.Evict(errors.New("compute member disconnected"))
 	}()
 
-	req := map[string]any{"requestId": "req-disconnect"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-disconnect", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-disconnect", "tx-1", 5000)
 	if err == nil {
 		t.Fatal("expected error for member disconnect")
 	}
@@ -744,8 +876,7 @@ func TestDispatchCalloutToMember_NilUserContext(t *testing.T) {
 	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
 	member := registry.Get(memberID)
 
-	req := map[string]any{"requestId": "req-no-uc"}
-	_, err := dispatcher.dispatchCalloutToMember(context.Background(), member, EntityProcessorCalculationRequest, req, "req-no-uc", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, context.Background(), member, "req-no-uc", "tx-1", 5000)
 	if err == nil {
 		t.Fatal("expected error for missing user context")
 	}
@@ -766,8 +897,7 @@ func TestDispatchCalloutToMember_UnsetKind(t *testing.T) {
 		Tenant: spi.Tenant{ID: testTenantID, Name: "Test Tenant"},
 	})
 
-	req := map[string]any{"requestId": "req-unset-kind"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-unset-kind", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-unset-kind", "tx-1", 5000)
 	if err == nil {
 		t.Fatal("expected error for unset principal kind")
 	}
@@ -791,8 +921,7 @@ func TestDispatchCalloutToMember_InvalidKind(t *testing.T) {
 		Tenant: spi.Tenant{ID: testTenantID, Name: "Test Tenant"},
 	})
 
-	req := map[string]any{"requestId": "req-invalid-kind"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-invalid-kind", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-invalid-kind", "tx-1", 5000)
 	if err == nil {
 		t.Fatal("expected error for invalid principal kind")
 	}
@@ -849,8 +978,7 @@ func TestDispatchCalloutToMember_KindDrivenAuthType(t *testing.T) {
 				member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Payload: json.RawMessage(`{"data":{}}`)})
 			}()
 
-			req := map[string]any{"requestId": "req-kind-driven"}
-			resp, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-kind-driven", "tx-1", 5000, "processor", "my-proc")
+			resp, err := tryOnce(dispatcher, ctx, member, "req-kind-driven", "tx-1", 5000)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -863,9 +991,9 @@ func TestDispatchCalloutToMember_KindDrivenAuthType(t *testing.T) {
 
 // TestDispatchProcessor_WarningPropagatesName guards that response warnings
 // surface to the client keyed by the processor NAME, not the opaque request
-// ID. These strings appear in the gRPC warnings array and HTTP body
-// (.claude/rules/error-handling.md); a refactor must not swap the name for a
-// UUID.
+// ID. These strings appear in the gRPC warnings array and the HTTP
+// Cyoda-Warning headers (.claude/rules/error-handling.md); a refactor must not
+// swap the name for a UUID.
 func TestDispatchProcessor_WarningPropagatesName(t *testing.T) {
 	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
 	ctx := common.WithDiagnostics(testContext())
@@ -894,7 +1022,7 @@ func TestDispatchProcessor_WarningPropagatesName(t *testing.T) {
 		})
 	}()
 
-	if _, err := dispatcher.DispatchProcessor(ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
+	if _, err := dispatchProcessor(dispatcher, ctx, entity, processor, "wf1", "t1", "tx-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -907,52 +1035,6 @@ func TestDispatchProcessor_WarningPropagatesName(t *testing.T) {
 	}
 	if strings.Contains(warnings[0], "-") && !strings.Contains(warnings[0], "validate-order") {
 		t.Errorf("warning appears to leak requestId instead of name: %q", warnings[0])
-	}
-}
-
-// TestDispatchCriteria_FailurePropagatesName guards the error path: a failed
-// criteria response surfaces to the client keyed by the criteria NAME.
-func TestDispatchCriteria_FailurePropagatesName(t *testing.T) {
-	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
-	ctx := common.WithDiagnostics(testContext())
-	entity := testEntity()
-
-	// Production criterion shape: name/config nested under "function".
-	criterion := json.RawMessage(`{
-		"type": "function",
-		"function": {
-			"name": "amount-check",
-			"config": {
-				"calculationNodesTags": "python",
-				"responseTimeoutMs": 5000
-			}
-		}
-	}`)
-
-	go func() {
-		ce := <-sentCh
-		reqID, err := extractRequestID(ce)
-		if err != nil {
-			t.Errorf("extractRequestID: %v", err)
-			return
-		}
-		member := registry.Get(memberID)
-		member.CompleteRequest(reqID, &ProcessingResponse{
-			Success: false,
-			Error:   "boom",
-		})
-	}()
-
-	if _, _, err := dispatcher.DispatchCriteria(ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1"); err == nil {
-		t.Fatal("expected dispatch failure error")
-	}
-
-	errs := common.GetDiagnostics(ctx).GetErrors()
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error diagnostic, got %d: %v", len(errs), errs)
-	}
-	if errs[0] != "criteria amount-check: boom" {
-		t.Errorf("error diagnostic must carry criteria name, got %q", errs[0])
 	}
 }
 
@@ -1002,7 +1084,7 @@ func TestDispatchFunction_HappyPath(t *testing.T) {
 		})
 	}()
 
-	result, err := dispatcher.DispatchFunction(ctx, entity, fn, "wf1", "t1", "tx-1")
+	result, err := dispatchFunction(dispatcher, ctx, entity, fn, "wf1", "t1", "tx-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1016,9 +1098,7 @@ func TestDispatchFunction_HappyPath(t *testing.T) {
 
 func TestDispatchFunction_NoMember(t *testing.T) {
 	registry := NewMemberRegistry()
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher := newTestDispatcher(t, registry)
 	ctx := testContext()
 	entity := testEntity()
 
@@ -1028,12 +1108,12 @@ func TestDispatchFunction_NoMember(t *testing.T) {
 		CalculationNodesTags: "java",
 	}
 
-	_, err := dispatcher.DispatchFunction(ctx, entity, fn, "wf1", "t1", "tx-1")
+	_, err := dispatchFunction(dispatcher, ctx, entity, fn, "wf1", "t1", "tx-1")
 	if err == nil {
 		t.Fatal("expected error for missing member")
 	}
-	if !errors.Is(err, ErrNoMatchingMember) {
-		t.Errorf("expected ErrNoMatchingMember, got: %s", err)
+	if !errors.Is(err, contract.ErrNoMatchingMember) {
+		t.Errorf("expected contract.ErrNoMatchingMember, got: %s", err)
 	}
 }
 
@@ -1055,8 +1135,7 @@ func TestDispatchCalloutToMember_AbandonOnCtxCancel(t *testing.T) {
 		cancel()
 	}()
 
-	req := map[string]any{"requestId": "req-ctx-cancel"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-ctx-cancel", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-ctx-cancel", "tx-1", 5000)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
 	}
@@ -1073,8 +1152,7 @@ func TestDispatchCalloutToMember_AbandonOnTimeout(t *testing.T) {
 	member := registry.Get(memberID)
 	ctx := testContext()
 
-	req := map[string]any{"requestId": "req-timeout-abandon"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-timeout-abandon", "tx-1", 1, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-timeout-abandon", "tx-1", 1)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -1094,13 +1172,10 @@ func TestDispatchCalloutToMember_AbandonOnWriterFailure(t *testing.T) {
 	member := registry.Register("member-send-fail", testTenantID, []string{"python"}, func(_ *cepb.CloudEvent) error {
 		return fmt.Errorf("send boom")
 	}, nil)
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher := newTestDispatcher(t, registry)
 	ctx := testContext()
 
-	req := map[string]any{"requestId": "req-send-fail"}
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-send-fail", "tx-1", 5000, "processor", "my-proc")
+	_, err := tryOnce(dispatcher, ctx, member, "req-send-fail", "tx-1", 5000)
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeComputeMemberDisconnected {
 		t.Fatalf("err = %v, want COMPUTE_MEMBER_DISCONNECTED", err)
@@ -1170,8 +1245,7 @@ func TestDispatch_MemberGoneBeforeTrack_IsDisconnectedImmediately(t *testing.T) 
 	registry.Unregister(member)
 
 	start := time.Now()
-	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
-		map[string]any{"requestId": "r1"}, "r1", "", 30_000, "processor", "p")
+	_, err := tryOnce(dispatcher, testContext(), member, "r1", "", 30_000)
 	if time.Since(start) > 2*time.Second {
 		t.Fatalf("took %v; should not wait out the response timeout", time.Since(start))
 	}
@@ -1188,8 +1262,7 @@ func TestDispatch_EnqueueTimeout_IsDispatchTimeoutNotDraining(t *testing.T) {
 	dispatcher, member := newWedgedDispatcher(t)
 
 	start := time.Now()
-	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
-		map[string]any{"requestId": "r1"}, "r1", "", 100, "processor", "p")
+	_, err := tryOnce(dispatcher, testContext(), member, "r1", "", 100)
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeDispatchTimeout {
 		t.Fatalf("err = %v, want DISPATCH_TIMEOUT", err)
@@ -1209,8 +1282,7 @@ func TestDispatch_ParentCancelDuringEnqueue_IsCtxErr(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(testContext())
 	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
-	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest,
-		map[string]any{"requestId": "r1"}, "r1", "", 30_000, "processor", "p")
+	_, err := tryOnce(dispatcher, ctx, member, "r1", "", 30_000)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -1230,8 +1302,7 @@ func TestDispatch_MemberEvictedDuringEnqueue_IsDisconnectedPromptly(t *testing.T
 	}()
 
 	start := time.Now()
-	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
-		map[string]any{"requestId": "r1"}, "r1", "", 30_000, "processor", "p")
+	_, err := tryOnce(dispatcher, testContext(), member, "r1", "", 30_000)
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeComputeMemberDisconnected {
 		t.Fatalf("err = %v, want COMPUTE_MEMBER_DISCONNECTED", err)
@@ -1253,8 +1324,7 @@ func newWedgedDispatcher(t *testing.T) (*ProcessorDispatcher, *Member) {
 		func(*cepb.CloudEvent) error { <-release; return nil }, nil)
 	t.Cleanup(func() { registry.Unregister(member) })
 	_ = member.Send(context.Background(), mustCE(t)) // wedge the writer
-	signer, _ := token.NewSigner(make32(t))
-	return NewProcessorDispatcher(registry, common.NewTestUUIDGenerator(), signer, "node-test", time.Minute), member
+	return newTestDispatcher(t, registry), member
 }
 
 func mustCE(t *testing.T) *cepb.CloudEvent {
@@ -1264,4 +1334,82 @@ func mustCE(t *testing.T) *cepb.CloudEvent {
 		t.Fatal(err)
 	}
 	return ce
+}
+
+// TestDispatchCalloutToMember_SendsTheCalloutsIdentity guards that a try
+// attaches the identity the callout carries and never recomputes it from the
+// context it runs under. On a pnode that received the callout in a hand-over,
+// the context names only the executor; the attributed principal the owner
+// computed is alice, and that is what the cnode is sent.
+func TestDispatchCalloutToMember_SendsTheCalloutsIdentity(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	member := registry.Get(memberID)
+	peerCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "C9", Kind: spi.PrincipalService, Roles: []string{"ROLE_M2M"},
+		Tenant: spi.Tenant{ID: testTenantID},
+	})
+	id := CalloutIdentity{
+		Attributed: spi.Principal{ID: "alice", Kind: spi.PrincipalUser},
+		Executor:   spi.Principal{ID: "C9", Kind: spi.PrincipalService},
+		Roles:      []string{"ROLE_M2M"},
+	}
+
+	go func() {
+		ce := <-sentCh
+		for key, want := range map[string]string{
+			"authid": "alice", "authtype": "user", "authexecid": "C9", "authexectype": "service", "authclaims": "ROLE_M2M",
+		} {
+			if got, ok := ceAttr(ce, key); !ok || got != want {
+				t.Errorf("%s = %q (present %v), want %q", key, got, ok, want)
+			}
+		}
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Payload: json.RawMessage(`{"data":{}}`)})
+	}()
+
+	if _, err := tryOnceAs(dispatcher, peerCtx, member, id, "req-identity", "tx-1", 5000); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestMintPass_NoOwnerWhenLocationIndependent: on a location-independent
+// backend any pnode serves the transaction's callbacks, so the pass names no
+// owner; it still names the transaction, the callout and the try's number.
+// On any other backend the pass names the owner.
+func TestMintPass_NoOwnerWhenLocationIndependent(t *testing.T) {
+	signer, err := token.NewSigner(make32(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := processorCall("x", false, 5*time.Second)
+	call.OwnerNodeID = "node-owner"
+
+	for _, tc := range []struct {
+		name                string
+		locationIndependent bool
+		wantOwner           string
+	}{
+		{"location-independent", true, ""},
+		{"owner-bound", false, "node-owner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewMemberRegistry()
+			d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), signer, 30*time.Second, 60*time.Second, 3*time.Second, tc.locationIndependent)
+			pass, err := d.mintPass(call, 2, 1)
+			if err != nil {
+				t.Fatalf("mintPass: %v", err)
+			}
+			claims := verifyPass(t, pass)
+			if claims.NodeID != tc.wantOwner {
+				t.Errorf("owner = %q; want %q", claims.NodeID, tc.wantOwner)
+			}
+			if claims.TxRef != call.TxID || claims.Callout != call.RequestID || claims.Major != 2 || claims.Minor != 1 {
+				t.Errorf("claims = %+v; want tx %s, callout %s, number (2,1)", claims, call.TxID, call.RequestID)
+			}
+		})
+	}
 }

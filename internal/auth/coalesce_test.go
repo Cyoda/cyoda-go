@@ -66,3 +66,37 @@ func TestCoalescingRunner_ConcurrentTriggers(t *testing.T) {
 		t.Fatal("no run executed")
 	}
 }
+
+// A run that panics still clears running and closes done: Wait must not
+// hang on it, and a later Trigger must still be able to start a fresh run.
+func TestCoalescingRunner_PanicStillClearsRunningAndUnblocksWait(t *testing.T) {
+	var c coalescingRunner
+	entered := make(chan struct{})
+	c.Trigger(func() {
+		close(entered)
+		panic("boom")
+	})
+	<-entered
+
+	waitDone := make(chan struct{})
+	go func() {
+		c.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait never returned after a panicking run")
+	}
+	if c.busy() {
+		t.Fatal("running still true after a panicking run")
+	}
+
+	ran := make(chan struct{})
+	c.Trigger(func() { close(ran) })
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a Trigger after a panicking run never ran")
+	}
+}

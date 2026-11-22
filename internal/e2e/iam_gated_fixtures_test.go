@@ -4,12 +4,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // newMockIAMServer builds an in-process server using mock IAM mode with the
 // trusted-key feature gate enabled. In this configuration (F-a):
-//   - OIDC adapter is nil  → 7 OIDC ops return 501
 //   - keyStore is nil      → 5 keypair ops return 501
 //   - trustedKeyStore nil, feature gate ON → 5 trusted ops return 501
 //   - m2mClientStore nil   → 4 M2M ops return 501
@@ -26,7 +25,7 @@ func newMockIAMServer(t *testing.T) (string, func()) {
 	cfg.IAM.TrustedKeyRegistrationEnabled = true // gate ON → nil store → 501
 
 	a := app.New(cfg)
-	srv := httptest.NewServer(a.Handler())
+	srv := httptest.NewServer(validated(a.Handler()))
 	return srv.URL, func() {
 		srv.Close()
 		a.Shutdown()
@@ -48,7 +47,7 @@ func newFeatureOffServer(t *testing.T) (string, func()) {
 	// cfg.IAM.TrustedKeyRegistrationEnabled is false in DefaultConfig — leave it.
 
 	a := app.New(cfg)
-	srv := httptest.NewServer(a.Handler())
+	srv := httptest.NewServer(validated(a.Handler()))
 	return srv.URL, func() {
 		srv.Close()
 		a.Shutdown()

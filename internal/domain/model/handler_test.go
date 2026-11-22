@@ -10,11 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // newTestServer creates an App with default config and returns an httptest.Server.
@@ -145,7 +146,7 @@ func ctxWithTenant(tid spi.TenantID) context.Context {
 }
 
 func TestNewHandler(t *testing.T) {
-	h := model.New(nil)
+	h := model.New(cachedFactory(nil), platformclock.Real())
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}
@@ -610,11 +611,16 @@ func TestUnlockBlockedByEntities(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestDeleteBlockedByEntities pins the rule: a model with entities is LOCKED and
+// delete answers MODEL_ALREADY_LOCKED, never MODEL_HAS_ENTITIES.
 func TestDeleteBlockedByEntities(t *testing.T) {
 	a, srv := newTestApp(t)
 
-	// Import model (stays unlocked).
+	// A model with entities is LOCKED: import and lock it.
 	resp := doImport(t, srv.URL, "DeleteGuard", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doLock(t, srv.URL, "DeleteGuard", 1)
 	expectStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
 
@@ -637,10 +643,10 @@ func TestDeleteBlockedByEntities(t *testing.T) {
 		t.Fatalf("failed to save entity: %v", err)
 	}
 
-	// Attempt delete — should be blocked with 409 + MODEL_HAS_ENTITIES code.
+	// Attempt delete — blocked by the lock: 409 MODEL_ALREADY_LOCKED.
 	resp = doDelete(t, srv.URL, "DeleteGuard", 1)
 	expectStatus(t, resp, http.StatusConflict)
-	commontest.ExpectErrorCode(t, resp, "MODEL_HAS_ENTITIES")
+	commontest.ExpectErrorCode(t, resp, "MODEL_ALREADY_LOCKED")
 	resp.Body.Close()
 }
 
@@ -821,6 +827,32 @@ func TestValidateNonConformingData(t *testing.T) {
 	}
 }
 
+// TestValidate_OneReading: validate reads the data as entity create does, so it
+// never calls valid what create refuses. A member written twice, anything after
+// the value, and text no store can hold are 400, not a verdict on the last
+// duplicate or the first value.
+func TestValidate_OneReading(t *testing.T) {
+	srv := newTestServer(t)
+	resp := doImport(t, srv.URL, "ValOne", 1, `{"name":"Alice","age":30}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	for _, body := range []string{
+		`{"name":"Bob","name":"Carol","age":25}`,
+		`{"name":"Bob","age":25} {"x":1}`,
+		`{"name":"Bo\u0000b","age":25}`,
+	} {
+		resp := doValidate(t, srv.URL, "ValOne", 1, body)
+		b := string(readBody(t, resp))
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400: %s", body, resp.StatusCode, b)
+		}
+		if !strings.Contains(b, "invalid JSON at") && !strings.Contains(b, "BAD_REQUEST: field") {
+			t.Errorf("%s: the refusal does not name where: %s", body, b)
+		}
+	}
+}
+
 func TestValidateModelNotFound(t *testing.T) {
 	srv := newTestServer(t)
 
@@ -912,7 +944,7 @@ func TestSetUniqueKeys_422_Unsupported(t *testing.T) {
 	// concrete SupportsCompositeUniqueKeys method on the real factory is NOT
 	// promoted — the type assertion in SetUniqueKeys returns ok=false.
 	type incapableFactory struct{ spi.StoreFactory }
-	h := model.New(incapableFactory{memory.NewStoreFactory()})
+	h := model.New(cachedFactory(incapableFactory{memory.NewStoreFactory()}), platformclock.Real())
 
 	body := `{"uniqueKeys": [{"id": "uk1", "fields": ["$.name"]}]}`
 	r := httptest.NewRequest(http.MethodPut, "/model/UKUnsupported/1/unique-keys", strings.NewReader(body))
@@ -950,6 +982,49 @@ func TestExportIncludesUniqueKeys(t *testing.T) {
 	arr, ok := uks.([]any)
 	if !ok || len(arr) != 1 {
 		t.Fatalf("expected 1 unique key in export, got %v", uks)
+	}
+}
+
+// TestSetUniqueKeys_400_NoUniqueKeys: `uniqueKeys` is required. A body without
+// it, or with null, is refused and the model keeps its keys; before, it read
+// as "no keys" and removed them all. Only `[]` removes the keys.
+func TestSetUniqueKeys_400_NoUniqueKeys(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doImport(t, srv.URL, "UKMissing", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doSetUniqueKeys(t, srv.URL, "UKMissing", 1, `{"uniqueKeys": [{"id": "uk1", "fields": ["$.name"]}]}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	for name, body := range map[string]string{
+		"absent": `{}`,
+		"null":   `{"uniqueKeys": null}`,
+	} {
+		resp = doSetUniqueKeys(t, srv.URL, "UKMissing", 1, body)
+		expectStatus(t, resp, http.StatusBadRequest)
+		commontest.ExpectErrorCode(t, resp, "BAD_REQUEST")
+
+		resp = doExport(t, srv.URL, "JSON_SCHEMA", "UKMissing", 1)
+		expectStatus(t, resp, http.StatusOK)
+		var exported map[string]any
+		json.Unmarshal(readBody(t, resp), &exported)
+		if arr, _ := exported["uniqueKeys"].([]any); len(arr) != 1 {
+			t.Errorf("%s: unique keys after the refused request = %v; want the one key kept", name, exported["uniqueKeys"])
+		}
+	}
+
+	// [] is the one body that removes the keys.
+	resp = doSetUniqueKeys(t, srv.URL, "UKMissing", 1, `{"uniqueKeys": []}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doExport(t, srv.URL, "JSON_SCHEMA", "UKMissing", 1)
+	expectStatus(t, resp, http.StatusOK)
+	var exported map[string]any
+	json.Unmarshal(readBody(t, resp), &exported)
+	if arr, _ := exported["uniqueKeys"].([]any); len(arr) != 0 {
+		t.Errorf("unique keys after [] = %v; want none", exported["uniqueKeys"])
 	}
 }
 

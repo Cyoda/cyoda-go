@@ -87,7 +87,7 @@ func TestCallback_ConcurrentCallbacks_Serialise(t *testing.T) {
 			"version": "1.1", "name": "primary-concurrent-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-concurrent-fanout", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "cb-concurrent-fanout", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
@@ -188,7 +188,7 @@ func TestDispatch_NeverHoldsGateAcrossDispatch(t *testing.T) {
 			"version": "1.1", "name": "primary-gate-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-join-during-dispatch", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "cb-join-during-dispatch", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}

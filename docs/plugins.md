@@ -9,7 +9,7 @@ You are writing a Go module that plugs into a custom cyoda binary as a new stora
 ## Where the contract lives
 
 - `docs/ARCHITECTURE.md` §1 — the SPI surface, the `Plugin` / `DescribablePlugin` / `Startable` / `StoreFactory` / `TransactionManager` interfaces, and how the binary resolves plugins via `spi.GetPlugin`.
-- `pkg.go.dev/github.com/cyoda-platform/cyoda-go-spi` — the API documentation for the SPI module itself. The SPI is stdlib-only by design; depending on it does not pull in transitive dependencies.
+- `pkg.go.dev/github.com/cyoda/cyoda-go-spi` — the API documentation for the SPI module itself. The SPI is stdlib-only by design; depending on it does not pull in transitive dependencies.
 
 ## Reference implementations to fork
 

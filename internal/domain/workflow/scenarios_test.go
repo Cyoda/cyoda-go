@@ -3,15 +3,17 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // lifecycleCriterion returns a criterion that checks a lifecycle field (e.g. "state").
@@ -48,12 +50,9 @@ func TestScenarioAutoCascadeChain(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("chain1", modelRef, map[string]any{"ok": true})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity.Meta.State != "FINAL" {
 		t.Fatalf("expected state FINAL, got %s", entity.Meta.State)
@@ -105,12 +104,9 @@ func TestScenarioLoopbackWithAutoExit(t *testing.T) {
 
 	// Entity with status=done → auto-completes to COMPLETED.
 	entity1 := makeEntity("lb1", modelRef, map[string]any{"status": "done"})
-	result, err := engine.Execute(ctx, entity1, "")
+	_, err := engine.Execute(ctx, entity1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity1.Meta.State != "COMPLETED" {
 		t.Fatalf("expected COMPLETED, got %s", entity1.Meta.State)
@@ -118,12 +114,9 @@ func TestScenarioLoopbackWithAutoExit(t *testing.T) {
 
 	// Entity with status=pending → stays at PROCESSING (criterion false).
 	entity2 := makeEntity("lb2", modelRef, map[string]any{"status": "pending"})
-	result, err = engine.Execute(ctx, entity2, "")
+	_, err = engine.Execute(ctx, entity2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success (stable state)")
 	}
 	if entity2.Meta.State != "PROCESSING" {
 		t.Fatalf("expected PROCESSING, got %s", entity2.Meta.State)
@@ -131,12 +124,9 @@ func TestScenarioLoopbackWithAutoExit(t *testing.T) {
 
 	// Manual RETRY transition → stays at PROCESSING, auto re-evaluates, still pending.
 	entity2.Meta.State = "PROCESSING"
-	result, err = engine.ManualTransition(ctx, entity2, "RETRY")
+	_, err = engine.ManualTransition(ctx, entity2, "RETRY", IfMatch{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity2.Meta.State != "PROCESSING" {
 		t.Fatalf("expected PROCESSING after retry (still pending), got %s", entity2.Meta.State)
@@ -162,12 +152,9 @@ func TestScenarioStuckState(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("stuck1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success (stable at STUCK)")
 	}
 	if entity.Meta.State != "STUCK" {
 		t.Fatalf("expected STUCK, got %s", entity.Meta.State)
@@ -207,12 +194,9 @@ func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
 
 	// High priority: INITIAL -> FAST_TRACK -> DONE
 	entityHigh := makeEntity("prio-h", modelRef, map[string]any{"priority": "high"})
-	result, err := engine.Execute(ctx, entityHigh, "")
+	_, err := engine.Execute(ctx, entityHigh)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entityHigh.Meta.State != "DONE" {
 		t.Fatalf("expected DONE for high priority, got %s", entityHigh.Meta.State)
@@ -220,12 +204,9 @@ func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
 
 	// Low priority: INITIAL -> SLOW_TRACK -> REVIEW -> DONE
 	entityLow := makeEntity("prio-l", modelRef, map[string]any{"priority": "low"})
-	result, err = engine.Execute(ctx, entityLow, "")
+	_, err = engine.Execute(ctx, entityLow)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entityLow.Meta.State != "DONE" {
 		t.Fatalf("expected DONE for low priority, got %s", entityLow.Meta.State)
@@ -350,7 +331,7 @@ func TestScenarioDynamicLoopLimit(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	// Use a small maxStateVisits for faster test.
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, WithMaxStateVisits(3))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real(), WithMaxStateVisits(3))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "dynamic-loop", ModelVersion: "1.0"}
@@ -371,7 +352,7 @@ func TestScenarioDynamicLoopLimit(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("dyn1", modelRef, map[string]any{"x": 1})
-	_, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	if err == nil {
 		t.Fatal("expected error from dynamic loop limit")
 	}
@@ -426,24 +407,18 @@ func TestScenarioManualTriggersAutoCascade(t *testing.T) {
 
 	// Create entity → stays at INITIAL (no auto transitions).
 	entity := makeEntity("mc1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity.Meta.State != "INITIAL" {
 		t.Fatalf("expected INITIAL, got %s", entity.Meta.State)
 	}
 
 	// Manual transition PROCESS → cascades to DONE.
-	result, err = engine.ManualTransition(ctx, entity, "PROCESS")
+	_, err = engine.ManualTransition(ctx, entity, "PROCESS", IfMatch{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Fatalf("expected DONE after manual transition + cascade, got %s", entity.Meta.State)
@@ -473,7 +448,7 @@ func TestScenarioLoopbackReEvaluates(t *testing.T) {
 
 	// Create with ready=false → stays at WAITING.
 	entity := makeEntity("lbr1", modelRef, map[string]any{"ready": false})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -483,12 +458,9 @@ func TestScenarioLoopbackReEvaluates(t *testing.T) {
 
 	// Update data to ready=true and loopback → should cascade to DONE.
 	entity.Data, _ = json.Marshal(map[string]any{"ready": true})
-	result, err = engine.Loopback(ctx, entity)
+	_, err = engine.Loopback(ctx, entity, IfMatch{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Fatalf("expected DONE after loopback, got %s", entity.Meta.State)
@@ -502,8 +474,8 @@ func TestScenarioStaticLoopDetectionViaImport(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr2 := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr2)
-	handler := New(factory, engine)
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr2, platformclock.Real())
+	handler := New(factory, engine, 60*time.Second)
 
 	ctx := ctxWithTenant(testTenant)
 
@@ -582,7 +554,7 @@ func TestValidateWorkflows_RejectsStartNewTxOnDispatchOnNonCommitBeforeDispatch(
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
 					{Type: ProcessorTypeExternalized, Name: "p", ExecutionMode: "SYNC",
-						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &tt}},
+						StartNewTxOnDispatch: &tt},
 				}},
 			}},
 			"S2": {},
@@ -601,8 +573,9 @@ func TestValidateWorkflows_RejectsStartNewTxOnDispatchOnNonCommitBeforeDispatch(
 	if !strings.Contains(err.Error(), "SYNC") {
 		t.Fatalf("error message must mention the offending mode (SYNC), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "test-wf") || !strings.Contains(err.Error(), `"t"`) || !strings.Contains(err.Error(), `"p"`) {
-		t.Fatalf("error message must mention workflow, transition, and processor names, got: %v", err)
+	if !strings.Contains(err.Error(), "test-wf") || !strings.Contains(err.Error(), `state "S1"`) ||
+		!strings.Contains(err.Error(), `"t"`) || !strings.Contains(err.Error(), `"p"`) {
+		t.Fatalf("error message must mention workflow, state, transition, and processor names, got: %v", err)
 	}
 }
 
@@ -614,7 +587,7 @@ func TestValidateWorkflows_AcceptsStartNewTxOnDispatchOnCommitBeforeDispatch(t *
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
 					{Type: ProcessorTypeExternalized, Name: "p", ExecutionMode: "COMMIT_BEFORE_DISPATCH",
-						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &tt}},
+						StartNewTxOnDispatch: &tt},
 				}},
 			}},
 			"S2": {},
@@ -636,7 +609,7 @@ func TestValidateWorkflows_AcceptsStartNewTxOnDispatchNilOrFalse(t *testing.T) {
 					{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: "SYNC",
 						Config: spi.ProcessorConfig{}},
 					{Type: ProcessorTypeExternalized, Name: "p2", ExecutionMode: "SYNC",
-						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &ff}},
+						StartNewTxOnDispatch: &ff},
 				}},
 			}},
 			"S2": {},
@@ -659,8 +632,8 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr2 := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr2)
-	handler := New(factory, engine)
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr2, platformclock.Real())
+	handler := New(factory, engine, 60*time.Second)
 
 	ctx := ctxWithTenant(testTenant)
 
@@ -692,10 +665,10 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 					"next": "S2",
 					"manual": true,
 					"processors": [{
-						"type": "EXTERNAL",
+						"type": "externalized",
 						"name": "p",
 						"executionMode": "SYNC",
-						"config": {"startNewTxOnDispatch": true}
+						"startNewTxOnDispatch": true
 					}]
 				}]},
 				"S2": {"transitions": []}
@@ -713,8 +686,8 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 	}
 	respBody := rr.Body.String()
 	// Pin the full error format reaches the HTTP caller intact: error code,
-	// flag name, plus all four context fields the validator includes
-	// (workflow / transition / processor / offending mode). A future handler
+	// flag name, plus all five context fields the validator includes
+	// (workflow / state / transition / processor / offending mode). A future handler
 	// change that collapses this message would surface as a regression here,
 	// not just in the unit-level validator test. The validator uses %q on
 	// each name; the JSON response body escapes those inner quotes as \".
@@ -722,6 +695,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 		"VALIDATION_FAILED",
 		"startNewTxOnDispatch",
 		`workflow \"snttd-wf\"`,
+		`state \"S1\"`,
 		`transition \"t\"`,
 		`processor \"p\"`,
 		`got \"SYNC\"`,

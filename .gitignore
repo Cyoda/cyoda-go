@@ -57,6 +57,8 @@ Thumbs.db
 # Packaging templates are not credentials — allow them explicitly.
 !scripts/packaging/*.env
 *.pem
+# The one test-only key fixture (no system trusts it); any other .pem stays ignored.
+!internal/auth/testdata/vault/bootstrap-pkcs8.pem
 *.key
 credentials.json
 secrets.yaml

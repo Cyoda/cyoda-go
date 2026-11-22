@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,10 +15,15 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 const submitTimeTTL = 1 * time.Hour
+
+// submitTimePruneInterval rate-limits the submit_times table housekeeping
+// delete (see pruneSubmitTimes) to at most once per interval, rather than
+// running it on every commit.
+const submitTimePruneInterval = 5 * time.Minute
 
 // submitTimeEntry pairs a committed transaction's submit time with the
 // tenant that owns it, so GetSubmitTime can enforce the same tenant gate
@@ -57,8 +63,25 @@ type TransactionManager struct {
 	origins    map[string]spi.Principal
 	txStatesMu sync.RWMutex
 	txStates   map[string]*txState
-	// acquireTimeout bounds Begin's wait for a pooled connection.
+	// acquireTimeout bounds Begin's and ConsistencyTime's wait for a pooled
+	// connection.
 	acquireTimeout time.Duration
+	// statementTimeout is the configured statement ceiling; ConsistencyTime
+	// waits no longer than it (see waitBudgetMillis). Zero means no limit.
+	statementTimeout time.Duration
+	// keys caches each tenant's marker key; see tenantKeys. A manager built
+	// by a factory uses the factory's cache (withTenantKeys); one built on
+	// its own has a cache of its own.
+	keys *tenantKeys
+	// lastSubmitTimePruneNano rate-limits pruneSubmitTimes (UnixNano since
+	// epoch; zero means "never pruned"). Accessed without tm.mu: it gates an
+	// independent housekeeping statement on the pool, not the maps tm.mu
+	// protects, so a plain atomic keeps the common (skip) path lock-free.
+	lastSubmitTimePruneNano atomic.Int64
+	// clock is the business clock (see StoreFactory.clock); nil in
+	// production. It supplies commit stamps and consistency times
+	// (stampAtArg) and the retention cutoff of submit times.
+	clock spi.Clock
 }
 
 // TransactionManagerOption configures a TransactionManager at construction.
@@ -71,6 +94,26 @@ type TransactionManagerOption func(*TransactionManager)
 // manager still gets the shipped default rather than an unbounded wait.
 func WithAcquireTimeout(d time.Duration) TransactionManagerOption {
 	return func(tm *TransactionManager) { tm.acquireTimeout = d }
+}
+
+// withStatementTimeout passes the configured statement ceiling
+// (CYODA_POSTGRES_STATEMENT_TIMEOUT) to the manager, which caps its
+// consistency-time wait at it.
+func withStatementTimeout(d time.Duration) TransactionManagerOption {
+	return func(tm *TransactionManager) { tm.statementTimeout = d }
+}
+
+// withTenantKeys gives the manager the tenant-key cache of the factory that
+// builds it (StoreFactory.InitTransactionManager), so the two share one.
+// Without it the manager has a cache of its own.
+func withTenantKeys(k *tenantKeys) TransactionManagerOption {
+	return func(tm *TransactionManager) { tm.keys = k }
+}
+
+// withBusinessClock gives the manager the factory's business clock; nil keeps
+// the database clock.
+func withBusinessClock(c spi.Clock) TransactionManagerOption {
+	return func(tm *TransactionManager) { tm.clock = c }
 }
 
 // NewTransactionManager creates a new PostgreSQL-backed TransactionManager.
@@ -88,6 +131,9 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...
 	for _, apply := range opts {
 		apply(tm)
 	}
+	if tm.keys == nil {
+		tm.keys = newTenantKeys()
+	}
 	return tm
 }
 
@@ -99,6 +145,15 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...
 // Commit() and docs/superpowers/specs/2026-04-15-postgres-si-first-committer-wins-design.md.
 func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Context, error) {
 	tenantID, err := resolveTenant(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("Begin: %w", err)
+	}
+
+	// The tenant's marker key, which this transaction's commit stamp takes.
+	// Resolved here, before the transaction's connection is taken, so a miss
+	// waits for no second connection while holding one and the commit phase
+	// never touches the key table (see tenantKeys).
+	markerKey, err := tm.keys.get(ctx, tm.pool, tm.acquireTimeout, tenantID)
 	if err != nil {
 		return "", nil, fmt.Errorf("Begin: %w", err)
 	}
@@ -149,7 +204,7 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 	func() {
 		tm.txStatesMu.Lock()
 		defer tm.txStatesMu.Unlock()
-		tm.txStates[txID] = newTxState(tenantID)
+		tm.txStates[txID] = newTxState(tenantID, markerKey)
 	}()
 
 	// ReadSet/WriteSet/Buffer/Deletes/DeleteAttribution are left nil:
@@ -175,9 +230,13 @@ func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Conte
 }
 
 // Commit commits the transaction and records its submit time.
-// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001)
-// or when the application-layer first-committer-wins validation detects a
-// stale read or write set.
+// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001),
+// including one a savepoint rollback has since undone, or when the
+// application-layer first-committer-wins validation detects a stale read or
+// write set. The commit checks unique keys on the transaction's final
+// entities (commitWrittenClaims): spi.ErrPartialUniqueKey for a partial composite
+// key, spi.ErrUniqueViolation for a value already held, and spi.ErrConflict
+// when two commits deadlock claiming values each frees.
 //
 // Tenant isolation: rejects callers whose UserContext
 // tenant does not match the transaction's tenant. RLS protects data-path
@@ -199,6 +258,15 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		return err
 	}
 
+	// A concurrent writer won against this transaction. A savepoint rollback
+	// may have made the session usable again (see txState.RestoreSavepoint),
+	// but the transaction lost the race and must not commit.
+	if cause := state.AbortCause(); isConcurrentWriterAbort(cause) {
+		tm.cleanupTx(txID)
+		_ = pgxTx.Rollback(context.Background())
+		return fmt.Errorf("Commit: transaction aborted: %w", cause)
+	}
+
 	// --- First-committer-wins validation (read-set) ---
 	// Re-read the current committed versions of all entities we read in this tx
 	// and compare against the captured readSet. A version mismatch or missing row
@@ -215,9 +283,19 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	if len(readIDs) > 0 {
 		current, err := tm.validateInChunks(ctx, pgxTx, state.tenantID, readIDs, 0)
 		if err != nil {
+			// The validation query is the first statement Commit issues, so on
+			// an aborted transaction it is the one that meets the 25P02.
+			if aborted, ok := abortedCommitError(state, err); ok {
+				tm.cleanupTx(txID)
+				_ = pgxTx.Rollback(context.Background())
+				return aborted
+			}
+			// Classify while the transaction is still registered, so the
+			// classifier sees its bookkeeping.
+			classified := tm.classifyTxError(txID, fmt.Errorf("Commit: validate: %w", err))
 			tm.cleanupTx(txID)
 			_ = pgxTx.Rollback(context.Background())
-			return tm.classifyTxError(txID, fmt.Errorf("Commit: validate: %w", err))
+			return classified
 		}
 		if verr := state.ValidateReadSet(current); verr != nil {
 			tm.cleanupTx(txID)
@@ -226,38 +304,62 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		}
 	}
 
-	// Capture the database timestamp before committing.
-	// If the transaction is already in an aborted state (e.g. an earlier Exec
-	// returned 40001 and left the tx aborted), the SELECT will fail with
-	// SQLSTATE 25P02 (in_failed_sql_transaction). In that case we rollback
-	// and surface ErrConflict, since the abort was most likely caused by a
-	// serialization failure. We use time.Now() as a stand-in; it is never
-	// stored on an error path.
-	var submitTime time.Time
-	if tsErr := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); tsErr != nil {
-		tm.cleanupTx(txID)
-		// Only classify as ErrConflict when the probe fails specifically because
-		// the transaction is already in an aborted state (SQLSTATE 25P02:
-		// in_failed_sql_transaction). Any other error (context cancellation,
-		// network failure, etc.) is returned as-is so callers are not misled
-		// into treating a transient infrastructure error as a retryable conflict.
-		var pgErr *pgconn.PgError
-		if errors.As(tsErr, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction {
+	// Unique keys, from the transaction's final entities and the stored
+	// models' unique-key definitions (commitWrittenClaims). Before the
+	// stamp: these statements can wait on a lock, and nothing after
+	// cyoda_stamp may. With an empty read set the claim release is the first
+	// statement Commit issues, so on an aborted transaction it meets the
+	// 25P02.
+	if err := tm.commitWrittenClaims(ctx, pgxTx, state); err != nil {
+		if aborted, ok := abortedCommitError(state, err); ok {
+			tm.cleanupTx(txID)
 			_ = pgxTx.Rollback(context.Background())
-			// 25P02 says only "something earlier in this transaction failed".
-			// When that something was a ceiling, classifyTxError recorded it,
-			// and reporting the real cause is what keeps a cancelled statement
-			// off the retryable-conflict path — a retry would cancel again.
-			if cause := state.AbortCause(); cause != nil {
-				return fmt.Errorf("Commit: transaction aborted: %w", cause)
-			}
-			return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
+			return aborted
 		}
-		// For non-25P02 errors (e.g. network failures, context deadline exceeded)
-		// roll back with a fresh context so we don't leak the connection, then
-		// return the raw error without wrapping it as ErrConflict.
+		// Classified while the transaction is still registered: 40001 and
+		// 40P01 become spi.ErrConflict, a 23505 on unique_claims_uq
+		// spi.ErrUniqueViolation; spi.ErrPartialUniqueKey passes through.
+		classified := tm.classifyTxError(txID, fmt.Errorf("Commit: unique keys: %w", err))
+		tm.cleanupTx(txID)
 		_ = pgxTx.Rollback(context.Background())
-		return fmt.Errorf("Commit: failed to capture submit time: %w", tsErr)
+		return classified
+	}
+
+	// Fix the transaction's instant and stamp it onto every row the
+	// transaction wrote, immediately before COMMIT.
+	//
+	// If the transaction is already in an aborted state (e.g. an earlier Exec
+	// returned 40001 and left the tx aborted) and had no read set to validate
+	// and no entity written, the first statement of the stamp fails with SQLSTATE 25P02
+	// (in_failed_sql_transaction), which abortedCommitError reads.
+	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, state.markerKey, txID)
+	if tsErr != nil {
+		tm.cleanupTx(txID)
+		// A cyoda_stamp failure closes the connection before the rollback
+		// below releases it, so the pool never reuses it.
+		closeIfStampFailed(ctx, pgxTx, tsErr)
+		// Only a 25P02 is read as an aborted transaction. Any other error
+		// (context cancellation, network failure, etc.) is classified below so
+		// callers are not misled into treating a transient infrastructure error
+		// as a retryable conflict.
+		if aborted, ok := abortedCommitError(state, tsErr); ok {
+			_ = pgxTx.Rollback(context.Background())
+			return aborted
+		}
+		// For non-25P02 errors: roll back with a fresh context so we don't leak
+		// the connection, then classify before returning. classifyError only
+		// reclassifies specific SQLSTATEs (40001/40P01 to spi.ErrConflict,
+		// transport-loss shapes to the idle-in-tx marker) and passes everything
+		// else through unchanged, so a genuine transient infrastructure error
+		// (context cancellation, network failure) still isn't misreported as
+		// retryable. Every statement in stampCommitInstant is currently scoped
+		// to this transaction's own rows and so shouldn't itself raise 40001 —
+		// but that scoping is a property of the SQL text, not something this
+		// error path can verify, so classification stays generic rather than
+		// assuming today's statements are the only ones this function will
+		// ever run.
+		_ = pgxTx.Rollback(context.Background())
+		return fmt.Errorf("Commit: failed to stamp the commit instant: %w", classifyError(tsErr))
 	}
 
 	if err := pgxTx.Commit(ctx); err != nil {
@@ -269,6 +371,11 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		return tm.classifyCommitError(txID, fmt.Errorf("Commit: %w", err))
 	}
 
+	// Table housekeeping, deliberately AFTER commit and on the pool, never
+	// inside pgxTx — see pruneSubmitTimes for why sharing this transaction's
+	// snapshot would let unrelated tenants' commits abort each other.
+	tm.pruneSubmitTimes(ctx)
+
 	// Record the submit time BEFORE cleanupTx removes the active-tx state:
 	// a concurrent GetSubmitTime racing this Commit then observes the tx in
 	// at least one of the two maps at all times (its committed branch wins
@@ -278,7 +385,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		tm.mu.Lock()
 		defer tm.mu.Unlock()
 		tm.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: state.tenantID}
-		evictBefore := time.Now().Add(-submitTimeTTL)
+		evictBefore := businessNow(tm.clock).Add(-submitTimeTTL)
 		for id, e := range tm.submitTimes {
 			if e.submitTime.Before(evictBefore) {
 				delete(tm.submitTimes, id)
@@ -289,6 +396,226 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	tm.cleanupTx(txID)
 
 	return nil
+}
+
+// commitWrittenClaims runs the commit-time unique-key check (commit_claims.go)
+// over the entities the transaction wrote, every step in the transaction:
+// releaseClaims, modelKeys, insertClaims. The unique-key definitions are
+// read in the transaction's snapshot; commit_claims.go says why that is
+// correct and why the commit borrows no second connection for it. A transaction that wrote
+// no entity issues no statement here, and one that wrote only deletes reads
+// no model.
+func (tm *TransactionManager) commitWrittenClaims(ctx context.Context, tx pgx.Tx, state *txState) error {
+	written := state.WrittenEntities()
+	if len(written) == 0 {
+		return nil
+	}
+	if err := releaseClaims(ctx, tx, state.tenantID, writtenIDs(written)); err != nil {
+		return err
+	}
+	keys, err := modelKeys(ctx, tx, state.tenantID, savedModels(written))
+	if err != nil {
+		return err
+	}
+	return insertClaims(ctx, tx, state.tenantID, written, keys)
+}
+
+// stampCommitInstant fixes the transaction's instant and applies it to every
+// row the transaction wrote, immediately before COMMIT.
+//
+// CURRENT_TIMESTAMP is fixed at transaction START, so it dates a write when
+// the transaction opened rather than when it became visible. The stamp is
+// taken here instead, by cyoda_stamp (migrations 000016, 000017): the DB
+// clock, or the business clock's reading when there is one, raised above the
+// stamp floor so it is above every consistency time already returned. It also
+// takes the in-flight marker a consistency-time call waits for, held until
+// this transaction ends.
+//
+// The rows are found by transaction_id rather than from the in-memory write
+// set, which is not authoritative: after a savepoint rollback the write set
+// and the table disagree, and the table is right.
+//
+// Lock note: validateInChunks' FOR SHARE covers the READ set; the entity and
+// version updates touch rows this transaction already holds exclusively, so no
+// lock upgrade occurs and they cannot deadlock against the validation that
+// precedes them. That reasoning holds only while each WHERE stays scoped to
+// rows this transaction actually wrote.
+//
+// The audit update is the one statement that is NOT so scoped — it matches by
+// LABEL (see its own comment), and an event can be labelled with a transaction
+// that did not record it. It is still safe, but for a second reason rather than
+// the first: this transaction runs at REPEATABLE READ, so a row another
+// transaction inserted after this snapshot is invisible here and is not
+// locked at all, and a visible row concurrently modified raises 40001
+// (→ spi.ErrConflict) instead of waiting. Audit rows are otherwise
+// append-only, so nothing else ever holds one under a conflicting lock.
+//
+// Five things would break this reasoning: widening any WHERE beyond this
+// transaction's own rows; moving the stamp before the validation while that
+// validation still takes FOR SHARE on rows the stamp updates; adding a
+// statement that locks a row this transaction only read; a future FK, trigger
+// or index on the stamped columns that reaches a parent row; and — the one
+// already live above — a statement whose WHERE matches rows this transaction
+// did not write, which needs its own argument every time it is added.
+func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, markerKey int32, txID string) (time.Time, error) {
+	var instant time.Time
+	// cyoda_stamp takes this transaction's in-flight marker and a stamp above
+	// the floor. Design rule: nothing after this statement waits on a lock —
+	// the statements below touch only rows this transaction wrote (the
+	// sm_audit_events UPDATE matches this transaction's own label; see its
+	// comment), so a consistency-time call waiting on the marker cannot
+	// deadlock with it. markerKey was resolved at Begin, outside this
+	// transaction (see tenantKeys). The arguments are typed, as at every call
+	// of the two functions: an untyped one would let an overload another role
+	// created in the functions' schema be chosen and run with this
+	// connection's rights (see cyoda_consistency_time's call). The second is
+	// NULL without a business clock (stampAtArg).
+	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1::pg_catalog.int4, $2::pg_catalog.int8)",
+		markerKey, stampAtArg(tm.clock)).Scan(&instant); err != nil {
+		return time.Time{}, fmt.Errorf("read commit instant: %w", classifyStampError(err))
+	}
+	tid := string(tenantID)
+
+	// creation_date is stamped on the version that creates its entity,
+	// version 1, and on that entity's row, which is then at version 1 too. A
+	// transaction records at most one version of an entity (saveOn, deleteOn),
+	// so an entity this transaction created has no other row here to carry
+	// the provisional creation date.
+	//
+	// The CASE must stay conditional. By the time this runs, the version
+	// INSERT already sources creation_date by sub-select from the entity's own
+	// entities.creation_date, so a version written by a LATER transaction
+	// correctly inherits the entity's original creation date. Replacing this
+	// CASE with an unconditional SET creation_date = $1 would restamp every
+	// updated entity's creation as that update's instant — which is exactly
+	// the defect found when this column was first projected into reads:
+	// history reporting when a revision was written rather than when the
+	// entity was created, and diverging from the memory backend, which
+	// preserves the original.
+	if _, err := tx.Exec(ctx,
+		`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,
+		        creation_date = CASE WHEN version = 1 THEN $1 ELSE creation_date END
+		  WHERE tenant_id = $2 AND transaction_id = $3`,
+		instant, tid, txID); err != nil {
+		return time.Time{}, fmt.Errorf("stamp entity versions: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE entities e SET last_modified = $1,
+		        creation_date = CASE WHEN e.version = 1 THEN $1 ELSE e.creation_date END
+		  WHERE e.tenant_id = $2 AND e.entity_id IN (
+		            SELECT entity_id FROM entity_versions
+		             WHERE tenant_id = $2 AND transaction_id = $3)`,
+		instant, tid, txID); err != nil {
+		return time.Time{}, fmt.Errorf("stamp entities: %w", err)
+	}
+
+	// Audit events LABELLED with this transaction share its instant, so the
+	// audit trail and the version history cannot drift apart or invert.
+	//
+	// "Labelled with", not "written by", and the difference is real rather
+	// than pedantic: the engine records some events under a transaction id
+	// that is not the one recording them — a segmented scheduled run records
+	// SCHEDULED_TRANSITION_FIRE under its ENTRY transaction's id in its last
+	// segment (internal/domain/workflow/fire_scheduled.go), as a
+	// COMMIT_BEFORE_DISPATCH cascade records its later events. Such an
+	// event is matched here if its label happens to name a transaction that
+	// later commits, and is otherwise never stamped at all: it keeps the
+	// recording process's clock while being ordered, and now reported, from
+	// this column. No value regresses — nothing stamped it before either —
+	// but the audit trail is not uniformly on the commit clock, and claiming
+	// otherwise would be false.
+	//
+	// This is also a point-in-time sweep rather than a write barrier: an
+	// INSERT into this table after this statement, in this same transaction,
+	// is not matched and keeps its recorded clock. It does not arise in the
+	// normal path — recordEvent runs on the goroutine driving the transaction,
+	// which is inside Commit here — but the property is "every event recorded
+	// before the commit phase", not "every event this transaction labels".
+	// The index this filters on is idx_sm_events_tenant_tx (migration 000013);
+	// 000001's idx_sm_events_tx cannot serve it, because entity_id sits
+	// between the two columns constrained here.
+	if _, err := tx.Exec(ctx,
+		`UPDATE sm_audit_events SET timestamp = $1
+		  WHERE tenant_id = $2 AND transaction_id = $3`,
+		instant, tid, txID); err != nil {
+		return time.Time{}, fmt.Errorf("stamp audit events: %w", err)
+	}
+
+	// The durable record of the same instant: the in-process map answers only
+	// on the node that committed, and only until a restart.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO submit_times (tenant_id, tx_id, submit_time) VALUES ($1, $2, $3)
+		 ON CONFLICT (tenant_id, tx_id) DO UPDATE SET submit_time = EXCLUDED.submit_time`,
+		tid, txID, instant); err != nil {
+		return time.Time{}, fmt.Errorf("record submit time: %w", err)
+	}
+
+	return instant, nil
+}
+
+// pruneSubmitTimes deletes expired submit_times rows on the pool, called
+// only AFTER the caller's own commit has already succeeded — never from
+// inside pgxTx/stampCommitInstant.
+//
+// It must run outside the committing transaction. Every other statement in
+// stampCommitInstant is scoped to this transaction's own rows, by
+// tenant_id+transaction_id (see that function's lock-note comment); two
+// concurrent commits can never touch the same row there. A DELETE scoped
+// only by submit_time has no such boundary: two concurrent commits whose
+// expiry ranges overlap the same stale row would serialize under
+// REPEATABLE READ, and the loser gets 40001 — meaning two commits from
+// completely unrelated tenants could abort each other over shared
+// housekeeping, on the hot commit path of a system whose primary target is
+// multi-node with concurrent writers. Running this as an independent
+// statement, after commit, on its own connection, removes that coupling: it
+// can now only conflict with another concurrent prune, and even then it
+// just loses this window and tries again next time (see the rate limit and
+// the swallowed error below).
+//
+// Rate-limited to once per submitTimePruneInterval: this is opportunistic
+// housekeeping like the in-process map's own sweep in Commit, not a
+// per-commit obligation, so almost every commit skips it after one atomic
+// load. idx_submit_times_pruning (migration 000012) keeps the occasional
+// real delete a bounded range scan rather than a full-table scan.
+//
+// Failure is logged and swallowed, never returned: a business commit that
+// has already succeeded must not be reported as failed because deleting old
+// bookkeeping rows didn't work.
+//
+// The DELETE carries no tenant predicate on purpose — this is global
+// housekeeping over every tenant's expired rows, not a tenant-scoped
+// operation — which, like getSubmitTimeFromTable's read, requires the
+// owner role this plugin runs as. Under a non-owner, RLS-subject role
+// (not a supported posture: see rls_test.go and getSubmitTimeFromTable)
+// the policy would admit no row, this would delete nothing on every run,
+// and nothing would say so: zero rows deleted is not an error, and the
+// error path here is swallowed by design.
+//
+// The rate limit is housekeeping and runs on the process clock; the cutoff
+// compares submit times, which are business stamps, so it is taken from the
+// business clock.
+func (tm *TransactionManager) pruneSubmitTimes(ctx context.Context) {
+	now := time.Now() // realtime: prune rate limit is housekeeping
+	last := tm.lastSubmitTimePruneNano.Load()
+	if now.Sub(time.Unix(0, last)) < submitTimePruneInterval {
+		return
+	}
+	if !tm.lastSubmitTimePruneNano.CompareAndSwap(last, now.UnixNano()) {
+		return // another goroutine already claimed this window
+	}
+
+	// A fresh, short-lived context: the caller's Commit is about to return
+	// its own result regardless of this outcome, so this must not inherit a
+	// deadline or cancellation meant for the business transaction — and must
+	// not be allowed to hang indefinitely either.
+	pruneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if _, err := tm.pool.Exec(pruneCtx,
+		`DELETE FROM submit_times WHERE submit_time < $1`,
+		businessNow(tm.clock).Add(-submitTimeTTL)); err != nil {
+		slog.Warn("prune submit_times failed", "pkg", "postgres", "err", err)
+	}
 }
 
 // Rollback aborts the transaction.
@@ -388,10 +715,67 @@ func (tm *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (t
 		if err := verifyTenant(ctx, activeTenant, "GetSubmitTime", txID); err != nil {
 			return time.Time{}, err
 		}
-		return time.Time{}, fmt.Errorf("transaction not yet committed: %s", txID)
+		return time.Time{}, fmt.Errorf("%w (txID=%s)", spi.ErrTxNotCommitted, txID)
 	default:
+		return tm.getSubmitTimeFromTable(ctx, txID)
+	}
+}
+
+// getSubmitTimeFromTable answers a lookup that missed both in-process maps:
+// a transaction this node never began or committed, because it committed on
+// a different node, or because this node restarted since. The map is
+// node-local and dies with the process; the submit_times table (written
+// inside Commit, see stampCommitInstant) is the durable authority a lookup
+// routed anywhere, at any time after commit, resolves from.
+//
+// The row's own tenant_id is read unconditionally — the query is not scoped
+// to the caller's tenant — so that a cross-tenant caller is told "wrong
+// tenant" rather than the misleading "not found": verifyTenant runs against
+// whatever tenant actually owns the row, exactly like the committed and
+// active branches above run it against tenant state they already hold.
+// Reporting node-local ignorance as ErrTxNotFound instead of consulting the
+// table would be a wrong definitive answer, which this project's
+// correctness-over-availability design rejects.
+//
+// Role posture — this read requires a database role NOT subject to RLS.
+// Like every other pool-routed statement in this plugin it carries no
+// app.current_tenant GUC (set_config's is_local flag scopes that setting to a
+// transaction, so no non-transactional statement has ever carried it), and
+// submit_times has a tenant-isolation policy like every other table. That is
+// safe in the posture cyoda-go actually runs and supports: the application
+// connects as the table owner, RLS is ENABLEd but not FORCEd (migrate_test.go
+// pins both), and an owner bypasses every policy. A non-owner, RLS-subject
+// role is NOT a supported deployment today — see rls_test.go — and this
+// lookup is one of the reasons: under such a role
+// current_setting('app.current_tenant', true) is NULL on a pooled connection,
+// the policy admits no row, and this function would answer ErrTxNotFound for
+// a transaction that demonstrably committed. That is a wrong definitive
+// answer, not a degraded one, so the non-owner mode cannot be enabled by
+// changing this query: it needs the tenant set on the pool path for the whole
+// plugin (a pgxpool AfterConnect/BeforeAcquire hook) before any pool-routed
+// read can be trusted under RLS.
+func (tm *TransactionManager) getSubmitTimeFromTable(ctx context.Context, txID string) (time.Time, error) {
+	var tenantID string
+	var submit time.Time
+	// The table's primary key is (tenant_id, tx_id), not tx_id alone, so this
+	// WHERE tx_id = $1 is a query, not a key lookup. It's safe only because
+	// txID is a fresh UUID minted per Begin (see NewTransactionManager's
+	// uuids field) and collision across tenants is astronomically unlikely;
+	// LIMIT 1 makes that assumption explicit rather than relying on
+	// QueryRow's own "first row wins" behaviour to paper over a collision.
+	err := tm.pool.QueryRow(ctx,
+		`SELECT tenant_id, submit_time FROM submit_times WHERE tx_id = $1 LIMIT 1`,
+		txID).Scan(&tenantID, &submit)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("GetSubmitTime: %w", classifyError(err))
+	}
+	if err := verifyTenant(ctx, spi.TenantID(tenantID), "GetSubmitTime", txID); err != nil {
+		return time.Time{}, err
+	}
+	return submit, nil
 }
 
 // LookupTx exposes the registry lookup for use in tests and by the store
@@ -499,7 +883,7 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 	spID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 	spName := "sp_" + spID
 	if _, err := pgxTx.Exec(ctx, "SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
-		return "", fmt.Errorf("Savepoint: %w", err)
+		return "", tm.classifyTxError(txID, fmt.Errorf("Savepoint: %w", err))
 	}
 
 	state.PushSavepoint(spID)
@@ -534,7 +918,7 @@ func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID stri
 	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
-		return fmt.Errorf("RollbackToSavepoint: %w", err)
+		return tm.classifyTxError(txID, fmt.Errorf("RollbackToSavepoint: %w", err))
 	}
 	if err := state.RestoreSavepoint(savepointID); err != nil {
 		return fmt.Errorf("RollbackToSavepoint: %w", err)
@@ -565,12 +949,35 @@ func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string,
 	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "RELEASE SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
-		return fmt.Errorf("ReleaseSavepoint: %w", err)
+		return tm.classifyTxError(txID, fmt.Errorf("ReleaseSavepoint: %w", err))
 	}
 	if err := state.ReleaseSavepoint(savepointID); err != nil {
 		return fmt.Errorf("ReleaseSavepoint: %w", err)
 	}
 	return nil
+}
+
+// LostRace reports whether the transaction has already lost a write race.
+// PostgreSQL refuses the losing write itself — 40001 when a concurrent
+// committer changed the row, 40P01 for a deadlock victim — and classifyTxError
+// records that as the transaction's abort cause, which a rollback to a
+// savepoint keeps (see txState.RestoreSavepoint). So the answer is whether the
+// recorded cause is a concurrent writer. It issues no statement, so it answers
+// on the aborted transaction, and it changes nothing.
+//
+// Tenant isolation: rejects mismatched-tenant callers.
+func (tm *TransactionManager) LostRace(ctx context.Context, txID string) (bool, error) {
+	if _, ok := tm.registry.Lookup(txID); !ok {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return false, fmt.Errorf("LostRace: %w (txID=%s)", spi.ErrTxNotFound, txID)
+	}
+	if err := verifyTenant(ctx, state.tenantID, "LostRace", txID); err != nil {
+		return false, err
+	}
+	return isConcurrentWriterAbort(state.AbortCause()), nil
 }
 
 // lookupTenant returns the tenant recorded for a transaction, or false if
@@ -624,6 +1031,9 @@ func verifyTenant(ctx context.Context, txTenantID spi.TenantID, op string, txID 
 //   - statement_timeout (57014) → passed through unmarked, so it lands on the
 //     500-with-a-ticket path. Re-running a statement that just exceeded the
 //     ceiling will exceed it again; calling that retryable would be a lie.
+//
+// SQLSTATE classes 22, 23 and 42 carry spi.ErrStoreRejected: a deterministic
+// rejection, which a retry cannot clear.
 func classifyError(err error) error {
 	if err == nil {
 		return nil
@@ -647,6 +1057,9 @@ func classifyError(err error) error {
 // Reports false when no branch matched, so callers can decide for themselves
 // what to make of an error the server never answered.
 func classifySQLState(err error) (error, bool) {
+	if errors.Is(err, spi.ErrStoreRejected) {
+		return err, true // already classified
+	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		return err, false
@@ -669,6 +1082,12 @@ func classifySQLState(err error) (error, bool) {
 		slog.Warn("statement cancelled after exceeding the configured ceiling",
 			"pkg", "postgres", "setting", "statement_timeout", "err", err)
 		return err, true
+	case len(pgErr.Code) == 5 && (pgErr.Code[:2] == "22" || pgErr.Code[:2] == "23" || pgErr.Code[:2] == "42"):
+		// Data exception, integrity-constraint violation, syntax or access
+		// rule: the database will refuse the same statement again. The marker
+		// tells a caller that retries by default (the scheduler's bookkeeping)
+		// to stop. The unique_claims_uq case above keeps its own sentinel.
+		return fmt.Errorf("%w: %w", spi.ErrStoreRejected, err), true
 	}
 	return err, false
 }
@@ -678,21 +1097,80 @@ func classifySQLState(err error) (error, bool) {
 // server-side and Commit/Rollback will never run to tidy up after it — so the
 // pgx handle and the per-transaction bookkeeping are reclaimed here instead.
 //
-// It also records a cancelled statement on the txState. PostgreSQL answers every
-// later statement in an aborted transaction — Commit's own probe included — with
-// 25P02, which says only "something earlier failed"; without this the commit
-// would report the ceiling as a retryable conflict.
+// It also records on the txState what aborted the transaction, when that is a
+// cancelled statement or a concurrent writer (serialization failure, deadlock).
+// PostgreSQL answers every later statement in an aborted transaction — Commit's
+// own probe included — with 25P02, which says only "something earlier failed".
+// The record is what lets that answer be read correctly: a ceiling stays a
+// ceiling at Commit rather than becoming a retryable conflict, and a statement
+// issued after a concurrent writer won — by Commit or by any caller that keeps
+// going — is reported as spi.ErrTxAborted (a conflict that is not about the
+// statement itself), not as an unclassified fault.
 func (tm *TransactionManager) classifyTxError(txID string, err error) error {
 	classified := classifyError(err)
 	if isIdleInTxAbort(classified) {
 		tm.discardTx(txID)
 		return classified
 	}
-	if isStatementTimeout(classified) {
-		if state, ok := tm.lookupTxState(txID); ok {
-			state.RecordAbort(classified)
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return classified
+	}
+	switch {
+	case isStatementTimeout(classified), isConcurrentWriterAbort(classified):
+		state.RecordAbort(classified)
+	case isInFailedTx(classified):
+		if cause := state.AbortCause(); isConcurrentWriterAbort(cause) {
+			return fmt.Errorf("%w: %w; this statement: %w", spi.ErrTxAborted, cause, classified)
 		}
 	}
+	return classified
+}
+
+// abortedCommitError reads a Commit statement's 25P02 in_failed_sql_transaction,
+// reporting false for any other error.
+//
+// 25P02 says only "something earlier in this transaction failed". When that
+// something was a ceiling or a concurrent writer, classifyTxError recorded it,
+// and Commit reports the recorded cause: that keeps a cancelled statement off
+// the retryable-conflict path — a retry would cancel again — and keeps a
+// conflict a conflict. With nothing recorded, the abort is read as a conflict.
+func abortedCommitError(state *txState, err error) (error, bool) {
+	if !isInFailedTx(err) {
+		return nil, false
+	}
+	if cause := state.AbortCause(); cause != nil {
+		return fmt.Errorf("Commit: transaction aborted: %w", cause), true
+	}
+	return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, err), true
+}
+
+// isConcurrentWriterAbort reports whether err is PostgreSQL aborting the
+// transaction because a concurrent writer won: serialization_failure (40001) or
+// deadlock_detected (40P01). classifyError maps both to spi.ErrConflict.
+func isConcurrentWriterAbort(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		(pgErr.Code == pgerrcode.SerializationFailure || pgErr.Code == pgerrcode.DeadlockDetected)
+}
+
+// isInFailedTx reports whether err is 25P02 in_failed_sql_transaction: the
+// statement was refused because an earlier one aborted the transaction.
+func isInFailedTx(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction
+}
+
+// classifyCommitOutcome is classifyCommitError without the manager's
+// bookkeeping, for the COMMIT of a transaction the manager does not track: a
+// non-transactional write's own (save, Delete, CompareAndSave). The same rule
+// holds there: a torn socket on COMMIT leaves the outcome in doubt, so only
+// what the server said is classified.
+func classifyCommitOutcome(err error) error {
+	if err == nil {
+		return nil
+	}
+	classified, _ := classifySQLState(err)
 	return classified
 }
 
@@ -711,7 +1189,7 @@ func (tm *TransactionManager) classifyCommitError(txID string, err error) error 
 	if err == nil {
 		return nil
 	}
-	classified, _ := classifySQLState(err)
+	classified := classifyCommitOutcome(err)
 	var pgErr *pgconn.PgError
 	if errors.As(classified, &pgErr) && pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout {
 		tm.discardTx(txID)

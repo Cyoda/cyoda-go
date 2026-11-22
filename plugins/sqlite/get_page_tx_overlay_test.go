@@ -5,7 +5,8 @@ import (
 	"sort"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // Every in-tx page equals the corresponding slice of the full in-tx Iterate
@@ -16,6 +17,7 @@ func TestGetPageTx_PagesEqualIterateSlices_RecordsPageOnly(t *testing.T) {
 	f, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-ovl", "u1", spi.PrincipalUser)
 	ref := spi.ModelRef{EntityName: "m-pg-ovl", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	store, _ := f.EntityStore(ctx)
 	seedN(t, store, ctx, ref, 12) // e00..e11
 

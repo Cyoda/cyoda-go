@@ -3,6 +3,7 @@ topic: models
 title: "models — entity model schema system"
 stability: stable
 see_also:
+  - design
   - crud
   - workflows
   - search
@@ -10,6 +11,8 @@ see_also:
   - errors.MODEL_ALREADY_LOCKED
   - errors.MODEL_ALREADY_UNLOCKED
   - errors.MODEL_HAS_ENTITIES
+  - errors.MODEL_NOT_LOCKED
+  - errors.MODEL_ADMIN_IN_JOINED_TRANSACTION
   - errors.INVALID_CHANGE_LEVEL
   - errors.VALIDATION_FAILED
   - errors.UNIQUE_VIOLATION
@@ -47,13 +50,15 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`).
 
 A model is a named, versioned schema registered per tenant. Every entity in the system is an instance of exactly one model. Models are identified by `(entityName, modelVersion)`. The model ID is a deterministic UUID v5 derived from that key: `UUID.newSHA1(NameSpaceURL, "{entityName}.{modelVersion}")`.
 
-Models have two lifecycle states: `UNLOCKED` and `LOCKED`. A `LOCKED` model blocks further imports. An `UNLOCKED` model accepts re-import and schema merging. Entities can only be created against a `LOCKED` model. Deletion is blocked while any entities reference the model.
+Models have two lifecycle states: `UNLOCKED` and `LOCKED`. A `LOCKED` model blocks further imports. An `UNLOCKED` model accepts re-import and schema merging. Entities can only be created against a `LOCKED` model. Deletion requires an `UNLOCKED` model, and a model is unlocked only when it has no entities.
 
 Schema inference is additive: importing sample data against an existing model merges the incoming schema with the stored one. The model's `changeLevel` field controls which structural changes are allowed during entity ingestion on a locked model.
 
 **Sample data is a document, or a collection of documents.** A JSON object is one sample document. A JSON array is several — each element must itself be an object, and the derived model is their merge, the same result successive imports produce. Any other body (a scalar, an array holding a non-object) is rejected with `400 VALIDATION_FAILED`, naming the offending element.
 
-**A value's kind must be one the field declares.** A field declared as a scalar accepts a scalar; declared as an array, an array; declared as an object, an object. A value of any other kind is rejected with `400`, at every depth including array elements. On a model with no `changeLevel` (and on PATCH) that is `VALIDATION_FAILED` — `expected scalar, got array`, naming every kind the field does declare. With a `changeLevel` set the write also proposes a schema change, so the answer turns on the level: giving a path a kind it does not declare is a `STRUCTURAL` change, refused below that level and accepted at it.
+**An entity document's values sit at most 255 levels below its root.** The root is level 0 and a scalar counts as a level, so a value 256 or more levels down is refused with `400 VALIDATION_FAILED` (`validation depth exceeded (max 256)`) on every write, whatever the `changeLevel`. Objects and arrays that nest more than 10 000 deep, one inside another, are not read as JSON at all: the document is refused before it is validated, with `400 BAD_REQUEST` on HTTP and `InvalidArgument` on gRPC. That depth counts from the root of the request body, of each item's `payload` on an HTTP collection write, and on gRPC of the event's data.
+
+**A value's kind must be one the field declares.** A field declared as a scalar accepts a scalar; declared as an array, an array; declared as an object, an object. A value of any other kind is rejected with `400`, at every depth including array elements. On a model with no `changeLevel` (and on PATCH) that is `VALIDATION_FAILED` — `expected scalar, got array`, naming every kind the field does declare. With a `changeLevel` set the write also proposes a schema change, so the answer turns on the level: giving a path a kind it does not declare is a `STRUCTURAL` change, refused below that level and accepted at it. The root is the exception: an entity's data is a JSON object at every `changeLevel`, and a write whose data is `null`, a scalar or an array is refused with `400 VALIDATION_FAILED` (`expected object, got null`) and changes neither the model nor the entity.
 
 A field may declare more than one kind — observed in each while the model is `UNLOCKED` (successive imports, or one import of several sample documents), or added by a write at `STRUCTURAL`. Every declared kind is admissible at every `changeLevel`, and the export names each branch.
 
@@ -75,6 +80,8 @@ This applies to both paths that establish a model's field set: sample-data impor
 
 ## ENDPOINTS
 
+Model administration never runs inside a transaction. The operations below that change a model — import, delete, change level, lock, unlock, unique keys, and the workflow import of `cyoda help workflows` — refuse a request that carries a transaction token (`X-Tx-Token`, or the `tx-token` gRPC metadata a compute member echoes on a callback) with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION`, before the token is verified and before anything is read or written. The read-only operations — list, export, validate — are not administration and take a token like any other request. A processor that needs to administer a model makes the request without the token. See `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION`.
+
 **GET /api/model/**
 
 List all models for the authenticated tenant.
@@ -90,7 +97,7 @@ Import or update a model schema from sample data. Body size limit: 10 MiB.
 - `entityName` (path): string — model name
 - `modelVersion` (path): int32 — model version number
 
-If the model does not exist, it is created with state `UNLOCKED`. If it exists and is `UNLOCKED`, the incoming schema is merged (additive). If it exists and is `LOCKED`, returns `409 CONFLICT`.
+If the model does not exist, it is created with state `UNLOCKED`. If it exists and is `UNLOCKED`, the incoming schema is merged (additive). If it exists and is `LOCKED`, returns `409 MODEL_ALREADY_LOCKED`. A merge that would leave a declared unique key over a path that is not a scalar leaf — sample data that puts an object or array at a keyed field — returns `422 INVALID_UNIQUE_KEY_DEFINITION` and changes nothing.
 
 Response: `200 OK`, `application/json`, UUID string — the model ID.
 
@@ -106,7 +113,7 @@ Response: `200 OK`, `application/json` — format depends on converter.
 
 **POST /api/model/validate/{entityName}/{modelVersion}**
 
-Validate a JSON payload against the model's schema. Returns a result object, not an HTTP error, on validation failure.
+Validate a JSON payload against the model's schema. Returns a result object, not an HTTP error, on validation failure. The payload is read as entity create reads it: one that is not JSON, has anything after its value, writes a member twice in one object or holds text no store can hold is refused with `400 BAD_REQUEST`.
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
@@ -117,13 +124,15 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 **DELETE /api/model/{entityName}/{modelVersion}**
 
-Delete a model. Blocked if the model is `LOCKED` or if any entities reference it (entity count > 0).
+Delete a model. Refused with `409 MODEL_ALREADY_LOCKED` if the model is `LOCKED`: unlock it first, which requires that it has no entities.
 
-Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success. `409 MODEL_ALREADY_LOCKED` if the model is locked; `409 MODEL_HAS_ENTITIES` if entities reference it.
+Response: `200 OK`, `application/json`, `EntityModelActionResultDto` on success. `409 MODEL_ALREADY_LOCKED` if the model is locked.
 
 **POST /api/model/{entityName}/{modelVersion}/changeLevel/{changeLevel}**
 
-Set or update the change level on a model. Meaningful for locked models; unlocked models always allow all changes.
+Set or update the change level on a model. The level governs a locked model; an unlocked model always allows all changes.
+
+Set the level when you define the model, before you lock it. A change on a locked model takes effect on each node as that node's model cache picks it up: through the cache invalidation broadcast, normally within milliseconds, or when `CYODA_MODEL_CACHE_LEASE` ends if the broadcast is lost. Until then a node keeps admitting or refusing extensions by the old level, and an extension computed under the old level can commit just after the change.
 
 - `changeLevel` (path): `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, or `STRUCTURAL`
 
@@ -138,13 +147,15 @@ Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 **PUT /api/model/{entityName}/{modelVersion}/lock**
 
-Lock a model. The model must be `UNLOCKED`. Returns `409 CONFLICT` if already locked.
+Lock a model. The model must be `UNLOCKED`. Returns `409 MODEL_ALREADY_LOCKED` if already locked.
 
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
 **PUT /api/model/{entityName}/{modelVersion}/unlock**
 
-Unlock a model. The model must be `LOCKED` and have zero associated entities. Returns `409 CONFLICT` if entities exist or model is not locked.
+Unlock a model. The model must be `LOCKED` and have zero associated entities. Returns `409 MODEL_HAS_ENTITIES` if entities exist, and `409 MODEL_ALREADY_UNLOCKED` if the model is not locked. The unlocked model keeps every field that entity writes added while it was locked.
+
+Unlock requires that the model has no entities. Stop writes to the model before you unlock it. See LIFECYCLE.
 
 Response: `200 OK`, `application/json`, `EntityModelActionResultDto`.
 
@@ -163,7 +174,7 @@ Request body (`application/json`):
 }
 ```
 
-- `uniqueKeys` — array of key definitions; `[]` clears all keys.
+- `uniqueKeys` — array of key definitions, required; `[]` clears all keys. A body without it, or with `null`, is refused and changes nothing.
 - `id` — stable string identifier, unique within the model.
 - `fields` — ordered array of scalar leaf field paths (dotted paths matching the model's inferred schema). Array, object, and wildcard paths are rejected.
 
@@ -171,11 +182,14 @@ Validation is immediate: field paths must be known scalar leaves in the model's 
 
 Returns `200 OK` with `EntityModelActionResultDto` on success.
 
-- `422 COMPOSITE_KEY_UNSUPPORTED` — the active storage backend does not support composite unique keys.
+- `400 BAD_REQUEST` — the body is not JSON, has a member it does not declare (at the top level or in a key), or has no `uniqueKeys` (absent or `null`).
+- `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` — the request carries a transaction token; see the administration note above.
+- `404 MODEL_NOT_FOUND` — no model with this name and version.
 - `409 MODEL_ALREADY_LOCKED` — model is not in `UNLOCKED` state.
-- `422 INVALID_UNIQUE_KEY_DEFINITION` — a field path references a non-scalar/unknown/array field, a key `id` is duplicated, or `fields` is empty.
+- `422 COMPOSITE_KEY_UNSUPPORTED` — the active storage backend does not support composite unique keys.
+- `422 INVALID_UNIQUE_KEY_DEFINITION` — a key's `id` is empty or missing or duplicated, its `fields` is empty or missing or names a field twice, or a field path references a non-scalar/unknown/array field.
 
-**Transactional ordering.** When one transaction (e.g. a workflow) both frees a unique-key value — by deleting or re-keying its holder — and claims it on another entity, free it before claiming. Free-then-claim works on every backend; the reverse is rejected on write-time backends (PostgreSQL) and accepted on commit-time ones (in-memory, SQLite), so free-before-claim for portable behavior.
+**Enforcement.** Keys are checked when a transaction commits, on the entities as the transaction leaves them, with the unique-key definitions of the stored model (they change only as LIFECYCLE says). A value an entity frees in the same transaction — by being deleted or re-keyed — is free for another entity of that transaction, in either order: two entities can swap their key values, and a chain of moves commits, as long as the final entities are unique. A value claimed by two entities of one transaction, or held by an entity outside it, refuses the commit with `409 UNIQUE_VIOLATION`; a final entity that fills a key in part refuses it with `422 INVALID_UNIQUE_KEY`. A `COMMIT_BEFORE_DISPATCH` processor commits the transaction it runs in before its callout, and the request goes on in a new one (`cyoda help workflows`); each of these commits is checked on the entities as it leaves them. A request body that fills a key in part is refused with `422` before its workflow runs.
 
 **GET /api/model/{entityName}/{modelVersion}/workflow/export**
 
@@ -330,23 +344,54 @@ Transitions:
 - `UNLOCKED` → `LOCKED` via `PUT /model/{name}/{version}/lock`
 - `LOCKED` → `UNLOCKED` via `PUT /model/{name}/{version}/unlock` (only when entity count is zero)
 
-The `changeLevel` field controls schema evolution on locked models. When set, entity ingestion that introduces new structure triggers an additive schema extension (delta computed via `schema.Diff`, appended via `ModelStore.ExtendSchema`, committed with the entity transaction).
+The API keeps these rules:
 
-Entity ingestion here includes data returned by a workflow processor, not just data sent by a client. A processor that writes a field the model does not declare needs `changeLevel` set exactly as a client would.
+- An entity is created only in a `LOCKED` model: a create refuses a model that is not `LOCKED` with `409 MODEL_NOT_LOCKED`.
+- A model is unlocked only when it has no entities: unlock counts them and refuses `409 MODEL_HAS_ENTITIES`.
+- A `LOCKED` model is never deleted or re-imported, and its unique-key definitions do not change: delete, import and the unique-key change refuse it with `409 MODEL_ALREADY_LOCKED`. While `LOCKED`, a model changes only through its change level and schema extensions.
+
+A model's state reaches the other nodes eventually. Each node keeps only `LOCKED` models in its model cache, which an invalidation broadcast updates (normally within milliseconds) or, if the broadcast is lost, `CYODA_MODEL_CACHE_LEASE` expires. A model a node reads as not `LOCKED` therefore comes from storage, and a create that reads it so reads it once more before it refuses with `409 MODEL_NOT_LOCKED`, so a read that raced the lock does not refuse it.
+
+Run model administration — import, lock, unlock, delete, change level, unique-key definitions — from one place, such as a deploy step, not concurrently on the same model, and not while writes to the model are in flight. Register and lock a model once, from one caller, rather than from every replica of an application at start-up, and stop writes to a model before you unlock it.
+
+Change a model's state or its unique-key definitions (`uniqueKeys`) — import, lock, unlock, unique-key change — only while no transaction that will write entities of that model is open. In practice, deploy a model before anything ingests data into it, and change it only while nothing writes to it.
+
+## SCHEMA EXTENSION
+
+The `changeLevel` field controls schema evolution on locked models. When it is set and an entity write brings structure the model does not have and the level permits, the write extends the model: it computes an additive change and commits it to the model before the write's own entity changes commit. A write whose data fits the schema extends nothing and does no extra work.
+
+Entity ingestion here includes data returned by a workflow processor, not just data sent by a client. A processor that writes a field the model does not declare needs `changeLevel` set exactly as a client would, and its extension behaves exactly as described here.
+
+**An extension commits on its own.** It is committed in a short transaction of its own, never in the transaction of the write that brought it. Two writes that extend the same model never conflict over it: neither is answered `409 CONFLICT` because of the other's extension; at most the second waits briefly for the first. An extension the schema already holds writes nothing.
+
+**When it is visible.** When a write that extends returns `2xx`, the node that ran the write has the new schema. (On the in-tree backends a write carrying a transaction token is forwarded to the node that owns the transaction and runs there; see `cyoda help cluster`.) Another node has the new schema when the model cache invalidation broadcast arrives (normally within milliseconds), or, if the broadcast is lost, when `CYODA_MODEL_CACHE_LEASE` ends. Other clients may see the new field earlier, before the write returns.
+
+What follows from this:
+
+- A new field can be visible to other clients — in the model export, in search path validation, in criteria — before the write that brought it commits. A query on that field finds nothing from that write until it commits.
+- If the write fails after its extension — a workflow or processor error, a unique-key violation, a conflict, the client cancelling, a crash — the model keeps the field. Removing it takes unlocking the model (which needs zero entities), deleting it and importing it again: an import into an existing model merges.
+- A write whose own data fills a composite unique key only in part, or puts a value that is not a scalar in a key's field, is refused with `422 INVALID_UNIQUE_KEY` before it extends the model. A collection create checks every item's key before any item's schema is checked. A collection update checks each item's key before that item's schema is checked: if a later item is refused, an extension an earlier item made stays, as for any failed write. A partial key in data a workflow processor returns is found only when the entity is saved, after the extension.
+- An extension made by a compute-node callback that joined a transaction stays even if that transaction rolls back, or if the callback's work is undone: an `ASYNC_NEW_TX` processor that fails discards its callbacks' entity writes, not their extensions.
+- Writes that bring different types for one field leave the model admitting both.
+- A failed request may still have extended the model. Retrying it is safe: an extension the schema already holds writes nothing.
+- On another node, until the broadcast arrives, the older schema is in use. A search or criterion that names a path the node does not know reads the model again once and normally finds the field. A query that does not refuse can silently miss the new field or a widened type — `code = 42` after `code` was widened from string to string-or-integer finds no integer match there — and a write, PATCH or validation there can be refused as if the field did not exist, or extend again, which writes nothing.
+- On PostgreSQL a write that extends waits for one of the model pool's extension slots (`CYODA_POSTGRES_MODEL_CONNS`, `cyoda help config database`). A client-set `transactionTimeoutMillis` keeps running while it waits, and on the writes that hold an entity transaction — an update, a collection update, a transition whose processor returns data — so does `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`, because that transaction's connection is idle meanwhile.
 
 ## ERRORS
 
 - `errors.MODEL_NOT_FOUND` — `404` — model does not exist for the given name and version
 - `errors.MODEL_ALREADY_LOCKED` — `409` — re-import, relock, or delete attempted on a model already in `LOCKED` state
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — unlock attempted on a model already in `UNLOCKED` state
-- `errors.MODEL_HAS_ENTITIES` — `409` — unlock or delete blocked because entities of the model exist (`entityCount` in `properties`)
+- `errors.MODEL_HAS_ENTITIES` — `409` — unlock refused because entities of the model exist (`entityCount` in `properties`)
+- `errors.MODEL_NOT_LOCKED` — `409` — an entity create names a model that is not `LOCKED`
+- `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — a model-changing operation carries a transaction token; model and workflow administration never runs inside a transaction
 - `errors.INVALID_CHANGE_LEVEL` — `400` — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL` (`entityName`, `entityVersion`, `suppliedValue`, `validValues` in `properties`)
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed (static analysis); sample data that is neither a document nor a collection of documents; a field name that is not addressable
 - `errors.BAD_REQUEST` — `400` — unsupported converter, or a malformed body
 - `errors.UNIQUE_VIOLATION` — `409` — entity write rejected because it would duplicate a composite unique key value-set held by another live entity
 - `errors.INVALID_UNIQUE_KEY` — `422` — entity write rejected because a key is partially filled (all-or-nothing rule), the numeric value exceeded the allowed precision bound, or a key field path resolves to a non-scalar value
 - `errors.COMPOSITE_KEY_UNSUPPORTED` — `422` — composite unique key declared on a backend that does not support the feature
-- `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — key declaration rejected: non-scalar or unknown field path, duplicate key `id`, or empty `fields` array
+- `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — model administration only: a key declaration with a non-scalar or unknown field path, a duplicate key `id` or an empty `fields` array, or a re-import that would make a keyed field non-scalar. An entity write is never answered with it: a write that puts a non-scalar value in a keyed field is refused with `INVALID_UNIQUE_KEY`
 
 ## EXAMPLES
 
@@ -354,7 +399,7 @@ Entity ingestion here includes data returned by a workflow processor, not just d
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"category":"physics","year":"2024","laureates":[{"firstname":"John","surname":"Hopfield","id":"1037"}]}' \
   "http://localhost:8080/api/model/import/JSON/SAMPLE_DATA/nobel-prize/1"
@@ -362,33 +407,33 @@ curl -s -X POST \
 
 Response: `"1d1e1b10-1155-11f0-bcd5-ae468cd3ed16"`
 
+**Set change level (allow structural evolution once the model is locked):**
+
+```
+curl -s -X POST \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/model/nobel-prize/1/changeLevel/STRUCTURAL"
+```
+
 **Lock the model:**
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1/lock"
-```
-
-**Set change level (allow structural evolution on locked model):**
-
-```
-curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8080/api/model/nobel-prize/1/changeLevel/STRUCTURAL"
 ```
 
 **List all models:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/"
 ```
 
 **Export as SIMPLE_VIEW:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/export/SIMPLE_VIEW/nobel-prize/1"
 ```
 
@@ -396,7 +441,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"category":"physics","year":"2024"}' \
   "http://localhost:8080/api/model/validate/nobel-prize/1"
@@ -406,12 +451,13 @@ curl -s -X POST \
 
 ```
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1"
 ```
 
 ## SEE ALSO
 
+- design
 - crud
 - workflows
 - search
@@ -419,6 +465,7 @@ curl -s -X DELETE \
 - errors.MODEL_ALREADY_LOCKED
 - errors.MODEL_ALREADY_UNLOCKED
 - errors.MODEL_HAS_ENTITIES
+- errors.MODEL_NOT_LOCKED
 - errors.INVALID_CHANGE_LEVEL
 - errors.VALIDATION_FAILED
 - errors.UNIQUE_VIOLATION

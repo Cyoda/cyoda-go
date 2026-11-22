@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // In-tx DeleteAll stages every committed id of the model and every buffered
@@ -12,6 +12,7 @@ import (
 // id-only rewrite; the rewrite itself is reviewed, not measured.)
 func TestTxDeleteAll_StagesCommittedAndBuffered(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-it"), spi.ModelRef{EntityName: "m-dall", ModelVersion: "1"}, spi.ModelRef{EntityName: "m-keep", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-it"))
 	ref := spi.ModelRef{EntityName: "m-dall", ModelVersion: "1"}
 	other := spi.ModelRef{EntityName: "m-keep", ModelVersion: "1"}
@@ -26,7 +27,7 @@ func TestTxDeleteAll_StagesCommittedAndBuffered(t *testing.T) {
 	if err := store.DeleteAll(txCtx, ref); err != nil {
 		t.Fatalf("DeleteAll: %v", err)
 	}
-	if n, _ := store.Count(txCtx, ref); n != 0 {
+	if n, _ := store.Count(txCtx, ref, nil); n != 0 {
 		t.Fatalf("in-tx Count after DeleteAll = %d, want 0", n)
 	}
 	if err := tm.Commit(txCtx, txID); err != nil {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 	"go.opentelemetry.io/otel"
 )
 
@@ -23,10 +23,12 @@ func (p *plugin) ConfigVars() []spi.ConfigVar {
 		{Name: "CYODA_POSTGRES_AUTO_MIGRATE", Description: "Run embedded SQL migrations on startup", Default: "true"},
 		{Name: "CYODA_POSTGRES_STATEMENT_TIMEOUT", Description: "Maximum run time for a single SQL statement; 0 disables", Default: "5m"},
 		{Name: "CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT", Description: "Maximum time a connection may sit idle inside an open transaction; 0 disables", Default: "5m"},
-		{Name: "CYODA_POSTGRES_ACQUIRE_TIMEOUT", Description: "Maximum wait for a free pooled connection before failing with 503; 0 disables", Default: "10s"},
+		{Name: "CYODA_POSTGRES_ACQUIRE_TIMEOUT", Description: "Maximum wait for a free pooled connection before failing with 503, for an operation that opens a transaction or needs a second connection inside one; a statement outside a transaction waits instead; 0 disables", Default: "10s"},
 		{Name: "CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT", Description: "Maximum lock wait during schema migration; 0 disables", Default: "5m"},
 		{Name: "CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", Description: "Statement ceiling for async search scans; 0 disables", Default: "30m"},
-		{Name: "CYODA_SCHEMA_SAVEPOINT_INTERVAL", Description: "Rows per savepoint during schema extension", Default: "64"},
+		{Name: "CYODA_POSTGRES_SCHEDULER_CONNS", Description: "Connections in the scheduler's own pool (claims, run bookkeeping, async-search heartbeats); at least 2. The scheduler heartbeat has one more of its own", Default: "10"},
+		{Name: "CYODA_POSTGRES_MODEL_CONNS", Description: "Connections in the model store's own pool (model reads, schema extensions, model administration); extensions use at most half; at least 2", Default: "8"},
+		{Name: "CYODA_SCHEMA_SAVEPOINT_INTERVAL", Description: "A model's schema-extension deltas per savepoint; bounds how many deltas a read of the model folds", Default: "64"},
 	}
 }
 
@@ -50,10 +52,22 @@ func (p *plugin) NewFactory(
 		return nil, err
 	}
 
-	factory := newStoreFactory(pool, cfg)
-	factory.initTransactionManager(&defaultUUIDGenerator{})
-	unregister, err := registerPoolMetrics(otel.Meter(meterName), pool)
+	factory := newStoreFactory(pool, cfg, spi.ApplyFactoryOptions(opts).Clock())
+	if err := factory.openSchedulerPools(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("postgres: %w", err)
+	}
+	factory.models, err = newModelPool(ctx, pool.Config(), cfg.ModelConns, cfg.AcquireTimeout)
 	if err != nil {
+		factory.closeSchedulerPools()
+		pool.Close()
+		return nil, fmt.Errorf("postgres: %w", err)
+	}
+	factory.initTransactionManager(&defaultUUIDGenerator{})
+	unregister, err := registerPoolMetrics(otel.Meter(meterName), pool, &factory.sched, factory.openModelPoolOrNil)
+	if err != nil {
+		factory.closeSchedulerPools()
+		factory.models.close()
 		pool.Close()
 		return nil, fmt.Errorf("postgres: %w", err)
 	}

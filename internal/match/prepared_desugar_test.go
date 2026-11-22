@@ -3,9 +3,9 @@ package match_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 
-	"github.com/cyoda-platform/cyoda-go/internal/match"
+	"github.com/cyoda/cyoda-go/internal/match"
 )
 
 // deepChainCondition builds a chain of depth nested AND-groups, each

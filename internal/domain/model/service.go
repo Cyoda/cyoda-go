@@ -11,11 +11,14 @@ import (
 	"strings"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/exporter"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	"github.com/cyoda/cyoda-go/internal/cluster/modelcache"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/exporter"
+	"github.com/cyoda/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // classifyGetErr maps ModelStore.Get errors to AppError: genuine not-found
@@ -46,8 +49,9 @@ func classifyGetErr(verb string, entityName string, ver int32, err error) *commo
 // json.UseNumber decoding, or a Go type schema.Describe's traversal never
 // produces), not the tenant's — its own text names a Go decoding instruction
 // or a %T-formatted Go type, neither of which belongs in a 4xx body. Every
-// production ingress into schema.Describe decodes with json.UseNumber (see
-// UnsupportedValueError's own doc comment), so this is unreachable today;
+// production ingress into schema.Describe keeps numbers as json.Number
+// (json.UseNumber or strictjson.PreserveNumbers; see UnsupportedValueError's
+// own doc comment), so this is unreachable today;
 // routing it to 5xx-with-ticket here mirrors ingest.ValidateOrExtend's
 // identical routing for the same error on the entity-write door, so the
 // classification cannot drift between the two doors that both funnel into
@@ -109,22 +113,20 @@ func parseVersion(v string) int32 {
 	return int32(n)
 }
 
-// getModelFresh returns the model descriptor, bypassing any per-request
-// cache layer when the store supports RefreshAndGet. In multi-node
-// cluster deployments this eliminates a stale-cache race window
-// between a peer's mutation and its gossip-borne invalidation.
-// Admin-path gating reads (ImportModel, LockModel, UnlockModel,
-// DeleteModel, SetChangeLevel) use this; routine display/listing
-// reads (ExportModel, ListModels, ValidateModel) keep the cache for
-// throughput — eventual consistency is acceptable for those paths.
-func getModelFresh(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	type refresher interface {
-		RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error)
+// modelLockedErr is the 409 for a change that needs an UNLOCKED model and found
+// it LOCKED.
+func modelLockedErr(action, entityName string, ver int32) *common.AppError {
+	appErr := common.Operational(
+		http.StatusConflict,
+		common.ErrCodeModelAlreadyLocked,
+		fmt.Sprintf("%s entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", action, entityName, ver))
+	appErr.Props = map[string]any{
+		"entityName":    entityName,
+		"entityVersion": ver,
+		"expectedState": "UNLOCKED",
+		"actualState":   "LOCKED",
 	}
-	if r, ok := store.(refresher); ok {
-		return r.RefreshAndGet(ctx, ref)
-	}
-	return store.Get(ctx, ref)
+	return appErr
 }
 
 // ImportModel imports a model from sample data, merging with any existing schema.
@@ -145,9 +147,11 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	// can briefly serve a stale LOCKED descriptor in the window between a
 	// peer's delete and its gossip-borne invalidation. Admin operations
 	// are low-frequency, so one forced round-trip is fine.
-	existing, err := getModelFresh(ctx, store, ref)
-	if err != nil {
-		existing = nil
+	// Only not-found means no model: a read that fails would otherwise skip the
+	// locked-model refusal below and save over the stored model.
+	existing, err := modelcache.GetFresh(ctx, store, ref)
+	if err != nil && !errors.Is(err, spi.ErrNotFound) {
+		return nil, common.Internal("failed to import model", err)
 	}
 
 	if existing != nil && existing.State == spi.ModelLocked {
@@ -187,7 +191,7 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	desc := &spi.ModelDescriptor{
 		Ref:        ref,
 		State:      spi.ModelUnlocked,
-		UpdateDate: time.Now(),
+		UpdateDate: h.clock.Now(),
 		Schema:     schemaBytes,
 	}
 	if existing != nil {
@@ -302,8 +306,8 @@ func (h *Handler) LockModel(ctx context.Context, entityName, modelVersion string
 	ref := modelRef(entityName, ver)
 
 	// Admin-path gating read — bypass the per-request cache; see
-	// getModelFresh for the multi-node rationale.
-	desc, err := getModelFresh(ctx, store, ref)
+	// modelcache.GetFresh for the multi-node rationale.
+	desc, err := modelcache.GetFresh(ctx, store, ref)
 	if err != nil {
 		return nil, classifyGetErr("lock model", entityName, ver, err)
 	}
@@ -312,17 +316,7 @@ func (h *Handler) LockModel(ctx context.Context, entityName, modelVersion string
 	}
 
 	if desc.State == spi.ModelLocked {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelAlreadyLocked,
-			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"expectedState": "UNLOCKED",
-			"actualState":   "LOCKED",
-		}
-		return nil, appErr
+		return nil, modelLockedErr("cannot process", entityName, ver)
 	}
 
 	if err := store.Lock(ctx, ref); err != nil {
@@ -346,8 +340,8 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 	ref := modelRef(entityName, ver)
 
 	// Admin-path gating read — bypass the per-request cache; see
-	// getModelFresh for the multi-node rationale.
-	desc, err := getModelFresh(ctx, modelStore, ref)
+	// modelcache.GetFresh for the multi-node rationale.
+	desc, err := modelcache.GetFresh(ctx, modelStore, ref)
 	if err != nil {
 		return nil, classifyGetErr("unlock model", entityName, ver, err)
 	}
@@ -374,7 +368,7 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	count, err := entityStore.Count(ctx, ref)
+	count, err := entityStore.Count(ctx, ref, nil)
 	if err != nil {
 		return nil, common.Internal("failed to count entities", err)
 	}
@@ -401,7 +395,9 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 	}, nil
 }
 
-// DeleteModel deletes a model. Blocked if model is locked or entities exist.
+// DeleteModel deletes a model. Blocked if the model is locked. It counts no
+// entities: a model with entities is locked, because unlock refuses a model
+// that has entities.
 func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion string) error {
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {
@@ -412,8 +408,8 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 	ref := modelRef(entityName, ver)
 
 	// Admin-path gating read — bypass the per-request cache; see
-	// getModelFresh for the multi-node rationale.
-	desc, err := getModelFresh(ctx, modelStore, ref)
+	// modelcache.GetFresh for the multi-node rationale.
+	desc, err := modelcache.GetFresh(ctx, modelStore, ref)
 	if err != nil {
 		return classifyGetErr("delete model", entityName, ver, err)
 	}
@@ -422,39 +418,7 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 	}
 
 	if desc.State == spi.ModelLocked {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelAlreadyLocked,
-			fmt.Sprintf("cannot delete entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"expectedState": "UNLOCKED",
-			"actualState":   "LOCKED",
-		}
-		return appErr
-	}
-
-	entityStore, err := h.factory.EntityStore(ctx)
-	if err != nil {
-		return common.Internal("failed to access entity store", err)
-	}
-
-	count, err := entityStore.Count(ctx, ref)
-	if err != nil {
-		return common.Internal("failed to count entities", err)
-	}
-	if count > 0 {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelHasEntities,
-			fmt.Sprintf("cannot delete: %d entities exist", count))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"entityCount":   count,
-		}
-		return appErr
+		return modelLockedErr("cannot delete", entityName, ver)
 	}
 
 	if err := modelStore.Delete(ctx, ref); err != nil {
@@ -515,11 +479,14 @@ func (h *Handler) ValidateModel(ctx context.Context, entityName, modelVersion st
 		return common.Internal("failed to unmarshal schema", err)
 	}
 
+	// The data is read as entity create reads it, so validate never calls
+	// valid what create refuses.
+	if appErr := ingest.RejectUnstorable(data); appErr != nil {
+		return appErr
+	}
 	var parsedData any
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	if err := dec.Decode(&parsedData); err != nil {
-		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to parse request body")
+	if err := strictjson.Decode(data, &parsedData, strictjson.PreserveNumbers); err != nil {
+		return common.InvalidBody(err)
 	}
 
 	validationErrors := schema.Validate(modelNode, parsedData)
@@ -559,8 +526,8 @@ func (h *Handler) SetChangeLevel(ctx context.Context, entityName, modelVersion, 
 	ref := modelRef(entityName, ver)
 
 	// Admin-path gating read — bypass the per-request cache; see
-	// getModelFresh for the multi-node rationale.
-	desc, err := getModelFresh(ctx, store, ref)
+	// modelcache.GetFresh for the multi-node rationale.
+	desc, err := modelcache.GetFresh(ctx, store, ref)
 	if err != nil {
 		return classifyGetErr("set change level", entityName, ver, err)
 	}
@@ -613,8 +580,8 @@ func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion st
 	ref := modelRef(entityName, ver)
 
 	// Admin-path gating read — bypass the per-request cache; see
-	// getModelFresh for the multi-node rationale.
-	desc, err := getModelFresh(ctx, store, ref)
+	// modelcache.GetFresh for the multi-node rationale.
+	desc, err := modelcache.GetFresh(ctx, store, ref)
 	if err != nil {
 		return nil, classifyGetErr("set unique keys", entityName, ver, err)
 	}
@@ -623,17 +590,7 @@ func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion st
 	}
 
 	if desc.State == spi.ModelLocked {
-		appErr := common.Operational(
-			http.StatusConflict,
-			common.ErrCodeModelAlreadyLocked,
-			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
-		appErr.Props = map[string]any{
-			"entityName":    entityName,
-			"entityVersion": ver,
-			"expectedState": "UNLOCKED",
-			"actualState":   "LOCKED",
-		}
-		return nil, appErr
+		return nil, modelLockedErr("cannot process", entityName, ver)
 	}
 
 	node, err := schema.Unmarshal(desc.Schema)
@@ -657,8 +614,11 @@ func (h *Handler) SetUniqueKeys(ctx context.Context, entityName, modelVersion st
 		return nil, common.Internal("failed to validate unique key definitions", valErr)
 	}
 
-	desc.UniqueKeys = keys
-	if err := store.Save(ctx, desc); err != nil {
+	// The read descriptor can be shared with other readers of this model (one
+	// coalesced storage read), so the change goes into a copy.
+	updated := *desc
+	updated.UniqueKeys = keys
+	if err := store.Save(ctx, &updated); err != nil {
 		return nil, common.Internal("failed to save model", err)
 	}
 

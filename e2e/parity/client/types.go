@@ -138,6 +138,8 @@ type AsyncSearchStatus struct {
 	CalculationTimeMillis int64      `json:"calculationTimeMillis"`
 	CreateTime            time.Time  `json:"createTime"`
 	FinishTime            *time.Time `json:"finishTime,omitempty"`
+	// FailureReason is present only when SearchJobStatus is FAILED.
+	FailureReason *string `json:"failureReason,omitempty"`
 }
 
 // GroupedStatsBucket mirrors internal/domain/entity.GroupedStatsBucket —

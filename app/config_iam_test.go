@@ -7,12 +7,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // Mock IAM defaults must grant ROLE_M2M so the gRPC streaming service accepts
 // connections from a default mock-authenticated client, and ROLE_ADMIN so the
-// admin HTTP endpoints accept the same user. This matches the bootstrap mode
-// defaults (CYODA_BOOTSTRAP_ROLES=ROLE_ADMIN,ROLE_M2M).
+// admin HTTP endpoints accept the same user.
 func TestDefaultConfig_MockRolesIncludeM2MAndAdmin(t *testing.T) {
 	// t.Setenv registers cleanup, then Unsetenv ensures the var is absent
 	// so we observe the DefaultConfig fallback, not an inherited value.
@@ -102,6 +104,45 @@ func TestDefaultConfig_MockRolesValidOverrideDoesNotWarn(t *testing.T) {
 
 	if strings.Contains(buf.String(), "CYODA_IAM_MOCK_ROLES") {
 		t.Errorf("unexpected log output for valid override:\n%s", buf.String())
+	}
+}
+
+// TestShippedUserIDConstantsPassCheck stops a later change to a default from
+// producing a binary that cannot start, or a mock mode whose user fails the
+// check every door applies. The platform system principal is the opposite
+// case: it must BE the reserved id, built directly rather than through
+// ValidateUserID, so it never passes the check itself.
+func TestShippedUserIDConstantsPassCheck(t *testing.T) {
+	cfg := DefaultConfig()
+	for name, id := range map[string]string{
+		"IAM.MockUserID": cfg.IAM.MockUserID,
+	} {
+		if err := common.ValidateUserID(id); err != nil {
+			t.Errorf("%s (%q) fails the user-id check: %v", name, id, err)
+		}
+	}
+
+	systemID := common.SystemPrincipal().ID
+	if systemID != common.ReservedSystemUserID {
+		t.Errorf("SystemPrincipal().ID = %q, want %q", systemID, common.ReservedSystemUserID)
+	}
+	if err := common.ValidateUserID(systemID); err == nil {
+		t.Errorf("ValidateUserID(%q) = nil, want the system id to be refused as reserved", systemID)
+	}
+}
+
+// TestShippedTenantConstantsSatisfyGrammar stops a later change to a default
+// from producing a binary that cannot start, or a mock mode that cannot
+// authenticate.
+func TestShippedTenantConstantsSatisfyGrammar(t *testing.T) {
+	cfg := DefaultConfig()
+	for name, id := range map[string]spi.TenantID{
+		"spi.SystemTenantID": spi.SystemTenantID,
+		"IAM.MockTenantID":   spi.TenantID(cfg.IAM.MockTenantID),
+	} {
+		if err := common.ValidateTenantID(id); err != nil {
+			t.Errorf("%s (%q) fails the tenant grammar: %v", name, id, err)
+		}
 	}
 }
 

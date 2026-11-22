@@ -1,6 +1,7 @@
 package multinode
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // attribution.go — CROSS-NODE follow-on-action attribution parity scenarios.
@@ -22,16 +23,21 @@ import (
 //  1. Proxied-join cascade: a processor callback that lands on the NON-owner
 //     node writes a secondary into the joined tx → attributed to the
 //     originating USER, executed by the member's SERVICE identity — IDENTICAL
-//     to the same-node cascade (the Join-origin-repopulation path).
-//  2. Scheduled fire: tasks armed on the cluster by a USER, round-robin fired
-//     across all members (peer RPC) → each attributed to the user (durable
-//     ArmedBy read on the firing node inside FireScheduledTransition), executed
-//     by the system. Positively asserts at least one task fired on a PEER
-//     (non-coordinator) node via that node's captured logs, so the scenario
-//     cannot pass vacuously if scheduler distribution ever collapsed to self.
-//  3. Callout authtype: a peer-dispatched (A→B forwarded) processor receives
-//     the executor's TRUE principal kind in its AuthContext authtype (Task 7),
-//     without which the re-dispatch would fail closed with authtype "".
+//     to the same-node cascade (the Join-origin-repopulation path). The
+//     secondary's own processor, forwarded to the member-hosting node, is
+//     called for that user and executed by the member's client.
+//  2. Scheduled fire: tasks armed on the cluster by a USER; whichever pnode
+//     claims each, the claimed task carries ArmedBy, so every fired change
+//     attributes to the arming user, executed by the system — and so does the
+//     fire's callout, wherever it is forwarded.
+//  3. Callout auth context: a peer-dispatched (A→B forwarded) processor
+//     receives the identity the dispatching pnode computed — the attributed
+//     principal and the executor — as computed, never recomputed by the peer.
+//
+// The callout scenarios read what the forwarded processor received from the
+// entity data its record-authtype processor writes: observedAuthType and
+// observedAuthID (the attributed principal), observedAuthExecType and
+// observedAuthExecID (the executor).
 //
 // These live in the SHARED multinode registry (not a postgres-only test) so
 // every cluster-capable backend that consumes AllTests() — including the
@@ -52,6 +58,14 @@ import (
 // model's changeLevel keeps the model strict.
 const attrSampleCreateSecondary = `{"name":"parent","amount":10,"status":"new","secondaryId":"","secondaryTxId":"","tokenWasEmpty":false}`
 
+// attrObservedFields is the record-authtype processor's output, seeded with
+// zero values so a strict model accepts it.
+const attrObservedFields = `"observedAuthType":"","observedAuthID":"","observedAuthExecType":"","observedAuthExecID":""`
+
+// attrSampleSecondaryObserved is the cascade secondary's model sample: the
+// fields cb-create-secondary writes, and the fields record-authtype writes.
+const attrSampleSecondaryObserved = `{"name":"child","amount":1,"status":"new",` + attrObservedFields + `}`
+
 func init() {
 	Register(
 		NamedTest{Name: "Attribution_ProxiedJoinCascade", Fn: RunAttribution_ProxiedJoinCascade},
@@ -71,17 +85,11 @@ type AttributionCapable interface {
 	// the compute-test-client's tenant — a human origin whose cascades still
 	// dispatch to the registered gRPC member.
 	ComputeUser(t *testing.T, userID string, roles ...string) parity.Tenant
-	// NodeLogs returns node idx's captured combined stdout+stderr as a snapshot,
-	// so a scenario can positively assert that a scheduled task fired on a peer
-	// node (the peer-RPC fire path emits a distinctive log line). "" for an
-	// out-of-range index. Never assert on token/secret material read here (Gate 3).
-	NodeLogs(idx int) string
+	// ComputeServiceID is the executor principal id of every callback of the
+	// fixture's own compute client: the id of the M2M client it
+	// authenticates as.
+	ComputeServiceID() string
 }
-
-// attrServiceID is the executor principal id of every member callback — the
-// bootstrap user id the compute-test-client authenticates as (CyodaEnv:
-// CYODA_BOOTSTRAP_USER_ID=compute-admin; MintM2MJWT: caas_user_id=compute-admin).
-const attrServiceID = "compute-admin"
 
 // attrRequireCapable type-asserts the optional attribution capability, skipping
 // the scenario as PENDING when the fixture has not wired it.
@@ -116,13 +124,23 @@ func RunAttribution_ProxiedJoinCascade(t *testing.T, fixture MultiNodeFixture) {
 
 	const secondary = "attr-mn-casc-secondary"
 	const primary = "attr-mn-casc-primary"
-	cbRouteSetupModel(t, cSetup, secondary, cbRouteSampleSecondary, cbRouteSecondaryWorkflow)
+	// The secondary runs record-authtype on a second compute client on node 0,
+	// tagged for it alone: a compute client answers one request at a time, and
+	// the fixture's own client is still waiting on the callback that creates
+	// the secondary. Created in T on the owner node, the secondary's callout is
+	// forwarded to node 0 when the owner is another node. The second client
+	// serves the same catalog as the fixture's own, so a callout of the
+	// compute tenant with no tags that reaches it is answered the same way.
+	const recordTag = "attr-mn-casc-rec"
+	StartComputeClientOrSkip(t, fixture, 0, parity.ComputeClientSpec{TenantID: admin.ID, Tags: []string{recordTag}})
+	cbRouteSetupModel(t, cSetup, secondary, attrSampleSecondaryObserved,
+		attrProcWorkflow("attr-mn-casc-sec-wf", "record-authtype", "SYNC", recordTag, ""))
 	cbRouteSetupModel(t, cSetup, primary, attrSampleCreateSecondary,
 		attrPrimaryProcWorkflow("attr-mn-casc-wf", "cb-create-secondary", "SYNC",
 			cbRouteContext(secondary, "attr-mn-casc-marker")))
 
 	const userID = "cluster-alice"
-	user := ac.ComputeUser(t, userID, "ROLE_USER")
+	user := ac.ComputeUser(t, userID, "ROLE_USER", "ROLE_M2M")
 
 	// Same-node baseline: node 0 owns T AND hosts the member. Dispatch is local,
 	// the callback lands on the owner and joins locally — no cross-node hop.
@@ -141,8 +159,17 @@ func RunAttribution_ProxiedJoinCascade(t *testing.T, fixture MultiNodeFixture) {
 	sameChange := attrFindChange(t, cRead, sameNodeSecID, "CREATE")
 	crossChange := attrFindChange(t, cRead, crossNodeSecID, "CREATE")
 
-	attrAssert(t, "same-node secondary", sameChange, userID, "user", "service", attrServiceID)
-	attrAssert(t, "cross-node secondary", crossChange, userID, "user", "service", attrServiceID)
+	serviceID := ac.ComputeServiceID()
+	if serviceID == "" {
+		t.Fatal("the fixture names no compute client id")
+	}
+	attrAssert(t, "same-node secondary", sameChange, userID, "user", "service", serviceID)
+	attrAssert(t, "cross-node secondary", crossChange, userID, "user", "service", serviceID)
+
+	// The secondary's callout is a write-back cascade: for the transaction's
+	// origin, executed by the member's client — forwarded or not.
+	attrAssertCallout(t, "same-node secondary callout", attrObserved(t, cRead, sameNodeSecID), userID, "user", serviceID, "service")
+	attrAssertCallout(t, "cross-node secondary callout", attrObserved(t, cRead, crossNodeSecID), userID, "user", serviceID, "service")
 
 	// Explicit identical-attribution assertion (the primary acceptance
 	// criterion): the cross-node cascade records the SAME {attributed, executor}
@@ -185,14 +212,10 @@ func attrDriveCascade(t *testing.T, c *client.Client, primary string) uuid.UUID 
 
 // --- Scenario 2: cross-node scheduled fire attribution -----------------------
 
-// RunAttribution_ScheduledFire arms several tasks as a USER, waits for the
-// coordinator's round-robin to fire them across all members, and asserts every
-// fired change attributes to the arming user (executed by the system). It then
-// POSITIVELY asserts that at least one task fired on a PEER (non-coordinator)
-// node, read from that node's captured logs — the peer-RPC fire path
-// (SchedulerRPCHandler) emits a distinctive line only on a node that received a
-// delegated fire. Without this assertion the scenario would pass vacuously if
-// scheduler distribution ever collapsed to firing everything on the coordinator.
+// RunAttribution_ScheduledFire arms several tasks as a USER through node 1,
+// waits for them to fire, and asserts every fired change attributes to the
+// arming user (executed by the system). Whichever node claims a task runs it
+// and reads ArmedBy from the claimed record.
 func RunAttribution_ScheduledFire(t *testing.T, fixture MultiNodeFixture) {
 	t.Helper()
 	ac := attrRequireCapable(t, fixture)
@@ -202,34 +225,15 @@ func RunAttribution_ScheduledFire(t *testing.T, fixture MultiNodeFixture) {
 	}
 	admin := fixture.ComputeTenant(t)
 
-	// Raise every node to debug so the peer-RPC fire path's (Debug-level)
-	// resolved line is captured for the peer-fire assertion below; restore
-	// info afterwards so unrelated scenarios stay quiet. Uses the compute-tenant
-	// admin token (ROLE_ADMIN required by the admin route).
-	for _, url := range urls {
-		if err := client.NewClient(url, admin.Token).SetLogLevel(t, "debug"); err != nil {
-			t.Fatalf("raise log level to debug on %s: %v", url, err)
-		}
-	}
-	defer func() {
-		for _, url := range urls {
-			_ = client.NewClient(url, admin.Token).SetLogLevel(t, "info")
-		}
-	}()
-
 	const model = "attr-mn-sched"
 	cbRouteSetupModel(t, client.NewClient(urls[0], admin.Token), model,
-		`{"name":"x","amount":1,"status":"new"}`, attrScheduledWorkflow)
+		`{"name":"x","amount":1,"status":"new",`+attrObservedFields+`}`, attrScheduledWorkflow())
 
 	const userID = "cluster-bob"
-	user := ac.ComputeUser(t, userID, "ROLE_USER")
+	user := ac.ComputeUser(t, userID, "ROLE_USER", "ROLE_M2M")
 
-	// Arm several tasks via node 1. The coordinator (lowest node id = node 0)
-	// scans and round-robins each due task across all members, so some fire on
-	// a PEER via SchedulerRPC. Whichever node fires, the durable ArmedBy (the
-	// user) — re-read on the firing node inside FireScheduledTransition — must
-	// drive the attribution. Arm enough that round-robin provably reaches every
-	// member.
+	// Arm several tasks through node 1. Any node may claim and run them; the
+	// durable ArmedBy (the user) drives the attribution wherever the task runs.
 	const n = 9
 	ids := make([]uuid.UUID, 0, n)
 	cArm := client.NewClient(urls[1%len(urls)], user.Token)
@@ -243,39 +247,25 @@ func RunAttribution_ScheduledFire(t *testing.T, fixture MultiNodeFixture) {
 
 	cRead := client.NewClient(urls[2%len(urls)], admin.Token)
 	for i, id := range ids {
-		attrWaitForState(t, cRead, id, "Closed", 30*time.Second)
+		attrWaitForState(t, fixture, cRead, id, "Closed", 30*time.Second)
 		// The scheduled fire's change is the one executed by the SYSTEM (the
 		// scheduler), attributed to the arming user. The CREATE change, by
 		// contrast, is executed by the user. Select by executor kind.
 		fireChange := attrFindChangeByExecutorKind(t, cRead, id, "system")
 		attrAssert(t, fmt.Sprintf("scheduled fire #%d", i), fireChange, userID, "user", "system", "")
-	}
-
-	// Positive peer-execution assertion (anti-vacuity). The coordinator is
-	// node-0 (lowest id); it fires its own share locally and delegates the rest
-	// to peers over the peer-authenticated scheduler RPC. Only a node that
-	// RECEIVED a delegated fire emits peerFireMarker, so its presence in any
-	// non-coordinator node's log is unambiguous proof the cross-node peer-RPC
-	// fire path executed — not a same-node collapse.
-	const peerFireMarker = "scheduled task peer fire resolved"
-	firedPeers := make([]int, 0, len(urls))
-	for idx := 1; idx < len(urls); idx++ {
-		if strings.Contains(ac.NodeLogs(idx), peerFireMarker) {
-			firedPeers = append(firedPeers, idx)
-		}
-	}
-	if len(firedPeers) == 0 {
-		t.Errorf("no scheduled task observably fired on a peer (non-coordinator) node: expected at least one of nodes 1..%d to log %q; scheduler distribution may have collapsed to the coordinator",
-			len(urls)-1, peerFireMarker)
+		// The fire's callout, made by whichever node claimed the task and
+		// forwarded to the member-hosting node from any other: for the arming
+		// user, executed by the system.
+		attrAssertCallout(t, fmt.Sprintf("scheduled fire #%d callout", i), attrObserved(t, cRead, id), userID, "user", "system", "system")
 	}
 }
 
-// --- Scenario 3: cross-node callout authtype ---------------------------------
+// --- Scenario 3: cross-node callout auth context -----------------------------
 
 // RunAttribution_CalloutAuthType drives a SYNC processor from a memberless owner
-// node (forwarded dispatch A→B) and asserts the forwarded processor observes the
-// executor's TRUE principal kind ("service") in its CloudEvents authtype — Task
-// 7 reconstructing PrincipalKind on the member-hosting node.
+// node (forwarded dispatch A→B) and asserts the forwarded processor receives
+// the identity the owner computed: a client acting for itself is both the
+// attributed principal and the executor.
 func RunAttribution_CalloutAuthType(t *testing.T, fixture MultiNodeFixture) {
 	t.Helper()
 	_ = attrRequireCapable(t, fixture)
@@ -284,21 +274,20 @@ func RunAttribution_CalloutAuthType(t *testing.T, fixture MultiNodeFixture) {
 		t.Fatalf("callout authtype needs >=2 nodes, got %d", len(urls))
 	}
 
-	// The executor here is the compute-tenant SERVICE principal that drives the
-	// transition; its true kind must reach the forwarded processor's authtype.
+	// The compute-tenant SERVICE principal drives the transition for itself.
 	svc := fixture.ComputeTenant(t)
+	svcID := attrTokenUser(t, svc.Token)
 
 	const model = "attr-mn-authtype"
-	cbRouteSetupModel(t, client.NewClient(urls[0], svc.Token), model,
-		`{"name":"x","amount":1,"status":"new","observedAuthType":""}`,
+	sample := `{"name":"x","amount":1,"status":"new",` + attrObservedFields + `}`
+	cbRouteSetupModel(t, client.NewClient(urls[0], svc.Token), model, sample,
 		attrPrimaryProcWorkflow("attr-mn-authtype-wf", "record-authtype", "SYNC", ""))
 
 	// Drive from node 1 (owner, no member) → dispatch forwards node1->node0
-	// (A→B). Node 0 re-dispatches to its local member, reconstructing the
-	// executor's PrincipalKind (Task 7) into the CloudEvents authtype. The
-	// processor records what it observed.
+	// (A→B). Node 0 sends the callout to its local member with the identity
+	// node 1 computed. The processor records what it observed.
 	c := client.NewClient(urls[1], svc.Token)
-	id, err := c.CreateEntity(t, model, 1, `{"name":"x","amount":1,"status":"new","observedAuthType":""}`)
+	id, err := c.CreateEntity(t, model, 1, sample)
 	if err != nil {
 		t.Fatalf("create entity (authtype): %v", err)
 	}
@@ -309,38 +298,52 @@ func RunAttribution_CalloutAuthType(t *testing.T, fixture MultiNodeFixture) {
 	if ent.Meta.State != "ACTIVE" {
 		t.Fatalf("state = %q; want ACTIVE (forwarded dispatch did not complete): data=%+v", ent.Meta.State, ent.Data)
 	}
-	got, _ := ent.Data["observedAuthType"].(string)
-	if got != "service" {
-		t.Errorf("forwarded processor observed authtype = %q; want %q (Task 7 must reconstruct the executor's true kind on the member-hosting node)", got, "service")
-	}
+	attrAssertCallout(t, "forwarded callout", attrObservedOf(ent.Data), svcID, "service", svcID, "service")
 }
 
 // --- workflow builders -------------------------------------------------------
 
 // attrScheduledWorkflow: NONE -> (init) -> Open -> (AutoClose, scheduled) ->
 // Closed. Creating an entity arms AutoClose with ArmedBy = the creating origin;
-// the scan loop fires it after delayMs.
-const attrScheduledWorkflow = `{
-	"importMode": "REPLACE",
-	"workflows": [{
-		"version": "1.1", "name": "attr-mn-sched-wf", "initialState": "NONE", "active": true,
-		"states": {
-			"NONE":   {"transitions": [{"name": "init", "next": "Open", "manual": false}]},
-			"Open":   {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 1500}}]},
-			"Closed": {}
-		}
-	}]
-}`
+// a node's scheduler claims and fires it after delayMs. AutoClose runs
+// record-authtype pinned to computeMemberTag, so the fire's callout is
+// forwarded to the member-hosting node from any other node.
+func attrScheduledWorkflow() string {
+	b, _ := json.Marshal(map[string]any{
+		"importMode": "REPLACE",
+		"workflows": []any{map[string]any{
+			"version": "1.1", "name": "attr-mn-sched-wf", "initialState": "NONE", "active": true,
+			"states": map[string]any{
+				"NONE": map[string]any{"transitions": []any{map[string]any{"name": "init", "next": "Open", "manual": false}}},
+				"Open": map[string]any{"transitions": []any{map[string]any{
+					"name": "AutoClose", "next": "Closed", "manual": false,
+					"schedule": map[string]any{"delayMs": 1500},
+					"processors": []any{map[string]any{
+						"type": "externalized", "name": "record-authtype", "executionMode": "SYNC",
+						"config": map[string]any{"attachEntity": true, "calculationNodesTags": computeMemberTag},
+					}},
+				}}},
+				"Closed": map[string]any{},
+			},
+		}},
+	})
+	return string(b)
+}
 
 // attrPrimaryProcWorkflow builds a NONE->ACTIVE auto-transition workflow whose
 // transition carries one processor pinned to computeMemberTag (so dispatch is
 // forwarded to the member-hosting node when driven from any other node).
 // contextValue may be "" for processors that need no pass-through context.
 func attrPrimaryProcWorkflow(wfName, procName, execMode, contextValue string) string {
+	return attrProcWorkflow(wfName, procName, execMode, computeMemberTag, contextValue)
+}
+
+// attrProcWorkflow is attrPrimaryProcWorkflow with the processor pinned to tag.
+func attrProcWorkflow(wfName, procName, execMode, tag, contextValue string) string {
 	// Built with an encoder, not a string template. contextValue arrives as a
 	// plain JSON string from cbRouteContext and is encoded here — splicing it
 	// raw would emit a nested object where the DTO expects a string.
-	cfg := map[string]any{"attachEntity": true, "calculationNodesTags": computeMemberTag}
+	cfg := map[string]any{"attachEntity": true, "calculationNodesTags": tag}
 	if contextValue != "" {
 		cfg["context"] = contextValue
 	}
@@ -352,7 +355,7 @@ func attrPrimaryProcWorkflow(wfName, procName, execMode, contextValue string) st
 				"NONE": map[string]any{"transitions": []any{map[string]any{
 					"name": "init", "next": "ACTIVE", "manual": false,
 					"processors": []any{map[string]any{
-						"type": "calculator", "name": procName, "executionMode": execMode, "config": cfg,
+						"type": "externalized", "name": procName, "executionMode": execMode, "config": cfg,
 					}},
 				}}},
 				"ACTIVE": map[string]any{},
@@ -398,23 +401,18 @@ func attrFindChangeByExecutorKind(t *testing.T, c *client.Client, entityID uuid.
 	return client.EntityChangeMeta{}
 }
 
-// attrWaitForState polls until the entity reaches wantState or the deadline
-// elapses.
-func attrWaitForState(t *testing.T, c *client.Client, entityID uuid.UUID, wantState string, timeout time.Duration) {
+// attrWaitForState polls until the entity reaches wantState, failing the test
+// at the deadline of a wait of timeout on the cluster's schedulers
+// (parity.AwaitScheduler). A failed read is retried.
+func attrWaitForState(t *testing.T, fixture MultiNodeFixture, c *client.Client, entityID uuid.UUID, wantState string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var last string
-	for time.Now().Before(deadline) {
+	parity.AwaitScheduler(t, fixture, timeout, fmt.Sprintf("entity %s in state %q", entityID, wantState), func() (bool, string) {
 		ent, err := c.GetEntity(t, entityID)
-		if err == nil {
-			last = ent.Meta.State
-			if last == wantState {
-				return
-			}
+		if err != nil {
+			return false, "read: " + err.Error()
 		}
-		time.Sleep(150 * time.Millisecond)
-	}
-	t.Fatalf("entity %s did not reach state %q within %v (last=%q)", entityID, wantState, timeout, last)
+		return ent.Meta.State == wantState, fmt.Sprintf("state %q", ent.Meta.State)
+	})
 }
 
 // attrAssert asserts the {attributed, executor} pair on a change entry.
@@ -436,6 +434,65 @@ func attrAssert(t *testing.T, label string, ch client.EntityChangeMeta, wantUser
 	if wantExecID != "" && ch.ExecutedBy.ID != wantExecID {
 		t.Errorf("%s: executedBy.id = %q; want %q (entry=%+v)", label, ch.ExecutedBy.ID, wantExecID, ch)
 	}
+}
+
+// attrObservation is the auth context a record-authtype processor observed.
+type attrObservation struct {
+	ID, Type, ExecID, ExecType string
+}
+
+// attrObservedOf reads the auth context record-authtype wrote into data.
+func attrObservedOf(data map[string]any) attrObservation {
+	str := func(k string) string { v, _ := data[k].(string); return v }
+	return attrObservation{
+		ID: str("observedAuthID"), Type: str("observedAuthType"),
+		ExecID: str("observedAuthExecID"), ExecType: str("observedAuthExecType"),
+	}
+}
+
+// attrObserved reads entityID and returns the auth context its record-authtype
+// processor observed.
+func attrObserved(t *testing.T, c *client.Client, entityID uuid.UUID) attrObservation {
+	t.Helper()
+	ent, err := c.GetEntity(t, entityID)
+	if err != nil {
+		t.Fatalf("get entity %s: %v", entityID, err)
+	}
+	return attrObservedOf(ent.Data)
+}
+
+// attrAssertCallout asserts both principals of the auth context a callout
+// carried.
+func attrAssertCallout(t *testing.T, label string, got attrObservation, wantID, wantType, wantExecID, wantExecType string) {
+	t.Helper()
+	if got.ID != wantID || got.Type != wantType {
+		t.Errorf("%s: authid/authtype = %q/%q; want %q/%q", label, got.ID, got.Type, wantID, wantType)
+	}
+	if got.ExecID != wantExecID || got.ExecType != wantExecType {
+		t.Errorf("%s: authexecid/authexectype = %q/%q; want %q/%q", label, got.ExecID, got.ExecType, wantExecID, wantExecType)
+	}
+}
+
+// attrTokenUser returns the caas_user_id claim of a JWT: the principal id the
+// token authenticates. The signature is not checked; the token is the test's
+// own.
+func attrTokenUser(t *testing.T, token string) string {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatal("the token is not a JWT")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode the token's claims: %v", err)
+	}
+	var claims struct {
+		User string `json:"caas_user_id"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil || claims.User == "" {
+		t.Fatalf("the token names no caas_user_id (%v)", err)
+	}
+	return claims.User
 }
 
 // attrPrincipalKind returns the executor kind or "" for a nil principal.

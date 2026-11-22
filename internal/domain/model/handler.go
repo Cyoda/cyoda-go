@@ -1,29 +1,32 @@
 package model
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
 	"github.com/google/uuid"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // Handler implements the model management HTTP endpoints.
 type Handler struct {
 	factory spi.StoreFactory
+	clock   spi.Clock
 }
 
-// New returns a new Handler wired to the given StoreFactory.
-func New(factory spi.StoreFactory) *Handler {
-	return &Handler{factory: factory}
+// New returns a new Handler wired to the given StoreFactory and the clock that stamps model update dates.
+func New(factory spi.StoreFactory, clock spi.Clock) *Handler {
+	if clock == nil {
+		panic("model.New: nil clock")
+	}
+	return &Handler{factory: factory, clock: clock}
 }
 
 // modelRef builds a ModelRef from the path parameters.
@@ -193,7 +196,7 @@ func (h *Handler) ValidateEntityModel(w http.ResponseWriter, r *http.Request, en
 	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to parse request body"))
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read request body"))
 		return
 	}
 
@@ -225,10 +228,15 @@ func (h *Handler) ValidateEntityModel(w http.ResponseWriter, r *http.Request, en
 
 // SetEntityModelUniqueKeys handles PUT /model/{entityName}/{modelVersion}/unique-keys.
 func (h *Handler) SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
 	var req genapi.SetUniqueKeysRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to parse request body"))
+	if err := common.DecodeBoundedJSON(w, r, 1*1024*1024, &req); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
+		return
+	}
+	// The keys replace the model's keys, so an absent or null uniqueKeys is
+	// refused rather than read as "no keys"; only [] removes them.
+	if req.UniqueKeys == nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "uniqueKeys is required and must not be null; send [] to remove the keys"))
 		return
 	}
 

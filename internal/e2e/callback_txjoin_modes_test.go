@@ -23,7 +23,7 @@ import (
 // All tests run against the full HTTP+gRPC stack (real Postgres) via the
 // callback-capable compute member (callback_harness_test.go). The token
 // round-trip — engine mints cyodatxtoken → gRPC calc request → member echoes
-// it as X-Tx-Token → TxJoin middleware → JoinFromToken → participate — is
+// it as X-Tx-Token → TxJoin middleware → Joiner.Run → participate — is
 // exercised in every test (or proven absent in the CBD-default case).
 //
 // The token value is never logged (Gate 3 / spec §8-H10).
@@ -70,7 +70,7 @@ func TestCallback_AsyncNewTx_DiscardedOnProcessorFailure(t *testing.T) {
 			"version": "1.1", "name": "anytx-fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-anytx-create-then-fail",
+					"processors": [{"type": "externalized", "name": "cb-anytx-create-then-fail",
 						"executionMode": "ASYNC_NEW_TX",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -141,7 +141,7 @@ func TestCallback_AsyncNewTx_KeptOnSuccess(t *testing.T) {
 			"version": "1.1", "name": "anytx-ok-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-anytx-create-ok",
+					"processors": [{"type": "externalized", "name": "cb-anytx-create-ok",
 						"executionMode": "ASYNC_NEW_TX",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -182,7 +182,7 @@ func TestCallback_AsyncNewTx_KeptOnSuccess(t *testing.T) {
 //   - TX_pre commits before dispatch (entity durably in pre-callout state).
 //   - The dispatcher opens TX_post and mints a token for it.
 //   - The callback echoes the TX_post token (X-Tx-Token) → TxJoin middleware
-//     → JoinFromToken → the write participates in TX_post.
+//     → Joiner.Run → the write participates in TX_post.
 //   - TX_post commits with both the primary apply-result and the secondary entity.
 //
 // This is the spec §4.4 / §16 case B (create-time entry point) counterpart
@@ -219,9 +219,9 @@ func TestCallback_CBDPost_JoinsTxPost(t *testing.T) {
 			"version": "1.1", "name": "cbd-post-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-cbd-post-proc",
+					"processors": [{"type": "externalized", "name": "cb-cbd-post-proc",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
-						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]
+						"startNewTxOnDispatch": true, "config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
 			}
@@ -266,7 +266,7 @@ func TestCallback_CBDPost_JoinsTxPost(t *testing.T) {
 //
 // By the time this criterion runs the entry txID names an already-committed
 // transaction; a callback that joins on it gets 404 TRANSACTION_NOT_FOUND
-// (internal/domain/txjoin.JoinFromToken) instead of participating in the
+// (internal/domain/txjoin.Joiner.Run) instead of participating in the
 // still-open segment. The criterion callback below treats a non-200 joined
 // create as a failure, which fails criterion evaluation and keeps the primary
 // in WAITING — the observable symptom of the bug this test guards against.
@@ -302,9 +302,9 @@ func TestCallback_CriterionAfterCBDSegment_JoinsTxPost(t *testing.T) {
 			"version": "1.1", "name": "critseg-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":    {"transitions": [{"name": "segment", "next": "WAITING", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-critseg-proc",
+					"processors": [{"type": "externalized", "name": "cb-critseg-proc",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
-						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]
+						"startNewTxOnDispatch": true, "config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"WAITING": {"transitions": [{"name": "gate", "next": "ACTIVE", "manual": false,
 					"criterion": {"type": "function", "function": {"name": "cb-critseg-crit",
@@ -398,7 +398,7 @@ func TestCallback_CBDDefault_RunsStandalone(t *testing.T) {
 			"version": "1.1", "name": "cbd-default-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-cbd-default-proc",
+					"processors": [{"type": "externalized", "name": "cb-cbd-default-proc",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},

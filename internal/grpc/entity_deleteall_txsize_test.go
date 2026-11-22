@@ -8,15 +8,17 @@ import (
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // Task 15: gRPC EntityDeleteAllRequest honors an explicitly-sent
@@ -54,9 +56,11 @@ type deleteAllTxSizeSpyStore struct {
 }
 
 func (s *deleteAllTxSizeSpyStore) DeleteAll(ctx context.Context, ref spi.ModelRef) error {
-	s.mu.Lock()
-	s.called = true
-	s.mu.Unlock()
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.called = true
+	}()
 	return s.EntityStore.DeleteAll(ctx, ref)
 }
 
@@ -105,11 +109,11 @@ func newDeleteAllTxSizeEnv(t *testing.T) (svc *CloudEventsServiceImpl, ctx conte
 	spyStore = &deleteAllTxSizeSpyStore{EntityStore: realStore}
 	factory := &deleteAllTxSizeSpyFactory{StoreFactory: realFactory, store: spyStore}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), rtm)
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), rtm, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New())
-	modelHandler := model.New(factory)
+	searchService := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), rtm, common.NewDefaultUUIDGenerator(), engine, txcoord.New(rtm), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cachedFactory(factory), platformclock.Real())
 
 	svc = &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -347,10 +351,12 @@ type failNthCommitTxSizeMgr struct {
 }
 
 func (m *failNthCommitTxSizeMgr) Commit(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	m.commits++
-	idx := m.commits
-	m.mu.Unlock()
+	idx := func() int {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.commits++
+		return m.commits
+	}()
 	if err, ok := m.failOn[idx]; ok {
 		return err
 	}
@@ -387,7 +393,7 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	}
 	ctx := spi.WithUserContext(context.Background(), uc)
 
-	modelHandler := model.New(realFactory)
+	modelHandler := model.New(cachedFactory(realFactory), platformclock.Real())
 	dataBytes, err := json.Marshal(map[string]any{"name": "Alice"})
 	if err != nil {
 		t.Fatalf("marshal sample data: %v", err)
@@ -404,10 +410,10 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 
 	// Seed 6 entities through a plain, unwrapped txMgr so the seeding
 	// commits never touch the fail-injecting manager's counter.
-	engineSeed := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), realTxMgr)
+	engineSeed := workflow.NewEngine(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), realTxMgr, platformclock.Real())
 	searchStoreSeed, _ := realFactory.AsyncSearchStore(context.Background())
-	searchServiceSeed := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreSeed)
-	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txgate.New())
+	searchServiceSeed := search.NewSearchService(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), searchStoreSeed, newTestConsistency(t, realFactory), platformclock.Real())
+	entityHandlerSeed := entity.New(cachedFactory(realFactory), realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txcoord.New(realTxMgr), newTestConsistency(t, realFactory), platformclock.Real())
 	svcSeed := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         realTxMgr,
@@ -432,10 +438,10 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	// 6 matching entities, batchSize 2 => 3 batches. Commit index 3 (1
 	// resolution tx + batch1 + THIS batch) is forced to fail.
 	failMgr := &failNthCommitTxSizeMgr{TransactionManager: realTxMgr, failOn: map[int]error{3: errors.New("commit boom")}}
-	engineDelete := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), failMgr)
+	engineDelete := workflow.NewEngine(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), failMgr, platformclock.Real())
 	searchStoreDelete, _ := realFactory.AsyncSearchStore(context.Background())
-	searchServiceDelete := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreDelete)
-	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txgate.New())
+	searchServiceDelete := search.NewSearchService(cachedFactory(realFactory), common.NewDefaultUUIDGenerator(), searchStoreDelete, newTestConsistency(t, realFactory), platformclock.Real())
+	entityHandlerDelete := entity.New(cachedFactory(realFactory), failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txcoord.New(failMgr), newTestConsistency(t, realFactory), platformclock.Real())
 	svcDelete := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         failMgr,
@@ -527,26 +533,20 @@ func TestRPC_EntityDeleteAll_NonConvergence_Envelope(t *testing.T) {
 	}
 }
 
-// TestEntityDeleteAllRequestJson_PageSize_Tolerated pins that pageSize is no
-// longer part of the request type (there is nothing for it to mean —
-// selection is streamed) while a client still sending it is tolerated: the
-// generated unmarshaller ignores unknown fields.
+// TestEntityDeleteAllRequestJson_PageSize_Tolerated pins that a client still
+// sending pageSize is not refused (Cloud's schema declares it, so Cloud's
+// client may send it), although it has nothing to mean — selection is
+// streamed. The strict decode refuses an undeclared member, so the schema
+// declares it as having no effect.
 func TestEntityDeleteAllRequestJson_PageSize_Tolerated(t *testing.T) {
 	payload := []byte(`{"id":"test","model":{"name":"person","version":1},"pageSize":10,"verbose":true}`)
 
 	var req events.EntityDeleteAllRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
-		t.Fatalf("unmarshal with a legacy pageSize field must succeed: %v", err)
+	if err := strictjson.Decode(payload, &req); err != nil {
+		t.Fatalf("a request with pageSize must decode: %v", err)
 	}
 	if !req.Verbose {
 		t.Error("Verbose = false, want true (the rest of the payload must still bind)")
-	}
-	raw, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(raw), "pageSize") {
-		t.Errorf("re-encoded request still carries pageSize: %s", raw)
 	}
 }
 

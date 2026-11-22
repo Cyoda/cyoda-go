@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 const (
@@ -28,6 +28,7 @@ func pitSetup(t *testing.T) (*spi.Entity, spi.EntityStore, func() time.Time) {
 	t.Helper()
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant(pitTenant)
+	lockModels(t, factory, ctx, orderModel)
 	store, _ := factory.EntityStore(ctx)
 	pool := factory.Pool()
 

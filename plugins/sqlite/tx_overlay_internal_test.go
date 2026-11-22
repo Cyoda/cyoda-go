@@ -6,7 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // The id/state projection yields the same merged view as the full projection —
@@ -29,6 +30,7 @@ func TestOpenTxOverlay_IDStateProjection(t *testing.T) {
 		t.Fatalf("EntityStore returned %T, want *entityStore", store)
 	}
 	ref := spi.ModelRef{EntityName: "m-idstate", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	seed := []struct{ id, state string }{{"e01", "open"}, {"e02", "closed"}, {"e03", "open"}}
 	for _, s := range seed {
 		if _, err := store.Save(ctx, &spi.Entity{

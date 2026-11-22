@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strconv"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // taskID deterministically derives a ScheduledTask's ID from the tenant,
@@ -28,15 +28,30 @@ func taskID(tenantID spi.TenantID, entityID, sourceState, transition string) str
 	return hex.EncodeToString(h[:16])
 }
 
-// workflowHasSchedule reports whether any transition in wf carries a
-// Schedule. reconcileScheduledTasks uses this to skip all ScheduledTaskStore
-// I/O for the (overwhelmingly common) case of a workflow with no scheduled
-// transitions at all.
-func workflowHasSchedule(wf *spi.WorkflowDefinition) bool {
-	for _, st := range wf.States {
-		for _, tr := range st.Transitions {
-			if tr.Schedule != nil {
-				return true
+// armsOnSchedule is the one arm rule: the engine arms a task for a
+// transition that has a schedule and is neither manual nor disabled. Arm
+// (reconcileScheduledTasks), fire (findFireableTransitionInState), the
+// model-level flag (modelHasSchedule) and the workflow import's clean-up all
+// use it, so they cannot disagree.
+func armsOnSchedule(tr *spi.TransitionDefinition) bool {
+	return tr.Schedule != nil && !tr.Manual && !tr.Disabled
+}
+
+// modelHasSchedule reports whether any workflow of the model — active or not —
+// has a transition the arm rule arms (armsOnSchedule). When none does, no task
+// of the model's entities can be armed, so reconcile does nothing. The
+// workflow import's clean-up removes the tasks of transitions no longer armed.
+// An import can still fail after its workflows are saved (409), and its
+// leftover tasks then stay until the import is retried; the fire door cancels
+// such a task, with an audit event, when it falls due. It is computed from the
+// workflows resolveWorkflow already loaded, so a write costs no extra read.
+func modelHasSchedule(wfs []spi.WorkflowDefinition) bool {
+	for i := range wfs {
+		for _, st := range wfs[i].States {
+			for j := range st.Transitions {
+				if armsOnSchedule(&st.Transitions[j]) {
+					return true
+				}
 			}
 		}
 	}
@@ -44,11 +59,13 @@ func workflowHasSchedule(wf *spi.WorkflowDefinition) bool {
 }
 
 // ErrScheduledTaskInfra marks a server-side failure in the settle-time
-// arm/cancel pass: the scheduled-task store could not be resolved, or its
-// reconcile write failed. Neither is attributable to the caller's input, so
-// callers map it to a sanitized 5xx with a ticket rather than echoing the
-// store's own text — driver wording, table and constraint names, a SQLSTATE —
-// into a 4xx WORKFLOW_FAILED body.
+// arm/cancel pass: the scheduled-task store could not be resolved, its
+// reconcile write failed, or a static Schedule.DelayMs/TimeoutMs (workflow
+// config, not this request's input) produces a fire or expiry time that
+// cannot be rendered — see addScheduleMs. None of these is attributable to
+// the caller's input, so callers map it to a sanitized 5xx with a ticket
+// rather than echoing the store's own text — driver wording, table and
+// constraint names, a SQLSTATE — into a 4xx WORKFLOW_FAILED body.
 //
 // The same treatment, and the same reason, as ErrProcessorOutputInfra,
 // ErrCriterionTypingInfra and ErrCommitBeforeDispatchInfra. It is its own
@@ -62,16 +79,18 @@ func workflowHasSchedule(wf *spi.WorkflowDefinition) bool {
 // under a generic ticket would lose the actionable answer.
 var ErrScheduledTaskInfra = errors.New("scheduled task reconciliation failed")
 
-// reconcileScheduledTasks brings the entity's pending ScheduledTask rows in
-// line with its current state: it arms every non-manual, non-disabled
-// scheduled transition out of the CURRENT state, and cancels (deletes) any
-// pending task left over from a state the entity is no longer in. The write
-// is atomic with the entity write because it runs against the same ctx/txID
-// the caller is already inside — the context-resolving, tx-scoped
-// ScheduledTaskStore joins whatever transaction ctx carries.
+// reconcileScheduledTasks brings the entity's ScheduledTask rows in line with
+// its current state: it arms every transition out of the CURRENT state that
+// the arm rule arms (armsOnSchedule), and removes every other task of the
+// entity, in any status: one left over from another state, one whose
+// transition is no longer scheduled, and a FAILED one. The write is atomic
+// with the entity write because it runs against the same ctx/txID the caller
+// is already inside — the context-resolving, tx-scoped ScheduledTaskStore
+// joins whatever transaction ctx carries.
 //
-// No-op (zero store I/O) when the workflow has no scheduled transitions
-// anywhere, so entities on schedule-free workflows pay no cost.
+// No-op (zero store I/O) when no workflow of the entity's model has a
+// scheduled transition (modelScheduled, from modelHasSchedule), so entities
+// of schedule-free models pay no cost.
 //
 // Arm/cancel audit events are recorded best-effort via recordEvent, matching
 // every other audit call site in the engine — a failure to audit must never
@@ -81,18 +100,8 @@ var ErrScheduledTaskInfra = errors.New("scheduled task reconciliation failed")
 // events share the same guaranteed-non-nil store as every other audit event
 // in the call — reconcile no longer re-derives its own and silently skips
 // the audit block on a transient resolution failure.
-//
-// suppressCancelAuditFor, when non-empty, names a ScheduledTask ID whose
-// SourceState-mismatch is NOT a genuine "left behind" cancel: it is the very
-// task FireScheduledTransition just fired, so its SourceState no longer
-// matching the post-cascade CurrentState is expected. ReconcileForEntity
-// still reports (and its own Delete still removes) that task's row like any
-// other cancelled entry — this only suppresses the misleading
-// SCHEDULED_TRANSITION_CANCEL audit event that would otherwise sit alongside
-// its SCHEDULED_TRANSITION_FIRE event. Every non-fire caller
-// (Execute/ManualTransition/Loopback) passes "" — no exclusion.
-func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, txID string, auditStore spi.StateMachineAuditStore, suppressCancelAuditFor string) error {
-	if !workflowHasSchedule(wf) {
+func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, modelScheduled bool, txID string, auditStore spi.StateMachineAuditStore) error {
+	if !modelScheduled {
 		return nil
 	}
 
@@ -107,15 +116,15 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 
 	var arm []spi.ScheduledTask
 	// cancelIDs carries born-expired task IDs into ReconcileRequest.Cancel
-	// — deleted in the same transaction as the entity write (Task 6.1's
-	// store-side Cancel branch) without ever having been armed.
+	// — deleted in the same transaction as the entity write without ever
+	// having been armed.
 	var cancelIDs []string
 	var bornExpired []expiredSchedule
 
 	if stateDef, ok := wf.States[state]; ok {
 		for i := range stateDef.Transitions {
 			tr := &stateDef.Transitions[i]
-			if tr.Schedule == nil || tr.Manual || tr.Disabled {
+			if !armsOnSchedule(tr) {
 				continue
 			}
 			// ModelRef.ModelVersion is the wire/string form ("1.0"); the
@@ -139,16 +148,40 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 				continue
 			}
 
+			sched, ok := addScheduleMs(armMs, tr.Schedule.DelayMs)
+			if !ok {
+				// Config, not caller input — DelayMs comes from the imported
+				// workflow, not this request. Fails the arm and rolls back
+				// the write (the caller never commits), in the same error
+				// family as every other settle-time arm/cancel failure
+				// (ErrScheduledTaskInfra), not a 4xx blaming this caller for
+				// a value it did not supply.
+				return fmt.Errorf("scheduled transition %q static delay produces an unrenderable fire time: %w",
+					tr.Name, ErrScheduledTaskInfra)
+			}
+
 			var timeoutMs *int64
 			if tr.Schedule.TimeoutMs != nil {
 				v := *tr.Schedule.TimeoutMs
+				if _, ok := addScheduleMs(sched, v); !ok {
+					return fmt.Errorf("scheduled transition %q static timeout produces an unrenderable expiry time: %w",
+						tr.Name, ErrScheduledTaskInfra)
+				}
 				timeoutMs = &v
 			}
+			// ArmedBy is the write's attributed principal (spi.AttributionFor),
+			// not its transaction origin (spi.ResolveOrigin) — they differ for a
+			// user-kind caller writing inside a transaction begun by someone
+			// else, and for an on-behalf-of principal (AttributionFor never
+			// lets an OBO write inherit a transaction's origin). The executor
+			// half of AttributionFor is deliberately discarded: arming has no
+			// executor/attributed split, only who it is attributed to.
+			attributed, _ := spi.AttributionFor(ctx)
 			arm = append(arm, spi.ScheduledTask{
 				ID:            id,
 				TenantID:      entity.Meta.TenantID,
 				Type:          spi.ScheduledTaskFireTransition,
-				ScheduledTime: armMs + tr.Schedule.DelayMs,
+				ScheduledTime: sched,
 				TimeoutMs:     timeoutMs,
 				EntityID:      entity.Meta.ID,
 				ModelName:     entity.Meta.ModelRef.EntityName,
@@ -156,7 +189,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 				Transition:    tr.Name,
 				SourceState:   state,
 				ArmedAt:       armMs,
-				ArmedBy:       spi.ResolveOrigin(ctx),
+				ArmedBy:       attributed,
 			})
 		}
 	}
@@ -181,27 +214,24 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
 			spi.SMEventScheduledTransitionArmed,
 			fmt.Sprintf("Scheduled transition %q armed for %dms from now", a.Transition, a.ScheduledTime-armMs),
-			map[string]any{"transition": a.Transition, "sourceState": state, "scheduledTime": a.ScheduledTime})
+			ScheduledArmedData(a.Transition, state, a.ScheduledTime))
 	}
 	for _, c := range cancelled {
-		if suppressCancelAuditFor != "" && c.ID == suppressCancelAuditFor {
-			continue
-		}
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, c.SourceState,
 			spi.SMEventScheduledTransitionCancelled,
-			fmt.Sprintf("Scheduled transition %q cancelled (left state %q)", c.Transition, c.SourceState),
-			map[string]any{"transition": c.Transition, "sourceState": c.SourceState})
+			fmt.Sprintf("Scheduled transition %q of state %q cancelled (not armed for state %q)", c.Transition, c.SourceState, state),
+			ScheduledCancelledData(c.Transition, c.SourceState, ""))
 	}
 	// Born-expired Function results are cancelled via req.Cancel above but
 	// deliberately excluded from ReconcileForEntity's returned cancelled
-	// slice (Task 6.1) so they are audited distinctly here as EXPIRE, not
-	// CANCEL — a "left the state" cancel and "never fired, expired on
-	// arrival" are different operational stories.
+	// slice so they are audited distinctly here as EXPIRE, not CANCEL — a
+	// task no longer armed and one that "never fired, expired on arrival"
+	// are different operational stories.
 	for _, be := range bornExpired {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
 			spi.SMEventScheduledTransitionExpired,
 			fmt.Sprintf("Scheduled transition %q born expired (Function result already past its resolved expiry)", be.transition),
-			map[string]any{"transition": be.transition, "sourceState": state})
+			ScheduledExpiredData(be.transition, state))
 	}
 
 	return nil
@@ -220,28 +250,43 @@ type expiredSchedule struct {
 // result into either a ScheduledTask ready to arm, or a born-expired
 // signal. Exactly one of the two return values is non-nil on a nil error.
 //
-// The per-tx gate is released (txgate.Suspend) across the blocking dispatch
-// and re-acquired immediately on return — BEFORE this function's caller
-// does any further tx-buffer work — because the callout can re-enter with a
-// descendant callback joined on the same txID (same H3 rationale as
-// evaluateCriterion's FUNCTION-criterion dispatch and
+// The chain's scope is paused (txcoord.Pause) across the blocking dispatch
+// and resumed immediately on return — BEFORE this function's caller does any
+// further transaction work — because the callout can re-enter with a
+// descendant callback joined on the same txID (the same reason as at
+// evaluateCriterion's FUNCTION-criterion dispatch and at
 // executeSyncProcessor). resume is both deferred AND called explicitly, as at
-// every other Suspend site: the explicit call re-acquires before returning, so
-// reconcileScheduledTasks's later buffer write (ReconcileForEntity) is gated;
-// the deferred call covers the path where the dispatch panics, so the caller's
-// own deferred gate release never unlocks an unheld mutex — a runtime fatal no
-// recover() can catch. resume is sync.Once-guarded, so having both is free.
+// every other Pause site: the explicit call retakes the gate and checks the
+// chain's scope before returning, so reconcileScheduledTasks's later write
+// (ReconcileForEntity) is made under the gate by a chain still entitled to
+// it; the deferred call covers the path where the dispatch panics, so the
+// scope ends holding its gate. resume is idempotent, so having both is free.
 func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, tr *spi.TransitionDefinition, state, id string, armMs int64, modelVersion int, txID string) (task *spi.ScheduledTask, expired *expiredSchedule, err error) {
 	if e.extProc == nil {
 		return nil, nil, fmt.Errorf("no external processing service configured for scheduled-transition Function %q", tr.Schedule.Function.Name)
 	}
 
-	resume := txgate.Suspend(ctx)
+	// The transaction holds the anchor as it is before the callout,
+	// in the chain's scope, before Pause releases the gate.
+	if err := e.saveAnchorBeforeCallout(ctx, entity, txID); err != nil {
+		return nil, nil, err
+	}
+	resume := txcoord.Pause(ctx)
 	defer resume()
-	res, derr := e.extProc.DispatchFunction(ctx, entity, *tr.Schedule.Function, wf.Name, tr.Name, txID)
-	resume() // BEFORE any tx-buffer write — see doc comment above.
+	callCtx, stop := runCallCtx(ctx)
+	defer stop()
+	res, derr := e.extProc.DispatchFunction(callCtx, entity, *tr.Schedule.Function, wf.Name, tr.Name, txID)
+	stop()
+	// BEFORE any transaction write — see doc comment above.
+	if rerr := resume(); rerr != nil {
+		return nil, nil, rerr
+	}
 	if derr != nil {
-		return nil, nil, derr // already a classified AppError (503) — fails the write, fail-closed
+		// Fails the write, fail-closed. The wrap names the function for the one
+		// failure whose text reaches the client through it — a compute node
+		// that answered "failed"; every other callout failure carries its own
+		// classified error, which the wrap leaves intact.
+		return nil, nil, fmt.Errorf("schedule function %s failed: %w", tr.Schedule.Function.Name, derr)
 	}
 	if res.Kind != "Schedule" {
 		return nil, nil, invalidScheduleResult("function %q returned resultKind %q, want %q", tr.Schedule.Function.Name, res.Kind, "Schedule")
@@ -255,6 +300,13 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 		return nil, &expiredSchedule{transition: tr.Name}, nil
 	}
 
+	// ArmedBy is the write's attributed principal (spi.AttributionFor(ctx)),
+	// NOT from the Function's dispatch result — res carries only timing (fireAt /
+	// fireAfterMs / expireAfterMs), never a principal. The callout affects
+	// WHEN this task fires, never WHO it is attributed to. The executor half
+	// of AttributionFor is discarded — see the static-schedule arm site for
+	// why AttributionFor, not ResolveOrigin.
+	attributed, _ := spi.AttributionFor(ctx)
 	return &spi.ScheduledTask{
 		ID:            id,
 		TenantID:      entity.Meta.TenantID,
@@ -267,10 +319,6 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 		Transition:    tr.Name,
 		SourceState:   state,
 		ArmedAt:       armMs,
-		// ArmedBy is resolved from ctx (the chain origin), NOT from the
-		// Function's dispatch result — res carries only timing (fireAt /
-		// fireAfterMs / expireAfterMs), never a principal. The callout
-		// affects WHEN this task fires, never WHO it is attributed to.
-		ArmedBy: spi.ResolveOrigin(ctx),
+		ArmedBy:       attributed,
 	}, nil, nil
 }

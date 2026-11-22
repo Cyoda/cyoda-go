@@ -23,15 +23,13 @@ Before starting, you need:
   go install sigs.k8s.io/ingress2gateway/cmd/ingress2gateway@latest
   ```
 
-## Step 1 — Render the existing Ingress objects
+## Step 1 — Export the existing Ingress objects
 
 If you're already running cyoda with `ingress.enabled=true`, dump the
-rendered `Ingress` objects so Ingress2Gateway can convert them:
+release's `Ingress` objects so Ingress2Gateway can convert them:
 
 ```bash
-helm template cyoda cyoda/cyoda -n cyoda --reuse-values \
-  --show-only templates/ingress.yaml \
-  --show-only templates/ingress-grpc.yaml \
+kubectl get ingress -n cyoda -l app.kubernetes.io/instance=cyoda -o yaml \
   > /tmp/cyoda-ingress.yaml
 ```
 
@@ -103,9 +101,25 @@ Inspect `/tmp/cyoda-routes.yaml`. You'll see two route resources:
 - A `GRPCRoute` (translated from the `backend-protocol: GRPC`
   annotation) for the gRPC service.
 
-Compare against `helm template cyoda cyoda/cyoda --set
-gateway.enabled=true --show-only templates/httproute.yaml` to see the
-chart's canonical shape. Differences are usually:
+Compare against the routes the chart renders, to see its canonical shape.
+`helm template` reads no Secret, but the chart needs the Secret names set,
+so any name will do here; use your own Gateway and hostnames:
+
+```bash
+helm template cyoda cyoda/cyoda -n cyoda \
+  --set postgres.existingSecret=any \
+  --set jwt.existingSecret=any \
+  --set cluster.hmacSecret.existingSecret=any \
+  --set monitoring.metricsBearer.existingSecret=any \
+  --set 'gateway.parentRefs[0].name=platform-gateway' \
+  --set 'gateway.parentRefs[0].namespace=gateway-system' \
+  --set 'gateway.http.hostnames[0]=cyoda.example.com' \
+  --set 'gateway.grpc.hostnames[0]=grpc.cyoda.example.com' \
+  --show-only templates/gateway-httproute.yaml \
+  --show-only templates/gateway-grpcroute.yaml
+```
+
+Differences are usually:
 
 - The chart attaches via `parentRefs` you supply via values — adjust
   `gateway.parentRefs[]` to match your `Gateway` name and namespace.
@@ -118,13 +132,13 @@ With the Gateway in place, switch the chart from `ingress` to
 `gateway`:
 
 ```bash
-helm upgrade cyoda cyoda/cyoda -n cyoda --reuse-values \
+helm upgrade cyoda cyoda/cyoda -n cyoda --reset-then-reuse-values \
   --set ingress.enabled=false \
   --set gateway.enabled=true \
   --set 'gateway.parentRefs[0].name=platform-gateway' \
   --set 'gateway.parentRefs[0].namespace=gateway-system' \
-  --set gateway.http.hostnames[0]=cyoda.example.com \
-  --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com
+  --set 'gateway.http.hostnames[0]=cyoda.example.com' \
+  --set 'gateway.grpc.hostnames[0]=grpc.cyoda.example.com'
 ```
 
 The chart now renders `HTTPRoute` and `GRPCRoute` resources that
@@ -140,7 +154,7 @@ curl -fsSL https://cyoda.example.com/api/health
 
 # gRPC (via grpcurl)
 grpcurl -insecure grpc.cyoda.example.com:443 list
-# expected: cyoda's gRPC services listed
+# expected: the cyoda gRPC services listed
 ```
 
 If either fails, check:

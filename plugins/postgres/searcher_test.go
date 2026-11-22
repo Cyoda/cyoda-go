@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 var searchModel = spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -20,6 +20,7 @@ func setupSearcher(t *testing.T) (spi.EntityStore, context.Context) {
 	t.Helper()
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("search-tenant")
+	lockModels(t, factory, ctx, searchModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -309,6 +310,7 @@ func TestPGSearcher_OrderByNumericData(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, e := range []struct{ id, data string }{
 		{"a", `{"n":"9"}`},
 		{"b", `{"n":"10"}`},
@@ -338,8 +340,8 @@ func TestPGSearcher_OrderByNumericData(t *testing.T) {
 }
 
 // TestPGSearcher_OrderByCreationDateMeta verifies that the canonical meta path
-// "creationDate" is mapped to the blob key "creation_date", enabling temporal
-// ordering by entity creation time.
+// "creationDate" is mapped to the entities.creation_date column, enabling
+// temporal ordering by entity creation time.
 //
 // Entity IDs are assigned so that chronological (creationDate) order DIFFERS
 // from entity_id lexicographic order: "z" is oldest, "m" is middle, "a" is
@@ -355,6 +357,7 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, id := range []string{"z", "m", "a"} {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
@@ -363,9 +366,11 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 			t.Fatalf("Save %s: %v", id, err)
 		}
 	}
-	// Patch creation_date directly so each entity has a distinct, ordered
-	// timestamp (instants ≥ 1 ms apart). "z" is oldest, "a" is newest —
-	// the inverse of entity_id lexicographic order.
+	// Patch the creation_date COLUMN directly so each entity has a distinct,
+	// ordered timestamp (instants ≥ 1 ms apart). "z" is oldest, "a" is
+	// newest — the inverse of entity_id lexicographic order. The column,
+	// not doc->'_meta'->>'creation_date', is the source of truth
+	// (entity_doc.go no longer serializes the date into the document).
 	pool := factory.Pool()
 	for _, pair := range []struct{ id, ts string }{
 		{"z", "2020-01-01T00:00:00.000Z"},
@@ -373,7 +378,7 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 		{"a", "2021-01-01T00:00:00.000Z"},
 	} {
 		if _, err := pool.Exec(ctx,
-			`UPDATE entities SET doc = jsonb_set(doc, '{_meta,creation_date}', to_jsonb($1::text))
+			`UPDATE entities SET creation_date = $1::timestamptz
 			 WHERE tenant_id = $2 AND entity_id = $3`,
 			pair.ts, tenant, pair.id); err != nil {
 			t.Fatalf("patch creation_date %s: %v", pair.id, err)
@@ -406,6 +411,7 @@ func TestPGSearcher_OrderByStateMeta(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, e := range []struct {
 		id    string
 		state string
@@ -461,6 +467,7 @@ func TestPGSearcher_OrderByMetaEmptyTransitionLast(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	// Both entities start with transition="" (zero value, stored without omitempty).
 	// We then patch e-has to a non-empty value so the two entities differ.
 	for _, id := range []string{"e-has", "e-empty"} {
@@ -508,6 +515,7 @@ func TestPGSearcher_OrderByNullsLast(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, e := range []struct{ id, data string }{
 		{"has-score", `{"score":"50","present":true}`},
 		{"high-score", `{"score":"90","present":true}`},
@@ -550,6 +558,7 @@ func TestPGSearcher_OrderByTiebreaker(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, id := range []string{"z-ent", "a-ent", "m-ent"} {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
@@ -587,6 +596,7 @@ func TestPGSearcher_OrderByPointInTime(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, id := range []string{"pit-1", "pit-2"} {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: id, ModelRef: ref, State: "NEW"},
@@ -596,7 +606,11 @@ func TestPGSearcher_OrderByPointInTime(t *testing.T) {
 		}
 	}
 	// Patch entity_versions: set valid_time before the PIT snapshot and set
-	// distinct creation_date values so temporal ordering is deterministic.
+	// distinct creation_date COLUMN values so temporal ordering is
+	// deterministic. The column, not doc->'_meta'->>'creation_date', is the
+	// source of truth (entity_doc.go no longer serializes the date into the
+	// document); the PIT base query's lateral projects ev.creation_date
+	// directly (search_base.go).
 	pool := factory.Pool()
 	for _, pair := range []struct{ id, ts, createdAt string }{
 		{"pit-1", baseTS, "2020-01-01T00:00:00Z"},
@@ -605,7 +619,7 @@ func TestPGSearcher_OrderByPointInTime(t *testing.T) {
 		if _, err := pool.Exec(ctx,
 			`UPDATE entity_versions
 			 SET valid_time = $1,
-			     doc = jsonb_set(doc, '{_meta,creation_date}', to_jsonb($2::text))
+			     creation_date = $2::timestamptz
 			 WHERE tenant_id = $3 AND entity_id = $4`,
 			pair.ts, pair.createdAt, tenant, pair.id); err != nil {
 			t.Fatalf("patch entity_versions %s: %v", pair.id, err)
@@ -702,6 +716,7 @@ func TestPGSearcher_TenantIsolation(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctxA := ctxWithTenant("tenant-a")
 	ctxB := ctxWithTenant("tenant-b")
+	lockModels(t, factory, ctxA, searchModel)
 
 	storeA, err := factory.EntityStore(ctxA)
 	if err != nil {
@@ -825,6 +840,7 @@ func pitSearchSetup(t *testing.T) (spi.EntityStore, context.Context, time.Time) 
 	)
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant(tenant)
+	lockModels(t, factory, ctx, searchModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -898,6 +914,7 @@ func TestPGSearcher_OrderByNullsLastDesc(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, e := range []struct{ id, data string }{
 		{"has-score", `{"score":"50","present":true}`},
 		{"high-score", `{"score":"90","present":true}`},
@@ -940,6 +957,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	lockModels(t, factory, ctx, ref)
 	for _, e := range []struct{ id, data string }{
 		{"t", `{"active":true,"tag":"y"}`},
 		{"f", `{"active":false,"tag":"y"}`},
@@ -995,6 +1013,7 @@ func newBoundedSearchStore(t *testing.T) (spi.EntityStore, context.Context) {
 	t.Helper()
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("bounded-search-tenant")
+	lockModels(t, factory, ctx, boundedSearchModel)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

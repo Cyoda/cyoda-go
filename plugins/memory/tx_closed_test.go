@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // Every read and bulk-write entry point refuses a committed transaction's
@@ -15,6 +15,7 @@ import (
 // merged view of a transaction that no longer exists.
 func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-closed"), spi.ModelRef{EntityName: "m-closed", ModelVersion: "1"})
 	ctx := tenantCtx(spi.TenantID("tenant-closed"))
 	ref := spi.ModelRef{EntityName: "m-closed", ModelVersion: "1"}
 	store, err := f.EntityStore(ctx)
@@ -73,11 +74,11 @@ func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
 			return it.Err()
 		}},
 		{"Count", func(c context.Context) error {
-			_, err := store.Count(c, ref)
+			_, err := store.Count(c, ref, nil)
 			return err
 		}},
 		{"CountByState", func(c context.Context) error {
-			_, err := store.CountByState(c, ref, nil)
+			_, err := store.CountByState(c, ref, nil, nil)
 			return err
 		}},
 		{"DeleteAll", func(c context.Context) error {

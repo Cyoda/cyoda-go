@@ -7,15 +7,52 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/app"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
+
+// TestConfig_NoBootstrapClient verifies that no credential is defined by
+// configuration except the signing key (`cyoda token` signs the first admin
+// token): a jwt-mode app started with the former bootstrap-client variables
+// set creates no client from them, and a client_credentials grant with them
+// is refused.
+func TestConfig_NoBootstrapClient(t *testing.T) {
+	t.Setenv("CYODA_BOOTSTRAP_CLIENT_ID", "leftover")
+	t.Setenv("CYODA_BOOTSTRAP_CLIENT_SECRET", "leftover-secret")
+	t.Setenv("CYODA_BOOTSTRAP_TENANT_ID", "leftover-tenant")
+	t.Setenv("CYODA_BOOTSTRAP_USER_ID", "leftover-user")
+	t.Setenv("CYODA_BOOTSTRAP_ROLES", "ROLE_ADMIN,ROLE_M2M")
+	a := jwtApp(t)
+	if _, err := a.AuthService().M2MClientStore().Authenticate(context.Background(), "leftover-tenant", "leftover", "leftover-secret"); !errors.Is(err, auth.ErrInvalidClient) {
+		t.Fatalf("M2MClientStore().Authenticate(leftover) err = %v, want ErrInvalidClient", err)
+	}
+	if l, err := a.AuthService().M2MClientStore().List(context.Background(), "leftover-tenant"); err != nil || len(l) != 0 {
+		t.Fatalf("leftover-tenant clients: %v %v, want none", l, err)
+	}
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/tenants/leftover-tenant/oauth/token", strings.NewReader("grant_type=client_credentials"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("leftover", "leftover-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("client_credentials with the leftover client: status %d, want 401", resp.StatusCode)
+	}
+}
 
 func TestHealthEndpoint(t *testing.T) {
 	cfg := app.DefaultConfig()
@@ -53,16 +90,13 @@ func TestDIWiring(t *testing.T) {
 		{"StoreFactory", a.StoreFactory() != nil},
 		{"TransactionManager", a.TransactionManager() != nil},
 		{"AuthenticationService", a.AuthenticationService() != nil},
-		{"AuthorizationService", a.AuthorizationService() != nil},
 		{"WorkflowEngine", a.WorkflowEngine() != nil},
 		{"SearchService", a.SearchService() != nil},
-		{"AuditService", a.AuditService() != nil},
 		{"StoreFactory.MessageStore", func() bool {
 			ctx := ctxWithTenant("test-tenant")
 			ms, err := a.StoreFactory().MessageStore(ctx)
 			return err == nil && ms != nil
 		}()},
-		{"ClusterService", a.ClusterService() != nil},
 	}
 
 	for _, c := range checks {
@@ -171,10 +205,6 @@ func jwtApp(t *testing.T) *app.App {
 	cfg.IAM.JWTSigningKey = generateTestPEM(t)
 	cfg.IAM.JWTIssuer = "cyoda"
 	cfg.IAM.JWTExpiry = 3600
-	cfg.Bootstrap.ClientID = "test-bootstrap"
-	cfg.Bootstrap.ClientSecret = "test-secret-that-is-long-enough-for-bcrypt"
-	cfg.Bootstrap.TenantID = "test-tenant"
-	cfg.Bootstrap.Roles = "ROLE_ADMIN,ROLE_M2M"
 	return app.New(cfg)
 }
 
@@ -237,7 +267,7 @@ func TestAuthPublicEndpointsNoAuth(t *testing.T) {
 	}
 
 	// Token endpoint should return 401 (bad credentials), not 404 or 500
-	req, _ := http.NewRequest("POST", srv.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+	req, _ := http.NewRequest("POST", srv.URL+"/tenants/acme/oauth/token", strings.NewReader("grant_type=client_credentials"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -250,35 +280,62 @@ func TestAuthPublicEndpointsNoAuth(t *testing.T) {
 	}
 }
 
-// TestOIDCSubsystemWired verifies that app.New succeeds with the full OIDC
-// subsystem wired in JWT IAM mode. It confirms startup hooks do not crash and
-// that the chained validator is active by sending a request with an invalid
-// token — if the chain is working, the response is 401 (not 500 or 404).
-func TestOIDCSubsystemWired(t *testing.T) {
-	a := jwtApp(t)
+// TestMockMode_TokenEndpoint_Returns501: mock IAM mode mounts no token
+// handler, so POST /tenants/{tenant}/oauth/token reaches the generated router, which answers
+// 501 NOT_IMPLEMENTED: mock mode issues no token.
+func TestMockMode_TokenEndpoint_Returns501(t *testing.T) {
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = ""
+	a := app.New(cfg)
 	srv := httptest.NewServer(a.Handler())
 	defer srv.Close()
 
-	// Confirm the app started without panic (jwtApp would os.Exit on failure).
-	if a.AuthenticationService() == nil {
-		t.Fatal("AuthenticationService is nil — OIDC wiring failed")
-	}
-
-	// A request with a syntactically valid but unrecognised Bearer token should
-	// return 401 (chained validator falls through all validators → auth failure).
-	// 500 would indicate a panic in the chain; 404 would mean the route is
-	// missing entirely.
-	req, _ := http.NewRequest("GET", srv.URL+"/account", nil)
-	req.Header.Set("Authorization", "Bearer not.a.real.token")
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/tenants/acme/oauth/token", strings.NewReader("grant_type=client_credentials"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("token request failed: %v", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	var body struct {
+		Properties map[string]any `json:"properties"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != http.StatusNotImplemented || body.Properties["errorCode"] != "NOT_IMPLEMENTED" {
+		t.Fatalf("mock-mode POST /tenants/{tenant}/oauth/token: status %d errorCode %v, want 501 NOT_IMPLEMENTED",
+			resp.StatusCode, body.Properties["errorCode"])
+	}
+}
 
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("want 401 for invalid token with OIDC chain, got %d", resp.StatusCode)
+// jwtAppWithKey is jwtApp, also returning the signing key.
+func jwtAppWithKey(t *testing.T) (*app.App, *rsa.PrivateKey) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
 	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = ""
+	cfg.IAM.Mode = "jwt"
+	cfg.IAM.JWTSigningKey = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	cfg.IAM.JWTIssuer = "cyoda"
+	cfg.IAM.JWTExpiry = 3600
+	return app.New(cfg), key
+}
+
+// mintAppToken signs a token for tenant acme with the given roles.
+func mintAppToken(t *testing.T, key *rsa.PrivateKey, roles ...string) string {
+	t.Helper()
+	tok, err := auth.MintOperatorToken(context.Background(), key, auth.OperatorTokenRequest{
+		Tenant: "acme", UserID: "tester", Roles: roles, TTL: 5 * time.Minute, Issuer: "cyoda"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
 }
 
 func ctxWithTenant(tid spi.TenantID) context.Context {
@@ -295,6 +352,7 @@ func TestMultiTenantAPIIsolation(t *testing.T) {
 
 	ctxA := ctxWithTenant("tenant-A")
 	ctxB := ctxWithTenant("tenant-B")
+	spitest.EnsureLockedModel(t, factory, ctxA, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 
 	storeA, err := factory.EntityStore(ctxA)
 	if err != nil {
@@ -313,7 +371,9 @@ func TestMultiTenantAPIIsolation(t *testing.T) {
 		},
 		Data: []byte(`{"tenant": "A"}`),
 	}
-	storeA.Save(ctxA, entityA)
+	if _, err := storeA.Save(ctxA, entityA); err != nil {
+		t.Fatalf("tenant-A save: %v", err)
+	}
 
 	_, err = storeB.Get(ctxB, "e-001")
 	if err == nil {

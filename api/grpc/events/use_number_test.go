@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/api/grpc/events"
 )
 
 // Regression tests for precision loss above 2^53.

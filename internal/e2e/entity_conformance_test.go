@@ -1,7 +1,7 @@
 package e2e_test
 
 // entity_conformance_test.go — E2E tests that exercise the entity endpoints so
-// the ambient openapivalidator (enforce mode) binds their response shapes. Where
+// the ambient openapivalidator binds their response shapes. Where
 // spec and server disagreed, each finding was reconciled per ADR 0003 Decision 7
 // (fix whichever side left the contract), not by assuming the server is always
 // right — see docs/superpowers/specs/2026-07-02-openapi-contract-reconciliation-design.md §2.
@@ -121,7 +121,7 @@ func TestGetOneEntity_ReturnsEnvelope(t *testing.T) {
 	}
 
 	// Minimal presence check: type/data/meta must exist at the top level.
-	// The ambient openapivalidator (enforce mode) covers the full Envelope +
+	// The ambient openapivalidator covers the full Envelope +
 	// EntityMetadata schema — per-field meta assertions are not needed here.
 	if _, ok := envelope["type"]; !ok {
 		t.Errorf("getOneEntity: missing 'type' field; got keys: %v", keys(envelope))
@@ -161,7 +161,7 @@ func TestGetAllEntities_ReturnsJSONArray(t *testing.T) {
 	}
 
 	// Minimal presence check per element: type/data/meta must exist.
-	// The ambient openapivalidator (enforce mode) covers the full Envelope +
+	// The ambient openapivalidator covers the full Envelope +
 	// EntityMetadata schema — per-field meta assertions are not needed here.
 	for i, item := range arr {
 		if _, ok := item["type"]; !ok {

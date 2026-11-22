@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 	"github.com/gofrs/flock"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
@@ -22,17 +22,25 @@ import (
 // Option is a functional option for newStoreFactory.
 type Option func(*StoreFactory)
 
-// WithClock injects a custom Clock into the factory.
-// Used by conformance tests to advance time deterministically.
+// WithClock injects the PHYSICAL clock into the factory: the clock behind
+// liveness (scheduler owner heartbeats and sweeps, search-job heartbeats and
+// stale reclaim). Used by conformance tests to advance time deterministically.
 func WithClock(c Clock) Option {
 	return func(f *StoreFactory) { f.clock = c }
 }
 
-// ApplyFunc replays an opaque SchemaDelta onto a base schema and
-// returns the new schema bytes. Production wiring uses schema.Apply
-// from internal/domain/model/schema; the SPI keeps deltas opaque so
-// the catalog stays out of the plugin.
-type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
+// WithBusinessClock injects the BUSINESS clock: the one behind submit time,
+// snapshot time, consistency time and retention cutoffs. It defaults to the
+// physical clock.
+func WithBusinessClock(c Clock) Option {
+	return func(f *StoreFactory) { f.bizClock = c }
+}
+
+// ApplyFunc replays opaque SchemaDeltas, in order, onto a base schema in
+// one call and returns the new schema bytes; an empty list re-encodes base.
+// Production wiring uses schema.ApplyMany from internal/domain/model/schema;
+// the SPI keeps deltas opaque so the catalog stays out of the plugin.
+type ApplyFunc func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)
 
 // WithApplyFunc installs the replay function used by ExtendSchema.
 // Must be called when the caller intends to use ExtendSchema; until
@@ -49,7 +57,7 @@ func WithApplyFunc(fn ApplyFunc) Option {
 // The parameter is the unnamed function type (not sqlite.ApplyFunc)
 // so that an interface type-assertion in app/app.go can satisfy the
 // setter uniformly across plugins.
-func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
 	if f.applyFunc != nil {
 		panic("sqlite: SetApplyFunc called twice")
 	}
@@ -61,10 +69,16 @@ type StoreFactory struct {
 	db        *sql.DB
 	readDB    *sql.DB
 	fileLock  *flock.Flock
-	clock     Clock
+	clock     Clock // physical: liveness
+	bizClock  Clock // business: stamps and retention; defaults to clock
 	cfg       config
 	tm        *transactionManager
 	applyFunc ApplyFunc
+	// uuids is the id generator the transaction manager was installed with
+	// (initTransactionManager is the sole caller of newTransactionManager).
+	// StateMachineAuditStore.Record reads it to assign the event id (see
+	// spi.StateMachineAuditStore).
+	uuids spi.UUIDGenerator
 
 	closeMu sync.Mutex
 	closed  bool
@@ -126,9 +140,13 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	}
 
 	// readDB is a second, dedicated *sql.DB against the same file, used
-	// exclusively for reads (GetPage, GetVersionMetadata,
-	// GetVersionByTransaction, non-tx Iterate). It never opens a
-	// transaction, so _txlock never applies to it.
+	// exclusively for reads: the entity store's committed reads (pages,
+	// counts, version history, non-tx iteration and the committed half of an
+	// in-transaction cursor), grouped stats and the scheduled-task query.
+	// Most are single statements. Two need one snapshot across several
+	// statements and open a deferred read transaction here: the model
+	// store's Get (the model doc with its extension log) and the async
+	// search store's GetResultIDs.
 	//
 	// Why a separate pool at all: a long-lived, undrained Iterate cursor
 	// checks out its connection for the life of the iterator. Sharing db's
@@ -148,9 +166,10 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	//
 	// _txlock=deferred, not the writer DSN's immediate: a transaction opened
 	// here must never take the write lock. GetResultIDs asks for a read-only
-	// transaction, which the driver already begins DEFERRED, but a future
-	// caller passing nil TxOptions would inherit immediate from a shared DSN
-	// and start contending with the writer from a pool sized for readers.
+	// transaction, which the driver already begins DEFERRED; the model
+	// store's Get passes nil TxOptions and gets DEFERRED from this DSN, where
+	// a shared DSN would give it immediate and set it contending with the
+	// writer from a pool sized for readers.
 	// query_only(1) in readerPragmaParams makes the same guarantee at the
 	// statement level.
 	readerDSN := fmt.Sprintf("file:%s?_txlock=deferred", cfg.Path) + readerPragmaParams(cfg)
@@ -186,6 +205,9 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	}
 	for _, o := range opts {
 		o(f)
+	}
+	if f.bizClock == nil {
+		f.bizClock = f.clock
 	}
 	f.startWALMaintenance()
 	return f, nil
@@ -357,7 +379,7 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelStore{db: f.db, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
+	return &modelStore{db: f.db, readDB: f.readDB, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
 }
 
 func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, error) {
@@ -390,19 +412,18 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 	if err != nil {
 		return nil, err
 	}
-	return &smAuditStore{db: f.db, tenantID: tid}, nil
+	return &smAuditStore{db: f.db, tenantID: tid, uuids: f.uuids, tm: f.tm}, nil
 }
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
-	return &asyncSearchStore{db: f.db, readDB: f.readDB, clock: f.clock}, nil
+	return &asyncSearchStore{db: f.db, readDB: f.readDB, clock: f.clock, biz: f.bizClock}, nil
 }
 
-// ScheduledTaskStore returns the durable ScheduledTask store. Unlike the
-// per-tenant accessors above, it does not resolve a tenant from ctx: ScanDue
-// is cross-tenant by design and Upsert/Delete/Reconcile carry the tenant on
-// the task/request itself (see spi.ScheduledTaskStore godoc).
+// ScheduledTaskStore returns the scheduled-task store. No tenant is resolved
+// from ctx: every tenant-facing method takes its tenant as an argument, and
+// ClaimDue, GiveBackIdle and the owner and sweep methods are cross-tenant.
 func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskStore, error) {
-	return &scheduledTaskStore{db: f.db, tm: f.tm}, nil
+	return &scheduledTaskStore{db: f.db, readDB: f.readDB, tm: f.tm, clock: f.clock}, nil
 }
 
 // TransactionManager implements spi.StoreFactory.
@@ -412,6 +433,13 @@ func (f *StoreFactory) TransactionManager(_ context.Context) (spi.TransactionMan
 		return nil, fmt.Errorf("sqlite: TransactionManager not initialized")
 	}
 	return f.tm, nil
+}
+
+// Ping implements spi.StoreFactory. It checks the read handle, which is a
+// separate pool from the writer and so answers while a write is in progress.
+// After Close the handle is closed and the ping fails.
+func (f *StoreFactory) Ping(ctx context.Context) error {
+	return f.readDB.PingContext(ctx)
 }
 
 func (f *StoreFactory) Close() error {
@@ -444,26 +472,31 @@ func (f *StoreFactory) SupportsCompositeUniqueKeys() bool { return true }
 // initTransactionManager installs the SI+FCW transaction manager on the factory.
 // Called by Plugin.NewFactory after the factory is created.
 // Seeds lastSubmitTime from the database to maintain monotonicity across restarts.
-func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
+func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) error {
+	f.uuids = uuids
 	f.tm = newTransactionManager(f, uuids)
-	f.tm.seedLastSubmitTime()
+	return f.tm.seedLastSubmitTime()
 }
 
 // NewStoreFactoryForTest creates a factory with auto-migrate enabled and the
 // given path. Intended for test use only.
 func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) (*StoreFactory, error) {
 	cfg := config{
-		Path:                   dbPath,
-		AutoMigrate:            true,
-		BusyTimeout:            5 * time.Second,
-		CacheSizeKiB:           64000,
-		ReaderPoolSize:         defaultReaderPoolSize(),
-		SchemaExtendMaxRetries: 8,
+		Path:           dbPath,
+		AutoMigrate:    true,
+		BusyTimeout:    5 * time.Second,
+		CacheSizeKiB:   64000,
+		ReaderPoolSize: defaultReaderPoolSize(),
+		// The shipped default; a test that needs another interval sets it.
+		SchemaSavepointInterval: defaultSchemaSavepointInterval,
 	}
 	f, err := newStoreFactory(ctx, cfg, opts...)
 	if err != nil {
 		return nil, err
 	}
-	f.initTransactionManager(&defaultUUIDGenerator{})
+	if err := f.initTransactionManager(&defaultUUIDGenerator{}); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("sqlite: %w", err)
+	}
 	return f, nil
 }

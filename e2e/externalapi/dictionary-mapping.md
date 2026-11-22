@@ -16,6 +16,9 @@ Status vocabulary:
   Schema check than scenario run.
 - `gap_on_our_side` — endpoint or capability missing in cyoda-go
   today; scenario cannot run. See `notes`.
+- `not_applicable` — the dictionary scenario describes behaviour that is
+  not part of the cyoda-go contract (e.g. Cloud's `entitySearchLimit`);
+  the scenario is skipped by design. See `notes`.
 
 ---
 
@@ -96,10 +99,10 @@ Status vocabulary:
 |-----------|-----------------|-------|
 | delete/01-single-by-id | new:RunExternalAPI_06_01_DeleteSingle | tranche 1 |
 | delete/02-all-by-model-version | new:RunExternalAPI_06_02_DeleteByModel | tranche 1 |
-| delete/03-by-condition-jsonpath-equals | gap_on_our_side | The OpenAPI generator emits `DeleteEntitiesJSONRequestBody = AbstractConditionDto` (`api/generated.go:DeleteEntitiesJSONRequestBody`), but `internal/domain/entity/handler.go:DeleteEntities` does not read the body — it only consults `DeleteEntitiesParams` (`transactionSize`/`pointInTime`/`verbose`) and calls `DeleteAllEntities(name, version)`. Implementing this means parsing the existing `AbstractConditionDto` typedef, extending the service with a condition-aware delete path, and propagating to the storage SPI. |
-| delete/04-by-condition-not-null | gap_on_our_side | same as 06/03 — handler ignores the existing `AbstractConditionDto` body type |
-| delete/05-by-condition-at-point-in-time-too-many-entities | gap_on_our_side | same as 06/03 + `entitySearchLimit` enforcement on condition+pointInTime deletes is missing |
-| delete/06-all-by-model-at-point-in-time | new:RunExternalAPI_06_06_DeleteAtPointInTime (skipped pending #124) | tranche 1 — test body in place; t.Skip until #124 ships in v0.7.0. `Handler.DeleteEntities` ignores `params.PointInTime`; storage SPI has no `DeleteAllAsAt`. Cross-repo fix (SPI tag + plugin impls + handler wiring) tracked in #124. |
+| delete/03-by-condition-jsonpath-equals | pending:tranche-2 | `DELETE /entity/{name}/{version}` reads the condition body (`internal/domain/entity/handler.go:586` into `service.go:1310`); no `RunExternalAPI_06_03` scenario exists yet. |
+| delete/04-by-condition-not-null | pending:tranche-2 | same as 06/03: the condition body is read; no `RunExternalAPI_06_04` scenario exists yet. |
+| delete/05-by-condition-at-point-in-time-too-many-entities | not_applicable | cyoda-go has no entitySearchLimit, so a conditional delete has no match-count limit to exceed. A client that wants the guard counts at an instant (statistics with `pointInTime`) and deletes at the same `pointInTime`. |
+| delete/06-all-by-model-at-point-in-time | new:RunExternalAPI_06_06_DeleteAtPointInTime | `DELETE /entity/{name}/{version}?pointInTime=` selects the entities that existed at the instant and deletes their current rows; an instant later than the consistency time is refused. |
 
 ---
 
@@ -120,7 +123,7 @@ Status vocabulary:
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
 | wf-import/01-simple-automated-transition | new:RunExternalAPI_08_01_SimpleAutomatedTransition | tranche 3; `different_naming_same_level` schema adaptations: dictionary `to`/`automated`/`criterion shape` → cyoda-go `next`/`manual:false`/`{type:"simple",jsonPath,operatorType,value}` |
-| wf-import/02-defaults-applied-and-returned | new:RunExternalAPI_08_02_DefaultsAppliedAndReturned | tranche 3 |
+| wf-import/02-defaults-applied-and-returned | new:RunExternalAPI_08_02_DefaultsAppliedAndReturned | tranche 3; asserts `active` true and `manual` as sent. Adaptations: cyoda-go's export leaves a false `disabled` out, so `disabled` is asserted false or absent; the import carries no function criterion and no processors, so the dictionary's `executionMode` default is not asserted |
 | wf-import/03-advanced-criteria-and-processors | new:RunExternalAPI_08_03_AdvancedCriteriaAndProcessors | tranche 3; group-criterion `clauses` → `conditions` field |
 | wf-import/04-strategy-replace | new:RunExternalAPI_08_04_StrategyReplace | tranche 3 |
 | wf-import/05-strategy-activate | new:RunExternalAPI_08_05_StrategyActivate | tranche 3 |
@@ -130,22 +133,22 @@ Status vocabulary:
 
 ## 09-workflow-externalization.yaml
 
-The `parity.BackendFixture` exposes a compute-tenant matched to the running `cmd/compute-test-client`; the workflow externalization scenarios use it to exercise the gRPC streaming path without a separate process.
+The `parity.BackendFixture` exposes a compute-tenant matched to the running `cmd/compute-test-client`; scenarios 09/01-09/04 and 09/13-09/15 use it to exercise the gRPC streaming path. Scenarios 09/09-09/12 instead start further compute clients (`parity.StartComputeClientOrSkip`) under a fresh tenant, on a tag of their own, so that they can script a client's behaviour and count the requests each client received; a fixture that cannot start compute clients skips them.
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
 | ext/01-sync-processor-success | new:RunExternalAPI_09_01_SyncProcessorSuccess | tranche 3 |
 | ext/02-sync-processor-exception-rolls-back | new:RunExternalAPI_09_02_SyncProcessorExceptionRollsBack | tranche 3 — `equiv_or_better`: cyoda-go emits `WORKFLOW_FAILED` @400 (specific code, transaction cancelled, entity not persisted); dictionary's implicit 5xx is more generic |
 | ext/03-async-same-tx-exception-rolls-back | new:RunExternalAPI_09_03_AsyncSameTxExceptionRollsBack | tranche 3 — same `WORKFLOW_FAILED` @400 as 09/02 (engine treats SYNC + ASYNC_SAME_TX exceptions identically) |
-| ext/04-async-new-tx-exception-keeps-initial-save | new:RunExternalAPI_09_04_AsyncNewTxExceptionKeepsInitial | tranche 3 — cyoda-go's `ASYNC_NEW_TX` failures are non-fatal per `engine.go`; entity reaches DONE matching dictionary's "initial save survives" semantic |
+| ext/04-async-new-tx-exception-keeps-initial-save | new:RunExternalAPI_09_04_AsyncNewTxExceptionKeepsInitialSave | tranche 3 — cyoda-go's `ASYNC_NEW_TX` failures are non-fatal per `engine.go`; entity reaches PROCESSED matching dictionary's "initial save survives" semantic |
 | ext/05-sync-error-flag-rolls-back | (skipped) | pending compute-test-client error-flag processor; processorFunc signature doesn't expose ProcessorResponse warnings/errors; out of tranche-3 scope |
 | ext/06-async-same-tx-error-flag-rolls-back | (skipped) | same as 09/05 (ASYNC_SAME_TX) |
 | ext/07-async-new-tx-error-flag-keeps-initial-save | (skipped) | same as 09/05 (ASYNC_NEW_TX) |
 | ext/08-no-external-registered-fails | new:RunExternalAPI_09_08_NoExternalRegisteredFails | tranche 3 — `equiv_or_better`: cyoda-go emits `NO_COMPUTE_MEMBER_FOR_TAG` @503 retryable ("no matching calculation member"); fresh tenant has no calc member registered. Now classifies the no-member case as a transient compute-infra condition (retryable 503), not a client error — strictly stronger than the earlier `WORKFLOW_FAILED` @400 mapping, which mislabelled an unreachable/unregistered compute node as a bad request. |
-| ext/09-external-disconnect-succeeds-on-retry | (skipped) | multi-member orchestration not in tranche-3 fixture |
-| ext/10-external-timeout-failover | (skipped) | no per-call timeout config visible in cyoda-go; non-deterministic without one |
-| ext/11-processing-node-disconnects-mid-request | (skipped) | needs deterministic mid-request gRPC disconnect (fixture orchestration) |
-| ext/12-externalized-criterion-skips-call-when-not-matched | new:RunExternalAPI_09_12_ExternalizedCriterionSkipsCall | tranche 3 — uses externalized `always-false` criterion; entity stays at CREATED |
+| ext/09-external-disconnect-succeeds-on-retry | new:RunExternalAPI_09_09_ExternalDisconnectSucceedsOnRetry | two compute clients on one tag: the first drops its stream on receiving the work; the processor is declared `idempotent`, so the second client serves the same request (same request id) and the entity reaches ACTIVE |
+| ext/10-external-timeout-failover | new:RunExternalAPI_09_10_ExternalTimeoutFailover | two compute clients on one tag: the first never answers; after the idempotent processor's `responseTimeoutMs` (300) the second client serves the same request and the entity is created |
+| ext/11-processing-node-disconnects-mid-request | new:RunExternalAPI_09_11_ProcessingNodeDisconnectsMidRequest | two compute clients on one tag, the first drops its stream with the request in hand. Not `idempotent`: 503 `COMPUTE_MEMBER_DISCONNECTED` retryable, the second client is never asked, no entity is created. `idempotent`: the second client serves the same request |
+| ext/12-externalized-criterion-skips-call-when-not-matched | new:RunExternalAPI_09_12_ExternalizedCriterionSkipsCall | mirrors Cloud's `testExternalizedCriteriaConditionSkipsExternalCallWhenNotMatched`: a function criterion (`always-true`) with the pre-check `$.flag == true`, counted at a compute client started for the scenario. `flag:false`: 0 criterion requests, entity stays at CREATED. `flag:true`: exactly 1 criterion request, entity reaches PROCESSED, `TRANSITION_MAKE` records the callout |
 
 ---
 
@@ -179,7 +182,7 @@ The `parity.BackendFixture` exposes a compute-tenant matched to the running `cmd
 | neg/04-get-single-entity-at-time-before-creation | new:RunExternalAPI_12_04_GetEntityAtTimeBeforeCreation | tranche 2 / #132 — parity-client surface delivered (`GetEntityAtRaw` now returns `(int, []byte, error)`); test asserts ENTITY_NOT_FOUND@404. equiv_or_better. |
 | neg/05-get-single-entity-with-bogus-transaction-id | new:RunExternalAPI_12_05_GetEntityWithBogusTransactionID | tranche 2 — server-side gap fixed in #150: a bogus `transactionId` now returns `ENTITY_NOT_FOUND@404` (`equiv_or_better`, matches `EntityNotFoundException`). Parity-client `GetEntityByTransactionIDRaw` helper delivered via #132. |
 | neg/06-get-changes-for-missing-entity | new:RunExternalAPI_12_06_GetChangesForMissingEntity | tranche 2 — `equiv_or_better`: cyoda-go emits `ENTITY_NOT_FOUND` @404; matches dictionary's `EntityNotFoundException` semantically. Tightened assertion. |
-| neg/07-condition-delete-at-pit-too-many-matches | gap_on_our_side (#124) | tranche 2 — t.Skip pending #124. Whole delete-by-condition surface is a v0.7.0 server-side gap (handler ignores condition body and pointInTime). |
+| neg/07-condition-delete-at-pit-too-many-matches | not_applicable | cyoda-go has no entitySearchLimit, so a conditional delete has no match-count limit to exceed (t.Skip). A client that wants the guard counts at an instant (statistics with `pointInTime`) and deletes at the same `pointInTime`. |
 | neg/08-update-with-unknown-transition | new:RunExternalAPI_12_08_UpdateUnknownTransition | tranche 2 — `equiv_or_better` after wiring `TRANSITION_NOT_FOUND` into the engine-failure code path (review C1 fix). cyoda-go emits `TRANSITION_NOT_FOUND` @400 — matches dictionary's `(IllegalTransition\|TransitionNotFound)` semantically. |
 | neg/09-get-model-after-delete | new:RunExternalAPI_12_09_GetModelAfterDelete | tranche 2 — `different_naming_same_level`: cyoda-go has no per-model GET endpoint; test verifies via `ListModels` and confirms absence. Semantically equivalent to per-model 404; reconcile in tranche-5 cloud smoke if cyoda-go ever adds a per-model GET. |
 | neg/10-import-workflow-on-unknown-model | new:RunExternalAPI_12_10_ImportWorkflowOnUnknownModel | tranche 2 negative path; resolved by #131. cyoda-go now returns HTTP 404 with `MODEL_NOT_FOUND` for workflow imports on non-existent models, matching dictionary's `(ModelNotFound\|EntityModelNotFound)` regex. `equiv_or_better`. |

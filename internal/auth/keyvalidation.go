@@ -7,6 +7,8 @@ import (
 	"math"
 	"math/big"
 	"regexp"
+
+	"github.com/cyoda/cyoda-go-spi/strictjson"
 )
 
 // trustedKIDPattern is the character whitelist enforced on trusted-key
@@ -21,6 +23,17 @@ var trustedKIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 // MatchesTrustedKIDPattern is the exported form for adapter consumption.
 func MatchesTrustedKIDPattern(kid string) bool { return trustedKIDPattern.MatchString(kid) }
 
+// keyPairIDPattern is the form of every key-pair KID: an issued key pair's 16
+// random bytes (newKID) and the bootstrap key's SPKI hash prefix (DeriveKID),
+// both as 32 lowercase hex characters.
+var keyPairIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// MatchesKeyPairIDPattern reports whether kid has the form of a key-pair KID.
+func MatchesKeyPairIDPattern(kid string) bool { return keyPairIDPattern.MatchString(kid) }
+
+// MinRSAModulusBits is the smallest RSA modulus a JWK may carry.
+const MinRSAModulusBits = 2048
+
 // ParseRSAPublicKeyFromJWK is the exported form for adapter consumption.
 // Returns a generic error on non-RSA kty; callers needing the specific
 // UNSUPPORTED_KEY_TYPE response should check kty before calling.
@@ -32,8 +45,14 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	if len(jwkData) == 0 {
 		return nil, fmt.Errorf("empty JWK")
 	}
-	var jwk struct{ Kty, N, E string }
-	if err := json.Unmarshal(jwkData, &jwk); err != nil {
+	// Member names are case-sensitive (RFC 7517 §4); a JWK may carry
+	// members of its own, so the rest are allowed.
+	var jwk struct {
+		Kty string `json:"kty"`
+		N   string `json:"n"`
+		E   string `json:"e"`
+	}
+	if err := strictjson.Decode(jwkData, &jwk, strictjson.AllowUnknownMembers); err != nil {
 		return nil, fmt.Errorf("parse JWK: %w", err)
 	}
 	if jwk.Kty != "RSA" {
@@ -53,6 +72,10 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	if len(nBytes) > maxModulusBytes {
 		return nil, fmt.Errorf("rsa modulus too large: %d bytes (max %d)", len(nBytes), maxModulusBytes)
 	}
+	n := new(big.Int).SetBytes(nBytes)
+	if n.BitLen() < MinRSAModulusBits {
+		return nil, fmt.Errorf("rsa modulus too small: %d bits (min %d)", n.BitLen(), MinRSAModulusBits)
+	}
 	eBytes, err := decodeBase64URL(jwk.E)
 	if err != nil {
 		return nil, fmt.Errorf("invalid e: %w", err)
@@ -61,7 +84,7 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}, nil
+	return &rsa.PublicKey{N: n, E: e}, nil
 }
 
 // validateRSAPublicExponent enforces the integrity invariants on an RSA

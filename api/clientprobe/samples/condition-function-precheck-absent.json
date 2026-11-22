@@ -1,0 +1,10 @@
+{
+  "schema": "QueryConditionDto",
+  "class": "FunctionConditionDto",
+  "value": {
+    "type": "function",
+    "function": {
+      "name": "isPriority"
+    }
+  }
+}

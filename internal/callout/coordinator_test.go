@@ -1,0 +1,861 @@
+package callout
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"reflect"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+)
+
+var _ contract.ExternalProcessingService = (*Coordinator)(nil)
+
+// The owner reads every callout's platform time from its clock: one without a
+// clock is refused when it is built.
+func TestNew_NilClockPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("New with a nil clock did not panic")
+		}
+	}()
+	New(nil, nil, nil, nil, nil, nil, Config{})
+}
+
+// --- the number of tries ---
+
+func TestOwner_RetryPolicyNone_OneTry_OnEveryKindOfCallout(t *testing.T) {
+	kinds := map[string]func(e *env) error{
+		"processor": func(e *env) error {
+			_, err := e.owner.DispatchProcessor(userCtx(tenantA), testEntity(), processorDef("x", "NONE", true), "wf1", "t1", "tx-1")
+			return err
+		},
+		"criterion": func(e *env) error {
+			_, _, err := e.owner.DispatchCriteria(userCtx(tenantA), testEntity(), criterionJSON("x", "NONE"), "TRANSITION", "wf1", "t1", "", "tx-1")
+			return err
+		},
+		"function": func(e *env) error {
+			_, err := e.dispatchFunction(userCtx(tenantA), "x", "NONE")
+			return err
+		},
+	}
+	for name, dispatch := range kinds {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t, Config{FixedNumRetries: 3})
+			first := e.attach(t, "m-1", tenantA, "x", nil) // takes the work, never answers
+			second := e.attach(t, "m-2", tenantA, "x", answers("m-2"))
+
+			err := dispatch(e)
+
+			// Repeat-safe, a second cnode ready to answer — and still one try.
+			if got := appErrOf(t, err).Code; got != common.ErrCodeDispatchTimeout {
+				t.Errorf("code = %s, want the one try's own DISPATCH_TIMEOUT", got)
+			}
+			if first.count() != 1 || second.count() != 0 {
+				t.Errorf("asked m-1 %d times and m-2 %d times, want 1 and 0", first.count(), second.count())
+			}
+		})
+	}
+}
+
+func TestOwner_RetryPolicyFixedOrUnset_OneTryPlusTheConfiguredRetries(t *testing.T) {
+	for _, policy := range []string{"", "FIXED"} {
+		t.Run("retryPolicy="+policy, func(t *testing.T) {
+			e := newEnv(t, Config{FixedNumRetries: 2})
+			var cnodes []*cnode
+			for _, id := range []string{"m-1", "m-2", "m-3", "m-4"} {
+				cnodes = append(cnodes, e.attach(t, id, tenantA, "x", nil))
+			}
+
+			_, err := e.dispatchFunction(userCtx(tenantA), "x", policy)
+
+			asked := 0
+			for _, n := range cnodes {
+				asked += n.count()
+			}
+			if asked != 3 {
+				t.Errorf("%d tries were made, want 1 + 2", asked)
+			}
+			appErr := appErrOf(t, err)
+			if appErr.Code != common.ErrCodeCalloutFailed || !strings.Contains(appErr.Message, "got 3 failures") {
+				t.Errorf("error = %s", appErr.Message)
+			}
+		})
+	}
+}
+
+// No retries configured is one try: the setting is what is added to the first
+// try, and with nothing added the second cnode is never asked.
+func TestOwner_NoRetriesConfigured_OneTry(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 0})
+	first := e.attach(t, "m-1", tenantA, "x", nil) // takes the work, never answers
+	second := e.attach(t, "m-2", tenantA, "x", nil)
+
+	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+
+	if first.count() != 1 || second.count() != 0 {
+		t.Errorf("asked m-1 %d times and m-2 %d times, want 1 and 0", first.count(), second.count())
+	}
+	if got := appErrOf(t, err).Code; got != common.ErrCodeDispatchTimeout {
+		t.Errorf("code = %s, want the one try's own DISPATCH_TIMEOUT", got)
+	}
+}
+
+// --- what the client is told ---
+
+func TestOwner_EveryTryUsed_IsCalloutFailedAndListsTheTries(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 1})
+	e.attach(t, "m-1", tenantA, "x", nil)
+	e.attach(t, "m-2", tenantA, "x", detaches())
+
+	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+
+	appErr := appErrOf(t, err)
+	if appErr.Status != 503 || appErr.Code != common.ErrCodeCalloutFailed || !appErr.Retryable {
+		t.Fatalf("got %d %s retryable=%v, want a retryable 503 CALLOUT_FAILED", appErr.Status, appErr.Code, appErr.Retryable)
+	}
+	want := "CALLOUT_FAILED: the callout could not be completed, got 2 failures: " +
+		"[member<m-1>: DISPATCH_TIMEOUT: function dispatch timed out after 60ms: no response], " +
+		"[member<m-2>: COMPUTE_MEMBER_DISCONNECTED: compute member disconnected during function dispatch]"
+	if appErr.Message != want {
+		t.Errorf("message\n got %s\nwant %s", appErr.Message, want)
+	}
+	var failure *contract.CalloutFailure
+	if !errors.As(err, &failure) || len(failure.Attempts) != 2 {
+		t.Errorf("failure = %+v, want both attempts on it", failure)
+	}
+}
+
+func TestOwner_ExactlyOneAttemptRecorded_IsNotWrapped(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 3})
+	e.attach(t, "m-1", tenantA, "x", nil)
+
+	// Repeat-safe and three tries left, but no other cnode and no patience.
+	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+
+	appErr := appErrOf(t, err)
+	if appErr.Code != common.ErrCodeDispatchTimeout || !appErr.Retryable {
+		t.Errorf("got %s, want the attempt's own retryable DISPATCH_TIMEOUT", appErr.Message)
+	}
+	if strings.Contains(appErr.Message, "member<") {
+		t.Errorf("a single attempt must not be wrapped: %s", appErr.Message)
+	}
+}
+
+func TestOwner_NoAnswer_ProcessorThatIsNotIdempotent_Stops(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 3})
+	e.attach(t, "m-1", tenantA, "x", nil)
+	second := e.attach(t, "m-2", tenantA, "x", answers("m-2"))
+
+	_, err := e.owner.DispatchProcessor(userCtx(tenantA), testEntity(), processorDef("x", "", false), "wf1", "t1", "tx-1")
+
+	if got := appErrOf(t, err).Code; got != common.ErrCodeDispatchTimeout {
+		t.Errorf("code = %s, want the try's own DISPATCH_TIMEOUT", got)
+	}
+	if second.count() != 0 {
+		t.Error("a processor that is not idempotent was given to a second cnode after a hand-off")
+	}
+}
+
+func TestOwner_NoAnswer_IdempotentProcessor_NextCnodeAnswers(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 3})
+	e.attach(t, "m-1", tenantA, "x", detaches())
+	e.attach(t, "m-2", tenantA, "x", answers("m-2"))
+
+	updated, err := e.owner.DispatchProcessor(userCtx(tenantA), testEntity(), processorDef("x", "", true), "wf1", "t1", "tx-1")
+
+	if err != nil {
+		t.Fatalf("DispatchProcessor: %v", err)
+	}
+	if string(updated.Data) != `{"by":"m-2"}` {
+		t.Errorf("entity data = %s, want m-2's answer", updated.Data)
+	}
+}
+
+func TestOwner_MemberFailed_OneTry_AndTheVerdictIsKept(t *testing.T) {
+	yes := true
+	e := newEnv(t, Config{FixedNumRetries: 3})
+	e.attach(t, "m-1", tenantA, "x", fails("rates service is down", &yes))
+	second := e.attach(t, "m-2", tenantA, "x", answers("m-2"))
+
+	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+
+	var failure *contract.CalloutFailure
+	if !errors.As(err, &failure) || failure.Kind != contract.MemberFailed {
+		t.Fatalf("err = %v, want a MemberFailed failure", err)
+	}
+	if failure.Message != "rates service is down" || failure.Retryable == nil || !*failure.Retryable {
+		t.Errorf("failure = %+v, want the cnode's own message and verdict", failure)
+	}
+	if second.count() != 0 {
+		t.Error("a cnode that answered \"failed\" was replaced")
+	}
+}
+
+func TestOwner_SameRequestIDOnEveryTry(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 3})
+	first := e.attach(t, "m-1", tenantA, "x", detaches())
+	second := e.attach(t, "m-2", tenantA, "x", answers("m-2"))
+
+	if _, err := e.dispatchFunction(userCtx(tenantA), "x", ""); err != nil {
+		t.Fatal(err)
+	}
+	ids1, _ := first.seen()
+	ids2, _ := second.seen()
+	if len(ids1) != 1 || len(ids2) != 1 || ids1[0] == "" || ids1[0] != ids2[0] {
+		t.Errorf("request ids = %v and %v, want one id, the same on both tries", ids1, ids2)
+	}
+}
+
+// --- precedence when nothing more can be done ---
+
+func TestOwner_NoCnode_NoPatience_IsNoComputeMemberAtOnce(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 3})
+	start := time.Now()
+
+	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+
+	if !errors.Is(err, contract.ErrNoMatchingMember) {
+		t.Fatalf("err = %v, want ErrNoMatchingMember (503 NO_COMPUTE_MEMBER_FOR_TAG at the classifier)", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("took %v: with no patience the answer is immediate", elapsed)
+	}
+}
+
+func TestOwner_AttemptsOnRecordBeatNoCnode(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 3})
+	e.attach(t, "m-1", tenantA, "x", detaches())
+	e.attach(t, "m-2", tenantA, "x", detaches())
+
+	// Two tries, both cnodes gone, two tries left, nobody else to ask.
+	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+
+	if errors.Is(err, contract.ErrNoMatchingMember) {
+		t.Fatal("\"no compute member\" is reported only when no try was ever made")
+	}
+	appErr := appErrOf(t, err)
+	if appErr.Code != common.ErrCodeCalloutFailed || !strings.Contains(appErr.Message, "got 2 failures") {
+		t.Errorf("error = %s, want CALLOUT_FAILED listing the two attempts", appErr.Message)
+	}
+}
+
+// A pass that made no try because the callout's deadline had already passed
+// looked for no compute member, so it must not replace what a pass that did look
+// reported: with no try ever made the answer is NO_COMPUTE_MEMBER_FOR_TAG.
+func TestProgress_APassStoppedByTheDeadlineDoesNotReplaceNoComputeMember(t *testing.T) {
+	deadlinePassed := &contract.CalloutFailure{
+		Kind:    contract.NoHandOff,
+		Code:    common.ErrCodeDispatchTimeout,
+		Message: common.ErrCodeDispatchTimeout + ": the callout deadline passed before a try could start",
+		Err:     contract.ErrCalloutDeadline,
+	}
+	noCnode := &contract.CalloutFailure{
+		Kind:    contract.NoHandOff,
+		Code:    common.ErrCodeNoComputeMemberForTag,
+		Message: common.ErrCodeNoComputeMemberForTag + `: no compute member for tags "x"`,
+		Err:     contract.ErrNoMatchingMember,
+	}
+
+	t.Run("the deadline does not overwrite what a pass that looked found", func(t *testing.T) {
+		p := &progress{}
+		p.noTry(noCnode)
+		p.noTry(deadlinePassed)
+		if got := p.stop(context.Background()); !errors.Is(got, contract.ErrNoMatchingMember) {
+			t.Errorf("stop = %v, want the NO_COMPUTE_MEMBER_FOR_TAG the first pass found", got)
+		}
+	})
+	t.Run("the deadline is reported when no pass ever looked for a member", func(t *testing.T) {
+		p := &progress{}
+		p.noTry(deadlinePassed)
+		if got := p.stop(context.Background()); !errors.Is(got, contract.ErrCalloutDeadline) {
+			t.Errorf("stop = %v, want the deadline: a member was there and nothing was tried", got)
+		}
+	})
+	t.Run("one pass with no compute member after another is the latest of them", func(t *testing.T) {
+		p := &progress{}
+		p.noTry(deadlinePassed)
+		p.noTry(noCnode)
+		if got := p.stop(context.Background()); !errors.Is(got, contract.ErrNoMatchingMember) {
+			t.Errorf("stop = %v, want NO_COMPUTE_MEMBER_FOR_TAG", got)
+		}
+	})
+}
+
+// A failure the owner returns owns its attempts: the loop goes on recording
+// tries into its own slice, and nothing of that reaches the value already
+// handed to the caller.
+func TestOwner_AReturnedFailureDoesNotShareTheRunningAttempts(t *testing.T) {
+	attempt := func(id string) contract.CalloutAttempt {
+		return contract.CalloutAttempt{MemberID: id, Kind: contract.NoAnswer, Cause: "DISPATCH_TIMEOUT: no response"}
+	}
+	tests := map[string]*progress{
+		"the failure's kind forbids another cnode": {
+			triesLeft: 3,
+			attempts:  []contract.CalloutAttempt{attempt("m-1")},
+			lastTried: &contract.CalloutFailure{Kind: contract.Terminal, Message: "internal error"},
+		},
+		"every try is used": {
+			triesLeft: 0,
+			attempts:  []contract.CalloutAttempt{attempt("m-1"), attempt("m-2")},
+			lastTried: &contract.CalloutFailure{Kind: contract.NoAnswer, Message: "no response"},
+		},
+	}
+	for name, p := range tests {
+		t.Run(name, func(t *testing.T) {
+			before := len(p.attempts)
+
+			done, err := p.verdict(true)
+
+			if !done {
+				t.Fatalf("verdict said the callout may go on; this case ends it")
+			}
+			var failure *contract.CalloutFailure
+			if !errors.As(err, &failure) || len(failure.Attempts) != before {
+				t.Fatalf("failure = %+v, want the %d attempts on it", failure, before)
+			}
+			// The loop goes on over the slice it kept: an entry is rewritten
+			// where it stands, and another try is recorded after it.
+			p.attempts[0].MemberID = "overwritten"
+			p.attempts = append(p.attempts, attempt("m-9"))
+
+			if len(failure.Attempts) != before || failure.Attempts[0].MemberID != "m-1" {
+				t.Errorf("the returned failure changed under the caller: %+v", failure.Attempts)
+			}
+		})
+	}
+}
+
+// --- tenants ---
+
+func TestOwner_TwoTenantsShareATag_OnlyTheCallersCnodesAreTriedOrNamed(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 3})
+	e.attach(t, "a-1", tenantA, "shared", nil)
+	e.attach(t, "a-2", tenantA, "shared", nil)
+	other := e.attach(t, "b-1", tenantB, "shared", answers("b-1"))
+
+	_, err := e.dispatchFunction(userCtx(tenantA), "shared", "")
+
+	appErr := appErrOf(t, err)
+	if appErr.Code != common.ErrCodeCalloutFailed || !strings.Contains(appErr.Message, "member<a-1>") || !strings.Contains(appErr.Message, "member<a-2>") {
+		t.Errorf("error = %s, want both of tenant A's cnodes listed", appErr.Message)
+	}
+	if strings.Contains(appErr.Message, "b-1") {
+		t.Errorf("another tenant's cnode is named: %s", appErr.Message)
+	}
+	if other.count() != 0 {
+		t.Error("another tenant's cnode was given the work")
+	}
+}
+
+// --- a scheduled fire ---
+
+// A callout made from a scheduled fire runs under the system principal and no
+// client; the rules are the same.
+func TestOwner_CalloutFromAScheduledFire_FollowsTheSameRules(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 1})
+	e.attach(t, "m-1", tenantA, "x", detaches())
+	e.attach(t, "m-2", tenantA, "x", answers("m-2"))
+
+	by, err := e.dispatchFunction(commontest.SystemUserContext(tenantA), "x", "")
+	if err != nil || by != "m-2" {
+		t.Fatalf("answered by %q, err %v; want m-2", by, err)
+	}
+
+	e.attach(t, "m-3", tenantA, "x", nil)
+	e.attach(t, "m-4", tenantA, "x", nil)
+	_, err = e.owner.DispatchProcessor(commontest.SystemUserContext(tenantA), testEntity(), processorDef("x", "", false), "wf1", "t1", "tx-1")
+	if got := appErrOf(t, err).Code; got != common.ErrCodeDispatchTimeout {
+		t.Errorf("code = %s, want a processor that is not idempotent to stop at its first NoAnswer", got)
+	}
+}
+
+// --- fencing, the Coordinator's side ---
+
+func pairOf(t *testing.T, e *env, pass string) txcoord.Pair {
+	t.Helper()
+	claims := claimsOf(t, e, pass)
+	return txcoord.Pair{Callout: claims.Callout, Major: claims.Major, Minor: claims.Minor}
+}
+
+// The owner gives the work to a second cnode of its own: by the time the second
+// cnode is handed the work, the number has risen — the first cnode's pass is
+// refused — and the owner has waited for the first cnode's joined request that
+// was in progress.
+func TestOwner_SecondCnode_TheFirstIsShutOutAndWaitedForBeforeTheNextHandOff(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 1})
+	var first *cnode
+	holding := make(chan txcoord.Scope, 1)
+	first = e.attach(t, "m-1", tenantA, "x", func(_ *internalgrpc.MemberRegistry, m *internalgrpc.Member, _ string) {
+		// m-1's callback is in progress on the transaction.
+		_, passes := first.seen()
+		s, _ := e.callback(t, txcoord.Write, pairOf(t, e, passes[0]))
+		holding <- s
+		e.reg.Unregister(m) // and then its stream drops
+	})
+	second := e.attach(t, "m-2", tenantA, "x", answers("m-2"))
+
+	// The test keeps the callback in progress for as long as it takes to look;
+	// the callout's deadline — tries × answer limit — must not end it
+	// meanwhile, or the second try would rightly never start.
+	fn := functionDef("x", "")
+	fn.ResponseTimeoutMs = patientLimitMs
+	done := make(chan struct{})
+	var by string
+	var err error
+	go func() {
+		defer close(done)
+		by, err = e.dispatchFunctionDef(userCtx(tenantA), fn)
+	}()
+
+	var inProgress txcoord.Scope
+	select {
+	case inProgress = <-holding:
+	case <-time.After(5 * time.Second):
+		t.Fatal("m-1 was never given the work")
+	}
+
+	// The number rose before the wait: m-1's pass is refused.
+	_, passes := first.seen()
+	deadline := time.Now().Add(5 * time.Second)
+	for !e.refused(pairOf(t, e, passes[0])) {
+		if time.Now().After(deadline) {
+			t.Fatal("m-1's pass was never refused")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// And the wait comes before the next hand-off: the number has risen, and
+	// the owner cannot hand the work on before m-1's request ends, which only
+	// this test does below — so m-2 has not been given it.
+	if second.count() != 0 {
+		t.Fatal("m-2 was given the work while m-1's joined request was still in progress")
+	}
+
+	// m-1's request ends: it was overtaken, so it is discarded and answered
+	// 410.
+	if answer := inProgress.End(nil); answer == nil || answer.Code != common.ErrCodeCalloutSuperseded {
+		t.Fatalf("m-1's request ended with %v; want 410 CALLOUT_SUPERSEDED", answer)
+	}
+	mustFinish(t, "the callout", done)
+	if err != nil || by != "m-2" {
+		t.Fatalf("answered by %q, err %v; want m-2", by, err)
+	}
+	_, passes2 := second.seen()
+	if got := pairOf(t, e, passes2[0]); got.Major != 2 || got.Minor != 0 {
+		t.Errorf("m-2's pass carries (%d, %d), want (2, 0): the owner's own tries raise major", got.Major, got.Minor)
+	}
+}
+
+func TestOwner_WhenTheCalloutHasEnded_ItsPassesAreRefused(t *testing.T) {
+	e := newEnv(t, Config{})
+	only := e.attach(t, "m-1", tenantA, "x", answers("m-1"))
+
+	if _, err := e.dispatchFunction(userCtx(tenantA), "x", ""); err != nil {
+		t.Fatal(err)
+	}
+	_, passes := only.seen()
+	if !e.refused(pairOf(t, e, passes[0])) {
+		t.Error("the pass of a callout that has ended was admitted")
+	}
+}
+
+// Every callout the owner's loop runs names this pnode as its owner: a callout
+// inside a transaction that names none is refused before the hand-off, because
+// its cnode's callbacks could never be routed.
+func TestOwner_EveryCalloutNamesThisPnodeAsItsOwner(t *testing.T) {
+	kinds := map[string]func(e *env) error{
+		"processor": func(e *env) error {
+			_, err := e.owner.DispatchProcessor(userCtx(tenantA), testEntity(), processorDef("x", "", true), "wf1", "t1", "tx-1")
+			return err
+		},
+		"criterion": func(e *env) error {
+			_, _, err := e.owner.DispatchCriteria(userCtx(tenantA), testEntity(), criterionJSON("x", ""), "TRANSITION", "wf1", "t1", "", "tx-1")
+			return err
+		},
+		"function": func(e *env) error {
+			_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+			return err
+		},
+	}
+	for name, dispatch := range kinds {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t, Config{SelfNodeID: "node-of-the-owner"})
+			only := e.attach(t, "m-1", tenantA, "x", answers("m-1"))
+
+			if err := dispatch(e); err != nil {
+				t.Fatalf("dispatch: %v", err)
+			}
+			_, passes := only.seen()
+			if len(passes) != 1 {
+				t.Fatalf("passes = %v, want the one try's pass", passes)
+			}
+			if got := claimsOf(t, e, passes[0]).NodeID; got != "node-of-the-owner" {
+				t.Errorf("pass names %q as the owner, want this pnode's own id", got)
+			}
+		})
+	}
+}
+
+// A callout made from inside a callback is begun under the callback's own pairs:
+// they travel into every pass it mints, so the cnode's callbacks are judged
+// against the enclosing callout too, and the Coordinator is released when the
+// enclosing cnode is replaced.
+func TestOwner_CalloutFromInsideACallback_ItsPassesCarryTheOuterPairs(t *testing.T) {
+	e := newEnv(t, Config{})
+	only := e.attach(t, "m-1", tenantA, "x", answers("m-1"))
+
+	_, endOuter := e.coord.BeginCallout(context.Background(), "tx-1", "outer-callout")
+	defer endOuter()
+	e.coord.Advance("outer-callout", 3)
+	scope, callback := e.callback(t, txcoord.Write, txcoord.Pair{Callout: "outer-callout", Major: 3})
+	defer scope.End(nil)
+	resume := txcoord.Pause(callback) // as the engine does around a callout
+	defer func() { _ = resume() }()
+
+	if _, err := e.dispatchFunction(callback, "x", ""); err != nil {
+		t.Fatalf("the inner callout failed: %v", err)
+	}
+
+	_, passes := only.seen()
+	claims := claimsOf(t, e, passes[0])
+	if len(claims.Outer) != 1 || claims.Outer[0] != (token.Pair{Callout: "outer-callout", Major: 3}) {
+		t.Errorf("Outer = %+v, want the callback's own pair", claims.Outer)
+	}
+	if claims.Callout == "outer-callout" || claims.Major != 1 || claims.Minor != 0 {
+		t.Errorf("the inner pass names (%s, %d, %d), want a callout of its own at (1, 0)", claims.Callout, claims.Major, claims.Minor)
+	}
+}
+
+// --- whose context ended ---
+
+// A caller whose context ends during a try ends the callout with its own
+// context error, marked as the caller's departure so a door's error funnel can
+// log it quietly and without a ticket rather than guess from the cancellation.
+func TestOwner_CallerGoesAwayDuringATry_CtxErrMarkedClientGone(t *testing.T) {
+	tests := []struct {
+		name    string
+		ctx     func() (context.Context, context.CancelFunc)
+		wantErr error
+	}{
+		{"the client went away", func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(userCtx(tenantA))
+			time.AfterFunc(20*time.Millisecond, cancel)
+			return ctx, cancel
+		}, context.Canceled},
+		{"transactionTimeoutMillis fired", func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(userCtx(tenantA), 20*time.Millisecond)
+		}, context.DeadlineExceeded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t, Config{FixedNumRetries: 3})
+			e.attach(t, "m-1", tenantA, "x", nil)
+			second := e.attach(t, "m-2", tenantA, "x", answers("m-2"))
+			ctx, cancel := tt.ctx()
+			defer cancel()
+
+			err := e.dispatchPatientFunction(ctx, "x")
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("err = %v, want %v on the chain", err, tt.wantErr)
+			}
+			if !errors.Is(err, common.ErrClientGone) {
+				t.Errorf("err = %v, want it marked as the caller's departure", err)
+			}
+			if second.count() != 0 {
+				t.Error("a caller that went away ends the callout; the work does not move to the next cnode")
+			}
+		})
+	}
+}
+
+// A callout made from inside a callback is released when the cnode that made
+// the callback is replaced: CALLOUT_SUPERSEDED, not a cancelled request.
+func TestOwner_ReleasedByTheFenceDuringATry_IsCalloutSuperseded(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 3})
+	tried := make(chan struct{})
+	e.attach(t, "m-1", tenantA, "x", func(*internalgrpc.MemberRegistry, *internalgrpc.Member, string) {
+		close(tried) // takes the work and never answers
+	})
+
+	_, endOuter := e.coord.BeginCallout(context.Background(), "tx-1", "outer-callout")
+	defer endOuter()
+	e.coord.Advance("outer-callout", 1)
+	scope, callback := e.callback(t, txcoord.Write, txcoord.Pair{Callout: "outer-callout", Major: 1})
+	resume := txcoord.Pause(callback)
+	advanced := make(chan struct{})
+	go func() {
+		defer close(advanced)
+		<-tried                             // the try is in progress
+		e.coord.Advance("outer-callout", 2) // and the outer cnode is replaced
+	}()
+
+	err := e.dispatchPatientFunction(callback, "x")
+	_ = resume()
+	scope.End(nil) // the callback ends; the Advance waited for it
+	<-advanced
+
+	appErr := appErrOf(t, err)
+	if appErr.Status != 410 || appErr.Code != common.ErrCodeCalloutSuperseded {
+		t.Errorf("got %d %s, want 410 CALLOUT_SUPERSEDED", appErr.Status, appErr.Code)
+	}
+	if !errors.Is(err, txcoord.ErrSuperseded) {
+		t.Errorf("err = %v, want txcoord.ErrSuperseded as its cause", err)
+	}
+}
+
+// --- what the loop reports ---
+
+func TestOwner_ReportsEveryTryWithItsOutcome(t *testing.T) {
+	e := newEnv(t, Config{FixedNumRetries: 3})
+	e.attach(t, "m-1", tenantA, "x", detaches())
+	e.attach(t, "m-2", tenantA, "x", answers("m-2"))
+	ctx, stats := contract.WithCalloutStats(userCtx(tenantA))
+
+	if _, err := e.dispatchFunction(ctx, "x", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(stats.Tries, ","); got != "no_answer,ok" {
+		t.Errorf("Tries = %s, want no_answer,ok", got)
+	}
+}
+
+// --- the callout's identity ---
+
+// The owner computes who a callout is for and who executes it once, from the
+// caller's context, and both its own cnodes and every peer it hands over to
+// are given that one identity. Here the callout is a processor write-back's
+// cascade: the compute client executes, in alice's transaction.
+func TestOwner_IdentityIsComputedOnceAndGivenToTheLocalTryAndTheHandOver(t *testing.T) {
+	router := newScriptedRouter("p-1")
+	router.script("p-1", peerAnswers("cnode-on-p-1"))
+	e := newClusterEnv(t, Config{FixedNumRetries: 1, HandoverAllowance: time.Second}, router)
+	own := e.attach(t, "m-1", tenantA, "x", detaches())
+
+	ctx := spi.WithTransaction(spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "compute", Kind: spi.PrincipalService, Roles: []string{"ROLE_M2M"},
+		Tenant: spi.Tenant{ID: tenantA},
+	}), &spi.TransactionState{ID: "tx-1", TenantID: tenantA, Origin: spi.Principal{ID: "alice", Kind: spi.PrincipalUser}})
+
+	if by, err := e.dispatchFunction(ctx, "x", ""); err != nil || by != "cnode-on-p-1" {
+		t.Fatalf("answered by %q, err %v; want the peer's cnode", by, err)
+	}
+
+	want := internalgrpc.CalloutIdentity{
+		Attributed: spi.Principal{ID: "alice", Kind: spi.PrincipalUser},
+		Executor:   spi.Principal{ID: "compute", Kind: spi.PrincipalService},
+		Roles:      []string{"ROLE_M2M"},
+	}
+	auth := own.authSeen()
+	if len(auth) != 1 {
+		t.Fatalf("local tries = %d, want 1", len(auth))
+	}
+	for key, v := range map[string]string{"authid": "alice", "authtype": "user", "authexecid": "compute", "authexectype": "service", "authclaims": "ROLE_M2M"} {
+		if auth[0][key] != v {
+			t.Errorf("local try %s = %q, want %q", key, auth[0][key], v)
+		}
+	}
+	calls := router.made()
+	if len(calls) != 1 {
+		t.Fatalf("hand-overs = %+v, want one", calls)
+	}
+	if got := calls[0].identity; !reflect.DeepEqual(got, want) {
+		t.Errorf("hand-over identity = %+v, want %+v", got, want)
+	}
+}
+
+// A scheduled fire's callout: the system executes, with no roles, in the
+// transaction whose origin is the arming user. The owner's own try and the
+// hand-over both carry that identity — the arming user, executed by the
+// system — and no roles, so the cnode is sent no authclaims.
+func TestOwner_AScheduledFiresIdentityIsGivenToTheLocalTryAndTheHandOver(t *testing.T) {
+	router := newScriptedRouter("p-1")
+	router.script("p-1", peerAnswers("cnode-on-p-1"))
+	e := newClusterEnv(t, Config{FixedNumRetries: 1, HandoverAllowance: time.Second}, router)
+	own := e.attach(t, "m-1", tenantA, "x", detaches())
+
+	ctx := spi.WithTransaction(spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "system", Kind: spi.PrincipalSystem, Tenant: spi.Tenant{ID: tenantA},
+	}), &spi.TransactionState{ID: "tx-1", TenantID: tenantA, Origin: spi.Principal{ID: "bob", Kind: spi.PrincipalUser}})
+
+	if by, err := e.dispatchFunction(ctx, "x", ""); err != nil || by != "cnode-on-p-1" {
+		t.Fatalf("answered by %q, err %v; want the peer's cnode", by, err)
+	}
+
+	auth := own.authSeen()
+	if len(auth) != 1 {
+		t.Fatalf("local tries = %d, want 1", len(auth))
+	}
+	want := map[string]string{"authid": "bob", "authtype": "user", "authexecid": "system", "authexectype": "system"}
+	if !reflect.DeepEqual(auth[0], want) {
+		t.Errorf("local try auth context = %v, want %v (no authclaims)", auth[0], want)
+	}
+	calls := router.made()
+	if len(calls) != 1 {
+		t.Fatalf("hand-overs = %+v, want one", calls)
+	}
+	wantID := internalgrpc.CalloutIdentity{
+		Attributed: spi.Principal{ID: "bob", Kind: spi.PrincipalUser},
+		Executor:   spi.Principal{ID: "system", Kind: spi.PrincipalSystem},
+	}
+	if got := calls[0].identity; !reflect.DeepEqual(got, wantID) {
+		t.Errorf("hand-over identity = %+v, want %+v", got, wantID)
+	}
+}
+
+// raceTM is noopTM in a transaction that has lost a write race from the
+// loseFrom-th LostRace ask on; loseFrom 0 never loses.
+//
+// A failed callback's End asks first (row 2): answered "not lost", it marks the
+// scope. Every later ask — the owner's, after the mark — then reads the race
+// as lost. That is a race lost after the mark, made visible before the owner
+// can look, without changing the row End takes.
+type raceTM struct {
+	noopTM
+	asks     *atomic.Int32
+	loseFrom int32
+}
+
+func (m raceTM) LostRace(context.Context, string) (bool, error) {
+	n := m.asks.Add(1)
+	return m.loseFrom > 0 && n >= m.loseFrom, nil
+}
+
+// losesAfterTheMark is a raceTM whose race reads as lost from the ask after the
+// failed callback's End; neverLoses never loses.
+func losesAfterTheMark() raceTM { return raceTM{asks: &atomic.Int32{}, loseFrom: 2} }
+func neverLoses() raceTM        { return raceTM{asks: &atomic.Int32{}} }
+
+// raceFor is losesAfterTheMark when lose is set, neverLoses otherwise.
+func raceFor(lose bool) raceTM {
+	if lose {
+		return losesAfterTheMark()
+	}
+	return neverLoses()
+}
+
+// A callback of the callout fails a write: the scope the callout was begun from
+// is marked, which cancels the callout. The owner's loop makes no further try,
+// and the callout fails with that scope's refusal — 409
+// TRANSACTION_ROLLBACK_ONLY naming the callback's code, or, when the
+// transaction has lost a write race, the retryable conflict.
+func TestCoordinator_RollbackOnlyCauseMapsTo409(t *testing.T) {
+	run := func(t *testing.T, loseAfterTheMark bool, fromCallback bool) error {
+		e := newEnvOver(t, Config{FixedNumRetries: 1}, raceFor(loseAfterTheMark))
+		var first *cnode
+		first = e.attach(t, "m-1", tenantA, "x", func(*internalgrpc.MemberRegistry, *internalgrpc.Member, string) {
+			// m-1's callback fails its write; m-1 never answers the callout.
+			_, passes := first.seen()
+			claims := claimsOf(t, e, passes[0])
+			pairs := []txcoord.Pair{{Callout: claims.Callout, Major: claims.Major, Minor: claims.Minor}}
+			pairs = append(pairs, claims.Outer...)
+			s, _ := e.callback(t, txcoord.Write, pairs...)
+			// With loseAfterTheMark, the race is lost after this End has
+			// marked (raceTM): the failed write may have been the stale
+			// snapshot's doing.
+			s.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+		})
+		second := e.attach(t, "m-2", tenantA, "x", answers("m-2"))
+
+		ctx := userCtx(tenantA)
+		if fromCallback {
+			_, endOuter := e.coord.BeginCallout(context.Background(), "tx-1", "outer-callout")
+			defer endOuter()
+			e.coord.Advance("outer-callout", 1)
+			scope, callback := e.callback(t, txcoord.Write, txcoord.Pair{Callout: "outer-callout", Major: 1})
+			defer scope.End(nil)
+			resume := txcoord.Pause(callback)
+			defer func() { _ = resume() }()
+			ctx = callback
+		}
+		err := e.dispatchPatientFunction(ctx, "x")
+		if second.count() != 0 {
+			t.Error("the owner's loop tried another member after the mark")
+		}
+		return err
+	}
+	for name, fromCallback := range map[string]bool{"from the root": false, "from a callback": true} {
+		t.Run(name, func(t *testing.T) {
+			err := run(t, false, fromCallback)
+			appErr := appErrOf(t, err)
+			if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeTransactionRollbackOnly || appErr.Retryable {
+				t.Fatalf("err = %d %s retryable=%v; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable", appErr.Status, appErr.Code, appErr.Retryable)
+			}
+			if !strings.Contains(appErr.Message, common.ErrCodeWorkflowFailed) {
+				t.Errorf("message %q does not name the callback's code", appErr.Message)
+			}
+		})
+	}
+	t.Run("lost race first", func(t *testing.T) {
+		if err := run(t, true, false); !errors.Is(err, spi.ErrTxAborted) {
+			t.Fatalf("err = %v; want the lost race (spi.ErrTxAborted)", err)
+		}
+	})
+}
+
+// A cnode that answers its callout after one of its callbacks failed a write
+// does not make the callout succeed: the scope it was made from is marked, so
+// the callout fails with that scope's refusal whichever the owner's loop sees
+// first, the mark's cancellation or the answer.
+//
+// The callback ends before the answer is sent. A callback still in progress
+// when the cnode answers is another case: the owner ends the callout, and the
+// callback then ends superseded and marks nothing (row 1).
+func TestCoordinator_AnsweredAfterTheMark_FailsRollbackOnly(t *testing.T) {
+	e := newEnv(t, Config{})
+	var only *cnode
+	only = e.attach(t, "m-1", tenantA, "x", func(_ *internalgrpc.MemberRegistry, m *internalgrpc.Member, requestID string) {
+		_, passes := only.seen()
+		s, _ := e.callback(t, txcoord.Write, pairOf(t, e, passes[0]))
+		s.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+		answers("m-1")(nil, m, requestID)
+	})
+	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+	appErr := appErrOf(t, err)
+	if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeTransactionRollbackOnly {
+		t.Fatalf("err = %d %s; want 409 TRANSACTION_ROLLBACK_ONLY", appErr.Status, appErr.Code)
+	}
+}
+
+// A cnode that answers a non-retryable failure after one of its callbacks
+// failed a write does not decide the callout either: the scope is marked, so
+// the callout fails with the scope's refusal — 409 TRANSACTION_ROLLBACK_ONLY,
+// or the retryable conflict when the transaction has lost a write race after
+// the mark — whichever the owner's loop sees first, the mark's cancellation or
+// the failure.
+func TestCoordinator_FailedAfterTheMark_FailsWithTheScopesRefusal(t *testing.T) {
+	run := func(t *testing.T, lose bool) error {
+		e := newEnvOver(t, Config{}, raceFor(lose))
+		var only *cnode
+		verdict := false
+		only = e.attach(t, "m-1", tenantA, "x", func(_ *internalgrpc.MemberRegistry, m *internalgrpc.Member, requestID string) {
+			_, passes := only.seen()
+			s, _ := e.callback(t, txcoord.Write, pairOf(t, e, passes[0]))
+			s.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+			fails("the member failed", &verdict)(nil, m, requestID)
+		})
+		_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+		return err
+	}
+	t.Run("rollback-only", func(t *testing.T) {
+		appErr := appErrOf(t, run(t, false))
+		if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeTransactionRollbackOnly || appErr.Retryable {
+			t.Fatalf("err = %d %s retryable=%v; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable", appErr.Status, appErr.Code, appErr.Retryable)
+		}
+	})
+	t.Run("lost race first", func(t *testing.T) {
+		if err := run(t, true); !errors.Is(err, spi.ErrTxAborted) {
+			t.Fatalf("err = %v; want the lost race (spi.ErrTxAborted)", err)
+		}
+	})
+}

@@ -55,7 +55,7 @@ scenarios:
       model: { name: simple1, version: 1 }
     steps:
       - action: create_entity
-        endpoint: { rest: "POST /entity/JSON/simple1/1?waitForConsistencyAfter=true" }
+        endpoint: { rest: "POST /entity/JSON/simple1/1" }
         body: "<<valid json>>"
         capture: createResp
       - action: get_entity

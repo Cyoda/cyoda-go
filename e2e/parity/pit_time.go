@@ -6,19 +6,22 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // Point-in-time boundaries must be derived from the SERVER's timeline, never
 // from the test process's clock.
 //
-// Version timestamps are stamped by the backend: the postgres plugin takes them
-// from the database (`SELECT CURRENT_TIMESTAMP`), so on a testcontainer they
-// come from the Docker VM's clock, not the host's. Under CPU load that clock
-// has been measured lagging the host by 10–13 ms — more than the sleep margins
-// these scenarios used to rely on. A `time.Now()` boundary compared against a
-// server-stamped `valid_time` is therefore a two-clock comparison, and it
-// resolves to the wrong version whenever the skew exceeds the sleep.
+// Version timestamps are stamped by the backend at commit: the postgres plugin
+// takes them from the database (`cyoda_stamp`, which reads the database clock
+// and raises a shared floor), so on a testcontainer they come from the Docker
+// VM's clock, not the host's. Under CPU load that clock has been measured
+// lagging the host by 10–13 ms — more than the sleep margins these scenarios
+// used to rely on. A `time.Now()` boundary compared against a server-stamped
+// `valid_time` is therefore a two-clock comparison, and it resolves to the
+// wrong version whenever the skew exceeds the sleep. The server also refuses a
+// `pointInTime` later than its consistency time, so a boundary that runs ahead
+// of the server's clock is refused outright.
 //
 // The helpers below read timestamps back from the server so every comparison
 // happens on a single clock. Sleeps around writes remain, but they now only

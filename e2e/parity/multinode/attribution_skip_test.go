@@ -3,7 +3,7 @@ package multinode
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity"
 )
 
 // stubNoAttrFixture implements MultiNodeFixture but deliberately does NOT
@@ -18,6 +18,9 @@ func (stubNoAttrFixture) NewTenant(*testing.T) parity.Tenant { return parity.Ten
 func (stubNoAttrFixture) ComputeTenant(*testing.T) parity.Tenant {
 	return parity.Tenant{}
 }
+func (stubNoAttrFixture) PlatformOperator(*testing.T) parity.Tenant {
+	return parity.Tenant{ID: "PLATFORM"}
+}
 
 // Compile-time proof the stub is a MultiNodeFixture but NOT AttributionCapable.
 var _ MultiNodeFixture = stubNoAttrFixture{}
@@ -27,7 +30,7 @@ var _ MultiNodeFixture = stubNoAttrFixture{}
 // when the fixture does not implement AttributionCapable. This is the guarantee
 // the out-of-tree commercial backend relies on: it consumes the shared registry
 // and must see these as visible-but-pending, not as hard failures, until it
-// wires ComputeUser/NodeLogs.
+// wires ComputeUser.
 func TestAttributionScenariosSkipWithoutCapability(t *testing.T) {
 	scenarios := []struct {
 		name string

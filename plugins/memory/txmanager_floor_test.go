@@ -4,12 +4,12 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // A direct (non-transactional) write must stamp its submit time under the
-// same monotonic floor a commit uses, exactly as the sqlite plugin does.
+// same non-decreasing floor a commit uses, exactly as the sqlite plugin does.
 // Under a frozen clock — which the conformance and parity suites use — a
 // direct write that stamped the raw clock value would land AT the snapshot
 // of a transaction already open, and that transaction's snapshot read would
@@ -19,6 +19,7 @@ import (
 func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 	clock := memory.NewTestClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	lockModels(t, factory, ctxWithTenant("tenant-floor"), spi.ModelRef{EntityName: "m-floor", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-floor")
 	ref := spi.ModelRef{EntityName: "m-floor", ModelVersion: "1"}
 
@@ -32,7 +33,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 	}
 
 	// Stand in for a write that already stamped this instant, so the
-	// monotonic floor stands at the frozen clock value — the state any
+	// non-decreasing floor stands at the frozen clock value — the state any
 	// system that has done work is in. (From a floor of zero the first
 	// stamp is simply the clock value, and there is nothing to order it
 	// against.)
@@ -87,7 +88,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 	}
 }
 
-// Begin does not merely read the monotonic floor, it RESERVES its snapshot
+// Begin does not merely read the non-decreasing floor, it RESERVES its snapshot
 // time as the new floor. Flooring alone leaves the first transaction on a
 // quiet factory unprotected: with the floor still at zero the snapshot is the
 // raw clock value, and the next write stamps max(now, floor+1µs) — the same
@@ -98,6 +99,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 func TestBegin_ReservesItsSnapshotTimeAsTheFloor(t *testing.T) {
 	clock := memory.NewTestClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	lockModels(t, factory, ctxWithTenant("tenant-reserve"), spi.ModelRef{EntityName: "m-reserve", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-reserve")
 	ref := spi.ModelRef{EntityName: "m-reserve", ModelVersion: "1"}
 
@@ -166,6 +168,7 @@ func TestBegin_ReservesItsSnapshotTimeAsTheFloor(t *testing.T) {
 func TestNewTransactionManager_CarriesTheSubmitTimeFloor(t *testing.T) {
 	clock := memory.NewTestClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	lockModels(t, factory, ctxWithTenant("tenant-carry"), spi.ModelRef{EntityName: "m-carry", ModelVersion: "1"})
 	ctx := ctxWithTenant("tenant-carry")
 	ref := spi.ModelRef{EntityName: "m-carry", ModelVersion: "1"}
 

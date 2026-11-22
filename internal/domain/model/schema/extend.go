@@ -3,7 +3,7 @@ package schema
 import (
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // changeLevelRank maps each ChangeLevel to its position in the permission hierarchy.

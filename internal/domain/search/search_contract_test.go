@@ -8,11 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func newContractFixture(t *testing.T) (*search.SearchService, context.Context, spi.ModelRef) {
@@ -27,7 +28,7 @@ func newContractFixture(t *testing.T) (*search.SearchService, context.Context, s
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	return search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore), ctx, ref
+	return search.NewSearchService(cachedFactory(base), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real()), ctx, ref
 }
 
 // limitProbeStore records whether the store's Search was reached at all.
@@ -74,8 +75,8 @@ func TestSearch_NonPositiveLimit_IsContractError(t *testing.T) {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 	probe := &limitProbeStore{}
-	svc := search.NewSearchService(&limitProbeFactory{StoreFactory: base, store: probe},
-		common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(cachedFactory(&limitProbeFactory{StoreFactory: base, store: probe}),
+		common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, &limitProbeFactory{StoreFactory: base, store: probe}), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.val", OperatorType: "EQUALS", Value: 0}
 	for _, limit := range []int{0, -1} {

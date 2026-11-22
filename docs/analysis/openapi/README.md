@@ -97,7 +97,7 @@ not leave a quarter of the surface as advertised-but-absent.
 ### P2 — Advertised-but-unwired request semantics  (`server-gap` — the dangerous class)
 The spec declares parameters/bodies expressing real intent that the handler never reads.
 - 🔴 **`deleteEntities` — data loss.** Contract: delete only entities matching an
-  `AbstractConditionDto` body (+ `pointInTime`, `verbose`). Handler ignores the body and
+  `QueryConditionDto` body (+ `pointInTime`, `verbose`). Handler ignores the body and
   params entirely and calls `DeleteAllEntities` → a client asking to delete a filtered
   subset **silently wipes the whole model**.
 - **`getAllEntities`**, **`getAsyncSearchResults`** ignore `pointInTime` → "as-at"
@@ -112,8 +112,9 @@ The spec declares parameters/bodies expressing real intent that the handler neve
 > consumers get the shape, but leave the object open so additive fields stay non-breaking.
 > Two consequences for this list: (1) genuinely-open values — entity `data`, `JsonNode`, and
 > RFC 9457 `ProblemDetail.properties` extension bags — are **correct as open** and come *off*
-> the tightenable set; (2) the state-machine audit-event union is tightened as a discriminated
-> `oneOf` + unknown/default variant + open-enum discriminator, not a sealed object. "Tighten"
+> the tightenable set; (2) the state-machine audit-event union is tightened as a base with a
+> discriminator mapping and a plain-string discriminator, which a client of an earlier spec
+> reads as empty for an unknown value (ADR 0005), not a sealed object. "Tighten"
 > below means "enumerate + keep open," never "seal."
 
 The class that triggered this audit.

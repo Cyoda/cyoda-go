@@ -9,9 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster"
-	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // scheduled_function_test.go is Task 9.1's E2E layer for the scheduled-
@@ -27,22 +25,18 @@ import (
 //
 // Arm happy-path cases need a real Function callout, so they use the
 // callback-harness's gRPC compute member (callback_harness_test.go),
-// extended in this change with RegisterFunction/handleFunctionRequest to
-// answer EntityFunctionCalculationRequest with a configurable
-// resultKind/result — the shared, reusable "fake Function-serving compute
-// node" tasks 9.2/9.3 build on. The member joins with tags ["sched-fn"] so
+// extended in this change with RegisterFunction, answered by the default
+// cnode's registered-function closure with a configurable resultKind/result —
+// the shared, reusable "fake Function-serving compute node" tasks 9.2/9.3
+// build on. The member joins with tags ["sched-fn"] so
 // a schedule.function config's calculationNodesTags (validated non-empty at
 // import, unlike the processor/criteria tests' calculationNodesTags:"")
-// resolves to it via MemberRegistry.FindByTags.
+// resolves to it via MemberRegistry.Candidates.
 //
-// The shared harness's scheduler runs with its default cadence
-// (CYODA_SCHEDULER_SCAN_INTERVAL, 1s — see scheduled_transition_test.go's
-// scheduledFireTimeout/awaitEntityStateE2E, which this file reuses/mirrors
-// for the callback-harness stack via awaitCallbackEntityState), so the
-// "fires at the expected time" assertions poll for the real fire, not just
-// the armed row. Storage-level assertions (exact scheduled_time/timeout_ms)
-// additionally query scheduled_tasks directly, mirroring
-// TestE2E_ScheduledTransition_RestartDurability's durability check.
+// Tests that need a fire run on newSchedulerCallbackHarness: a stack with a
+// live scheduler on a database of their own, and the default cnode (tag
+// sched-fn). Storage-level assertions (exact scheduled_time/timeout_ms) query
+// that database's scheduled_tasks table.
 
 // scheduledFnTag is the calculationNodesTags value used by every
 // schedule.function config in this file — must match the callback-harness
@@ -119,6 +113,107 @@ func TestScheduledFunction_Import_DelayMsAndFunctionBothSet_400(t *testing.T) {
 	assertImportRejected(t, status, body, "delayMs and function both set")
 }
 
+// TestScheduledFunction_Import_TimeoutMsNegative_StaticDelay_400,
+// TestScheduledFunction_Import_TimeoutMsNegative_Function_400 and
+// TestScheduledFunction_Import_DelayMsNegativeWithFunction_400 are the E2E
+// twins of internal/domain/workflow's TestValidator_TimeoutMsNegative_Rejected,
+// TestValidator_TimeoutMsNegative_RejectedWithFunctionSchedule and
+// TestValidator_DelayMsNegativeWithFunction_Rejected: api/openapi.yaml's
+// TransitionScheduleDto publishes `timeoutMs: minimum 0` and `delayMs:
+// minimum 1`, and these confirm the full HTTP stack now enforces both at
+// import instead of accepting them silently.
+
+func TestScheduledFunction_Import_TimeoutMsNegative_StaticDelay_400(t *testing.T) {
+	const model = "e2e-schedfn-import-timeoutms-neg-static"
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "schedfn-timeoutms-neg-static-wf", "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false,
+					"schedule": {"delayMs": 1000, "timeoutMs": -1}
+				}]},
+				"Closed": {}
+			}
+		}]
+	}`
+	importModelE2E(t, model, 1)
+	lockModelE2E(t, model, 1)
+	status, body := importWorkflowE2E(t, model, 1, wf)
+	assertImportRejected(t, status, body, "negative timeoutMs, static delay")
+}
+
+func TestScheduledFunction_Import_TimeoutMsNegative_Function_400(t *testing.T) {
+	const model = "e2e-schedfn-import-timeoutms-neg-fn"
+	wf := fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.3", "name": "schedfn-timeoutms-neg-fn-wf", "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false,
+					"schedule": {"function": %s, "timeoutMs": -1}
+				}]},
+				"Closed": {}
+			}
+		}]
+	}`, validScheduleFunctionJSON("calcFire"))
+	importModelE2E(t, model, 1)
+	lockModelE2E(t, model, 1)
+	status, body := importWorkflowE2E(t, model, 1, wf)
+	assertImportRejected(t, status, body, "negative timeoutMs, function schedule")
+}
+
+func TestScheduledFunction_Import_DelayMsNegativeWithFunction_400(t *testing.T) {
+	const model = "e2e-schedfn-import-delayms-neg-fn"
+	wf := fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.3", "name": "schedfn-delayms-neg-fn-wf", "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false,
+					"schedule": {"delayMs": -1, "function": %s}
+				}]},
+				"Closed": {}
+			}
+		}]
+	}`, validScheduleFunctionJSON("calcFire"))
+	importModelE2E(t, model, 1)
+	lockModelE2E(t, model, 1)
+	status, body := importWorkflowE2E(t, model, 1, wf)
+	assertImportRejected(t, status, body, "negative delayMs alongside function")
+}
+
+// TestScheduledFunction_Import_DelayMsZeroOrNullWithFunction_400: delayMs is
+// published as minimum 1 and mutually exclusive with function, so a delayMs
+// sent beside a function is refused even as 0 or null — values the decoded
+// int64 cannot tell apart from an omitted field.
+func TestScheduledFunction_Import_DelayMsZeroOrNullWithFunction_400(t *testing.T) {
+	for _, tc := range []struct{ name, delayMs string }{{"zero", "0"}, {"null", "null"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := "e2e-schedfn-import-delayms-" + tc.name + "-fn"
+			wf := fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.3", "name": "schedfn-delayms-%s-fn-wf", "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false,
+					"schedule": {"delayMs": %s, "function": %s}
+				}]},
+				"Closed": {}
+			}
+		}]
+	}`, tc.name, tc.delayMs, validScheduleFunctionJSON("calcFire"))
+			importModelE2E(t, model, 1)
+			lockModelE2E(t, model, 1)
+			status, body := importWorkflowE2E(t, model, 1, wf)
+			assertImportRejected(t, status, body, "delayMs "+tc.delayMs+" alongside function")
+			if !strings.Contains(body, "schedule.delayMs and schedule.function are mutually exclusive") {
+				t.Errorf("detail must name the rule, got: %s", body)
+			}
+		})
+	}
+}
+
 func TestScheduledFunction_Import_ManualAndFunction_400(t *testing.T) {
 	const model = "e2e-schedfn-import-manual-and-fn"
 	wf := fmt.Sprintf(`{
@@ -171,24 +266,16 @@ func TestScheduledFunction_Import_MissingCalculationNodesTags_400(t *testing.T) 
 
 // --- Arm happy paths (fake Function-serving compute node, callback harness) ---
 
-// awaitCallbackEntityState is awaitEntityStateE2E's callback-harness
-// counterpart (scheduled_transition_test.go): polls until entityID reaches
-// wantState on h's stack, or fails the test once timeout elapses.
+// awaitCallbackEntityState polls until entityID reaches wantState on h's
+// stack, or fails the test at awaitScheduler's deadline for timeout.
 func awaitCallbackEntityState(t *testing.T, h *callbackHarness, entityID, wantState string, timeout time.Duration) string {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var last string
-	for {
+	awaitScheduler(t, timeout, fmt.Sprintf("entity %s in state %q", entityID, wantState), func() (bool, string) {
 		last, _ = h.GetEntityState(t, entityID)
-		if last == wantState {
-			return last
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for entity %s to reach state %q; last observed state %q",
-				timeout, entityID, wantState, last)
-		}
-		time.Sleep(scheduledPollInterval)
-	}
+		return last == wantState, fmt.Sprintf("state %q", last)
+	})
+	return last
 }
 
 // TestScheduledFunction_ArmAbsoluteFireAt_FiresThroughHTTPStack proves the
@@ -198,8 +285,8 @@ func awaitCallbackEntityState(t *testing.T, h *callbackHarness, entityID, wantSt
 // row's scheduled_time must equal it exactly. The real scheduler then fires
 // the transition once it comes due.
 func TestScheduledFunction_ArmAbsoluteFireAt_FiresThroughHTTPStack(t *testing.T) {
-	h := newCallbackHarness(t)
-	const model = "e2e-schedfn-arm-abs"
+	h, s := newSchedulerCallbackHarness(t, nil)
+	model := uniq("e2e-schedfn-arm-abs")
 
 	var wantFireAt atomic.Int64
 	h.RegisterFunction("calcAbsFire", func(rc *reqCtx) (string, map[string]any, error) {
@@ -219,8 +306,7 @@ func TestScheduledFunction_ArmAbsoluteFireAt_FiresThroughHTTPStack(t *testing.T)
 	// The create POST only returns after the create-cascade (including the
 	// arm-time Function dispatch) has committed, so the callback has
 	// necessarily already run and stored fireAt by this point.
-	rows := queryDB(t, "test-tenant",
-		"SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1 AND source_state = $2 AND transition = $3 AND scheduled_time = $4",
+	rows := s.count(t, "SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1 AND source_state = $2 AND transition = $3 AND scheduled_time = $4",
 		entityID, "Open", "AutoClose", wantFireAt.Load())
 	if rows != 1 {
 		t.Fatalf("expected exactly one scheduled_tasks row with scheduled_time=%d for entity %s; found %d",
@@ -240,8 +326,8 @@ func TestScheduledFunction_ArmAbsoluteFireAt_FiresThroughHTTPStack(t *testing.T)
 // skew: client and server share a machine/process in this harness). No
 // expiry is configured, so timeout_ms must be NULL.
 func TestScheduledFunction_ArmRelativeFireAfterMs_FiresThroughHTTPStack(t *testing.T) {
-	h := newCallbackHarness(t)
-	const model = "e2e-schedfn-arm-rel"
+	h, s := newSchedulerCallbackHarness(t, nil)
+	model := uniq("e2e-schedfn-arm-rel")
 	const fireAfterMs = int64(300)
 
 	h.RegisterFunction("calcRelFire", func(rc *reqCtx) (string, map[string]any, error) {
@@ -260,8 +346,7 @@ func TestScheduledFunction_ArmRelativeFireAfterMs_FiresThroughHTTPStack(t *testi
 
 	wantMin := beforeCreateMs + fireAfterMs
 	wantMax := afterCreateMs + fireAfterMs
-	rows := queryDB(t, "test-tenant",
-		"SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1 AND source_state = $2 AND transition = $3 AND scheduled_time BETWEEN $4 AND $5 AND timeout_ms IS NULL",
+	rows := s.count(t, "SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1 AND source_state = $2 AND transition = $3 AND scheduled_time BETWEEN $4 AND $5 AND timeout_ms IS NULL",
 		entityID, "Open", "AutoClose", wantMin, wantMax)
 	if rows != 1 {
 		t.Fatalf("expected exactly one scheduled_tasks row with scheduled_time in [%d,%d] and timeout_ms NULL for entity %s; found %d",
@@ -280,8 +365,8 @@ func TestScheduledFunction_ArmRelativeFireAfterMs_FiresThroughHTTPStack(t *testi
 // the fire time, so the task is not born-expired and must still fire — the
 // born-expired rejection path itself is Task 9.2's concern, not this one's.
 func TestScheduledFunction_ArmWithExpiry_TimeoutMsStoredAndStillFires(t *testing.T) {
-	h := newCallbackHarness(t)
-	const model = "e2e-schedfn-arm-expiry"
+	h, s := newSchedulerCallbackHarness(t, nil)
+	model := uniq("e2e-schedfn-arm-expiry")
 	const fireAfterMs = int64(300)
 	const expireAfterMs = int64(60_000)
 
@@ -297,8 +382,7 @@ func TestScheduledFunction_ArmWithExpiry_TimeoutMsStoredAndStillFires(t *testing
 		t.Fatalf("create entity: expected 200, got %d: %s", status, body)
 	}
 
-	rows := queryDB(t, "test-tenant",
-		"SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1 AND source_state = $2 AND transition = $3 AND timeout_ms = $4",
+	rows := s.count(t, "SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1 AND source_state = $2 AND transition = $3 AND timeout_ms = $4",
 		entityID, "Open", "AutoClose", expireAfterMs)
 	if rows != 1 {
 		t.Fatalf("expected exactly one scheduled_tasks row with timeout_ms=%d for entity %s; found %d",
@@ -360,25 +444,15 @@ func scheduleFunctionJSONWithTimeout(functionName string, timeoutMs int) string 
 		functionName, scheduledFnTag, timeoutMs)
 }
 
-// awaitCallbackSMEventType is awaitSMEventType's callback-harness
-// counterpart (mirrors awaitCallbackEntityState's relationship to
-// awaitEntityStateE2E): polls h's own audit endpoint until an event
+// awaitCallbackSMEventType polls h's own audit endpoint until an event
 // matching wantType (and, if wantState is non-empty, state too) appears, or
-// fails the test once timeout elapses.
+// fails the test at awaitScheduler's deadline for timeout.
 func awaitCallbackSMEventType(t *testing.T, h *callbackHarness, entityID, wantType, wantState string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
+	awaitScheduler(t, timeout, fmt.Sprintf("StateMachine event %q (state=%q) on entity %s", wantType, wantState, entityID), func() (bool, string) {
 		events := h.GetSMAuditEvents(t, entityID)
-		if hasSMEventType(events, wantType, wantState) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for StateMachine event %q (state=%q) on entity %s; got events: %+v",
-				timeout, wantType, wantState, entityID, events)
-		}
-		time.Sleep(scheduledPollInterval)
-	}
+		return hasSMEventType(events, wantType, wantState), fmt.Sprintf("events: %+v", events)
+	})
 }
 
 // TestScheduledFunction_NoMember_Returns503 lives in
@@ -422,6 +496,25 @@ func TestScheduledFunction_DispatchTimeout_Returns503(t *testing.T) {
 	}
 }
 
+// scheduleFunctionTouchWorkflowJSON is scheduleFunctionWorkflowJSON with one
+// manual self-transition on Open, so a write that names a transition settles
+// in Open and re-arms its schedule there.
+func scheduleFunctionTouchWorkflowJSON(wfName, fnJSON string) string {
+	return fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.3", "name": %q, "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [
+					{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"function": %s}},
+					{"name": "touch", "next": "Open", "manual": true}
+				]},
+				"Closed": {}
+			}
+		}]
+	}`, wfName, fnJSON)
+}
+
 // TestScheduledFunction_MalformedResult_Returns500 proves a structurally
 // invalid Schedule result (here: both fireAt and fireAfterMs set —
 // resolveSchedule requires exactly one) fails the write with a 500
@@ -429,30 +522,80 @@ func TestScheduledFunction_DispatchTimeout_Returns503(t *testing.T) {
 // response, not the caller's request — and the response body follows the
 // sanitized-5xx contract (Gate 3 / .claude/rules/error-handling.md): a
 // generic detail plus a correlation ticket, never the internal cause text.
+//
+// Every write door settles the entity and re-arms its schedule, so every one
+// of them can meet the bad result: the create doors with the first arm, the
+// update doors with the re-arm of the state they settle in.
 func TestScheduledFunction_MalformedResult_Returns500(t *testing.T) {
 	h := newCallbackHarness(t)
-	const model = "e2e-schedfn-badresult"
+	const payload = `{"name":"Test Order","amount":100,"status":"draft"}`
 
-	h.RegisterFunction("calcBadResult", func(rc *reqCtx) (string, map[string]any, error) {
-		return "Schedule", map[string]any{"fireAt": time.Now().UnixMilli(), "fireAfterMs": int64(1000)}, nil
-	})
+	for _, door := range []struct {
+		name string
+		// existing says the door acts on an entity that was created while the
+		// Function still answered well.
+		existing bool
+		drive    func(t *testing.T, model, entityID string) (int, string)
+	}{
+		{"create", false, func(t *testing.T, model, _ string) (int, string) {
+			_, status, body := h.CreateEntity(t, model, 1, payload)
+			return status, body
+		}},
+		{"create-collection", false, func(t *testing.T, model, _ string) (int, string) {
+			return doorRequest(t, h, http.MethodPost, "/api/entity/JSON", collectionCreateItems(model, payload))
+		}},
+		{"update-transition", true, func(t *testing.T, _, id string) (int, string) {
+			return doorRequest(t, h, http.MethodPut, "/api/entity/JSON/"+id+"/touch", payload)
+		}},
+		{"loopback", true, func(t *testing.T, _, id string) (int, string) {
+			return doorRequest(t, h, http.MethodPut, "/api/entity/JSON/"+id, payload)
+		}},
+		{"patch", true, func(t *testing.T, _, id string) (int, string) {
+			resp := txctlHarnessPatch(t, h, "/api/entity/JSON/"+id, "application/merge-patch+json", "*", `{"amount":101}`)
+			return resp.StatusCode, h.readBody(t, resp)
+		}},
+		{"patch-transition", true, func(t *testing.T, _, id string) (int, string) {
+			resp := txctlHarnessPatch(t, h, "/api/entity/JSON/"+id+"/touch", "application/merge-patch+json", "*", `{"amount":102}`)
+			return resp.StatusCode, h.readBody(t, resp)
+		}},
+		{"update-collection", true, func(t *testing.T, _, id string) (int, string) {
+			return doorRequest(t, h, http.MethodPut, "/api/entity/JSON", collectionUpdateItems(id, "touch", payload))
+		}},
+	} {
+		t.Run(door.name, func(t *testing.T) {
+			key := doorKey(door.name)
+			model := "e2e-schedfn-badresult-" + key
+			fn := "calcBadResult" + key
+			var bad atomic.Bool
+			h.RegisterFunction(fn, func(rc *reqCtx) (string, map[string]any, error) {
+				if bad.Load() {
+					return "Schedule", map[string]any{"fireAt": time.Now().UnixMilli(), "fireAfterMs": int64(1000)}, nil
+				}
+				return "Schedule", map[string]any{"fireAfterMs": int64(600_000)}, nil
+			})
+			h.SetupModelWithWorkflow(t, model, scheduleFunctionTouchWorkflowJSON("schedfn-badresult-wf-"+key, validScheduleFunctionJSON(fn)))
 
-	wf := scheduleFunctionWorkflowJSON("schedfn-badresult-wf", validScheduleFunctionJSON("calcBadResult"))
-	h.SetupModelWithWorkflow(t, model, wf)
+			entityID := ""
+			if door.existing {
+				entityID = createQuietEntity(t, h, model, payload)
+			}
+			bad.Store(true)
 
-	_, status, body := h.CreateEntity(t, model, 1, `{"name":"Test Order","amount":100,"status":"draft"}`)
-	if status != http.StatusInternalServerError {
-		t.Fatalf("create entity with a malformed Schedule result (fireAt AND fireAfterMs both set): expected 500, got %d: %s", status, body)
-	}
-	pd := decodeProblem(t, body)
-	if pd.errorCode() != "SCHEDULE_FUNCTION_INVALID_RESULT" {
-		t.Errorf("properties.errorCode: got %q, want SCHEDULE_FUNCTION_INVALID_RESULT; body=%s", pd.errorCode(), body)
-	}
-	if pd.Ticket == "" {
-		t.Errorf("expected a correlation ticket UUID on the sanitized 500 response; body=%s", body)
-	}
-	if strings.Contains(body, "exactly one of fireAt") {
-		t.Errorf("sanitized-5xx contract violated: internal cause text leaked into the client-facing body=%s", body)
+			status, body := door.drive(t, model, entityID)
+			if status != http.StatusInternalServerError {
+				t.Fatalf("a malformed Schedule result (fireAt AND fireAfterMs both set): expected 500, got %d: %s", status, body)
+			}
+			pd := decodeProblem(t, body)
+			if pd.errorCode() != "SCHEDULE_FUNCTION_INVALID_RESULT" {
+				t.Errorf("properties.errorCode: got %q, want SCHEDULE_FUNCTION_INVALID_RESULT; body=%s", pd.errorCode(), body)
+			}
+			if pd.Ticket == "" {
+				t.Errorf("expected a correlation ticket UUID on the sanitized 500 response; body=%s", body)
+			}
+			if strings.Contains(body, "exactly one of fireAt") {
+				t.Errorf("sanitized-5xx contract violated: internal cause text leaked into the client-facing body=%s", body)
+			}
+		})
 	}
 }
 
@@ -501,8 +644,8 @@ func TestScheduledFunction_BornExpired_SucceedsNotArmedRecordsExpire(t *testing.
 // is armed verbatim with the past timestamp, and the real scheduler fires
 // it on its very next scan (already due at arm time).
 func TestScheduledFunction_PastFireAt_FiresPromptly(t *testing.T) {
-	h := newCallbackHarness(t)
-	const model = "e2e-schedfn-pastfire"
+	h, s := newSchedulerCallbackHarness(t, nil)
+	model := uniq("e2e-schedfn-pastfire")
 
 	pastFireAt := time.Now().Add(-5 * time.Second).UnixMilli()
 	h.RegisterFunction("calcPastFire", func(rc *reqCtx) (string, map[string]any, error) {
@@ -517,8 +660,7 @@ func TestScheduledFunction_PastFireAt_FiresPromptly(t *testing.T) {
 		t.Fatalf("create entity: expected 200, got %d: %s", status, body)
 	}
 
-	rows := queryDB(t, "test-tenant",
-		"SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1 AND source_state = $2 AND transition = $3 AND scheduled_time = $4",
+	rows := s.count(t, "SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1 AND source_state = $2 AND transition = $3 AND scheduled_time = $4",
 		entityID, "Open", "AutoClose", pastFireAt)
 	if rows != 1 {
 		t.Fatalf("expected exactly one scheduled_tasks row armed verbatim with the past fireAt=%d; found %d", pastFireAt, rows)
@@ -531,86 +673,49 @@ func TestScheduledFunction_PastFireAt_FiresPromptly(t *testing.T) {
 	if !hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "Closed") {
 		t.Errorf("expected a SCHEDULED_TRANSITION_FIRE audit event with state Closed; got events: %+v", events)
 	}
+	assertSMEventData(t, events, "SCHEDULED_TRANSITION_FIRE", map[string]any{"eventType": "SCHEDULED_TRANSITION_FIRE",
+		"transition": "AutoClose", "sourceState": "Open", "workflowName": "schedfn-pastfire-wf"})
 }
 
 // TestScheduledFunction_ExpiryElapsedBeforeScan_ExpiresNoFire proves the
-// settled-interval "expiry elapsed before any scanner ever reads the row"
-// path (design §5.5's grace-band gate in fire_scheduled.go): once lateness
-// exceeds TimeoutMs+grace, the task resolves Expired and never Fired.
-//
-// A live default-cadence (1s) scheduler ticking mid-flight would create an
-// unavoidable race window between "due" and "expired" here (the
-// TimeoutMs+grace band is only ~110ms) — a tick landing inside that window
-// would legitimately FIRE instead of expire, flaking the test purely on
-// cadence phase. This test sidesteps the race by disabling the harness's
-// own scheduler at construction (cfg.Scheduler.Enabled=false) and only
-// starting a bespoke scheduler.Service (mirrors
-// TestE2E_ScheduledTransition_RestartDurability's fresh-instance pattern)
-// AFTER sleeping comfortably past the expiry deadline — so the very FIRST
-// scan any scheduler ever performs against this row already sees it
-// expired, deterministically, no matter the scan cadence.
+// "expiry elapsed before any scanner ever reads the row" path: once the
+// deadline — scheduledTime + timeoutMs — has passed before the first claim,
+// the task is expired, never fired (spec §5.1 step 4, first rule). The first
+// stack has no scheduler; the second opens the same database after the
+// deadline, so its first claim is late whatever the scan cadence.
 func TestScheduledFunction_ExpiryElapsedBeforeScan_ExpiresNoFire(t *testing.T) {
-	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
-		cfg.Scheduler.Enabled = false
-	})
-	const model = "e2e-schedfn-expiry-elapsed"
+	first, s := newSchedulerHarness(t, func(cfg *app.Config) { cfg.Scheduler.Enabled = false })
+	first.member = first.AttachCnode(t, cnodeSpec{name: "default", tags: []string{scheduledFnTag}, script: first.registeredScript}).m
+	model := uniq("e2e-schedfn-expiry-elapsed")
 	const fireAfterMs = int64(50)
-	const expireAfterMs = int64(60) // resolves to timeoutMs = 10ms
+	const expireAfterMs = int64(60) // timeoutMs = 10ms
 
-	h.RegisterFunction("calcExpireElapsed", func(rc *reqCtx) (string, map[string]any, error) {
+	first.RegisterFunction("calcExpireElapsed", func(rc *reqCtx) (string, map[string]any, error) {
 		return "Schedule", map[string]any{"fireAfterMs": fireAfterMs, "expireAfterMs": expireAfterMs}, nil
 	})
-
-	wf := scheduleFunctionWorkflowJSON("schedfn-expireelapsed-wf", validScheduleFunctionJSON("calcExpireElapsed"))
-	h.SetupModelWithWorkflow(t, model, wf)
-
-	entityID, status, body := h.CreateEntity(t, model, 1, `{"name":"Test Order","amount":100,"status":"draft"}`)
+	first.SetupModelWithWorkflow(t, model, scheduleFunctionWorkflowJSON("schedfn-expireelapsed-wf", validScheduleFunctionJSON("calcExpireElapsed")))
+	entityID, status, body := first.CreateEntity(t, model, 1, `{"name":"Test Order","amount":100,"status":"draft"}`)
 	if status != http.StatusOK {
 		t.Fatalf("create entity: expected 200, got %d: %s", status, body)
 	}
 
-	// Comfortably past the fire(50ms)+timeout(10ms)+default-grace(100ms) =
-	// 160ms deadline, with generous CI-jitter headroom — BEFORE any
-	// scheduler is even running (the harness's own is disabled above, and
-	// the bespoke one below hasn't started yet).
+	// Past fire (50ms) + timeoutMs (10ms), with room for a slow machine,
+	// before any scheduler exists.
 	time.Sleep(500 * time.Millisecond)
+	second := newStackOn(t, s, nil)
 
-	schedEngine := cluster.NewSchedulerEngine(h.app.WorkflowEngine())
-	freshExecutor := cluster.NewClusterExecutor(schedEngine, "local", h.app.NodeRegistry(), nil)
-	freshScheduler := scheduler.NewService(
-		scheduler.Config{
-			Enabled:           true,
-			ScanInterval:      100 * time.Millisecond,
-			RedispatchBackoff: 5 * time.Second,
-			BatchSize:         100,
-		},
-		scheduler.Deps{
-			Store:        h.app.StoreFactory(),
-			Registry:     h.app.NodeRegistry(),
-			Coordinator:  scheduler.LowestLiveNodeID{},
-			Distribution: scheduler.Self{},
-			Clock:        scheduler.NewRealClock(),
-			Executor:     freshExecutor,
-			SelfID:       "local",
-		},
-	)
-	freshScheduler.Start()
-	defer freshScheduler.Stop()
-
-	awaitCallbackSMEventType(t, h, entityID, "SCHEDULED_TRANSITION_EXPIRE", "Open", scheduledFireTimeout)
-
-	events := h.GetSMAuditEvents(t, entityID)
+	awaitCallbackSMEventType(t, second, entityID, "SCHEDULED_TRANSITION_EXPIRE", "Open", scheduledFireTimeout)
+	events := second.GetSMAuditEvents(t, entityID)
 	if hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "") {
-		t.Errorf("expected no SCHEDULED_TRANSITION_FIRE event — lateness already exceeded timeout+grace before any scanner ran; got events: %+v", events)
+		t.Error("the task fired; its deadline had passed before the first claim")
 	}
-	if st, _ := h.GetEntityState(t, entityID); st != "Open" {
-		t.Errorf("expected entity to remain in Open (expired, not fired); got %q", st)
+	assertSMEventData(t, events, "SCHEDULED_TRANSITION_EXPIRE", map[string]any{"eventType": "SCHEDULED_TRANSITION_EXPIRE",
+		"transition": "AutoClose", "sourceState": "Open"})
+	if st, _ := second.GetEntityState(t, entityID); st != "Open" {
+		t.Errorf("state = %q; want Open (expired, not fired)", st)
 	}
-	rows := queryDB(t, "test-tenant",
-		"SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1 AND source_state = $2 AND transition = $3",
-		entityID, "Open", "AutoClose")
-	if rows != 0 {
-		t.Fatalf("expected the expired scheduled_tasks row to be deleted; found %d", rows)
+	if n := s.count(t, "SELECT count(*) FROM scheduled_tasks WHERE entity_id = $1", entityID); n != 0 {
+		t.Errorf("%d scheduled_tasks rows after the expiry; want 0 (spec §4: removed)", n)
 	}
 }
 

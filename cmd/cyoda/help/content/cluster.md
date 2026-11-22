@@ -5,6 +5,10 @@ stability: stable
 see_also:
   - config.database
   - config.auth
+  - config.cluster
+  - config.grpc
+  - grpc
+  - workflows
   - run
   - quickstart
   - helm
@@ -43,29 +47,72 @@ PostgreSQL is the only stateful component. Cluster size is bounded below by quor
 
 Peer discovery uses SWIM gossip via HashiCorp `memberlist`. Cluster membership is eventually consistent across nodes. New nodes join via a seed-list — at least one peer's `host:gossip_port`. Nodes leave gracefully on SIGTERM and are evicted by gossip after a configurable suspect-then-confirm timeout if they crash.
 
+Each node announces, in its gossip metadata, who it is — its id and its HTTP and gRPC addresses — the version of the list of compute tags it hosts, and its node state: `STARTING`, `NORMAL`, `DRAINING` or `UNHEALTHY`. A node advertises `DRAINING` from the start of its shutdown, and that state is gossiped before the node leaves the cluster. The list itself, one entry per tenant with a compute node attached, is sent to every peer over the membership layer's reliable (TCP) channel whenever it changes, and a node that finds it holds a different version from the one a peer announces asks that peer for it. One mechanism covers a lost message, a node that joins late, a node restarted under the same id, and a healed partition. The number of tenants and tags a node can host is not limited by the membership layer.
+
+The metadata is limited to 512 bytes by `memberlist`. Its size depends only on `CYODA_NODE_ID`, `CYODA_NODE_ADDR` and `CYODA_GRPC_NODE_ADDR`; a node whose identity would not fit refuses to start and names the three settings. All membership traffic, the tag lists included, is encrypted with `CYODA_HMAC_SECRET`.
+
 The gossip protocol is operationally invisible — there are no per-message logs at INFO level. `memberlist`'s own log output is routed to `slog` at DEBUG.
 
 ## TRANSACTION ROUTING
 
-PostgreSQL transactions are bound to the connection that begins them (`pgx.Tx` is single-owner). When a node begins a transaction, it issues a routing token containing the owning node's identity, an opaque transaction reference, and an expiry, signed with HMAC-SHA256 keyed on `CYODA_HMAC_SECRET`. The token is returned to the client (HTTP header `X-Tx-Token`, gRPC metadata key `tx-token`) and replayed on subsequent requests against that transaction.
+PostgreSQL transactions are bound to the connection that begins them (`pgx.Tx` is single-owner). When a node gives a callout to a compute member it mints a token that names the owning node, an opaque transaction reference, the callout and the try it belongs to, and an expiry, signed with HMAC-SHA256 keyed on `CYODA_HMAC_SECRET`. The compute member echoes it on its callbacks (HTTP header `X-Tx-Token`, gRPC metadata key `tx-token`). A token lives for its try's answer limit plus `CYODA_CALLOUT_PASS_ALLOWANCE`.
 
 The HTTP and gRPC frontends inspect the token, verify the HMAC, and either handle the request locally (token's owner is this node) or reverse-proxy to the owning node. Failure modes:
 
-- Token signature mismatch, malformed token, or expired token — `400 Bad Request` (codes `BAD_REQUEST` / `TRANSACTION_EXPIRED`); the client must restart the transaction.
-- Owner node not in the registry, marked dead by gossip, or unreachable from the proxy — `503 Service Unavailable` (code `TRANSACTION_NODE_UNAVAILABLE`); PostgreSQL has already aborted the connection's transaction on the dead node, so the client retries from scratch. Fail-closed semantics, no orphaned transactions.
+- Signature mismatch or malformed token — `401 UNAUTHORIZED`. Expired token — `410 TRANSACTION_EXPIRED`.
+- The request was not sent to the owner node — the node is not in the registry or is marked dead by gossip, the peer address guard refused its address, or the connection to it could not be opened (on gRPC: the call failed before any of its headers went out) — `503 Service Unavailable` (code `TRANSACTION_NODE_UNAVAILABLE`), retryable: nothing ran, so sending the request again is safe. When the owner is in fact gone, its transaction is gone with it: the operation that owns it fails, and its client retries the operation from scratch. Fail-closed semantics, no orphaned transactions.
+- The request may have reached the owner — the connection failed after it was opened, or no answer came within `CYODA_PROXY_TIMEOUT` — the same `503`, not retryable: the owner may be alive and may have run the request, so the outcome of a write is unknown.
+
+A storage backend may coordinate transactions itself (the optional SPI capability `TransactionCoordinationCapable`). None of the in-tree backends does. On such a backend any node can serve any transaction: the token names no owning node, and every node serves the callback where it lands, without a proxy hop. A node picks this at start-up and logs it (`transaction coordination selected`, `locationIndependent=true`); an error from the backend when it is asked fails start-up. The callbacks of one transaction may then run at the same time, on one node or several. Of two that wrote the same entity from the same version, one keeps nothing but a schema extension it made and is answered `409 CONFLICT`, retryable. Nothing waits for a callback in progress: one still in progress when its callout moves on, or when the transaction is committed or rolled back, cannot complete, and is answered `410 CALLOUT_SUPERSEDED` with nothing kept but a schema extension it made, which stays (`cyoda help models`, SCHEMA EXTENSION).
 
 `CYODA_HMAC_SECRET` is a deployment secret. All nodes in a cluster must share the same value; it is also the root key for peer-to-peer dispatch authentication (HKDF-derived AEAD), so rotating it requires a cluster-wide restart — see `SECRET ROTATION`.
 
 ## OPERATIONS
 
 - **Growing the cluster.** Start a new node with the same `CYODA_HMAC_SECRET` and a seed-list pointing at any existing node. Gossip propagates membership within seconds. The load balancer's health checks (against `/readyz`) decide when to send traffic.
-- **Shrinking the cluster.** Send SIGTERM. The node finishes in-flight requests, declares itself dead via gossip, and exits. Outstanding transactions owned by the departing node abort cleanly via PostgreSQL connection close.
-- **Rolling restart.** Restart one node at a time, waiting for `/readyz` to report ready before moving on. Transactions in flight on the restarting node abort; clients retry.
-- **Network partitions.** A node partitioned from peers but still reachable from PostgreSQL continues to serve requests; gossip-level membership is best-effort and does not gate request handling. A node partitioned from PostgreSQL continues to pass `/readyz` (readiness is a static initialization flag plus the panic-recovery health flag, not a live store probe — see `app/app.go ReadinessCheck`); individual requests fail at query time and the client retries. The full partition analysis (5 phases, dispatch and CRUD-callback paths) is in `docs/ARCHITECTURE.md` §4.5.
+- **Shrinking the cluster.** Send SIGTERM. `/readyz` fails at once, so the load balancer stops sending the node new requests. The node finishes in-flight requests, declares itself dead via gossip, and exits. Outstanding transactions owned by the departing node abort cleanly via PostgreSQL connection close.
+- **Rolling restart.** Restart one node at a time. On SIGTERM `/readyz` fails at once, so the load balancer drains the node; wait for `/readyz` to report ready on the restarted node before moving on. Transactions in flight on the restarting node abort; clients retry.
+- **Network partitions.** A node partitioned from peers but still reachable from PostgreSQL continues to serve requests; gossip-level membership is best-effort and does not gate request handling. A node partitioned from PostgreSQL continues to pass `/readyz` (readiness checks that storage was initialised, the panic-recovery health latch and the draining state, so it fails while the node drains or after a recovered panic, but it is not a live store probe — see `app/app.go ReadinessCheck`); individual requests fail at query time and the client retries. The full partition analysis (5 phases, dispatch and CRUD-callback paths) is in `docs/ARCHITECTURE.md` §4.5.
 
-## CROSS-NODE DISPATCH FAILOVER
+## CLUSTER STATUS
 
-When a callout (processor, criterion, or scheduled function) needs a compute tag no local member serves, the node forwards it to a peer advertising the tag. If the forward fails at the transport level (peer unreachable) or the peer reports it no longer has a matching member, the node fails over to the next tag-matching peer, trying each peer at most once. Failures indicating the callout actually ran on the peer (e.g. `DISPATCH_TIMEOUT`) are never retried on another peer. When all peers are exhausted, the last failure surfaces as a retryable `503`.
+`GET /api/platform/cluster` lists every node of the cluster and says whether the cluster is operational. It is for a platform operator only (`ROLE_ADMIN` in the tenant `PLATFORM`; on-behalf-of tokens are refused) and is served over HTTP only.
+
+The node that serves the request lists every member of its gossip directory, itself included, and asks each one for its status over the sealed peer channel (`POST /internal/dispatch/status`), all in parallel. Each ask is bounded by `CYODA_PROXY_TIMEOUT`, and opening its connection by `CYODA_DISPATCH_CONNECT_TIMEOUT`. A member that answers is `UP`, with the state, database check, version and clock setting from its answer. A member that does not answer — no answer in time, a connection that does not open, an answer that does not authenticate or validate, or no usable address — is `DOWN`, with the state its gossip metadata names, or no state when that metadata does not parse or names no valid state. A node that has left the directory is not listed. Without clustering (`CYODA_CLUSTER_ENABLED=false`) the one entry is `local`, read in process.
+
+Query parameters:
+
+- `waitForNodes` (integer, 1 to 1000, optional) — answer once at least this many nodes are `UP` and `NORMAL`. The node asks again whenever the directory changes, and at least once a second. Absent, the answer follows one round.
+- `timeoutMs` (integer, 1 to 600000, default 30000) — the longest wait for `waitForNodes`. When it has passed the answer is the last counted round (a round counts only when every ask it made returned before then); the first round always completes. Given without `waitForNodes` it is refused.
+
+The body is the same for 200 and 503, and is a status, not a problem:
+
+- `nodes` — one entry per member, in ascending `id` order: `id`, `reachability` (`UP` or `DOWN`), `state`, and, for an `UP` node only, `database` (its store's `Ping` passed, bounded by half of that node's `CYODA_PROXY_TIMEOUT`), `version` (the node's build version) and `clock` (`controllable`, `version`, `writer`: the node's clock setting without its times; `false`, `0`, `""` on a node without clock control).
+- `counts` — one item per combination of `reachability` and `state` present, with its `count`.
+- `operational` — true only when every node is `UP` and `NORMAL` with `database` true, all nodes have the same `version` and the same `clock`, and, with `waitForNodes`, at least that many nodes are `UP` and `NORMAL`. So with `waitForNodes`, an extra `DOWN` node still makes the cluster not operational.
+
+The answer is `200` when `operational` is true and `503` when it is false. A query string that does not parse is `400 BAD_REQUEST`. So is a parameter that is not an integer, out of range, undeclared or given more than once, and a lone `timeoutMs`; for these, `properties.parameter` names the parameter. The body never holds node addresses, peer URLs or error text; those go to the log of the node that saw them. A client that leaves during the wait gets no answer, and the node logs it at DEBUG.
+
+A node's state is one of four, with the precedence `UNHEALTHY` > `DRAINING` > `STARTING` > `NORMAL`; no transition is undone:
+
+- `STARTING` — the node is in gossip and still building. Nothing serves its peer route yet, so it is always listed `DOWN`.
+- `NORMAL` — the node has finished building. Between that point and its listeners opening it cannot answer, so it is listed `DOWN` with the state `NORMAL`, and `waitForNodes` keeps waiting until it answers.
+- `DRAINING` — shutdown has begun. `/readyz` fails from this point.
+- `UNHEALTHY` — the node has recovered a panic in engine or store work.
+
+## CALLOUTS ACROSS NODES
+
+A callout (processor, criterion or scheduled function) is run by the node that holds the operation's transaction — the owner. The owner first tries its own matching compute members, one after another. If that does not produce an answer and tries are left, it **hands the callout over** to one peer that advertises the tag, together with the number of tries left, the answer limit and the request id. The peer tries its own members only; it never hands on. The owner then asks the next such peer, and when nobody anywhere has a matching member it waits — up to `CYODA_DISPATCH_WAIT_TIMEOUT` in total — for one to attach or for a peer to announce one.
+
+What counts as a try:
+
+- A peer that **cannot be connected to** within `CYODA_DISPATCH_CONNECT_TIMEOUT`, or that answers that it handed the work to nobody, costs no try; the next peer is asked.
+- A hand-over whose **answer is lost** — no reply, a broken connection, a non-2xx status, an answer that does not authenticate — counts as one try, because the peer may have given the work to a member. For a processor not declared `idempotent` nothing else is tried and the operation fails with `503 DISPATCH_FORWARD_FAILED`.
+- Every hand-over opens a connection of its own, so "could not connect" is the only case in which a dead peer costs nothing. Behind a sidecar or an ingress the connection always opens and a dead peer shows as a `502`–`504`; with an `https://` node address a failed TLS handshake is not a connect failure either. Both count as a lost answer — the safe side.
+
+The number of tries is therefore the normal number, not a hard limit. The time is: see `cyoda help config cluster` (`CYODA_CALLOUT_HANDOVER_ALLOWANCE`) and `cyoda help config grpc`.
+
+Node clocks more than 30 seconds apart make a peer refuse a hand-over before reading it. That refusal cannot be authenticated, so it counts as a lost answer: clocks that far apart fail operations whose processors are not `idempotent` rather than being routed around. Keep node clocks synchronised.
 
 ## SECRET ROTATION
 
@@ -75,42 +122,84 @@ Rotating the secret therefore requires full-cluster downtime: stop all nodes, up
 
 ## DISPATCH REPLAY PROTECTION
 
-Each node keeps an in-memory replay cache of dispatch-envelope nonces: entries live for 60 seconds (twice the 30-second timestamp-skew window) and the cache holds at most 100 000 nonces, per node. The cache is fail-closed: when full, new dispatch envelopes are rejected as replays until entries expire, surfacing to the forwarding node as a retryable failure (which dispatch failover routes around). The ceiling admits roughly 1 600 sustained inbound cross-node dispatches per second per node (100 000 nonces per 60-second window) — far above realistic callout rates; reaching it indicates a flood, not normal load.
+A callout handed over to another node travels as an AES-256-GCM envelope, and so does the answer. Both are keyed from `CYODA_HMAC_SECRET`. A request binds its direction, method, path, timestamp and the id of the node it is sealed for; an answer binds its direction, the path, the timestamp, that same node and the nonce of the one request it answers — so an envelope cannot be replayed onto another endpoint, reflected back in the other direction, moved onto another request, or delivered to a different node of the cluster, which holds the same key and would otherwise answer it. The node id is not sent: the sender names the node whose address it looked up and the receiver names itself, so an envelope opens only on the node it was meant for. This is why `CYODA_NODE_ID` must be distinct on every node of a cluster — two nodes sharing one id can open each other's hand-overs. A duplicate is not left to be discovered while a node is starting: a node whose id a live node of the cluster already holds keeps trying for `CYODA_STARTUP_TIMEOUT` and then exits, naming `CYODA_NODE_ID`, the address the id was found at and the seed it was learned from, while the node already holding the id keeps serving. The budget is given to the commonest cause of the finding, which is not a second node at all: a node that crashed rather than leaving gracefully and came back at another address, whose peers still hold the record of its previous life and cannot tell it from a second node's. That record is reaped within seconds, and the attempt made after it has gone is the one that lets the node in. Two nodes starting at the same instant are caught too, by the membership gossip rather than the join exchange: a node can tell that it is one of the two, because the record its own membership layer holds for the contested id is its own, and a node that has not finished starting refuses to start on that.
+
+This check covers a node up to the moment it serves, and no further. A node that is already serving refuses the exchange that would establish the duplicate, which keeps the second record out of its own view, logs the conflict at ERROR once per address, and carries on. Two clusters that each started healthily under overlapping ids and only later meet — a network policy opened, a namespace split joined up, a partition healed — therefore produce ERROR lines and two nodes serving under one id, each able to open the other's hand-overs. Whether a serving node should stop, or refuse hand-overs, when its id is contested is an open question; until it is answered, that ERROR line is what to watch for, and the remedy is to fix the id and restart the node that has the wrong one. Every hand-over opens a connection of its own.
+
+The entity's payload travels base64-encoded, byte for byte, in both directions: it is what the store holds and what the compute member is handed, and a re-encoding on the way would drop whitespace and rewrite characters in a tenant's stored data. The envelope ceiling follows from that — the 10 MiB an entity write may carry, base64-encoded, plus room for the entity's meta, the processor definition or criterion, the roles and the tags — so an entity the API accepts can always be handed over. A body above the ceiling is refused before anything is sent: the callout fails without using a try rather than being retried identically on every node.
+
+Each node keeps an in-memory replay cache of request nonces: entries live for 60 seconds (twice the 30-second timestamp-skew window) and the cache holds at most 100 000 nonces, per node. The cache is fail-closed: when it is full, or a nonce repeats, the request is refused; the duplicate check runs first, so a replay is never turned into something answerable just because the cache also happens to be full. A repeated nonce authenticates like any other request but gets a bare `403` anyway — a replay must not be confirmed under any seal — which the owner cannot trust and reads as a lost answer (`DISPATCH_FORWARD_FAILED`). A request refused only for the cache being full is answered — under seal — that nothing was handed to a compute member; the node that sent the hand-over asks the next peer and no try is used. Such a refusal records no nonce, so the node also remembers the refused request's timestamp and refuses every later request stamped at or before it whose nonce it does not hold — otherwise the refused hand-over would simply be accepted once the cache had room, which is all an attacker holding a captured one has to wait for. A genuine hand-over caught by that rule is refused the same way, and costs no try either. Answers need no cache: each opens only under the nonce of a request the owner itself chose, and is protected the same way requests are — encrypted, with a nonce of its own, bound to the request it answers — but never enters this cache. The ceiling admits roughly 1 600 sustained inbound peer requests (hand-overs, clock pushes and status asks) per second per node — far above realistic callout rates; reaching it indicates a flood, not normal load.
+
+A platform clock push (`POST /internal/dispatch/clock`, see `cyoda help clock`) travels on the same channel: it is sealed the same way, bound to its own path, and counted in the same replay cache. A push that is refused, by the cache or otherwise, is not retried; the clock change answers `503 CLOCK_NOT_CONFIRMED`.
+
+A status ask (`POST /internal/dispatch/status`, see `CLUSTER STATUS`) travels on the same channel, sealed the same way, bound to its own path and counted in the same replay cache. An ask that is refused is not retried within the round; the node is listed `DOWN`.
+
+The cache lives in memory only, so a node restarted inside the 30-second skew window accepts a replay of a request its previous life ran. Reaching that needs an attacker on the network between nodes holding the cluster secret's traffic and a restart inside the window; binding a node's lifetime into the seal instead would refuse every hand-over to a node whose membership has not yet gossiped after a restart, which is a far more likely failure.
 
 ## COMPUTE CALLBACK TRANSACTION ROUTING
 
-When the workflow engine dispatches to a compute node it mints a signed tx-token
-and includes it as the `cyodatxtoken` CloudEvent extension attribute. The compute
-node MUST echo this token on every callback:
+The node that gives a callout to a compute member mints a signed token for that
+try and includes it as the `cyodatxtoken` CloudEvent extension attribute — also
+when the callout was handed over, in which case the token still names the
+owner (on a location-independent backend it names no node; see `TRANSACTION
+ROUTING`). The compute member MUST echo this token on every callback:
 
 - HTTP CRUD callbacks: `X-Tx-Token` request header
 - gRPC EntityManage callbacks: `tx-token` metadata key
 
+The published API document declares the HTTP form: `X-Tx-Token` is an optional
+header parameter on the thirty entity, search, message, audit and platform-api
+operations a callback uses, and every operation the join layer serves declares
+the statuses it answers with — `401`, `403`, `404`, `409`, `410`, `413` and
+`503`. A client
+generated from the document can therefore make a callback and read its refusal
+without extra hand-written code. The entity-model and workflow operations that
+change a model or its workflows do not declare it: model and workflow
+administration never runs inside a transaction, and each of them refuses a
+request carrying the header with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` before
+the token is verified and before the request would be routed to the owning
+node (see `cyoda help errors MODEL_ADMIN_IN_JOINED_TRANSACTION`).
+
 The receiving node verifies the token's HMAC and routes the callback to the
-transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above).
+transaction-owning node (same proxy mechanism as `TRANSACTION ROUTING` above),
+or, on a location-independent backend, serves it where it lands.
 Without the echo the callback runs in a standalone transaction and cannot see
-the cascade's uncommitted writes. Callback acks are provisional until the
+what the cascade's transaction has written so far (not yet committed). Callback acks are provisional until the
 owning transaction commits.
+
+The owner admits a callback only while the token's callout is in progress and the token belongs to the member that currently has the work. A callback from a member that was replaced, or whose callout has ended, is refused with `410 CALLOUT_SUPERSEDED` while the transaction is open, and with `404 TRANSACTION_NOT_FOUND` afterwards. A callback still in progress when its callout moves on — the work goes to the next member, or the callout ends — runs to its end, and is then discarded and answered `410 CALLOUT_SUPERSEDED`: none of its writes are kept, except a schema extension it made, which stays (`cyoda help models`, SCHEMA EXTENSION). On the in-tree backends the owner waits until every such callback has ended before it gives the work to the next member, and before the workflow carries on after a callout; on a location-independent backend nothing waits, and such a callback is refused completion when it ends.
+
+Each callback is all-or-nothing: either all its writes become part of the transaction, or none do. A schema extension one of its writes made is not part of the transaction: it stays whatever happens to the callback (`cyoda help models`, SCHEMA EXTENSION). A `2xx` answer means they were kept. They are still undone with the part of the transaction above them — the transaction's rollback, or a failed `ASYNC_NEW_TX` processor the callback ran under. A callback that fails with a retryable answer keeps nothing, and the transaction goes on, so the compute member can send it again under the same token. A write that fails with an answer that is not retryable keeps nothing and makes the transaction rollback-only: the operation that owns it fails with `409 TRANSACTION_ROLLBACK_ONLY`. The mark also stops the callout the failed write was made under before its next try, so a later callback under its token is refused: with `409 TRANSACTION_ROLLBACK_ONLY` until the owner has ended the callout, and with `410 CALLOUT_SUPERSEDED` after. Under an `ASYNC_NEW_TX` processor the mark stops at the processor: the processor fails, and the operation goes on. A read that fails with a `4xx`, such as a `404`, keeps what it read and marks nothing.
+
+On the in-tree backends (memory, SQLite, PostgreSQL) the callbacks of one transaction are served one at a time, in the order they arrive. A callback whose write runs a workflow with a callout of its own pauses while that callout is out. While it is paused, only the callbacks of that inner callout are admitted: any other callback of the transaction is refused at once with `503 TRANSACTION_BUSY`, retryable. Compute members should send the callbacks of one transaction in series; on these backends parallel callbacks gain nothing. A location-independent backend runs them at the same time instead (see `TRANSACTION ROUTING`).
+
+A callback's request and its answer are both held in memory on the node that serves it while it runs, each under its own ceiling: an over-size request body is refused with `413 BAD_REQUEST` (HTTP) at a fixed 10 MiB, and an answer past `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB) fails the callback with `413 JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short. Page a large read instead. A callback still waiting its turn when its member goes away is dropped — it has touched nothing, and the drop is logged at `DEBUG` with no ticket, since nothing was wrong on the server and there is nobody left to quote a ticket to; one that already has the transaction runs to completion.
+
+How many callbacks may wait for one transaction is bounded too, by `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) — each one waiting holds its whole request for as long as the callout lasts. Because the in-tree backends serve the callbacks of one transaction one at a time, firing many at once buys a compute member no speed; past the cap a callback is refused with `503 TOO_MANY_JOINED_REQUESTS` before its request is read, having touched nothing, while the callback holding the transaction and those already queued are unaffected. On that refusal, back off and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
 
 See `workflows` and `docs/PROCESSOR_EXECUTION_MODES.md` for mode-specific
 semantics (`SYNC`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`).
 
-## COMPOSITE UNIQUE KEY STALENESS
+## MODEL CACHE
 
-Composite unique keys are part of the model descriptor. They inherit the descriptor's existing cross-cluster coherence: when a model is locked or unlocked, the node that performs the operation invalidates the local model cache and gossip-broadcasts `topicModelInvalidate` so every other node evicts and reloads the descriptor (keys included).
+Each node caches its tenants' locked models. Every change to a model — import, lock, unlock, delete, change level, unique-key definitions — and every schema extension an entity write makes evicts the model from the cache of the node that made it, and that node gossip-broadcasts a `model.invalidate` message so every other node evicts it too and reads it again on next use. A node that does not receive the broadcast keeps the older model until its cache lease (`CYODA_MODEL_CACHE_LEASE`, default `5m`) ends.
 
-**Changing a key on a live multi-node postgres deployment** requires a destructive teardown: unlock the model (requires zero live entities, so all entities must be deleted first), change the key definitions, then relock. This is an inherently disruptive operation. There is a bounded window during which a node that missed both the unlock and relock gossip messages may still enforce the **old** key set. Data written through that node in the window will carry claim rows under the old key IDs.
+So a schema extension is in use on the node that served the write when the write returns, and on another node when the broadcast arrives. Until then that node uses the older schema; see `cyoda help models` (SCHEMA EXTENSION) for what that means for searches, criteria and writes there. A `changeLevel` change on a locked model takes effect on each node the same way.
 
-**Operator guidance:** after changing a composite unique key on a multi-node deployment, pause writes and allow the cluster to settle for at least one cache-lease TTL before resuming. The cache TTL is the backstop that guarantees every node has reloaded the new descriptor.
+## COMPOSITE UNIQUE KEYS
 
-The proper fix — acknowledged model-cache invalidation, where the relock waits for every online node to confirm eviction before completing — is a planned cluster enhancement and is out of scope for v0.8.2.
+Composite unique keys are part of the model descriptor, but they are not enforced from a node's model cache. When a transaction commits, its entities are checked against the unique-key definitions of the stored model (`cyoda help models`, LIFECYCLE). A node whose cached model is out of date after an unlock, key change and relock therefore still enforces the stored definitions. The early check of a request body for a partly filled key (`422 INVALID_UNIQUE_KEY`) uses the node's cached model.
 
-**Scope:** this limitation applies to multi-node postgres only. The memory and sqlite backends are single-process; their cache invalidation is synchronous.
+Changing the unique-key definitions needs the model unlocked, which needs zero live entities: delete the model's entities, unlock, change the unique-key definitions, then relock. Stop writes to the model while you do (`cyoda help models`, LIFECYCLE).
 
 ## SEE ALSO
 
 - `config.database` — PostgreSQL is the only multi-node-capable backend
 - `config.auth` — `CYODA_HMAC_SECRET` configuration
+- `config.cluster` — cluster settings, including the callout hand-over ones
+- `config.grpc` — tries, answer limit, the PostgreSQL ceiling
+- `grpc` — the callout envelope, retries and callback routing
+- `workflows` — `retryPolicy`, `idempotent`, and what a failed callout leaves behind
 - `run` — server lifecycle
 - `quickstart` — first-run defaults
 - `helm` — Kubernetes deployment of multi-node clusters

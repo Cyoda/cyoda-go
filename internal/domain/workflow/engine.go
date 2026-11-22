@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -16,18 +15,15 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/observability"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
-var tracer = otel.Tracer("github.com/cyoda-platform/cyoda-go/workflow")
+var tracer = otel.Tracer("github.com/cyoda/cyoda-go/workflow")
 
 //go:embed default_workflow.json
 var defaultWorkflowJSON []byte
@@ -43,22 +39,21 @@ var ErrTransitionNotFound = errors.New("transition not found")
 // ErrCriterionNotMatched is the sentinel FireScheduledTransition uses to
 // distinguish "the transition's criterion evaluated to false" (Declined —
 // terminal, one-shot, no retry) from every other fireTransition failure
-// (criterion-evaluation error, processor failure — both retried on the next
-// scan). errors.Is(err, ErrCriterionNotMatched) reports true for the error
-// fireTransition returns from either of its criterion-not-matched branches.
+// (criterion-evaluation error, processor failure — a failure the scheduler
+// records and retries). errors.Is(err, ErrCriterionNotMatched) reports true
+// for the error fireTransition returns from either of its
+// criterion-not-matched branches.
 //
-// fireTransition cannot wrap with a plain %w here: attemptTransition's tests
-// assert the criterion-not-matched message byte-for-byte
-// (`transition %q criterion not matched: %s` / `transition %q criterion not
-// matched`), and %w appends the sentinel's own "criterion not matched" text,
-// which would change that message. criterionNotMatchedError instead carries
-// the exact pre-existing text in Error() while still satisfying errors.Is
-// via a custom Is method.
+// fireTransition cannot wrap with a plain %w here: the criterion-not-matched
+// message is `transition %q criterion not matched`, with `: <reason>`
+// appended when the reason is not the default, and %w appends the
+// sentinel's own "criterion not matched" text, which would change that
+// message. criterionNotMatchedError instead carries the exact text in
+// Error() while still satisfying errors.Is via a custom Is method.
 var ErrCriterionNotMatched = errors.New("criterion not matched")
 
-// criterionNotMatchedError preserves fireTransition's existing
-// criterion-not-matched error text exactly while satisfying
-// errors.Is(err, ErrCriterionNotMatched).
+// criterionNotMatchedError carries fireTransition's criterion-not-matched
+// text while satisfying errors.Is(err, ErrCriterionNotMatched).
 type criterionNotMatchedError struct {
 	msg string
 }
@@ -102,12 +97,18 @@ const defaultMaxStateVisits = 10
 
 // maxCriterionReasonLen bounds the criterion reason stored in the audit and
 // reflected into the 400 body. The reason is compute-node-supplied and the
-// audit is durable storage, so it is capped defensively.
-const maxCriterionReasonLen = 2048
+// audit is durable storage, so it is capped defensively — but the bound
+// expected to bite is the member-side one (internal/grpc's
+// MaxCriterionReasonRunes, 2048 runes, marked with "…"), applied upstream of
+// this. 8195 is that bound's worst case in bytes — 2048 runes at up to 4
+// bytes each plus the 3-byte ellipsis — so this cap cannot silently cut a
+// second time, unmarked, for text made of multi-byte runes.
+const maxCriterionReasonLen = 8195
 
 // defaultCriterionReason is recorded when a criterion returns false without an
-// explanatory reason (inline predicates, or a FUNCTION criterion that supplies
-// none). Keeps the audit data.reason shape stable.
+// explanatory reason: a criterion without a function condition, or a
+// whole-criterion function whose member gave no reason. Keeps the audit
+// data.reason shape stable.
 const defaultCriterionReason = "criterion did not match"
 
 // capReason truncates a compute-node-supplied criterion reason to
@@ -128,49 +129,37 @@ func capReason(s string) string {
 
 // criterionName derives the audit "criterion" field: the FUNCTION name for a
 // function criterion, else the parsed condition type (e.g. "simple", "group").
-// The canonical FUNCTION wire shape nests the name under "function" (see
-// internal/grpc/dispatch.go); a top-level "name" is kept as a fallback for
-// robustness.
+// It reads the criterion with the parsers import validated it with, so a
+// shape import refuses names nothing.
 func criterionName(criterion []byte) string {
-	var envelope struct {
-		Type     string `json:"type"`
-		Name     string `json:"name"`
-		Function struct {
-			Name string `json:"name"`
-		} `json:"function"`
+	cond, err := predicate.ParseCondition(criterion)
+	if err != nil {
+		return ""
 	}
-	if json.Unmarshal(criterion, &envelope) == nil && envelope.Type == "function" {
-		if envelope.Function.Name != "" {
-			return envelope.Function.Name
-		}
-		if envelope.Name != "" {
-			return envelope.Name
+	if cond.Type() == "function" {
+		if fn, present, err := contract.ParseCriterionFunction(criterion); err == nil && present && fn.Name != "" {
+			return fn.Name
 		}
 	}
-	if cond, err := predicate.ParseCondition(criterion); err == nil {
-		return cond.Type()
-	}
-	return ""
+	return cond.Type()
 }
 
 // Engine orchestrates workflow execution for entities.
 type Engine struct {
-	factory          spi.StoreFactory
-	uuids            spi.UUIDGenerator
-	txMgr            spi.TransactionManager
-	extProc          contract.ExternalProcessingService
+	factory spi.StoreFactory
+	uuids   spi.UUIDGenerator
+	txMgr   spi.TransactionManager
+	extProc contract.ExternalProcessingService
+	// coord is the transaction coordination the engine opens ASYNC_NEW_TX
+	// processor scopes in: the one the callout coordinator registers its
+	// callouts with and the doors open callback scopes in.
+	coord            txcoord.Coordination
 	maxStateVisits   int
 	defaultWorkflows []spi.WorkflowDefinition
 	// clock supplies "now" for scheduled-transition arming (reconcileScheduledTasks)
-	// and for FireScheduledTransition's lateness/grace-band math and the
-	// scheduler's scan loop. Defaults to time.Now; overridden via
-	// WithScheduledClock for deterministic tests.
-	clock func() time.Time
-	// expiryGraceMs is the margin (ms) above a scheduled transition's
-	// TimeoutMs that FireScheduledTransition tolerates before expiring a
-	// late task instead of leaving it for the next scan (design §5.5).
-	// Defaults to defaultExpiryGraceMs; overridden via WithExpiryGrace.
-	expiryGraceMs int64
+	// and for FireScheduledTransition's deadline decisions, and stamps the audit
+	// trail. Injected via NewEngine.
+	clock spi.Clock
 	// commitBudget bounds flushAndCommitSegment's shielded CBD-segment
 	// commit (common.ShieldedCommitWithBudget). Defaults to
 	// common.CommitBudget (the same 30s production budget
@@ -178,13 +167,34 @@ type Engine struct {
 	// WithCommitBudget so a test can observe the common.ErrCommitInterrupted
 	// wrap firing for real without waiting out the production budget.
 	commitBudget time.Duration
+	// runTxs maps each transaction a scheduled run began to the run's guard.
+	runTxs runTxGuards
 }
 
-// NewEngine creates a new workflow engine.
-func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
-	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, expiryGraceMs: defaultExpiryGraceMs, commitBudget: common.CommitBudget}
+// NewEngine creates a new workflow engine. txMgr is required and must not be
+// nil: the engine takes savepoints and rolls back segments through it. clock
+// is required and must not be nil: it is the platform clock behind
+// reconcileScheduledTasks' scheduledTime/armedAt computation,
+// FireScheduledTransition's deadline decisions and audit-event timestamps.
+// There is no default; a missing clock fails at construction.
+func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, clock spi.Clock, opts ...EngineOption) *Engine {
+	if clock == nil {
+		panic("workflow.NewEngine: nil clock")
+	}
+	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: clock, commitBudget: common.CommitBudget}
 	for _, opt := range opts {
 		opt(e)
+	}
+	if e.coord == nil {
+		if e.extProc != nil {
+			// Its processor scopes would sit where the doors and the
+			// owner's loop never look: a callback would re-parent to the root
+			// and a pause would release no gate.
+			panic("workflow.NewEngine: WithExternalProcessing needs WithCoordination, the coordination its callouts and callbacks share")
+		}
+		// An engine that makes no callouts has no callbacks and no processor
+		// scopes to share.
+		e.coord = txcoord.New(txMgr)
 	}
 
 	var defaultWF spi.WorkflowDefinition
@@ -207,23 +217,24 @@ func WithExternalProcessing(extProc contract.ExternalProcessingService) EngineOp
 	}
 }
 
+// WithCoordination sets the transaction coordination the engine opens
+// ASYNC_NEW_TX processor scopes in. It must be the one the external processing
+// service registers its callouts with, and the one the callback doors open
+// their scopes in: a processor scope is the parent of the callouts begun from
+// it and of their callbacks. It is required with WithExternalProcessing;
+// NewEngine panics without it. An engine with no external processing builds
+// one of its own.
+func WithCoordination(c txcoord.Coordination) EngineOption {
+	return func(e *Engine) {
+		e.coord = c
+	}
+}
+
 // WithMaxStateVisits sets the per-state visit limit for cascade loop protection.
 func WithMaxStateVisits(n int) EngineOption {
 	return func(e *Engine) {
 		if n > 0 {
 			e.maxStateVisits = n
-		}
-	}
-}
-
-// WithScheduledClock overrides the engine's clock, used for
-// reconcileScheduledTasks' scheduledTime/armedAt computation and, later, by
-// FireScheduledTransition and the scan-loop scheduler. Defaults to
-// time.Now; tests inject a deterministic clock instead.
-func WithScheduledClock(clock func() time.Time) EngineOption {
-	return func(e *Engine) {
-		if clock != nil {
-			e.clock = clock
 		}
 	}
 }
@@ -242,10 +253,7 @@ func WithCommitBudget(budget time.Duration) EngineOption {
 
 // now returns the engine's current time per its configured clock.
 func (e *Engine) now() time.Time {
-	if e.clock != nil {
-		return e.clock()
-	}
-	return time.Now()
+	return e.clock.Now()
 }
 
 // rollbackSegment releases a transaction segment the engine opened and never
@@ -260,32 +268,41 @@ func (e *Engine) now() time.Time {
 // the stack is unwinding through a panic. None of them recover: surviving a panic
 // is the request door's decision, not the engine's.
 //
-// Nil-safe on txMgr: segmentation implies a transaction manager, so this cannot
-// be nil in production, but the engine is constructed without one in unit tests.
+// recordEventInOwnTx releases the transaction it opens for one audit event the
+// same way, with no entry transaction to spare.
 func (e *Engine) rollbackSegment(ctx context.Context, openTxID, entryTxID string) {
-	if e.txMgr == nil || openTxID == "" || openTxID == entryTxID {
+	if openTxID == "" || openTxID == entryTxID {
 		return
 	}
-	rbCtx, cancel := common.RollbackContext(ctx)
-	defer cancel()
-	if err := e.txMgr.Rollback(rbCtx, openTxID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
-		slog.Warn("failed to roll back engine-opened segment",
+	if err := e.rollbackSealed(ctx, openTxID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
+		slog.Warn("failed to roll back an engine-opened transaction",
 			"pkg", "workflow", "txID", openTxID, "err", err)
 	}
 }
 
+// rollbackSealed rolls back a transaction the engine owns: it seals the
+// transaction first, ignoring the answer — a rollback is what a refused seal
+// asks for — and the coordination forgets it after the rollback. The rollback
+// runs on common.RollbackContext, derived once the seal is done, so the
+// seal's wait does not spend the rollback's budget.
+func (e *Engine) rollbackSealed(ctx context.Context, txID string) error {
+	finish, _ := e.coord.Seal(ctx, txID)
+	defer finish()
+	rbCtx, cancel := common.RollbackContext(ctx)
+	defer cancel()
+	return e.txMgr.Rollback(rbCtx, txID)
+}
+
 // Execute runs the workflow engine for entity creation. It selects the matching
-// workflow, sets the initial state, optionally fires a named transition, and
-// cascades automated transitions.
+// workflow, sets the initial state, and cascades automated transitions.
 //
 // State-machine audit events are recorded under entity.Meta.TransactionID so
 // that the transaction ID returned by POST /entity can be used to look up
 // workflow results via /audit/entity/{id}/workflow/{txId}/finished.
-func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName string) (*EngineResult, error) {
+func (e *Engine) Execute(ctx context.Context, entity *spi.Entity) (*EngineResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.execute", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
-		observability.AttrTransitionName.String(transitionName),
 	))
 	defer span.End()
 
@@ -299,8 +316,9 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	// The engine owns every segment it opens after entryTxID until it hands one
 	// back on the success return. openCtx/openTxID are dedicated locals, NOT the
 	// named returns: every failure path in executeCommitBeforeDispatch is
-	// `return nil, "", err`, so a guard reading a named newTxID return would see
-	// "" on exactly the paths that need it and skip the rollback.
+	// `return nil, "", committed, err`, so a guard reading a named newTxID
+	// return would see "" on exactly the paths that need it and skip the
+	// rollback.
 	//
 	// entryTxID is resolveAuditTxID's value, which equals the handler's
 	// transaction because every handler stamps Meta.TransactionID = txID before
@@ -322,9 +340,9 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 
 	// Record STARTED.
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		spi.SMEventStarted, "State machine started", nil)
+		spi.SMEventStarted, "State machine started", startedData(entity.Meta.State))
 
-	selectedWF, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	selectedWF, modelScheduled, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
 	if err != nil {
 		return nil, err
 	}
@@ -332,23 +350,8 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	// Set initial state.
 	entity.Meta.State = selectedWF.InitialState
 
-	// Named transition (on creation with explicit transition).
-	currentCtx := ctx
-	currentTxID := txID
-	if transitionName != "" {
-		nCtx, nTxID, err := e.attemptTransition(currentCtx, entity, selectedWF, transitionName, auditStore, currentTxID)
-		currentCtx = nCtx
-		currentTxID = nTxID
-		openCtx, openTxID = currentCtx, currentTxID
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	// Cascade automated transitions.
-	nCtx, nTxID, err := e.cascadeAutomated(currentCtx, entity, selectedWF, auditStore, currentTxID)
-	currentCtx = nCtx
-	currentTxID = nTxID
+	currentCtx, currentTxID, stop, err := e.cascadeAutomated(ctx, entity, selectedWF, auditStore, txID)
 	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
@@ -358,7 +361,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	// settles, using the FINAL ctx/txID — the write joins whatever
 	// transaction currentCtx carries, atomic with the entity write it just
 	// cascaded into.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, selectedWF, currentTxID, auditStore, ""); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, selectedWF, modelScheduled, currentTxID, auditStore); err != nil {
 		// Already self-describing, and marked ErrScheduledTaskInfra when the
 		// store is what failed — re-wrapping only doubles the phrase.
 		return nil, err
@@ -368,40 +371,25 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	// is currently open; cascade-entry txID for client-correlation continuity
 	// (spec §8).
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
-		spi.SMEventFinished, "State machine finished", map[string]any{"success": true})
+		spi.SMEventFinished, "State machine finished", finishedData(entity.Meta.State, stop))
 
 	handedOff = true
 	return &EngineResult{
 		ExecutionResult: &spi.ExecutionResult{
-			State:   entity.Meta.State,
-			Success: true,
+			State: entity.Meta.State,
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
-		Segmented: currentTxID != txID,
 	}, nil
 }
 
-// ManualTransitionWithIfMatch is the variant of ManualTransition used by
-// callers that supply an If-Match expected-txID (cross-request optimistic
-// concurrency). Per spec §4.1, the expected-txID is applied at the FIRST
-// segment-flush of the cascade — the engine's first EntityStore write inside
-// the cascade — so a stale If-Match aborts before any segment commits or any
-// external dispatch fires.
-//
-// For non-segmenting cascades (no COMMIT_BEFORE_DISPATCH processors) the
-// engine never performs a first-segment flush; ifMatch is left untouched on
-// the context for the handler to apply post-engine via its own CompareAndSave
-// path. The handler distinguishes the two cases via EngineResult.Segmented.
-//
-// If ifMatch is empty this method is identical to ManualTransition.
-func (e *Engine) ManualTransitionWithIfMatch(ctx context.Context, entity *spi.Entity, transitionName, ifMatch string) (*EngineResult, error) {
-	return e.ManualTransition(withIfMatch(ctx, ifMatch), entity, transitionName)
-}
-
 // ManualTransition fires a named transition on an existing entity and cascades
-// any automated transitions from the resulting state.
-func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, transitionName string) (*EngineResult, error) {
+// any automated transitions from the resulting state. The engine records the
+// transition's start and then checks the caller's If-Match precondition,
+// before it selects a workflow or runs any criterion or processor. A mismatch
+// records TRANSITION_ABORTED and fails with spi.ErrConflict (see IfMatch and
+// checkIfMatch). A zero IfMatch means no precondition.
+func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, transitionName string, ifMatch IfMatch) (*EngineResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.manual_transition", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
@@ -409,6 +397,10 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 		observability.AttrEntityState.String(entity.Meta.State),
 	))
 	defer span.End()
+
+	if err := refuseNULCallerText(transitionName, ifMatch); err != nil {
+		return nil, err
+	}
 
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
@@ -429,13 +421,16 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	}()
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		spi.SMEventStarted, "Manual transition started", nil)
+		spi.SMEventStarted, "Manual transition started", startedData(entity.Meta.State))
+	if err := e.checkIfMatch(ctx, auditStore, entity, txID, transitionName, ifMatch); err != nil {
+		return nil, err
+	}
 
 	// Select the workflow the entity's criterion binds it to. If the
 	// entity's current state is absent from that definition, attemptTransition
 	// below rejects the call — the engine never falls through to another
 	// definition that happens to declare the state.
-	wf, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	wf, modelScheduled, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +441,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 		return nil, err
 	}
 
-	currentCtx, currentTxID, err = e.cascadeAutomated(currentCtx, entity, wf, auditStore, currentTxID)
+	currentCtx, currentTxID, stop, err := e.cascadeAutomated(currentCtx, entity, wf, auditStore, currentTxID)
 	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
@@ -454,51 +449,41 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 
 	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
 	// treatment as Execute, atomic with the entity write.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID, auditStore, ""); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, modelScheduled, currentTxID, auditStore); err != nil {
 		// Already self-describing, and marked ErrScheduledTaskInfra when the
 		// store is what failed — re-wrapping only doubles the phrase.
 		return nil, err
 	}
 
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
-		spi.SMEventFinished, "Manual transition finished", map[string]any{"success": true})
+		spi.SMEventFinished, "Manual transition finished", finishedData(entity.Meta.State, stop))
 
 	handedOff = true
 	return &EngineResult{
 		ExecutionResult: &spi.ExecutionResult{
-			State:   entity.Meta.State,
-			Success: true,
+			State: entity.Meta.State,
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
-		Segmented: currentTxID != txID,
 	}, nil
-}
-
-// LoopbackWithIfMatch is the variant of Loopback used by callers that supply
-// an If-Match expected-txID. The engine consumes ifMatch on the FIRST
-// segment-flush of any COMMIT_BEFORE_DISPATCH cascade encountered during the
-// loopback (spec §4.1), so a stale If-Match aborts before any external
-// dispatch fires. For loopback runs that produce no engine-side flush
-// (the common case — no CBD processors), ifMatch is left untouched on the
-// context for the handler to apply post-engine. Callers distinguish via
-// EngineResult.Segmented.
-//
-// If ifMatch is empty this method is identical to Loopback.
-func (e *Engine) LoopbackWithIfMatch(ctx context.Context, entity *spi.Entity, ifMatch string) (*EngineResult, error) {
-	return e.Loopback(withIfMatch(ctx, ifMatch), entity)
 }
 
 // Loopback re-evaluates automated transitions from the entity's current state
 // without firing a specific named transition. This is used when entity data is
 // updated and the workflow should re-check conditions from the current state.
-func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResult, error) {
+// The caller's If-Match is checked as ManualTransition checks it; a zero
+// IfMatch means no precondition.
+func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMatch) (*EngineResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.loopback", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
 		observability.AttrEntityState.String(entity.Meta.State),
 	))
 	defer span.End()
+
+	if err := refuseNULCallerText("", ifMatch); err != nil {
+		return nil, err
+	}
 
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
@@ -518,37 +503,47 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 	}()
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		spi.SMEventStarted, "Loopback started", nil)
+		spi.SMEventStarted, "Loopback started", startedData(entity.Meta.State))
+	if err := e.checkIfMatch(ctx, auditStore, entity, txID, "", ifMatch); err != nil {
+		return nil, err
+	}
 
-	wf, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
+	wf, modelScheduled, err := e.resolveWorkflow(ctx, entity, auditStore, txID)
 	if err != nil {
 		return nil, err
 	}
 
 	if _, ok := wf.States[entity.Meta.State]; !ok {
 		// Current state not in the SELECTED workflow — stable, nothing to
-		// do. Another definition declaring the state is not a reason to
+		// cascade. Another definition declaring the state is not a reason to
 		// cascade it: the entity is bound to the workflow its criterion
 		// selected.
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventForcedSuccess,
-			fmt.Sprintf("Current state is not declared in the selected workflow %q — nothing to loop back", wf.Name), nil)
+			fmt.Sprintf("Current state is not declared in the selected workflow %q — nothing to loop back", wf.Name), forcedSuccessData())
+		// Its tasks are still reconciled: nothing can be armed for a state the
+		// selected workflow does not declare, so every task of the entity is
+		// removed.
+		if err := e.reconcileScheduledTasks(ctx, entity, wf, modelScheduled, txID, auditStore); err != nil {
+			return nil, err
+		}
+		stop := StopReason{
+			Type:        "FORCE_SUCCESS",
+			Description: fmt.Sprintf(`State "%s" is not declared in workflow "%s"`, entity.Meta.State, wf.Name),
+		}
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			spi.SMEventFinished, "Loopback finished (state not in workflow)", map[string]any{"success": true})
+			spi.SMEventFinished, "Loopback finished (state not in workflow)", finishedData(entity.Meta.State, stop))
 		handedOff = true
 		return &EngineResult{
 			ExecutionResult: &spi.ExecutionResult{
-				State:      entity.Meta.State,
-				Success:    true,
-				StopReason: "STATE_NOT_IN_WORKFLOW",
+				State: entity.Meta.State,
 			},
 			FinalCtx:  ctx,
 			FinalTxID: txID,
-			Segmented: false,
 		}, nil
 	}
 
-	currentCtx, currentTxID, err := e.cascadeAutomated(ctx, entity, wf, auditStore, txID)
+	currentCtx, currentTxID, stop, err := e.cascadeAutomated(ctx, entity, wf, auditStore, txID)
 	openCtx, openTxID = currentCtx, currentTxID
 	if err != nil {
 		return nil, err
@@ -556,24 +551,22 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*EngineResul
 
 	// Arm/cancel the settled state's scheduled tasks — same FINAL ctx/txID
 	// treatment as Execute/ManualTransition, atomic with the entity write.
-	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, currentTxID, auditStore, ""); err != nil {
+	if err := e.reconcileScheduledTasks(currentCtx, entity, wf, modelScheduled, currentTxID, auditStore); err != nil {
 		// Already self-describing, and marked ErrScheduledTaskInfra when the
 		// store is what failed — re-wrapping only doubles the phrase.
 		return nil, err
 	}
 
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
-		spi.SMEventFinished, "Loopback finished", map[string]any{"success": true})
+		spi.SMEventFinished, "Loopback finished", finishedData(entity.Meta.State, stop))
 
 	handedOff = true
 	return &EngineResult{
 		ExecutionResult: &spi.ExecutionResult{
-			State:   entity.Meta.State,
-			Success: true,
+			State: entity.Meta.State,
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
-		Segmented: currentTxID != txID,
 	}, nil
 }
 
@@ -589,44 +582,37 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 		if len(wf.Criterion) == 0 || string(wf.Criterion) == "null" {
 			// No criterion — matches unconditionally.
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-				spi.SMEventWorkflowFound, fmt.Sprintf("Workflow %q selected (no criterion)", wf.Name), nil)
+				spi.SMEventWorkflowFound, fmt.Sprintf("Workflow %q selected (no criterion)", wf.Name), workflowFoundData(wf.Name, nil))
 			return wf, nil
 		}
 
-		matched, reason, err := e.evaluateCriterion(wf.Criterion, entity, &criterionContext{
+		out, err := e.evaluateCriterion(wf.Criterion, entity, &criterionContext{
 			ctx: ctx, txID: txID, workflowName: wf.Name, target: "WORKFLOW",
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to evaluate workflow criterion for %q: %w", wf.Name, err)
 		}
-		if matched {
+		if out.matched {
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-				spi.SMEventWorkflowFound, fmt.Sprintf("Workflow %q matched criterion", wf.Name), nil)
+				spi.SMEventWorkflowFound, fmt.Sprintf("Workflow %q matched criterion", wf.Name), workflowFoundData(wf.Name, &out))
 			return wf, nil
 		}
 
-		if reason == "" {
-			reason = defaultCriterionReason
-		}
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventWorkflowSkipped, fmt.Sprintf("Workflow %q criterion not matched", wf.Name),
-			map[string]any{"workflowName": wf.Name, "reason": reason})
+			workflowSkippedData(wf.Name, out.notMatchedReason(), out))
 	}
 
 	// No imported workflow matched the entity — fall back to the embedded
-	// default. Both channels (body warning + slog.Warn) fire.
-	if len(e.defaultWorkflows) > 0 {
-		common.AddWarning(ctx, "no imported workflow matched entity — using default workflow")
-		e.logDefaultFallback(ctx, entity, "no_criterion_matched")
-		defaultWF := &e.defaultWorkflows[0]
-		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			spi.SMEventWorkflowFound, fmt.Sprintf("No imported workflow matched; using default workflow %q", defaultWF.Name), nil)
-		return defaultWF, nil
-	}
-
+	// default, which NewEngine always installs. Both channels (client warning +
+	// slog.Warn) fire.
+	common.AddWarning(ctx, "no imported workflow matched entity — using default workflow")
+	e.logDefaultFallback(ctx, entity, "no_criterion_matched")
+	defaultWF := &e.defaultWorkflows[0]
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		spi.SMEventWorkflowNotFound, "No workflow matched entity", nil)
-	return nil, fmt.Errorf("no matching workflow for model %s", entity.Meta.ModelRef)
+		spi.SMEventWorkflowFound, fmt.Sprintf("No imported workflow matched; using default workflow %q", defaultWF.Name),
+		workflowFoundData(defaultWF.Name, nil))
+	return defaultWF, nil
 }
 
 // resolveWorkflow loads the model's workflow definitions and returns the one
@@ -652,7 +638,13 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 // Selection is per call and never cached: the criterion is evaluated against
 // the entity as it is right now, which is what makes a data change able to
 // re-bind an entity to a different definition.
-func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
+//
+// It also reports modelScheduled: whether any workflow of the model, active
+// or not, has a transition the arm rule arms (modelHasSchedule). It counts
+// every workflow the entity can be bound to: the stored ones and the default
+// workflow, which selection falls back to when none is stored or none
+// matches.
+func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, bool, error) {
 	return e.resolveWorkflowWith(ctx, entity, auditStore, txID)
 }
 
@@ -661,19 +653,17 @@ func (e *Engine) resolveWorkflow(ctx context.Context, entity *spi.Entity, auditS
 // executing the entity and have nothing to key to on a read.
 //
 // It deliberately does NOT suppress the operator-facing
-// default-substitution WARN. Emitting one per read is more log volume than
-// an execution path produces, and that was reason enough to consider
-// silencing it — but common.AddWarning cannot compensate here: the
-// diagnostics bag is installed only on the gRPC entry points
-// (internal/grpc/*), the transitions endpoints are HTTP-only, and
-// common.WriteJSON emits a bare array with no warnings field. Silencing the
-// log would leave a read that answered from the default workflow with no
-// signal on any channel at all.
+// default-substitution WARN, although one per read is more log volume than an
+// execution path produces: the warning common.AddWarning raises reaches the
+// client (the transitions endpoints are HTTP-only, and carry it in a
+// Cyoda-Warning header), while the log line is the operator's channel, which
+// every door that substitutes the default feeds alike.
 func (e *Engine) resolveWorkflowForQuery(ctx context.Context, entity *spi.Entity) (*spi.WorkflowDefinition, error) {
-	return e.resolveWorkflowWith(ctx, entity, discardedAuditStore{}, "")
+	wf, _, err := e.resolveWorkflowWith(ctx, entity, discardedAuditStore{}, "")
+	return wf, err
 }
 
-func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
+func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, bool, error) {
 	// Store failures are server-side conditions, never attributable to the
 	// caller's input, so they are minted as sanitized 5xx AppErrors here
 	// rather than left as bare errors: callers classify a bare engine error
@@ -683,7 +673,7 @@ func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, au
 	// (ErrCommitBeforeDispatchInfra, ErrProcessorOutputInfra).
 	wfStore, err := e.factory.WorkflowStore(ctx)
 	if err != nil {
-		return nil, common.Internal("failed to access workflow store", err)
+		return nil, false, common.Internal("failed to access workflow store", err)
 	}
 
 	// Load workflows for model. A "not found" error is treated as empty.
@@ -691,18 +681,26 @@ func (e *Engine) resolveWorkflowWith(ctx context.Context, entity *spi.Entity, au
 	if err != nil && errors.Is(err, spi.ErrNotFound) {
 		workflows = nil
 	} else if err != nil {
-		return nil, common.Internal("failed to load workflows", err)
+		return nil, false, common.Internal("failed to load workflows", err)
 	}
 
-	// No workflows defined → use embedded default. Body warning surfaces to
+	// No workflows defined → use embedded default. The warning surfaces to
 	// the client; slog.Warn surfaces to operators.
 	if len(workflows) == 0 {
 		common.AddWarning(ctx, "no workflows imported for model — using default workflow")
 		e.logDefaultFallback(ctx, entity, "no_workflows_imported")
 		workflows = e.defaultWorkflows
 	}
+	// Counts every workflow the entity can be bound to: the stored ones and
+	// the default workflow, which selection falls back to when none is stored
+	// or none matches.
+	modelScheduled := modelHasSchedule(workflows) || modelHasSchedule(e.defaultWorkflows)
 
-	return e.selectWorkflow(ctx, workflows, entity, auditStore, txID)
+	wf, err := e.selectWorkflow(ctx, workflows, entity, auditStore, txID)
+	if err != nil {
+		return nil, false, err
+	}
+	return wf, modelScheduled, nil
 }
 
 // discardedAuditStore is the audit sink used by read-only paths. Workflow
@@ -744,42 +742,40 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 
 	if transition == nil {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q not found in state %q", transitionName, entity.Meta.State), nil)
+			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q not found in state %q", transitionName, entity.Meta.State),
+			transitionNotFoundData(wf.Name, transitionName))
 		return ctx, txID, fmt.Errorf("transition %q not found in state %q: %w", transitionName, entity.Meta.State, ErrTransitionNotFound)
 	}
 
 	if transition.Disabled {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q is disabled", transitionName), nil)
+			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q is disabled", transitionName),
+			transitionNotFoundData(wf.Name, transitionName))
 		return ctx, txID, fmt.Errorf("transition %q is disabled in state %q: %w", transitionName, entity.Meta.State, ErrTransitionNotFound)
 	}
 
 	if transition.Schedule != nil {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventTransitionNotFound,
-			fmt.Sprintf("Transition %q is %s", transitionName, scheduledReason), nil)
+			fmt.Sprintf("Transition %q is %s", transitionName, scheduledReason),
+			transitionNotFoundData(wf.Name, transitionName))
 		return ctx, txID, fmt.Errorf(
 			"transition %q in state %q is %s: %w",
 			transitionName, entity.Meta.State, scheduledReason, ErrTransitionNotFound)
 	}
 
-	newCtx, newTxID, _, err := e.fireTransition(ctx, entity, wf, transition, auditStore, txID)
+	newCtx, newTxID, err := e.fireTransition(ctx, entity, wf, transition, auditStore, txID)
 	return newCtx, newTxID, err
 }
 
 // fireTransition runs the transition *mechanism* for an already-resolved
 // transition: criterion evaluation, processor execution, and the audited
 // state advance. It applies no policy — callers are responsible for
-// rejecting disabled or scheduled transitions before invoking it, so a
-// later scheduled-transition firing path can reuse the mechanism without
-// going through attemptTransition's manual/scheduled reject policy.
-//
-// matched reports whether the transition actually fired (criterion matched
-// and the state advanced). It is false whenever the criterion evaluated to
-// false or processor execution failed; in both cases entity.Meta.State is
-// left unchanged and err carries the same error attemptTransition has
-// always returned in that case.
-func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transition *spi.TransitionDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, retMatched bool, retErr error) {
+// rejecting disabled or scheduled transitions before invoking it, so
+// FireScheduledTransition reuses the mechanism without going through
+// attemptTransition's manual/scheduled reject policy. On any error
+// entity.Meta.State is left unchanged.
+func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transition *spi.TransitionDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, retErr error) {
 	transitionName := transition.Name
 
 	// Panic-only guard (see rollbackSegment). segCtx/segTxID track the segment
@@ -792,35 +788,31 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 	}()
 
 	// Evaluate transition criterion.
+	var crit *criterionOutcome // nil when the transition has no criterion
 	if len(transition.Criterion) > 0 && string(transition.Criterion) != "null" {
 		// ctx/txID here are already correct: they are this function's own
 		// inputs, and nothing can have segmented yet — processors (the only
 		// thing that can open a new segment) run after the criterion below.
-		matched, reason, err := e.evaluateCriterion(transition.Criterion, entity, &criterionContext{
+		out, err := e.evaluateCriterion(transition.Criterion, entity, &criterionContext{
 			ctx: ctx, txID: txID, workflowName: wf.Name, transitionName: transitionName, target: "TRANSITION",
 		})
 		if err != nil {
-			return ctx, txID, false, fmt.Errorf("failed to evaluate transition criterion: %w", err)
+			return ctx, txID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 		}
-		if !matched {
-			external := reason != ""
-			if reason == "" {
-				reason = defaultCriterionReason
-			}
+		if !out.matched {
+			reason := out.notMatchedReason()
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 				spi.SMEventTransitionCriterionNoMatch,
 				fmt.Sprintf("Transition %q criterion not matched", transitionName),
-				map[string]any{
-					"workflowName": wf.Name,
-					"transition":   transitionName,
-					"criterion":    criterionName(transition.Criterion),
-					"reason":       reason,
-				})
-			if external {
-				return ctx, txID, false, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched: %s", transitionName, reason)}
+				transitionNotMatchedData(wf.Name, transitionName, criterionName(transition.Criterion), reason, out))
+			// The manual path rolls back, so this message — not the audit
+			// event — is where the caller learns why.
+			if reason != defaultCriterionReason {
+				return ctx, txID, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched: %s", transitionName, reason)}
 			}
-			return ctx, txID, false, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched", transitionName)}
+			return ctx, txID, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched", transitionName)}
 		}
+		crit = &out
 	}
 
 	// Execute processors. May shift (ctx, txID) for COMMIT_BEFORE_DISPATCH.
@@ -829,10 +821,7 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 	// segment actually open.
 	segCtx, segTxID = newCtx, newTxID
 	if err != nil {
-		e.recordEvent(auditStore, newCtx, entity.Meta.ID, txID, entity.Meta.State,
-			spi.SMEventStateProcessResult, fmt.Sprintf("Processor failed for transition %q: %v", transitionName, err),
-			map[string]any{"success": false})
-		return newCtx, newTxID, false, err
+		return newCtx, newTxID, err
 	}
 
 	// Record transition and move state. The audit event uses the cascade-entry
@@ -840,10 +829,11 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 	// segment is currently open.
 	e.recordEvent(auditStore, newCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventTransitionMade,
-		fmt.Sprintf("Transition %q: %s → %s", transitionName, entity.Meta.State, transition.Next), nil)
+		fmt.Sprintf("Transition %q: %s → %s", transitionName, entity.Meta.State, transition.Next),
+		transitionMadeData(wf.Name, transitionName, transition.Next, crit))
 	entity.Meta.State = transition.Next
 
-	return newCtx, newTxID, true, nil
+	return newCtx, newTxID, nil
 }
 
 // cascadeAutomated loops through automated transitions until a stable state
@@ -853,7 +843,11 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 // Returns the (possibly updated) ctx and txID — the cascade segment boundary
 // may shift these when a COMMIT_BEFORE_DISPATCH processor runs (spec §3, §4).
 // The cascade-entry txID is preserved for audit-event correlation (spec §8).
-func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, retErr error) {
+//
+// It also returns why the cascade stopped: the stop reason of the pass it
+// settled on. Only that pass counts; a refusal in a state the cascade then
+// left is not a reason the run stopped.
+func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, auditStore spi.StateMachineAuditStore, txID string) (retCtx context.Context, retTxID string, stop StopReason, retErr error) {
 	ctx, cascadeSpan := tracer.Start(ctx, "workflow.cascade", trace.WithAttributes(
 		observability.AttrWorkflowName.String(wf.Name),
 		observability.AttrEntityID.String(entity.Meta.ID),
@@ -878,12 +872,17 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 		// Spec D9: observe cancellation/expiry between transitions, the same
 		// way an attemptTransition failure is routed, so the deferred
 		// rollback guard above still runs. Naturally inert once the cascade
-		// is running on a post-CBD ctx — commitAndBeginNextSegment derives
+		// is running on a post-CBD ctx — beginNextSegment derives
 		// that one via context.WithoutCancel, which carries no deadline of
 		// its own, so an already-elapsed ORIGINAL client deadline cannot
 		// abort a cascade continuing past a segment commit (spec D3).
 		if err := currentCtx.Err(); err != nil {
-			return currentCtx, currentTxID, fmt.Errorf("cascade aborted: %w", err)
+			return currentCtx, currentTxID, StopReason{}, fmt.Errorf("cascade aborted: %w", err)
+		}
+		// Checkpoint before each cascade step (spec §5.3). ctx.Err above is
+		// inert after a segment commit; the guard is not.
+		if err := runCheckpoint(currentCtx, "cascade aborted"); err != nil {
+			return currentCtx, currentTxID, StopReason{}, err
 		}
 
 		state := entity.Meta.State
@@ -891,23 +890,25 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 		if stateVisits[state] > e.maxStateVisits {
 			reason := fmt.Sprintf("state %q visited %d times (limit: %d)", state, stateVisits[state], e.maxStateVisits)
 			e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, state,
-				spi.SMEventCancelled, "State machine aborted: "+reason, nil)
-			return currentCtx, currentTxID, fmt.Errorf("state machine aborted: %s", reason)
+				spi.SMEventCancelled, "State machine aborted", cancelledData(reason))
+			return currentCtx, currentTxID, StopReason{}, fmt.Errorf("state machine aborted: %s", reason)
 		}
 
-		stateDef, ok := wf.States[state]
-		if !ok {
-			return currentCtx, currentTxID, nil // state not in workflow — stable
-		}
-
+		// A state the workflow does not declare has no transitions; import and
+		// Loopback keep the entity out of one.
+		stateDef := wf.States[state]
 		fired := false
+		automated := 0
+		var rejected []RejectedTransition
 		for i := range stateDef.Transitions {
 			tr := &stateDef.Transitions[i]
 			if tr.Disabled || tr.Manual || tr.Schedule != nil {
 				continue
 			}
+			automated++
 
 			// Evaluate criterion.
+			var crit *criterionOutcome // nil when the transition has no criterion
 			if len(tr.Criterion) > 0 && string(tr.Criterion) != "null" {
 				// currentTxID, not txID: after a COMMIT_BEFORE_DISPATCH segment
 				// the cascade-entry txID names a committed transaction, and
@@ -915,27 +916,22 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 				// joining on it would get ErrTxNotFound. Audit correlation
 				// keeps using the entry txID; that is a separate concern from
 				// transaction identity.
-				matched, reason, err := e.evaluateCriterion(tr.Criterion, entity, &criterionContext{
+				out, err := e.evaluateCriterion(tr.Criterion, entity, &criterionContext{
 					ctx: currentCtx, txID: currentTxID, workflowName: wf.Name, transitionName: tr.Name, target: "TRANSITION",
 				})
 				if err != nil {
-					return currentCtx, currentTxID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
+					return currentCtx, currentTxID, StopReason{}, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 				}
-				if !matched {
-					if reason == "" {
-						reason = defaultCriterionReason
-					}
+				if !out.matched {
+					refused := RejectedTransition{TransitionName: tr.Name, Criterion: criterionName(tr.Criterion), Reason: out.notMatchedReason()}
+					rejected = append(rejected, refused)
 					e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 						spi.SMEventTransitionCriterionNoMatch,
 						fmt.Sprintf("Automated transition %q criterion not matched", tr.Name),
-						map[string]any{
-							"workflowName": wf.Name,
-							"transition":   tr.Name,
-							"criterion":    criterionName(tr.Criterion),
-							"reason":       reason,
-						})
+						transitionNotMatchedData(wf.Name, tr.Name, refused.Criterion, refused.Reason, out))
 					continue
 				}
+				crit = &out
 			}
 
 			// Execute processors. May shift (currentCtx, currentTxID) when
@@ -952,17 +948,14 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 			if err != nil {
 				trSpan.RecordError(err)
 				trSpan.End()
-				e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
-					spi.SMEventStateProcessResult,
-					fmt.Sprintf("Processor failed for transition %q: %v", tr.Name, err),
-					map[string]any{"success": false})
-				return currentCtx, currentTxID, err
+				return currentCtx, currentTxID, StopReason{}, err
 			}
 
 			// Record transition and move state.
 			e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 				spi.SMEventTransitionMade,
-				fmt.Sprintf("Transition %q: %s → %s", tr.Name, entity.Meta.State, tr.Next), nil)
+				fmt.Sprintf("Transition %q: %s → %s", tr.Name, entity.Meta.State, tr.Next),
+				transitionMadeData(wf.Name, tr.Name, tr.Next, crit))
 			entity.Meta.State = tr.Next
 			trSpan.End()
 			fired = true
@@ -971,14 +964,31 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 
 		if !fired {
 			cascadeSpan.SetAttributes(observability.AttrCascadeDepth.Int(depth))
-			return currentCtx, currentTxID, nil // stable state
+			return currentCtx, currentTxID, settledStop(state, automated, rejected), nil // stable state
 		}
 	}
 
 	reason := fmt.Sprintf("cascade depth exceeded (%d) at state %q", maxCascadeDepth, entity.Meta.State)
 	e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
-		spi.SMEventCancelled, "State machine aborted: "+reason, nil)
-	return currentCtx, currentTxID, fmt.Errorf("state machine aborted: %s", reason)
+		spi.SMEventCancelled, "State machine aborted", cancelledData(reason))
+	return currentCtx, currentTxID, StopReason{}, fmt.Errorf("state machine aborted: %s", reason)
+}
+
+// settledStop is the stop reason of a pass that fired nothing in state: it
+// had no automated transition, or every one was refused by its criterion
+// (any other outcome fires a transition or fails the run).
+func settledStop(state string, automated int, rejected []RejectedTransition) StopReason {
+	if automated == 0 {
+		return StopReason{
+			Type:        "COMPLETED_NO_AUTO_TRANSITIONS",
+			Description: fmt.Sprintf(`No automated transition from state "%s"`, state),
+		}
+	}
+	return StopReason{
+		Type:        "COMPLETED_ALL_CRITERIA_REJECTED",
+		Description: fmt.Sprintf(`Every automated transition from state "%s" was refused by its criterion`, state),
+		Rejected:    rejected,
+	}
 }
 
 // criterionContext carries contextual information needed for FUNCTION criteria
@@ -991,209 +1001,39 @@ type criterionContext struct {
 	target         string // "WORKFLOW", "TRANSITION", "PROCESSOR"
 }
 
-// evaluateCriterion parses and matches a JSON criterion against the entity.
-// If the criterion is a FUNCTION type, it delegates to the external processing
-// service using the provided criterionContext and returns the capped
-// compute-node-supplied reason (passed through regardless of match result;
-// only consumed on a matched=false rejection). Inline predicates have no such
-// explanation and always return an empty reason.
-func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *criterionContext) (bool, string, error) {
+// evaluateCriterion evaluates a criterion against the entity in two phases.
+// The compile phase splits it at its function conditions
+// (buildCriterionTree) and checks and prepares every local unit — each
+// function-free subtree and each pre-check — against the model; no callout
+// is made until all of it has passed. The run phase evaluates the tree:
+// groups in declaration order with the stop rule, and each function
+// condition reached by its pre-check and, when that matches, one callout
+// with its own JSON. A failed callout fails the evaluation.
+func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *criterionContext) (criterionOutcome, error) {
 	cond, err := predicate.ParseCondition(criterion)
 	if err != nil {
-		return false, "", fmt.Errorf("failed to parse criterion: %w", err)
+		return criterionOutcome{}, fmt.Errorf("failed to parse criterion: %w", err)
 	}
-
-	if _, ok := cond.(*predicate.FunctionCondition); ok {
-		if e.extProc == nil {
-			return false, "", fmt.Errorf("no external processing service configured for FUNCTION criteria")
-		}
-		// Release any per-tx gate this call chain holds across the blocking
-		// FUNCTION-criterion dispatch — same H3 rationale as executeSyncProcessor:
-		// the callout can re-enter with a descendant joined callback on the same
-		// txID. No-op for the owner / non-joined calls.
-		resume := txgate.Suspend(cc.ctx)
-		defer resume()
-		matches, reason, err := e.extProc.DispatchCriteria(cc.ctx, entity, criterion, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
-		return matches, capReason(reason), err
+	root, err := buildCriterionTree(cond, "")
+	if err != nil {
+		return criterionOutcome{}, err
 	}
-
-	// Type-directed evaluation: the predicate kernel compares data leaves by
-	// their declared model types (a temporal data field compares temporally,
-	// consistent with the search path). The model READ is gated on the
-	// condition carrying at least one data-field path (search.ConditionFieldPaths
-	// walks the WHOLE tree up front, not just as far as Prepare's own walk
-	// reaches) — a purely lifecycle criterion never touches the model store.
-	// This is deliberately EAGER rather than the previous lazily-triggered-
-	// during-Prepare load: computing the path set over the whole tree first
-	// makes the infra-failure precedence below hold regardless of which child
-	// of a group a structural fault happens to live in (see the note on
-	// loadErr below).
-	//
-	// A load failure on a criterion that DOES reference data leaves is
-	// surfaced (fail closed): the model schema is a required input for
-	// correct typing, so we reject rather than silently mis-evaluate.
-	paths := search.ConditionFieldPaths(cond)
-
-	var loadErr error
-	var pathErr error
-	var node *schema.ModelNode
-	var fields map[string]schema.FieldDescriptor
-
-	if len(paths) > 0 {
-		modelStore, err := e.factory.ModelStore(cc.ctx)
-		if err != nil {
-			loadErr = fmt.Errorf("%w: model store unavailable: %w", ErrCriterionTypingInfra, err)
-		} else if n, err := search.LoadModelNode(cc.ctx, modelStore, entity.Meta.ModelRef); err != nil {
-			loadErr = fmt.Errorf("%w: model %s/%s: %w", ErrCriterionTypingInfra,
-				entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, err)
-		} else {
-			// ONE read, ONE parse: node feeds BOTH the path check below (via
-			// its own FieldsMap()) and the type-soundness check
-			// (ValidateConditionValueTypes(node, cond)) at the bottom of
-			// this function. Two separate reads here — one via
-			// LoadFieldsMap, one via LoadModelNode — would double the
-			// store Get and schema.Unmarshal cost on every criterion, every
-			// transition, every save, for no benefit on the common
-			// (unrefreshed) path, and would open a TOCTOU where Prepare and
-			// ValidateConditionValueTypes could silently disagree about
-			// which schema snapshot they are typing against.
-			node = n
-			if node != nil {
-				fields = node.FieldsMap()
-			}
-			// A query never executes against a field the model does not
-			// declare (ruling, spec §5): hold every path the criterion
-			// names to the model's declared fields. This carries the one
-			// bounded schema refresh a cluster needs (path-grammar.md
-			// §6) — a field a peer node just added is not falsely
-			// refused. That refresh is itself a SECOND read, but only on
-			// the rare path where the first one missed a path — the common
-			// case above pays for exactly one. The (possibly refreshed)
-			// fields map is what feeds fieldTypes below, so the actual
-			// match evaluation sees the same authoritative schema this
-			// check validated against; node is deliberately NOT
-			// re-derived from that refresh (there is no cheap way to turn
-			// a refreshed fields map back into a *schema.ModelNode without
-			// a third read) — ValidateConditionValueTypes treats a path
-			// absent from its own (possibly one-refresh-stale) node as
-			// "no type constraint here" and defers to this already-passed
-			// check, exactly the leniency it already documents for any
-			// path it doesn't recognise.
-			fields, pathErr = search.ValidateKnownPaths(cc.ctx, modelStore, entity.Meta.ModelRef, paths, fields)
-			if errors.Is(pathErr, search.ErrPathRefreshInfra) {
-				// The bounded refresh itself failed — RefreshAndGet errored
-				// for a reason other than the model being legitimately
-				// deleted. That failure cannot tell "this field is
-				// genuinely undeclared" from "the cache is merely stale",
-				// so per correctness-over-availability it is infrastructure,
-				// not the caller's fault. Fold it into loadErr (wrapped with
-				// %w on both sides, so the underlying cause — a
-				// context.DeadlineExceeded included — stays reachable via
-				// errors.Is for classifyWorkflowError's own cancellation
-				// branch and, beyond it, common.ClassifyRequestTimeout) so
-				// it shares loadErr's precedence: infra wins over every
-				// structural fault below, exactly like a model-store outage
-				// on the read above.
-				loadErr = fmt.Errorf("%w: %w", ErrCriterionTypingInfra, pathErr)
-				pathErr = nil
-			}
-		}
+	units, fns := collectCriterion(root)
+	if len(fns) > 0 && e.extProc == nil {
+		return criterionOutcome{}, fmt.Errorf("no external processing service configured for FUNCTION criteria")
 	}
-
-	fieldTypes := func(p string) []spi.DataType {
-		if fd, ok := fields[p]; ok {
-			return fd.Types
-		}
-		return nil
+	if err := e.prepareLocalUnits(cc.ctx, entity, units); err != nil {
+		return criterionOutcome{}, err
 	}
-
-	// If an infra failure was observed, it wins: a model-store outage — on
-	// either read, or on the bounded refresh ValidateKnownPaths performs —
-	// is a server-side condition and must not surface as a client error just
-	// because the same criterion also carries a malformed operator or an
-	// undeclared field. Unlike the previous lazily-triggered load, paths is
-	// now computed over the WHOLE tree before Prepare ever runs, so this
-	// precedence holds regardless of which child of a group carries the data
-	// leaf versus the structural fault.
-	if loadErr != nil {
-		return false, "", loadErr
+	var out criterionOutcome
+	if len(fns) > 0 {
+		out.functions = []functionRecord{}
+		_, out.whole = root.(*critFunction)
 	}
-
-	// Model-boundary validation, in the same order the search HTTP boundary
-	// enforces it (path existence, then pattern compilability, then declared
-	// type/operator soundness):
-	//
-	//  1. ValidateKnownPaths (above) — the field itself must be declared.
-	//  2. ValidatePatterns — a MATCHES_PATTERN/LIKE operand the kernel cannot
-	//     compile is rejected regardless of whether the field is typed; a
-	//     workflow stored before pattern validation existed is never
-	//     re-validated at import, so this must run at evaluation. Not
-	//     redundant with match.Prepare below: for the string-operator family
-	//     (LIKE/MATCHES_PATTERN included), the SPI kernel's ExpandLeaf
-	//     deliberately SWALLOWS a pattern-compile failure into a leaf that
-	//     never matches (its own doc comment: "Callers wanting a rejection
-	//     ask ValidateLeafPattern FIRST") — so Prepare alone would silently
-	//     never-match rather than abort.
-	//  3. ValidateConditionValueTypes — ALWAYS called, with node nil when the
-	//     condition carries no data path. This is deliberate: gating the
-	//     CALL (rather than just the model READ, which is correctly gated
-	//     above on len(paths)>0) would leave validateLifecycleType unreached,
-	//     and that is the one check that refuses a text/pattern operator on
-	//     a temporal meta field (e.g. `creationDate CONTAINS "2024"`, which
-	//     carries no data path at all). Without it, such a criterion would
-	//     reach internal/match's deliberate temporal-meta never-match guard —
-	//     exactly the fail-open a later NOT node would invert into
-	//     matching every entity. Also not fully redundant with Prepare for a
-	//     data leaf: a KNOWN CONTAINER path (declared, but only via a nested
-	//     leaf beneath it) compared with a scalar-carrying operator like
-	//     CONTAINS is accepted by ValidateKnownPaths (a container with a
-	//     known leaf beneath it counts as known) and by Prepare (CONTAINS is
-	//     declaration-independent), but is not a sound comparison — only this
-	//     check's container-vs-scalar guard refuses it.
-	//
-	// pathErr, when it names a genuinely unknown path, is re-wrapped as a
-	// plain error rather than returned as-is: search.ValidateKnownPaths
-	// hands back an already-classified *common.AppError (400
-	// INVALID_FIELD_PATH), the correct code for its other callers —
-	// SearchService and grouped stats, where the client's request IS a field
-	// path. Here the client asked to save/transition an entity and knows
-	// nothing about the criterion's internal JSONPath; classifyWorkflowError
-	// checks errors.As(*common.AppError) FIRST and would otherwise let that
-	// unrelated code leak through unchanged instead of falling to the
-	// uniform 400 WORKFLOW_FAILED every other criterion structural fault
-	// gets (the "existing unevaluable-criterion contract"). The AppError's
-	// Message already carries its own "INVALID_FIELD_PATH: " code prefix
-	// (common.Operational bakes the code into Message); that prefix is
-	// stripped so the re-wrapped detail does not carry two codes
-	// ("WORKFLOW_FAILED: ...: INVALID_FIELD_PATH: ...") — only the domain
-	// detail (which names the offending path) survives.
-	if pathErr != nil {
-		var appErr *common.AppError
-		if errors.As(pathErr, &appErr) {
-			return false, "", errors.New(strings.TrimPrefix(appErr.Message, appErr.Code+": "))
-		}
-		return false, "", errors.New(pathErr.Error())
+	if out.matched, err = root.eval(e, cc, entity, &out.functions); err != nil {
+		return criterionOutcome{}, err
 	}
-	if err := search.ValidatePatterns(cond); err != nil {
-		return false, "", err
-	}
-	if err := search.ValidateConditionValueTypes(node, cond); err != nil {
-		return false, "", err
-	}
-
-	// Prepared only now, after every model-boundary refusal above has
-	// cleared: a criterion the model-boundary checks would abort is never
-	// even compiled, just to be discarded. Every structural fault the
-	// criterion carries surfaces here, from the condition's own shape,
-	// rather than from whichever entity happens to reach it — so a
-	// criterion that cannot be evaluated fails the transition instead of
-	// being silently read as "not satisfied".
-	prepared, prepErr := match.Prepare(cond, fieldTypes)
-	if prepErr != nil {
-		return false, "", prepErr
-	}
-
-	return prepared.Match(entity.Data, entity.Meta), "", nil
+	return out, nil
 }
 
 // resolveAuditTxID returns the transaction ID to use for state-machine audit
@@ -1218,14 +1058,11 @@ func (e *Engine) resolveAuditTxID(entity *spi.Entity) string {
 //   - "no_criterion_matched":  workflows exist but none matched the entity
 //     (selectWorkflow tail).
 //
-// Read paths log too (see resolveWorkflowForQuery): on the HTTP-only
-// transitions endpoints this line is the ONLY channel the substitution
-// surfaces on, since the diagnostics bag common.AddWarning writes to is
-// installed on the gRPC entry points only.
+// Read paths log too (see resolveWorkflowForQuery).
 //
-// The body-level warning via common.AddWarning is raised on every path for
-// client-facing surfacing wherever a diagnostics bag exists; this log line
-// is purely additive for operational observability.
+// The warning via common.AddWarning is raised on every path for the client:
+// in the gRPC `warnings` array and in an HTTP response's Cyoda-Warning headers.
+// This log line is the operator's channel beside it.
 func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, reason string) {
 	slog.WarnContext(ctx, "default workflow substituted",
 		slog.String("pkg", "workflow"),
@@ -1236,12 +1073,21 @@ func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, rea
 		slog.String("reason", reason))
 }
 
-// recordEvent records a single audit event.
-func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) {
+// recordEvent records a single audit event, and reports whether the store
+// accepted it.
+func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) bool {
+	// A chain whose scope is refused (superseded, or marked rollback-only)
+	// performs no store operation of any kind, an audit row included: on
+	// PostgreSQL it would be a statement on the operation's connection, after
+	// the owner has stopped waiting for this chain, and in a marked scope it
+	// would be discarded anyway. The guard is here, and not at the error paths
+	// that record, so that no further site can appear later.
+	if txcoord.Check(ctx) != nil {
+		return false
+	}
 	event := spi.StateMachineEvent{
 		EventType:     eventType,
 		EntityID:      entityID,
-		TimeUUID:      uuid.UUID(e.uuids.NewTimeUUID()).String(),
 		State:         state,
 		TransactionID: txID,
 		Details:       details,
@@ -1251,14 +1097,68 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 		// source makes the two incomparable whenever a clock is injected.
 		Timestamp: e.now(),
 	}
+	event.Attributed, event.Executor = spi.AttributionFor(ctx)
 	// Best-effort recording; audit failures do not break workflow execution.
-	// Logged rather than dropped: on a backend whose audit store joins the
-	// transaction the entity write fails too and the loss is self-limiting, but
-	// on one that writes straight through the event is simply gone while the
-	// entity write commits — and a silently missing audit trail is the kind of
-	// thing that is only ever noticed long after it mattered.
+	// Logged rather than dropped: audit events are bound to the transaction
+	// on every backend, so a Record failure caused by the transaction's own
+	// state (rolled back, already committed) mirrors what the entity write
+	// in the same transaction would see. A failure local to the audit call
+	// itself (no id generator configured, an event that cannot be written)
+	// is not otherwise correlated with the entity write, so a silently
+	// missing audit trail is still the kind of thing that is only ever
+	// noticed long after it mattered.
 	if err := auditStore.Record(ctx, entityID, event); err != nil {
 		slog.Warn("state-machine audit event not recorded",
 			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", err)
+		return false
 	}
+	return true
+}
+
+// recordEventInOwnTx records a single audit event in a transaction of its own
+// and commits it. It is for an event of an operation that fails after part of
+// it committed: the event describes work that happened, and the transaction it
+// would otherwise land in is already committed or is about to be rolled back.
+//
+// The transaction is begun from ctx's values — the request's tenant and
+// principal, so the event is attributed as recordEvent attributes it — but not
+// from its transaction nor its cancellation: the operation is failing, and its
+// deadline may be what failed it. Best effort, as every audit write: a failure
+// is logged, and the operation's own error is unchanged.
+func (e *Engine) recordEventInOwnTx(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) {
+	ownTxID, ownCtx, err := e.txMgr.Begin(spi.WithTransaction(context.WithoutCancel(ctx), nil))
+	if err != nil {
+		slog.Warn("state-machine audit event not recorded: failed to begin its transaction",
+			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", err)
+		return
+	}
+	// The transaction makes no callout, and seals before its write like every
+	// other the engine commits. The coordination forgets it once the commit or
+	// the rollback below is done: deferred first, so it runs after them.
+	finish, sealErr := e.coord.Seal(ownCtx, ownTxID)
+	defer finish()
+	committed := false
+	defer func() {
+		if !committed {
+			e.rollbackSegment(ownCtx, ownTxID, "")
+		}
+	}()
+	if sealErr != nil {
+		slog.Warn("state-machine audit event not recorded: its transaction was refused at its seal",
+			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", sealErr)
+		return
+	}
+	// An event recordEvent refuses leaves the transaction empty; it is rolled
+	// back rather than committed.
+	if !e.recordEvent(auditStore, ownCtx, entityID, txID, state, eventType, details, data) {
+		return
+	}
+	if err := common.ShieldedCommitWithBudget(ownCtx, e.commitBudget, func(commitCtx context.Context) error {
+		return e.txMgr.Commit(commitCtx, ownTxID)
+	}); err != nil {
+		slog.Warn("state-machine audit event not recorded: failed to commit its transaction",
+			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", err)
+		return
+	}
+	committed = true
 }

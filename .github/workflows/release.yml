@@ -22,7 +22,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Pre-flight: verify that no cyoda-platform/* module resolves to a
+      # Pre-flight: verify that no github.com/cyoda/* module resolves to a
       # pseudo-version (which would mean the release ships unreleased code)
       # and that no external module is diverted via a replace directive
       # (which would break reproducibility for downstream consumers).
@@ -38,8 +38,8 @@ jobs:
           GOWORK=off go mod download
           GOWORK=off go mod verify
           echo "Plugin dependency versions pinned by go.mod:"
-          GOWORK=off go list -m github.com/cyoda-platform/cyoda-go/plugins/... || true
-          go run ./cmd/release-preflight --go-mod go.mod --org github.com/cyoda-platform/
+          GOWORK=off go list -m github.com/cyoda/cyoda-go/plugins/... || true
+          go run ./cmd/release-preflight --go-mod go.mod --org github.com/cyoda/
 
       - name: Guard — Dockerfile must exist
         run: |

@@ -1,16 +1,16 @@
-module github.com/cyoda-platform/cyoda-go/plugins/memory
+module github.com/cyoda/cyoda-go/plugins/memory
 
-go 1.26.7
+go 1.27.4
 
 require (
-	github.com/cyoda-platform/cyoda-go-spi v0.8.4
+	github.com/cyoda/cyoda-go-spi v0.9.0
 	github.com/google/uuid v1.6.0
-	github.com/tidwall/gjson v1.19.0
+	github.com/stretchr/testify v1.12.1
+	github.com/tidwall/gjson v1.20.4
 )
 
 require (
-	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.0 // indirect
+	github.com/tidwall/pretty v1.3.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 )

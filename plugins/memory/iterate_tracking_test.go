@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 type contextT = context.Context
@@ -49,6 +49,7 @@ func stateIs(state string) spi.Filter {
 // not the whole merged model at open.
 func TestIterate_InTx_TrackingReadRecordsYieldsOnly(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-it"), spi.ModelRef{EntityName: "m-it", ModelVersion: "1"})
 	ctx := tenantCtx("tenant-it")
 	ref := spi.ModelRef{EntityName: "m-it", ModelVersion: "1"}
 	store, _ := f.EntityStore(ctx)
@@ -86,6 +87,7 @@ func TestIterate_InTx_TrackingReadRecordsYieldsOnly(t *testing.T) {
 // In-tx GroupedAggregate records nothing — the rule every backend shares.
 func TestGroupedAggregate_InTx_RecordsNothing(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-it"), spi.ModelRef{EntityName: "m-ga", ModelVersion: "1"})
 	ctx := tenantCtx("tenant-it")
 	ref := spi.ModelRef{EntityName: "m-ga", ModelVersion: "1"}
 	store, _ := f.EntityStore(ctx)
@@ -110,6 +112,7 @@ func TestGroupedAggregate_InTx_RecordsNothing(t *testing.T) {
 // iterator stops serving a view of a transaction that has been thrown away.
 func TestIterate_InTx_RollbackWhileOpen_EndsWithRolledBack(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-it"), spi.ModelRef{EntityName: "m-it-rb", ModelVersion: "1"})
 	ctx := tenantCtx("tenant-it")
 	ref := spi.ModelRef{EntityName: "m-it-rb", ModelVersion: "1"}
 	store, _ := f.EntityStore(ctx)
@@ -140,6 +143,7 @@ func TestIterate_InTx_RollbackWhileOpen_EndsWithRolledBack(t *testing.T) {
 // by sending a PIT read away from its transaction iterator.
 func TestIterate_InTx_PIT_IgnoresTransaction(t *testing.T) {
 	f, tm := newTxManager(t)
+	lockModels(t, f, ctxWithTenant("tenant-it"), spi.ModelRef{EntityName: "m-it-pit", ModelVersion: "1"})
 	ctx := tenantCtx("tenant-it")
 	ref := spi.ModelRef{EntityName: "m-it-pit", ModelVersion: "1"}
 	store, _ := f.EntityStore(ctx)

@@ -8,15 +8,19 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	"github.com/google/uuid"
+
+	"github.com/cyoda/cyoda-go/api/grpc/authctx"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
 )
 
 // callback.go — callback-capable processors/criteria for the
 // compute-test-client. These read the signed cyodatxtoken the engine attaches
 // to a calc request and echo it as the X-Tx-Token HTTP header on a callback into
-// cyoda-go, exercising the transaction-join path (JoinFromToken → participate)
+// cyoda-go, exercising the transaction-join path (Joiner.Run → participate)
 // across all backends in the parity suite.
 //
 // The token value is never logged (Gate 3 / spec §8-H10) — only its emptiness
@@ -41,26 +45,23 @@ func txTokenFromCloudEvent(ce *cepb.CloudEvent) string {
 	return v.GetCeString()
 }
 
-// authTypeAttr is the CloudEvents Auth Context extension attribute carrying the
-// executor's principal kind (one of user | service | system). cyoda-go emits it
-// verbatim from the dispatching principal's explicit Kind (internal/grpc/
-// cloudevent.go AttachAuthContext). In the cluster, a forwarded processor
-// dispatch (A→B) reconstructs the SAME authtype on the member-hosting node from
-// the originating node's PrincipalKind (Task 7 forwarding) — without which the
-// re-dispatch would fail closed with an unset Kind.
-const authTypeAttr = "authtype"
+// calloutAuth is the CloudEvents Auth Context a calc request carried
+// (internal/grpc/cloudevent.go AttachAuthContext): the attributed principal
+// (Type, ID) and the executor (ExecType, ExecID). On a callout another pnode
+// forwarded, it is the identity the dispatching pnode computed.
+type calloutAuth struct {
+	Type, ID, ExecType, ExecID string
+}
 
-// authTypeFromCloudEvent extracts the authtype (executor principal kind) from a
-// calc-request CloudEvent, or "" when absent.
-func authTypeFromCloudEvent(ce *cepb.CloudEvent) string {
-	if ce == nil || ce.Attributes == nil {
-		return ""
+// authFromCloudEvent reads the auth context of a calc-request CloudEvent; an
+// absent attribute reads as "".
+func authFromCloudEvent(ce *cepb.CloudEvent) calloutAuth {
+	return calloutAuth{
+		Type:     authctx.Type(ce),
+		ID:       authctx.ID(ce),
+		ExecType: authctx.ExecutorType(ce),
+		ExecID:   authctx.ExecutorID(ce),
 	}
-	v, ok := ce.Attributes[authTypeAttr]
-	if !ok {
-		return ""
-	}
-	return v.GetCeString()
 }
 
 // cbConfig is the per-scenario configuration delivered via the pass-through
@@ -70,6 +71,13 @@ type cbConfig struct {
 	SecondaryModel   string `json:"secondaryModel"`
 	SecondaryVersion int    `json:"secondaryVersion"`
 	Marker           string `json:"marker"`
+	// RecordModel, when set, is the model a recording processor writes what
+	// its joined callback was answered into — with no tx token, so the record
+	// is committed whatever becomes of the joined transaction.
+	RecordModel string `json:"recordModel"`
+	// AnchorModel is the model of the entity the callout runs for, which
+	// cb-read-anchor searches, counts and pages (version 1).
+	AnchorModel string `json:"anchorModel"`
 }
 
 // parseCallbackConfig decodes the calc request's parameters node — which the
@@ -95,22 +103,19 @@ func parseCallbackConfig(parameters json.RawMessage) (cbConfig, error) {
 
 // callbackClient issues HTTP callbacks into cyoda-go, presenting the tx-token as
 // X-Tx-Token so writes/reads join the originating transaction. It authenticates
-// with the compute client's M2M bearer.
+// with the compute client's M2M bearer, asking token for it on every request.
 type callbackClient struct {
 	baseURL string
-	bearer  string
+	token   func() (string, error)
 	hc      *http.Client
 }
 
-// newCallbackClient constructs a callback client, or nil when baseURL is empty
-// (callback processors then report a clear error rather than panicking).
-func newCallbackClient(baseURL, bearer string) *callbackClient {
-	if baseURL == "" {
-		return nil
-	}
+// newCallbackClient constructs a callback client for the cyoda instance at
+// baseURL.
+func newCallbackClient(baseURL string, token func() (string, error)) *callbackClient {
 	return &callbackClient{
 		baseURL: baseURL,
-		bearer:  bearer,
+		token:   token,
 		hc:      &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -132,7 +137,11 @@ func (c *callbackClient) do(ctx context.Context, method, path, body, txToken, if
 	if err != nil {
 		return cbResult{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.bearer)
+	bearer, err := c.token()
+	if err != nil {
+		return cbResult{}, fmt.Errorf("failed to get a callback bearer: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Content-Type", "application/json")
 	if txToken != "" {
 		req.Header.Set("X-Tx-Token", txToken)
@@ -185,6 +194,28 @@ func (c *callbackClient) getEntityAt(ctx context.Context, entityID string, at ti
 	return c.do(ctx, http.MethodGet, path, "", txToken, "")
 }
 
+// consistencyTime issues GET /api/entity/consistency-time within the joined
+// transaction and returns the instant the platform reports. A point-in-time
+// read is refused when it lies after this instant, so a scenario that reads at
+// a point in time takes the instant from the platform instead of the local
+// clock.
+func (c *callbackClient) consistencyTime(ctx context.Context, txToken string) (time.Time, error) {
+	res, err := c.do(ctx, http.MethodGet, "/api/entity/consistency-time", "", txToken, "")
+	if err != nil {
+		return time.Time{}, err
+	}
+	if res.Status != http.StatusOK {
+		return time.Time{}, fmt.Errorf("consistency time status=%d body=%s", res.Status, res.Body)
+	}
+	var body struct {
+		ConsistencyTime time.Time `json:"consistencyTime"`
+	}
+	if err := json.Unmarshal([]byte(res.Body), &body); err != nil {
+		return time.Time{}, fmt.Errorf("failed to decode the consistency time: %w", err)
+	}
+	return body.ConsistencyTime, nil
+}
+
 // createSecondaryWithQuery is createSecondary's negative-path sibling: it
 // appends a raw query string (e.g. "transactionTimeoutMillis=5000") to the
 // create URL instead of assuming success. Used by scenarios that expect the
@@ -201,6 +232,33 @@ func (c *callbackClient) createSecondaryWithQuery(ctx context.Context, cfg cbCon
 	return c.do(ctx, http.MethodPost, path, body, txToken, "")
 }
 
+// recordHop writes what a joined callback was answered (res) into
+// cfg.RecordModel as a standalone create: no tx token, so it is committed
+// outside the joined transaction whatever that transaction's fate. A scenario
+// reads it back by cfg.Marker. A config with no RecordModel records nothing.
+func (c *callbackClient) recordHop(ctx context.Context, cfg cbConfig, res cbResult, txToken string) error {
+	if cfg.RecordModel == "" {
+		return nil
+	}
+	body, err := json.Marshal(map[string]any{
+		"marker":        cfg.Marker,
+		"hopStatus":     res.Status,
+		"hopBody":       res.Body,
+		"tokenWasEmpty": txToken == "",
+	})
+	if err != nil {
+		return fmt.Errorf("record the callback's answer: %w", err)
+	}
+	rec, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", cfg.RecordModel), string(body), "", "")
+	if err != nil {
+		return fmt.Errorf("record the callback's answer: %w", err)
+	}
+	if rec.Status != http.StatusOK {
+		return fmt.Errorf("record the callback's answer: status=%d body=%s", rec.Status, rec.Body)
+	}
+	return nil
+}
+
 // loopbackUpdate issues a PUT /api/entity/JSON/{id} (loopback, no transition)
 // callback carrying an If-Match precondition, within the joined transaction.
 func (c *callbackClient) loopbackUpdate(ctx context.Context, entityID, ifMatch, txToken, status string) (cbResult, error) {
@@ -215,6 +273,121 @@ func (c *callbackClient) loopbackUpdate(ctx context.Context, entityID, ifMatch, 
 func (c *callbackClient) conditionalDelete(ctx context.Context, model string, version int, condition, txToken string) (cbResult, error) {
 	path := fmt.Sprintf("/api/entity/%s/%d", model, version)
 	return c.do(ctx, http.MethodDelete, path, condition, txToken, "")
+}
+
+// targetOf returns the targetId carried on the entity's data.
+func targetOf(entity *Entity) (string, error) {
+	data, err := decodeData(entity)
+	if err != nil {
+		return "", err
+	}
+	targetID, _ := data["targetId"].(string)
+	if targetID == "" {
+		return "", fmt.Errorf("entity data has no targetId")
+	}
+	return targetID, nil
+}
+
+// writeBack reads entityID and writes its data back unchanged, both through
+// txToken's transaction when it is non-empty, and returns the write's HTTP
+// status. A write that could not be made at all is an error.
+func (c *callbackClient) writeBack(ctx context.Context, entityID, txToken string) (int, error) {
+	got, err := c.getEntity(ctx, entityID, txToken)
+	if err != nil {
+		return 0, fmt.Errorf("callback read: %w", err)
+	}
+	if got.Status != http.StatusOK {
+		return 0, fmt.Errorf("callback read status=%d body=%s", got.Status, got.Body)
+	}
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(got.Body), &env); err != nil || len(env.Data) == 0 {
+		return 0, fmt.Errorf("callback read: no entity data in %s", got.Body)
+	}
+	res, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entityID, string(env.Data), txToken, "")
+	if err != nil {
+		return 0, fmt.Errorf("callback update: %w", err)
+	}
+	return res.Status, nil
+}
+
+// setStatus reads entityID through txToken's transaction and writes its data
+// back there with status set to status. A read or write not answered 200 is
+// an error; the write's answer is returned for the caller to read the
+// transaction id from.
+func (c *callbackClient) setStatus(ctx context.Context, entityID, status, txToken string) (cbResult, error) {
+	got, err := c.getEntity(ctx, entityID, txToken)
+	if err != nil {
+		return cbResult{}, fmt.Errorf("callback read of %s: %w", entityID, err)
+	}
+	if got.Status != http.StatusOK {
+		return cbResult{}, fmt.Errorf("callback read of %s status=%d body=%s", entityID, got.Status, got.Body)
+	}
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(got.Body), &env); err != nil || env.Data == nil {
+		return cbResult{}, fmt.Errorf("callback read of %s: no entity data in %s", entityID, got.Body)
+	}
+	env.Data["status"] = status
+	body, err := json.Marshal(env.Data)
+	if err != nil {
+		return cbResult{}, fmt.Errorf("callback update of %s: encode data: %w", entityID, err)
+	}
+	res, err := c.do(ctx, http.MethodPut, "/api/entity/JSON/"+entityID, string(body), txToken, "")
+	if err != nil {
+		return cbResult{}, fmt.Errorf("callback update of %s: %w", entityID, err)
+	}
+	if res.Status != http.StatusOK {
+		return cbResult{}, fmt.Errorf("callback update of %s status=%d body=%s", entityID, res.Status, res.Body)
+	}
+	return res, nil
+}
+
+// targetVerdict is how a cb-*-target processor answers after its joined write.
+type targetVerdict int
+
+const (
+	// verdictStrict fails when the joined write is not answered 200, as a
+	// processor checking its own callback would, and otherwise answers
+	// success with the primary unchanged.
+	verdictStrict targetVerdict = iota
+	// verdictFail ignores the joined write's answer and always fails.
+	verdictFail
+)
+
+// targetWriter builds the cb-*-target processors. rival makes a write of the
+// target outside T first; verdict is how the processor answers after the
+// joined write.
+func targetWriter(rival bool, verdict targetVerdict) callbackProcessorFunc {
+	return func(ctx context.Context, entity *Entity, _ cbConfig, token string, cb *callbackClient) (*Entity, error) {
+		if cb == nil {
+			return nil, fmt.Errorf("callback client unavailable: CYODA_COMPUTE_HTTP_BASE not set")
+		}
+		targetID, err := targetOf(entity)
+		if err != nil {
+			return nil, err
+		}
+		if rival {
+			if _, err := cb.writeBack(ctx, targetID, ""); err != nil {
+				return nil, fmt.Errorf("rival write: %w", err)
+			}
+		}
+		status, err := cb.writeBack(ctx, targetID, token)
+		if err != nil {
+			return nil, err
+		}
+		switch verdict {
+		case verdictStrict:
+			if status != http.StatusOK {
+				return nil, fmt.Errorf("joined write of %s answered %d", targetID, status)
+			}
+		case verdictFail:
+			return nil, fmt.Errorf("processor fails after the joined write of %s", targetID)
+		}
+		return entity, nil
+	}
 }
 
 // parseCreateResponse extracts the first entity id and transactionId from a
@@ -246,6 +419,119 @@ func entityDataStatus(body string) string {
 	}
 	s, _ := env.Data["status"].(string)
 	return s
+}
+
+// problemErrorCode extracts properties.errorCode from an RFC 9457 problem
+// body, or "" when the body is not one.
+func problemErrorCode(body string) string {
+	var pd struct {
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal([]byte(body), &pd) != nil {
+		return ""
+	}
+	return pd.Properties.ErrorCode
+}
+
+// anchorReads is what cb-read-anchor observed of its anchor through joined
+// reads: the GET, a search and a grouped count by the anchor's current
+// data.status, and the first page of the anchor's model.
+type anchorReads struct {
+	GetStatus   int    // the joined GET's HTTP status
+	GetState    string // meta.state the GET returned
+	GetMarker   string // data.status the GET returned
+	SearchHits  int    // search results by data.status that are the anchor
+	CountByMark int    // grouped count of the model's entities with that data.status
+	PageMarker  string // data.status of the anchor on the model's first page; "" when absent
+}
+
+// readAnchor reads entity (the anchor, of model cfg.AnchorModel version 1)
+// under txToken through every read door: GET, direct search by its current
+// data.status, a grouped count by data.status and the first page. A door that
+// answers other than 200 leaves its zero value; a transport error is an error.
+func (c *callbackClient) readAnchor(ctx context.Context, entity *Entity, cfg cbConfig, txToken string) (anchorReads, error) {
+	var out anchorReads
+	data, err := decodeData(entity)
+	if err != nil {
+		return out, err
+	}
+	marker, _ := data["status"].(string)
+
+	got, err := c.getEntity(ctx, entity.ID, txToken)
+	if err != nil {
+		return out, fmt.Errorf("joined GET: %w", err)
+	}
+	out.GetStatus = got.Status
+	if got.Status == http.StatusOK {
+		var env struct {
+			Meta struct {
+				State string `json:"state"`
+			} `json:"meta"`
+		}
+		_ = json.Unmarshal([]byte(got.Body), &env)
+		out.GetState = env.Meta.State
+		out.GetMarker = entityDataStatus(got.Body)
+	}
+
+	cond, _ := json.Marshal(map[string]any{"type": "simple", "jsonPath": "$.status", "operatorType": "EQUALS", "value": marker})
+	found, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1", cfg.AnchorModel), string(cond), txToken, "")
+	if err != nil {
+		return out, fmt.Errorf("joined search: %w", err)
+	}
+	if found.Status == http.StatusOK {
+		for _, line := range strings.Split(found.Body, "\n") {
+			var env struct {
+				Meta struct {
+					ID string `json:"id"`
+				} `json:"meta"`
+			}
+			if json.Unmarshal([]byte(line), &env) == nil && env.Meta.ID == entity.ID {
+				out.SearchHits++
+			}
+		}
+	}
+
+	counted, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/entity/stats/%s/1/query", cfg.AnchorModel), `{"groupBy":["$.status"]}`, txToken, "")
+	if err != nil {
+		return out, fmt.Errorf("joined grouped count: %w", err)
+	}
+	if counted.Status == http.StatusOK {
+		var buckets []struct {
+			GroupKey []struct {
+				Path  string `json:"path"`
+				Value any    `json:"value"`
+			} `json:"groupKey"`
+			Count int `json:"count"`
+		}
+		_ = json.Unmarshal([]byte(counted.Body), &buckets)
+		for _, b := range buckets {
+			if len(b.GroupKey) == 1 && b.GroupKey[0].Path == "$.status" && b.GroupKey[0].Value == marker {
+				out.CountByMark = b.Count
+			}
+		}
+	}
+
+	page, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/entity/%s/1?pageSize=100", cfg.AnchorModel), "", txToken, "")
+	if err != nil {
+		return out, fmt.Errorf("joined page: %w", err)
+	}
+	if page.Status == http.StatusOK {
+		var entities []struct {
+			Meta struct {
+				ID string `json:"id"`
+			} `json:"meta"`
+			Data map[string]any `json:"data"`
+		}
+		_ = json.Unmarshal([]byte(page.Body), &entities)
+		for _, e := range entities {
+			if e.Meta.ID == entity.ID {
+				out.PageMarker, _ = e.Data["status"].(string)
+			}
+		}
+	}
+	return out, nil
 }
 
 // callbackProcessorFunc is a processor that may issue joined callbacks. It
@@ -330,6 +616,9 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err != nil {
 				return nil, fmt.Errorf("callback create with transactionTimeoutMillis: %w", err)
 			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
 			data, err := decodeData(entity)
 			if err != nil {
 				return nil, err
@@ -338,6 +627,117 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			data["hopBody"] = res.Body
 			data["tokenWasEmpty"] = token == ""
 			return withData(entity, data)
+		},
+
+		// cb-create-secondary-record — issues the same joined create callback as
+		// cb-create-secondary, but records the callback's raw status + body into
+		// the primary's data and succeeds whatever the callback answered. The
+		// owner therefore goes on to commit its transaction, so a scenario can
+		// assert both a refusal of the joined write and what the owner's commit
+		// leaves behind — including across a forwarded cluster hop.
+		"cb-create-secondary-record": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
+				return nil, fmt.Errorf("callback create: %w", err)
+			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["hopStatus"] = float64(res.Status)
+			data["hopBody"] = res.Body
+			data["tokenWasEmpty"] = token == ""
+			return withData(entity, data)
+		},
+
+		// cb-create-secondary-then-silent — issues the joined create callback,
+		// then never answers the callout (it waits for its own context to end),
+		// whatever the callback answered. The owner's loop would give the work
+		// to another member once the answer limit passes — unless something
+		// ends the callout first.
+		//
+		// Its context is the client's stream context: a callout's end does
+		// not end it. The client serves callouts one at a time on its receive
+		// loop, so this client takes no further work, and reads no further
+		// message, until it is stopped. A scenario uses it for the one callout
+		// that client is meant to receive, and that is what keeps a second
+		// try from reaching it.
+		"cb-create-secondary-then-silent": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			if _, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker); err != nil {
+				return nil, fmt.Errorf("callback create: %w", err)
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+
+		// cb-create-secondary-retry-record — issues the joined create callback,
+		// and again, up to three tries, until it is answered 200. Each answer
+		// is recorded under the marker with "-attempt-<n>" appended. It
+		// succeeds whatever the last answer was, so a scenario sees what the
+		// owner does with a retried joined write.
+		"cb-create-secondary-retry-record": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			for attempt := 1; attempt <= 3; attempt++ {
+				res, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
+				if err != nil {
+					return nil, fmt.Errorf("callback create: %w", err)
+				}
+				rec := cfg
+				rec.Marker = fmt.Sprintf("%s-attempt-%d", cfg.Marker, attempt)
+				if err := cb.recordHop(ctx, rec, res, token); err != nil {
+					return nil, err
+				}
+				if res.Status == http.StatusOK {
+					break
+				}
+			}
+			return entity, nil
+		},
+
+		// cb-get-unknown-record — reads, through a joined callback, an entity
+		// that does not exist, and records the answer. It succeeds, so the owner
+		// goes on to commit.
+		"cb-get-unknown-record": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, err := cb.getEntity(ctx, uuid.NewString(), token)
+			if err != nil {
+				return nil, fmt.Errorf("callback read: %w", err)
+			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
+			return entity, nil
+		},
+
+		// cb-post-message-then-fail — posts a message, under the token, on the
+		// subject cfg.Marker, records the answer, and then fails. The owner's
+		// operation fails with it; a message never joins the transaction, so the
+		// record holds the message id for a scenario to look for afterwards.
+		"cb-post-message-then-fail": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			res, err := cb.do(ctx, http.MethodPost, "/api/message/new/"+url.PathEscape(cfg.Marker), `{"payload":{"x":1}}`, token, "")
+			if err != nil {
+				return nil, fmt.Errorf("callback message: %w", err)
+			}
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("processor deliberately fails after posting a message")
 		},
 
 		// cb-grpc-create-secondary — like cb-create-secondary but issues the joined
@@ -523,10 +923,15 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err != nil {
 				return nil, fmt.Errorf("callback plain read: %w", err)
 			}
-			// One hour ahead: strictly after the uncommitted create, and far
-			// enough clear of it that no clock skew between this process and
-			// the server can make the instant precede the write.
-			pit, err := cb.getEntityAt(ctx, secID, time.Now().Add(time.Hour), token)
+			// The latest instant a point-in-time read may name is the
+			// consistency time, taken from the platform after the create (a
+			// later instant is refused). The secondary is uncommitted, so it
+			// is invisible at that instant whatever its value.
+			at, err := cb.consistencyTime(ctx, token)
+			if err != nil {
+				return nil, fmt.Errorf("callback consistency time: %w", err)
+			}
+			pit, err := cb.getEntityAt(ctx, secID, at, token)
 			if err != nil {
 				return nil, fmt.Errorf("callback point-in-time read: %w", err)
 			}
@@ -598,6 +1003,138 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			return withData(entity, data)
 		},
 
+		// cb-update-target-strict — reads, through a joined callback, the
+		// entity whose id rides on the primary's data as targetId, and writes
+		// its data back unchanged through a joined update. The write is a new
+		// version of the target in T, so a change another client committed to
+		// the target after T began makes T lose first-committer-wins. It
+		// fails, as a real processor checking its own callback would, when
+		// the joined write is not answered 200, and otherwise answers success
+		// with the primary unchanged.
+		"cb-update-target-strict": targetWriter(false, verdictStrict),
+
+		// cb-race-target-strict — cb-update-target-strict with the rival write
+		// made by this processor itself: it first writes the target back
+		// OUTSIDE T (no token), which commits a new version after T began, and
+		// then does the joined write. T therefore loses first-committer-wins on
+		// the target with no second client and nothing running at the same
+		// time.
+		"cb-race-target-strict": targetWriter(true, verdictStrict),
+		// cb-race-target-thenfail — cb-race-target-strict that ignores the
+		// joined write's answer and then fails. Under ASYNC_NEW_TX the failure
+		// rolls back the processor's savepoint, which discards the joined
+		// write after it lost the race.
+		"cb-race-target-thenfail": targetWriter(true, verdictFail),
+
+		// cb-write-target — reads, through a joined GET, the entity whose id
+		// rides on the anchor's data as targetId, and writes it back through
+		// a joined update with data.status set to cfg.Marker. A read or write
+		// not answered 200 fails the processor. It answers with the anchor
+		// unchanged. Two of them in one transition write the target twice in
+		// one transaction.
+		"cb-write-target": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			targetID, err := targetOf(entity)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := cb.setStatus(ctx, targetID, cfg.Marker, token); err != nil {
+				return nil, err
+			}
+			return entity, nil
+		},
+		// cb-write-target-read-by-tx — writes the target as cb-write-target
+		// does, then reads the target back through a joined GET with
+		// ?transactionId= naming the transaction the write joined, and records
+		// the read's answer (cfg.RecordModel, outside the transaction). The
+		// transaction has not committed, so the read is answered 404
+		// ENTITY_NOT_FOUND although it is made inside it. It answers with the
+		// anchor unchanged.
+		"cb-write-target-read-by-tx": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			targetID, err := targetOf(entity)
+			if err != nil {
+				return nil, err
+			}
+			res, err := cb.setStatus(ctx, targetID, cfg.Marker, token)
+			if err != nil {
+				return nil, err
+			}
+			var written struct {
+				TransactionID string `json:"transactionId"`
+			}
+			if err := json.Unmarshal([]byte(res.Body), &written); err != nil || written.TransactionID == "" {
+				return nil, fmt.Errorf("callback write response has no transactionId: %s", res.Body)
+			}
+			read, err := cb.do(ctx, http.MethodGet, "/api/entity/"+targetID+"?transactionId="+url.QueryEscape(written.TransactionID), "", token, "")
+			if err != nil {
+				return nil, fmt.Errorf("callback by-transaction read: %w", err)
+			}
+			if err := cb.recordHop(ctx, cfg, read, token); err != nil {
+				return nil, err
+			}
+			return entity, nil
+		},
+		// cb-move-status — for each {id, status} on the anchor's data.moves, in
+		// order, reads that entity through a joined GET and writes it back
+		// through a joined update with data.status set to the move's status. A
+		// read or write not answered 200 fails the processor. It answers with
+		// the anchor unchanged. With a unique key on $.status, the moves let a
+		// scenario swap or chain key values between entities in one
+		// transaction.
+		"cb-move-status": func(ctx context.Context, entity *Entity, _ cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			var anchor struct {
+				Moves []struct {
+					ID     string `json:"id"`
+					Status string `json:"status"`
+				} `json:"moves"`
+			}
+			if len(entity.Data) > 0 {
+				if err := json.Unmarshal(entity.Data, &anchor); err != nil {
+					return nil, fmt.Errorf("cb-move-status: decode moves: %w", err)
+				}
+			}
+			for _, m := range anchor.Moves {
+				if _, err := cb.setStatus(ctx, m.ID, m.Status, token); err != nil {
+					return nil, err
+				}
+			}
+			return entity, nil
+		},
+		// cb-read-anchor — reads the entity the processor runs for through
+		// every joined read door (readAnchor; cfg.AnchorModel names its
+		// model) and answers with the entity's data plus what it saw:
+		// anchorGetStatus, anchorGetState, anchorGetMarker,
+		// anchorSearchHits, anchorCountByMarker and anchorPageMarker. It
+		// changes the entity only through that returned data and never
+		// writes it.
+		"cb-read-anchor": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+			if err := requireCB(cb); err != nil {
+				return nil, err
+			}
+			seen, err := cb.readAnchor(ctx, entity, cfg, token)
+			if err != nil {
+				return nil, err
+			}
+			data, err := decodeData(entity)
+			if err != nil {
+				return nil, err
+			}
+			data["anchorGetStatus"] = float64(seen.GetStatus)
+			data["anchorGetState"] = seen.GetState
+			data["anchorGetMarker"] = seen.GetMarker
+			data["anchorSearchHits"] = float64(seen.SearchHits)
+			data["anchorCountByMarker"] = float64(seen.CountByMark)
+			data["anchorPageMarker"] = seen.PageMarker
+			return withData(entity, data)
+		},
 		// cb-ifmatch-update — creates a secondary inside T, then issues a
 		// loopback update with If-Match set to the create's in-T transactionId.
 		"cb-ifmatch-update": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
@@ -630,6 +1167,21 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 	}
 
 	crit := map[string]callbackCriterionFunc{
+		// cb-criterion-reads-anchor — GETs, through a joined callback, the
+		// entity the criterion runs for and matches only when that read
+		// answers 200 with data.status equal to cfg.Marker. It shows the
+		// criterion sees the entity as the workflow has it, not its last
+		// committed version.
+		"cb-criterion-reads-anchor": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (bool, error) {
+			if err := requireCB(cb); err != nil {
+				return false, err
+			}
+			got, err := cb.getEntity(ctx, entity.ID, token)
+			if err != nil {
+				return false, fmt.Errorf("callback read: %w", err)
+			}
+			return got.Status == http.StatusOK && entityDataStatus(got.Body) == cfg.Marker, nil
+		},
 		// cb-criterion-reads — GETs, through a joined callback, the secondary
 		// entity a prior cascade step wrote into T (its id rides on the primary's
 		// in-T data as secondaryId) and matches only when that uncommitted

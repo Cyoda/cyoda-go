@@ -13,7 +13,7 @@ import (
 
 func getLogLevelE2E(t *testing.T) string {
 	t.Helper()
-	resp := doAuth(t, http.MethodGet, "/api/admin/log-level", "")
+	resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodGet, "/api/admin/log-level", "")
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET log-level: status=%d body=%s", resp.StatusCode, body)
@@ -43,11 +43,11 @@ func TestAdminLogLevel_SetRoundTrip(t *testing.T) {
 	// Restore the level so this test cannot leak verbosity into the rest of
 	// the suite (the level is process-global).
 	defer func() {
-		resp := doAuth(t, http.MethodPost, "/api/admin/log-level", `{"level":"`+original+`"}`)
+		resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodPost, "/api/admin/log-level", `{"level":"`+original+`"}`)
 		readBody(t, resp)
 	}()
 
-	resp := doAuth(t, http.MethodPost, "/api/admin/log-level", `{"level":"`+target+`"}`)
+	resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodPost, "/api/admin/log-level", `{"level":"`+target+`"}`)
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST log-level: status=%d body=%s", resp.StatusCode, body)
@@ -85,12 +85,30 @@ func TestAdminLogLevel_BadRequests(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := doAuth(t, http.MethodPost, "/api/admin/log-level", tc.body)
+			resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodPost, "/api/admin/log-level", tc.body)
 			body := readBody(t, resp)
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status=%d, want 400; body: %s", resp.StatusCode, body)
 			}
 			assertErrorCode(t, body, "BAD_REQUEST")
 		})
+	}
+}
+
+// TestAdminLogLevel_UnknownLevel asserts the wired route answers 400 for a
+// level outside the accepted set, and that a subsequent GET shows the level
+// was left unchanged rather than silently set to info.
+func TestAdminLogLevel_UnknownLevel(t *testing.T) {
+	original := getLogLevelE2E(t)
+
+	resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodPost, "/api/admin/log-level", `{"level":"verbose"}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400; body: %s", resp.StatusCode, body)
+	}
+	assertErrorCode(t, body, "BAD_REQUEST")
+
+	if now := getLogLevelE2E(t); now != original {
+		t.Errorf("GET after a refused unknown level: level=%q, want unchanged %q", now, original)
 	}
 }

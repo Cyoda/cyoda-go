@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
+	"github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema/gentree"
 )
 
 // TestRoundtripCatalog — I1 master invariant on curated fixtures.
@@ -74,9 +74,9 @@ func assertRoundTrip(t *testing.T, old, extended *schema.ModelNode, label string
 	if err != nil {
 		t.Fatalf("%s: Diff failed: %v", label, err)
 	}
-	applied, err := schema.Apply(old, delta)
+	applied, err := applyDelta(old, delta)
 	if err != nil {
-		t.Fatalf("%s: Apply failed: %v", label, err)
+		t.Fatalf("%s: apply failed: %v", label, err)
 	}
 	appliedBytes, _ := schema.Marshal(applied)
 	extendedBytes, _ := schema.Marshal(extended)

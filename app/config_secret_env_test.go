@@ -83,13 +83,13 @@ func TestResolveSecretEnv_TrimsTrailingWhitespace(t *testing.T) {
 	}
 }
 
-func TestResolveSecretEnv_EmptyFileTreatedAsUnset(t *testing.T) {
+func TestResolveSecretEnv_EmptyFileYieldsEmptyNoFallback(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
 	if err := os.WriteFile(path, []byte("   \n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("TEST_SECRET", "")
+	t.Setenv("TEST_SECRET", "plain")
 	t.Setenv("TEST_SECRET_FILE", path)
 
 	got, err := ResolveSecretEnv("TEST_SECRET")
@@ -97,7 +97,7 @@ func TestResolveSecretEnv_EmptyFileTreatedAsUnset(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got != "" {
-		t.Errorf("file with only whitespace should return empty; got %q", got)
+		t.Errorf("file with only whitespace should return empty, not fall back to TEST_SECRET; got %q", got)
 	}
 }
 

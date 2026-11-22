@@ -1,0 +1,22 @@
+{
+  "schema": "QueryConditionDto",
+  "class": "FunctionConditionDto",
+  "value": {
+    "type": "function",
+    "function": {
+      "name": "isPriority",
+      "config": {
+        "attachEntity": true,
+        "calculationNodesTags": "scoring",
+        "responseTimeoutMs": 5000,
+        "retryPolicy": "FIXED"
+      },
+      "criterion": {
+        "type": "simple",
+        "jsonPath": "$.amount",
+        "operatorType": "GREATER_THAN",
+        "value": 10
+      }
+    }
+  }
+}

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda/cyoda-go/internal/cluster/registry"
 )
 
 // TestGossipRegistry_RegisterHonorsContextDeadline is the regression test for
@@ -23,7 +23,7 @@ func TestGossipRegistry_RegisterHonorsContextDeadline(t *testing.T) {
 		NodeID:          "ctx-deadline-node",
 		NodeAddr:        "127.0.0.1:28000",
 		BindAddr:        "127.0.0.1",
-		BindPort:        28946,
+		BindPort:        0,
 		Seeds:           []string{"127.0.0.1:1"},
 		StabilityWindow: 0,
 	})
@@ -62,7 +62,7 @@ func TestGossipRegistry_RegisterHonorsCanceledContext(t *testing.T) {
 		NodeID:          "ctx-cancel-node",
 		NodeAddr:        "127.0.0.1:28010",
 		BindAddr:        "127.0.0.1",
-		BindPort:        28947,
+		BindPort:        0,
 		Seeds:           []string{"127.0.0.1:1"},
 		StabilityWindow: 0,
 	})

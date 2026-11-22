@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 func TestResolveGRPCAddr_AdvertisedWins(t *testing.T) {
@@ -48,6 +48,23 @@ func TestResolveGRPCAddr_DeriveStripsSchemeAndPort(t *testing.T) {
 	}
 	if got != "node-c.internal:8443" {
 		t.Fatalf("expected %q, got %q", "node-c.internal:8443", got)
+	}
+}
+
+// TestResolveGRPCAddr_DeriveKeepsIPv6Brackets pins that a derived address is
+// joined as host and port: url.Hostname drops an IPv6 literal's brackets, and
+// "fd00::5:9090" cannot be dialled.
+func TestResolveGRPCAddr_DeriveKeepsIPv6Brackets(t *testing.T) {
+	ni := contract.NodeInfo{
+		NodeID: "node-v6",
+		Addr:   "http://[fd00::5]:8080",
+	}
+	got, err := resolveGRPCAddr(ni, 9090)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "[fd00::5]:9090" {
+		t.Fatalf("expected %q, got %q", "[fd00::5]:9090", got)
 	}
 }
 

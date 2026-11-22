@@ -16,27 +16,33 @@ cli.serve — start the cyoda API server.
 
 ## SYNOPSIS
 
-`cyoda` (no subcommand; serving is the default mode)
+`cyoda [serve]`
 
 ## DESCRIPTION
 
-Starting with no subcommand loads configuration from environment variables, validates the IAM mode, and binds the REST, gRPC, and admin listeners. The server is single-process, multi-tenant, and stateful — storage is provided by one of the pluggable backends (`memory`, `sqlite`, or `postgres`); see `cyoda help config` for backend selection.
+`cyoda` with no subcommand and `cyoda serve` are the same command. It takes no arguments and no flags: any argument after `serve` other than a lone `-h` / `--help` is refused with exit code `2` before anything starts. Starting loads configuration from environment variables and the env files (see the profile loader in `cyoda help config`), validates the IAM mode, and binds the REST, gRPC, and admin listeners. The server is single-process, multi-tenant, and stateful — storage is provided by one of the pluggable backends (`memory`, `sqlite`, or `postgres`); see `cyoda help config` for backend selection.
 
 On startup, the binary prints an ASCII banner with version, commit, build date, HTTP port, gRPC port, IAM mode, context path, and active storage profiles. The banner is suppressed by `CYODA_SUPPRESS_BANNER=true`.
 
-The server handles graceful shutdown on `SIGINT` (Ctrl+C) or `SIGTERM`: the HTTP and admin servers drain in-flight requests within a hardcoded 10-second deadline, then the storage backend is closed and the process exits.
+The server handles graceful shutdown on `SIGINT` (Ctrl+C) or `SIGTERM`: the HTTP, admin and gRPC servers drain in-flight requests concurrently, each within a hardcoded 10-second deadline, then the storage backend is closed and the process exits. See `run` for the full shutdown timing.
 
 ## LISTENERS
 
-Three TCP listeners start concurrently:
+Three TCP listeners are bound before any of them is served — a port that cannot be bound stops the process before a request is accepted — and are then served concurrently:
 
-- **REST API** — `CYODA_HTTP_PORT` (default: 8080). All entity, schema, workflow, and auth endpoints, plus `GET /health` — a health summary for humans and simple scripts, not the deployment probe: `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` after a panic recovered in engine or store work, latched until the node is replaced. Context path prefix: `CYODA_CONTEXT_PATH` (default: `/api`).
-- **gRPC** — `CYODA_GRPC_PORT` (default: 9090). Externalized-processor streaming.
-- **Admin** — `CYODA_ADMIN_BIND_ADDRESS:CYODA_ADMIN_PORT` (default: `127.0.0.1:9091`). `/livez`, `/readyz`, and `/metrics` endpoints — `/livez` (unconditional) and `/readyz` (mirrors the same flag as `/health`) are the deployment probes. Admin port is bound to localhost by default; the Helm chart overrides `CYODA_ADMIN_BIND_ADDRESS` so the kubelet can reach `/readyz` without traversing the service mesh.
+- **REST API** — `CYODA_HTTP_BIND_ADDRESS:CYODA_HTTP_PORT` (default: `127.0.0.1:8080`). All entity, schema, workflow, and auth endpoints, plus `GET /health` — a health summary for humans and simple scripts, not the deployment probe: `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` after a panic recovered in engine or store work, latched until the node is replaced. Context path prefix: `CYODA_CONTEXT_PATH` (default: `/api`).
+- **gRPC** — `CYODA_GRPC_BIND_ADDRESS:CYODA_GRPC_PORT` (default: `127.0.0.1:9090`). Externalized-processor streaming.
+- **Admin** — `CYODA_ADMIN_BIND_ADDRESS:CYODA_ADMIN_PORT` (default: `127.0.0.1:9091`). `/livez`, `/readyz`, and `/metrics` endpoints — `/livez` (unconditional) and `/readyz` (fails after a recovered panic or from the start of shutdown; `/health` reflects only the health latch) are the deployment probes. Admin port is bound to localhost by default; the Helm chart overrides `CYODA_ADMIN_BIND_ADDRESS` so the kubelet can reach `/readyz` without traversing the service mesh.
+
+All three listeners bind loopback by default, so a server started with no settings is reachable only from its own host. Clients, compute nodes and cluster peers on other hosts, and a container's port mapping, need the bind address set to `0.0.0.0` (or `::`); the Helm chart and the bundled compose file do this. When `CYODA_IAM_MODE=mock` and the HTTP or gRPC listener is bound to an address that is not loopback, the server logs a WARN naming the listener at startup: every caller that reaches it acts as the mock principal.
+
+## OPTIONS
+
+- `-h`, `--help` — print this topic and exit `0`. Nothing is loaded or started. It must be the only argument after `serve`.
 
 ## ENVIRONMENT VARIABLES
 
-All configuration is via environment variables. The subtopics below enumerate the complete per-subsystem variable sets:
+All configuration is via environment variables, set in the process environment or in the env files. The subtopics below enumerate the complete per-subsystem variable sets:
 
 - `config` — all top-level server options (HTTP port, log level, OTel, etc.)
 - `config.database` — storage backend selection and per-backend connection settings
@@ -47,9 +53,11 @@ All configuration is via environment variables. The subtopics below enumerate th
 Variables read specifically during server boot (not covered by the config subtopics above):
 
 - `CYODA_HTTP_PORT` (int, default: `8080`) — HTTP API listen port.
+- `CYODA_HTTP_BIND_ADDRESS` (string, default: `127.0.0.1`) — HTTP API listener bind address: a bare host, IPv4 or IPv6, without brackets (`::1`, not `[::1]`).
 - `CYODA_GRPC_PORT` (int, default: `9090`) — gRPC listen port.
+- `CYODA_GRPC_BIND_ADDRESS` (string, default: `127.0.0.1`) — gRPC listener bind address, in the same form.
 - `CYODA_ADMIN_PORT` (int, default: `9091`) — admin listener port for `/livez`, `/readyz`, `/metrics`.
-- `CYODA_ADMIN_BIND_ADDRESS` (string, default: `127.0.0.1`) — admin listener bind address.
+- `CYODA_ADMIN_BIND_ADDRESS` (string, default: `127.0.0.1`) — admin listener bind address: a bare host, IPv4 or IPv6, without brackets (`::1`, not `[::1]`).
 - `CYODA_OTEL_ENABLED` (bool, default: `false`) — initialize the OpenTelemetry SDK at startup.
 - `CYODA_LOG_LEVEL` (string, default: `info`) — accepted: `debug|info|warn|error`.
 - `CYODA_SUPPRESS_BANNER` (bool, default: `false`) — suppress the ASCII startup banner and mock-auth warning.
@@ -57,21 +65,25 @@ Variables read specifically during server boot (not covered by the config subtop
 ## EXIT CODES
 
 - `0` — clean shutdown after SIGINT or SIGTERM.
-- `1` — startup failure: IAM validation failed (`CYODA_REQUIRE_JWT` contract not met), OTel SDK initialization error, gRPC port-bind failure, or backend connection failure during `app.New`.
-- `2` — hard exit forced by a second SIGINT or SIGTERM delivered while the graceful drain was still running. Nothing is drained or flushed on this path.
+- `1` — startup failure, or a server that failed while running (`server group exited with error` in the log). Startup failures include: a setting that `Config.Validate` rejects (`startup failure` in the log, `phase=config-validation`) — for example an unsupported `CYODA_IAM_MODE` or an unmet `CYODA_REQUIRE_JWT` contract — OTel SDK initialization error, a gRPC, HTTP or admin port that cannot be bound, or backend connection failure during `app.New`.
+- `2` — an argument after `serve` other than a lone `-h` / `--help` (nothing is loaded or started), or a hard exit forced by a second SIGINT or SIGTERM delivered while the graceful drain was still running. Nothing is drained or flushed on that path.
 
 ## EXAMPLES
 
 ```
-# Run with defaults (in-memory storage, mock auth)
+# Run with defaults: mock auth, sqlite storage once "cyoda init" or the
+# deb/rpm package has written a config, in-memory before
 cyoda
+
+# The same, with the subcommand spelled out
+cyoda serve
 
 # SQLite backend with debug logging
 CYODA_STORAGE_BACKEND=sqlite CYODA_LOG_LEVEL=debug cyoda
 
 # PostgreSQL backend, JWT auth, loaded via profiles
 CYODA_PROFILES=postgres,jwt \
-  CYODA_JWT_SIGNING_KEY="$(cat signing.pem)" \
+  CYODA_JWT_SIGNING_KEY_FILE=signing.pem \
   cyoda
 
 # Suppress startup banner (useful in CI)

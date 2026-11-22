@@ -5,9 +5,11 @@ stability: stable
 see_also:
   - cli
   - cli.serve
+  - cli.token
   - cli.init
   - cli.health
   - quickstart
+  - install
   - helm
   - config
   - config.database
@@ -29,25 +31,28 @@ cyoda
 
 # Docker
 docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:9091 \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   ghcr.io/cyoda/cyoda:latest
 
 # Docker Compose (bundled compose.yaml)
 docker compose -f deploy/docker/compose.yaml up
 
 # Helm (Kubernetes)
-helm install cyoda ./deploy/helm/cyoda \
+helm repo add cyoda https://cyoda.github.io/cyoda-go
+helm install cyoda cyoda/cyoda \
   --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt
+  --set jwt.existingSecret=cyoda-jwt \
+  --set "gateway.parentRefs[0].name=prod-gateway"
 
-# Dev script (in-memory, mock auth)
+# Dev script (local profile: .env.local, copied from .env.local.example)
 ./scripts/dev/run-local.sh
 ```
 
 ## DESCRIPTION
 
-cyoda-go is a single-process, multi-tenant REST and gRPC API server. It starts in serving mode when invoked with no subcommand. All configuration is via environment variables with a `CYODA_` prefix. The binary, Docker image, and Helm chart run the same binary; only the environment configuration differs across run modes.
+cyoda-go is a single-process, multi-tenant REST and gRPC API server. It starts in serving mode when invoked with no subcommand or with `serve`. All configuration is via environment variables with a `CYODA_` prefix. The binary, Docker image, and Helm chart run the same binary; only the environment configuration differs across run modes.
 
-The process binds three TCP listeners concurrently: the REST API (default port 8080), gRPC (default port 9090), and an admin server (default port 9091). The admin server hosts health probes and the Prometheus metrics endpoint. On receiving `SIGINT` or `SIGTERM`, the server drains in-flight HTTP and admin requests within a 10-second deadline, then closes the storage backend and exits.
+The process binds three TCP listeners before it serves on any of them: gRPC (default port 9090), the REST API (default port 8080), and an admin server (default port 9091). A port that cannot be bound stops the process with exit status `1` and a `listen failed` log naming the listener, before a single request is served. The admin server hosts health probes and the Prometheus metrics endpoint. On receiving `SIGINT` or `SIGTERM`, the scheduler drains its runs first, then the HTTP, admin and gRPC servers drain in-flight requests within a 10-second deadline each, then the storage backend is closed and the process exits. See SHUTDOWN TIMING.
 
 No systemd unit files ship in the repository. Process supervision (systemd, runit, s6, etc.) is the operator's responsibility when running the binary directly outside of Docker or Kubernetes.
 
@@ -55,7 +60,7 @@ No systemd unit files ship in the repository. Process supervision (systemd, runi
 
 ### Binary
 
-The prebuilt binary is the canonical artifact. Build from source or download from the GitHub release page.
+The prebuilt binary is the canonical artifact. To install it (Homebrew, install script, `.deb`/`.rpm`, container image, `go install`), see `cyoda help install`.
 
 **Build from source:**
 
@@ -63,7 +68,7 @@ The prebuilt binary is the canonical artifact. Build from source or download fro
 go build -o bin/cyoda ./cmd/cyoda
 ```
 
-**Run (default — in-memory storage, mock auth):**
+**Run with defaults (mock auth; in-memory storage until `cyoda init` or the deb/rpm package has written a sqlite config):**
 
 ```
 ./bin/cyoda
@@ -89,7 +94,9 @@ export CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem
 cyoda
 ```
 
-The binary accepts env vars from the process environment, from `.env` files loaded by `CYODA_PROFILES`, and from the user config written by `cyoda init`. The `CYODA_PROFILES` variable selects which `.env` profile files to load from the **current working directory**. For example, `CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt` from the working directory. The user config at `~/.config/cyoda/cyoda.env` (written by `cyoda init`) is always loaded automatically as a separate step — it is not a profile file.
+First admin token: `cyoda token --tenant <tenant>` in the same environment; see `cyoda help cli token`.
+
+The binary reads env vars from the process environment and from env files: the system config, the user config written by `cyoda init`, `./.env`, and the profile files that `CYODA_PROFILES` selects from the **current working directory** (`CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt`). A variable set in the process environment wins over the same variable in any file (a `_FILE` variant from a file still beats the plain variable). The profile loader in `cyoda help config` gives the per-OS paths and the full order.
 
 ### Docker
 
@@ -99,7 +106,7 @@ The image uses `gcr.io/distroless/static` as its base. The binary is placed at `
 
 Exposed ports: `8080` (HTTP), `9090` (gRPC), `9091` (admin).
 
-The entrypoint is `/cyoda` with no default arguments. Subcommands (`init`, `health`, `migrate`) are passed as Docker CMD arguments.
+The entrypoint is `/cyoda` with no default arguments. Subcommands (`serve`, `init`, `health`, `migrate`, `token`, `help`) are passed as Docker CMD arguments.
 
 **Minimal run (in-memory + mock auth):**
 
@@ -108,11 +115,13 @@ docker run --rm \
   -p 127.0.0.1:8080:8080 \
   -p 127.0.0.1:9090:9090 \
   -p 127.0.0.1:9091:9091 \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   ghcr.io/cyoda/cyoda:latest
 ```
 
-`CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` is required when running in Docker so the health probes on port 9091 are reachable from outside the container. Without it, the admin server binds to loopback (127.0.0.1) inside the container and `/livez` and `/readyz` are unreachable.
+The three `*_BIND_ADDRESS=0.0.0.0` settings are required when running in Docker. Every listener binds loopback (`127.0.0.1`) by default, and inside a container that is the container's own loopback, which Docker's port mapping does not forward to: without them the API on 8080, gRPC on 9090 and the health probes on 9091 are unreachable from outside the container. The `-p 127.0.0.1:…` mappings then keep the ports on the host's loopback, which matters most in mock auth.
 
 **SQLite with persistent volume:**
 
@@ -123,6 +132,8 @@ docker run --rm \
   -p 127.0.0.1:9091:9091 \
   -e CYODA_STORAGE_BACKEND=sqlite \
   -e CYODA_SQLITE_PATH=/var/lib/cyoda/cyoda.db \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   -v cyoda-data:/var/lib/cyoda \
   ghcr.io/cyoda/cyoda:latest
@@ -136,14 +147,21 @@ docker run --rm \
   -p 127.0.0.1:9090:9090 \
   -p 127.0.0.1:9091:9091 \
   -e CYODA_STORAGE_BACKEND=postgres \
-  -e CYODA_POSTGRES_URL=postgres://cyoda:secret@db:5432/cyoda \
+  -e CYODA_POSTGRES_URL_FILE=/run/secrets/postgres-url \
+  -v /path/to/postgres-url:/run/secrets/postgres-url:ro \
   -e CYODA_IAM_MODE=jwt \
   -e CYODA_REQUIRE_JWT=true \
   -e CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem \
   -v /path/to/signing.pem:/run/secrets/signing.pem:ro \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
-  ghcr.io/cyoda/cyoda:latest
+  "ghcr.io/cyoda/cyoda@$D"
 ```
+
+`$D` is the digest of the image you verified: a tag can be moved, so check the signature of the release you run and run it by digest (`cyoda help install`, *Container image*). Credentials go in files, not in `-e`: a value passed with `-e` shows in `docker inspect` and in shell history. The file `postgres-url` holds the DSN (`postgres://user:pass@host:5432/db?sslmode=require`). The container runs as UID 65532, so on a Linux host each mounted file must be readable by that user, for example `sudo chown 65532:65532 signing.pem postgres-url && sudo chmod 0400 signing.pem postgres-url`.
+
+First admin token: `docker exec <container> /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
 ### Docker Compose
 
@@ -162,6 +180,8 @@ services:
     environment:
       CYODA_STORAGE_BACKEND: sqlite
       CYODA_SQLITE_PATH: /var/lib/cyoda/cyoda.db
+      CYODA_HTTP_BIND_ADDRESS: 0.0.0.0
+      CYODA_GRPC_BIND_ADDRESS: 0.0.0.0
       CYODA_ADMIN_BIND_ADDRESS: 0.0.0.0
     volumes:
       - cyoda-data:/var/lib/cyoda
@@ -191,15 +211,18 @@ docker compose -f deploy/docker/compose.yaml up
 # 2. docker-compose.yaml snippet (add to the cyoda service):
 #      volumes:
 #        - ./secrets/signing.pem:/run/secrets/signing.pem:ro
+#        (the file must be readable by UID 65532, the container user. See Docker above.)
 #      environment:
 #        CYODA_IAM_MODE: jwt
 #        CYODA_REQUIRE_JWT: "true"
 #        CYODA_JWT_SIGNING_KEY_FILE: /run/secrets/signing.pem
-#        CYODA_JWT_ISSUER: https://auth.example.com
+#        CYODA_JWT_ISSUER: https://cyoda.example.com
 #        CYODA_JWT_AUDIENCE: cyoda-api
-# 3. Launch:
-docker compose up
+# 3. Launch the image you verified, by digest (cyoda help install, Container image):
+CYODA_IMAGE="ghcr.io/cyoda/cyoda@$D" docker compose up
 ```
+
+First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
 **Use a custom image (e.g. a local dev build):**
 
@@ -214,34 +237,43 @@ The compose file reads `${CYODA_IMAGE:-ghcr.io/cyoda/cyoda:latest}` for the imag
 
 ### Kubernetes (Helm)
 
-cyoda-go ships a Helm chart at `deploy/helm/cyoda/`. The chart renders a StatefulSet (with Parallel pod management policy), ClusterIP Service, headless Service for gossip, ConfigMap for non-sensitive env vars, projected-volume Secrets for credentials, and optional Gateway API routes, Ingress, HorizontalPodAutoscaler, PodDisruptionBudget, NetworkPolicy, ServiceAccount, ServiceMonitor, and a pre-upgrade migration Job.
+cyoda-go ships a Helm chart, published to the Helm repository `https://cyoda.github.io/cyoda-go` as `cyoda/cyoda` (source: `deploy/helm/cyoda/`). The chart renders a StatefulSet (with Parallel pod management policy), ClusterIP Service, headless Service for gossip, ConfigMap for non-sensitive env vars, projected-volume Secrets for credentials, and optional Gateway API routes, Ingress, HorizontalPodAutoscaler, PodDisruptionBudget, NetworkPolicy, ServiceAccount, ServiceMonitor, and a pre-upgrade migration Job.
 
-The chart is not yet published to a Helm repository. Install directly from the local path or from a cloned repository. See `helm` for the complete Helm reference.
+See `cyoda help helm` for the complete Helm reference: values, creating the Secrets, and more examples.
 
-**Minimal install:**
+**Minimal install** (the Secrets `cyoda-pg` and `cyoda-jwt` exist; the routes attach to the Gateway `prod-gateway` — on a cluster without a Gateway, use `--set gateway.enabled=false` instead of the two `gateway.parentRefs` lines):
 
 ```
-helm install cyoda ./deploy/helm/cyoda \
+helm repo add cyoda https://cyoda.github.io/cyoda-go
+helm install cyoda cyoda/cyoda \
+  --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt
+  --set jwt.existingSecret=cyoda-jwt \
+  --set "gateway.parentRefs[0].name=prod-gateway" \
+  --set "gateway.parentRefs[0].namespace=gateway-system"
+```
+
+**First admin token** — the pods hold the signing key, so `cyoda token` in a pod signs it (see `cyoda help cli token`). Use it to create the M2M clients that applications and compute nodes use:
+
+```
+TOKEN=$(kubectl exec -n cyoda cyoda-0 -- /cyoda token --tenant acme)
 ```
 
 **Upgrade:**
 
 ```
-helm upgrade --install cyoda ./deploy/helm/cyoda \
-  --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt
+helm repo update
+helm upgrade cyoda cyoda/cyoda --namespace cyoda --reset-then-reuse-values
 ```
 
 ### Development Scripts
 
 Developer convenience scripts live under `scripts/dev/`. These are not canonical provisioning artifacts. Canonical artifacts are in `deploy/`.
 
-- `scripts/dev/run-local.sh` — runs `cyoda-go` via `go run ./cmd/cyoda` using the `local` profile (in-memory storage, mock auth). Override with `CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh`.
-- `scripts/dev/run-docker-dev.sh` — builds the binary from source for the host platform (`linux/amd64` or `linux/arm64`), builds a local Docker image tagged `ghcr.io/cyoda/cyoda:dev`, and runs it via `docker compose -f deploy/docker/compose.yaml up`. Generates a fresh JWT signing key and randomized bootstrap client secret per run. Intended for contributors testing local changes in a container before they land.
+- `scripts/dev/run-local.sh` — runs `cyoda-go` via `go run ./cmd/cyoda` using the `local` profile: `.env.local`, which you copy from `.env.local.example` (in-memory storage, mock auth). Without that file, the defaults and any `cyoda init` user config apply. Override with `CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh`.
+- `scripts/dev/run-docker-dev.sh` — builds the binary from source for the host platform (`linux/amd64` or `linux/arm64`), builds a local Docker image tagged `ghcr.io/cyoda/cyoda:dev`, and runs it via `docker compose -f deploy/docker/compose.yaml up`. The compose file's defaults apply: sqlite storage and mock auth. Intended for contributors testing local changes in a container before they land.
 
-**Run with in-memory storage and mock auth (go run):**
+**Run with the `local` profile (go run; in-memory storage and mock auth once `.env.local` exists):**
 
 ```
 ./scripts/dev/run-local.sh
@@ -261,7 +293,7 @@ CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh
 
 ## SIGNALS
 
-- `SIGINT` (Ctrl+C) — triggers graceful shutdown. HTTP and admin servers drain in-flight requests within a 10-second deadline. The storage backend is closed. The process exits with code 0.
+- `SIGINT` (Ctrl+C) — triggers graceful shutdown. The scheduler drains its runs first; then the HTTP, admin and gRPC servers drain in-flight requests within a 10-second deadline, and the storage backend is closed. The process exits with code 0. See SHUTDOWN TIMING.
 - `SIGTERM` — same behavior as `SIGINT`. Kubernetes sends `SIGTERM` when a pod is evicted or deleted.
 - `SIGPIPE` — ignored. When the binary is piped through `tee` (e.g. `./bin/cyoda | tee log`) and Ctrl+C kills `tee` first, the broken pipe would cause the binary to exit immediately before the `SIGINT` handler runs. Ignoring `SIGPIPE` lets the write fail silently while the graceful shutdown proceeds. (Source: `cmd/cyoda/main.go`, `signal.Ignore(syscall.SIGPIPE)`.)
 
@@ -271,33 +303,50 @@ Signal handling is established before the listeners start.
 
 ## HEALTH PROBES
 
-Both probes are served on `CYODA_ADMIN_PORT` (default `9091`) at `CYODA_ADMIN_BIND_ADDRESS` (default `127.0.0.1`). Both endpoints are unauthenticated — authentication is not applied to `/livez` or `/readyz` regardless of `CYODA_METRICS_BEARER` or `CYODA_METRICS_REQUIRE_AUTH`. These are the deployment probes. `GET /health` on the API listener mirrors the same readiness flag as `/readyz` — `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` after a panic recovered in engine or store work, latched until the node is replaced — but it is for humans and simple scripts, not orchestrators. A panic in one of these probes or in a metrics scrape is contained with a ticket and a `500`, and does not latch: they do no engine work, so a broken probe is no evidence about the node's state.
+Both probes are served on `CYODA_ADMIN_PORT` (default `9091`) at `CYODA_ADMIN_BIND_ADDRESS` (default `127.0.0.1`). Both endpoints are unauthenticated — authentication is not applied to `/livez` or `/readyz` regardless of `CYODA_METRICS_BEARER` or `CYODA_METRICS_REQUIRE_AUTH`. These are the deployment probes. `GET /health` on the API listener reads the panic-recovery health latch alone — `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` after a panic recovered in engine or store work, latched until the node is replaced. It stays `200` while the node drains, so it differs from `/readyz` during shutdown. It is for humans and simple scripts, not orchestrators. A panic in one of these probes or in a metrics scrape is contained with a ticket and a `500`, and does not latch: they do no engine work, so a broken probe is no evidence about the node's state.
 
 - `GET /livez` — liveness probe. Returns `200 OK` with body `ok` when the admin server is accepting connections. No business logic check is performed, so a node that has recovered a panic still passes it. Nothing restarts such a node: it stops receiving new client connections through the Service, keeps handling established ones and any work peers forward to it, and waits for an operator to replace it.
-- `GET /readyz` — readiness probe. Returns `200 OK` with body `ready`. Returns `503` permanently once the node has recovered a panic — its state is then unverified, so it stops receiving client traffic. The reason is in the server log; the response body stays generic. The admin listener only starts after storage is open and migrations have run, so during startup the probe is refused rather than answered `503`.
+- `GET /readyz` — readiness probe. Returns `200 OK` with body `ready`. Returns `503` permanently once the node has recovered a panic — its state is then unverified, so it stops receiving client traffic. Also returns `503` from the start of shutdown, while the node is draining, so load balancers stop sending it new requests; `/livez` and `GET /health` are unaffected. The response body stays generic; the server log carries the reason, the panic reason when both hold. The admin listener only starts after storage is open and migrations have run, so during startup the probe is refused rather than answered `503`.
 
-The `cyoda health` subcommand calls `/readyz` on the admin port with a 2-second HTTP client timeout and exits 0 on `200 OK`, 1 otherwise. This is the implementation behind Docker's `HEALTHCHECK: CMD /cyoda health` and is valid as a readiness check for any init system.
+A latched node, whatever latched it, claims no scheduled task; its runs in progress go on unless the panic was inside the scheduler, and it keeps heartbeating unless the heartbeat itself panicked.
 
-**Admin bind address in container environments:** set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` to make health probes reachable from outside the container. The Kubernetes Helm chart sets this value in its ConfigMap. Without it, `/livez` and `/readyz` are inaccessible from the kubelet or Docker healthcheck daemon.
+The gRPC listener answers the same readiness through the standard `grpc.health.v1.Health/Check`, without a token: `SERVING` while `/readyz` returns `200`, `NOT_SERVING` otherwise; see `cyoda help grpc`.
+
+The `cyoda health` subcommand calls `/readyz` on the admin port with a 2-second HTTP client timeout and exits 0 on `200 OK`, 1 otherwise or when `CYODA_ADMIN_PORT` is not a port number, and 2 on an argument; see `cyoda help cli health`. The bundled compose file's `healthcheck` runs it, and it is valid as a readiness check for any init system.
+
+**Bind addresses in container environments:** set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` to make health probes reachable from outside the container, and `CYODA_HTTP_BIND_ADDRESS` and `CYODA_GRPC_BIND_ADDRESS` likewise for the API and gRPC ports. The Kubernetes Helm chart sets all three in its ConfigMap. Without them, the API, gRPC and probe ports are unreachable from the Service, peer nodes, compute nodes and the kubelet. The probes cannot show the API and gRPC part: with only the admin listener open, `/readyz` passes while nothing reaches ports 8080 and 9090.
 
 ## SHUTDOWN TIMING
 
-The graceful shutdown deadline is **10 seconds**, applied separately to the HTTP server and the admin server. This value is hardcoded in `cmd/cyoda/main.go`:
+On the first signal the scheduler stops first, while compute members and their callbacks can still reach the node:
 
-```go
-shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-```
+1. It stops claiming scheduled transitions. From here on no run sends a new processor that is not declared `idempotent`.
+2. It waits up to `CYODA_SCHEDULER_SHUTDOWN_DRAIN` (default `20s`) for the runs in progress.
+3. It cancels the runs still going, except a run with a processor in flight that is not declared `idempotent`. That callout may finish or reach its own deadline, and the run may then carry on with safe steps and commit.
+4. It waits for every run to record its outcome: at most the longest remaining callout deadline plus 45 seconds.
+5. It hands back the tasks whose runs ended without an outcome, and stops its heartbeat.
 
-After both HTTP servers shut down, `app.Close()` is called to release backend resources (database connection pools, cluster membership). There is no separate configurable timeout for `app.Close()` — it runs to completion after the HTTP deadline.
+A run cut at step 3 that had sent nothing unsafe is claimed again at once, by any node, and the attempt is not counted. When a server fails instead, the same steps run after the servers have stopped.
 
-In Kubernetes, the pod `terminationGracePeriodSeconds` (default 30s) must be greater than 10s to allow the HTTP drain to complete before the kubelet sends `SIGKILL`.
+The server drains follow. Their graceful shutdown deadline is **10 seconds**, applied separately to the HTTP server, the admin server and the gRPC server; the three drain concurrently, so the server drains take about 10 seconds in total, not 30. The value is not configurable. A gRPC drain that outlives its deadline is cut off with a hard stop.
+
+Three steps follow the server drains, in order: `app.Shutdown()` gives in-flight async search jobs up to 5 seconds to finish, then releases whatever is still registered for reclaim by another node (no time limit of its own), and takes the node out of the cluster (no time limit of its own); `app.Close()` releases backend resources (database connection pools), with no timeout of its own; and the telemetry flush gets up to 10 seconds. Everything time-bounded after the scheduler therefore takes about 25 seconds at worst, plus the job release, the cluster leave and the storage close, none of which carries its own deadline. An idle node exits in well under a second.
+
+The worst case from signal to exit is `max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10, callout deadline) + 100` seconds. The extra 10 seconds is step 1's wait for the claim loop's own store call in flight. The callout deadline is `(1 + CYODA_RETRY_FIXED_NUM_RETRIES) × CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE`.
+
+- With no processor with a non-idempotent callout in flight, the callout deadline does not apply: `CYODA_SCHEDULER_SHUTDOWN_DRAIN` + 110 seconds — 130 s at the defaults.
+- With one in flight: the callout deadline is 275 s at the defaults (`4 × 60s + 5s + 30s`), so the total is 375 s.
+
+The 100 seconds are the 30-second commit budget; 15 seconds after the commit budget, the last 10 of them for outcome writes under way; 30 seconds for step 5's three store calls (giving back claims, the heartbeat still in flight, and retiring the owner); and the 25 seconds above.
+
+In Kubernetes, the pod `terminationGracePeriodSeconds` must cover the worst case, or the kubelet sends `SIGKILL` before the node has recorded its runs' outcomes; another node then takes those tasks over after `CYODA_SCHEDULER_STALE_AFTER`, as lost owners. The Helm chart sets `390`. Raise it when you raise the drain, the tries, the answer limit, the wait or the hand-over allowance (see `cyoda help helm`).
 
 ## PORT LAYOUT
 
 All ports are configurable via environment variables. The defaults:
 
-- **HTTP REST API** — port `8080`, bind address `0.0.0.0` (all interfaces). Controlled by `CYODA_HTTP_PORT`. All entity, model, workflow, search, and auth endpoints, plus `GET /health` (a health summary for humans and simple scripts — not the deployment probe; see HEALTH PROBES above). Context path prefix: `CYODA_CONTEXT_PATH` (default `/api`).
-- **gRPC** — port `9090`, bind address `0.0.0.0` (all interfaces). Controlled by `CYODA_GRPC_PORT`. Externalized-processor streaming (processor and criteria dispatch). The bind expression is `fmt.Sprintf(":%d", cfg.GRPC.Port)` — all interfaces, not loopback.
+- **HTTP REST API** — port `8080`, bind address `127.0.0.1` (loopback) by default. Controlled by `CYODA_HTTP_PORT` and `CYODA_HTTP_BIND_ADDRESS`. All entity, model, workflow, search, and auth endpoints, plus `GET /health` (a health summary for humans and simple scripts — not the deployment probe; see HEALTH PROBES above). Context path prefix: `CYODA_CONTEXT_PATH` (default `/api`).
+- **gRPC** — port `9090`, bind address `127.0.0.1` (loopback) by default. Controlled by `CYODA_GRPC_PORT` and `CYODA_GRPC_BIND_ADDRESS`. Externalized-processor streaming (processor and criteria dispatch).
 - **Admin** — port `9091`, bind address `127.0.0.1` (loopback) by default. Controlled by `CYODA_ADMIN_PORT` and `CYODA_ADMIN_BIND_ADDRESS`. Hosts `/livez`, `/readyz`, and `/metrics` — the deployment probes. Set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` in Docker/Kubernetes to make probes reachable.
 - **Gossip (cluster mode only)** — port `7946` TCP+UDP. Controlled by `CYODA_GOSSIP_ADDR` (default `:7946`). Used by the memberlist gossip protocol for cluster membership and SWIM health checking. Active only when `CYODA_CLUSTER_ENABLED=true`.
 
@@ -311,10 +360,12 @@ export CYODA_POSTGRES_URL_FILE=/run/secrets/postgres-url
 export CYODA_IAM_MODE=jwt
 export CYODA_REQUIRE_JWT=true
 export CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem
-export CYODA_JWT_ISSUER=https://auth.example.com
+export CYODA_JWT_ISSUER=https://cyoda.example.com
 export CYODA_JWT_AUDIENCE=cyoda-api
 ./bin/cyoda
 ```
+
+First admin token: `./bin/cyoda token --tenant <tenant>` in the same environment; see `cyoda help cli token`.
 
 **Docker — in-memory + OTel tracing:**
 
@@ -323,6 +374,8 @@ docker run --rm \
   -p 127.0.0.1:8080:8080 \
   -p 127.0.0.1:9090:9090 \
   -p 127.0.0.1:9091:9091 \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_OTEL_ENABLED=true \
   -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 \
@@ -335,6 +388,8 @@ docker run --rm \
 ```
 docker run --rm \
   -e CYODA_SUPPRESS_BANNER=true \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   ghcr.io/cyoda/cyoda:latest
 ```
@@ -349,8 +404,10 @@ curl -s http://localhost:9091/readyz
 
 ```
 ./bin/cyoda health
-echo $?   # 0 = ready, 1 = not ready or error
+echo $?
 ```
+
+`0` means ready; `1` means not ready, or an error.
 
 **Docker Compose — production JWT (file-mount):**
 
@@ -359,16 +416,20 @@ echo $?   # 0 = ready, 1 = not ready or error
 # Do not export CYODA_JWT_SIGNING_KEY inline — multi-line PEM does not
 # survive shell → docker-compose env interpolation reliably.
 # See the Docker Compose section above for the full snippet.
-docker compose up
+CYODA_IMAGE="ghcr.io/cyoda/cyoda@$D" docker compose up
 ```
+
+First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
 ## SEE ALSO
 
 - cli
 - cli.serve
+- cli.token
 - cli.init
 - cli.health
 - quickstart
+- install
 - helm
 - config
 - config.database

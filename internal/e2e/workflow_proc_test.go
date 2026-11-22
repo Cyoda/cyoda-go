@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // --- Helpers ---
@@ -217,7 +217,7 @@ func TestWorkflowProc_ProcessorModifiesData(t *testing.T) {
 			"version": "1.1", "name": "modify-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "compute-total", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "compute-total", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {}
@@ -272,9 +272,9 @@ func TestWorkflowProc_MultipleProcessorsSameTransition(t *testing.T) {
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [
-						{"type": "calculator", "name": "step-1", "executionMode": "SYNC",
+						{"type": "externalized", "name": "step-1", "executionMode": "SYNC",
 							"config": {"attachEntity": true, "calculationNodesTags": ""}},
-						{"type": "calculator", "name": "step-2", "executionMode": "SYNC",
+						{"type": "externalized", "name": "step-2", "executionMode": "SYNC",
 							"config": {"attachEntity": true, "calculationNodesTags": ""}}
 					]
 				}]},
@@ -312,7 +312,7 @@ func TestWorkflowProc_FullAuditTrail(t *testing.T) {
 			"version": "1.1", "name": "audit-trail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "audit-proc", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "audit-proc", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {"transitions": [{"name": "finish", "next": "DONE", "manual": false}]},
@@ -417,7 +417,7 @@ func TestWorkflowProc_UpdateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "cbd-enrich",
+					"processors": [{"type": "externalized", "name": "cbd-enrich",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -464,7 +464,7 @@ func TestWorkflowProc_UpdateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 
 // TestWorkflowProc_UpdateWithCBD_StaleIfMatchAbortsBeforeDispatch is the e2e
 // counterpart to engine_ifmatch_test.go's
-// TestManualTransitionWithIfMatch_CBDCascadeStaleAbortsBeforeDispatch.
+// TestIfMatch_StaleAbortsBeforeAnything.
 //
 // Spec §4.1 "strictly-earlier-enforcement": when an UpdateEntity carries an
 // If-Match precondition and the cascade contains a COMMIT_BEFORE_DISPATCH
@@ -501,7 +501,7 @@ func TestWorkflowProc_UpdateWithCBD_StaleIfMatchAbortsBeforeDispatch(t *testing.
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "cbd-enrich-counted",
+					"processors": [{"type": "externalized", "name": "cbd-enrich-counted",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -641,7 +641,7 @@ func TestWorkflowProc_CreateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "auto-approve", "next": "APPROVED", "manual": false,
-					"processors": [{"type": "calculator", "name": "cbd-enrich-create",
+					"processors": [{"type": "externalized", "name": "cbd-enrich-create",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -727,9 +727,9 @@ func TestWorkflowProc_UpdateWithCBD_TrueBranch_SecondaryEntityWritten(t *testing
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "cbd-true-proc",
+					"processors": [{"type": "externalized", "name": "cbd-true-proc",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
-						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]
+						"startNewTxOnDispatch": true, "config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"APPROVED": {}
 			}
@@ -842,7 +842,7 @@ func TestWorkflowProc_SearchSeesPreCalloutStateDuringDispatch(t *testing.T) {
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "cbd-blocker",
+					"processors": [{"type": "externalized", "name": "cbd-blocker",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -939,7 +939,7 @@ func TestWorkflowProc_UpdateWithoutCBD_RegressionBound(t *testing.T) {
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "sync-enrich",
+					"processors": [{"type": "externalized", "name": "sync-enrich",
 						"executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -1073,7 +1073,7 @@ func TestWorkflowProc_LoopbackWithCBD(t *testing.T) {
 				"NONE":        {"transitions": [{"name": "init", "next": "PENDING_BIG", "manual": false}]},
 				"PENDING_BIG": {"transitions": [{"name": "auto-upgrade", "next": "UPGRADED", "manual": false,
 					"criterion": {"type": "function", "function": {"name": "amount-over-100"}},
-					"processors": [{"type": "calculator", "name": "cbd-loopback-enrich",
+					"processors": [{"type": "externalized", "name": "cbd-loopback-enrich",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},

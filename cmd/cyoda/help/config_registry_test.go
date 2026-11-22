@@ -3,14 +3,27 @@ package help
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
-	_ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
-	_ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
+	_ "github.com/cyoda/cyoda-go/plugins/postgres"
+	_ "github.com/cyoda/cyoda-go/plugins/sqlite"
 )
+
+// TestRegistry_NoBootstrapClientVariables verifies that no variable with the
+// prefix below is registered: the server reads none, no credential is defined
+// by configuration except the signing key, and `cyoda token` signs the first
+// admin token. A registry entry would document a variable nothing reads.
+func TestRegistry_NoBootstrapClientVariables(t *testing.T) {
+	for _, e := range rootConfigVars {
+		if strings.HasPrefix(e.Name, "CYODA_BOOTSTRAP_") {
+			t.Errorf("%s is still registered", e.Name)
+		}
+	}
+}
 
 func TestRootConfigVars_WellFormed(t *testing.T) {
 	vars := RootConfigVars()
@@ -21,7 +34,7 @@ func TestRootConfigVars_WellFormed(t *testing.T) {
 	validTopic := map[string]bool{
 		"server": true, "admin": true, "search": true,
 		"cluster": true, "auth": true, "cors": true, "grpc": true,
-		"scheduler": true,
+		"scheduler": true, "clock": true,
 	}
 	for _, v := range vars {
 		if v.Name == "" || v.Description == "" {
@@ -162,6 +175,28 @@ func TestWriteConfigAllText_ShowsType(t *testing.T) {
 		}
 	}
 	t.Error("CYODA_HTTP_PORT row not found")
+}
+
+// TestRetiredSettings_Absent pins that a setting the server no longer reads
+// is gone from the registry and from the config help, so `cyoda help config`
+// does not advertise a knob that does nothing. (A retired name left in Go
+// source is caught the other way round, by TestConfig_EnvVarCoverage.)
+func TestRetiredSettings_Absent(t *testing.T) {
+	retired := []string{"CYODA_TX_TOKEN_TTL", "CYODA_SCHEMA_EXTEND_MAX_RETRIES"}
+
+	for _, v := range RootConfigVars() {
+		for _, name := range retired {
+			if v.Name == name {
+				t.Errorf("%s is retired but still in rootConfigVars", name)
+			}
+		}
+	}
+	documented := scanEnvVarsInConfigDocs(t, filepath.Join(repoRoot(t), "cmd/cyoda/help/content"))
+	for _, name := range retired {
+		if documented[name] {
+			t.Errorf("%s is retired but still documented under content/config", name)
+		}
+	}
 }
 
 func TestWriteConfigAllText_ListsVars(t *testing.T) {

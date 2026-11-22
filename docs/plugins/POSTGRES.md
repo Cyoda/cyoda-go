@@ -41,8 +41,10 @@ original `*pgconn.PgError` stays in the error chain for observability.
 
 Every transaction sets `app.current_tenant` via
 `SELECT set_config('app.current_tenant', $1, true)` immediately after
-`BEGIN`, which RLS policies on every table consult to enforce tenant
-isolation at the row level.
+`BEGIN`. The tables' row-level security policies read it, but row-level
+security is not supported and the policies take no effect (see
+"Row-level security" below); tenant isolation is each statement's
+`tenant_id` predicate.
 
 ## Transaction manager
 
@@ -63,16 +65,46 @@ Full transaction-lifecycle implementation
 - **Transaction registry:** the `txRegistry` is a mutex-guarded
   `txID → pgx.Tx` map — the single source of truth for active
   transactions on a node.
-- **Submit-time bookkeeping:** each committed transaction captures
-  `SELECT CURRENT_TIMESTAMP` before `COMMIT` and records it with a
-  1-hour TTL, surfaced via `GetSubmitTime`.
+- **Commit-instant stamping:** immediately before `COMMIT` — after
+  read-set validation — the TM takes one instant from `cyoda_stamp` (see
+  "Consistency time and commit stamping") and applies it to every row the
+  transaction wrote, by narrow-column
+  `UPDATE`s over `entity_versions`, `entities` and the audit events
+  labelled with the transaction. The provisional value each insert writes,
+  `CURRENT_TIMESTAMP`, is fixed at transaction *start*; the commit-phase
+  stamp is what dates a write.
+  See "Bi-temporal versioning" below for which values move.
+- **Submit-time bookkeeping:** the same instant is the transaction's
+  submit time. It is recorded both in an in-process map (the fast path)
+  and durably in the `submit_times` table, inside the committing
+  transaction, so `GetSubmitTime` answers on any node and after a restart
+  rather than only on the node that committed. Both copies carry a 1-hour
+  TTL; the table's pruning runs after commit, on the pool, rate-limited —
+  never inside the committing transaction, where an unscoped housekeeping
+  `DELETE` could make two unrelated tenants' commits abort each other.
 
-- **Eager deletes:** an in-transaction `Delete` writes its tombstone
-  version row immediately on the transaction's connection. A re-create of
-  the same entity later in that transaction therefore leaves `DELETED` then
-  the re-create in the version history, where memory and sqlite (which
-  buffer and cancel the delete) record only the re-create. Documented
-  difference; see `docs/CONSISTENCY.md` §6.
+- **One version per entity per transaction:** an in-transaction `Save`,
+  `CompareAndSave` or `Delete` writes to the database at once, on the
+  transaction's connection. When the transaction already wrote the entity's
+  current pending version (the `entity_versions` row at `entities.version`
+  carrying this transaction's id), the write updates that row and the
+  `entities` row in place instead of adding a version; the change type comes
+  from whether a version before this transaction exists. A delete followed
+  by a re-create in one transaction is one version, as on memory and sqlite
+  (`docs/CONSISTENCY.md` §6). The transaction holds the entity's row lock
+  from that write until it ends, or until a rollback to a savepoint undoes the
+  write.
+- **Commit-time key check:** a save inside a transaction does no
+  unique-key work; the transaction records each entity it wrote with the
+  bytes of its last write. At commit, after read-set validation and before
+  the commit stamp, it first releases the claims of every entity it wrote.
+  It then reads in one statement the unique-key definitions of the stored
+  model of every entity whose final write is a save (no lock, no state
+  check), in the transaction. The commit borrows no second connection. It
+  then inserts the claims of its final entities, computed with those
+  definitions, in a fixed order. A duplicate fails on `unique_claims_uq`
+  (`spi.ErrUniqueViolation`). A write outside a transaction runs the same
+  steps in its own statements.
 
 The real serialization guarantee is the combination of PostgreSQL's
 `REPEATABLE READ` snapshot + tuple locks + the TM's first-committer
@@ -99,6 +131,224 @@ Consequences:
 - The `txRegistry` (`sync.RWMutex`-protected `map[string]pgx.Tx`) is
   the single source of truth for active transactions on a node.
 
+### Consistency time and commit stamping
+
+Migration `000016_consistency_time` adds a sequence, a tenant-key table and
+two functions. The contract they implement is `docs/CONSISTENCY.md` §1a.
+
+- `cyoda_stamp_floor` — a `bigint` sequence holding the highest stamp or
+  consistency time issued, in microseconds since the epoch. The migration
+  sets it to the highest stamp already stored in `entity_versions` and
+  `submit_times`. `search_jobs.point_in_time` is not a source: it holds a
+  caller-chosen instant, which must not move the floor.
+- `consistency_tenant_keys` — one row per tenant: `tenant_id` and
+  `tenant_key`, an `int4` drawn from `consistency_tenant_key_seq` (starts at
+  1; a `CHECK` keeps it above 0). Keys are unique, so two tenants never share
+  commit markers. Rows are never deleted. Each store factory, with its
+  transaction manager, keeps one cache of tenant keys; it looks a tenant's key
+  up the first time it needs it, in a short `READ COMMITTED` transaction of
+  its own, before any commit phase (at
+  `Begin`, before a non-transactional write opens its own transaction, and at
+  the start of a consistency-time call); a commit's own transaction never
+  reads the table. A failed lookup fails the operation. The table carries the
+  same tenant row-level security policy as the other tenant-scoped tables.
+- `cyoda_stamp(tenant_key, at_us)` — called once per commit, at the top level of the
+  commit transaction, by `stampCommitInstant` and `stampOwnCommitInstant` in
+  place of `clock_timestamp()`. It returns `max(clock, floor + 1)` and moves
+  the floor there, so no two commits share a stamp and stamps never go back.
+  It also takes a transaction-level advisory lock `(tenant_key, xact_key)` —
+  the commit's in-flight marker — held until the transaction ends, after its
+  rows are visible.
+- `cyoda_consistency_time(tenant_key, wait_budget_ms, at_us)` — raises the floor to
+  `C = max(clock, floor)` so every later stamp is above `C`, then takes and
+  releases a shared lock on each of the tenant's in-flight markers, waiting
+  for those commits to end. The call runs on its own pool connection in
+  autocommit, never on a transaction's connection. The wait budget is 10 s,
+  or `CYODA_POSTGRES_STATEMENT_TIMEOUT` when that is above 0 and lower; a
+  budget that runs out (`55P03` or `57014`) is `ErrConsistencyTimeUnavailable`.
+
+`clock` is `clock_timestamp()` when `at_us` is NULL, which is every call in
+production. A test clock (migration `000017`) passes its own time in
+microseconds as `at_us`; the floor, locks and timeouts are unchanged.
+
+Advisory keys use the two-int form (`objsubid = 2`), which nothing else in the
+plugin uses (the scheduler and the migrator use the one-bigint form):
+`(0, 0)` is the floor mutex, held for microseconds; `(tenant_key, n)` with
+`tenant_key` from `consistency_tenant_keys` (never 0) and `n` in `1..2^31-1`
+is a commit marker.
+
+**Load.** Each consistency-time computation reads `pg_locks`, a snapshot of
+the instance-wide lock table. The engine bounds this to two concurrent calls
+per tenant per node. Operators who expose the API to untrusted callers at a
+high request rate should rate-limit at ingress.
+
+**Commit-phase limits.** Inside `cyoda_stamp`, `lock_timeout` is 2 s, so a
+commit that cannot get the floor mutex fails with `55P03`, rolls back, and is
+a retryable `503 STORAGE_UNAVAILABLE`. The function also lowers
+`idle_in_transaction_session_timeout` to at most 5 s for the rest of the
+transaction: a pause of more than 5 s between the stamp and `COMMIT` aborts
+the commit. After the stamp, the commit touches only rows it wrote itself, so
+it never waits on another transaction's lock, and a fenced read made while the
+caller holds a transaction cannot deadlock with the commits it waits for.
+
+**Roles.** The plugin connects as the owner of these objects. A non-owner role
+needs `SELECT, UPDATE` on `cyoda_stamp_floor`, `SELECT, INSERT` on
+`consistency_tenant_keys`, `USAGE` on `consistency_tenant_key_seq`, `USAGE` on
+the schema, and `EXECUTE` on both functions (granted to `PUBLIC` by default).
+Follow standard PostgreSQL practice and give no untrusted role `CREATE` on the
+schemas in cyoda's search path: PostgreSQL 15 and later do this by default, and
+on PostgreSQL 14 run `REVOKE CREATE ON SCHEMA public FROM PUBLIC`.
+
+**Replicas.** With asynchronous replicas, a failover to a host whose clock is
+behind can stamp below a consistency time already returned — the same
+exposure as losing commits on an asynchronous failover. Each
+`cyoda_consistency_time` call commits its floor update durably.
+
+## Model store and the model pool
+
+Models live in `models` (one row per model: state, change level, unique keys
+and the base schema in `doc`) and `model_schema_extensions`, an append-only
+log of schema deltas and savepoints per model. The model store never joins
+the caller's transaction, and runs on a pool of its own, sized by
+`CYODA_POSTGRES_MODEL_CONNS` (default `8`, floor `2`), so entity transactions
+cannot starve model reads, extensions or model administration. The pool takes
+the main pool's statement and idle-in-transaction ceilings and sets
+`lock_timeout` to `0`. It reports through the `cyoda.storage.pool.connections`
+gauge under `pool="model"`.
+
+**Reads.** `Get` reads the doc, the latest savepoint and the deltas after it
+in one statement, so one snapshot: a read racing `Unlock` sees it whole or
+not at all. It returns the latest committed model whatever transaction the
+caller holds. Inside a transaction its connection acquire is bounded by
+`CYODA_POSTGRES_ACQUIRE_TIMEOUT`, as every second connection is.
+
+**Extensions.** `ExtendSchema` takes an extension slot (at most half the
+pool's connections, at least one; the wait lasts until the caller's context
+ends), then a connection under the acquire timeout, and runs one short
+`READ COMMITTED` transaction: set the tenant, `SELECT … FOR NO KEY UPDATE`
+the model's `models` row, fold the log in a statement of its own, compare the delta's
+result with the current schema byte for byte and write nothing when they are
+equal, insert the delta, and insert a savepoint of the folded schema once
+`CYODA_SCHEMA_SAVEPOINT_INTERVAL` of this model's deltas follow its latest
+savepoint. The row lock writes no row version; it serialises the extenders of
+one model and conflicts with the `UPDATE` of `Lock`, `Unlock`,
+`SetChangeLevel` and `Save` and with `Delete`. It is held only for this
+transaction, never for an entity transaction. Under it every statement sees
+every earlier extension's commit, so `seq` order is commit order and a
+savepoint holds every delta with a lower `seq`. The transaction takes one row
+lock at `READ COMMITTED`, so it cannot fail with `40001` or `40P01`:
+contention is a wait. A nil `ApplyFunc` is refused.
+
+**Administration.** `Lock`, `Save`, `Delete` and `SetChangeLevel` are one
+statement each; `Lock` writes no savepoint. `Unlock` updates the state first
+(taking the row lock every extension takes), folds the log into `doc` and
+clears the log, in one transaction. `Save` and `Delete` each clear the
+model's extension log in the same statement, so a saved model's schema is
+the saved one alone and a deleted model leaves no log behind. The store checks no model state and counts no entities: the API
+keeps the model rules (`cyoda help models`, LIFECYCLE).
+
+## Scheduled tasks and the scheduler pool
+
+Scheduled tasks live in `scheduled_tasks`, keyed by `(tenant_id, id)`. Each
+task has a life (its arm token, drawn on every arm), a status (`WAITING`,
+`RUNNING`, `FAILED`) and, while `RUNNING`, a claim (claim token and owner
+incarnation). Two more tables serve the scheduler: `scheduled_task_marks`,
+keyed by `(tenant_id, task_id, arm_token)`, records that an owner was about
+to hand a life off to a processor that is not safe to repeat; `scheduler_owners`
+holds one liveness record per pnode incarnation, stamped by the database
+clock. CHECK constraints enforce the row's own consistency:
+`scheduled_tasks_status_chk` limits `status` to the three values,
+`scheduled_tasks_claim_chk` requires a claim exactly while `RUNNING`,
+`scheduled_tasks_claim_pair_chk` requires `claim_token` and `claim_owner` to
+be both set or both `NULL`, `scheduled_tasks_failed_chk` requires a failure
+reason exactly while `FAILED`, and `scheduled_tasks_last_error_len_chk` caps
+`last_error` at 1024 bytes — the store rejects a longer one before any
+statement runs. A partial unique index, `scheduled_tasks_one_running_per_entity_uq`
+on `(tenant_id, entity_id) WHERE status = 'RUNNING'`, is the one place the
+database itself enforces "at most one running task per entity".
+
+**Writes in the entity transaction.** Arming, cancelling, removing a fired
+task, the segment stamp and `Fail` write task rows straight into the open
+entity transaction (`REPEATABLE READ`). A task row that another transaction
+changed after the snapshot raises `40001`, mapped to `spi.ErrConflict`;
+`40P01` maps the same way. A row the transaction wrote stays locked until it
+ends.
+
+**The scheduler pool.** Claims, marks, attempt records, give-backs, owner
+records and sweeps never join the caller's transaction. They run on a pool of
+their own, sized by `CYODA_POSTGRES_SCHEDULER_CONNS` connections (default
+`10`, floor `2`), so entity transactions cannot starve them. The async-search
+heartbeat and claim run there too, as does the cross-tenant
+`ScheduledTaskStore.SchedulerActivity` read a platform clock move polls. The scheduler heartbeat has one more
+connection of its own, used only for `ScheduledTaskStore.Heartbeat`. Every
+scheduler connection uses `READ COMMITTED`, `statement_timeout` 30s,
+`idle_in_transaction_session_timeout` 10s and `lock_timeout` 2s — fixed
+ceilings that overwrite whatever the DSN says — and every acquire is bounded
+at 5s. `GET /scheduled-tasks` (`Query`) and every `Get` outside an open
+transaction of the task's own tenant read on the main pool. Both scheduler
+pools report through the existing `cyoda.storage.pool.connections` gauge,
+under `pool="scheduler"` and `pool="heartbeat"` (`pool="main"` is the main
+pool).
+
+**`ClaimDue`** is one transaction on the scheduler pool: rank the due tasks
+(one per entity, each tenant within its limit, tenants taking turns), lock
+them with `FOR UPDATE SKIP LOCKED`, claim them with a conditional `UPDATE`,
+and read their marks while the locks are held. The ranking never reads a
+tenant's backlog. The claim first lists its tenants once: a loose index scan
+of `scheduled_tasks_waiting_due_idx` reads each tenant's earliest `WAITING`
+task (one probe per tenant with a `WAITING` task) and keeps the tenants whose
+earliest task is due, plus, for a lost-owner claim, the tenants with a
+`RUNNING` task. Per listed tenant, the ranking reads in
+`(next_attempt_time, id)` order only the tasks that are their entity's
+earliest claimable task, up to the most turns the claim can give that tenant,
+plus as many lost-owner `RUNNING` tasks. Each walked row is checked with
+per-row index probes by `(tenant, entity)` — `scheduled_tasks_waiting_entity_idx`
+and `scheduled_tasks_one_running_per_entity_uq` — written as `LIMIT 1` scalar
+subqueries so no plan turns them into a scan of the tenant's rows, and against
+the claim's exclusions through a hashed `= ANY`. The cut comes after the
+one-per-entity choice, so the result is the one a ranking of every due task
+would give. A ranking round costs, per listed tenant, the rows it passes
+before that tenant's last turn: its candidates, the busy or excluded rows,
+the tasks of entities with a `RUNNING` task, and the later due tasks of the
+entities already met — at most *n* times the tasks one entity can hold, which
+is one per scheduled transition of its current state, never growing with the
+number of the tenant's due entities. A claim ranks again after
+each round that finds busy rows or held entities, about one round per
+per-tenant limit of them. The claim transaction turns JIT off and forces
+custom plans (`set_config(..., true)`). A per-entity, transaction-scoped
+PostgreSQL advisory lock serialises claimers: a claimer takes an entity's lock
+for the rest of its transaction, and a rival claimer of the same entity can
+only take that lock once this one has committed or rolled back — PostgreSQL
+makes a commit visible before it releases the lock. So a claim's own `UPDATE`
+sees, for every entity it holds, either no sibling `RUNNING` or a sibling whose
+commit is already visible; its `NOT EXISTS` check passes over that entity
+either way, and a claim never meets a sibling claim at
+`scheduled_tasks_one_running_per_entity_uq`. A row an open entity transaction
+holds, or that another claimer's advisory lock already covers, is passed over
+rather than waited for, and its turn goes to the next claimable task, a
+sibling on the same entity included. Any claim error — including a unique
+violation at that index, which would mean the invariant above was somehow
+broken — is returned and the claim rolls back: a lock wait is
+`spi.ErrTaskBusy`, a deadlock `spi.ErrConflict`, nothing is swallowed.
+
+**`MarkUnsafe`** share-locks the task row with `NOWAIT` and inserts the mark.
+A row held by another transaction answers `spi.ErrTaskBusy` at once.
+
+**Errors.** SQLSTATE classes `22`, `23` and `42` carry `spi.ErrStoreRejected`
+in every store of the plugin — the database will refuse the same statement
+again. A lock wait past `lock_timeout` (`55P03`) answers `spi.ErrTaskBusy`
+for `MarkUnsafe`, `RecordAttempt`, and the async-search `Heartbeat` (it
+stamps `search_jobs` and runs on this same scheduler pool); a busy heartbeat
+tick is treated as transient and missed, not a lost claim, and is retried on
+the next tick. `ScheduledTaskStore.Heartbeat` itself is a plain upsert into
+`scheduler_owners` with no row contention to answer busy for.
+
+**Tenant isolation.** Every tenant-facing statement filters on `tenant_id`.
+`ClaimDue`, `GiveBackIdle`, the owner methods and the sweeps are cross-tenant
+and no API reaches them, so none of the three tables is under row-level
+security. The comment in migration `000004` claims every write carried a
+tenant predicate; that was not so, and `000014` records the correction.
+
 ## Data model and schema
 
 The postgres plugin uses a normalized relational schema with JSONB
@@ -116,33 +366,97 @@ CREATE TABLE entity_versions (
     model_version    TEXT        NOT NULL,
     version          BIGINT      NOT NULL,
     valid_time       TIMESTAMPTZ NOT NULL,
-    transaction_time TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    transaction_time TIMESTAMPTZ NOT NULL,                     -- no default since 000017
     wall_clock_time  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    transaction_id   TEXT        NOT NULL DEFAULT '',            -- 000012
+    creation_date    TIMESTAMPTZ NOT NULL,                     -- 000012; no default since 000017
     doc              JSONB       NOT NULL,
-    PRIMARY KEY (tenant_id, entity_id, version)
+    PRIMARY KEY (tenant_id, entity_id, version),
+    FOREIGN KEY (tenant_id, entity_id)
+        REFERENCES entities (tenant_id, entity_id) ON DELETE RESTRICT  -- 000012
 );
 ```
 
-- `valid_time` — application-supplied timestamp (entity's logical
-  time).
-- `transaction_time` — database `CURRENT_TIMESTAMP` (when PG recorded
-  the row).
-- `wall_clock_time` — `clock_timestamp()` (actual wall-clock,
-  independent of transaction).
+- `valid_time` — **the commit instant of the transaction that wrote this
+  revision.** Nothing supplies it: no API accepts a caller-chosen
+  effective time, so "application-supplied" was never true of this
+  column. It is defined as the instant a revision became effective, and
+  it equals `transaction_time` for every write the system can make today;
+  the two are kept separate because a backdated write — which would carry
+  an earlier `valid_time` against a current `transaction_time` — is the
+  case the bi-temporal model reserves them for, and that is **not
+  implemented**.
+- `transaction_time` — the commit instant of the same transaction: when
+  the revision became visible. The insert writes a provisional value only,
+  holding the column non-null until the commit-phase stamp overwrites it:
+  `CURRENT_TIMESTAMP`, fixed at transaction start and exactly the value the
+  stamp exists to replace, or a test clock's reading when there is one. The
+  same provisional value fills `entity_versions.valid_time` and
+  `entities.last_modified`, and `entities.creation_date` on an entity's first
+  revision; every revision's `creation_date` copies `entities.creation_date`.
+  This is the value read back as `lastUpdateTime`.
+- `wall_clock_time` — `clock_timestamp()` at the inserting statement: the
+  physical moment the row was written, independent of the transaction and
+  never restamped, kept for debugging and analysis. Nothing reads it. Under
+  a test clock it keeps physical time, so it differs from the business
+  times.
+- `transaction_id` — the transaction that committed the row, stamped by
+  the store and never taken from the caller; the empty string for a
+  non-transactional write. The commit phase finds its own rows by it
+  (`idx_ev_transaction`), and so does `GetVersionByTransaction`: the
+  column and the document's `_meta.transaction_id` always carry the same
+  id, since a write outside a transaction stores the empty id and ignores
+  the caller's. The read is committed-only and matches at most one row.
+- `creation_date` — the commit instant of the transaction that *created*
+  the entity, carried onto every later revision. A later transaction
+  never restamps it.
 
-As-at queries filter by `valid_time`:
+`entities` carries the same pair of columns for the current row
+(`creation_date`, `last_modified`, both migration `000012`).
+
+**Temporal values live in columns, not in the document.** The documents no
+longer carry `creation_date` / `last_modified_date` copies, and every read
+path projects the columns alongside `doc`. (`_meta.transaction_id` stays in
+the document, beside the column that carries the same id.)
+This is
+what makes the commit-phase stamp a narrow-column `UPDATE` rather than a
+rewrite of every JSONB document the transaction touched, which would
+roughly double a transaction's write volume and end `entity_versions`'
+append-only property. Migration `000012` backfills the columns from the
+documents before writes stop populating them.
+
+A single-entity as-at read probes the version chain:
 
 ```sql
-SELECT doc FROM entity_versions
-WHERE tenant_id = $1 AND entity_id = $2 AND valid_time <= $3
-ORDER BY valid_time DESC, transaction_time DESC
+SELECT doc, creation_date, transaction_time FROM entity_versions
+WHERE tenant_id = $1 AND entity_id = $2
+  AND valid_time <= $3
+ORDER BY valid_time DESC, transaction_time DESC, version DESC
 LIMIT 1;
 ```
 
-**Row-level security (RLS):** every table has RLS enabled with a
-policy that compares `tenant_id` against the session variable
-`app.current_tenant`, set via `set_config(..., true)` at transaction
-start:
+`version DESC` is the final key, so the order is total. Committed versions
+of one entity do not tie on the two time keys: a transaction writes at most
+one version of each entity, and commit stamps strictly increase.
+
+**A point-in-time read over a model follows entities, not revisions.** The
+base query for `Search`, `Iterate` / grouped statistics and
+`GetPage(asAt)` enumerates the model's rows in `entities` and probes each
+one's revision at the instant through a `CROSS JOIN LATERAL` into
+`idx_ev_bitemporal`, with the same ordering and tiebreak as above. It
+therefore costs one index probe per *entity*, not one per revision, so the
+read cost follows the size of the model rather than the length of its
+history. The result set rests on three properties:
+`entities` keeps a row for every entity that has ever existed (delete is
+a soft delete; nothing removes the row, and the foreign key above makes
+that an enforced invariant rather than a habit), an entity's model
+reference never changes (see below), and an entity created after the
+instant yields no lateral row and drops out.
+
+**Row-level security (RLS) is not supported.** The migrations enable RLS
+on the tenant tables with a policy that compares `tenant_id` against the
+session variable `app.current_tenant`, set via `set_config(..., true)` at
+transaction start:
 
 ```sql
 ALTER TABLE entities ENABLE ROW LEVEL SECURITY;
@@ -150,9 +464,18 @@ CREATE POLICY tenant_isolation_entities ON entities
     USING (tenant_id = current_setting('app.current_tenant', true));
 ```
 
-This is defense-in-depth: even a tenant-scoping bug in application
-code cannot leak data, because PostgreSQL enforces the isolation at
-the row level.
+**These policies take no effect.** cyoda connects as the table owner, and
+RLS is `ENABLE`d but not `FORCE`d — an owner bypasses every policy. Tenant
+isolation is the explicit `WHERE tenant_id = $1` predicate every statement
+carries, and nothing else: a tenant-scoping bug in application code
+**would** leak data. The scheduler's three tables have no policy at all;
+see "Scheduled tasks and the scheduler pool".
+
+Running cyoda as a role that does not own the tables, or forcing RLS, is not
+supported either: `app.current_tenant` is set with `set_config(..., true)`,
+which is transaction-local, so no statement outside a transaction carries
+it, and under an enforced policy those reads would match no row and answer
+a confident, wrong "not found".
 
 **Schema (all tables):**
 
@@ -166,8 +489,23 @@ the row level.
 | `sm_audit_events` | State-machine audit trail | `(tenant_id, entity_id, event_id)` |
 | `search_jobs` | Async search job metadata | `id` (with `tenant_id` indexed) |
 | `search_job_results` | Entity ID results per job | `(job_id, seq)`, FK to `search_jobs` |
+| `submit_times` | Durable transaction submit instants (1-hour TTL) | `(tenant_id, tx_id)` |
+| `consistency_tenant_keys` | Per-tenant commit-marker key (consistency time) | `tenant_id`; `tenant_key` unique |
+| `scheduled_tasks` | Scheduled tasks: life, status, claim, attempt record | `(tenant_id, id)` |
+| `scheduled_task_marks` | Unsafe-dispatch marks, one per life | `(tenant_id, task_id, arm_token)` |
+| `scheduler_owners` | Scheduler liveness, one row per pnode incarnation | `owner` |
 
 Workflows live in `kv_store` under a dedicated namespace.
+
+**An entity's model reference is immutable.** `model_name` /
+`model_version` are fixed when the entity row is created; the `entities`
+upsert refuses to change them on an existing row and `Save` returns
+`spi.ErrEntityModelMismatch` (surfaced as `400 ENTITY_MODEL_MISMATCH`)
+instead of rewriting them. All three in-tree backends enforce this, and
+the SPI conformance suite requires it of every backend. Rewriting the
+reference would strand the entity's earlier-model history: a point-in-time
+read issued under the original model would lose the entity entirely, with
+no error.
 
 **Migrations:** SQL migrations ship embedded in the binary via
 `//go:embed migrations/*.sql` and are applied on startup by
@@ -193,8 +531,13 @@ enforced with `COLLATE "C"` on every `entity_id ORDER BY` — the database's
 configured default collation may not be `"C"` and can otherwise reorder
 entity IDs differently from Go's byte-wise string comparison, so `COLLATE
 "C"` is pinned explicitly rather than relied on as a server default. The
-supporting index is `idx_entities_model_entity_id` (migration `000008`; see
-that migration's operator note below). This order is stable and
+supporting index is `idx_entities_model_entity_id` (migration `000008`,
+rebuilt by `000011`; see those migrations' operator note below). Since
+`000011` the index covers every entity of a model rather than only the
+live ones: a point-in-time read must see an entity deleted *since* the
+instant, whose current row carries `deleted = true`, so the index can no
+longer carry a `WHERE NOT deleted` predicate. Current-state reads keep
+that predicate in the query and filter after the index lookup. This order is stable and
 deterministic but is **not** guaranteed identical to another storage
 engine's canonical order — each in-house backend documents byte-wise
 ascending as its native behaviour, but a client that depends on
@@ -215,6 +558,9 @@ are rendered in the binary's `--help`.
 | `CYODA_POSTGRES_MIN_CONNS` | `5` | `pgxpool.Pool` minimum (warm) connections. |
 | `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` | `5m` | Idle connection reap threshold (Go duration syntax). |
 | `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run embedded SQL migrations on startup. When `false`, the binary refuses to start if the database schema is older than the code. |
+| `CYODA_POSTGRES_SCHEDULER_CONNS` | `10` | Size of the scheduler pool (see "Scheduled tasks and the scheduler pool"). At least `2`; an invalid value fails startup. The scheduler heartbeat has one more connection of its own. |
+| `CYODA_POSTGRES_MODEL_CONNS` | `8` | Size of the model pool (see "Model store and the model pool"): model reads, schema extensions and model administration. Extensions hold at most half of it. At least `2`; an invalid value fails startup. |
+| `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | A model's deltas per savepoint of its extension log; bounds how many deltas a read folds. Minimum `1`; a value below it falls back to the default. Shared with the sqlite plugin — not plugin-namespaced. |
 | `CYODA_POSTGRES_STATEMENT_TIMEOUT` | `5m` | Maximum run time for a single SQL statement. Server-side, carried in the connection startup packet. |
 | `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` | `5m` | Maximum time a connection may sit idle inside an open transaction. Server-side, carried in the connection startup packet. Must clear the longest legitimate idle gap — a compute-node callout bounded by `responseTimeoutMs` (default `30s`). |
 | `CYODA_POSTGRES_ACQUIRE_TIMEOUT` | `10s` | Deadline on the wait for a free pooled connection, after which the request fails with `503 STORAGE_UNAVAILABLE`. Applied by the pool, not the server — `pgxpool.Config` has no acquire-timeout field. |
@@ -246,9 +592,14 @@ Options:
   simple-query mode — accepts a small per-query overhead in exchange
   for pooler compatibility.
 
-cyoda uses transaction-scoped `set_config(..., true)` for RLS
-(tenant isolation) only — no session-level state fights PgBouncer
-transaction mode beyond the prepared-statement cache.
+cyoda uses transaction-scoped `set_config(..., true)` for the RLS tenant
+setting (which takes no effect; see "Row-level security") and for the commit-phase limits in `cyoda_stamp` — no
+session-level state fights PgBouncer transaction mode beyond the
+prepared-statement cache. The one session-level lock is the floor mutex
+`(0, 0)` taken inside `cyoda_stamp` and `cyoda_consistency_time`, for
+microseconds. It cannot leak: it is taken in a guarded block that releases it
+on every exit, including a cancel, and a connection on which either function
+returned an error is closed instead of going back to the pool.
 
 ## Operational notes and limits
 
@@ -285,6 +636,37 @@ transaction mode beyond the prepared-statement cache.
   adds an index to an already-populated table hits the same choice between
   `CONCURRENTLY` (deadlocks concurrent multi-node boot) and a plain
   `CREATE INDEX` (blocks writers) until the runner grows that tolerance.
+- **Migrations `000011`, `000012` and `000013` each block writers on an
+  upgrade of a populated deployment**, for the same structural reason and
+  with the same plain-`CREATE INDEX` choice. Size one maintenance window
+  to cover all three.
+  - `000011` rebuilds `idx_entities_model_entity_id` without its partial
+    predicate. It builds the replacement under a temporary name first and
+    only then drops and renames, so **readers are blocked for a moment
+    rather than for the build** — the naive drop-then-create holds
+    `AccessExclusiveLock` across the whole build, because the file runs as
+    one implicit transaction, and blocks every `SELECT` against `entities`
+    cluster-wide for its duration.
+  - `000012` adds the four temporal columns, backfills them from the
+    documents, adds `idx_ev_transaction`, adds the `entity_versions →
+    entities` foreign key, and creates `submit_times`. The foreign key is
+    added `NOT VALID` and validated by a following statement, but both run
+    inside one implicit transaction — the whole file does — so the
+    `SHARE ROW EXCLUSIVE` the `ADD CONSTRAINT` takes is held until the file
+    commits, across the historical validation scan of `entity_versions`.
+    **Writers to `entities` and `entity_versions` are blocked for that whole
+    span**; size the window for it. Readers are unaffected.
+    The backfill itself is a full pass over `entity_versions` and
+    `entities` — its duration scales with history, not with live entities.
+  - `000013` adds `idx_sm_events_tenant_tx`, the index the commit-phase
+    audit stamp filters on. A plain `CREATE INDEX` takes `SHARE` on
+    `sm_audit_events`, so audit writers — which now includes every
+    committing transaction — block for the build; readers never do.
+- **Migration `000014` blocks readers and writers of `scheduled_tasks`** while
+  it runs. It alters the table (a rewrite, for the per-row arm token), backfills
+  it and builds five indexes in one implicit transaction under
+  `ACCESS EXCLUSIVE`. No other table is locked. The table holds one row per
+  armed timer.
 
 ## When to use / when not to use
 

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda/cyoda-go/internal/domain/model/importer"
 )
 
 func TestJSONParserFlat(t *testing.T) {
@@ -177,6 +177,23 @@ func TestJSONParserError(t *testing.T) {
 	_, err := importer.ParseJSON(strings.NewReader(input))
 	if err == nil {
 		t.Fatal("expected error for malformed JSON, got nil")
+	}
+}
+
+// TestJSONParser_OneReading: sample data has one reading. A member written
+// twice in one object, and anything after the value, are refused — the
+// gRPC import refuses them in the event's payload, so the HTTP import must
+// too. Before, the last duplicate won and trailing text was ignored.
+func TestJSONParser_OneReading(t *testing.T) {
+	for _, input := range []string{
+		`{"name":"Alice","name":2}`,
+		`{"items":[{"a":1,"a":"x"}]}`,
+		`{"name":"Alice"} {"name":"Bob"}`,
+		`{"name":"Alice"}}`,
+	} {
+		if parsed, err := importer.ParseJSON(strings.NewReader(input)); err == nil {
+			t.Errorf("%s: accepted as %v", input, parsed)
+		}
 	}
 }
 

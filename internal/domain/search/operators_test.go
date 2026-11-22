@@ -6,8 +6,8 @@ import (
 	"sort"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // TestCanonicalOperators_MatchesSPI is the anti-drift guard for I5:

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -11,10 +12,9 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
 )
 
 // CloudEvent type constants — duplicated here so the compute-test-client
@@ -33,16 +33,44 @@ const (
 
 // dispatcher manages the gRPC connection to cyoda and the dispatch loop.
 type dispatcher struct {
-	endpoint string
-	token    string
-	cat      *catalog
-	conn     *grpc.ClientConn
-	memberID string
+	endpoint  string
+	token     func() (string, error)
+	cat       *catalog
+	gcb       *grpcCallbackClient
+	tags      []string
+	behaviour behaviour
+	rec       *recorder
+	conn      *grpc.ClientConn
+	memberID  string
 
 	// sendMu serialises every write to the stream: the request loop and the
 	// keep-alive ticker both send, and grpc-go forbids concurrent SendMsg on
 	// one stream. Compute-node implementations must do the same.
 	sendMu sync.Mutex
+
+	// held are the callouts a late-callback client took and has not yet
+	// called back for. heldWork is the work a hold client took and answers on
+	// release; stream is where those answers go. All three are guarded by
+	// heldMu.
+	heldMu   sync.Mutex
+	held     []heldCallout
+	heldWork []heldWork
+	stream   grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent]
+}
+
+// heldWork is one request a hold client took and has not answered yet.
+type heldWork struct {
+	msg     *cepb.CloudEvent
+	payload json.RawMessage
+	pass    string
+}
+
+// heldCallout is a callout whose pass is kept, in memory only, for a late callback.
+type heldCallout struct {
+	seq    int
+	cfg    cbConfig
+	cfgErr string
+	pass   string
 }
 
 // send is the only place this client writes to its stream.
@@ -53,11 +81,62 @@ func (d *dispatcher) send(stream grpc.BidiStreamingClient[cepb.CloudEvent, cepb.
 }
 
 // newDispatcher creates a dispatcher targeting the given cyoda gRPC endpoint.
-func newDispatcher(endpoint, token string, cat *catalog) *dispatcher {
-	return &dispatcher{
-		endpoint: endpoint,
-		token:    token,
-		cat:      cat,
+func newDispatcher(endpoint string, token func() (string, error), cat *catalog, gcb *grpcCallbackClient, tags []string, beh behaviour, rec *recorder) *dispatcher {
+	return &dispatcher{endpoint: endpoint, token: token, cat: cat, gcb: gcb, tags: tags, behaviour: beh, rec: rec}
+}
+
+func (d *dispatcher) hold(hc heldCallout) {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	d.held = append(d.held, hc)
+}
+
+// takeHeld returns the held callouts and forgets them.
+func (d *dispatcher) takeHeld() []heldCallout {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	held := d.held
+	d.held = nil
+	return held
+}
+
+// holdWork keeps one request a hold client took, to answer on release.
+func (d *dispatcher) holdWork(w heldWork) {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	d.heldWork = append(d.heldWork, w)
+}
+
+// takeHeldWork returns the held work and forgets it.
+func (d *dispatcher) takeHeldWork() []heldWork {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	work := d.heldWork
+	d.heldWork = nil
+	return work
+}
+
+// setStream records the stream released answers are sent on.
+func (d *dispatcher) setStream(stream grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent]) {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	d.stream = stream
+}
+
+// currentStream returns the stream released answers are sent on, nil before run.
+func (d *dispatcher) currentStream() grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent] {
+	d.heldMu.Lock()
+	defer d.heldMu.Unlock()
+	return d.stream
+}
+
+// joinPayload is the join event's payload.
+func (d *dispatcher) joinPayload() map[string]any {
+	return map[string]any{
+		"id":                  uuid.NewString(),
+		"tags":                d.tags,
+		"joinedLegalEntityId": "",
+		"success":             true,
 	}
 }
 
@@ -65,8 +144,11 @@ func newDispatcher(endpoint, token string, cat *catalog) *dispatcher {
 // sends the join event, and waits for the greet response. On success it
 // stores the assigned memberID.
 func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent], error) {
+	// The bearer rides as per-call credentials: the stream carries the one
+	// current when it opens.
 	conn, err := grpc.NewClient(d.endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithPerRPCCredentials(bearerCredentials{tok: d.token}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial gRPC endpoint %s: %w", d.endpoint, err)
@@ -75,23 +157,13 @@ func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb
 
 	client := cyodapb.NewCloudEventsServiceClient(conn)
 
-	// Attach the JWT as per-call metadata.
-	md := metadata.Pairs("authorization", "Bearer "+d.token)
-	streamCtx := metadata.NewOutgoingContext(ctx, md)
-
-	stream, err := client.StartStreaming(streamCtx)
+	stream, err := client.StartStreaming(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open StartStreaming: %w", err)
 	}
 
 	// Send join event.
-	joinPayload := map[string]any{
-		"id":                  uuid.NewString(),
-		"tags":                []string{"compute-test-client"},
-		"joinedLegalEntityId": "",
-		"success":             true,
-	}
-	joinCE, err := newCloudEvent(ceTypeJoin, joinPayload)
+	joinCE, err := newCloudEvent(ceTypeJoin, d.joinPayload())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create join event: %w", err)
 	}
@@ -119,6 +191,7 @@ func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb
 		return nil, fmt.Errorf("failed to unmarshal greet: %w", err)
 	}
 	d.memberID = greet.MemberID
+	d.rec.setMemberID(d.memberID)
 	slog.Info("greet received", "pkg", "compute-test-client", "memberId", d.memberID)
 
 	return stream, nil
@@ -128,6 +201,10 @@ func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb
 // them to the catalog. It also starts a keep-alive goroutine. This method
 // blocks until the context is cancelled or the stream is closed.
 func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent]) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	d.setStream(stream)
+
 	// Start keep-alive goroutine.
 	go d.keepAliveLoop(ctx, stream)
 
@@ -148,46 +225,23 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 			continue
 		}
 
-		// The signed tx-token rides as a CloudEvent extension
-		// attribute; it is echoed on joined callbacks. Empty when the dispatch
-		// carries no transaction context. Never logged (Gate 3).
-		txToken := txTokenFromCloudEvent(msg)
-
-		// authtype (CloudEvents Auth Context extension) carries the executor's
-		// principal kind. Surfaced to processors via Entity.AuthType so an
-		// attribution scenario can observe the faithful kind a cross-node
-		// forwarded dispatch reconstructs (Task 7).
-		authType := authTypeFromCloudEvent(msg)
-
 		switch msg.Type {
-		case ceTypeProcessorRequest:
-			resp, err := d.handleProcessorRequest(ctx, payload, txToken, authType)
+		case ceTypeProcessorRequest, ceTypeCriteriaRequest, ceTypeFunctionRequest:
+			reply, drop, err := d.handleCallout(ctx, msg, payload)
 			if err != nil {
-				slog.Error("processor dispatch failed", "pkg", "compute-test-client", "error", err)
+				slog.Error("calculation request failed", "pkg", "compute-test-client", "type", msg.Type, "error", err)
 				continue
 			}
-			if err := d.send(stream, resp); err != nil {
-				slog.Error("failed to send processor response", "pkg", "compute-test-client", "error", err)
+			if drop {
+				slog.Info("closing the stream on receiving work", "pkg", "compute-test-client", "type", msg.Type)
+				d.close()
+				return nil
 			}
-
-		case ceTypeCriteriaRequest:
-			resp, err := d.handleCriteriaRequest(ctx, payload, txToken)
-			if err != nil {
-				slog.Error("criteria dispatch failed", "pkg", "compute-test-client", "error", err)
+			if reply == nil {
 				continue
 			}
-			if err := d.send(stream, resp); err != nil {
-				slog.Error("failed to send criteria response", "pkg", "compute-test-client", "error", err)
-			}
-
-		case ceTypeFunctionRequest:
-			resp, err := d.handleFunctionRequest(ctx, payload, txToken)
-			if err != nil {
-				slog.Error("function dispatch failed", "pkg", "compute-test-client", "error", err)
-				continue
-			}
-			if err := d.send(stream, resp); err != nil {
-				slog.Error("failed to send function response", "pkg", "compute-test-client", "error", err)
+			if err := d.send(stream, reply); err != nil {
+				slog.Error("failed to send calculation response", "pkg", "compute-test-client", "type", msg.Type, "error", err)
 			}
 
 		case ceTypeKeepAlive:
@@ -197,6 +251,196 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 			slog.Debug("ignoring unknown event type", "pkg", "compute-test-client", "type", msg.Type)
 		}
 	}
+}
+
+// handleCallout records one calculation request and decides what this client
+// does with it: a reply to send (nil = stay silent) and whether to close the
+// stream. The pass is read here and goes no further than the callback that
+// presents it; it is never logged or recorded.
+func (d *dispatcher) handleCallout(ctx context.Context, msg *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, bool, error) {
+	var head struct {
+		RequestID     string          `json:"requestId"`
+		EntityID      string          `json:"entityId"`
+		ProcessorName string          `json:"processorName"`
+		ProcessorID   string          `json:"processorId"`
+		CriteriaName  string          `json:"criteriaName"`
+		CriteriaID    string          `json:"criteriaId"`
+		FunctionName  string          `json:"functionName"`
+		FunctionID    string          `json:"functionId"`
+		Parameters    json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(payload, &head); err != nil {
+		return nil, false, fmt.Errorf("failed to unmarshal calculation request: %w", err)
+	}
+	kind, name := "processor", head.ProcessorName
+	if name == "" {
+		name = head.ProcessorID
+	}
+	switch msg.Type {
+	case ceTypeCriteriaRequest:
+		kind, name = "criterion", head.CriteriaName
+		if name == "" {
+			name = head.CriteriaID
+		}
+	case ceTypeFunctionRequest:
+		kind, name = "function", head.FunctionName
+		if name == "" {
+			name = head.FunctionID
+		}
+	}
+
+	pass := txTokenFromCloudEvent(msg)
+	seq := d.rec.add(calloutRecord{
+		Kind: kind, Name: name, RequestID: head.RequestID, EventID: msg.Id,
+		EntityID: head.EntityID, PassPresent: pass != "",
+	})
+
+	switch d.behaviour {
+	case behaviourStall:
+		return nil, false, nil
+	case behaviourDrop:
+		return nil, true, nil
+	case behaviourLateCallback:
+		hc := heldCallout{seq: seq, pass: pass}
+		cfg, err := parseCallbackConfig(head.Parameters)
+		if err != nil {
+			hc.cfgErr = err.Error()
+		}
+		hc.cfg = cfg
+		d.hold(hc)
+		return nil, false, nil
+	case behaviourHold:
+		d.holdWork(heldWork{msg: msg, payload: payload, pass: pass})
+		return nil, false, nil
+	case behaviourCriterionReasonNUL:
+		// Any other request falls out of the switch and is served from the
+		// catalog.
+		if kind == "criterion" {
+			reply, err := d.buildCriteriaRefusal(head.RequestID, head.EntityID, "scripted reason\x00with U+0000")
+			return reply, false, err
+		}
+	case behaviourFail, behaviourFailRetryable, behaviourFailSilent:
+		var verdict *bool
+		if d.behaviour == behaviourFailRetryable {
+			v := true
+			verdict = &v
+		}
+		msgText := "scripted failure: " + string(d.behaviour)
+		if d.behaviour == behaviourFailSilent {
+			msgText = ""
+		}
+		var reply *cepb.CloudEvent
+		var err error
+		switch kind {
+		case "criterion":
+			reply, err = d.buildCriteriaResponse(head.RequestID, head.EntityID, false, false, msgText, verdict)
+		case "function":
+			reply, err = d.buildFunctionResponse(head.RequestID, head.EntityID, "", nil, false, msgText, verdict)
+		default:
+			reply, err = d.buildProcessorResponse(head.RequestID, head.EntityID, nil, false, msgText, verdict)
+		}
+		return reply, false, err
+	}
+
+	reply, err := d.answer(ctx, msg, payload, pass)
+	return reply, false, err
+}
+
+type requestTimeKey struct{}
+
+// withRequestTime carries the request's CloudEvents time attribute (platform
+// time) to the catalog function that serves it.
+func withRequestTime(ctx context.Context, msg *cepb.CloudEvent) context.Context {
+	if a, ok := msg.GetAttributes()["time"]; ok && a.GetCeTimestamp() != nil {
+		return context.WithValue(ctx, requestTimeKey{}, a.GetCeTimestamp().AsTime())
+	}
+	return ctx
+}
+
+// platformNow is the time of the request being served: platform time as the
+// server stamped it. A request without it is an error, never the client's own
+// clock standing in.
+func platformNow(ctx context.Context) (time.Time, error) {
+	t, ok := ctx.Value(requestTimeKey{}).(time.Time)
+	if !ok {
+		return time.Time{}, errors.New("request carries no time attribute")
+	}
+	return t, nil
+}
+
+// answer serves one request from the catalog.
+func (d *dispatcher) answer(ctx context.Context, msg *cepb.CloudEvent, payload json.RawMessage, pass string) (*cepb.CloudEvent, error) {
+	ctx = withRequestTime(ctx, msg)
+	switch msg.Type {
+	case ceTypeCriteriaRequest:
+		return d.handleCriteriaRequest(ctx, payload, pass)
+	case ceTypeFunctionRequest:
+		return d.handleFunctionRequest(ctx, payload, pass)
+	default:
+		// The auth context names the attributed principal and the executor;
+		// processors see it on the Entity.
+		return d.handleProcessorRequest(ctx, payload, pass, authFromCloudEvent(msg))
+	}
+}
+
+// release makes the late callback for every held callout, records what each
+// door answered, and answers every request a hold client took. Held work
+// exists only once run has recorded the stream, so the stream is set here.
+func (d *dispatcher) release(ctx context.Context) {
+	for _, hc := range d.takeHeld() {
+		d.rec.setCallback(hc.seq, d.lateCallback(ctx, hc))
+	}
+	stream := d.currentStream()
+	for _, w := range d.takeHeldWork() {
+		reply, err := d.answer(ctx, w.msg, w.payload, w.pass)
+		if err != nil {
+			slog.Error("held request could not be answered", "pkg", "compute-test-client", "error", err)
+			continue
+		}
+		if err := d.send(stream, reply); err != nil {
+			// The pnode this client was attached to may be gone; the record
+			// of what was received is what a scenario reads.
+			slog.Warn("held answer not delivered", "pkg", "compute-test-client", "error", err)
+		}
+	}
+}
+
+// lateCallback presents a held pass on the HTTP door and, when a gRPC callback
+// client exists, on the gRPC door, with an entity create on each.
+func (d *dispatcher) lateCallback(ctx context.Context, hc heldCallout) callbackOutcome {
+	var out callbackOutcome
+	switch {
+	case hc.cfgErr != "":
+		out.Error = hc.cfgErr
+		return out
+	case hc.cfg.SecondaryModel == "":
+		out.Error = "late-callback needs secondaryModel in the callout's context"
+		return out
+	case d.cat.cb == nil:
+		out.Error = "callback client unavailable (CYODA_COMPUTE_HTTP_BASE unset)"
+		return out
+	}
+	res, _, _, err := d.cat.cb.createSecondary(ctx, hc.cfg, hc.pass, hc.cfg.Marker)
+	if err != nil {
+		out.Error = "http callback: " + err.Error()
+		return out
+	}
+	out.HTTPStatus = res.Status
+	out.HTTPErrorCode = problemErrorCode(res.Body)
+
+	if d.gcb == nil {
+		return out
+	}
+	out.GRPCAttempted = true
+	g, err := d.gcb.createSecondary(ctx, hc.cfg, hc.pass, hc.cfg.Marker)
+	if err != nil {
+		out.Error = "grpc callback: " + err.Error()
+		return out
+	}
+	out.GRPCSuccess = g.Success
+	out.GRPCErrorCode = g.ErrorCode
+	out.GRPCErrorMessage = g.ErrorMsg
+	return out
 }
 
 // close tears down the gRPC connection.
@@ -237,16 +481,19 @@ func (d *dispatcher) keepAliveLoop(ctx context.Context, stream grpc.BidiStreamin
 
 // handleProcessorRequest dispatches a processor request to the catalog and
 // returns the response CloudEvent.
-func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.RawMessage, txToken, authType string) (*cepb.CloudEvent, error) {
+func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.RawMessage, txToken string, auth calloutAuth) (*cepb.CloudEvent, error) {
 	var req struct {
 		RequestID     string          `json:"requestId"`
 		ProcessorID   string          `json:"processorId"`
 		ProcessorName string          `json:"processorName"`
 		EntityID      string          `json:"entityId"`
+		TransactionID string          `json:"transactionId"`
 		Parameters    json.RawMessage `json:"parameters"`
 		Payload       *struct {
 			Data json.RawMessage `json:"data"`
-			Meta json.RawMessage `json:"meta"`
+			Meta struct {
+				TransactionID string `json:"transactionId"`
+			} `json:"meta"`
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
@@ -261,11 +508,18 @@ func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.Ra
 
 	// Build entity from payload data.
 	entity := &Entity{
-		ID:       req.EntityID,
-		AuthType: authType,
+		ID:           req.EntityID,
+		AuthType:     auth.Type,
+		AuthID:       auth.ID,
+		AuthExecType: auth.ExecType,
+		AuthExecID:   auth.ExecID,
+		RequestTxID:  req.TransactionID,
 	}
-	if req.Payload != nil && req.Payload.Data != nil {
-		entity.Data = req.Payload.Data
+	if req.Payload != nil {
+		entity.PayloadTxID = req.Payload.Meta.TransactionID
+		if req.Payload.Data != nil {
+			entity.Data = req.Payload.Data
+		}
 	}
 
 	// Callback-capable processors take precedence: they receive
@@ -273,30 +527,30 @@ func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.Ra
 	if cbFn, ok := d.cat.callbackProcessor(name); ok {
 		cfg, err := parseCallbackConfig(req.Parameters)
 		if err != nil {
-			return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error())
+			return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error(), nil)
 		}
 		result, err := cbFn(ctx, entity, cfg, txToken, d.cat.cb)
 		if err != nil {
-			return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error())
+			return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error(), verdictOf(err))
 		}
-		return d.buildProcessorResponse(req.RequestID, req.EntityID, result.Data, true, "")
+		return d.buildProcessorResponse(req.RequestID, req.EntityID, result.Data, true, "", nil)
 	}
 
 	procFn, ok := d.cat.processor(name)
 	if !ok {
-		return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, fmt.Sprintf("unknown processor: %s", name))
+		return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, fmt.Sprintf("unknown processor: %s", name), nil)
 	}
 
 	result, err := procFn(ctx, entity, req.Parameters)
 	if err != nil {
-		return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error())
+		return d.buildProcessorResponse(req.RequestID, req.EntityID, nil, false, err.Error(), verdictOf(err))
 	}
 
-	return d.buildProcessorResponse(req.RequestID, req.EntityID, result.Data, true, "")
+	return d.buildProcessorResponse(req.RequestID, req.EntityID, result.Data, true, "", nil)
 }
 
 // buildProcessorResponse constructs an EntityProcessorCalculationResponse CloudEvent.
-func (d *dispatcher) buildProcessorResponse(requestID, entityID string, data json.RawMessage, success bool, errMsg string) (*cepb.CloudEvent, error) {
+func (d *dispatcher) buildProcessorResponse(requestID, entityID string, data json.RawMessage, success bool, errMsg string, retryable *bool) (*cepb.CloudEvent, error) {
 	resp := map[string]any{
 		"id":        uuid.NewString(),
 		"requestId": requestID,
@@ -310,10 +564,7 @@ func (d *dispatcher) buildProcessorResponse(requestID, entityID string, data jso
 		}
 	}
 	if errMsg != "" {
-		resp["error"] = map[string]any{
-			"code":    "PROCESSOR_ERROR",
-			"message": errMsg,
-		}
+		resp["error"] = errorNode("PROCESSOR_ERROR", errMsg, retryable)
 	}
 	return newCloudEvent(ceTypeProcessorResponse, resp)
 }
@@ -353,26 +604,26 @@ func (d *dispatcher) handleCriteriaRequest(ctx context.Context, payload json.Raw
 	if cbFn, ok := d.cat.callbackCriterion(name); ok {
 		cfg, err := parseCallbackConfig(req.Parameters)
 		if err != nil {
-			return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error())
+			return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error(), nil)
 		}
 		matches, err := cbFn(ctx, entity, cfg, txToken, d.cat.cb)
 		if err != nil {
-			return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error())
+			return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error(), verdictOf(err))
 		}
-		return d.buildCriteriaResponse(req.RequestID, req.EntityID, matches, true, "")
+		return d.buildCriteriaResponse(req.RequestID, req.EntityID, matches, true, "", nil)
 	}
 
 	critFn, ok := d.cat.criterion(name)
 	if !ok {
-		return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, fmt.Sprintf("unknown criterion: %s", name))
+		return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, fmt.Sprintf("unknown criterion: %s", name), nil)
 	}
 
 	matches, err := critFn(ctx, entity, req.Parameters)
 	if err != nil {
-		return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error())
+		return d.buildCriteriaResponse(req.RequestID, req.EntityID, false, false, err.Error(), verdictOf(err))
 	}
 
-	return d.buildCriteriaResponse(req.RequestID, req.EntityID, matches, true, "")
+	return d.buildCriteriaResponse(req.RequestID, req.EntityID, matches, true, "", nil)
 }
 
 // handleFunctionRequest dispatches a generic Function calculation request
@@ -409,22 +660,23 @@ func (d *dispatcher) handleFunctionRequest(ctx context.Context, payload json.Raw
 
 	fn, ok := d.cat.function(name)
 	if !ok {
-		return d.buildFunctionResponse(req.RequestID, "", nil, false, fmt.Sprintf("unknown function: %s", name))
+		return d.buildFunctionResponse(req.RequestID, req.EntityID, "", nil, false, fmt.Sprintf("unknown function: %s", name), nil)
 	}
 
 	resultKind, result, err := fn(ctx, entity, req.Parameters)
 	if err != nil {
-		return d.buildFunctionResponse(req.RequestID, "", nil, false, err.Error())
+		return d.buildFunctionResponse(req.RequestID, req.EntityID, "", nil, false, err.Error(), verdictOf(err))
 	}
 
-	return d.buildFunctionResponse(req.RequestID, resultKind, result, true, "")
+	return d.buildFunctionResponse(req.RequestID, req.EntityID, resultKind, result, true, "", nil)
 }
 
 // buildFunctionResponse constructs an EntityFunctionCalculationResponse CloudEvent.
-func (d *dispatcher) buildFunctionResponse(requestID, resultKind string, result map[string]any, success bool, errMsg string) (*cepb.CloudEvent, error) {
+func (d *dispatcher) buildFunctionResponse(requestID, entityID, resultKind string, result map[string]any, success bool, errMsg string, retryable *bool) (*cepb.CloudEvent, error) {
 	resp := map[string]any{
 		"id":        uuid.NewString(),
 		"requestId": requestID,
+		"entityId":  entityID,
 		"success":   success,
 	}
 	if resultKind != "" {
@@ -434,16 +686,13 @@ func (d *dispatcher) buildFunctionResponse(requestID, resultKind string, result 
 		resp["result"] = result
 	}
 	if errMsg != "" {
-		resp["error"] = map[string]any{
-			"code":    "FUNCTION_ERROR",
-			"message": errMsg,
-		}
+		resp["error"] = errorNode("FUNCTION_ERROR", errMsg, retryable)
 	}
 	return newCloudEvent(ceTypeFunctionResponse, resp)
 }
 
 // buildCriteriaResponse constructs an EntityCriteriaCalculationResponse CloudEvent.
-func (d *dispatcher) buildCriteriaResponse(requestID, entityID string, matches, success bool, errMsg string) (*cepb.CloudEvent, error) {
+func (d *dispatcher) buildCriteriaResponse(requestID, entityID string, matches, success bool, errMsg string, retryable *bool) (*cepb.CloudEvent, error) {
 	resp := map[string]any{
 		"id":        uuid.NewString(),
 		"requestId": requestID,
@@ -452,12 +701,22 @@ func (d *dispatcher) buildCriteriaResponse(requestID, entityID string, matches, 
 		"matches":   matches,
 	}
 	if errMsg != "" {
-		resp["error"] = map[string]any{
-			"code":    "CRITERIA_ERROR",
-			"message": errMsg,
-		}
+		resp["error"] = errorNode("CRITERIA_ERROR", errMsg, retryable)
 	}
 	return newCloudEvent(ceTypeCriteriaResponse, resp)
+}
+
+// buildCriteriaRefusal builds a successful criteria response whose verdict is
+// "does not match", with the member's reason for it.
+func (d *dispatcher) buildCriteriaRefusal(requestID, entityID, reason string) (*cepb.CloudEvent, error) {
+	return newCloudEvent(ceTypeCriteriaResponse, map[string]any{
+		"id":        uuid.NewString(),
+		"requestId": requestID,
+		"entityId":  entityID,
+		"success":   true,
+		"matches":   false,
+		"reason":    reason,
+	})
 }
 
 // --- CloudEvent helpers ---

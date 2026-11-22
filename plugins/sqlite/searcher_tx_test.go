@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // idSetTx builds a set of entity IDs from a result slice.
@@ -439,6 +440,7 @@ func TestSearchTx_MixedFilterOverLargeModel(t *testing.T) {
 	ctx := testCtx("tenant-1")
 	store, _ := factory.EntityStore(ctx)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 
 	// 50 committed persons; only e-berlin-0 and e-berlin-1 live in Berlin.
 	for i := 0; i < 48; i++ {
@@ -520,6 +522,7 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 
 	ctx := testCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -609,6 +612,7 @@ func TestSearchTxPIT_MixedFilterOverLargeModel(t *testing.T) {
 	ctx := testCtx("tenant-1")
 	store, _ := factory.EntityStore(ctx)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, ref)
 
 	// 50 committed persons; only e-berlin-0 and e-berlin-1 live in Berlin.
 	for i := 0; i < 48; i++ {

@@ -3,13 +3,14 @@ package workflow
 import (
 	"context"
 	"errors"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // registerTypedModel saves a model descriptor whose schema declares a single
@@ -27,13 +28,7 @@ func registerTypedModel(t *testing.T, ctx context.Context, factory spi.StoreFact
 	if err != nil {
 		t.Fatalf("schema.Marshal: %v", err)
 	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
-		t.Fatalf("Save model: %v", err)
-	}
+	saveLockedModel(t, factory, ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw})
 }
 
 // registerModelFields saves a model descriptor whose schema declares the given
@@ -58,13 +53,7 @@ func registerModelFields(t *testing.T, ctx context.Context, factory spi.StoreFac
 	if err != nil {
 		t.Fatalf("schema.Marshal: %v", err)
 	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
-		t.Fatalf("Save model: %v", err)
-	}
+	saveLockedModel(t, factory, ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw})
 }
 
 // registerUnionTypedModel saves a model descriptor whose schema declares a
@@ -98,13 +87,7 @@ func registerUnionTypedModel(t *testing.T, ctx context.Context, factory spi.Stor
 	if err != nil {
 		t.Fatalf("schema.Marshal: %v", err)
 	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
-		t.Fatalf("Save model: %v", err)
-	}
+	saveLockedModel(t, factory, ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw})
 }
 
 // errModelStoreFactory wraps a StoreFactory but makes ModelStore fail, modelling
@@ -138,80 +121,45 @@ func TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel(t *testing.T
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 
 	// age(30) > 5 → typed numeric comparison matches.
-	got, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	out, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !got {
+	if !out.matched {
 		t.Fatal("age(30) GREATER_THAN 5 must match under a declared-Integer field")
 	}
 
 	// age(30) > 50 → typed numeric comparison does NOT match (real evaluation,
 	// not an always-true wiring stub).
-	got, _, err = engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 50), entity, &criterionContext{ctx: ctx})
+	out, err = engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 50), entity, &criterionContext{ctx: ctx})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got {
+	if out.matched {
 		t.Fatal("age(30) GREATER_THAN 50 must NOT match")
 	}
 }
 
-// TestEvaluateCriterion_DataFieldPathUntypedFailsClosed isolates
-// match.Prepare's OWN leaf-expansion-failure branch (internal/match's
-// leafNode/ErrUnevaluableLeaf) — distinct from BOTH search.ValidateKnownPaths
-// (TestEvaluateCriterion_UndeclaredPathAbortsTheSave — $.age is DECLARED
-// here) and search.ValidateConditionValueTypes, which this exact criterion
-// does NOT trip.
-//
-// `$.age` is declared with a UNION of scalar types, [Integer, Boolean] (the
-// model has observed both). The criterion is BETWEEN [5, true].
-// search.ValidateConditionValueTypes checks each bound independently
-// (operandParsesDeclared, an operator-independent oracle) and accepts: "5"
-// parses as Integer, "true" parses as Boolean, each individually a member of
-// the declared set — so it raises no error. The SPI kernel's own
-// expandBetween (which match.Prepare calls) is stricter: a numeric range
-// requires BOTH bounds to parse as a number, a temporal range requires both
-// to parse as a timestamp, and only a declared String type accepts a mixed
-// pair lexicographically — [Integer, Boolean] offers none of those, so no
-// bucket engages jointly and expandBetween fails with "range bounds parse
-// into no declared type", which leafNode turns into match.ErrUnevaluableLeaf.
-//
-// Before Task 7 wired in search.ValidateConditionValueTypes, a simpler
-// fixture (a single-type field an operand couldn't parse into at all) also
-// isolated this same match.Prepare branch — but for the SINGLE-type case,
-// ValidateConditionValueTypes' per-element check and match.Prepare's
-// engagement check share the identical underlying oracle for every
-// comparison and range operator and are structurally guaranteed to agree,
-// so no single-type fixture can any longer tell the two apart: with
-// ValidateConditionValueTypes now running before match.Prepare, a
-// single-type mismatch is always caught by ValidateConditionValueTypes
-// first, and match.Prepare's own check becomes unreachable through such a
-// fixture — verified: deleting the search.ValidateConditionValueTypes call
-// site left the OLD single-type version of this test passing unchanged.
-// The union-type BETWEEN mismatch above is the one shape where the two
-// checks genuinely disagree, and it is what makes this test's assertion
-// (errors.Is(err, match.ErrUnevaluableLeaf)) meaningful: it fails if EITHER
-// candidate call site — search.ValidateConditionValueTypes (which must NOT
-// have already rejected this criterion) or match.Prepare (which must be the
-// one that does) — is wrong.
-func TestEvaluateCriterion_DataFieldPathUntypedFailsClosed(t *testing.T) {
+// TestEvaluateCriterion_RangeBoundsInNoSingleTypeAreRefused: `$.age` is
+// declared [Integer, LocalDate] and the criterion is BETWEEN [5.5,
+// "2024-01-01"]. Each bound parses into one declared type, but the kernel's
+// range needs both bounds in one family — a number range or a date range —
+// so no range exists to evaluate. The type check refuses it before
+// match.Prepare is reached, as search.ErrConditionTypeMismatch, the same
+// answer a search with this condition gets. (match.Prepare's own refusal of
+// an unevaluable leaf is pinned in internal/match.)
+func TestEvaluateCriterion_RangeBoundsInNoSingleTypeAreRefused(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
 
-	registerUnionTypedModel(t, ctx, factory, ref, "age", schema.Integer, schema.Boolean)
+	registerUnionTypedModel(t, ctx, factory, ref, "age", schema.Integer, schema.LocalDate)
 
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "BETWEEN", []any{5, true}), entity, &criterionContext{ctx: ctx})
-	if err == nil {
-		t.Fatal("expected an error: BETWEEN [5, true] engages no declared type jointly, even though $.age is declared [Integer, Boolean]")
-	}
-	if !errors.Is(err, match.ErrUnevaluableLeaf) {
-		t.Fatalf("expected match.ErrUnevaluableLeaf (match.Prepare's own leaf-expansion-failure branch); "+
-			"got a different error, meaning search.ValidateConditionValueTypes rejected this criterion instead "+
-			"of accepting it as expected: %v", err)
+	_, err := engine.evaluateCriterion(simpleCriterion("$.age", "BETWEEN", []any{5.5, "2024-01-01"}), entity, &criterionContext{ctx: ctx})
+	if !errors.Is(err, search.ErrConditionTypeMismatch) {
+		t.Fatalf("BETWEEN [5.5, \"2024-01-01\"] on [Integer, LocalDate]: want search.ErrConditionTypeMismatch, got %v", err)
 	}
 }
 
@@ -227,13 +175,13 @@ func TestEvaluateCriterion_FailsClosedOnGenuineModelLoadError(t *testing.T) {
 	txMgr := baseFactory.NewTransactionManager(uuids)
 	wantErr := errors.New("model store down")
 	factory := &errModelStoreFactory{StoreFactory: baseFactory, err: wantErr}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("a genuine model-load error on a data-field criterion must fail closed (surface the error)")
 	}
@@ -252,7 +200,7 @@ func TestEvaluateCriterion_FailsClosedOnGenuineModelLoadError(t *testing.T) {
 // (criterion_model_boundary_test.go), proves the other half of the same
 // gate: the model READ is skipped here, but the VALIDATION CALL
 // (search.ValidateConditionValueTypes) is never gated — it always runs with
-// a nil model — because that is the one call that still refuses a
+// a nil fields map — because that is the one call that still refuses a
 // text/pattern operator on a temporal meta field for a lifecycle-only
 // criterion.
 func TestEvaluateCriterion_LifecycleCriterionNeedsNoModel(t *testing.T) {
@@ -261,18 +209,18 @@ func TestEvaluateCriterion_LifecycleCriterionNeedsNoModel(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := baseFactory.NewTransactionManager(uuids)
 	factory := &errModelStoreFactory{StoreFactory: baseFactory, err: errors.New("model store down")}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 	entity.Meta.State = "CREATED"
 
-	got, _, err := engine.evaluateCriterion(lifecycleCriterion("state", "EQUALS", "CREATED"), entity, &criterionContext{ctx: ctx})
+	out, err := engine.evaluateCriterion(lifecycleCriterion("state", "EQUALS", "CREATED"), entity, &criterionContext{ctx: ctx})
 	if err != nil {
 		t.Fatalf("lifecycle criterion must not touch the model store (no error expected), got: %v", err)
 	}
-	if !got {
+	if !out.matched {
 		t.Fatal("state EQUALS CREATED must match")
 	}
 }

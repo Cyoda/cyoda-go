@@ -4,7 +4,6 @@ title: "SEARCH_TIMEOUT — search timeout expired before results collected"
 stability: stable
 see_also:
   - errors
-  - errors.SEARCH_SHARD_TIMEOUT
 ---
 
 # errors.SEARCH_TIMEOUT
@@ -24,4 +23,3 @@ Fires when the client-supplied `timeoutMillis` elapses before the search result 
 ## SEE ALSO
 
 - errors
-- errors.SEARCH_SHARD_TIMEOUT

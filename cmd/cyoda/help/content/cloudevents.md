@@ -7,6 +7,8 @@ see_also:
   - workflows
   - errors.DISPATCH_TIMEOUT
   - errors.DISPATCH_FORWARD_FAILED
+  - errors.CALLOUT_FAILED
+  - errors.COMPUTE_MEMBER_DISCONNECTED
 ---
 
 # cloudevents
@@ -18,25 +20,33 @@ cloudevents — JSON Schemas for every CloudEvent payload exchanged over the gRP
 ## SYNOPSIS
 
 ```
-cyoda help cloudevents            # narrative (this page)
-cyoda help cloudevents json       # full schemas tree as a single JSON document
+cyoda help cloudevents
+cyoda help cloudevents json
 ```
+
+The first prints this page; the second prints the full schemas tree as a single JSON document.
 
 ## DESCRIPTION
 
-cyoda-go uses [CloudEvents v1.0](https://cloudevents.io) as the transport envelope for event-driven processing. Every payload carried inside a CloudEvent — workflow calculation requests, calculation responses, entity transaction events, snapshot state, model descriptors — is validated against a JSON Schema (Draft 2020-12).
+cyoda-go uses [CloudEvents v1.0](https://cloudevents.io) as the transport envelope for event-driven processing. Every payload carried inside a CloudEvent — workflow calculation requests, calculation responses, entity transaction events, snapshot state, model descriptors — is described by a JSON Schema (Draft 2020-12).
+
+**Member names are exact.** cyoda-go reads a client's request through types generated from its schema, which also refuse a required member that is missing, or `null` where its schema states a type (`field name: must not be null`; a `null` entity `data`, merge `patch` or model-import `payload` is refused by the operation, with `VALIDATION_FAILED`), and a compute member's answer through the members its schema declares. Either way it refuses a member the schema does not declare, a name in another letter case, a member written twice and anything after the payload's JSON value. A required member written in another letter case is answered as that member missing (`field name: required`), because the required members are checked first. In a search `condition`, a `type` written in another case and an operator written twice are named in words, as `cyoda help openapi` describes. A refused request answers `InvalidArgument`, naming the member and where it is as a JSON Pointer; a refused answer is unreadable and fails the callout. An entity write (create, update, patch and the collection events) is first checked for text no store can hold, so a member written twice anywhere in it is answered by the event's error response, `CLIENT_ERROR` with `BAD_REQUEST`, naming the field. The contents of an entity payload are the client's data: no member there is unknown, but a member written twice is refused.
 
 The canonical schema tree lives at `docs/cyoda/schema/` in this repo and is embedded into the binary at build time. It is the single source of truth for:
 
-- **Runtime validation** of inbound CloudEvent payloads (in cyoda-go and external compute members).
+- **Decoding** of inbound CloudEvent payloads (in cyoda-go and external compute members).
 - **Code generation** via `scripts/generate-events.sh` — the Go types in `api/grpc/events/types.go` are derived from this tree.
 - **Downstream tooling**: documentation pipelines and SDK generators extract the tree from the binary (see `cyoda help cloudevents json`), so every version of cyoda ships with a matching, self-describing schema bundle.
+
+**Platform time.** A processor, criterion or schedule-function request carries a platform time in the CloudEvent `time` attribute (see `cyoda help clock`), so a schedule function computes an absolute fire time on the platform's clock, not its own. It is the platform time at which the node that owns the callout took it up, the same on every try of one callout and on every node that makes a try.
+
+**Two ids.** The CloudEvent envelope's `id` is unique per event. A calculation request's payload carries its own `id` and `requestId`, and these are **the same on every try of one callout**: when a callout is given to a second compute member, the second request is a new event with the same `requestId`. A compute member correlates its response by `requestId`, and may use it as the key that makes an outside action safe to repeat. See `cyoda help grpc` and `cyoda help workflows`.
 
 ## ORGANIZATION
 
 The tree is organized by domain:
 
-- **`common/`** — shared envelope fragments: `BaseEvent`, `DataPayload`, `CloudEventType`, `ModelSpec`, `ErrorCode`. Every domain-specific payload extends `BaseEvent`.
+- **`common/`** — shared envelope fragments: `BaseEvent`, `DataPayload`, `CloudEventType`, `ModelSpec`, `ErrorCode`. Every domain-specific payload composes with `BaseEvent`, through the `allOf` the declared 2020-12 dialect reads.
 - **`common/statemachine/`** — workflow metadata descriptors: `WorkflowInfo`, `TransitionInfo`, `ProcessorInfo`.
 - **`entity/`** — entity create / update / delete / transition / audit requests and responses.
 - **`model/`** — model snapshot events and management requests.
@@ -102,3 +112,5 @@ cyoda help cloudevents json \
 - workflows
 - errors.DISPATCH_TIMEOUT
 - errors.DISPATCH_FORWARD_FAILED
+- errors.CALLOUT_FAILED
+- errors.COMPUTE_MEMBER_DISCONNECTED

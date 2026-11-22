@@ -5,11 +5,13 @@ package fixtureutil
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -28,8 +30,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/testing/childproc"
 )
 
 // --- Binary building (sync.Once cached) ---
@@ -134,123 +137,131 @@ func GenerateJWTKeySet() (*JWTKeySet, error) {
 	}, nil
 }
 
-// MintNonAdminTenantJWT creates a fresh tenant JWT with no ROLE_ADMIN scope.
-// Use this to test endpoints that require ROLE_ADMIN — the request should
-// be rejected with 403 FORBIDDEN. The returned tenant has the same shape as
-// MintTenantJWT but carries only ROLE_M2M so that the request authenticates
-// successfully while failing the admin authorization gate.
-func MintNonAdminTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
-	t.Helper()
-
-	tenantID := uuid.NewString()
-	now := time.Now()
-
-	claims := map[string]any{
-		"sub":          "test-nonadmin-" + tenantID[:8],
-		"iss":          ks.Issuer,
-		"caas_user_id": "test-nonadmin-" + tenantID[:8],
-		"caas_org_id":  tenantID,
-		"scopes":       []string{"ROLE_M2M"},
-		"caas_tier":    "unlimited",
-		"exp":          now.Add(1 * time.Hour).Unix(),
-		"iat":          now.Unix(),
-		"jti":          uuid.NewString(),
-	}
-
-	token, err := auth.Sign(claims, ks.Key, ks.Kid)
-	if err != nil {
-		t.Fatalf("failed to mint non-admin tenant JWT: %v", err)
-	}
-
-	return parity.Tenant{
-		ID:    tenantID,
-		Token: token,
-	}
-}
-
 // MintTenantJWT creates a fresh tenant JWT for use in parity tests.
 func MintTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	t.Helper()
-
 	tenantID := uuid.NewString()
-	now := time.Now()
+	token, err := mintTenantAdminJWT(ks, tenantID, "test-user-"+tenantID[:8])
+	if err != nil {
+		t.Fatalf("failed to mint tenant JWT: %v", err)
+	}
+	return parity.Tenant{ID: tenantID, Token: token}
+}
 
+// mintTenantAdminJWT signs a ROLE_ADMIN, ROLE_M2M token of tenantID for userID with the
+// fixture's key.
+func mintTenantAdminJWT(ks *JWTKeySet, tenantID, userID string) (string, error) {
+	now := time.Now() // realtime: test JWT validity window
 	claims := map[string]any{
-		"sub":          "test-user-" + tenantID[:8],
+		"sub":          userID,
 		"iss":          ks.Issuer,
-		"caas_user_id": "test-user-" + tenantID[:8],
+		"caas_user_id": userID,
 		"caas_org_id":  tenantID,
-		"scopes":       []string{"ROLE_ADMIN"},
+		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
 		"caas_tier":    "unlimited",
 		"exp":          now.Add(1 * time.Hour).Unix(),
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
 	}
-
-	token, err := auth.Sign(claims, ks.Key, ks.Kid)
-	if err != nil {
-		t.Fatalf("failed to mint tenant JWT: %v", err)
-	}
-
-	return parity.Tenant{
-		ID:    tenantID,
-		Token: token,
-	}
+	return auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
 }
 
-// ComputeTenantID is the tenant under which the compute-test-client
-// registers via its M2M JWT. Processor/criteria dispatch is tenant-scoped,
-// so tests exercising gRPC dispatch must use this tenant for entity
-// creation. Exported so fixtures can reference it without duplicating
-// the string.
-const ComputeTenantID = "system-tenant"
-
-// MintM2MJWT creates an M2M JWT for the compute-test-client.
-func MintM2MJWT(ks *JWTKeySet) (string, error) {
-	now := time.Now()
+// MintPlatformOperatorJWT mints a platform-operator token: ROLE_ADMIN in the
+// PLATFORM tenant, in the shape `cyoda token --tenant PLATFORM` signs (a
+// person token, roles in user_roles). PLATFORM is one shared tenant: use the
+// token only on the platform-wide admin endpoints, never for tenant data.
+func MintPlatformOperatorJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
+	t.Helper()
+	now := time.Now() // realtime: test JWT validity window
 	claims := map[string]any{
-		"sub":          "compute-test",
+		"sub":          "platform-operator",
 		"iss":          ks.Issuer,
-		"caas_user_id": "compute-admin",
-		"caas_org_id":  ComputeTenantID,
-		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
+		"caas_user_id": "platform-operator",
+		"caas_org_id":  string(auth.PlatformTenantID),
+		"user_roles":   []string{"ROLE_ADMIN"},
 		"caas_tier":    "unlimited",
-		"exp":          now.Add(2 * time.Hour).Unix(),
+		"exp":          now.Add(1 * time.Hour).Unix(),
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
 	}
-	return auth.Sign(claims, ks.Key, ks.Kid)
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
+	if err != nil {
+		t.Fatalf("failed to mint platform operator JWT: %v", err)
+	}
+	return parity.Tenant{ID: string(auth.PlatformTenantID), Token: token}
 }
 
-// MintComputeTenantJWT creates a regular (non-M2M) JWT whose tenant matches
+// ComputeTenantID is the tenant of the fixture's own compute-test-client: it
+// authenticates as an M2M client of this tenant (ProvisionComputeClient).
+// Processor/criteria dispatch is tenant-scoped, so tests exercising gRPC
+// dispatch must use this tenant for entity creation. Exported so fixtures can
+// reference it without duplicating the string.
+const ComputeTenantID = "system-tenant"
+
+// computeProvisionerID is the user id of the admin token that provisions
+// compute clients.
+const computeProvisionerID = "compute-provisioner"
+
+// ProvisionComputeClient creates, through POST /api/clients on baseURL, an M2M
+// client of tenantID for a compute-test-client to authenticate as, and returns
+// its credentials. The request is authenticated by a tenant-admin JWT for
+// tenantID signed with ks. The secret is a credential: never log it. It fails
+// the test on any error.
+func ProvisionComputeClient(t *testing.T, baseURL, tenantID string, ks *JWTKeySet) (id, secret string) {
+	t.Helper()
+	id, secret, err := provisionComputeClient(baseURL, tenantID, ks)
+	if err != nil {
+		t.Fatalf("failed to provision the compute client: %v", err)
+	}
+	return id, secret
+}
+
+// provisionComputeClient is ProvisionComputeClient without *testing.T, for the
+// launch functions.
+func provisionComputeClient(baseURL, tenantID string, ks *JWTKeySet) (id, secret string, err error) {
+	admin, err := mintTenantAdminJWT(ks, tenantID, computeProvisionerID)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to mint the provisioning admin JWT: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/clients", nil)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to build POST /api/clients: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+admin)
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to call POST /api/clients: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read POST /api/clients: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// Only a 200 carries a secret, so a refusal's body is safe to show.
+		return "", "", fmt.Errorf("POST /api/clients answered %d: %s", resp.StatusCode, raw)
+	}
+	var cred struct {
+		ID     string `json:"client_id"`
+		Secret string `json:"client_secret"`
+	}
+	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
+		return "", "", fmt.Errorf("POST /api/clients answered no credentials (decode error: %v)", err)
+	}
+	return cred.ID, cred.Secret, nil
+}
+
+// MintComputeTenantJWT creates a tenant-admin JWT (not a client token) whose tenant matches
 // the compute-test-client's tenant. Tests that exercise gRPC processor/criteria
 // dispatch use this instead of MintTenantJWT so the MemberRegistry finds
 // the compute-test-client member.
 func MintComputeTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	t.Helper()
-
-	now := time.Now()
-	claims := map[string]any{
-		"sub":          "test-user-compute",
-		"iss":          ks.Issuer,
-		"caas_user_id": "test-user-compute",
-		"caas_org_id":  ComputeTenantID,
-		"scopes":       []string{"ROLE_ADMIN"},
-		"caas_tier":    "unlimited",
-		"exp":          now.Add(1 * time.Hour).Unix(),
-		"iat":          now.Unix(),
-		"jti":          uuid.NewString(),
-	}
-
-	token, err := auth.Sign(claims, ks.Key, ks.Kid)
+	token, err := mintTenantAdminJWT(ks, ComputeTenantID, "test-user-compute")
 	if err != nil {
 		t.Fatalf("failed to mint compute tenant JWT: %v", err)
 	}
-
-	return parity.Tenant{
-		ID:    ComputeTenantID,
-		Token: token,
-	}
+	return parity.Tenant{ID: ComputeTenantID, Token: token}
 }
 
 // MintComputeUserJWT creates a USER-kind (OBO-shaped) JWT scoped to the
@@ -267,7 +278,7 @@ func MintComputeUserJWT(t *testing.T, ks *JWTKeySet, userID string, roles ...str
 		roles = []string{}
 	}
 
-	now := time.Now()
+	now := time.Now() // realtime: test JWT validity window
 	claims := map[string]any{
 		"sub":          userID,
 		"iss":          ks.Issuer,
@@ -280,7 +291,7 @@ func MintComputeUserJWT(t *testing.T, ks *JWTKeySet, userID string, roles ...str
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := auth.Sign(claims, ks.Key, ks.Kid)
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
 	if err != nil {
 		t.Fatalf("failed to mint compute user JWT: %v", err)
 	}
@@ -417,9 +428,9 @@ func nodeOutcome(nodeIdx int, healthDoneCh <-chan error, exitedCh <-chan struct{
 // WaitForHTTPHealth polls the given URL until it returns 200 OK or the
 // timeout elapses.
 func WaitForHTTPHealth(url string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(timeout) // realtime: test poll deadline
 	client := &http.Client{Timeout: 2 * time.Second}
-	for time.Now().Before(deadline) {
+	for time.Now().Before(deadline) { // realtime: test poll deadline
 		resp, err := client.Get(url)
 		if err == nil {
 			resp.Body.Close()
@@ -470,11 +481,13 @@ func ParseHealthAddr(r io.Reader, timeout time.Duration) (string, error) {
 // cyoda-go fixture. Callers append backend-specific vars (e.g.
 // CYODA_POSTGRES_URL for postgres).
 //
-// OIDC network-level overrides are set here for test isolation:
-//   - CYODA_OIDC_REQUIRE_HTTPS=false — parity tests register providers
-//     with http:// URIs (fake hostnames) so no external TLS is needed.
-//   - CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true — skips DNS-based SSRF
-//     checks so tests can use arbitrary hostnames without network I/O.
+//   - CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT=3 — low enough that the M2M
+//     client cap scenario (RunM2MClientCap) can exercise it directly,
+//     rather than creating 100 clients. Every other scenario that creates
+//     M2M clients stays under 3 per tenant (grepped for CreateClientRaw /
+//     newM2MClient across e2e/parity).
+//   - CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true — the trusted-key
+//     endpoints are off by default; RunTrustedKeyPerTenantKid needs them.
 func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 	return append(os.Environ(),
 		fmt.Sprintf("CYODA_HTTP_PORT=%d", httpPort),
@@ -484,14 +497,8 @@ func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 		fmt.Sprintf("CYODA_JWT_SIGNING_KEY=%s", ks.KeyPEM),
 		fmt.Sprintf("CYODA_JWT_ISSUER=%s", ks.Issuer),
 		"CYODA_LOG_LEVEL=info",
-		"CYODA_BOOTSTRAP_CLIENT_ID=compute-test",
-		"CYODA_BOOTSTRAP_CLIENT_SECRET=compute-secret",
-		"CYODA_BOOTSTRAP_TENANT_ID=system-tenant",
-		"CYODA_BOOTSTRAP_USER_ID=compute-admin",
-		"CYODA_BOOTSTRAP_ROLES=ROLE_ADMIN,ROLE_M2M",
-		// OIDC test overrides — allow http:// and skip SSRF DNS checks.
-		"CYODA_OIDC_REQUIRE_HTTPS=false",
-		"CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true",
+		"CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT=3",
+		"CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true",
 	)
 }
 
@@ -501,13 +508,116 @@ type LaunchResult struct {
 	GRPCEndpoint string
 	CyodaCmd     *exec.Cmd
 	ComputeCmd   *exec.Cmd
+	// ComputeBin is the built compute-test-client, so a fixture can start
+	// further clients for a scenario (fixtureutil.StartComputeClientForFixture).
+	ComputeBin string
+	// Logs is the cyoda node's combined output (NodeProc.Logs), for a
+	// fixture's parity.SchedulerWaitFixture.
+	Logs *SyncBuffer
 }
 
 // LaunchOpts configures optional behavior for LaunchCyodaAndCompute.
 type LaunchOpts struct {
 	// ReadinessTimeout overrides the default health-check timeout for
-	// cyoda-go. Defaults to 30s if zero.
+	// cyoda-go. Defaults to defaultCyodaReadinessTimeout if zero.
 	ReadinessTimeout time.Duration
+	// NodeEnv, when set, returns extra environment for cluster node i. It is
+	// appended after every other variable, so it overrides them (os/exec uses
+	// the last value of a duplicated key). A scenario uses it to turn one
+	// node's scheduler off, or to isolate one node's gossip.
+	NodeEnv func(i int) []string
+}
+
+// NodeProc is one running cyoda-go process launched by LaunchCyodaNode.
+type NodeProc struct {
+	BaseURL      string
+	GRPCEndpoint string
+	// Logs is the process's combined output, also tee'd to os.Stderr. Never
+	// assert on token or secret material read from it (Gate 3).
+	Logs     *SyncBuffer
+	cmd      *exec.Cmd
+	exitedCh chan struct{}
+	killOnce sync.Once
+}
+
+// Kill SIGKILLs the process group and reaps it through the monitor's exit
+// signal (never a second cmd.Wait()). Calling it again is harmless.
+func (p *NodeProc) Kill() {
+	p.killOnce.Do(func() {
+		killProcessGroupNoWait(p.cmd)
+		<-p.exitedCh
+	})
+}
+
+// LaunchCyodaNode starts one cyoda-go process with extraEnv on fresh ports and
+// waits until it is healthy. It starts no compute client. A scenario that
+// restarts a node on the same storage calls it twice with the same env.
+// readiness 0 means the default readiness timeout.
+//
+// The whole launch is retried with fresh ports to self-heal a transient
+// FreePort() TOCTOU collision (see clusterLaunchAttempts), and the health
+// probe races the child's exit (nodeOutcome), so a bind-collision death fails
+// fast instead of stalling the full readiness timeout.
+func LaunchCyodaNode(cyodaBin string, ks *JWTKeySet, extraEnv []string, readiness time.Duration) (*NodeProc, error) {
+	if readiness == 0 {
+		readiness = defaultCyodaReadinessTimeout
+	}
+	var proc *NodeProc
+	err := retryLaunch(clusterLaunchAttempts, func() error {
+		hPort, e := FreePort()
+		if e != nil {
+			return fmt.Errorf("failed to get HTTP port: %w", e)
+		}
+		gPort, e := FreePort()
+		if e != nil {
+			return fmt.Errorf("failed to get gRPC port: %w", e)
+		}
+		// The admin port is picked too: the default (9091) is fixed, so parity
+		// packages running in parallel would collide on one host.
+		aPort, e := FreePort()
+		if e != nil {
+			return fmt.Errorf("failed to get admin port: %w", e)
+		}
+		cmd := exec.Command(cyodaBin)
+		cmd.WaitDelay = 3 * time.Second
+		cmd.Env = append(CyodaEnv(hPort, gPort, ks), extraEnv...)
+		cmd.Env = append(cmd.Env, fmt.Sprintf("CYODA_ADMIN_PORT=%d", aPort))
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		// Output goes to the test runner's stderr (diagnostics for 5xx and
+		// startup failures) and into Logs, so a test can read it as data.
+		logs := &SyncBuffer{}
+		cmd.Stdout = io.MultiWriter(os.Stderr, logs)
+		cmd.Stderr = io.MultiWriter(os.Stderr, logs)
+		release, e := childproc.Default().Start(cmd)
+		if e != nil {
+			return fmt.Errorf("failed to start cyoda-go: %w", e)
+		}
+		// The single owner of this process's Wait(). exitErr is read only
+		// after exitedCh's close is observed, which happens-after the store.
+		// The orphan record goes once the process is reaped.
+		exitedCh := make(chan struct{})
+		var exitErr error
+		go func() {
+			exitErr = cmd.Wait()
+			release()
+			close(exitedCh)
+		}()
+		url := fmt.Sprintf("http://127.0.0.1:%d", hPort)
+		healthDoneCh := make(chan error, 1)
+		go func() { healthDoneCh <- WaitForHTTPHealth(url+"/api/health", readiness) }()
+		if e := nodeOutcome(0, healthDoneCh, exitedCh, func() error { return exitErr }); e != nil {
+			killProcessGroupNoWait(cmd)
+			<-exitedCh
+			return e
+		}
+		proc = &NodeProc{BaseURL: url, GRPCEndpoint: fmt.Sprintf("127.0.0.1:%d", gPort), Logs: logs, cmd: cmd, exitedCh: exitedCh}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cyoda launch failed: %w", err)
+	}
+	slog.Info("cyoda-go is ready", "pkg", "fixtureutil", "baseURL", proc.BaseURL)
+	return proc, nil
 }
 
 // LaunchCyodaAndCompute builds the stock cyoda-go binary and the
@@ -538,175 +648,51 @@ func LaunchCyodaAndCompute(ks *JWTKeySet, extraEnv []string, opts ...LaunchOpts)
 //
 // cyodaBin and computeBin must be absolute paths to already-built
 // executables. The env for cyoda is assembled via CyodaEnv plus
-// extraEnv; the env for compute-test-client carries the gRPC
-// endpoint and an M2M token minted from ks.
+// extraEnv; the env for compute-test-client carries the gRPC endpoint,
+// the HTTP base and the credentials of an M2M client of ComputeTenantID
+// provisioned on the node (ProvisionComputeClient).
 func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySet, extraEnv []string, opts ...LaunchOpts) (*LaunchResult, func(), error) {
 	var opt LaunchOpts
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
-	cyodaReadinessTimeout := opt.ReadinessTimeout
-	if cyodaReadinessTimeout == 0 {
-		cyodaReadinessTimeout = defaultCyodaReadinessTimeout
+	node, err := LaunchCyodaNode(cyodaBin, ks, extraEnv, opt.ReadinessTimeout)
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := node.Kill
+
+	// The fixture's own compute client authenticates as a stored M2M client.
+	clientID, clientSecret, err := provisionComputeClient(node.BaseURL, ComputeTenantID, ks)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
 	}
 
-	// The launched, healthy cyoda node, published by the retry loop below. A
-	// monitor goroutine owns cyodaCmd.Wait() and signals exit by closing
-	// cyodaExitedCh — teardown reaps via that channel (kill-no-wait), never a
-	// second Wait().
-	var (
-		cyodaCmd      *exec.Cmd
-		cyodaExitedCh chan struct{}
-		grpcPort      int
-		baseURL       string
-	)
-
-	// Retry the whole launch phase (fresh ports each attempt) to self-heal a
-	// transient FreePort() TOCTOU port collision — identical rationale to the
-	// cluster path; see clusterLaunchAttempts. Racing the health probe against
-	// the child's exit (nodeOutcome) makes a bind-collision death fail fast
-	// instead of stalling the full readiness timeout.
-	launchErr := retryLaunch(clusterLaunchAttempts, func() error {
-		hPort, e := FreePort()
-		if e != nil {
-			return fmt.Errorf("failed to get HTTP port: %w", e)
-		}
-		gPort, e := FreePort()
-		if e != nil {
-			return fmt.Errorf("failed to get gRPC port: %w", e)
-		}
-		// Admin port must be picked too — the default (9091) is fixed, so
-		// parity packages running in parallel (memory, postgres, sqlite, …)
-		// collide on a single host and one subprocess logs "bind: address
-		// already in use" while the others succeed. Isolating the admin port
-		// per fixture mirrors HTTP/gRPC isolation.
-		aPort, e := FreePort()
-		if e != nil {
-			return fmt.Errorf("failed to get admin port: %w", e)
-		}
-
-		// Launch cyoda-go. Subprocess stdout/stderr flow to the test runner's
-		// stderr so go test -v surfaces the binary's log output — critical for
-		// diagnosing failures (5xx responses, startup panics, etc.). Without
-		// this, failures report only the HTTP error code with no server-side
-		// context.
-		cmd := exec.Command(cyodaBin)
-		cmd.WaitDelay = 3 * time.Second
-		cmd.Env = append(CyodaEnv(hPort, gPort, ks), extraEnv...)
-		cmd.Env = append(cmd.Env, fmt.Sprintf("CYODA_ADMIN_PORT=%d", aPort))
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-
-		if e := cmd.Start(); e != nil {
-			return fmt.Errorf("failed to start cyoda-go: %w", e)
-		}
-		// Single owner of this process's Wait(): publishes the exit via
-		// close(exitedCh) so both the health race and teardown observe it
-		// without a second Wait(). exitErr is read only after exitedCh's close
-		// is observed (nodeOutcome's exit branch), which happens-after the
-		// store — race-free without extra locking.
-		exitedCh := make(chan struct{})
-		var exitErr error
-		go func() {
-			exitErr = cmd.Wait()
-			close(exitedCh)
-		}()
-
-		// Race the health probe against an early process exit. A child that
-		// dies from a failed bind fails fast here instead of hanging the full
-		// readiness timeout.
-		url := fmt.Sprintf("http://127.0.0.1:%d", hPort)
-		healthDoneCh := make(chan error, 1)
-		go func() {
-			healthDoneCh <- WaitForHTTPHealth(url+"/api/health", cyodaReadinessTimeout)
-		}()
-		if e := nodeOutcome(0, healthDoneCh, exitedCh, func() error { return exitErr }); e != nil {
-			killProcessGroupNoWait(cmd)
-			<-exitedCh // reap: block until the monitor's Wait() returns
-			return e
-		}
-
-		// Attempt succeeded — publish for the compute wiring below and cleanup.
-		cyodaCmd = cmd
-		cyodaExitedCh = exitedCh
-		grpcPort = gPort
-		baseURL = url
-		return nil
+	// Callbacks target the same single node that dispatched them.
+	compute, err := StartComputeClient(ComputeClientOpts{
+		ComputeBin: computeBin, GRPCEndpoint: node.GRPCEndpoint, HTTPBase: node.BaseURL,
+		TenantID: ComputeTenantID, ClientID: clientID, ClientSecret: clientSecret,
 	})
-	if launchErr != nil {
-		return nil, nil, fmt.Errorf("cyoda launch failed: %w", launchErr)
-	}
-	slog.Info("cyoda-go is ready", "pkg", "fixtureutil", "baseURL", baseURL)
-
-	// cyoda is reaped by its monitor goroutine, so teardown kills without
-	// waiting and reaps via the exit signal — never KillProcessGroup, which
-	// would double-Wait.
-	killCyoda := func() {
-		killProcessGroupNoWait(cyodaCmd)
-		<-cyodaExitedCh
-	}
-	cleanup := killCyoda
-
-	// Mint M2M JWT for compute client.
-	m2mToken, err := MintM2MJWT(ks)
 	if err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("failed to mint M2M JWT: %w", err)
-	}
-
-	// Launch compute-test-client.
-	grpcEndpoint := fmt.Sprintf("127.0.0.1:%d", grpcPort)
-	computeCmd := exec.Command(computeBin)
-	computeCmd.WaitDelay = 3 * time.Second
-	computeCmd.Env = append(os.Environ(),
-		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", grpcEndpoint),
-		fmt.Sprintf("CYODA_COMPUTE_TOKEN=%s", m2mToken),
-		// HTTP base for callback-join processors (callbacks target
-		// the same single node that dispatched them).
-		fmt.Sprintf("CYODA_COMPUTE_HTTP_BASE=%s", baseURL),
-	)
-	computeCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	computeStdout, err := computeCmd.StdoutPipe()
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to create compute stdout pipe: %w", err)
-	}
-	if err := computeCmd.Start(); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to start compute-test-client: %w", err)
+		return nil, nil, err
 	}
 	cleanup = func() {
-		// computeCmd has no monitor goroutine, so KillProcessGroup (which owns
-		// its Wait) is correct. cyoda IS monitored, so it must be torn down
-		// kill-only + exit-signal wait — never KillProcessGroup, which would
-		// double-Wait.
-		KillProcessGroup(computeCmd)
-		killCyoda()
+		// The client owns its own Wait; cyoda is reaped by its monitor
+		// goroutine, so it is torn down kill-only + exit-signal wait.
+		compute.Stop()
+		node.Kill()
 	}
-
-	// Parse HEALTH_ADDR from stdout.
-	healthAddr, err := ParseHealthAddr(computeStdout, 15*time.Second)
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to parse HEALTH_ADDR from compute-test-client: %w", err)
-	}
-	go func() { _, _ = io.Copy(io.Discard, computeStdout) }()
-
-	// Wait for compute-test-client health.
-	computeHealthURL := fmt.Sprintf("http://%s/healthz", healthAddr)
-	if err := WaitForHTTPHealth(computeHealthURL, 30*time.Second); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("compute-test-client health probe failed: %w", err)
-	}
-	slog.Info("compute-test-client is ready", "pkg", "fixtureutil", "healthAddr", healthAddr)
+	slog.Info("compute-test-client is ready", "pkg", "fixtureutil", "controlURL", compute.ControlURL())
 
 	return &LaunchResult{
-		BaseURL:      baseURL,
-		GRPCEndpoint: grpcEndpoint,
-		CyodaCmd:     cyodaCmd,
-		ComputeCmd:   computeCmd,
+		BaseURL:      node.BaseURL,
+		GRPCEndpoint: node.GRPCEndpoint,
+		CyodaCmd:     node.cmd,
+		ComputeCmd:   compute.Cmd(),
+		ComputeBin:   computeBin,
+		Logs:         node.Logs,
 	}, cleanup, nil
 }
 
@@ -722,6 +708,13 @@ type ClusterLaunchResult struct {
 	// GRPCEndpoint is node 0's gRPC endpoint; the compute-test-client
 	// connects here.
 	GRPCEndpoint string
+	// GRPCEndpoints is the per-node gRPC endpoint list, same order as BaseURLs.
+	GRPCEndpoints []string
+	// ComputeBin is the built compute-test-client (see LaunchResult.ComputeBin).
+	ComputeBin string
+	// ComputeClientID is the M2M client the fixture's own compute-test-client
+	// authenticates as: the executor id of that member's callbacks.
+	ComputeClientID string
 	// CyodaCmds holds one *exec.Cmd per node, in the same order as
 	// BaseURLs. Exposed mainly for diagnostics; cleanup handles
 	// process termination.
@@ -731,10 +724,9 @@ type ClusterLaunchResult struct {
 	// NodeLogs holds one live capture of each node's combined stdout+stderr,
 	// in the same order as BaseURLs. Each node's output is tee'd to os.Stderr
 	// (unchanged diagnostics) AND into its SyncBuffer here, so a test can read
-	// a node's logs as data — e.g. to positively assert that a scheduled task
-	// fired on a specific peer (the peer-RPC fire path emits a distinctive
-	// log line), which is otherwise invisible at the data plane. Never assert
-	// on token/secret material read from here (Gate 3).
+	// a node's logs as data — e.g. the scheduler incarnation the node
+	// announced at start (IncarnationFromLog). Never assert on token/secret
+	// material read from here (Gate 3).
 	NodeLogs []*SyncBuffer
 	// KillNode SIGKILLs node i's process group and reaps it by waiting on that
 	// node's monitor exit signal (the same kill-no-wait + exit-signal reap the
@@ -745,6 +737,13 @@ type ClusterLaunchResult struct {
 	// returned cleanup still tears down whatever remains safely (killing an
 	// already-dead process group is harmless).
 	KillNode func(i int)
+	// SignalNode sends sig to node i's process group without waiting: SIGTERM
+	// for a graceful shutdown, SIGSTOP / SIGCONT to freeze and resume it.
+	SignalNode func(i int, sig syscall.Signal) error
+	// AwaitNodeExit waits up to within for node i's process to exit, reaping
+	// it through the monitor's exit signal. It returns an error if the
+	// process is still running. within 0 checks without waiting.
+	AwaitNodeExit func(i int, within time.Duration) error
 }
 
 // SyncBuffer is a goroutine-safe in-memory log sink. os/exec copies a
@@ -965,17 +964,20 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 				// forwarded processor/criteria dispatch (A→B) between nodes.
 				"CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING=true",
 			)
+			if opt.NodeEnv != nil {
+				env = append(env, opt.NodeEnv(i)...)
+			}
 			cmd.Env = env
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			// Tee each node's output to os.Stderr (unchanged diagnostics) AND
 			// into a per-node capture buffer so tests can read node logs as
-			// data — the only harness-honest way to positively assert that a
-			// scheduled task fired on a specific peer node (see ClusterLaunchResult.NodeLogs).
+			// data (see ClusterLaunchResult.NodeLogs).
 			logBuf := &SyncBuffer{}
 			attemptLogBufs[i] = logBuf
 			cmd.Stdout = io.MultiWriter(os.Stderr, logBuf)
 			cmd.Stderr = io.MultiWriter(os.Stderr, logBuf)
-			if e := cmd.Start(); e != nil {
+			release, e := childproc.Default().Start(cmd)
+			if e != nil {
 				killNodes(attemptNodes)
 				return fmt.Errorf("failed to start cyoda-go node %d: %w", i, e)
 			}
@@ -983,9 +985,11 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 			attemptNodes[i] = nd
 			// The single owner of this process's cmd.Wait(). Publishes the
 			// result via exitErr + close(exitedCh) so both the health race and
-			// teardown can observe the exit without a second Wait() call.
+			// teardown can observe the exit without a second Wait() call. The
+			// orphan record goes once the process is reaped.
 			go func(nd *clusterNode) {
 				nd.exitErr = nd.cmd.Wait()
+				release()
 				close(nd.exitedCh)
 			}(nd)
 		}
@@ -1055,6 +1059,39 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 			<-nd.exitedCh // reap: block until the monitor's Wait() returns
 		}
 	}
+	signalNode := func(i int, sig syscall.Signal) error {
+		if i < 0 || i >= len(nodes) || nodes[i] == nil || nodes[i].cmd == nil || nodes[i].cmd.Process == nil {
+			return fmt.Errorf("signal node %d: no such node", i)
+		}
+		pgid, err := syscall.Getpgid(nodes[i].cmd.Process.Pid)
+		if err != nil {
+			return fmt.Errorf("signal node %d: %w", i, err)
+		}
+		if err := syscall.Kill(-pgid, sig); err != nil {
+			return fmt.Errorf("signal node %d with %v: %w", i, sig, err)
+		}
+		return nil
+	}
+	awaitNodeExit := func(i int, within time.Duration) error {
+		if i < 0 || i >= len(nodes) || nodes[i] == nil || nodes[i].exitedCh == nil {
+			return fmt.Errorf("await node %d: no such node", i)
+		}
+		// An exit already observed wins over a zero wait: a select over two
+		// ready channels would pick one at random.
+		select {
+		case <-nodes[i].exitedCh:
+			return nil
+		default:
+		}
+		timer := time.NewTimer(within)
+		defer timer.Stop()
+		select {
+		case <-nodes[i].exitedCh:
+			return nil
+		case <-timer.C:
+			return fmt.Errorf("node %d is still running %s after the wait began", i, within)
+		}
+	}
 	// cleanup for the node phase; compute wiring below replaces it with a
 	// variant that also tears down the compute-test-client.
 	cleanup := func() {
@@ -1068,58 +1105,34 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 	// for the membership view to propagate after the last node joins.
 	time.Sleep(gossipSettleDelay)
 
-	// Mint M2M JWT for the compute client.
-	m2mToken, err := MintM2MJWT(ks)
+	// The fixture's own client attaches to node 0, and its callbacks target
+	// node 0; cross-node callback forwarding is covered by scenarios. It
+	// authenticates as a stored M2M client, provisioned through node 0 into
+	// the storage every node shares.
+	grpcEndpoints := make([]string, n)
+	for i := 0; i < n; i++ {
+		grpcEndpoints[i] = fmt.Sprintf("127.0.0.1:%d", grpcPorts[i])
+	}
+	node0 := fmt.Sprintf("http://127.0.0.1:%d", httpPorts[0])
+	clientID, clientSecret, err := provisionComputeClient(node0, ComputeTenantID, ks)
 	if err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("failed to mint M2M JWT: %w", err)
+		return nil, nil, err
 	}
-
-	// Compute-test-client points at node 0's gRPC.
-	grpcEndpoint := fmt.Sprintf("127.0.0.1:%d", grpcPorts[0])
-	computeCmd := exec.Command(computeBin)
-	computeCmd.WaitDelay = 3 * time.Second
-	computeCmd.Env = append(os.Environ(),
-		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", grpcEndpoint),
-		fmt.Sprintf("CYODA_COMPUTE_TOKEN=%s", m2mToken),
-		// HTTP base for callback-join processors. Callbacks target
-		// node 0 (where the compute client connects and dispatch originates);
-		// cross-node callback forwarding is covered separately, not here.
-		fmt.Sprintf("CYODA_COMPUTE_HTTP_BASE=http://127.0.0.1:%d", httpPorts[0]),
-	)
-	computeCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	computeStdout, err := computeCmd.StdoutPipe()
+	compute, err := StartComputeClient(ComputeClientOpts{
+		ComputeBin: computeBin, GRPCEndpoint: grpcEndpoints[0], HTTPBase: node0,
+		TenantID: ComputeTenantID, ClientID: clientID, ClientSecret: clientSecret,
+		ReadyTimeout: defaultCyodaReadinessTimeout,
+	})
 	if err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("failed to create compute stdout pipe: %w", err)
-	}
-	if err := computeCmd.Start(); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to start compute-test-client: %w", err)
+		return nil, nil, err
 	}
 	cleanup = func() {
-		// computeCmd has no monitor goroutine, so KillProcessGroup (which owns
-		// its Wait) is correct. The cyoda nodes are reaped by their monitor
-		// goroutines, so they must be torn down kill-only + exit-signal wait —
-		// never KillProcessGroup, which would double-Wait.
-		KillProcessGroup(computeCmd)
+		compute.Stop()
 		killNodes(nodes)
 	}
-
-	healthAddr, err := ParseHealthAddr(computeStdout, defaultComputeHealthAddrTimeout)
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to parse HEALTH_ADDR from compute-test-client: %w", err)
-	}
-	go func() { _, _ = io.Copy(io.Discard, computeStdout) }()
-
-	computeHealthURL := fmt.Sprintf("http://%s/healthz", healthAddr)
-	if err := WaitForHTTPHealth(computeHealthURL, defaultCyodaReadinessTimeout); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("compute-test-client health probe failed: %w", err)
-	}
-	slog.Info("compute-test-client (cluster) is ready", "pkg", "fixtureutil", "healthAddr", healthAddr, "nodes", n)
+	slog.Info("compute-test-client (cluster) is ready", "pkg", "fixtureutil", "controlURL", compute.ControlURL(), "nodes", n)
 
 	baseURLs := make([]string, n)
 	for i := 0; i < n; i++ {
@@ -1127,11 +1140,16 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 	}
 
 	return &ClusterLaunchResult{
-		BaseURLs:     baseURLs,
-		GRPCEndpoint: grpcEndpoint,
-		CyodaCmds:    cyodaCmds,
-		ComputeCmd:   computeCmd,
-		NodeLogs:     nodeLogBufs,
-		KillNode:     killNode,
+		BaseURLs:        baseURLs,
+		GRPCEndpoint:    grpcEndpoints[0],
+		GRPCEndpoints:   grpcEndpoints,
+		ComputeBin:      computeBin,
+		ComputeClientID: clientID,
+		CyodaCmds:       cyodaCmds,
+		ComputeCmd:      compute.Cmd(),
+		NodeLogs:        nodeLogBufs,
+		KillNode:        killNode,
+		SignalNode:      signalNode,
+		AwaitNodeExit:   awaitNodeExit,
 	}, cleanup, nil
 }

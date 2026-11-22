@@ -4,14 +4,22 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
-// TestRLS_PoliciesExist verifies that RLS policies are defined on all tables.
-// FORCE ROW LEVEL SECURITY is not set (deferred to Plan 5 when SET LOCAL is
-// wired at transaction start). The table owner bypasses RLS without FORCE.
-// In production, the application should connect as a non-owner role for RLS
-// enforcement. Application-level WHERE tenant_id = $1 is the primary isolation.
+// TestRLS_PoliciesExist verifies that the migrations define RLS policies on
+// the tenant tables, and do not FORCE them.
+//
+// Row-level security is not supported. cyoda connects as the table owner,
+// which bypasses the policies without FORCE, and the isolation is the
+// application-level WHERE tenant_id = $1. A non-owner, RLS-subject role is not
+// supported either: every transaction-scoped path sets app.current_tenant, but
+// no POOL-routed statement carries that setting (set_config's is_local flag
+// scopes it to a transaction), so under such a role the pool paths would see a
+// NULL setting and return nothing — silently for a read, and wrongly for
+// TransactionManager.getSubmitTimeFromTable, which would report a committed
+// transaction as not found. The non-owner probe roles some tests create check
+// the transaction-scoped paths only.
 func TestRLS_PoliciesExist(t *testing.T) {
 	pool := newTestPool(t)
 
@@ -25,7 +33,48 @@ func TestRLS_PoliciesExist(t *testing.T) {
 
 	ctx := context.Background()
 
-	tables := []string{"entities", "entity_versions", "sm_audit_events", "models", "kv_store", "messages"}
+	// Driven from the schema, not a hardcoded list: a hardcoded one silently
+	// stops covering every table added after it was written. It missed
+	// unique_claims, model_schema_extensions and submit_times.
+	rows, err := pool.Query(ctx,
+		`SELECT table_name FROM information_schema.columns
+		 WHERE table_schema = 'public' AND column_name = 'tenant_id'
+		 ORDER BY table_name`)
+	if err != nil {
+		t.Fatalf("failed to enumerate tenant-scoped tables: %v", err)
+	}
+	// Two tables are deliberately not enrolled: scheduled_tasks and
+	// scheduled_task_marks are read and written by ClaimDue, GiveBackIdle and
+	// the sweeps, which are cross-tenant and run with no tenant set, so scoping
+	// them to one tenant would break the scheduler under an enforced policy.
+	// TestPostgres_ScheduledTaskTables_NotRLSEnrolled pins them from the other
+	// side; the two tests must agree.
+	exempt := map[string]string{
+		"scheduled_tasks":      "the scheduler's claim and sweeps are cross-tenant",
+		"scheduled_task_marks": "the scheduler's claim and sweeps are cross-tenant",
+	}
+
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan table name: %v", err)
+		}
+		if reason, ok := exempt[name]; ok {
+			t.Logf("skipping %s: %s", name, reason)
+			continue
+		}
+		tables = append(tables, name)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("enumerate tenant-scoped tables: %v", err)
+	}
+	if len(tables) < 6 {
+		t.Fatalf("found only %d tenant-scoped tables (%v) — the schema query is wrong, "+
+			"not the schema", len(tables), tables)
+	}
+
 	for _, table := range tables {
 		// Verify RLS is enabled (policies are defined)
 		var rlsEnabled bool
@@ -40,8 +89,15 @@ func TestRLS_PoliciesExist(t *testing.T) {
 
 		// Verify a tenant_isolation policy exists
 		var policyCount int
+		// Both naming shapes are in use: tenant_isolation_<table> in 000001 and
+		// 000003, <table>_tenant_isolation in model_schema_extensions and
+		// submit_times. Matching only the prefix silently passed tables whose
+		// policy used the suffix form.
 		err = pool.QueryRow(ctx,
-			"SELECT count(*) FROM pg_policies WHERE tablename = $1 AND policyname LIKE 'tenant_isolation%'", table).Scan(&policyCount)
+			`SELECT count(*) FROM pg_policies
+			 WHERE tablename = $1
+			   AND (policyname LIKE 'tenant_isolation%' OR policyname LIKE '%\_tenant\_isolation')`,
+			table).Scan(&policyCount)
 		if err != nil {
 			t.Fatalf("failed to check policies for %s: %v", table, err)
 		}

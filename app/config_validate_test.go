@@ -1,20 +1,27 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
 
-// validSearchConfig is a Config carrying only the fields Config.Validate
-// inspects, all set to accepted values — the baseline each case below
-// perturbs by exactly one field.
-func validSearchConfig() Config {
+// validConfig is a Config carrying only the fields Config.Validate inspects,
+// all set to accepted values — the baseline each case below perturbs by
+// exactly one field.
+func validConfig() Config {
 	return Config{
 		SearchAsync:                SearchAsyncConfig{Workers: 8, QueueLen: 256, MaxPerTenant: 8},
 		SearchJobHeartbeatInterval: 15 * time.Second,
 		SearchJobStaleAfter:        5 * time.Minute,
 		SearchJobMaxAttempts:       3,
+		SearchSnapshotTTL:          time.Hour,
+		SearchReapInterval:         5 * time.Minute,
 		GRPC:                       GRPCConfig{KeepAliveInterval: 10, KeepAliveTimeout: 30},
+		Callout:                    validCalloutConfig(),
+		Cluster:                    validDispatchConfig(),
+		Scheduler:                  defaultSchedulerConfig(),
+		IAM:                        IAMConfig{Mode: "mock", MockKind: "service", AuthCacheReconcileInterval: time.Minute, TokenRequestsPerMinute: 600, TokenMaxConcurrentSecretChecks: 4},
 	}
 }
 
@@ -25,7 +32,7 @@ func validSearchConfig() Config {
 // in-process embedder (internal/e2e, any test harness) that skipped
 // cmd/cyoda/main.go's checks used to reach make(chan jobFunc, -1) and panic.
 func TestConfig_Validate(t *testing.T) {
-	if err := validSearchConfig().Validate(); err != nil {
+	if err := validConfig().Validate(); err != nil {
 		t.Fatalf("Validate() on a valid config = %v, want nil", err)
 	}
 
@@ -39,10 +46,25 @@ func TestConfig_Validate(t *testing.T) {
 		{"non-positive heartbeat", func(c *Config) { c.SearchJobHeartbeatInterval = 0 }},
 		{"stale-after too close to heartbeat", func(c *Config) { c.SearchJobStaleAfter = 20 * time.Second }},
 		{"zero max attempts", func(c *Config) { c.SearchJobMaxAttempts = 0 }},
+		{"zero snapshot TTL", func(c *Config) { c.SearchSnapshotTTL = 0 }},
+		{"negative snapshot TTL", func(c *Config) { c.SearchSnapshotTTL = -time.Second }},
+		{"zero reap interval", func(c *Config) { c.SearchReapInterval = 0 }},
+		{"negative reap interval", func(c *Config) { c.SearchReapInterval = -time.Second }},
+		{"answer limit above its upper bound", func(c *Config) { c.Callout.ResponseTimeout = 2 * time.Minute }},
+		{"negative patience", func(c *Config) { c.Cluster.DispatchWaitTimeout = -time.Second }},
+		{"zero pass allowance", func(c *Config) { c.Callout.PassAllowance = 0 }},
+		{"stale-after below its minimum", func(c *Config) { c.Scheduler.StaleAfter = 94 * time.Second }},
+		{"unknown IAM mode", func(c *Config) { c.IAM.Mode = "JWT" }},
+		{"unknown mock kind", func(c *Config) { c.IAM.MockKind = "admin" }},
+		{"negative token requests per minute", func(c *Config) { c.IAM.TokenRequestsPerMinute = -1 }},
+		{"zero concurrent secret checks", func(c *Config) { c.IAM.TokenMaxConcurrentSecretChecks = 0 }},
+		{"invalid CORS config", func(c *Config) {
+			c.CORS = CORSConfig{Enabled: true, Wildcard: true, AllowedOrigins: []string{"https://example.com"}}
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := validSearchConfig()
+			cfg := validConfig()
 			tc.mutate(&cfg)
 			if err := cfg.Validate(); err == nil {
 				t.Fatalf("Validate() = nil, want an error for %s", tc.name)
@@ -77,5 +99,14 @@ func TestValidateSearchJobMaxAttempts(t *testing.T) {
 	}
 	if err := ValidateSearchJobMaxAttempts(0); err == nil {
 		t.Fatal("0 must be rejected")
+	}
+}
+
+func TestValidateSearchSnapshot_NamesTheSetting(t *testing.T) {
+	if err := ValidateSearchSnapshot(0, time.Minute); err == nil || !strings.Contains(err.Error(), "CYODA_SEARCH_SNAPSHOT_TTL") {
+		t.Errorf("zero TTL: %v; want an error naming CYODA_SEARCH_SNAPSHOT_TTL", err)
+	}
+	if err := ValidateSearchSnapshot(time.Hour, 0); err == nil || !strings.Contains(err.Error(), "CYODA_SEARCH_REAP_INTERVAL") {
+		t.Errorf("zero reap interval: %v; want an error naming CYODA_SEARCH_REAP_INTERVAL", err)
 	}
 }

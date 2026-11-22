@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // txState holds per-transaction bookkeeping for first-committer-wins
@@ -17,6 +17,10 @@ import (
 //   - An entity ID appears in at most one of readSet/writeSet at any time.
 //   - readSet[id] = the version as first observed by a Get within this tx.
 //   - writeSet[id] = the pre-write version for an entity we updated or deleted.
+//   - written[id] = the last write of every entity this transaction wrote:
+//     the model and bytes of its last save, or a delete. Commit checks the
+//     models and computes the unique-key claims from these (commitWrittenClaims),
+//     never from a re-read of the stored document.
 //
 // writeSet is maintained for the readSet-disjoint invariant (RecordRead skips
 // entities in writeSet, keeping readSet correct) and for future use with
@@ -27,13 +31,19 @@ import (
 // See docs/superpowers/specs/2026-04-15-postgres-si-first-committer-wins-design.md
 // for the full semantic model.
 type txState struct {
-	mu         sync.Mutex
-	tenantID   spi.TenantID
+	mu       sync.Mutex
+	tenantID spi.TenantID
+	// markerKey is the tenant's marker key (tenantKeys), resolved at Begin
+	// and fixed for the transaction's life; the commit stamp takes it. It is
+	// a parameter of newTxState, the only constructor, so no state exists
+	// without one.
+	markerKey  int32
 	readSet    map[string]int64
 	writeSet   map[string]int64
+	written    map[string]writtenEntity
 	savepoints []savepointEntry
-	// abortCause is the ceiling error that aborted this transaction
-	// server-side, when one did. See RecordAbort.
+	// abortCause is the error that aborted this transaction server-side,
+	// when it was a ceiling or a concurrent writer. See RecordAbort.
 	abortCause error
 }
 
@@ -41,13 +51,24 @@ type savepointEntry struct {
 	id       string
 	readSet  map[string]int64
 	writeSet map[string]int64
+	written  map[string]writtenEntity
 }
 
-func newTxState(tenantID spi.TenantID) *txState {
+// writtenEntity is the last write of an entity in a transaction: a save of
+// data into the model ref, or a delete.
+type writtenEntity struct {
+	ref     spi.ModelRef
+	data    []byte
+	deleted bool
+}
+
+func newTxState(tenantID spi.TenantID, markerKey int32) *txState {
 	return &txState{
-		tenantID: tenantID,
-		readSet:  make(map[string]int64),
-		writeSet: make(map[string]int64),
+		tenantID:  tenantID,
+		markerKey: markerKey,
+		readSet:   make(map[string]int64),
+		writeSet:  make(map[string]int64),
+		written:   make(map[string]writtenEntity),
 	}
 }
 
@@ -61,9 +82,16 @@ func newTxState(tenantID spi.TenantID) *txState {
 // statement cancelled by statement_timeout would be cancelled again, so the
 // retry is a promise that cannot be kept.
 //
+// The same holds in the other direction for a statement issued after the abort:
+// its 25P02 is a conflict when a concurrent writer caused the abort
+// (40001/40P01), and nothing else about it says so. classifyTxError records both
+// kinds of cause and reads them back.
+//
 // First writer wins: the first failure is the one that aborted the transaction,
-// and everything after it is a consequence. RestoreSavepoint clears the record,
-// because a savepoint rollback makes the transaction usable again.
+// and everything after it is a consequence. RestoreSavepoint clears a ceiling,
+// because a savepoint rollback makes the transaction usable again. It keeps a
+// conflict: a conflict anywhere in the transaction is a conflict of the
+// transaction, and Commit refuses it.
 func (s *txState) RecordAbort(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -74,7 +102,8 @@ func (s *txState) RecordAbort(err error) {
 
 // AbortCause returns the error recorded by RecordAbort, or nil when nothing
 // recorded one — in which case Commit has no better information than 25P02 and
-// keeps its existing conflict mapping.
+// keeps its existing conflict mapping, and a later statement's 25P02 is
+// returned unmapped.
 func (s *txState) AbortCause() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -127,6 +156,36 @@ func (s *txState) RecordWrite(id string, preWriteVersion int64) {
 	s.writeSet[id] = preWriteVersion
 }
 
+// RecordSave records a save of the given entity into the model ref with
+// data, replacing any earlier write of it, so the record holds the
+// transaction's last write. data is kept as given: the caller hands over a
+// copy it owns (saveOn's defensive copy) and does not change it afterwards.
+func (s *txState) RecordSave(id string, ref spi.ModelRef, data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.written[id] = writtenEntity{ref: ref, data: data}
+}
+
+// RecordDelete records a delete of the given entity, replacing any earlier
+// write of it.
+func (s *txState) RecordDelete(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.written[id] = writtenEntity{deleted: true}
+}
+
+// WrittenEntities returns a copy of the record of every entity this
+// transaction wrote: its last write, a save or a delete.
+func (s *txState) WrittenEntities() map[string]writtenEntity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]writtenEntity, len(s.written))
+	for id, w := range s.written {
+		out[id] = w
+	}
+	return out
+}
+
 // SortedReadIDs returns a sorted slice of entity IDs in readSet only.
 // Used by Commit to restrict the FOR SHARE validation query to entities we
 // read but did not write in this transaction. Write-write conflicts are
@@ -161,7 +220,7 @@ func (s *txState) ValidateReadSet(current map[string]int64) error {
 	return nil
 }
 
-// PushSavepoint stores a deep copy of the current readSet/writeSet under the
+// PushSavepoint stores a copy of the current readSet/writeSet/written under the
 // given savepoint ID. Subsequent RestoreSavepoint(id) restores them to this
 // snapshot and trims later savepoints (postgres nested savepoint semantics).
 func (s *txState) PushSavepoint(id string) {
@@ -171,12 +230,18 @@ func (s *txState) PushSavepoint(id string) {
 		id:       id,
 		readSet:  make(map[string]int64, len(s.readSet)),
 		writeSet: make(map[string]int64, len(s.writeSet)),
+		written:  make(map[string]writtenEntity, len(s.written)),
 	}
 	for k, v := range s.readSet {
 		snap.readSet[k] = v
 	}
 	for k, v := range s.writeSet {
 		snap.writeSet[k] = v
+	}
+	// The byte slices are shared, not copied: a recorded slice is never
+	// changed, only replaced.
+	for k, v := range s.written {
+		snap.written[k] = v
 	}
 	s.savepoints = append(s.savepoints, snap)
 }
@@ -197,15 +262,22 @@ func (s *txState) HasSavepoint(id string) bool {
 	return false
 }
 
-// RestoreSavepoint restores readSet/writeSet to the snapshot captured at
+// RestoreSavepoint restores readSet/writeSet/written to the snapshot captured at
 // PushSavepoint(id) and trims any savepoints pushed after id. The named
 // savepoint itself remains (mirroring postgres ROLLBACK TO SAVEPOINT).
 //
-// It also discards any recorded abort cause. ROLLBACK TO SAVEPOINT is legal in
-// an aborted transaction and returns it to a working state, so the reason it was
-// aborted is no longer true — and a cause left behind here would be reported by
-// Commit in place of whatever aborted the transaction NEXT, downgrading a
-// retryable conflict to a plain 500.
+// ROLLBACK TO SAVEPOINT is legal in an aborted transaction and returns it to a
+// working state. What it does to a recorded abort cause depends on the cause:
+//
+//   - A ceiling is discarded. The cancelled statement is undone and the
+//     transaction may still commit; a ceiling left behind here would be reported
+//     by Commit in place of whatever aborted the transaction NEXT, downgrading a
+//     retryable conflict to a plain 500.
+//   - A conflict (40001/40P01) is kept. A concurrent writer won against this
+//     transaction, and undoing the losing statement does not make the rest of
+//     the transaction's work valid: a conflict anywhere in the transaction is a
+//     conflict of the transaction. Commit refuses it with this cause, which is
+//     the answer a backend that detects the conflict at commit gives.
 //
 // This is the only path back from aborted to usable. Every other route either
 // cannot run on an aborted transaction (SAVEPOINT and RELEASE SAVEPOINT both
@@ -227,14 +299,20 @@ func (s *txState) RestoreSavepoint(id string) error {
 	snap := s.savepoints[idx]
 	s.readSet = make(map[string]int64, len(snap.readSet))
 	s.writeSet = make(map[string]int64, len(snap.writeSet))
+	s.written = make(map[string]writtenEntity, len(snap.written))
 	for k, v := range snap.readSet {
 		s.readSet[k] = v
 	}
 	for k, v := range snap.writeSet {
 		s.writeSet[k] = v
 	}
+	for k, v := range snap.written {
+		s.written[k] = v
+	}
 	s.savepoints = s.savepoints[:idx+1]
-	s.abortCause = nil
+	if !isConcurrentWriterAbort(s.abortCause) {
+		s.abortCause = nil
+	}
 	return nil
 }
 
@@ -266,9 +344,48 @@ func (tm *TransactionManager) recordWriteIfInTx(ctx context.Context, entityID st
 	s.RecordWrite(entityID, preWriteVersion)
 }
 
-// ReleaseSavepoint drops the savepoint entry without touching the current
-// readSet/writeSet — work done after the push is kept. Mirrors postgres
-// RELEASE SAVEPOINT semantics.
+// recordSave records a save into the state of the transaction on ctx; see
+// txState.RecordSave. The caller has checked that ctx carries a transaction.
+func (tm *TransactionManager) recordSave(ctx context.Context, entityID string, ref spi.ModelRef, data []byte) error {
+	s, err := tm.writtenState(ctx, entityID)
+	if err != nil {
+		return err
+	}
+	s.RecordSave(entityID, ref, data)
+	return nil
+}
+
+// recordDelete records a delete into the state of the transaction on ctx.
+// The caller has checked that ctx carries a transaction.
+func (tm *TransactionManager) recordDelete(ctx context.Context, entityID string) error {
+	s, err := tm.writtenState(ctx, entityID)
+	if err != nil {
+		return err
+	}
+	s.RecordDelete(entityID)
+	return nil
+}
+
+// writtenState returns the state of the transaction on ctx, for a write of
+// entityID to be recorded in. A transaction with no state here fails the
+// write, since its commit would check nothing for it: with
+// spi.ErrTxAlreadyCommitted once it committed, as a statement on it answers
+// (deadTxQuerier), and spi.ErrTxNotFound otherwise.
+func (tm *TransactionManager) writtenState(ctx context.Context, entityID string) (*txState, error) {
+	txID := spi.GetTransaction(ctx).ID
+	if s, ok := tm.lookupTxState(txID); ok {
+		return s, nil
+	}
+	sentinel := spi.ErrTxNotFound
+	if tm.wasCommitted(txID) {
+		sentinel = spi.ErrTxAlreadyCommitted
+	}
+	return nil, fmt.Errorf("record the write of entity %s: transaction %s: %w", entityID, txID, sentinel)
+}
+
+// ReleaseSavepoint drops the savepoint entry and every savepoint pushed after
+// it, without touching the current readSet/writeSet/written — work done after the push
+// is kept. Mirrors postgres RELEASE SAVEPOINT semantics.
 func (s *txState) ReleaseSavepoint(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -282,6 +399,6 @@ func (s *txState) ReleaseSavepoint(id string) error {
 	if idx < 0 {
 		return fmt.Errorf("%w (savepointID=%q)", spi.ErrSavepointNotFound, id)
 	}
-	s.savepoints = append(s.savepoints[:idx], s.savepoints[idx+1:]...)
+	s.savepoints = s.savepoints[:idx]
 	return nil
 }

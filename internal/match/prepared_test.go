@@ -1,16 +1,16 @@
 package match_test
 
 import (
+	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 
-	"github.com/cyoda-platform/cyoda-go/internal/match"
+	"github.com/cyoda/cyoda-go/internal/match"
 )
 
 // typed is a FieldTypes that declares every path it is asked about as t.
@@ -18,10 +18,11 @@ func typed(t ...spi.DataType) match.FieldTypes {
 	return func(string) []spi.DataType { return t }
 }
 
-// TestPrepare_StructuralErrors pins the five faults that move from per-row
-// evaluation into Prepare. Each keeps its exact message so no error mapping
-// moves — these are reported from the condition's own shape now, not from
-// which rows happen to be present.
+// TestPrepare_StructuralErrors pins the faults Prepare reports from the
+// condition's own shape, never from which rows happen to be present, each
+// with its exact message. A function condition has no evaluator here: the
+// engine evaluates only function-free conditions with Prepare, and one that
+// reaches it is an unknown condition type, refused rather than matched.
 func TestPrepare_StructuralErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -31,7 +32,7 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 		{
 			"function condition",
 			&predicate.FunctionCondition{},
-			"function conditions not implemented",
+			"unknown condition type: *predicate.FunctionCondition",
 		},
 		{
 			"function condition nested in a group",
@@ -39,7 +40,7 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 				&predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "active"},
 				&predicate.FunctionCondition{},
 			}},
-			"function conditions not implemented",
+			"unknown condition type: *predicate.FunctionCondition",
 		},
 		{
 			"unknown lifecycle field",
@@ -68,6 +69,11 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 			&predicate.LifecycleCondition{Field: "state", OperatorType: "IS_CHANGED"},
 			"unsupported operator: IS_CHANGED",
 		},
+		{
+			"IS_CHANGED on a temporal meta field",
+			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "IS_CHANGED"},
+			"unsupported operator: IS_CHANGED",
+		},
 	}
 
 	for _, tc := range tests {
@@ -78,58 +84,6 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 			}
 			if err.Error() != tc.want {
 				t.Errorf("Prepare() error = %q, want %q", err.Error(), tc.want)
-			}
-		})
-	}
-}
-
-// TestPrepare_NeverMatchIsNotAnError pins the two cases that sit in FRONT of
-// the error path: they are deliberate never-match behaviour (the
-// prepareLifecycle temporal-meta guard) and turning either into a Prepare
-// error would silently reactivate a dormant workflow-criterion transition on
-// a binary upgrade alone (see the guard's own doc in prepared.go).
-//
-// The other two cases this table used to carry — a comparison leaf on an
-// untyped path, and an operand that parses into no declared type — moved to
-// TestPrepare_UnevaluableLeafIsAnError: both are leafNode's expansion-failure
-// branch, which now fails Prepare instead of building a silent never-match
-// leaf.
-func TestPrepare_NeverMatchIsNotAnError(t *testing.T) {
-	meta := spi.EntityMeta{
-		State:        "active",
-		CreationDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-	}
-
-	tests := []struct {
-		name       string
-		cond       predicate.Condition
-		fieldTypes match.FieldTypes
-		data       []byte
-	}{
-		{
-			// Field-dependent, not operator-dependent: the same operator on
-			// `state` IS an error (covered above).
-			"IS_CHANGED on a temporal meta field",
-			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "IS_CHANGED"},
-			nil,
-			[]byte(`{}`),
-		},
-		{
-			"CONTAINS on a temporal meta field",
-			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026"},
-			nil,
-			[]byte(`{}`),
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			p, err := match.Prepare(tc.cond, tc.fieldTypes)
-			if err != nil {
-				t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
-			}
-			if p.Match(tc.data, meta) {
-				t.Error("Match() = true, want false (never-match leaf)")
 			}
 		})
 	}
@@ -168,11 +122,12 @@ func TestPrepare_PreviousTransitionCanonicalisedBeforeFieldCheck(t *testing.T) {
 // TestPrepare_ArrayConditionOneExpansionPerPosition pins that an
 // ArrayCondition resolves one expansion per NON-NIL position — each position
 // is an EQUALS with its own operand, so a single leaf-level expansion cannot
-// serve them. Nil positions are skipped, and an all-nil condition matches.
+// serve them. Nil positions are skipped, and an all-nil condition is refused.
 func TestPrepare_ArrayConditionOneExpansionPerPosition(t *testing.T) {
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.tags",
-		Values:   []any{"red", nil, "blue"},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.tags",
+		Values:       []any{"red", nil, "blue"},
 	}
 	p, err := match.Prepare(cond, typed(spi.String))
 	if err != nil {
@@ -185,13 +140,9 @@ func TestPrepare_ArrayConditionOneExpansionPerPosition(t *testing.T) {
 		t.Error("Match() = true, want false: position 2 does not match")
 	}
 
-	allNil := &predicate.ArrayCondition{JsonPath: "$.tags", Values: []any{nil, nil}}
-	pn, err := match.Prepare(allNil, typed(spi.String))
-	if err != nil {
-		t.Fatalf("Prepare() error = %v", err)
-	}
-	if !pn.Match([]byte(`{"tags":[]}`), spi.EntityMeta{}) {
-		t.Error("Match() = false for an all-nil array condition, want true")
+	allNil := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tags", Values: []any{nil, nil}}
+	if _, err := match.Prepare(allNil, typed(spi.String)); !errors.Is(err, spi.ErrArrayClauseTestsNothing) {
+		t.Fatalf("Prepare() error = %v, want ErrArrayClauseTestsNothing", err)
 	}
 }
 
@@ -222,21 +173,19 @@ func TestPrepare_ArrayWildcardRoutesPerRow(t *testing.T) {
 }
 
 // unknownCondition implements predicate.Condition without being one of the
-// four kinds prepare() recognises (SimpleCondition, LifecycleCondition,
-// GroupCondition, FunctionCondition) — the one structural fault
-// TestPrepare_StructuralErrors does not cover, since every real
-// predicate.Condition implementation in this repo falls into one of those
-// four. spi.DesugarCondition, which prepare() calls first, passes an
-// unrecognised type through unchanged (its own switch only rewrites
-// ArrayCondition and recurses into GroupCondition), so this reaches
-// prepare()'s default: arm exactly as if DesugarCondition were not called.
+// kinds prepare() recognises (SimpleCondition, LifecycleCondition,
+// GroupCondition, and ArrayCondition through spi.DesugarCondition) and
+// without being a predicate type at all. spi.DesugarCondition, which
+// prepare() calls first, passes an unrecognised type through unchanged (its
+// own switch only rewrites ArrayCondition and recurses into GroupCondition),
+// so this reaches prepare()'s default: arm exactly as if DesugarCondition
+// were not called.
 type unknownCondition struct{}
 
 func (unknownCondition) Type() string { return "unknown" }
 
-// TestPrepare_UnknownConditionType pins the fifth structural fault: a
-// Condition implementation outside the four kinds prepare()'s type switch
-// recognises.
+// TestPrepare_UnknownConditionType pins that a Condition implementation
+// outside the kinds prepare()'s type switch recognises fails Prepare.
 func TestPrepare_UnknownConditionType(t *testing.T) {
 	cond := unknownCondition{}
 	want := fmt.Sprintf("unknown condition type: %T", cond)
@@ -375,19 +324,6 @@ func TestPrepare_MalformedPatternIsAnError(t *testing.T) {
 			t.Logf("%s: err = %v", c.name, err)
 		})
 	}
-}
-
-// TestPrepare_TemporalMetaGuardStaysANonMatch pins the fourth swallow — the
-// temporal-meta guard in prepareLifecycle — as the one that does NOT become
-// an error. operator-semantics.md and prepared_equivalence_test.go pin this
-// as a deliberate, permanent never-match: relaxing it would silently
-// reactivate a dormant transition in a stored workflow criterion on a binary
-// upgrade alone.
-func TestPrepare_TemporalMetaGuardStaysANonMatch(t *testing.T) {
-	p, err := match.Prepare(&predicate.LifecycleCondition{
-		Field: "creationDate", OperatorType: "CONTAINS", Value: "2024"}, nil)
-	require.NoError(t, err)
-	require.False(t, p.Match([]byte(`{}`), spi.EntityMeta{CreationDate: time.Now()}))
 }
 
 // notOf wraps cond in a GroupCondition{Operator: "NOT"} with exactly one

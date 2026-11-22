@@ -1,8 +1,12 @@
 # cyoda Helm charts
 
-| Chart | Version | AppVersion | Purpose |
-|-------|---------|------------|---------|
-| [cyoda/](./cyoda/) | 0.1.0 | 0.1.0 | Production Helm deployment |
+| Chart | Purpose |
+|-------|---------|
+| [cyoda/](./cyoda/) | Production Helm deployment |
+
+The chart is published to the Helm repository `https://cyoda.github.io/cyoda-go`
+(`helm repo add cyoda https://cyoda.github.io/cyoda-go`, then `cyoda/cyoda`).
+Its chart version and app version are in [`cyoda/Chart.yaml`](./cyoda/Chart.yaml).
 
 See the per-chart `README.md` for operator documentation, values schema,
 and upgrade notes.

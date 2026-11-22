@@ -3,16 +3,17 @@ package workflow
 import (
 	"context"
 	"errors"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 	"strings"
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/match"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // Task 7 (spec §5): a query never executes against a field the model does
@@ -49,7 +50,7 @@ func TestEvaluateCriterion_UndeclaredPathAbortsTheSave(t *testing.T) {
 			}
 			criterion := simpleCriterion("$.amonut", op, value)
 
-			_, _, err := engine.evaluateCriterion(criterion, entity, &criterionContext{ctx: ctx})
+			_, err := engine.evaluateCriterion(criterion, entity, &criterionContext{ctx: ctx})
 			if err == nil {
 				t.Fatalf("%s on undeclared path $.amonut must abort, got no error", op)
 			}
@@ -104,7 +105,7 @@ func TestEvaluateCriterion_UndeclaredPathLeavesStateUnchanged(t *testing.T) {
 	saveWorkflow(t, factory, ctx, ref, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e1", ref, map[string]any{"amount": 5})
-	_, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	if err == nil {
 		t.Fatal("expected the cascade to abort on the undeclared-field criterion")
 	}
@@ -117,13 +118,11 @@ func TestEvaluateCriterion_UndeclaredPathLeavesStateUnchanged(t *testing.T) {
 // whole-block gate on the model read would miss: `creationDate CONTAINS
 // "2024"` carries NO data path at all (a LifecycleCondition contributes
 // nothing to search.ConditionFieldPaths), so gating the model READ correctly
-// skips it — but the VALIDATION CALL must still run with a nil model,
-// because search.ValidateConditionValueTypes's lifecycle branch
-// (validateLifecycleType) is the one check that refuses a text operator on a
-// temporal meta field. Without it, this criterion reaches
-// internal/match's deliberate temporal-meta never-match guard, which a
-// later task's NOT node would invert into matching every entity — the exact
-// fail-open this task closes. The model store is made to error so a
+// skips it — and the validation call still runs with a nil fields map, so
+// search.ValidateConditionValueTypes's lifecycle branch
+// (validateLifecycleType) makes at evaluation the same check import makes
+// (criterion_temporal_test.go).
+// The model store is made to error so a
 // regression that accidentally started reading the model on this path would
 // surface as an infra error instead of the expected structural one.
 func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) {
@@ -132,37 +131,37 @@ func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) 
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := baseFactory.NewTransactionManager(uuids)
 	factory := &errModelStoreFactory{StoreFactory: baseFactory, err: errors.New("model store down")}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
 	entity := makeEntity("e1", ref, map[string]any{})
 	entity.Meta.State = "CREATED"
 
-	_, _, err := engine.evaluateCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2024"), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2024"), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("a text operator on the temporal meta field creationDate must be refused, not silently non-matched")
 	}
 	if errors.Is(err, ErrCriterionTypingInfra) {
 		t.Fatalf("must be a structural refusal (no model read happened for a lifecycle-only criterion), got infra error: %v", err)
 	}
-	if !errors.Is(err, search.ErrInvalidCondition) {
-		t.Fatalf("expected search.ErrInvalidCondition (unsupported operator on temporal field), got: %v", err)
+	if !errors.Is(err, search.ErrConditionTypeMismatch) {
+		t.Fatalf("expected search.ErrConditionTypeMismatch (operator does not apply to a temporal field), got: %v", err)
 	}
 }
 
 // refreshingModelStore is a minimal ModelStore fake mirroring
 // internal/domain/search/path_validate_test.go's fixture of the same name:
 // Get returns the head of getQueue (simulating a possibly-stale cached
-// descriptor); RefreshAndGet returns the head of refreshQueue and is
+// descriptor); RefreshSchemaNode returns the head of refreshQueue and is
 // counted, so a test can assert the refresh happened exactly once (the
 // bounded refresh path-grammar.md section 6 describes). Once both queues
 // are drained, Get falls back to the LAST descriptor a refresh produced —
 // mirroring a real caching model store, whose Get keeps serving the
-// now-updated cache indefinitely after a RefreshAndGet repopulates it,
+// now-updated cache indefinitely after a RefreshSchemaNode repopulates it,
 // rather than reverting to nothing. evaluateCriterion itself performs only
-// ONE read (search.LoadModelNode, consolidated — the fields map it types
-// against is derived from that same node, not a second independent read)
+// ONE read (search.LoadFieldsMap — the fields map it types against, not a
+// second independent read)
 // plus, on the rare path where that read misses a path, the ONE bounded
 // refresh search.ValidateKnownPaths performs internally; this fallback
 // keeps the fixture correct for any OTHER caller in this file that issues
@@ -172,7 +171,7 @@ type refreshingModelStore struct {
 	mu            sync.Mutex
 	getQueue      []*spi.ModelDescriptor
 	refreshQueue  []*spi.ModelDescriptor
-	refreshErr    error // when set, RefreshAndGet returns this instead of consuming refreshQueue
+	refreshErr    error // when set, RefreshSchemaNode returns this instead of consuming refreshQueue
 	lastRefreshed *spi.ModelDescriptor
 	getCount      int
 	refreshCount  int
@@ -196,7 +195,7 @@ func (s *refreshingModelStore) Get(context.Context, spi.ModelRef) (*spi.ModelDes
 	return d, nil
 }
 
-func (s *refreshingModelStore) RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
+func (s *refreshingModelStore) refreshDescriptor(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refreshCount++
@@ -210,6 +209,22 @@ func (s *refreshingModelStore) RefreshAndGet(context.Context, spi.ModelRef) (*sp
 	s.refreshQueue = s.refreshQueue[1:]
 	s.lastRefreshed = d
 	return d, nil
+}
+
+func (s *refreshingModelStore) SchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.Get(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
+}
+
+func (s *refreshingModelStore) RefreshSchemaNode(ctx context.Context, ref spi.ModelRef) (*schema.ModelNode, error) {
+	desc, err := s.refreshDescriptor(ctx, ref)
+	if err != nil || desc == nil || len(desc.Schema) == 0 {
+		return nil, err
+	}
+	return schema.Unmarshal(desc.Schema)
 }
 
 func (s *refreshingModelStore) Save(context.Context, *spi.ModelDescriptor) error { return nil }
@@ -267,9 +282,9 @@ func buildBoundaryDescriptor(t *testing.T, ref spi.ModelRef, fields map[string]s
 
 // TestEvaluateCriterion_PathAddedByAPeerIsNotRefused proves the bounded
 // refresh half of the rule: a path absent from the CACHED schema but present
-// in the AUTHORITATIVE (post-RefreshAndGet) schema — the shape of a cluster
+// in the AUTHORITATIVE (post-RefreshSchemaNode) schema — the shape of a cluster
 // peer having just extended the model — is not refused. Exactly one
-// RefreshAndGet call must happen, and the criterion must evaluate normally
+// RefreshSchemaNode call must happen, and the criterion must evaluate normally
 // (using the refreshed declared type) rather than being rejected as unknown.
 func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 	baseFactory := memory.NewStoreFactory()
@@ -286,27 +301,57 @@ func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 		refreshQueue: []*spi.ModelDescriptor{fresh},
 	}
 	factory := &refreshingModelStoreFactory{StoreFactory: baseFactory, store: ms}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
 
-	got, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	out, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err != nil {
 		t.Fatalf("a path a peer node just added must not be refused after one refresh, got: %v", err)
 	}
-	if !got {
+	if !out.matched {
 		t.Fatal("peer_field(10) GREATER_THAN 5 must match under the refreshed declared type")
 	}
 	if rc := ms.RefreshCount(); rc != 1 {
-		t.Errorf("expected exactly 1 bounded RefreshAndGet call, got %d", rc)
+		t.Errorf("expected exactly 1 bounded RefreshSchemaNode call, got %d", rc)
 	}
-	// Regression guard for the consolidated single-read shape: evaluateCriterion
-	// must issue exactly ONE Get (via search.LoadModelNode) on this path, not
-	// two (the old LoadFieldsMap-then-LoadModelNode shape this test's fixture
-	// comment used to describe).
+	// Regression guard for the single-read shape: evaluateCriterion must
+	// issue exactly ONE Get (via search.LoadFieldsMap) on this path.
 	if gc := ms.GetCount(); gc != 1 {
-		t.Errorf("expected exactly 1 Get call (the model node is loaded once and the fields map derived from it), got %d", gc)
+		t.Errorf("expected exactly 1 Get call (the fields map is loaded once), got %d", gc)
+	}
+}
+
+// TestEvaluateCriterion_PathAddedByAPeer_OperatorTypeChecked: the type check
+// must run against the schema the refresh returned, the one Prepare types the
+// leaf against. Checked against the pre-refresh schema, a path a peer just
+// added has no declared type there and passes unchecked, so NOT_CONTAINS on a
+// numeric field would match every entity on the node that refreshed while
+// every other node refuses the same criterion.
+func TestEvaluateCriterion_PathAddedByAPeer_OperatorTypeChecked(t *testing.T) {
+	baseFactory := memory.NewStoreFactory()
+	t.Cleanup(func() { baseFactory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := baseFactory.NewTransactionManager(uuids)
+
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
+	stale := buildBoundaryDescriptor(t, ref, map[string]schema.DataType{"a": schema.String})
+	fresh := buildBoundaryDescriptor(t, ref, map[string]schema.DataType{"a": schema.String, "peer_field": schema.Integer})
+
+	ms := &refreshingModelStore{
+		getQueue:     []*spi.ModelDescriptor{stale},
+		refreshQueue: []*spi.ModelDescriptor{fresh},
+	}
+	factory := &refreshingModelStoreFactory{StoreFactory: baseFactory, store: ms}
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
+
+	ctx := ctxWithTenant(testTenant)
+	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
+
+	out, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "NOT_CONTAINS", "7"), entity, &criterionContext{ctx: ctx})
+	if !errors.Is(err, search.ErrConditionTypeMismatch) {
+		t.Fatalf("NOT_CONTAINS on a numeric field a peer just added: want search.ErrConditionTypeMismatch, got match=%v err=%v", out.matched, err)
 	}
 }
 
@@ -328,13 +373,7 @@ func buildNestedAddressModel(t *testing.T, ctx context.Context, factory spi.Stor
 	if err != nil {
 		t.Fatalf("schema.Marshal: %v", err)
 	}
-	ms, err := factory.ModelStore(ctx)
-	if err != nil {
-		t.Fatalf("ModelStore: %v", err)
-	}
-	if err := ms.Save(ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw}); err != nil {
-		t.Fatalf("Save model: %v", err)
-	}
+	saveLockedModel(t, factory, ctx, &spi.ModelDescriptor{Ref: ref, Schema: raw})
 }
 
 // TestEvaluateCriterion_ContainerPathScalarComparisonAbortsTheSave covers the
@@ -362,34 +401,24 @@ func TestEvaluateCriterion_ContainerPathScalarComparisonAbortsTheSave(t *testing
 
 	entity := makeEntity("e1", ref, map[string]any{"address": map[string]any{"street": "Main St"}})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.address", "CONTAINS", "Main"), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.address", "CONTAINS", "Main"), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("CONTAINS against a container path ($.address has substructure, not a scalar) must abort, got no error")
 	}
 }
 
-// TestEvaluateCriterion_UncompilablePatternAbortsTheSave covers the
-// search.ValidatePatterns matrix row: a stored criterion carrying an
-// operand the pattern kernel cannot compile (a LIKE glob with a trailing
-// unpaired escape) must abort, not silently evaluate to a permanent
-// non-match.
-//
-// match.Prepare ALSO rejects this specific case today — internal/match's
-// expandNamed re-validates a LIKE/MATCHES_PATTERN operand via
-// spi.ValidateLeafPattern after calling spi.ExpandLeaf, closing the exact
-// swallow ExpandLeaf's own doc comment describes ("Callers wanting a
-// rejection ask ValidateLeafPattern FIRST") — a fail-open fix that landed
-// ahead of this task. So `err == nil` alone would NOT distinguish the two
-// checks: deleting search.ValidatePatterns' call site still leaves an
-// error, from match.Prepare's own errUnevaluableLeaf path (verified: see
-// task 7 fix-round-1 report). The distinguishing assertion is the
-// classification: search.ValidatePatterns' error names the jsonPath and is
-// a PLAIN error (never wraps match.ErrUnevaluableLeaf) — that is precisely
-// the "only the diagnostic changes" the reviewer described, and pinning it
-// is what the spec's coverage-matrix row requires regardless of whether a
-// deeper layer is also, today, defense-in-depth. The field is declared and
-// correctly typed so the OTHER two checks (ValidateKnownPaths,
-// ValidateConditionValueTypes) have nothing to say about this criterion.
+// TestEvaluateCriterion_UncompilablePatternAbortsTheSave: a criterion carrying
+// an operand the pattern kernel cannot compile (a LIKE glob with a trailing
+// unpaired escape) aborts the evaluation, never a permanent non-match.
+// Import refuses such a criterion first, in every position
+// (TestValidateWorkflowStructure_RejectsMalformedLike* in
+// criterion_pattern_test.go; a pre-check in TestImport_FunctionConditionsRefused),
+// and the engine's compile phase refuses it again: match.Prepare asks
+// spi.ValidateLeafPattern for every LIKE / MATCHES_PATTERN leaf and fails the
+// leaf as match.ErrUnevaluableLeaf. This feeds evaluateCriterion directly, as
+// no import would let it, to pin that refusal. The field is declared and
+// correctly typed, so the model-boundary checks (ValidateKnownPaths,
+// ValidateConditionValueTypes) have nothing to say about it.
 func TestEvaluateCriterion_UncompilablePatternAbortsTheSave(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -398,22 +427,15 @@ func TestEvaluateCriterion_UncompilablePatternAbortsTheSave(t *testing.T) {
 
 	entity := makeEntity("e1", ref, map[string]any{"name": "Alice"})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.name", "LIKE", `a\`), entity, &criterionContext{ctx: ctx})
-	if err == nil {
-		t.Fatal("an uncompilable LIKE pattern (trailing unpaired escape) must abort, got no error")
-	}
-	if errors.Is(err, match.ErrUnevaluableLeaf) {
-		t.Fatalf("expected search.ValidatePatterns' own classification (plain error naming the jsonPath), "+
-			"got match.Prepare's errUnevaluableLeaf instead — search.ValidatePatterns' call site was skipped: %v", err)
-	}
-	if !strings.Contains(err.Error(), "$.name") {
-		t.Errorf("expected search.ValidatePatterns' error to name the jsonPath, got: %v", err)
+	_, err := engine.evaluateCriterion(simpleCriterion("$.name", "LIKE", `a\`), entity, &criterionContext{ctx: ctx})
+	if !errors.Is(err, match.ErrUnevaluableLeaf) {
+		t.Fatalf("an uncompilable LIKE pattern (trailing unpaired escape) must abort as match.ErrUnevaluableLeaf, got %v", err)
 	}
 }
 
 // TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault pins review round
 // 1's Important-1 finding: a failed bounded schema refresh (the store's Get
-// serves a warm cache, but RefreshAndGet itself errors) cannot tell "this
+// serves a warm cache, but RefreshSchemaNode itself errors) cannot tell "this
 // field is genuinely undeclared" from "the cache is merely stale and we
 // couldn't confirm which". Per correctness-over-availability that ambiguity
 // is infrastructure, not a client fault, so it must be classified alongside
@@ -437,12 +459,12 @@ func TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault(t *testing.T) {
 		refreshErr: wantCause,
 	}
 	factory := &refreshingModelStoreFactory{StoreFactory: baseFactory, store: ms}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("expected an error: the refresh failed, so $.peer_field's status is unknown")
 	}
@@ -460,13 +482,11 @@ func TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault(t *testing.T) {
 		t.Errorf("expected a plain error wrapping ErrCriterionTypingInfra (classifyWorkflowError classifies it), got a pre-classified *common.AppError: %+v", appErr)
 	}
 	if rc := ms.RefreshCount(); rc != 1 {
-		t.Errorf("expected exactly 1 bounded RefreshAndGet call, got %d", rc)
+		t.Errorf("expected exactly 1 bounded RefreshSchemaNode call, got %d", rc)
 	}
-	// Regression guard for the consolidated single-read shape: evaluateCriterion
-	// must issue exactly ONE Get (via search.LoadModelNode) on this path, not
-	// two (the old LoadFieldsMap-then-LoadModelNode shape this test's fixture
-	// comment used to describe).
+	// Regression guard for the single-read shape: evaluateCriterion must
+	// issue exactly ONE Get (via search.LoadFieldsMap) on this path.
 	if gc := ms.GetCount(); gc != 1 {
-		t.Errorf("expected exactly 1 Get call (the model node is loaded once and the fields map derived from it), got %d", gc)
+		t.Errorf("expected exactly 1 Get call (the fields map is loaded once), got %d", gc)
 	}
 }

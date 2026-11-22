@@ -1,0 +1,10 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineTransitionAbortedDto",
+  "value": {
+    "eventType": "TRANSITION_ABORTED",
+    "reason": "ENTITY_MODIFIED",
+    "expectedTxId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b",
+    "actualTxId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6c"
+  }
+}

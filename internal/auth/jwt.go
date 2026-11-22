@@ -1,8 +1,8 @@
 package auth
 
 import (
+	"context"
 	"crypto"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// Sign creates a signed RS256 JWT token.
-func Sign(claims map[string]any, privateKey *rsa.PrivateKey, kid string) (string, error) {
+// Sign creates a signed RS256 JWT with signer.
+func Sign(ctx context.Context, claims map[string]any, signer Signer, kid string) (string, error) {
 	header := map[string]string{"alg": "RS256", "typ": "JWT", "kid": kid}
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
@@ -25,19 +25,14 @@ func Sign(claims map[string]any, privateKey *rsa.PrivateKey, kid string) (string
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal claims: %w", err)
 	}
-
-	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
-	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
-
-	signingInput := headerB64 + "." + claimsB64
+	signingInput := base64.RawURLEncoding.EncodeToString(headerJSON) + "." +
+		base64.RawURLEncoding.EncodeToString(claimsJSON)
 	hash := sha256.Sum256([]byte(signingInput))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hash[:])
+	sig, err := signer.Sign(ctx, hash[:])
 	if err != nil {
-		return "", fmt.Errorf("signing failed: %w", err)
+		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
-
-	sigB64 := base64.RawURLEncoding.EncodeToString(sig)
-	return signingInput + "." + sigB64, nil
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
 // ParsedToken holds a parsed but not yet verified JWT.
@@ -117,7 +112,7 @@ func EnsureAlgRS256(header map[string]any) error {
 
 // ValidateClaims checks exp and iat claims.
 func ValidateClaims(claims map[string]any, clockSkew time.Duration) error {
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	if exp, ok := claims["exp"].(float64); ok {
 		expTime := time.Unix(int64(exp), 0)
 		if now.After(expTime.Add(clockSkew)) {

@@ -27,8 +27,11 @@ binary release by `bump-chart-appversion.yml`.
 ```bash
 kubectl create namespace cyoda
 
-kubectl -n cyoda create secret generic cyoda-dsn \
-  --from-literal=dsn='postgres://cyoda:REDACTED@pg.example.com:5432/cyoda?sslmode=require'
+# Secrets go through private files, not the kubectl command line, which
+# other local users can see. printf is a shell builtin.
+(umask 077; printf '%s' 'postgres://cyoda:REDACTED@pg.example.com:5432/cyoda?sslmode=require' > dsn)
+kubectl -n cyoda create secret generic cyoda-dsn --from-file=dsn=dsn
+rm dsn
 
 kubectl -n cyoda create secret generic cyoda-jwt \
   --from-file=signing-key.pem=./jwt-signing-key.pem
@@ -43,27 +46,21 @@ helm repo update
 helm install cyoda cyoda/cyoda -n cyoda \
   --set postgres.existingSecret=cyoda-dsn \
   --set jwt.existingSecret=cyoda-jwt \
-  --set gateway.parentRefs[0].name=platform-gateway \
-  --set gateway.parentRefs[0].namespace=gateway-system \
-  --set gateway.http.hostnames[0]=cyoda.example.com \
-  --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com
+  --set "gateway.parentRefs[0].name=platform-gateway" \
+  --set "gateway.parentRefs[0].namespace=gateway-system" \
+  --set "gateway.http.hostnames[0]=cyoda.example.com" \
+  --set "gateway.grpc.hostnames[0]=grpc.cyoda.example.com"
 ```
 
-### Enabling the bootstrap M2M client (optional)
+### First admin token
 
-By default the chart does NOT provision a bootstrap M2M client
-(`bootstrap.clientId=""`). The binary runs cleanly in jwt mode via
-JWKS / external signing keys alone.
-
-To enable bootstrap, set `bootstrap.clientId`:
+The pod holds the signing key, so it can mint the first admin token:
 
 ```bash
-helm upgrade cyoda cyoda/cyoda -n cyoda --reuse-values \
-  --set bootstrap.clientId=cyoda-bootstrap
+kubectl exec -n cyoda cyoda-0 -- /cyoda token --tenant TENANT
 ```
 
-The chart auto-generates the secret (or use
-`bootstrap.clientSecret.existingSecret` for GitOps).
+Use it to create M2M clients: `POST /api/clients`.
 
 ### Separate migration DSN (optional, two-role DB model)
 
@@ -75,8 +72,9 @@ runtime StatefulSet connects as a non-owner **runtime** role. Set
 `dsn`) to a Secret holding the owner DSN:
 
 ```bash
-kubectl -n cyoda create secret generic cyoda-dsn-migrate \
-  --from-literal=dsn='postgres://cyoda_owner:REDACTED@pg.example.com:5432/cyoda?sslmode=require'
+(umask 077; printf '%s' 'postgres://cyoda_owner:REDACTED@pg.example.com:5432/cyoda?sslmode=require' > dsn-migrate)
+kubectl -n cyoda create secret generic cyoda-dsn-migrate --from-file=dsn=dsn-migrate
+rm dsn-migrate
 
 helm upgrade cyoda cyoda/cyoda -n cyoda \
   --set migrate.postgres.existingSecret=cyoda-dsn-migrate
@@ -136,7 +134,7 @@ operator wiring. To hand-scrape for a smoke check:
 kubectl -n cyoda port-forward svc/cyoda 9091:metrics &
 BEARER=$(kubectl -n cyoda get secret cyoda-metrics-bearer \
   -o jsonpath='{.data.bearer}' | base64 -d)
-curl -H "Authorization: Bearer $BEARER" http://localhost:9091/metrics | head
+curl -H @- http://localhost:9091/metrics <<<"Authorization: Bearer $BEARER" | head
 ```
 
 Rotation: delete the Kubernetes Secret and `helm upgrade` — the chart's
@@ -149,12 +147,32 @@ re-read automatically within one scrape interval.
 
 ```bash
 helm upgrade cyoda cyoda/cyoda -n cyoda \
-  --reuse-values \
+  --reset-then-reuse-values \
   --set replicas=3
 ```
 
 No mode flip needed — cluster mode is always on; at replicas=1 it runs
 as a "cluster of one".
+
+### Shutdown grace period
+
+The chart sets `terminationGracePeriodSeconds: 390`. On `SIGTERM` a node first
+drains its scheduled runs, and a run with a processor in flight that is not
+declared `idempotent` is allowed to finish. The worst case from `SIGTERM` to
+exit is
+
+```
+max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10s, callout deadline) + 100s
+callout deadline = (1 + CYODA_RETRY_FIXED_NUM_RETRIES) × CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS
+                   + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE
+```
+
+— 375 s at the binary's defaults. If you raise `CYODA_SCHEDULER_SHUTDOWN_DRAIN`
+or any of those callout settings through `extraEnv`, raise
+`terminationGracePeriodSeconds` to match. A pod killed before it has recorded
+its runs' outcomes leaves its tasks to another node, which takes them over
+after `CYODA_SCHEDULER_STALE_AFTER` (default `2m`). See `cyoda help run`
+(SHUTDOWN TIMING).
 
 ## Using with GitOps (Argo CD)
 
@@ -169,14 +187,14 @@ error message. To fix:
 
 **Option A: pre-create the Secrets and pass `existingSecret`.**
 Do this for every chart-managed Secret you want to keep stable across
-GitOps reconciles — HMAC, the metrics bearer, and (if you set
-`bootstrap.clientId`) the bootstrap client secret.
+GitOps reconciles — HMAC and the metrics bearer.
 
 ```bash
-kubectl -n cyoda create secret generic cyoda-hmac \
-  --from-literal=secret=$(openssl rand -hex 32)
-kubectl -n cyoda create secret generic cyoda-metrics-bearer \
-  --from-literal=bearer=$(openssl rand -base64 36)
+(umask 077; openssl rand -hex 32 | tr -d '\n' > hmac-secret
+  openssl rand -base64 36 | tr -d '\n' > metrics-bearer)
+kubectl -n cyoda create secret generic cyoda-hmac --from-file=secret=hmac-secret
+kubectl -n cyoda create secret generic cyoda-metrics-bearer --from-file=bearer=metrics-bearer
+rm hmac-secret metrics-bearer
 ```
 
 ```yaml
@@ -186,21 +204,6 @@ cluster:
 monitoring:
   metricsBearer:
     existingSecret: cyoda-metrics-bearer
-```
-
-If you also need the bootstrap M2M client (`bootstrap.clientId` set),
-pre-create that Secret too:
-
-```bash
-kubectl -n cyoda create secret generic cyoda-bootstrap \
-  --from-literal=secret=$(openssl rand -hex 32)
-```
-
-```yaml
-bootstrap:
-  clientId: cyoda-bootstrap
-  clientSecret:
-    existingSecret: cyoda-bootstrap
 ```
 
 **Option B: use external-secrets-operator** to sync from a real secret
@@ -277,6 +280,6 @@ serving — investigate before retrying.
 
 ### `CYODA_*_FILE` in `extraEnv` causes install to fail with duplicate env
 
-Remove it. The chart sets all five credential env vars (postgres DSN,
-JWT signing key, HMAC, bootstrap client secret, metrics bearer); to
-change a credential, change the referenced `existingSecret`.
+Remove it. The chart sets all four credential env vars (postgres DSN,
+JWT signing key, HMAC, metrics bearer); to change a credential, change
+the referenced `existingSecret`.

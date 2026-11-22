@@ -1,8 +1,7 @@
 ---
 paths:
   - "internal/domain/**/*.go"
-  - "internal/spi/**/*.go"
-  - "internal/persistence/**/*.go"
+  - "plugins/**/*.go"
 ---
 # Ownership & Mutability Rules
 
@@ -22,5 +21,5 @@ paths:
 
 ## Verification
 
-- `go test -race ./...` catches aliasing violations at runtime.
-- Code review must verify boundary-crossing sites follow: snapshot → yield → transform → commit/rollback.
+- `make race` catches aliasing only where two goroutines share the object.
+- Review catches the rest: boundary-crossing sites follow snapshot → yield → transform → commit/rollback.

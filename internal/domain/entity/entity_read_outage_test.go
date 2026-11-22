@@ -13,12 +13,14 @@ import (
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // A storage outage on the entity read that precedes a delete, an update or a
@@ -83,8 +85,8 @@ func newReadOutageHandler(t *testing.T, readErr error) (*entity.Handler, context
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	engine := wfengine.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	h := entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real())
 	return h, ctx
 }
 
@@ -196,7 +198,7 @@ func TestUpdateEntityCollection_MissingEntity_Still404(t *testing.T) {
 	expectEntityNotFound(t, err)
 }
 
-// --- HandleGetTransitions ----------------------------------------------------
+// --- GetEntityTransitions ----------------------------------------------------
 //
 // This route declares 503 in api/openapi.yaml, and its platform-api alias reads
 // the entity through workflow.GetAvailableTransitions, which has classified the
@@ -205,15 +207,14 @@ func TestUpdateEntityCollection_MissingEntity_Still404(t *testing.T) {
 func callGetTransitions(t *testing.T, readErr error) *httptest.ResponseRecorder {
 	t.Helper()
 	h, _ := newReadOutageHandler(t, readErr)
-	entityID := uuid.NewString()
+	entityID := uuid.New()
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/entity/"+entityID+"/transitions", nil)
-	r.SetPathValue("entityId", entityID)
-	h.HandleGetTransitions(w, r.WithContext(readOutageCtx()))
+	r := httptest.NewRequest(http.MethodGet, "/entity/"+entityID.String()+"/transitions", nil)
+	h.GetEntityTransitions(w, r.WithContext(readOutageCtx()), entityID, genapi.GetEntityTransitionsParams{})
 	return w
 }
 
-func TestHandleGetTransitions_StorageOutage_Returns503(t *testing.T) {
+func TestGetEntityTransitions_StorageOutage_Returns503(t *testing.T) {
 	w := callGetTransitions(t, storageOutage())
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; body: %s", w.Code, w.Body.String())
@@ -236,7 +237,7 @@ func TestHandleGetTransitions_StorageOutage_Returns503(t *testing.T) {
 	}
 }
 
-func TestHandleGetTransitions_MissingEntity_Still404(t *testing.T) {
+func TestGetEntityTransitions_MissingEntity_Still404(t *testing.T) {
 	w := callGetTransitions(t, spi.ErrNotFound)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body: %s", w.Code, w.Body.String())

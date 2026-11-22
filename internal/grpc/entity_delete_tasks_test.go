@@ -1,0 +1,327 @@
+package grpc
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	spi "github.com/cyoda/cyoda-go-spi"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/testing/taskconflict"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
+)
+
+const taskDeleteTenant spi.TenantID = "task-delete-tenant"
+
+// newTaskDeleteEnv is newTestEnv with a taskconflict.Factory in front of the
+// task store and a person workflow that arms AutoClose one hour after an
+// entity enters OPEN.
+func newTaskDeleteEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context, *memory.StoreFactory, *taskconflict.Plan) {
+	t.Helper()
+	return newTaskDeleteEnvWith(t, func(f spi.StoreFactory) spi.StoreFactory { return f })
+}
+
+// newTaskDeleteEnvWith is newTaskDeleteEnv with the store factory wrapped by
+// wrap, for a test that injects a store fault.
+func newTaskDeleteEnvWith(t *testing.T, wrap func(spi.StoreFactory) spi.StoreFactory) (*CloudEventsServiceImpl, context.Context, *memory.StoreFactory, *taskconflict.Plan) {
+	t.Helper()
+	real := memory.NewStoreFactory(memory.WithApplyFunc(schema.ApplyMany))
+	t.Cleanup(func() { real.Close() })
+	real.NewTransactionManager(common.NewDefaultUUIDGenerator())
+	txMgr := real.GetTransactionManager()
+	plan := taskconflict.NewPlan()
+	factory := wrap(&taskconflict.Factory{StoreFactory: real, Plan: plan})
+
+	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "task-delete-user", UserName: "Task Delete",
+		Tenant: spi.Tenant{ID: taskDeleteTenant, Name: "Task Delete"},
+		Roles:  []string{"ADMIN"},
+	})
+
+	engine := workflow.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	svc := &CloudEventsServiceImpl{
+		registry:      NewMemberRegistry(),
+		txMgr:         txMgr,
+		entityHandler: entity.New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistency(t, factory), platformclock.Real()),
+		modelHandler:  model.New(cachedFactory(factory), platformclock.Real()),
+		searchService: search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()),
+	}
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	wfStore, err := real.WorkflowStore(ctx)
+	if err != nil {
+		t.Fatalf("WorkflowStore: %v", err)
+	}
+	if err := wfStore.Save(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "person-sched", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 3_600_000}}}},
+			"CLOSED": {},
+		},
+	}}); err != nil {
+		t.Fatalf("WorkflowStore.Save: %v", err)
+	}
+	return svc, ctx, real, plan
+}
+
+func createPersonRPC(t *testing.T, svc *CloudEventsServiceImpl, ctx context.Context) string {
+	t.Helper()
+	resp, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+		"id": "create", "dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice"},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	info := parseResponsePayload(t, resp)["transactionInfo"].(map[string]any)
+	return info["entityIds"].([]any)[0].(string)
+}
+
+func personTasks(t *testing.T, real *memory.StoreFactory, ctx context.Context, entityID string) int {
+	t.Helper()
+	sts, err := real.ScheduledTaskStore(ctx)
+	if err != nil {
+		t.Fatalf("ScheduledTaskStore: %v", err)
+	}
+	page, err := sts.Query(ctx, taskDeleteTenant, spi.ScheduledTaskQuery{EntityID: entityID, Limit: 1000})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	return len(page.Items)
+}
+
+func requireConflictEnvelope(t *testing.T, success bool, code, message string, retryable *bool) {
+	t.Helper()
+	if success {
+		t.Fatal("success = true, want false")
+	}
+	if code != "CLIENT_ERROR" {
+		t.Errorf("code = %q, want CLIENT_ERROR", code)
+	}
+	if !strings.HasPrefix(message, common.ErrCodeConflict+":") {
+		t.Errorf("message = %q, want prefix %q", message, common.ErrCodeConflict+":")
+	}
+	if retryable == nil || !*retryable {
+		t.Errorf("retryable = %v, want true", retryable)
+	}
+}
+
+func TestRPC_EntityDelete_RemovesTheEntitysTasks(t *testing.T) {
+	svc, ctx, real, _ := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+	if n := personTasks(t, real, ctx, id); n != 1 {
+		t.Fatalf("tasks before the delete = %d, want 1", n)
+	}
+
+	resp, err := svc.EntityManage(ctx, makeCE(EntityDeleteRequest, map[string]any{"id": "del", "entityId": id}))
+	if err != nil {
+		t.Fatalf("EntityManage: %v", err)
+	}
+	var typed events.EntityDeleteResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Fatalf("delete failed: %+v", typed.Error)
+	}
+	if n := personTasks(t, real, ctx, id); n != 0 {
+		t.Errorf("tasks after the delete = %d, want 0", n)
+	}
+}
+
+func TestRPC_EntityDelete_TaskConflictPersists_ConflictEnvelope(t *testing.T) {
+	svc, ctx, real, plan := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+	plan.Refuse(taskconflict.DeleteForEntities, 100)
+
+	resp, err := svc.EntityManage(ctx, makeCE(EntityDeleteRequest, map[string]any{"id": "del", "entityId": id}))
+	if err != nil {
+		t.Fatalf("EntityManage: %v", err)
+	}
+	var typed events.EntityDeleteResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Error == nil {
+		t.Fatalf("error = nil, want the conflict envelope; success=%v", typed.Success)
+	}
+	requireConflictEnvelope(t, typed.Success, typed.Error.Code, typed.Error.Message, typed.Error.Retryable)
+	if n := personTasks(t, real, ctx, id); n != 1 {
+		t.Errorf("tasks = %d, want 1 (every attempt rolled back)", n)
+	}
+}
+
+func deleteAllRPC(t *testing.T, svc *CloudEventsServiceImpl, ctx context.Context, extra map[string]any) events.EntityDeleteAllResponseJson {
+	t.Helper()
+	fields := map[string]any{"id": "del-all", "model": map[string]any{"name": "person", "version": 1}}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	stream := &mockManageStream{ctx: ctx}
+	if err := svc.EntityManageCollection(makeCE(EntityDeleteAllRequest, fields), stream); err != nil {
+		t.Fatalf("EntityManageCollection: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("responses = %d, want 1", len(stream.sent))
+	}
+	var typed events.EntityDeleteAllResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	return typed
+}
+
+func TestRPC_EntityDeleteAll_FastPath_RemovesTasks(t *testing.T) {
+	svc, ctx, real, _ := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+
+	if typed := deleteAllRPC(t, svc, ctx, nil); !typed.Success {
+		t.Fatalf("delete-all failed: %+v", typed.Error)
+	}
+	if n := personTasks(t, real, ctx, id); n != 0 {
+		t.Errorf("tasks = %d, want 0", n)
+	}
+}
+
+func TestRPC_EntityDeleteAll_FastPath_TaskConflictPersists_ConflictEnvelope(t *testing.T) {
+	svc, ctx, real, plan := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+	plan.Refuse(taskconflict.DeleteForModel, 100)
+
+	typed := deleteAllRPC(t, svc, ctx, nil)
+	if typed.Error == nil {
+		t.Fatalf("error = nil, want the conflict envelope; success=%v", typed.Success)
+	}
+	requireConflictEnvelope(t, typed.Success, typed.Error.Code, typed.Error.Message, typed.Error.Retryable)
+	if n := personTasks(t, real, ctx, id); n != 1 {
+		t.Errorf("tasks = %d, want 1", n)
+	}
+}
+
+func TestRPC_EntityDeleteAll_Batched_RemovesTasks(t *testing.T) {
+	svc, ctx, real, _ := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+
+	if typed := deleteAllRPC(t, svc, ctx, map[string]any{"transactionSize": 1}); !typed.Success {
+		t.Fatalf("delete-all failed: %+v", typed.Error)
+	}
+	if n := personTasks(t, real, ctx, id); n != 0 {
+		t.Errorf("tasks = %d, want 0", n)
+	}
+}
+
+func TestRPC_EntityDeleteAll_Batched_TaskConflictPersists_ErrorsByID(t *testing.T) {
+	svc, ctx, real, plan := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+	plan.Refuse(taskconflict.DeleteForEntities, 1000)
+
+	typed := deleteAllRPC(t, svc, ctx, map[string]any{"transactionSize": 1})
+	if !typed.Success {
+		t.Fatalf("success = false (%+v), want true: a batched delete reports a conflict per id", typed.Error)
+	}
+	msg, _ := typed.ErrorsByID[id].(string)
+	if !strings.HasPrefix(msg, common.ErrCodeConflict+":") {
+		t.Errorf("ErrorsByID[%s] = %q, want a CONFLICT entry", id, msg)
+	}
+	if n := personTasks(t, real, ctx, id); n != 1 {
+		t.Errorf("tasks = %d, want 1", n)
+	}
+}
+
+func TestRPC_EntityUpdate_TaskRowConflict_ConflictEnvelope(t *testing.T) {
+	svc, ctx, _, plan := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+	plan.Refuse(taskconflict.ReconcileForEntity, 1)
+
+	resp, err := svc.EntityManage(ctx, makeCE(EntityUpdateRequest, map[string]any{
+		"id": "upd", "dataFormat": "JSON",
+		"payload": map[string]any{"entityId": id, "data": map[string]any{"name": "Alicia"}},
+	}))
+	if err != nil {
+		t.Fatalf("EntityManage: %v", err)
+	}
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Error == nil {
+		t.Fatalf("error = nil, want the conflict envelope; success=%v", typed.Success)
+	}
+	requireConflictEnvelope(t, typed.Success, typed.Error.Code, typed.Error.Message, typed.Error.Retryable)
+}
+
+func TestRPC_EntityDeleteAll_Verbose_RemovesTasks(t *testing.T) {
+	svc, ctx, real, plan := newTaskDeleteEnv(t)
+	id := createPersonRPC(t, svc, ctx)
+
+	if typed := deleteAllRPC(t, svc, ctx, map[string]any{"verbose": true}); !typed.Success {
+		t.Fatalf("delete-all failed: %+v", typed.Error)
+	}
+	if got := plan.Calls(taskconflict.DeleteForEntities); got != 1 {
+		t.Errorf("DeleteForEntities calls = %d, want 1 (verbose takes the single-transaction loop)", got)
+	}
+	if n := personTasks(t, real, ctx, id); n != 0 {
+		t.Errorf("tasks = %d, want 0", n)
+	}
+}
+
+// faultingDeleteFactory hands out entity stores whose nth Delete, counted
+// across them, fails with a server-side error.
+type faultingDeleteFactory struct {
+	spi.StoreFactory
+	n     int
+	calls int
+}
+
+func (f *faultingDeleteFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	s, err := f.StoreFactory.EntityStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &faultingDeleteStore{EntityStore: s, f: f}, nil
+}
+
+type faultingDeleteStore struct {
+	spi.EntityStore
+	f *faultingDeleteFactory
+}
+
+func (s *faultingDeleteStore) Delete(ctx context.Context, entityID string) error {
+	s.f.calls++
+	if s.f.calls == s.f.n {
+		return errors.New("pg: statement failed on a dropped connection")
+	}
+	return s.EntityStore.Delete(ctx, entityID)
+}
+
+// A delete-all in one transaction that meets a per-id fault answers, on the
+// gRPC door as on HTTP, the failure as a server-side error and deletes
+// nothing: the one transaction is atomic on every backend.
+func TestRPC_EntityDeleteAll_SingleTx_PerIDFaultFailsWhole(t *testing.T) {
+	svc, ctx, real, _ := newTaskDeleteEnvWith(t, func(f spi.StoreFactory) spi.StoreFactory {
+		return &faultingDeleteFactory{StoreFactory: f, n: 2}
+	})
+	ids := []string{createPersonRPC(t, svc, ctx), createPersonRPC(t, svc, ctx)}
+
+	typed := deleteAllRPC(t, svc, ctx, map[string]any{"verbose": true})
+	if typed.Success || typed.Error == nil || typed.Error.Code != "SERVER_ERROR" || !strings.Contains(typed.Error.Message, "ticket") {
+		t.Fatalf("answer = success %v, error %+v; want a ticketed SERVER_ERROR", typed.Success, typed.Error)
+	}
+	es, err := real.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	for _, id := range ids {
+		if _, err := es.Get(ctx, id); err != nil {
+			t.Errorf("entity %s gone although the request failed: %v", id, err)
+		}
+		if n := personTasks(t, real, ctx, id); n != 1 {
+			t.Errorf("tasks of %s = %d, want 1", id, n)
+		}
+	}
+}

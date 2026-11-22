@@ -1,7 +1,6 @@
 package grpc
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,16 +13,18 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/strictjson"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model/ingest"
+	"github.com/cyoda/cyoda-go/internal/domain/pagination"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/logging"
 )
 
 // EntitySearch handles unary search CloudEvents by calling service methods directly.
@@ -35,11 +36,18 @@ func (s *CloudEventsServiceImpl) EntitySearch(ctx context.Context, ce *cepb.Clou
 		return nil, status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entitySearch", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entitySearch", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
 	switch eventType {
 	case EntityGetRequest:
 		return s.handleEntityGetRequest(ctx, ce, payload)
+
+	case EntityConsistencyTimeGetRequest:
+		return s.handleConsistencyTimeGetRequest(ctx, ce, payload)
+
+	case PlatformClockGetRequest:
+		return s.handlePlatformClockGetRequest(ctx, ce, payload)
 
 	case EntitySnapshotSearchRequest:
 		return s.handleSnapshotSearchRequest(ctx, ce, payload)
@@ -66,6 +74,7 @@ func (s *CloudEventsServiceImpl) EntitySearchCollection(ce *cepb.CloudEvent, str
 		return status.Errorf(codes.InvalidArgument, "invalid CloudEvent: %v", err)
 	}
 
+	ctx = withRequestEvent(ctx, "entitySearchCollection", eventType, ce.Id)
 	slog.Debug("CloudEvent received", "pkg", "grpc", "rpc", "entitySearchCollection", "type", eventType, "ceId", ce.Id, "payload", logging.PayloadPreview(payload, 200))
 
 	switch eventType {
@@ -99,7 +108,7 @@ func (s *CloudEventsServiceImpl) EntitySearchCollection(ce *cepb.CloudEvent, str
 
 func (s *CloudEventsServiceImpl) handleEntityGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.EntityGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -108,7 +117,6 @@ func (s *CloudEventsServiceImpl) handleEntityGetRequest(ctx context.Context, ce 
 		PointInTime: req.PointInTime,
 	})
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", EntityGetRequest, "ceId", ce.Id, "error", err.Error())
 		return entityResponseError(ctx, ce.Id, err)
 	}
 
@@ -128,19 +136,69 @@ func (s *CloudEventsServiceImpl) handleEntityGetRequest(ctx context.Context, ce 
 	return NewCloudEvent(EntityResponse, resp)
 }
 
-func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
-	var req events.EntitySnapshotSearchRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+// handleConsistencyTimeGetRequest answers the tenant's consistency time. The
+// request carries only the base event fields; the answer never depends on a
+// transaction.
+func (s *CloudEventsServiceImpl) handleConsistencyTimeGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
+	var req events.EntityConsistencyTimeGetRequestJson
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
-	condBytes, err := json.Marshal(req.Condition)
+	c, err := s.cons.Fresh(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to marshal condition: %v", err)
+		return consistencyTimeError(ctx, ce.Id, err)
 	}
+
+	diag := common.GetDiagnostics(ctx)
+	resp := events.EntityConsistencyTimeResponseJson{
+		ID:              ce.Id,
+		Success:         true,
+		Warnings:        diag.GetWarnings(),
+		RequestID:       ce.Id,
+		ConsistencyTime: &c,
+	}
+	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", EntityConsistencyTimeResponse, "ceId", ce.Id, "success", true)
+	return NewCloudEvent(EntityConsistencyTimeResponse, resp)
+}
+
+// handlePlatformClockGetRequest answers this node's platform time, rate and
+// controllability, the same state GET /platform/clock answers. It reads no
+// store, so the only failures a request can cause are authentication, which
+// the interceptor refuses before the handler, and an invalid payload.
+func (s *CloudEventsServiceImpl) handlePlatformClockGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
+	var req events.PlatformClockGetRequestJson
+	if err := strictjson.Decode(payload, &req); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+	}
+
+	st := s.clockState()
+	now := st.Now.UTC()
+	rate := st.Rate()
+	diag := common.GetDiagnostics(ctx)
+	resp := events.PlatformClockResponseJson{
+		ID:           ce.Id,
+		Success:      true,
+		Warnings:     diag.GetWarnings(),
+		RequestID:    ce.Id,
+		Now:          &now,
+		Rate:         &rate,
+		Controllable: &st.Controllable,
+	}
+	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", PlatformClockResponse, "ceId", ce.Id, "success", true)
+	return NewCloudEvent(PlatformClockResponse, resp)
+}
+
+func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
+	var req events.EntitySnapshotSearchRequestJson
+	if err := strictjson.Decode(payload, &req); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+	}
+
+	condBytes, _ := json.Marshal(req.Condition) // decoded from JSON, so it encodes: cannot fail
 	cond, err := predicate.ParseCondition(condBytes)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid condition: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid condition: %v", strictjson.Within(err, "/condition"))
 	}
 
 	modelRef := spi.ModelRef{
@@ -167,7 +225,6 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 		if errors.Is(err, search.ErrQueueFull) {
 			err = search.QueueFullError()
 		}
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", EntitySnapshotSearchRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}
 
@@ -191,62 +248,77 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 
 func (s *CloudEventsServiceImpl) handleSnapshotGetStatusRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.SnapshotGetStatusRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
 	snapStatus, err := s.searchService.GetAsyncSearchStatus(ctx, req.SnapshotID)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", SnapshotGetStatusRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}
 
 	diag := common.GetDiagnostics(ctx)
-	count := snapStatus.EntitiesCount
 	resp := events.EntitySnapshotSearchResponseJson{
 		ID:       ce.Id,
 		Success:  true,
 		Warnings: diag.GetWarnings(),
-		Status: events.SearchSnapshotStatusJson{
-			SnapshotID:    snapStatus.SnapshotID,
-			Status:        events.SearchSnapshotStatusJsonStatus(snapStatus.Status),
-			EntitiesCount: &count,
-		},
+		Status:   snapshotStatusJSON(snapStatus),
 	}
 	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", EntitySnapshotSearchResponse, "ceId", ce.Id, "success", true)
 	return NewCloudEvent(EntitySnapshotSearchResponse, resp)
 }
 
+// snapshotStatusJSON renders a job's status for the wire. failureReason is
+// carried only when the service set one, which it does for a FAILED job alone.
+func snapshotStatusJSON(st *search.SnapshotStatus) events.SearchSnapshotStatusJson {
+	count := st.EntitiesCount
+	expires := st.ExpirationDate.UTC()
+	out := events.SearchSnapshotStatusJson{
+		SnapshotID:     st.SnapshotID,
+		Status:         events.SearchSnapshotStatusJsonStatus(st.Status),
+		EntitiesCount:  &count,
+		ExpirationDate: &expires,
+	}
+	if st.FailureReason != "" {
+		reason := st.FailureReason
+		out.FailureReason = &reason
+	}
+	return out
+}
+
 func (s *CloudEventsServiceImpl) handleSnapshotCancelRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.SnapshotCancelRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
 	err := s.searchService.CancelAsyncSearch(ctx, req.SnapshotID)
+	if appErr := (*common.AppError)(nil); errors.As(err, &appErr) && appErr.Code == common.ErrCodeSearchJobAlreadyTerminal {
+		// The snapshot has already ended: refused as the HTTP door refuses
+		// it, with the snapshot's own full status (failureReason for a FAILED
+		// snapshot) rather than the generic one.
+		snapStatus, serr := s.searchService.GetAsyncSearchStatus(ctx, req.SnapshotID)
+		if serr != nil {
+			return snapshotSearchError(ctx, ce.Id, serr)
+		}
+		return snapshotCancelRefused(ctx, ce.Id, appErr, snapshotStatusJSON(snapStatus))
+	}
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", SnapshotCancelRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}
 
 	// After cancel, fetch updated status.
 	snapStatus, err := s.searchService.GetAsyncSearchStatus(ctx, req.SnapshotID)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", SnapshotCancelRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}
 
 	diag := common.GetDiagnostics(ctx)
-	count := snapStatus.EntitiesCount
 	resp := events.EntitySnapshotSearchResponseJson{
 		ID:       ce.Id,
 		Success:  true,
 		Warnings: diag.GetWarnings(),
-		Status: events.SearchSnapshotStatusJson{
-			SnapshotID:    snapStatus.SnapshotID,
-			Status:        events.SearchSnapshotStatusJsonStatus(snapStatus.Status),
-			EntitiesCount: &count,
-		},
+		Status:   snapshotStatusJSON(snapStatus),
 	}
 	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", EntitySnapshotSearchResponse, "ceId", ce.Id, "success", true)
 	return NewCloudEvent(EntitySnapshotSearchResponse, resp)
@@ -258,7 +330,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotCancelRequest(ctx context.Context
 
 func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	var req events.EntityGetAllRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -273,7 +345,6 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 	// attacker-supplied PageNumber up to MaxInt would propagate to the
 	// service layer and panic with a slice-bounds error.
 	if vErr := pagination.ValidateOffset(int64(pageNumber), int64(pageSize)); vErr != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityGetAllRequest, "ceId", ce.Id, "error", vErr.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, vErr)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -284,9 +355,8 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 	envelopes, err := s.entityHandler.ListEntities(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), entity.PaginationParams{
 		PageSize:   int32(pageSize),
 		PageNumber: int32(pageNumber),
-	}, nil)
+	}, req.PointInTime)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityGetAllRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -321,17 +391,14 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 
 func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	var req events.EntitySearchRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
-	condBytes, err := json.Marshal(req.Condition)
-	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "failed to marshal condition: %v", err)
-	}
+	condBytes, _ := json.Marshal(req.Condition) // decoded from JSON, so it encodes: cannot fail
 	cond, err := predicate.ParseCondition(condBytes)
 	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "invalid condition: %v", err)
+		return status.Errorf(codes.InvalidArgument, "invalid condition: %v", strictjson.Within(err, "/condition"))
 	}
 
 	modelRef := spi.ModelRef{
@@ -353,7 +420,6 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		// request was invalid.
 		if *req.Limit < 1 {
 			vErr := common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid limit: must be at least 1")
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", vErr.Error())
 			errCE, ceErr := entityResponseError(ctx, ce.Id, vErr)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -379,7 +445,6 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 	// observes zero behavior change.
 	opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TimeoutMillis, "timeoutMillis")
 	if terr != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", terr.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, terr)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -397,7 +462,6 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeSearchTimeout); appErr != nil {
 			err = appErr
 		}
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -405,18 +469,28 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		return stream.Send(errCE)
 	}
 
-	diag := common.GetDiagnostics(ctx)
-	warnings := diag.GetWarnings()
+	return sendEntityResults(ctx, ce, results, stream)
+}
+
+// sendEntityResults streams one EntityResponse per result. Every envelope is
+// built before the first send, so stored data that does not decode fails the
+// request with one error envelope instead of a stream with entities left out.
+func sendEntityResults(ctx context.Context, ce *cepb.CloudEvent, results []*spi.Entity, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
+	warnings := common.GetDiagnostics(ctx).GetWarnings()
+	out := make([]*cepb.CloudEvent, 0, len(results))
 	for _, e := range results {
 		var data any
-		dec := json.NewDecoder(bytes.NewReader(e.Data))
-		dec.UseNumber()
-		if err := dec.Decode(&data); err != nil {
-			slog.Warn("failed to unmarshal entity data", "pkg", "grpc", "entityId", e.Meta.ID, "error", err)
-			continue
+		if err := ingest.DecodeStoredJSON(e.Data, &data); err != nil {
+			// buildErrorFields logs the detail under the ticket; the entity id
+			// rides in the cause so that one line names the entity.
+			appErr := common.Internal("failed to parse entity data", fmt.Errorf("entity %s: %w", e.Meta.ID, err))
+			errCE, ceErr := entityResponseError(ctx, ce.Id, appErr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(errCE)
 		}
-
-		resp := events.EntityResponseJson{
+		respCE, err := NewCloudEvent(EntityResponse, events.EntityResponseJson{
 			ID:        ce.Id,
 			Success:   true,
 			Warnings:  warnings,
@@ -426,11 +500,13 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 				Data: data,
 				Meta: buildEntityMeta(e, nil),
 			},
-		}
-		respCE, err := NewCloudEvent(EntityResponse, resp)
+		})
 		if err != nil {
 			return status.Errorf(codes.Internal, "failed to build response: %v", err)
 		}
+		out = append(out, respCE)
+	}
+	for _, respCE := range out {
 		if err := stream.Send(respCE); err != nil {
 			return err
 		}
@@ -440,15 +516,14 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 
 func (s *CloudEventsServiceImpl) handleEntityStatsGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	var req events.EntityStatsGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
 	// If a specific model is requested, get stats for that model only.
 	if req.Model != nil && req.Model.Name != "" {
-		stat, err := s.entityHandler.GetStatisticsForModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version))
+		stat, err := s.entityHandler.GetStatisticsForModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), req.PointInTime)
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsGetRequest, "ceId", ce.Id, "error", err.Error())
 			errCE, ceErr := entityStatsError(ctx, ce.Id, err)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -475,9 +550,8 @@ func (s *CloudEventsServiceImpl) handleEntityStatsGetRequest(ctx context.Context
 	}
 
 	// All models.
-	stats, err := s.entityHandler.GetStatistics(ctx)
+	stats, err := s.entityHandler.GetStatistics(ctx, req.PointInTime)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsGetRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityStatsError(ctx, ce.Id, err)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -511,7 +585,7 @@ func (s *CloudEventsServiceImpl) handleEntityStatsGetRequest(ctx context.Context
 
 func (s *CloudEventsServiceImpl) handleEntityStatsByStateGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	var req events.EntityStatsByStateGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -523,9 +597,8 @@ func (s *CloudEventsServiceImpl) handleEntityStatsByStateGetRequest(ctx context.
 	var results []entity.EntityStatByState
 	if req.Model != nil && req.Model.Name != "" {
 		var err error
-		results, err = s.entityHandler.GetStatisticsByStateForModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), statesFilter)
+		results, err = s.entityHandler.GetStatisticsByStateForModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), statesFilter, req.PointInTime)
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsByStateGetRequest, "ceId", ce.Id, "error", err.Error())
 			errCE, ceErr := entityStatsByStateError(ctx, ce.Id, err)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -534,9 +607,8 @@ func (s *CloudEventsServiceImpl) handleEntityStatsByStateGetRequest(ctx context.
 		}
 	} else {
 		var err error
-		results, err = s.entityHandler.GetStatisticsByState(ctx, statesFilter)
+		results, err = s.entityHandler.GetStatisticsByState(ctx, statesFilter, req.PointInTime)
 		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsByStateGetRequest, "ceId", ce.Id, "error", err.Error())
 			errCE, ceErr := entityStatsByStateError(ctx, ce.Id, err)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -572,13 +644,12 @@ func (s *CloudEventsServiceImpl) handleEntityStatsByStateGetRequest(ctx context.
 
 func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	var req events.EntityChangesMetadataGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
 	entries, err := s.entityHandler.GetChangesMetadata(ctx, req.EntityID, req.PointInTime)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityChangesMetadataGetRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityChangesMetadataError(ctx, ce.Id, err)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -606,6 +677,18 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 		if entry.HasEntity && entry.TransactionID != "" {
 			txID := entry.TransactionID
 			changeMeta.TransactionID = &txID
+		}
+		// Attribution, gated as the HTTP door gates it: each field only when
+		// the change recorded it.
+		if entry.AttributedKind != "" {
+			kind := entry.AttributedKind
+			changeMeta.AttributedKind = &kind
+		}
+		if entry.Executor.ID != "" {
+			changeMeta.ExecutedBy = &events.EntityChangeMetaJsonExecutedBy{
+				ID:   entry.Executor.ID,
+				Kind: string(entry.Executor.Kind),
+			}
 		}
 
 		resp := events.EntityChangesMetadataResponseJson{
@@ -667,7 +750,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 	stream cyodapb.CloudEventsService_EntitySearchCollectionServer,
 ) error {
 	var req events.SnapshotGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -676,7 +759,6 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 	// already validates here; the gRPC entry point did not, leaving the
 	// same offset = pageNumber*pageSize multiplication exposed.
 	if vErr := pagination.ValidateOffset(int64(req.PageNumber), int64(req.PageSize)); vErr != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", SnapshotGetRequest, "ceId", ce.Id, "error", vErr.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, vErr)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -686,7 +768,6 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 
 	results, err := s.searchService.GetAsyncSearchResults(ctx, req.SnapshotID, req.PageNumber, req.PageSize)
 	if err != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", SnapshotGetRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)
 		if ceErr != nil {
 			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -694,36 +775,5 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 		return stream.Send(errCE)
 	}
 
-	diag := common.GetDiagnostics(ctx)
-	warnings := diag.GetWarnings()
-	for _, e := range results {
-		var data any
-		if e.Data != nil {
-			dec := json.NewDecoder(bytes.NewReader(e.Data))
-			dec.UseNumber()
-			if err := dec.Decode(&data); err != nil {
-				slog.Warn("failed to unmarshal entity data", "pkg", "grpc", "entityId", e.Meta.ID, "error", err)
-				continue
-			}
-		}
-		resp := events.EntityResponseJson{
-			ID:        ce.Id,
-			Success:   true,
-			Warnings:  warnings,
-			RequestID: ce.Id,
-			Payload: events.DataPayloadJson{
-				Type: "JSON",
-				Data: data,
-				Meta: buildEntityMeta(e, nil),
-			},
-		}
-		respCE, err := NewCloudEvent(EntityResponse, resp)
-		if err != nil {
-			return status.Errorf(codes.Internal, "failed to build response: %v", err)
-		}
-		if err := stream.Send(respCE); err != nil {
-			return err
-		}
-	}
-	return nil
+	return sendEntityResults(ctx, ce, results, stream)
 }

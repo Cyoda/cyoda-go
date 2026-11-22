@@ -5,18 +5,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // A FUNCTION clause is a workflow/transition-criterion shape: the engine
-// intercepts it in evaluateCriterion and dispatches it to a compute member.
-// Search has no such dispatcher — the parsed FunctionCondition is an empty
-// struct (name and config are discarded by ParseCondition), ConditionToFilter
-// refuses to translate it, and match.Prepare has no evaluator for it. Left
-// unvalidated it reached the evaluator and surfaced as a 500 on a
-// client-supplied condition. ValidateCondition is the single boundary every
-// search-shaped entry point funnels through, so rejecting it here covers sync
-// search, async submit, grouped stats, conditional delete and gRPC at once.
+// evaluates it and dispatches it to a compute member. Search has no such
+// dispatcher — ConditionToFilter refuses to translate it, and match.Prepare
+// has no evaluator for it. ValidateCondition is the single boundary every
+// search-shaped entry point funnels through, so refusing it here as a client
+// fault covers sync search, async submit, grouped stats, conditional delete
+// and gRPC at once.
 
 func TestValidateCondition_FunctionRejected(t *testing.T) {
 	err := ValidateCondition(&predicate.FunctionCondition{})
@@ -64,7 +62,7 @@ func TestValidateCondition_NonFunctionTreeStillAccepted(t *testing.T) {
 		Conditions: []predicate.Condition{
 			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
 			&predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "APPROVED"},
-			&predicate.ArrayCondition{JsonPath: "$.tags[*]", Values: []any{"go"}},
+			&predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tags[*]", Values: []any{"go"}},
 		},
 	}
 	if err := ValidateCondition(cond); err != nil {

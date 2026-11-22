@@ -77,6 +77,13 @@ The following headers are emitted by the CORS middleware when it is installed
 - wildcard mode: literal `*` for every request, never reflective of `Origin`.
 - disabled mode: not emitted.
 
+**Access-Control-Expose-Headers:**
+
+- `Cyoda-Warning` (static), on every non-preflight response that carries
+  `Access-Control-Allow-Origin`, so that a script can read the request's
+  warnings (see `cyoda help errors`). Not emitted when the origin is not
+  allowed, nor on a preflight.
+
 **On preflight responses only** (`OPTIONS` with `Origin` and
 `Access-Control-Request-Method`):
 

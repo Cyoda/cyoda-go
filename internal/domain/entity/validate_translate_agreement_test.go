@@ -3,9 +3,9 @@ package entity_test
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 // TestDeleteAndGroupedStats_ClearingImpliesTranslates is the entity-package
@@ -84,6 +84,6 @@ func TestDeleteAndGroupedStats_ClearingImpliesTranslates(t *testing.T) {
 	// translator's switch runs, so it is a distinct shape from the ones
 	// above rather than a rewording of them.
 	t.Run("array", func(t *testing.T) {
-		assert(t, &predicate.ArrayCondition{JsonPath: "$.tags[*]", Values: []any{"v", nil, "w"}})
+		assert(t, &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tags[*]", Values: []any{"v", nil, "w"}})
 	})
 }

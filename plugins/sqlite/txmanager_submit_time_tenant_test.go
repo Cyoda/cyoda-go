@@ -6,8 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
+	"github.com/cyoda/cyoda-go/plugins/sqlite"
 )
 
 // TestGetSubmitTime_PersistentFallback_RejectsCrossTenant covers the
@@ -32,6 +33,7 @@ func TestGetSubmitTime_PersistentFallback_RejectsCrossTenant(t *testing.T) {
 			t.Fatalf("create factory (phase 1): %v", err)
 		}
 		defer factory.Close()
+		spitest.EnsureLockedModel(t, factory, ctxA, ref)
 
 		tm, err := factory.TransactionManager(ctxA)
 		if err != nil {

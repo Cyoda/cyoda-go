@@ -128,7 +128,7 @@ func updateEntityRaw(t *testing.T, entityID, payload string) (int, string) {
 // patchEntityMerge issues PATCH /entity/JSON/{entityId} with merge-patch+json.
 func patchEntityMerge(t *testing.T, entityID, ifMatch, patch string) (int, string) {
 	t.Helper()
-	token := getToken(t, "testclient", "testsecret")
+	token := suiteToken(t)
 	req, err := e2eNewRequest(t, http.MethodPatch,
 		serverURL+fmt.Sprintf("/api/entity/JSON/%s", entityID),
 		strings.NewReader(patch))
@@ -692,4 +692,25 @@ func mapKeys(m map[string]any) []string {
 		ks = append(ks, k)
 	}
 	return ks
+}
+
+// TestUniqueKeys_CollectionUpdateNonObjectRoot_400 verifies that a collection
+// update whose item data is not a JSON object answers 400 VALIDATION_FAILED on
+// a model with unique keys, as without them. The object-root refusal runs ahead
+// of the unique-key pre-check, which could not read a scalar or array root and
+// answered 500.
+func TestUniqueKeys_CollectionUpdateNonObjectRoot_400(t *testing.T) {
+	const model = "e2e-uk-coll-root"
+	setupUKModel(t, model, `{"uniqueKeys":[{"id":"name-amount-key","fields":["$.name","$.amount"]}]}`)
+	entityID := createEntityE2E(t, model, 1, `{"name":"Alice","amount":100,"status":"draft"}`)
+
+	for _, root := range []string{`5`, `"x"`, `[1]`} {
+		resp := doAuth(t, http.MethodPut, "/api/entity/JSON", collectionUpdateItems(entityID, "", root))
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("root %s: expected 400, got %d: %s", root, resp.StatusCode, body)
+			continue
+		}
+		assertErrorCode(t, body, "VALIDATION_FAILED")
+	}
 }

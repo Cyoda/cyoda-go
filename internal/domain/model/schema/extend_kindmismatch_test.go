@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // These two cases used to assert that a path declaring one kind REFUSED a
@@ -15,7 +15,7 @@ import (
 //
 // A write can add a kind now, at STRUCTURAL. The concern the original cases
 // guarded — that a node holding both a container and primitive types must not
-// be something Apply cannot replay — is what they assert instead, end to end.
+// be something ApplyMany cannot replay — is what they assert instead, end to end.
 
 func TestExtend_ScalarPathGainsAnObjectBranch(t *testing.T) {
 	existing := NewObjectNode()

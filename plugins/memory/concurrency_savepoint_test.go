@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // Locking-discipline race tests for Savepoint, RollbackToSavepoint, and
@@ -83,6 +83,7 @@ func TestSavepoint_VsCommit_NoRace(t *testing.T) {
 			txMgr := factory.NewTransactionManager(uuids)
 
 			ctx := ctxWithTenant("tenant-A")
+			lockModels(t, factory, ctx, savepointModelRef)
 			store, err := factory.EntityStore(ctx)
 			if err != nil {
 				t.Fatalf("EntityStore failed: %v", err)
@@ -164,6 +165,7 @@ func TestSavepoint_VsRollback_NoRace(t *testing.T) {
 			txMgr := factory.NewTransactionManager(uuids)
 
 			ctx := ctxWithTenant("tenant-A")
+			lockModels(t, factory, ctx, savepointModelRef)
 			_, err := factory.EntityStore(ctx)
 			if err != nil {
 				t.Fatalf("EntityStore failed: %v", err)
@@ -219,6 +221,7 @@ func TestRollbackToSavepoint_VsCommit_NoRace(t *testing.T) {
 			txMgr := factory.NewTransactionManager(uuids)
 
 			ctx := ctxWithTenant("tenant-A")
+			lockModels(t, factory, ctx, savepointModelRef)
 			store, err := factory.EntityStore(ctx)
 			if err != nil {
 				t.Fatalf("EntityStore failed: %v", err)
@@ -305,6 +308,7 @@ func TestRollbackToSavepoint_VsSave_NoRace(t *testing.T) {
 			txMgr := factory.NewTransactionManager(uuids)
 
 			ctx := ctxWithTenant("tenant-A")
+			lockModels(t, factory, ctx, savepointModelRef)
 			store, err := factory.EntityStore(ctx)
 			if err != nil {
 				t.Fatalf("EntityStore failed: %v", err)
@@ -385,6 +389,7 @@ func TestJoin_VsRollback_NoRace(t *testing.T) {
 			txMgr := factory.NewTransactionManager(uuids)
 
 			ctx := ctxWithTenant("tenant-A")
+			lockModels(t, factory, ctx, savepointModelRef)
 			_, err := factory.EntityStore(ctx)
 			if err != nil {
 				t.Fatalf("EntityStore failed: %v", err)

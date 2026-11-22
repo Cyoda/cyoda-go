@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
 )
 
 // search_intx_test.go — in-transaction SEARCH over the FULL HTTP and gRPC stack
@@ -90,7 +90,7 @@ func simpleStatusCond(value string) string {
 // class "CLIENT_ERROR"; the DOMAIN code, e.g. MODEL_NOT_FOUND, is carried in
 // the message per buildErrorFields).
 func (h *callbackHarness) searchGRPCCond(model string, version int, cond map[string]any, joinTok string, trackingRead bool) (count int, errCode, errMsg string, err error) {
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
 	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntitySearchRequest, map[string]any{
 		"id":           "cb-intx-grpc-search",
 		"model":        map[string]any{"name": model, "version": version},
@@ -155,7 +155,7 @@ func parseSearchFrame(ce *cepb.CloudEvent) (ok bool, errCode, errMsg string, err
 }
 
 // intxSearchPrimaryWF builds a REPLACE workflow whose NONE->ACTIVE transition
-// fires a single SYNC calculator processor by name.
+// fires a single SYNC externalized processor by name.
 func intxSearchPrimaryWF(wfName, procName string) string {
 	return fmt.Sprintf(`{
 		"importMode": "REPLACE",
@@ -163,7 +163,7 @@ func intxSearchPrimaryWF(wfName, procName string) string {
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}

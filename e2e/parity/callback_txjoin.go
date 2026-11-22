@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // callback_txjoin.go — cross-backend parity scenarios for
@@ -87,13 +87,20 @@ func cbWorkflowDoc(name string, states map[string]any) string {
 	return string(b)
 }
 
-// cbProc builds one calculator-processor entry.
+// cbProc builds one externalized-processor entry.
 func cbProc(name, execMode string, ctxValue string, extraConfig map[string]any) map[string]any {
 	cfg := map[string]any{"attachEntity": true, "calculationNodesTags": "", "context": ctxValue}
 	for k, v := range extraConfig {
 		cfg[k] = v
 	}
-	return map[string]any{"type": "calculator", "name": name, "executionMode": execMode, "config": cfg}
+	return map[string]any{"type": "externalized", "name": name, "executionMode": execMode, "config": cfg}
+}
+
+// withStartNewTx sets the processor's startNewTxOnDispatch, a member of the
+// processor beside executionMode, not of its config.
+func withStartNewTx(proc map[string]any, startNewTx bool) map[string]any {
+	proc["startNewTxOnDispatch"] = startNewTx
+	return proc
 }
 
 // cbPrimaryProcWorkflow builds a NONE→ACTIVE auto-transition workflow whose
@@ -489,8 +496,7 @@ func RunCallback_CBDPostJoinsTxPost(t *testing.T, fixture BackendFixture) {
 	wf := cbWorkflowDoc("cbtj-cbd-post-wf", map[string]any{
 		"NONE": map[string]any{"transitions": []any{map[string]any{
 			"name": "init", "next": "ACTIVE", "manual": false,
-			"processors": []any{cbProc("cb-create-secondary", "COMMIT_BEFORE_DISPATCH", ctxVal,
-				map[string]any{"startNewTxOnDispatch": true})},
+			"processors": []any{withStartNewTx(cbProc("cb-create-secondary", "COMMIT_BEFORE_DISPATCH", ctxVal, nil), true)},
 		}}},
 		"ACTIVE": map[string]any{},
 	})

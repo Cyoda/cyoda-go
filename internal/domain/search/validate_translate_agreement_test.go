@@ -3,9 +3,9 @@ package search_test
 import (
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 // TestValidateCondition_ClearingImpliesTranslates is the empirical check for
@@ -60,7 +60,7 @@ func TestValidateCondition_ClearingImpliesTranslates(t *testing.T) {
 	})
 
 	t.Run("array", func(t *testing.T) {
-		cond := &predicate.ArrayCondition{JsonPath: "$.tags[*]", Values: []any{"a", nil, "b"}}
+		cond := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tags[*]", Values: []any{"a", nil, "b"}}
 		assertClearingImpliesTranslates(t, cond)
 	})
 

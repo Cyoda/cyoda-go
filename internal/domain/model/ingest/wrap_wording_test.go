@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // Final review M4: Extend can fail for reasons that are not a change-level
@@ -33,7 +33,7 @@ func TestValidateOrExtend_NonLevelFailureIsNotLabeledChangeLevel(t *testing.T) {
 	}
 	root := map[string]any{"a": doc}
 
-	err = ValidateOrExtend(context.Background(), &recordingModelStore{}, desc, root)
+	_, err = ValidateOrExtend(context.Background(), &recordingModelStore{}, desc, root)
 	if err == nil {
 		t.Fatal("want an error for a document nested past MaxValidationDepth")
 	}
@@ -56,7 +56,7 @@ func TestValidateOrExtend_GenuineLevelViolationKeepsItsLabel(t *testing.T) {
 		ChangeLevel: spi.ChangeLevelArrayLength, // the most restrictive level
 	}
 
-	err = ValidateOrExtend(context.Background(), &recordingModelStore{}, desc, map[string]any{"amount": "y"})
+	_, err = ValidateOrExtend(context.Background(), &recordingModelStore{}, desc, map[string]any{"amount": "y"})
 	if err == nil {
 		t.Fatal("want a change-level violation for a new field at the most restrictive level")
 	}

@@ -49,7 +49,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // ukSampleJSON is the canonical sample payload imported to infer the model
@@ -424,7 +424,7 @@ const ukProcRewriteWorkflow = `{
 		"active": true,
 		"states": {
 			"NONE":    {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-				"processors": [{"type": "calculator", "name": "tag-with-foo", "executionMode": "SYNC",
+				"processors": [{"type": "externalized", "name": "tag-with-foo", "executionMode": "SYNC",
 					"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 			}]},
 			"CREATED": {}

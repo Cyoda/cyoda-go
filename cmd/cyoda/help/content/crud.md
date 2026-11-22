@@ -13,7 +13,8 @@ see_also:
   - errors.VALIDATION_FAILED
   - errors.INCOMPATIBLE_TYPE
   - errors.CONFLICT
-  - errors.IDEMPOTENCY_CONFLICT
+  - errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
+  - errors.CONSISTENCY_TIME_UNAVAILABLE
   - errors.TRANSACTION_TIMEOUT
   - errors.TRANSITION_NOT_FOUND
   - errors.WORKFLOW_FAILED
@@ -46,6 +47,7 @@ DELETE /api/entity/{entityName}/{modelVersion}
 GET    /api/entity/{entityName}/{modelVersion}
 GET    /api/entity/{entityId}/changes
 GET    /api/entity/{entityId}/transitions
+GET    /api/entity/consistency-time
 GET    /api/entity/stats
 GET    /api/entity/stats/states
 GET    /api/entity/stats/{entityName}/{modelVersion}
@@ -62,6 +64,8 @@ Entities are instances of models. Each entity has a UUID, a model reference (`en
 
 Body size limit on all write endpoints: 10 MiB.
 
+A response may carry `Cyoda-Warning` headers: one per warning the request raised, such as the default-workflow fallback or a compute member's warning. See `cyoda help errors` (WARNINGS) for the encoding and the bounds.
+
 ## ENDPOINTS
 
 **POST /api/entity/{format}/{entityName}/{modelVersion}** — Create a single entity
@@ -69,7 +73,7 @@ Body size limit on all write endpoints: 10 MiB.
 - `format` (path): `JSON` or `XML`
 - `entityName` (path): string — model name
 - `modelVersion` (path): int32
-- `transactionWindow` (query, optional): int32, default `100`, max `1000` — applies only when the request body is a JSON array. Maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Array bodies exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is then an array with one element per chunk in commit order; chunks committed before any later failure remain durable.
+- `transactionWindow` (query, optional): int32, default `100`, max `1000` — applies only when the request body is a JSON array. Maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Array bodies exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is then an array with one element per chunk in commit order; chunks committed before any later failure remain durable. On a request that joins an open transaction (a compute node's callback made with the transaction token) `transactionWindow` is rejected with `400`, whatever the body, and the collection is never split: it runs as one unit, so a failure in any item fails the request — the transaction's owner commits it or not.
 - `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 If the request body is a JSON array, each element is treated as a separate entity of the same model and the collection-create chunking contract applies (see `transactionWindow` above and the `POST /api/entity/{format}` partial-success shape below).
@@ -86,7 +90,7 @@ Response: `200 OK`, `application/json`. Single-object body returns a one-element
 **POST /api/entity/{format}** — Create a collection (mixed models)
 
 - `format` (path): `JSON` or `XML`
-- `transactionWindow` (query, optional): int32, default `100`, max `1000` — maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Collections exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is an array with one element per chunk in commit order.
+- `transactionWindow` (query, optional): int32, default `100`, max `1000` — maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Collections exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is an array with one element per chunk in commit order. On a request that joins an open transaction (a compute node's callback made with the transaction token) `transactionWindow` is rejected with `400`, whatever the body, and the collection is never split: it runs as one unit, so a failure in any item fails the request — the transaction's owner commits it or not.
 - `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 **IMPORTANT — `payload` is a JSON-encoded string, not an object.**
@@ -131,13 +135,13 @@ Response: `200 OK`, `application/json`, `EntityTransactionResponse` array — on
 ]
 ```
 
-When the very first chunk fails (no durable progress), the response is the standard `application/problem+json` 4xx error envelope instead.
+When the very first chunk fails (no durable progress), the response is the standard `application/problem+json` error envelope instead (4xx, or 5xx for a server-side failure).
 
 **GET /api/entity/{entityId}** — Read a single entity by UUID
 
 - `entityId` (path): UUID string
-- `pointInTime` (query, optional): RFC 3339 date-time — load entity state at this instant
-- `transactionId` (query, optional): UUID — load entity state as of the end of this transaction
+- `pointInTime` (query, optional): RFC 3339 date-time — load entity state at this instant; must be at or before the consistency time (see POINT-IN-TIME SEMANTICS)
+- `transactionId` (query, optional): UUID — load the entity as this transaction left it: the one version the transaction committed. Committed transactions only: a transaction that has not committed (also when the request joins it), never wrote the entity, or deleted it answers `404 ENTITY_NOT_FOUND`
 
 `pointInTime` and `transactionId` are mutually exclusive; supplying both returns `400 BAD_REQUEST`.
 
@@ -166,7 +170,7 @@ Response: `200 OK`, `application/json`:
 - `If-Match` (header, optional): transaction ID of last read — optimistic concurrency; if the entity was modified since, returns `412 Precondition Failed`
 - `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
-Request body: updated entity JSON/XML payload.
+Request body: the entity's new JSON/XML payload, which replaces the stored data. The body is required: an empty body is refused with `400 BAD_REQUEST` and nothing is committed. To run the loopback, or fire a transition, without changing the data, send `PATCH` with the empty patch `{}`.
 
 Response: `200 OK`, `application/json`:
 
@@ -181,16 +185,18 @@ Response: `200 OK`, `application/json`:
 
 - `format` (path): `JSON` or `XML`
 - `entityId` (path): UUID
-- `transition` (path): string — transition name defined in the model's workflow
+- `transition` (path): string — the name of a transition of the entity's current state. Any transition that is not `disabled` and has no `schedule` can be named, whether its `manual` is `true` or `false`: `manual` decides only whether the engine fires the transition on its own (see `cyoda help workflows`, TRANSITIONS)
 - `If-Match` (header, optional): transaction ID
 - `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
+
+Request body: the entity's new JSON/XML payload, required as on the loopback update above.
 
 Response: `200 OK`, same shape as loopback update.
 
 **PUT /api/entity/{format}** — Update a collection (mixed entities)
 
 - `format` (path): `JSON` (only supported format today; single-item PUT endpoints still accept XML)
-- `transactionWindow` (query, optional): int32, default `100`, max `1000` — maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Collections exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is an array with one element per chunk in commit order; chunks committed before any later failure remain durable.
+- `transactionWindow` (query, optional): int32, default `100`, max `1000` — maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Collections exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is an array with one element per chunk in commit order; chunks committed before any later failure remain durable. On a request that joins an open transaction (a compute node's callback made with the transaction token) `transactionWindow` is rejected with `400`, whatever the body, and the collection is never split: it runs as one unit, so a failure in any item fails the request — the transaction's owner commits it or not.
 - `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 **IMPORTANT — `payload` is a JSON-encoded string, not an object.**
@@ -200,7 +206,7 @@ The `payload` field in each update item must be a string containing the JSON-enc
 Correct: `"payload": "{\"category\":\"physics\"}"`
 Wrong:   `"payload": {"category":"physics"}`   (will be rejected with `errors.BAD_REQUEST`)
 
-Each item may also carry an optional `ifMatch` field — the entity's last-known `meta.transactionId` from a prior read. Items with `ifMatch` get a per-item cross-request optimistic-concurrency precondition: if the entity has been modified since, the item is rejected with `code=ENTITY_MODIFIED` and surfaces in the chunk's `failed` array, **without rolling the chunk back**. Items in the same chunk without `ifMatch` (or with a still-valid one) commit as usual. This mirrors the `If-Match` header on the single-item PUT endpoints, scoped per-item.
+Each item may also carry an optional `ifMatch` field — the entity's last-known `meta.transactionId` from a prior read. Items with `ifMatch` get a per-item cross-request optimistic-concurrency precondition: if the entity has been modified since, the item is rejected with `code=ENTITY_MODIFIED` and surfaces in the chunk's `failed` array, **without rolling the chunk back**. Items in the same chunk without `ifMatch` (or with a still-valid one) commit as usual. This mirrors the `If-Match` header on the single-item PUT endpoints, scoped per-item. A body holding text no storage backend can keep — U+0000, an unpaired surrogate, or bytes that are not valid UTF-8 — in an item's `id`, `transition` or `ifMatch` is refused whole with `400 BAD_REQUEST` before any item runs, as an item's payload holding it is: those fields reach the item's audit events, which cannot hold U+0000 on PostgreSQL.
 
 Request body: JSON array of update items:
 
@@ -217,10 +223,10 @@ Request body: JSON array of update items:
 
 Failure handling within a chunk:
 
-- **Per-item `ENTITY_MODIFIED` (only when `ifMatch` is supplied):** the item surfaces in `failed[]`; siblings still commit; the chunk's `transactionId` is reported. Per-item ENTITY_MODIFIED conflicts surface inside the `200` response body via the `failed[]` array, **not** as a `4xx` envelope. Inspect `failed[]` to detect them. The `4xx` envelope is reserved for chunk-wide infrastructure failures.
-- **Any other per-item failure** (missing entity, validation, non-conflict engine error): the entire chunk rolls back, matching the pre-existing contract. Earlier chunks remain durable; if the first chunk fails the response is a standard `application/problem+json` 4xx envelope.
+- **Per-item `ENTITY_MODIFIED` (only when `ifMatch` is supplied):** the item surfaces in `failed[]`; siblings still commit; the chunk's `transactionId` is reported. Per-item ENTITY_MODIFIED conflicts surface inside the `200` response body via the `failed[]` array, **not** as a `4xx` envelope. Inspect `failed[]` to detect them. The `4xx` envelope is reserved for chunk-wide failures, conflicts among them: `409 CONFLICT` (retryable) when another transaction committed a change to an item's entity after the chunk read it, or a processor's joined callback lost a write race; `412 ENTITY_MODIFIED` when another transaction changed an item's entity while a `COMMIT_BEFORE_DISPATCH` processor's callout ran. A conflict is never isolated to its item.
+- **Any other per-item failure** (missing entity, validation, non-conflict engine error): the entire chunk rolls back, matching the pre-existing contract. Earlier chunks remain durable; if the first chunk fails the response is a standard `application/problem+json` envelope (4xx, or 5xx for a server-side failure).
 
-Each per-item `ENTITY_MODIFIED` is also reflected in the entity's state-machine audit log: the engine emits a paired `STATE_MACHINE_START` plus `TRANSITION_ABORTED` event (with `data.reason = "ENTITY_MODIFIED"`, `data.expectedTxId`, and `data.actualTxId`) so consumers can correlate the failure cleanly without orphaned start events.
+Each per-item `ENTITY_MODIFIED` is also reflected in the entity's state-machine audit log: the engine emits a paired `STATE_MACHINE_START` plus `TRANSITION_ABORTED` event (with `data.reason = "ENTITY_MODIFIED"`, `data.transition` — absent on a loopback, which has no transition — `data.expectedTxId`, and `data.actualTxId`) so consumers can correlate the failure cleanly without orphaned start events.
 
 Response: `200 OK`, `application/json`, `EntityTransactionResponse` array — one element per committed chunk in commit order. The optional `failed` array is omitted on chunks with no per-item `ENTITY_MODIFIED` failures:
 
@@ -259,7 +265,7 @@ Request body: a sparse JSON object (the patch document). The patch is applied to
 - A key whose value is itself an object merges recursively.
 - A key present in the patch with an explicit `null` value deletes that key from the stored payload.
 - Arrays are replaced wholesale — there are no element-level operations.
-- The empty patch `{}` is a valid no-op merge: the data is unchanged, but the request still commits a new transaction and fires the loopback transition (consistent with PUT-with-empty-body).
+- The empty patch `{}` is a valid no-op merge: the data is unchanged, but the request still commits a new transaction and runs the loopback. On the named-transition route it fires that transition. This is how to fire a transition without changing the data; `PUT` refuses an empty body.
 
 **If-Match precondition (required).** Unlike `PUT`, where omitting `If-Match` means unconditional replace, PATCH requires `If-Match` to be present in some form, because the merge is applied relative to a base the caller read; silently patching a stale base risks lost updates. The token is the `meta.transactionId` from the caller's last `GET` of this entity — the same field the existing `PUT` `If-Match` uses.
 
@@ -267,7 +273,7 @@ Three states are accepted:
 
 - `If-Match: "<transactionId>"` — Conditional: the stored entity's `transactionId` must still match; returns `412 Precondition Failed` if it has moved since the caller's read.
 - `If-Match: *` — Unconditional opt-out: merge onto current state regardless of version (entity must exist); a concurrent-writer race can still surface as `409` (see below).
-- Absent — returns `428 Precondition Required`; the response body explains the two valid choices.
+- Absent or empty — returns `428 Precondition Required`; the response body explains the two valid choices. An empty value names no version, so it is not a request for last-writer-wins; only `*` is.
 
 Response: `200 OK`, same shape as the single-item PUT update.
 
@@ -275,7 +281,7 @@ Response: `200 OK`, same shape as the single-item PUT update.
 
 - `format` (path): `JSON` only
 - `entityId` (path): UUID
-- `transition` (path): string — transition name defined in the model's workflow
+- `transition` (path): string — the name of a transition of the entity's current state, under the same rule as the named-transition `PUT`: any transition that is not `disabled` and has no `schedule`, whatever its `manual`
 - `Content-Type` (header, required): same two-value list as the loopback form
 - `If-Match` (header, required in some form): same three-state list as the loopback form
 - `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
@@ -294,7 +300,7 @@ The merge patch is applied first; the named transition's processors then run on 
 - `409 Conflict` (retryable) — a concurrent writer committed between the in-transaction base read and this save (read-set conflict at commit); may occur even with `If-Match: *`; caller may retry
 - `412 Precondition Failed` — `If-Match: "<transactionId>"` supplied and the stored `transactionId` differs; see `errors.ENTITY_MODIFIED`
 - `415 Unsupported Media Type` — `XML` format, or a `Content-Type` other than the two patch media types
-- `428 Precondition Required` — no `If-Match` header present
+- `428 Precondition Required` — no `If-Match` header present, or an empty one
 - `501 Not Implemented` — `Content-Type: application/json-patch+json` (RFC 6902 is recognised but not yet implemented)
 - Standard `4xx` domain errors — the **merged result** fails strict schema validation (full domain detail + error code)
 
@@ -319,11 +325,11 @@ Response: `200 OK`, `application/json`:
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
-- `transactionSize` (query, optional): int32 — when set, matched entities (including a delete-all with no condition) are deleted in version-guarded batches of this size instead of one transaction. Batches already committed stay durable if a later batch fails. A per-id version mismatch (the entity changed after selection) or a batch's commit failure is reported per-id in `deleteResult.idToError`, not retried. Rejected with `400` on a request that joins an open transaction. Absent means a single transaction. Without `pointInTime`, the batched delete re-selects before each batch; if matching entities keep being created it is stopped at its batch cap and fails `409 DELETE_NOT_CONVERGED` (retryable), with the batches already committed left deleted.
-- `pointInTime` (query, optional): RFC 3339 — select the entities that existed at this instant (committed state; the ambient transaction is ignored) and delete their current rows. Absent means the current committed state. An entity selected at the instant but already gone is reported in `deleteResult.idToError`.
+- `transactionSize` (query, optional): int32 — when set, matched entities (including a delete-all with no condition) are deleted in version-guarded batches of this size instead of one transaction. Batches already committed stay durable if a later batch fails. A per-id version mismatch (the entity changed after selection) or a batch's failure — one entity's failure fails its whole batch, which deletes nothing — is reported per-id in `deleteResult.idToError`; only a batch that met a write conflict is run again. Rejected with `400` on a request that joins an open transaction. Absent means a single transaction. Without `pointInTime`, the batched delete re-selects before each batch; if matching entities keep being created it is stopped at its batch cap and fails `409 DELETE_NOT_CONVERGED` (retryable), with the batches already committed left deleted.
+- `pointInTime` (query, optional): RFC 3339 — select the entities that existed at this instant (committed state; the ambient transaction is ignored) and delete their current rows. Absent means the current committed state. Must be at or before the consistency time. An entity selected at the instant but already gone is reported in `deleteResult.idToError`.
 - `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every entity ID the delete attempted (an empty body lists them too); an ID whose delete failed also appears in `deleteResult.idToError`; on a large model this enumerates every entity of the model in one response.
 
-Request body: optional `AbstractConditionDto` (same condition DSL as `/search/*`). When the body is absent or empty, all entities of the model are deleted.
+Request body: optional `QueryConditionDto` (same condition DSL as `/search/*`). When the body is absent or empty, all entities of the model are deleted.
 
 Response: `200 OK`, `application/json`:
 
@@ -341,7 +347,7 @@ Response: `200 OK`, `application/json`:
 }
 ```
 
-`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (may be lower if individual deletes failed). Returns `400 INVALID_CONDITION` on a malformed condition body.
+`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (lower when an entity was already gone, was changed since it was selected, or was in a failed batch). Without `transactionSize` the delete is one transaction and is atomic: an entity already gone (a `pointInTime` selection) is reported in `idToError`, and any other failure to delete one entity fails the whole request with its error, deleting nothing. With `transactionSize` each batch is atomic the same way: a failed batch deletes nothing and its error is reported in `idToError` for each of its other entities (an entity gone or changed keeps its own entry), and the other batches still run. In a request that joins another request's transaction (a compute node's callback), the delete commits and rolls back nothing itself: the owner's transaction commits or rolls back as a whole. A joined delete that fails keeps nothing, and when its error is not retryable it makes the owner's transaction rollback-only: the owner fails with `409 TRANSACTION_ROLLBACK_ONLY`. An entity reported in `idToError` does not fail the request. Returns `400 INVALID_CONDITION` on a malformed condition body, `400 INVALID_FIELD_PATH` for a condition path the model does not declare, and `400 CONDITION_TYPE_MISMATCH` when a condition's operator applies to none of the field's declared types, or a comparison or range operand parses into none of the types the operator applies to (see `predicates`), and `400 BAD_REQUEST` for a body over 10 MiB; nothing is deleted in each case.
 
 **GET /api/entity/{entityName}/{modelVersion}** — List all entities for a model (paginated)
 
@@ -349,57 +355,71 @@ Response: `200 OK`, `application/json`:
 - `modelVersion` (path): int32
 - `pageSize` (query, optional): int32, default `20`
 - `pageNumber` (query, optional): int32, default `0`
-- `pointInTime` (query, optional): RFC 3339 — return entities as they existed at this instant (as-at, inclusive)
+- `pointInTime` (query, optional): RFC 3339 — return entities as they existed at this instant (as-at, inclusive); must be at or before the consistency time. Pages taken without it are read at different moments — see POINT-IN-TIME SEMANTICS for consistent paging
 
 Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET). Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant. Order is stable and deterministic; the specific order is storage-engine-specific (entity-ID based) — see `docs/plugins/*.md` for each backend's canonical order.
 
 **GET /api/entity/{entityId}/changes** — Get entity change history metadata
 
 - `entityId` (path): UUID
-- `pointInTime` (query, optional): RFC 3339 — view history as it existed at this time
+- `pointInTime` (query, optional): RFC 3339 — view history as it existed at this time; must be at or before the consistency time. The history lists committed changes only, also when the request joins a transaction
 
-Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first):
+Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first). A transaction records one version of each entity it writes, however often it wrote the entity, so each transaction that changed the entity has one entry:
 
 ```json
 [
   {
     "changeType": "UPDATE",
     "timeOfChange": "2025-08-02T09:00:00Z",
-    "user": "admin",
+    "user": "alice",
+    "attributedKind": "user",
+    "executedBy": {"id": "GC2693985CC61NUU", "kind": "service"},
     "transactionId": "733e7180-c055-11ef-a357-ae468cd3ed16"
   },
   {
     "changeType": "CREATE",
     "timeOfChange": "2025-08-01T10:00:00Z",
-    "user": "admin",
+    "user": "K3V0Q8B1D2E4F6G7",
+    "attributedKind": "service",
+    "executedBy": {"id": "K3V0Q8B1D2E4F6G7", "kind": "service"},
     "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16"
   }
 ]
 ```
 
 - `changeType`: `CREATE`, `UPDATE`, or `DELETE`
+- `user`: the attributed principal's id — who the change is for; `attributedKind`: its kind (`user`, `service` or `system`)
+- `executedBy`: `{id, kind}` — who made the change. The first entry above is an on-behalf-of write for the user `alice`, executed by the on-behalf-of client; the second is a client's own write. `attributedKind` and `executedBy` are absent on a change recorded without attribution. See `cyoda help auth integration` for every case. Over gRPC, `EntityChangesMetadataGetRequest` returns the same three fields in each change's `changeMeta`.
 - `transactionId`: present only when `hasEntity` is true (i.e., entity payload exists at that version)
 
 **GET /api/entity/{entityId}/transitions** — List available transitions for an entity
 
 - `entityId` (path): UUID
-- `pointInTime` (query, optional): RFC 3339
+- `pointInTime` (query, optional): RFC 3339 — must be at or before the consistency time
 - `transactionId` (query, optional): UUID — derive point-in-time from transaction submit time. The transaction must belong to the caller's tenant; an unknown or foreign transaction ID returns `400 BAD_REQUEST`.
 
-`pointInTime` and `transactionId` are mutually exclusive; supplying both returns `400 BAD_REQUEST`. When neither is provided, the current time is used.
+`pointInTime` and `transactionId` are mutually exclusive; supplying both returns `400 BAD_REQUEST`. When neither is provided, the current state is used. A `transactionId` is fenced like a `pointInTime`, at the transaction's commit instant.
 
-Response: `200 OK`, `application/json`, array of available transition names (as returned by the workflow engine).
+The submit time a `transactionId` resolves to is the transaction's commit instant, recorded durably: **any node** can resolve it, including after a restart, not only the node that ran the transaction. It is retained for one hour after the commit; an id older than that is no longer resolvable and answers `400 BAD_REQUEST`.
 
-The names come from the workflow the entity's criterion selects — the same definition a subsequent transition will run (see `cyoda help workflows`, *Workflow-level selection*). Because selection is evaluated here, this read carries the same failure modes as a write: `400 WORKFLOW_FAILED` when a criterion cannot be evaluated, `503 NO_COMPUTE_MEMBER_FOR_TAG` when the cause is specifically an unavailable compute member for a `function` criterion's tags. The request fails rather than answering from a different workflow. The read records no audit events.
+Response: `200 OK`, `application/json`, array of the names of the transitions a client can name on a save from the entity's current state: every transition of that state that is not `disabled` and has no `schedule`, whatever its `manual`, in declaration order. A state with none answers `[]`.
+
+The names come from the workflow the entity's criterion selects — the same definition a subsequent transition will run (see `cyoda help workflows`, *Workflow-level selection*). Because selection is evaluated here, this read makes the callouts that the workflow criteria need — one per function condition evaluation reaches — and carries the same failure modes as a write: `400 WORKFLOW_FAILED` when a criterion cannot be evaluated or a compute member answers `success: false`, and the callout's own `503` when a callout fails (`NO_COMPUTE_MEMBER_FOR_TAG` when no compute member is connected for a function condition's tags). The request fails rather than answering from a different workflow. The read records no audit events.
 
 **GET /api/platform-api/entity/fetch/transitions** — List available transitions (platform-api format)
 
 - `entityClass` (query, required): string in `Name.Version` format, e.g., `Offer.1`
 - `entityId` (query, required): UUID string
 
-Response: `200 OK`, `application/json`, array of available transition names.
+Response: `200 OK`, `application/json`, the same list as `GET /api/entity/{entityId}/transitions`: the names of the transitions a client can name on a save from the entity's current state.
+
+**GET /api/entity/consistency-time** — The current consistency time
+
+No parameters. Response: `200 OK`, `application/json`: `{"consistencyTime": "2026-10-05T14:03:07.123456Z"}`, at the store's full precision (microseconds on sqlite and postgres, nanoseconds on memory). Errors: `503 CONSISTENCY_TIME_UNAVAILABLE` (retryable), `503 STORAGE_UNAVAILABLE`. See POINT-IN-TIME SEMANTICS.
 
 **GET /api/entity/stats** — Entity count statistics across all models
+
+- `pointInTime` (query, optional): RFC 3339 — count entities, each in the state it had at this instant; must be at or before the consistency time. The three other `GET` stats endpoints accept it too
 
 Response: `200 OK`, `application/json`:
 
@@ -412,6 +432,7 @@ Response: `200 OK`, `application/json`:
 
 **GET /api/entity/stats/states** — Entity count by state across all models
 
+- `pointInTime` (query, optional): as above
 - `states` (query, optional): comma-separated list of state names to filter by; maximum 1000 entries
 
 Response: `200 OK`, `application/json`:
@@ -427,6 +448,7 @@ Response: `200 OK`, `application/json`:
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
+- `pointInTime` (query, optional): as above
 
 Response: `200 OK`, `application/json`, single `ModelStatsDto`. Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
 
@@ -434,6 +456,7 @@ Response: `200 OK`, `application/json`, single `ModelStatsDto`. Returns `404 MOD
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
+- `pointInTime` (query, optional): as above
 - `states` (query, optional): list of state names to filter by; maximum 1000 entries
 
 Response: `200 OK`, `application/json`, array of `ModelStateStatsDto`. Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
@@ -466,7 +489,7 @@ Request fields:
 - `groupBy` (required, 1..N entries): each entry is the reserved token `"state"` or a scalar JSONPath (with the required `$.` leader). Order in the request determines order in the response's `groupKey` array. Duplicate entries → 400 `DUPLICATE_GROUP_BY`. A path outside the grammar below → 400 `INVALID_GROUP_BY_PATH`.
 - `condition` (optional): the existing search `Condition` DSL (SimpleCondition, LifecycleCondition, GroupCondition with `AND`/`OR`/`NOT`, ArrayCondition). Omitted → match-all. A FunctionCondition at any depth → 400 `INVALID_CONDITION`; it is a criterion shape, not a search shape. See the `search` topic for the full DSL.
 - `aggregations` (optional, 0..N): per entry, `op` ∈ {`sum`, `avg`, `min`, `max`, `stdev`}; `field` is a scalar JSONPath into the entity payload; optional `as` alias for the response key. When `as` is omitted the server synthesizes `<op>_<field>` with the leading `$.` stripped from the field (for example, `field: "$.costPrice"` → alias `sum_costPrice`). The server dedupes identical `(op, field)` pairs. Two aliases colliding on distinct `(op, field)` pairs → 400 `DUPLICATE_AGGREGATION_ALIAS`.
-- `pointInTime` (optional RFC 3339): historical snapshot; default = now.
+- `pointInTime` (optional RFC 3339): historical snapshot, at or before the consistency time; absent = the current committed state.
 - `limit` (optional positive int): top-N. Must be `≤ CYODA_STATS_GROUP_MAX` (default 10000); `> CYODA_STATS_GROUP_MAX` → 400 `INVALID_LIMIT`. Default = unlimited (up to the cardinality ceiling).
 
 Response: `200 OK`, `application/json`, array of `GroupedStatsBucket`:
@@ -525,8 +548,8 @@ The function is `IMMUTABLE PARALLEL SAFE` (the planner inlines and parallelizes)
 
 **In-transaction behavior.** Calls made under an active transaction (the request carried a transaction context) route through the streaming-tally path via `EntityStore.Iterate`. The native `GroupedAggregator` pushdown is skipped in this case to preserve read-your-writes semantics. Per backend:
 
-- **memory and sqlite** — Inside a transaction, sqlite streams one merged cursor (committed snapshot on the reader connection plus the transaction's own buffered writes, staged deletes suppressed); memory walks a pointer snapshot of the merged view. Neither copies entity payloads beyond the rows it yields, and `trackingRead` records only yielded rows. Non-tx, non-PIT sqlite queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved); non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. In-tx with `pointInTime` falls through to the plain PIT path — reads `entity_versions` at the supplied snapshot WITHOUT applying the tx-buffer overlay; PIT is historical-read by definition, so the in-flight buffer is a documented limitation, and the result reflects committed history rather than the caller's uncommitted edits at the requested instant. The fully-pushed-down `GroupedAggregate` query (against `entities`) is skipped in-tx by the SPI dispatcher so the service falls through to the streaming tally over `Iterate`, which now honours RYW.
-- **postgres** — `Iterate` selects from the bi-temporal `entity_versions` table with `valid_time <= tx.SnapshotTime AND transaction_time <= CURRENT_TIMESTAMP`, and adds `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE` to skip deletion-marker versions. The `GroupedAggregate` pushdown is skipped in-tx.
+- **memory and sqlite** — Inside a transaction, sqlite streams one merged cursor (committed snapshot on the reader connection plus the transaction's own buffered writes, staged deletes suppressed); memory walks a pointer snapshot of the merged view. Neither copies entity payloads beyond the rows it yields, and `trackingRead` records only yielded rows. Non-tx, non-PIT sqlite queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved); non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. A `pointInTime` read is committed-only: it ignores the ambient transaction and its buffer, by contract (see POINT-IN-TIME SEMANTICS). Outside a transaction, `GroupedAggregate` pushes a point-in-time read down: it counts in the store over `entity_versions` (latest version per entity at or before the instant, deleted excluded), so no entity document is streamed out. On sqlite, exceptions stream through `Iterate` at the instant, committed-only: a `stdev` aggregation, and a condition with a residual the SQL cannot apply. The pushdown is skipped in-tx, so the service streams the tally over `Iterate`, which honours RYW without a `pointInTime`.
+- **postgres** — in-tx and non-PIT, `Iterate` selects from the live `entities` table on the transaction's own connection, so it sees that transaction's uncommitted writes on top of its `REPEATABLE READ` snapshot (RYW) and skips soft-deleted rows with `NOT deleted`. With `pointInTime` it is committed-only: it runs off any ambient transaction, enumerates `entities` and probes each entity's revision at the instant with a lateral join into `entity_versions` (`valid_time <= $4`), then drops deletion-marker versions with `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE. Outside a transaction, `GroupedAggregate` pushes a point-in-time read down over the same lateral base, so the store counts and no entity document leaves the database; a condition with a residual the SQL cannot apply, and any in-tx request, stream through `Iterate` (committed-only at an instant).
 
 **Cardinality ceiling.** `CYODA_STATS_GROUP_MAX` (default 10000) bounds the number of distinct group buckets the endpoint will produce. When the result would exceed the ceiling, the request fails with 422 `GROUP_CARDINALITY_EXCEEDED` (retry with a more selective `condition` or fewer `groupBy` dimensions). The same value caps the request `limit`: `limit > CYODA_STATS_GROUP_MAX` is rejected up-front with 400 `INVALID_LIMIT`.
 
@@ -554,16 +577,16 @@ ON entities (json_extract(data, '$.variantId'));
 Error codes (response carries RFC 9457 problem+json with `properties.errorCode` set to the machine-readable code below):
 
 - `MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant
-- `MALFORMED_REQUEST` — `400` — body unreadable, not valid JSON, carrying an unrecognised top-level field (decoding is strict), or carrying a `pointInTime` that is not RFC 3339
+- `MALFORMED_REQUEST` — `400` — body unreadable, not valid JSON, carrying a member that is undeclared at any depth, in another letter case or written twice (decoding is strict; an undeclared or case-variant member inside `condition` is `INVALID_CONDITION` instead), or carrying a `pointInTime` that is not RFC 3339
 - `MISSING_GROUP_BY` — `400` — `groupBy` empty or missing
 - `INVALID_GROUP_BY_PATH` — `400` — `groupBy` JSONPath outside the grammar above (missing `$.` leader, bracket-quoted access, array projection, recursive descent, disallowed character)
 - `DUPLICATE_GROUP_BY` — `400` — duplicate `groupBy` entries
 - `INVALID_AGGREGATION_OP` — `400` — `op` outside the set {`sum`, `avg`, `min`, `max`, `stdev`}
 - `INVALID_AGGREGATION_FIELD` — `400` — aggregation `field` outside the same JSONPath grammar
 - `DUPLICATE_AGGREGATION_ALIAS` — `400` — two aliases collide on distinct `(op, field)` pairs
-- `INVALID_CONDITION` — `400` — `condition` malformed, unknown `type`, `operatorType` outside the canonical list, malformed `LIKE` or `MATCHES_PATTERN` operand, or bad `BETWEEN` arity (propagated from search validator)
+- `INVALID_CONDITION` — `400` — `condition` malformed, an undeclared or case-variant member in it, unknown `type`, `operatorType` outside the canonical list, malformed `LIKE` or `MATCHES_PATTERN` operand, or bad `BETWEEN` arity (propagated from search validator)
 - `INVALID_FIELD_PATH` — `400` — a `condition` `jsonPath` is not valid JSON Path, names an unknown meta field, or is absent from the locked schema (propagated from search validator)
-- `CONDITION_TYPE_MISMATCH` — `400` — `condition` value type incompatible with the locked DataType (propagated from search validator)
+- `CONDITION_TYPE_MISMATCH` — `400` — a `condition` operator applies to none of the field's declared types, or a comparison or range operand parses into none of the types the operator applies to (propagated from search validator)
 - `INVALID_LIMIT` — `400` — `limit` non-positive or `> CYODA_STATS_GROUP_MAX`
 - `GROUP_CARDINALITY_EXCEEDED` — `422` — result buckets would exceed `CYODA_STATS_GROUP_MAX`
 - Standard `401` (missing/invalid Bearer), `403` (authenticated but not authorized), `413` (body exceeds 10 MiB), `500` (internal/driver error with ticket UUID; full detail logged server-side) apply as elsewhere.
@@ -576,12 +599,102 @@ inclusive**: a version whose write timestamp equals `pointInTime` is included
 against stored version timestamps at the storage engine's native precision.
 
 Behaviour is identical across every read path — single-entity read, list,
-search, grouped statistics, change history, and available transitions — and
+search, statistics, grouped statistics, conditional delete, change history, and
+available transitions — and
 across storage backends. Because backends store timestamps at different
 precisions (down to milliseconds on some deployments), cross-backend results are
 guaranteed to agree at **millisecond granularity**; finer-grained ordering
 within a single millisecond is backend-defined. Timestamps are accepted and
-emitted as RFC 3339 with full fractional precision.
+emitted as RFC 3339 with full fractional precision. An instant with an offset
+(`2026-10-05T16:03:07+02:00`) is accepted and compared as the instant it names.
+
+**The instant a version is dated at is its transaction's commit**, on every
+backend — not the instant the transaction started, and not the instant the
+individual write was issued. Every entity a transaction writes carries the
+same instant, so a `pointInTime` read either sees all of a transaction's
+writes or none of them.
+
+**The consistency time.** A read at an instant is only trustworthy if no save
+can still land at or before it. The **consistency time** is the instant up to
+which that holds, for your tenant. It is normally the store's current time; it
+waits only for saves still committing (milliseconds). It has four properties:
+
+- **Complete** — every save already confirmed to any client, on any node, is
+  at or before it.
+- **Final** — a read at or before it sees every save of your tenant dated at
+  or before the instant, and gives the same answer for ever. A save not yet
+  dated when the consistency time is returned is dated after it.
+- **Never goes back** — each consistency time is at or after every one
+  returned earlier, on any node, also across a restart.
+- **Exact** — it is never rounded up, and it covers the store's own read
+  resolution.
+
+With clock control on, the store takes its time from the platform clock, which a test can set (see `cyoda help clock`).
+
+`GET /api/entity/consistency-time` returns it. To read the model "as of now"
+with an answer that cannot change, fetch it and pass it as `pointInTime`; a
+read at that value is never refused with
+`POINT_IN_TIME_AFTER_CONSISTENCY_TIME` (a `503` is still possible) and includes
+every save confirmed before you asked.
+
+**The fence.** A read with a `pointInTime` later than the consistency time is
+refused with `400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME`; the problem's
+`properties.consistencyTime` carries the current value. There is no waiting. An
+instant at or before the store's clock is never refused: the store waits for the
+tenant's saves still committing, or answers `503 CONSISTENCY_TIME_UNAVAILABLE`
+past its budget. Only an instant later than the store's clock is refused — a
+future instant, or one from a client clock running ahead of the store's. The
+fence covers single-entity read, list, search, async search submit, conditional
+delete, the four stats reads, grouped statistics, change history and
+transitions. Request errors that do not involve the instant (malformed value,
+unknown model, `pointInTime` together with `transactionId`) are reported first;
+a `404` produced by the read itself comes after the fence. A
+`503 CONSISTENCY_TIME_UNAVAILABLE` means the store could not certify the
+consistency time within its wait budget; retry with back-off.
+
+Over gRPC the fence applies to every read carrying a `pointInTime` (get,
+get-all, search, snapshot search, delete-all, both stats, changes). The
+envelope has no properties, so a refusal carries the consistency time in its
+message text; or call `EntityConsistencyTimeGetRequest`. Payload fields:
+`cyoda help cloudevents json`.
+
+**Reads without `pointInTime` read the current state**: what is committed when
+the store runs the query. Two such reads can differ, and so can the pages of a
+list — **pages of a list without `pointInTime` are read at different moments.**
+For consistent pages, take the consistency time once and pass it as
+`pointInTime` on every page.
+
+**Async search** with no `pointInTime` takes a fresh consistency time at
+submission and records it on the job; status and result pages read at that
+instant, so every page of the result agrees. The default includes every save
+already confirmed when the submit is made; a save not yet confirmed at submit
+may or may not appear. A `pointInTime` you pass is fenced
+at submission and recorded the same way.
+
+**Inside a transaction.** Without `pointInTime`, a read sees the transaction's
+snapshot plus its own writes: the committed state as it was when the
+transaction began. A commit that completes later is not visible to it, also
+when it reads again. The timing per storage backend is in
+`docs/submit-times-snapshots-consistency-time.html`. With `pointInTime`, it sees
+committed data at that instant only, and is fenced like any other. The change
+history (and the audit trail built on it) lists committed changes only, on every
+backend.
+
+Per backend, a point-in-time read resolves the requested instant like this:
+
+- **memory** — walks the version list per entity and takes the newest whose
+  submit time is `<=` the instant.
+- **sqlite** — reads `entity_versions` with `submit_time <= ?`.
+- **postgres** — enumerates the model's rows in `entities` and probes each
+  one's revision with a lateral join (`valid_time <= $4`, newest first, ties
+  broken by `transaction_time` then `version`). A single-entity `GetAsAt` uses the
+  same bound and the same tiebreak against one entity's chain. The cost is
+  one index probe per entity of the model, not one per revision of its
+  history.
+
+All three implement the same inclusive `<=` rule stated above; the
+differences are in how the version is located, never in which version is
+returned.
 
 ## ENTITY ENVELOPE
 
@@ -609,8 +722,8 @@ All entity read operations return entities in the standard envelope:
 - `meta.id` — UUID string
 - `meta.modelKey` — object with `name` (string) and `version` (int32) identifying the model; present on all entity reads (single-get, list, search).
 - `meta.state` — current workflow state string
-- `meta.creationDate` — RFC 3339 with nanoseconds
-- `meta.lastUpdateTime` — RFC 3339 with nanoseconds; equals `creationDate` if never updated
+- `meta.creationDate` — RFC 3339 with nanoseconds; the instant the transaction that **created** the entity committed, carried unchanged through every later update
+- `meta.lastUpdateTime` — RFC 3339 with nanoseconds; the instant the transaction that wrote this revision committed. Equals `creationDate` if never updated. Both dates are assigned by the server at commit — a value sent on a write is ignored — so entities written by one transaction report the same instant. The instant is taken immediately before the commit, so a value read back is at or **before** the moment the write response was returned — and never as early as the moment the transaction opened
 - `meta.pointInTime` — the as-at point-in-time for which the entity was retrieved, when supplied
 - `meta.transactionId` — present when a transaction ID exists
 - `meta.transitionForLatestSave` — transition name that produced the latest save. Valid values: `"loopback"` (loopback update with no transition supplied by the client) or the named transition string. **Known bug:** the server currently stores the literal `"workflow"` for engine-driven initial-state writes; there is no valid `"workflow"` value and this is tracked for fix.
@@ -629,19 +742,20 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 ## ERRORS
 
 - `errors.ENTITY_NOT_FOUND` — `404` — entity UUID does not exist
-- `errors.ENTITY_MODIFIED` — `412` — `If-Match`-guarded update rejected; supplied transaction ID does not match the entity's current version
+- `errors.ENTITY_MODIFIED` — `412` — `If-Match`-guarded update rejected; supplied transaction ID does not match the entity's current version. Also on every write route when another transaction changed the entity while a `COMMIT_BEFORE_DISPATCH` processor's callout ran
 - `errors.MODEL_NOT_FOUND` — `404` — model referenced during create does not exist
 - `errors.MODEL_NOT_LOCKED` — `409` — model exists but is not in `LOCKED` state; entities cannot be created until the model is locked
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
 - `errors.INCOMPATIBLE_TYPE` — `400` — entity payload's leaf value type is not assignable to the schema's declared DataType for that field; carries `fieldPath`, `expectedType`, `actualType` in `properties`
-- `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable)
-- `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented. Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
+- `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable); never caused by a schema extension, which commits on its own
 - `errors.UNIQUE_VIOLATION` — `409` — a declared composite unique key already holds this field-value combination
 - `errors.INVALID_UNIQUE_KEY` — `422` — a unique-key field is null, missing, or has an out-of-range value
 - `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the workflow
 - `errors.WORKFLOW_FAILED` — `400` — the workflow engine rejected the operation: a transition criterion did not match, a processor failed, the workflow selected for the entity does not declare its current state, or a workflow selection criterion could not be evaluated. Reachable on create, a named transition, a transition-less (loopback) update, and both transitions reads — selection runs on every door
-- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — a `function` criterion or processor needs a compute member for its tags and none is connected. Reachable on the transitions reads too, since they evaluate workflow selection criteria
+- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — a function condition in a criterion, or a processor, needs a compute member for its tags and none is connected. Reachable on the transitions reads too, since they evaluate workflow selection criteria and make the callouts those need
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
+- `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — a `pointInTime` later than the consistency time; `properties.consistencyTime` carries the current one
+- `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not provide a consistency time in time
 - Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant; `400` for validation failures (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
 
 ## EXAMPLES
@@ -650,7 +764,7 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"category":"physics","year":"2024"}' \
   "http://localhost:8080/api/entity/JSON/nobel-prize/1"
@@ -659,14 +773,14 @@ curl -s -X POST \
 **Read an entity:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16"
 ```
 
 **Read an entity at a point in time:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16?pointInTime=2025-08-01T10:00:00Z"
 ```
 
@@ -674,7 +788,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "If-Match: cb91fa80-d4a8-11ee-a357-ae468cd3ed16" \
   -d '{"category":"chemistry","year":"2024"}' \
@@ -685,7 +799,7 @@ curl -s -X PUT \
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"category":"chemistry","year":"2024"}' \
   "http://localhost:8080/api/entity/JSON/74807f00-ed0d-11ee-a357-ae468cd3ed16/APPROVE"
@@ -695,7 +809,7 @@ curl -s -X PUT \
 
 ```
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16"
 ```
 
@@ -704,12 +818,12 @@ curl -s -X DELETE \
 ```
 # Delete all entities for the model:
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/nobel-prize/1"
 
 # Delete only VALIDATED entities and list the attempted IDs:
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"VALIDATED"}' \
   "http://localhost:8080/api/entity/nobel-prize/1?verbose=true"
@@ -718,21 +832,21 @@ curl -s -X DELETE \
 **List all entities for a model (page 0, size 20):**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/nobel-prize/1?pageSize=20&pageNumber=0"
 ```
 
 **Get entity change history:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16/changes"
 ```
 
 **Get available transitions:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16/transitions"
 ```
 
@@ -740,7 +854,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '[{"model":{"name":"nobel-prize","version":1},"payload":"{\"category\":\"physics\",\"year\":\"2024\"}"}]' \
   "http://localhost:8080/api/entity/JSON"
@@ -749,7 +863,7 @@ curl -s -X POST \
 **Get statistics by state for a model:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/stats/states/nobel-prize/1"
 ```
 
@@ -757,7 +871,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "groupBy": ["state", "$.country"],
@@ -775,7 +889,7 @@ curl -s -X POST \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "groupBy": ["$.variantId"],

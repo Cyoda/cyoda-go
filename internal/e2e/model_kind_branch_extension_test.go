@@ -162,12 +162,14 @@ func TestModelKindBranch_StrictDoorStillRejects(t *testing.T) {
 
 // A unique key can only be enforced over a path that holds a scalar and
 // nothing else, so a STRUCTURAL write that would give a KEYED path a container
-// branch is refused — and refused before anything is written.
+// branch is refused with 422 INVALID_UNIQUE_KEY — and refused before anything
+// is written.
 //
-// The ordering is what makes this matter: the schema extension is committed
-// before the write's own transaction is opened. Letting the widening through
-// would leave the model permanently declaring a kind that every later write of
-// that kind is then refused for, with nothing left to roll it back.
+// The ordering is what makes this matter: a schema extension commits on its
+// own and stays when the write is refused. The unique-key check runs before
+// the schema check, so the refused write never widens the model; letting the
+// widening through would leave the model permanently declaring a kind that
+// every later write of that kind is then refused for.
 func TestModelKindBranch_KeyedPathCannotGainAContainer(t *testing.T) {
 	const model = "e2e-kind-branch-keyed"
 	importModelSampleE2E(t, model, 1, `{"sku":"x"}`)
@@ -185,9 +187,7 @@ func TestModelKindBranch_KeyedPathCannotGainAContainer(t *testing.T) {
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422; body: %s", status, body)
 	}
-	if !strings.Contains(body, "INVALID_UNIQUE_KEY_DEFINITION") {
-		t.Errorf("body must carry INVALID_UNIQUE_KEY_DEFINITION; body: %s", body)
-	}
+	assertErrorCode(t, body, "INVALID_UNIQUE_KEY")
 
 	// Nothing was recorded: the model still declares exactly what it did.
 	after := rootBucketE2E(t, model, 1)

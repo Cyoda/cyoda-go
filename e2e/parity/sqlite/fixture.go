@@ -11,9 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/fixtureutil"
 )
 
 // sqliteFixture implements parity.BackendFixture for the sqlite backend.
@@ -21,6 +22,22 @@ type sqliteFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	// computeCreds holds the M2M client of each tenant a further compute
+	// client joins under.
+	computeCreds *fixtureutil.ComputeCredentials
+	computeBin   string
+	// logs is the cyoda node's captured output (parity.SchedulerWaitFixture).
+	logs *fixtureutil.SyncBuffer
+}
+
+var _ parity.ComputeClientFixture = (*sqliteFixture)(nil)
+
+var _ parity.SchedulerWaitFixture = (*sqliteFixture)(nil)
+
+// AwaitScheduler implements parity.SchedulerWaitFixture.
+func (f *sqliteFixture) AwaitScheduler(t *testing.T, slack time.Duration, what string, check func() (bool, string)) {
+	t.Helper()
+	fixtureutil.AwaitNodeScheduler(t, slack, what, check, f.logs)
 }
 
 // BaseURL implements parity.BackendFixture.
@@ -42,19 +59,31 @@ func (f *sqliteFixture) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
-// NewNonAdminTenant implements parity.NonAdminTenantFixture — mints a
-// fresh JWT without ROLE_ADMIN for authz-negative parity scenarios.
-func (f *sqliteFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
+// PlatformOperator implements parity.BackendFixture.
+func (f *sqliteFixture) PlatformOperator(t *testing.T) parity.Tenant {
 	t.Helper()
-	return fixtureutil.MintNonAdminTenantJWT(t, f.keySet)
+	return fixtureutil.MintPlatformOperatorJWT(t, f.keySet)
 }
 
-// IsTxBoundAuditStore implements parity.TxBoundAuditFixture. The sqlite
-// backend writes audit events outside the entity-write transaction (via
-// the same in-process bus as the memory backend), so a rolled-back
-// entity write still leaves its paired STATE_MACHINE_START +
-// TRANSITION_ABORTED events durable.
-func (f *sqliteFixture) IsTxBoundAuditStore() bool { return false }
+// StartComputeClient implements parity.ComputeClientFixture.
+func (f *sqliteFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
+	t.Helper()
+	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+}
+
+var _ parity.FreshStackFixture = (*sqliteFixture)(nil)
+
+// NewFreshStack implements parity.FreshStackFixture: a stack on a database
+// file of its own, in a directory the test removes.
+func (f *sqliteFixture) NewFreshStack(t *testing.T, env map[string]string) parity.FreshStack {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "fresh.db")
+	return fixtureutil.LaunchFreshStack(t, f.keySet, []string{
+		"CYODA_STORAGE_BACKEND=sqlite",
+		"CYODA_SQLITE_PATH=" + dbPath,
+		"CYODA_SQLITE_AUTO_MIGRATE=true",
+	}, env)
+}
 
 // setup creates a temp directory for the SQLite database, builds
 // binaries, launches subprocesses, and waits for readiness. It returns
@@ -79,17 +108,11 @@ func setup() (*sqliteFixture, func(), error) {
 	}
 
 	// 3. Launch cyoda-go + compute-test-client with sqlite backend.
-	result, processCleanup, err := fixtureutil.LaunchCyodaAndCompute(ks, []string{
+	result, processCleanup, err := fixtureutil.LaunchCyodaAndCompute(ks, append([]string{
 		"CYODA_STORAGE_BACKEND=sqlite",
 		"CYODA_SQLITE_PATH=" + dbPath,
 		"CYODA_SQLITE_AUTO_MIGRATE=true",
-		// Tuned down from the 1s production default so the
-		// scheduledtransition parity scenarios (e2e/parity/scheduledtransition)
-		// observe fires within a small, bounded poll window instead of
-		// needing multi-second timeouts. Harmless to every other parity
-		// scenario — an empty ScanDue is a cheap no-op query.
-		"CYODA_SCHEDULER_SCAN_INTERVAL=50ms",
-	})
+	}, fixtureutil.TunedServerEnv()...))
 	if err != nil {
 		tmpCleanup()
 		return nil, nil, err
@@ -104,6 +127,9 @@ func setup() (*sqliteFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeCreds: fixtureutil.NewComputeCredentials(ks),
+		computeBin:   result.ComputeBin,
+		logs:         result.Logs,
 	}
 
 	return fix, cleanup, nil

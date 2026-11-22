@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 // ctxWithTenantAndUser returns a context carrying a UserContext with an
@@ -150,6 +150,7 @@ func TestEntityStore_Delete_Tx_StampsDeleterNotPriorWriter(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	tenant := spi.TenantID("tenant-A")
 	creatorCtx := ctxWithTenantAndUser(tenant, "creator-user", spi.PrincipalUser)
+	lockModels(t, factory, creatorCtx, orderModel)
 
 	store, err := factory.EntityStore(creatorCtx)
 	if err != nil {
@@ -226,6 +227,7 @@ func TestEntityStore_Delete_Tx_StampsDeletingTransactionID(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	tenant := spi.TenantID("tenant-A")
 	ctx := ctxWithTenantAndUser(tenant, "creator-user", spi.PrincipalUser)
+	lockModels(t, factory, ctx, orderModel)
 
 	createTxID, createTxCtx := beginGuarded(t, tm, ctx)
 	createStore, err := factory.EntityStore(createTxCtx)
@@ -297,6 +299,7 @@ func TestEntityStore_Delete_NonTx_StampsDeleter(t *testing.T) {
 	factory, _ := newAttrFactory(t)
 	tenant := spi.TenantID("tenant-A")
 	creatorCtx := ctxWithTenantAndUser(tenant, "creator-user", spi.PrincipalUser)
+	lockModels(t, factory, creatorCtx, orderModel)
 
 	store, err := factory.EntityStore(creatorCtx)
 	if err != nil {
@@ -344,6 +347,7 @@ func TestEntityStore_DeleteAll_StampsDeleter(t *testing.T) {
 	tenant := spi.TenantID("tenant-A")
 	creatorCtx := ctxWithTenantAndUser(tenant, "creator-user", spi.PrincipalUser)
 	mref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	lockModels(t, factory, creatorCtx, mref)
 
 	store, err := factory.EntityStore(creatorCtx)
 	if err != nil {

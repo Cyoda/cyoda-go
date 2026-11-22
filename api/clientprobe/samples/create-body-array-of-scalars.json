@@ -1,0 +1,8 @@
+{
+  "body": "POST /entity/{format}/{entityName}/{modelVersion}",
+  "valid": false,
+  "value": [
+    1,
+    2
+  ]
+}

@@ -44,7 +44,7 @@ scenarios:
     steps:
       - action: create_entity
         repeat: 100
-        endpoint: { rest: "POST /entity/JSON/family/1?transactionWindow=1000&waitForConsistencyAfter=true" }
+        endpoint: { rest: "POST /entity/JSON/family/1?transactionWindow=1000" }
         body_ref: "family.json (5 members)"
       - action: delete_entities_by_model
         endpoint: { rest: DELETE /entity/family/1 }

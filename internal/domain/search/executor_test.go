@@ -12,17 +12,20 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // mustOccupyPool submits job to pool, retrying past the narrow startup race
@@ -161,7 +164,7 @@ func TestExecutor_ResultOrder_DefaultAndExplicit(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	pool := newTinyPool(t)
-	svc := search.NewSearchService(base, uuids, searchStore).
+	svc := search.NewSearchService(cachedFactory(base), uuids, searchStore, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 
@@ -235,7 +238,6 @@ func TestExecutor_StreamsIncrementally(t *testing.T) {
 	for i := 0; i < total; i++ {
 		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%06d", i), []byte(`{}`))
 	}
-
 	var nextCalls int64
 	ies := wrapIterate(t, base, ctx, func(it spi.Iterator) spi.Iterator {
 		return &countingIterator{Iterator: it, calls: &nextCalls}
@@ -247,7 +249,7 @@ func TestExecutor_StreamsIncrementally(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	pool := newTinyPool(t)
-	svc := search.NewSearchService(factory, uuids, observer).
+	svc := search.NewSearchService(cachedFactory(factory), uuids, observer, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(200 * time.Millisecond)
 
@@ -335,7 +337,7 @@ func TestExecutor_CancelMidFlight(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	uuids := common.NewTestUUIDGenerator()
 	pool := newTinyPool(t)
-	svc := search.NewSearchService(factory, uuids, searchStore).
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(20 * time.Millisecond)
 
@@ -413,7 +415,7 @@ func TestExecutor_HeartbeatRecordedWhileQueuedAndScanning(t *testing.T) {
 	<-started
 
 	const heartbeatInterval = 20 * time.Millisecond
-	svc := search.NewSearchService(factory, uuids, searchStore).
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(heartbeatInterval)
 
@@ -463,6 +465,13 @@ func TestExecutor_HeartbeatRecordedWhileQueuedAndScanning(t *testing.T) {
 // under the stale epoch rather than silently succeeding against the wrong
 // claim.
 func TestExecutor_HeartbeatFencingAborts(t *testing.T) {
+	// A takeover is an ordinary end on a cluster: the executor backs off
+	// without logging an ERROR, and records nothing for a claim it lost.
+	logs := &syncBuffer{}
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
 	base := memory.NewStoreFactory()
 	defer base.Close()
 	ctx := tenantCtx("tenant-1")
@@ -481,7 +490,7 @@ func TestExecutor_HeartbeatFencingAborts(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	pool := newTinyPool(t)
 	const heartbeatInterval = 15 * time.Millisecond
-	svc := search.NewSearchService(factory, uuids, searchStore).
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(heartbeatInterval)
 
@@ -529,6 +538,9 @@ func TestExecutor_HeartbeatFencingAborts(t *testing.T) {
 	if final.Status == "SUCCESSFUL" {
 		t.Fatal("job reached SUCCESSFUL under the original (fenced-out) executor — its writes should have been rejected once ClaimStale bumped the epoch")
 	}
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("a takeover logged an ERROR:\n%s", logs.String())
+	}
 }
 
 // (f) an OR condition (one always-true member, one on a wildcard array path)
@@ -572,7 +584,7 @@ func TestExecutor_OrConditionCompletesAndSaves(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	pool := newTinyPool(t)
-	svc := search.NewSearchService(base, uuids, searchStore).
+	svc := search.NewSearchService(cachedFactory(base), uuids, searchStore, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 
@@ -667,7 +679,7 @@ func TestExecutor_SubmitAsync_QueueFullCleansUp(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	uuids := common.NewTestUUIDGenerator()
-	svc := search.NewSearchService(base, uuids, observer).
+	svc := search.NewSearchService(cachedFactory(base), uuids, observer, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(20 * time.Millisecond)
 
@@ -716,7 +728,7 @@ func TestExecutor_ReleasedJobWritesNothing(t *testing.T) {
 	})
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
+	svc := search.NewSearchService(cachedFactory(factory), common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(newTinyPool(t)).WithHeartbeat(15 * time.Millisecond)
 
 	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}

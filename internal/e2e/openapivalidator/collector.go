@@ -1,6 +1,9 @@
 package openapivalidator
 
-import "sync"
+import (
+	"log/slog"
+	"sync"
+)
 
 // Mismatch describes one validation failure: which operation, where in the
 // response body, what was wrong.
@@ -96,4 +99,26 @@ func (c *collector) exerciseSet() map[string]bool {
 // (added in Task 1.9).
 func DrainAndExercised() ([]Mismatch, map[string]bool) {
 	return defaultCollector.drain(), defaultCollector.exerciseSet()
+}
+
+// FailOnUnreported is the e2e TestMain's last step: given the exit code of
+// m.Run, it drains the mismatches TestOpenAPIConformanceReport did not
+// report, logs each, and returns 1 when there are any and the run otherwise
+// passed. A run that included TestOpenAPIConformanceReport has drained them
+// already; a -run-filtered run that did not would otherwise pass over them.
+func FailOnUnreported(code int) int {
+	left := defaultCollector.drain()
+	if len(left) == 0 {
+		return code
+	}
+	for _, m := range left {
+		slog.Error("openapi conformance mismatch",
+			"operation", m.Operation, "method", m.Method, "path", m.Path,
+			"status", m.Status, "test", m.TestName, "reason", m.Reason)
+	}
+	slog.Error("openapi conformance: mismatches collected but not reported by TestOpenAPIConformanceReport", "count", len(left))
+	if code != 0 {
+		return code
+	}
+	return 1
 }

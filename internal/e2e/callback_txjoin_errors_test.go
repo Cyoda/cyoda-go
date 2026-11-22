@@ -12,9 +12,7 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
 )
 
 // callback_txjoin_errors_test.go — loud-fail error-code coverage
@@ -25,7 +23,9 @@ import (
 //	non-empty token, unknown/closed txID → 404 TRANSACTION_NOT_FOUND
 //	expired token                        → 410 TRANSACTION_EXPIRED
 //	forged / bad-HMAC token              → 401 UNAUTHORIZED
+//	pass with no callout and number      → 401 UNAUTHORIZED
 //	token tenant ≠ caller tenant         → 403 FORBIDDEN
+//	OBO caller, another user's tx        → 403 FORBIDDEN
 //	empty token (control)                → 2xx standalone
 //
 // Single-node uses an EPHEMERAL signer secret, so tokens the server will accept
@@ -57,42 +57,57 @@ func randSuffix(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-// provisionTenant creates an M2M client at tenantID on THIS stack (bypassing the
-// tenant-derived /clients HTTP surface) and returns its credentials.
+// adminTokenFor mints a self-signed M2M-shaped admin token for an arbitrary
+// tenant/user on this stack's signing key. POST /clients derives a new
+// client's tenant from the caller's own claims, so provisionTenant uses this
+// to seed a client belonging to tenantID without reaching into the store.
+func (h *callbackHarness) adminTokenFor(t *testing.T, tenant, user string) string {
+	t.Helper()
+	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, user, tenant, user, []string{"ROLE_ADMIN", "ROLE_M2M"})
+	if err != nil {
+		t.Fatalf("sign admin token: %v", err)
+	}
+	return tok
+}
+
+// provisionTenant creates an M2M client in tenantID through this stack, via
+// POST /clients authenticated with a seed admin token minted for that tenant
+// (adminTokenFor) rather than reaching into the store directly, and returns
+// its credentials. The client is deleted when the test ends, before the stack
+// shuts down (cleanups run last-registered first).
 func (h *callbackHarness) provisionTenant(t *testing.T, tenantID, userID string) (clientID, secret string) {
 	t.Helper()
-	authSvc := h.app.AuthService()
-	if authSvc == nil {
-		t.Fatal("provisionTenant requires JWT IAM mode (AuthService() returned nil)")
+	seed := h.adminTokenFor(t, tenantID, userID)
+	req, err := e2eNewRequest(t, http.MethodPost, h.baseURL+"/api/clients?withAdminRole=true", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
 	}
-	rb := make([]byte, 12)
-	if _, err := rand.Read(rb); err != nil {
-		t.Fatalf("rand: %v", err)
+	req.Header.Set("Authorization", "Bearer "+seed)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("provisionTenant: %v", err)
 	}
-	clientID = "cbxclient" + hex.EncodeToString(rb[:6])
-	secret = hex.EncodeToString(rb[6:])
-	if err := authSvc.M2MClientStore().CreateWithSecret(
-		clientID, spi.TenantID(tenantID), userID, secret, []string{"ROLE_ADMIN", "ROLE_M2M"},
-	); err != nil {
-		t.Fatalf("CreateWithSecret: %v", err)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("provisionTenant: %d: %s", resp.StatusCode, raw)
 	}
-	return clientID, secret
+	cred := decodeCredential(t, "provisionTenant", raw)
+	deleteClientAtCleanup(t, h.baseURL, cred.id, func() string { return h.adminTokenFor(t, tenantID, userID) })
+	return cred.id, cred.secret
 }
 
 // fetchTokenFor obtains a client-credentials bearer for the given creds on this stack.
-func (h *callbackHarness) fetchTokenFor(t *testing.T, clientID, secret string) string {
+func (h *callbackHarness) fetchTokenFor(t *testing.T, tenant, clientID, secret string) string {
 	t.Helper()
-	form := url.Values{"grant_type": {"client_credentials"}}
-	req, err := http.NewRequest(http.MethodPost, h.baseURL+"/api/oauth/token", strings.NewReader(form.Encode()))
-	if err != nil {
-		t.Fatalf("token request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(clientID, secret)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("token request failed: %v", err)
-	}
+	return h.grantToken(t, tenant, url.Values{"grant_type": {"client_credentials"}}, clientID, secret)
+}
+
+// grantToken runs the token grant form as the client clientID of tenant on this
+// stack and returns the issued bearer; any status but 200 fails the test.
+func (h *callbackHarness) grantToken(t *testing.T, tenant string, form url.Values, clientID, secret string) string {
+	t.Helper()
+	resp := postTokenTo(t, h.baseURL, tenant, form, clientID, secret)
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
@@ -116,7 +131,7 @@ func (h *callbackHarness) doAuthBearer(t *testing.T, bearer, method, path, body,
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.baseURL+path, r)
+	req, err := e2eNewRequest(t, method, h.baseURL+path, r)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -132,12 +147,27 @@ func (h *callbackHarness) doAuthBearer(t *testing.T, bearer, method, path, body,
 	return resp
 }
 
+// assertProblemNotRetryable asserts a problem body does not invite a retry:
+// none of the refusals of a pass can succeed when the same request is sent
+// again.
+func assertProblemNotRetryable(t *testing.T, body string) {
+	t.Helper()
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	_ = json.Unmarshal([]byte(body), &pd)
+	if _, ok := pd.Properties["retryable"]; ok {
+		t.Errorf("retryable is set; want it absent (body: %s)", body)
+	}
+}
+
 // TestCallbackErr_LoudFailCodes proves each documented status/error code a
-// callback token can trigger through the HTTP TxJoin middleware. Subtests share
+// callback token can trigger through the HTTP TxJoin middleware, none of them
+// retryable. Subtests share
 // one full stack (postgres + member) for speed; each uses isolated names.
 func TestCallbackErr_LoudFailCodes(t *testing.T) {
 	h := newCallbackHarness(t)
-	_ = h.token(t) // prime the bootstrap (tenant-A) bearer used by h.callback/DoAuth
+	_ = h.token(t) // prime the harness's admin (tenant-A) bearer used by h.callback/DoAuth
 
 	// A syntactically valid entity path; the token is rejected in the middleware
 	// before the handler runs, so the id need not resolve to a real entity.
@@ -147,7 +177,8 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 	// HMAC-valid (server's own signer) but references a tx that was never
 	// registered, so Join fails ErrTxNotFound rather than being rejected as forged.
 	t.Run("NotFound_404", func(t *testing.T) {
-		tok, err := h.app.TokenSigner().Issue("local", "no-such-tx-"+randSuffix(t), time.Now().Add(time.Minute))
+		txRef := "no-such-tx-" + randSuffix(t)
+		tok, err := h.app.TokenSigner().Issue(token.Claims{NodeID: "local", TxRef: txRef, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-" + txRef, Major: 1})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
@@ -159,12 +190,14 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if code := problemErrorCode(body); code != "TRANSACTION_NOT_FOUND" {
 			t.Fatalf("errorCode = %q; want TRANSACTION_NOT_FOUND (body: %s)", code, body)
 		}
+		assertProblemNotRetryable(t, body)
 	})
 
 	// expired token → 410 TRANSACTION_EXPIRED. HMAC-valid but past its deadline,
 	// so Verify fails ErrTokenExpired before any Join is attempted.
 	t.Run("Expired_410", func(t *testing.T) {
-		tok, err := h.app.TokenSigner().Issue("local", "tx-"+randSuffix(t), time.Now().Add(-10*time.Second))
+		txRef := "tx-" + randSuffix(t)
+		tok, err := h.app.TokenSigner().Issue(token.Claims{NodeID: "local", TxRef: txRef, ExpiresAt: time.Now().Add(-10 * time.Second).Unix(), Callout: "req-" + txRef, Major: 1})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
@@ -176,6 +209,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if code := problemErrorCode(body); code != "TRANSACTION_EXPIRED" {
 			t.Fatalf("errorCode = %q; want TRANSACTION_EXPIRED (body: %s)", code, body)
 		}
+		assertProblemNotRetryable(t, body)
 	})
 
 	// forged / bad-HMAC token → 401 UNAUTHORIZED. Signed by a DIFFERENT secret,
@@ -185,7 +219,8 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSigner(forger): %v", err)
 		}
-		tok, err := forger.Issue("local", "tx-"+randSuffix(t), time.Now().Add(time.Minute))
+		txRef := "tx-" + randSuffix(t)
+		tok, err := forger.Issue(token.Claims{NodeID: "local", TxRef: txRef, ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-" + txRef, Major: 1})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
@@ -197,6 +232,27 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if code := problemErrorCode(body); code != "UNAUTHORIZED" {
 			t.Fatalf("errorCode = %q; want UNAUTHORIZED (body: %s)", code, body)
 		}
+		assertProblemNotRetryable(t, body)
+	})
+
+	// A pass with no callout and number — what an earlier version minted — is
+	// malformed: 401, as any invalid pass.
+	t.Run("NoCalloutAndNumber_401", func(t *testing.T) {
+		tok, err := h.app.TokenSigner().Issue(token.Claims{
+			NodeID: "local", TxRef: "tx-" + randSuffix(t), ExpiresAt: time.Now().Add(time.Minute).Unix(),
+		})
+		if err != nil {
+			t.Fatalf("Issue: %v", err)
+		}
+		resp := h.DoAuth(t, http.MethodGet, probePath, "", tok)
+		body := h.readBody(t, resp)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d; want 401 (body: %s)", resp.StatusCode, body)
+		}
+		if code := problemErrorCode(body); code != "UNAUTHORIZED" {
+			t.Fatalf("errorCode = %q; want UNAUTHORIZED (body: %s)", code, body)
+		}
+		assertProblemNotRetryable(t, body)
 	})
 
 	// empty token (control) → 2xx standalone. No X-Tx-Token header: the middleware
@@ -234,7 +290,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 				"version": "1.1", "name": "cbx-primary-wf", "initialState": "NONE", "active": true,
 				"states": {
 					"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-						"processors": [{"type": "calculator", "name": "cbx-hold", "executionMode": "SYNC",
+						"processors": [{"type": "externalized", "name": "cbx-hold", "executionMode": "SYNC",
 							"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 					}]},
 					"ACTIVE": {}
@@ -245,7 +301,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 
 		// A second tenant on this same stack.
 		clientB, secretB := h.provisionTenant(t, "tenant-b", "user-b")
-		bearerB := h.fetchTokenFor(t, clientB, secretB)
+		bearerB := h.fetchTokenFor(t, "tenant-b", clientB, secretB)
 
 		// Begin T as tenant A (standalone create, empty token). It blocks inside
 		// the processor. h.callback is goroutine-safe and takes no *testing.T.
@@ -283,6 +339,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 		if code := problemErrorCode(body); code != "FORBIDDEN" {
 			t.Fatalf("cross-tenant errorCode = %q; want FORBIDDEN (body: %s)", code, body)
 		}
+		assertProblemNotRetryable(t, body)
 
 		// Release the held transaction and let the primary create finish.
 		close(release)
@@ -295,4 +352,53 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 			t.Fatal("timeout: primary create did not complete after release")
 		}
 	})
+}
+
+// TestCallbackJoin_OBOOtherUser_403: alice's on-behalf-of token creates X; X's
+// SYNC processor calls back with the pass of alice's transaction but presents
+// bob's on-behalf-of token. The pass binds no caller, and an OBO write records
+// its own user, so admitting it would record bob inside alice's transaction:
+// the join is refused 403 FORBIDDEN and no Y exists.
+func TestCallbackJoin_OBOOtherUser_403(t *testing.T) {
+	h := newCallbackHarness(t)
+
+	const primary = "cbj-obo-other-primary"
+	const secondary = "cbj-obo-other-secondary"
+	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
+
+	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
+	bob := oboTokenOn(t, h.baseURL, h.token(t), "bob")
+	results := make(chan callbackResult, 1)
+	h.RegisterProc("cbj-obo-other-proc", func(rc *reqCtx) (map[string]any, error) {
+		res, err := rc.CreateEntityAs(bob, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
+		if err != nil {
+			return nil, fmt.Errorf("callback as bob: %w", err)
+		}
+		results <- res
+		return nil, nil
+	})
+	h.SetupModelWithWorkflow(t, primary, procCascadeWF("cbj-obo-other", "cbj-obo-other-proc", "SYNC", ""))
+
+	if _, status, body := h.createEntityAs(t, alice, primary, 1, `{"name":"x","amount":100,"status":"new"}`); status != http.StatusOK {
+		t.Fatalf("create X as alice (OBO): %d %s", status, body)
+	}
+
+	var res callbackResult
+	select {
+	case res = <-results:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: processor did not call back")
+	}
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("callback as bob: %d; want 403 (body: %s)", res.StatusCode, res.Body)
+	}
+	if code := problemErrorCode(res.Body); code != "FORBIDDEN" {
+		t.Errorf("errorCode = %q; want FORBIDDEN (body: %s)", code, res.Body)
+	}
+	if d := problemDetail(t, res.Body); !strings.Contains(d, "an on-behalf-of request may join only its own user's transaction") {
+		t.Errorf("detail = %q; want it to name the own-user rule", d)
+	}
+	if n := h.countEntities(t, secondary); n != 0 {
+		t.Fatalf("%d %s entities exist; want none", n, secondary)
+	}
 }

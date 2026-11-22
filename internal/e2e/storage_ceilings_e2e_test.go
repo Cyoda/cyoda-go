@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -22,12 +23,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	"github.com/cyoda-platform/cyoda-go/app"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cepb "github.com/cyoda/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda/cyoda-go/app"
+	internalgrpc "github.com/cyoda/cyoda-go/internal/grpc"
+	"github.com/cyoda/cyoda-go/internal/testing/localproc"
 )
 
 const (
@@ -35,6 +36,11 @@ const (
 	// Short enough that a saturated write reports in well under the test's
 	// fail-fast budget, long enough not to fire on ordinary scheduling jitter.
 	storageCeilingAcquireTimeout = "500ms"
+	// stmtCeilingLockerAppName identifies holdRowLock's own connection in
+	// pg_stat_activity, so a caller waiting for a DIFFERENT backend to block on
+	// the row lock (callout_fencing_wait_test.go's awaitBlockedStatement) can
+	// exclude the lock holder's own session from the match.
+	stmtCeilingLockerAppName = "stmt-ceiling-locker"
 )
 
 // storageCeilingModel derives a per-test model name. Each test here stands up
@@ -73,9 +79,6 @@ func newSaturatedPoolHarness(t *testing.T) *holdHarness {
 		// In-process dispatch, so the criterion below runs on the SERVER's
 		// request goroutine with the transaction open.
 		cfg.ExternalProcessing = svc
-		// The scan loop would queue behind the held connection for the whole
-		// test and log acquire failures unrelated to what is under test.
-		cfg.Scheduler.Enabled = false
 	})
 
 	hh := &holdHarness{
@@ -129,25 +132,60 @@ func (hh *holdHarness) hold(t *testing.T) func() {
 	}
 }
 
-// TestE2E_SaturatedPool_WriteReturns503 is the HTTP half: the write fails fast
-// with a retryable 503 STORAGE_UNAVAILABLE instead of queueing behind the pool.
-func TestE2E_SaturatedPool_WriteReturns503(t *testing.T) {
+// TestE2E_SaturatedPool_HTTPReturns503 is the HTTP half: every entity write door,
+// each of which opens a transaction, fails fast with a retryable 503
+// STORAGE_UNAVAILABLE instead of queueing behind the pool — the create (into the
+// gated model), the collection create, the two updates and the patch (against
+// an ungated model seeded before the pool was saturated). The read of one entity
+// is not here: a statement outside a transaction takes a connection straight
+// from the pool with no acquire deadline, by design, so on a saturated pool it
+// waits for the holder; its 503 is covered by
+// TestE2E_TornConnection_AuditAndTrustedKeys503/getOneEntity.
+func TestE2E_SaturatedPool_HTTPReturns503(t *testing.T) {
 	h := newSaturatedPoolHarness(t)
+	plain := h.model + "-plain"
+	h.setupModelSampleWithWorkflow(t, plain, storageCeilingSample, manualNoProcWorkflowJSON(plain+"-wf"))
+	plainID := createQuietEntity(t, h.callbackHarness, plain, storageCeilingSample)
 	release := h.hold(t)
 	defer release()
 
-	start := time.Now()
-	_, status, body := h.CreateEntity(t, h.model, 1, storageCeilingSample)
-	elapsed := time.Since(start)
+	for _, door := range []struct {
+		name string
+		call func() (int, string)
+	}{
+		{"create", func() (int, string) {
+			_, status, body := h.CreateEntity(t, h.model, 1, storageCeilingSample)
+			return status, body
+		}},
+		{"create-collection", func() (int, string) {
+			return doorRequest(t, h.callbackHarness, http.MethodPost, "/api/entity/JSON", collectionCreateItems(plain, storageCeilingSample))
+		}},
+		{"update-transition", func() (int, string) {
+			return doorRequest(t, h.callbackHarness, http.MethodPut, "/api/entity/JSON/"+plainID+"/go", storageCeilingSample)
+		}},
+		{"loopback", func() (int, string) {
+			return doorRequest(t, h.callbackHarness, http.MethodPut, "/api/entity/JSON/"+plainID, storageCeilingSample)
+		}},
+		{"patch", func() (int, string) {
+			resp := txctlHarnessPatch(t, h.callbackHarness, "/api/entity/JSON/"+plainID, "application/merge-patch+json", "*", `{"amount":2}`)
+			return resp.StatusCode, h.readBody(t, resp)
+		}},
+	} {
+		t.Run(door.name, func(t *testing.T) {
+			start := time.Now()
+			status, body := door.call()
+			elapsed := time.Since(start)
 
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503; body: %s", status, body)
+			if status != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503; body: %s", status, body)
+			}
+			assertStorageUnavailableProblem(t, body)
+			if elapsed > 3*time.Second {
+				t.Fatalf("queued for %v instead of failing fast", elapsed)
+			}
+			t.Logf("saturated-pool %s returned 503 after %v; body: %s", door.name, elapsed, body)
+		})
 	}
-	assertStorageUnavailableProblem(t, body)
-	if elapsed > 3*time.Second {
-		t.Fatalf("queued for %v instead of failing fast", elapsed)
-	}
-	t.Logf("saturated-pool write returned 503 after %v; body: %s", elapsed, body)
 }
 
 // assertStorageUnavailableProblem checks the RFC 9457 body carries the error
@@ -242,9 +280,6 @@ func newReclaimedTxHarness(t *testing.T) (*callbackHarness, string) {
 		// happens inside app.New — i.e. after this mutator runs.
 		t.Setenv("CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT", idleCeilingLimit.String())
 		cfg.ExternalProcessing = svc
-		// The scan loop would keep tripping the same ceiling in the background
-		// and log failures unrelated to what is under test.
-		cfg.Scheduler.Enabled = false
 	})
 
 	model := storageCeilingModel(t, "idle-ceiling")
@@ -315,7 +350,6 @@ func newStatementCeilingHarness(t *testing.T) (*callbackHarness, string, string)
 	t.Helper()
 	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
 		t.Setenv("CYODA_POSTGRES_STATEMENT_TIMEOUT", stmtCeilingLimit.String())
-		cfg.Scheduler.Enabled = false
 	})
 	model := storageCeilingModel(t, "stmt-ceiling")
 	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, workflowV1)
@@ -369,7 +403,7 @@ func holdRowLockOn(t *testing.T, query, entityID string) func() {
 		t.Fatalf(format, args...)
 	}
 
-	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "stmt-ceiling-locker"))
+	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), stmtCeilingLockerAppName))
 	if err != nil {
 		fail("open locker pool: %v", err)
 	}
@@ -456,9 +490,6 @@ func newScheduledReArmCeilingHarness(t *testing.T) (*callbackHarness, string, st
 	t.Helper()
 	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
 		t.Setenv("CYODA_POSTGRES_STATEMENT_TIMEOUT", stmtCeilingLimit.String())
-		// Otherwise the scan loop fires (or contends on) the very task these
-		// scenarios lock.
-		cfg.Scheduler.Enabled = false
 	})
 	model := storageCeilingModel(t, "sched-rearm-ceiling")
 	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, scheduledCeilingWF(model+"-wf"))
@@ -529,7 +560,7 @@ func TestE2E_StatementTimeout_ScheduledReArm_GRPCEnvelope(t *testing.T) {
 		t.Errorf("Error.Message = %q, want the generic ticket message", env.Error.Message)
 	}
 	for _, leak := range []string{"sqlstate", "57014", "canceling statement", "statement_timeout", "scheduled_tasks", "pgx"} {
-		if strings.Contains(strings.ToLower(env.Error.Message), leak) {
+		if strings.Contains(strings.ToLower(withoutUUIDs(env.Error.Message)), leak) {
 			t.Errorf("gRPC envelope leaks internal detail (%q): %s", leak, env.Error.Message)
 		}
 	}
@@ -638,15 +669,21 @@ type txEnvelope struct {
 	} `json:"error"`
 }
 
-// createEntityGRPC issues an EntityCreateRequest over the real gRPC entity API
-// (the member's connection), unjoined.
+// createEntityGRPC issues an EntityCreateRequest over the real gRPC entity API,
+// unjoined.
 func (h *callbackHarness) createEntityGRPC(model string, version int, payload string) (txEnvelope, error) {
+	return h.createEntityGRPCJoined(model, version, payload, "")
+}
+
+// createEntityGRPCJoined is createEntityGRPC presenting joinTok as the
+// tx-token metadata, so the create joins that transaction ("" = unjoined).
+func (h *callbackHarness) createEntityGRPCJoined(model string, version int, payload, joinTok string) (txEnvelope, error) {
 	var data map[string]any
 	if err := json.Unmarshal([]byte(payload), &data); err != nil {
 		return txEnvelope{}, err
 	}
 	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityCreateRequest, map[string]any{
-		"id":         "storage-ceiling-create",
+		"id":         "harness-grpc-create",
 		"dataFormat": "JSON",
 		"payload": map[string]any{
 			"model": map[string]any{"name": model, "version": version},
@@ -656,17 +693,17 @@ func (h *callbackHarness) createEntityGRPC(model string, version int, payload st
 	if err != nil {
 		return txEnvelope{}, err
 	}
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
-	respCE, err := client.EntityManage(h.grpcCtx(""), reqCE)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
+	respCE, err := client.EntityManage(h.grpcCtx(joinTok), reqCE)
 	if err != nil {
 		return txEnvelope{}, err
 	}
 	return parseTxEnvelope(respCE)
 }
 
-// updateEntityGRPC issues an EntityUpdateRequest over the real gRPC entity API
-// (the member's connection), unjoined, with no transition — a loopback update,
-// the gRPC twin of PUT /api/entity/{format}/{entityId}.
+// updateEntityGRPC issues an EntityUpdateRequest over the real gRPC entity API,
+// unjoined, with no transition — a loopback update, the gRPC twin of
+// PUT /api/entity/{format}/{entityId}.
 func (h *callbackHarness) updateEntityGRPC(entityID, payload string) (txEnvelope, error) {
 	var data map[string]any
 	if err := json.Unmarshal([]byte(payload), &data); err != nil {
@@ -683,7 +720,7 @@ func (h *callbackHarness) updateEntityGRPC(entityID, payload string) (txEnvelope
 	if err != nil {
 		return txEnvelope{}, err
 	}
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
 	respCE, err := client.EntityManage(h.grpcCtx(""), reqCE)
 	if err != nil {
 		return txEnvelope{}, err
@@ -691,9 +728,9 @@ func (h *callbackHarness) updateEntityGRPC(entityID, payload string) (txEnvelope
 	return parseTxEnvelope(respCE)
 }
 
-// deleteEntityGRPC issues an EntityDeleteRequest over the real gRPC entity API
-// (the member's connection), unjoined. EntityDeleteResponse carries the same
-// error envelope shape as EntityTransactionResponse, so txEnvelope reads both.
+// deleteEntityGRPC issues an EntityDeleteRequest over the real gRPC entity API,
+// unjoined. EntityDeleteResponse carries the same error envelope shape as
+// EntityTransactionResponse, so txEnvelope reads both.
 func (h *callbackHarness) deleteEntityGRPC(entityID string) (txEnvelope, error) {
 	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityDeleteRequest, map[string]any{
 		"id":       "storage-ceiling-delete",
@@ -702,7 +739,7 @@ func (h *callbackHarness) deleteEntityGRPC(entityID string) (txEnvelope, error) 
 	if err != nil {
 		return txEnvelope{}, err
 	}
-	client := cyodapb.NewCloudEventsServiceClient(h.member.conn)
+	client := cyodapb.NewCloudEventsServiceClient(h.apiConn)
 	respCE, err := client.EntityManage(h.grpcCtx(""), reqCE)
 	if err != nil {
 		return txEnvelope{}, err
@@ -757,9 +794,6 @@ func newSearchCeilingHarness(t *testing.T) (*callbackHarness, string) {
 		// Read by the postgres plugin's own getenv at factory-open time, which
 		// happens inside app.New — i.e. after this mutator runs.
 		t.Setenv("CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", searchCeilingLimit)
-		// The scan loop would queue behind the single connection for the whole
-		// test and log acquire failures unrelated to what is under test.
-		cfg.Scheduler.Enabled = false
 	})
 	model := storageCeilingModel(t, "search-ceiling")
 	h.setupModelSampleWithWorkflow(t, model, storageCeilingSample, workflowV1)
@@ -789,12 +823,37 @@ func seedEntityVersions(t *testing.T, model string, n int) {
 	}
 	defer pool.Close()
 
+	// entity_versions_entity_fk (migration 000012) requires every
+	// entity_versions row to have a matching entities row, so the clones'
+	// entities rows must land first — the same order every real Save keeps.
+	//
+	// The clone's "name" field is overwritten to a sentinel other than
+	// "pool-hold": TestE2E_SearchCeiling_DoesNotLeakOntoInteractiveStatements
+	// runs an interactive search filtered on name = "pool-hold" and expects
+	// exactly the one real entity back, not the whole seeded volume — the
+	// match-all async scans this fixture backs stay unaffected, since they
+	// filter on nothing at all.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, creation_date, last_modified, doc)
+		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version, deleted, creation_date, last_modified,
+		       jsonb_set(jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g)),
+		                 '{name}', '"search-ceiling-fill"')
+		FROM entities, generate_series(1, $1) AS g
+		WHERE model_name = $2`, n, model); err != nil {
+		t.Fatalf("seed %d entities for %s: %v", n, model, err)
+	}
+	// Same "name" override as the entities block above: current state and
+	// its own history must agree. Leaving entity_versions.doc saying
+	// "pool-hold" while entities.doc says "search-ceiling-fill" for the same
+	// version would be a state no real write path can produce — Save always
+	// writes the same marshaled doc to both rows.
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version,
-		                             valid_time, transaction_time, wall_clock_time, doc)
+		                             valid_time, transaction_time, wall_clock_time, creation_date, doc)
 		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version,
-		       valid_time, transaction_time, wall_clock_time,
-		       jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g))
+		       valid_time, transaction_time, wall_clock_time, creation_date,
+		       jsonb_set(jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g)),
+		                 '{name}', '"search-ceiling-fill"')
 		FROM entity_versions, generate_series(1, $1) AS g
 		WHERE model_name = $2`, n, model); err != nil {
 		t.Fatalf("seed %d entity versions for %s: %v", n, model, err)
@@ -807,7 +866,12 @@ func seedEntityVersions(t *testing.T, model string, n int) {
 			return
 		}
 		defer cpool.Close()
+		// model is unique per test (storageCeilingModel derives it from
+		// t.Name()), so clearing every row under it — including the one
+		// entities row h.CreateEntity made directly — is safe: nothing else
+		// depends on this test's data outliving its own cleanup.
 		_, _ = cpool.Exec(cctx, `DELETE FROM entity_versions WHERE model_name = $1`, model)
+		_, _ = cpool.Exec(cctx, `DELETE FROM entities WHERE model_name = $1`, model)
 	})
 }
 
@@ -833,6 +897,13 @@ func (h *callbackHarness) submitAsyncSearchOn(t *testing.T, model string) string
 // tests waiting for it to leave.
 func (h *callbackHarness) asyncJobStatus(t *testing.T, jobID string) string {
 	t.Helper()
+	s, _ := h.asyncJobStatusBody(t, jobID)["searchJobStatus"].(string)
+	return s
+}
+
+// asyncJobStatusBody reads one job's whole status body over the real HTTP door.
+func (h *callbackHarness) asyncJobStatusBody(t *testing.T, jobID string) map[string]any {
+	t.Helper()
 	resp := h.DoAuth(t, http.MethodGet, "/api/search/async/"+jobID+"/status", "", "")
 	body := h.readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
@@ -842,8 +913,22 @@ func (h *callbackHarness) asyncJobStatus(t *testing.T, jobID string) string {
 	if err := json.Unmarshal([]byte(body), &st); err != nil {
 		t.Fatalf("async search status is not JSON: %v; body: %s", err, body)
 	}
-	s, _ := st["searchJobStatus"].(string)
-	return s
+	return st
+}
+
+// asyncJobFailureReason reads the failureReason a job's status serves, and
+// whether the member is present at all.
+func (h *callbackHarness) asyncJobFailureReason(t *testing.T, jobID string) (string, bool) {
+	t.Helper()
+	raw, ok := h.asyncJobStatusBody(t, jobID)["failureReason"]
+	if !ok {
+		return "", false
+	}
+	reason, isString := raw.(string)
+	if !isString {
+		t.Fatalf("failureReason is %T, want a string", raw)
+	}
+	return reason, true
 }
 
 // waitForAsyncTerminal polls the status endpoint until the job leaves RUNNING.
@@ -860,32 +945,13 @@ func (h *callbackHarness) waitForAsyncTerminal(t *testing.T, jobID string, timeo
 	return ""
 }
 
-// persistedJobError reads the message recorded against the job — the string
-// GetJob serves back, and the only place an async failure is reported.
-func persistedJobError(t *testing.T, jobID string) string {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "search-ceiling-reader"))
-	if err != nil {
-		t.Fatalf("open reader pool: %v", err)
-	}
-	defer pool.Close()
-	var msg string
-	if err := pool.QueryRow(ctx, `SELECT error FROM search_jobs WHERE id = $1`, jobID).Scan(&msg); err != nil {
-		t.Fatalf("read search job %s: %v", jobID, err)
-	}
-	return msg
-}
-
-// TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure — the persisted
-// job message is the one deliberate exception to output sanitization: the job is
-// the caller's own work, so it is told what happened and what to do about it.
-// The async status response carries no error-code field, so this string is the
-// caller's entire report. It stays fixed and backend-neutral — a raw driver
-// string here would put SQL, a SQLSTATE and connection detail in a record GetJob
-// serves straight back.
-func TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure(t *testing.T) {
+// TestE2E_AsyncSearch_CeilingExceeded_ServesSanitizedFailureReason — the job is
+// the caller's own work, so the status read tells them what happened and what to
+// do about it, as failureReason. The status carries no error-code field, so this
+// string is the caller's entire report. It stays fixed and backend-neutral — a
+// raw driver string here would put SQL, a SQLSTATE and connection detail in the
+// response.
+func TestE2E_AsyncSearch_CeilingExceeded_ServesSanitizedFailureReason(t *testing.T) {
 	h, model := newSearchCeilingHarness(t)
 
 	jobID := h.submitAsyncSearchOn(t, model)
@@ -893,15 +959,18 @@ func TestE2E_AsyncSearch_CeilingExceeded_RecordsSanitizedFailure(t *testing.T) {
 		t.Fatalf("async search status = %q, want FAILED — nothing bounded the scan", status)
 	}
 
-	msg := persistedJobError(t, jobID)
+	msg, present := h.asyncJobFailureReason(t, jobID)
+	if !present {
+		t.Fatal("FAILED status carries no failureReason")
+	}
 	const want = "search exceeded the backend's async search ceiling — narrow the query, " +
 		"or have the operator raise or disable the ceiling (see the config.database help topic)"
 	if msg != want {
-		t.Fatalf("job error =\n  %q\nwant\n  %q", msg, want)
+		t.Fatalf("failureReason =\n  %q\nwant\n  %q", msg, want)
 	}
 	for _, leak := range []string{"pgx", "postgres", "SELECT", "SQLSTATE", "57014", "statement_timeout", "host=", "password"} {
 		if strings.Contains(msg, leak) {
-			t.Fatalf("job error leaked internals (%q): %s", leak, msg)
+			t.Fatalf("failureReason leaked internals (%q): %s", leak, msg)
 		}
 	}
 	t.Logf("async search failed with the sanitized message: %s", msg)
@@ -928,10 +997,17 @@ func TestE2E_SearchCeiling_DoesNotLeakOntoInteractiveStatements(t *testing.T) {
 		t.Fatalf("an ordinary write failed with %d after the scan ran; the search ceiling leaked onto the interactive path. body: %s", status, body)
 	}
 
-	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1?pageSize=10", model),
+	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1?limit=10", model),
 		`{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"pool-hold"}`, "")
 	body := h.readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("an interactive search failed with %d after the scan ran; the search ceiling leaked onto the interactive path. body: %s", resp.StatusCode, body)
 	}
 }
+
+// uuidText matches a UUID, such as an error's ticket.
+var uuidText = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// withoutUUIDs removes every UUID from s. A leak check removes them first: a
+// random ticket can contain a short marker such as a SQLSTATE by chance.
+func withoutUUIDs(s string) string { return uuidText.ReplaceAllString(s, "") }

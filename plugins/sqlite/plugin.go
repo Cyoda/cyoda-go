@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 func init() { spi.Register(&plugin{}) }
@@ -20,8 +20,7 @@ func (p *plugin) ConfigVars() []spi.ConfigVar {
 		{Name: "CYODA_SQLITE_BUSY_TIMEOUT", Description: "Wait time for write lock", Default: "5s"},
 		{Name: "CYODA_SQLITE_CACHE_SIZE", Description: "Page cache in KiB, per connection", Default: "64000"},
 		{Name: "CYODA_SQLITE_READER_POOL_SIZE", Description: "Max concurrent reader connections; each holds its own page cache", Default: "GOMAXPROCS clamped to 4..8"},
-		{Name: "CYODA_SCHEMA_SAVEPOINT_INTERVAL", Description: "Rows per savepoint during schema extension", Default: "64"},
-		{Name: "CYODA_SCHEMA_EXTEND_MAX_RETRIES", Description: "Max retries on concurrent schema extension", Default: "8"},
+		{Name: "CYODA_SCHEMA_SAVEPOINT_INTERVAL", Description: "A model's schema-extension deltas per savepoint; bounds how many deltas a read of the model folds", Default: "64"},
 	}
 }
 
@@ -35,11 +34,18 @@ func (p *plugin) NewFactory(
 		return nil, fmt.Errorf("sqlite: %w", err)
 	}
 
-	factory, err := newStoreFactory(ctx, cfg)
+	var storeOpts []Option
+	if c := spi.ApplyFactoryOptions(opts).Clock(); c != nil {
+		storeOpts = append(storeOpts, WithBusinessClock(c))
+	}
+	factory, err := newStoreFactory(ctx, cfg, storeOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: %w", err)
 	}
 
-	factory.initTransactionManager(&defaultUUIDGenerator{})
+	if err := factory.initTransactionManager(&defaultUUIDGenerator{}); err != nil {
+		_ = factory.Close()
+		return nil, fmt.Errorf("sqlite: %w", err)
+	}
 	return factory, nil
 }

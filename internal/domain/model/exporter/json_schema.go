@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // JSONSchemaExporter exports a ModelNode tree as a JSON Schema document

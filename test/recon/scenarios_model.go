@@ -15,7 +15,7 @@ var ActionResultExclusions = []string{"/modelId"}
 
 // uniqueName generates a unique name with the given prefix for idempotent test runs.
 func uniqueName(prefix string) string {
-	return fmt.Sprintf("Recon_%d_%s", time.Now().UnixNano(), prefix)
+	return fmt.Sprintf("Recon_%d_%s", time.Now().UnixNano(), prefix) // realtime: a unique name, not a business time
 }
 
 // modelScenarios returns the model lifecycle reconciliation flow.
@@ -94,7 +94,7 @@ func modelLifecycleFlow() Scenario {
 			{
 				Name:         "Create entity with extra field (extends model)",
 				Method:       "POST",
-				PathTemplate: "/entity/JSON/{model}/1?waitForConsistencyAfter=true",
+				PathTemplate: "/entity/JSON/{model}/1",
 				Body:         `{"name":"Bob","age":25,"extra":"field"}`,
 				ExpectStatus: 200,
 				Exclusions:   EntityExclusions,

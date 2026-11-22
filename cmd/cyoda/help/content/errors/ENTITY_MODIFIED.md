@@ -5,7 +5,6 @@ stability: stable
 see_also:
   - errors
   - errors.CONFLICT
-  - errors.IDEMPOTENCY_CONFLICT
   - errors.EPOCH_MISMATCH
 ---
 
@@ -21,9 +20,13 @@ HTTP: `412` `Precondition Failed`. Retryable: `no`.
 
 ## DESCRIPTION
 
-When an entity update request carries an `If-Match` header, the server requires the supplied transaction ID to equal the entity's current `meta.transactionId`. A mismatch means another writer has updated the entity since the caller's last read. The optimistic-concurrency guard rejects the update rather than silently overwrite.
+When an entity update request carries an `If-Match` header, the header states the version the request starts from. The server checks it once, when the request's transition starts: the supplied transaction ID must equal the entity's `meta.transactionId` as the request's transaction reads it. A mismatch means another writer has updated the entity since the caller's last read. The optimistic-concurrency guard rejects the update rather than silently overwrite.
 
 The `entityId` property in the problem-detail body identifies the conflicting entity.
+
+This code answers only a precondition on the request's own entity. A write to the entity later in the same transaction — the engine's write of the entity before a callout that carries the transaction token, or a `COMMIT_BEFORE_DISPATCH` segment's own commit — is the request's own and does not break the `If-Match`. A processor's callback never writes the entity the workflow runs for (`cyoda help workflows`). A change that another transaction commits after the request's read is a lost race, not a failed precondition: the answer is a retryable `409 CONFLICT` (see `errors.CONFLICT`), on every storage backend.
+
+One more case answers this code, with or without `If-Match`: a `COMMIT_BEFORE_DISPATCH` processor committed the request's work before its callout, and another transaction changed the entity before the processor's result was applied. Every write route answers it — a create, an update, and an item of a collection create or update — with `entityId` naming that entity. A collection request fails whole: no later item runs. The committed segment stays. In a later chunk of a chunked collection request it is that chunk's error element, as every chunk-wide failure is.
 
 Not retryable in the protocol sense — replaying the same payload with the same `If-Match` value will fail again.
 
@@ -35,7 +38,7 @@ Not retryable in the protocol sense — replaying the same payload with the same
 
    ```
    curl -X PUT \
-     -H "Authorization: Bearer $TOKEN" \
+     -H @- <<<"Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
      -H "If-Match: <meta.transactionId from step 1>" \
      -d '<reconciled payload>' \
@@ -52,7 +55,7 @@ What `If-Match` adds is a precondition tied to **the caller's earlier read in a 
 
 **Cross-request race (caller GET-then-PUT, another writer commits in between).** Caller GETs at `t0` and observes `transactionId` `T0`. Another writer commits a change at `t1`. Caller submits the PUT at `t2`, with `t0 < t1 < t2`. With `If-Match: T0`, the PUT fails `412 ENTITY_MODIFIED` because the entity's current `transactionId` is no longer `T0`. Without `If-Match`, the PUT's own intra-transaction GET at `t2` already sees the writer's change as the current baseline; the PUT proceeds and applies the caller's payload on top of the writer's change — the caller never sees that they overwrote a state they hadn't read.
 
-**Overlapping-transaction race (two PUTs starting from the same baseline).** Two PUTs both begin a transaction and read the same entity version. With `If-Match`, the loser fails fast at write-time as `412 ENTITY_MODIFIED` via `CompareAndSave`. Without `If-Match`, the loser fails at commit-time as `409 CONFLICT` with `retryable: true` via SI+FCW read-set validation.
+**Overlapping-transaction race (two PUTs starting from the same baseline).** Two PUTs both begin a transaction and read the same entity version. Both pass the `If-Match` check, because both start from the version it names. The loser fails as `409 CONFLICT` with `retryable: true` via SI+FCW validation, with or without `If-Match`.
 
 So omitting `If-Match` does not turn off all concurrency control — but it does silence the cross-request precondition. Use it when reconciling against the live state at PUT-time is what you actually want; supply it when you specifically need to detect that the entity has changed since *your* last read and refuse to clobber.
 
@@ -60,5 +63,4 @@ So omitting `If-Match` does not turn off all concurrency control — but it does
 
 - errors
 - errors.CONFLICT
-- errors.IDEMPOTENCY_CONFLICT
 - errors.EPOCH_MISMATCH

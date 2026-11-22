@@ -19,8 +19,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	parityclient "github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	parityclient "github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // Driver drives cyoda's HTTP API through the dictionary vocabulary.

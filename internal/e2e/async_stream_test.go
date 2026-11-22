@@ -44,9 +44,9 @@ package e2e_test
 //     TestExecutor_HeartbeatFencingAborts in executor_test.go); e2e
 //     TestE2E_AsyncSearch_OrphanReExecuted (this file) — synthesises the
 //     owner-is-gone shape (a RUNNING row with no executor behind it,
-//     created_at backdated past SearchJobStaleAfter, real entities seeded
+//     heartbeat_time backdated past SearchJobStaleAfter, real entities seeded
 //     behind its model) and asserts app.New's wired reaper ticker (app.go's
-//     stopSearchReaper loop calling ReclaimStaleJobs) CLAIMS, ClearResults,
+//     startSearchReapers claim loop calling ReclaimStaleJobs) CLAIMS, ClearResults,
 //     re-enqueues, and completes it SUCCESSFUL with the direct-search result
 //     count — a crashed node's job is now finished, not failed;
 //     TestE2E_AsyncSearch_AttemptCap_Fails (this file) — a job whose
@@ -100,16 +100,15 @@ package e2e_test
 //     layer shift, same guarantee." Already present:
 //     TestGetPage_NonTx_UsesModelIDIndex (plugins/sqlite/entity_page_plan_test.go)
 //     and TestGetPage_NonTx_UsesModelEntityIDIndex (plugins/postgres/entity_page_plan_test.go).
-// 15. GetVersionByTransaction earliest-wins / empty txID rejected / 404:
-//     spitest — the sole home of earliest-wins and of empty-txID rejection.
-//     ?transactionId= never reaches the store as "": genapi types the
-//     query parameter *openapi_types.UUID (api/generated.go,
+// 15. GetVersionByTransaction empty txID rejected / 404:
+//     spitest — the home of empty-txID rejection and of the rule that an
+//     entity has one version per transaction and only committed versions
+//     resolve. ?transactionId= never reaches the store as "": genapi types
+//     the query parameter *openapi_types.UUID (api/generated.go,
 //     GetOneEntityParams), so an empty value fails parameter binding and
 //     the handler never runs.
-//     Earliest-wins needs two versions sharing one transaction id, which
-//     spitest arranges at the store; e2e
-//     TestEntityLifecycle_TemporalByTransactionID
-//     (internal/e2e/entity_lifecycle_test.go) covers the wire half only —
+//     e2e TestEntityLifecycle_TemporalByTransactionID
+//     (internal/e2e/entity_lifecycle_test.go) covers the wire half —
 //     200 for the create transaction's id, 404 for an unknown one; parity
 //     HistoryReadsChangesMetadataAndTransactionLookup (e2e/parity/history_reads.go)
 //     adds per-transaction resolution with no cross-transaction bleed and
@@ -172,8 +171,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/app"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/app"
 )
 
 // ---------------------------------------------------------------------------
@@ -279,6 +278,14 @@ func (s *blockingIterateStore) Iterate(ctx context.Context, model spi.ModelRef, 
 type blockingIterateFactory struct {
 	spi.StoreFactory
 	gate *iterateGate
+}
+
+// SetApplyFunc forwards the schema replay function to the wrapped factory:
+// startup refuses a factory that does not take it.
+func (f *blockingIterateFactory) SetApplyFunc(fn func(base []byte, deltas []spi.SchemaDelta) ([]byte, error)) {
+	f.StoreFactory.(interface {
+		SetApplyFunc(func(base []byte, deltas []spi.SchemaDelta) ([]byte, error))
+	}).SetApplyFunc(fn)
 }
 
 func (f *blockingIterateFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
@@ -527,7 +534,9 @@ func TestE2E_AsyncSearch_ShutdownReleases_NoFailedWrite(t *testing.T) {
 		cfg.StorageBackend = backend
 	})
 
-	const model = "shutdown-release-e2e"
+	// Repeated runs (go test -count=N) share this package's Postgres
+	// testcontainer, so a fixed model name meets itself as MODEL_ALREADY_LOCKED.
+	model := "shutdown-release-e2e-" + randSuffix(t)
 	const seeded = 4
 	seedStandalone(t, a, model, seeded)
 
@@ -629,13 +638,13 @@ func TestE2E_AsyncSearch_CrashMidSave_PartialCleared(t *testing.T) {
 		t.Fatalf("direct search returned %d, want %d seeded entities", want, seeded)
 	}
 
-	jobID := insertOrphanRunningJob(t, model)
+	jobID := insertOrphanRunningJob(t, model, consistentInstant(t, a.doAuth, model))
 	// A committed partial page from the (now dead) prior epoch: entity ids that
 	// are NOT real entities of this model, so any that survive into the final
 	// result set are unmistakably leftovers.
 	partial := []string{"stale-partial-0", "stale-partial-1", "stale-partial-2"}
 	insertPartialResultRows(t, jobID, partial)
-	backdateJobCreatedAt(t, jobID, time.Hour)
+	backdateJobLiveness(t, jobID, time.Hour)
 
 	if st := a.waitTerminal(t, jobID, 20*time.Second); st != "SUCCESSFUL" {
 		t.Fatalf("status = %s, want SUCCESSFUL (reclaim never re-executed the crashed-mid-save job)", st)
@@ -721,7 +730,7 @@ func reaperFastCadence(cfg *app.Config) {
 }
 
 // TestE2E_AsyncSearch_OrphanReExecuted pins app.New's wired reaper ticker
-// (app.go's stopSearchReaper loop calling search.ReclaimStaleJobs) as a
+// (app.go's startSearchReapers claim loop calling search.ReclaimStaleJobs) as a
 // genuinely running e2e path: an orphaned job is now CLAIMED and RE-EXECUTED
 // to SUCCESSFUL, not failed.
 //
@@ -729,8 +738,8 @@ func reaperFastCadence(cfg *app.Config) {
 // executor is GONE — the node holding it crashed or was killed — so nothing
 // will ever heartbeat it, complete it, or write its terminal status. That
 // shape is synthesised directly, by writing the job row the postgres store's
-// CreateJob writes (RUNNING, epoch 1, heartbeat_time NULL) with no executor
-// behind it and a created_at backdated far past SearchJobStaleAfter, with real
+// CreateJob writes (RUNNING, epoch 1, heartbeat_time stamped at creation) with no executor
+// behind it and a heartbeat_time backdated far past SearchJobStaleAfter, with real
 // entities seeded behind its model so the re-execution has something to return.
 // Nothing in this process owns the job, so the ONLY thing that can move it off
 // RUNNING is the app-wired reaper — which claims it, ClearResults, re-enqueues
@@ -765,8 +774,8 @@ func TestE2E_AsyncSearch_OrphanReExecuted(t *testing.T) {
 		t.Fatalf("direct search returned %d, want %d seeded entities", want, seeded)
 	}
 
-	jobID := insertOrphanRunningJob(t, model)
-	backdateJobCreatedAt(t, jobID, time.Hour)
+	jobID := insertOrphanRunningJob(t, model, consistentInstant(t, doAuth, model))
+	backdateJobLiveness(t, jobID, time.Hour)
 
 	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "SUCCESSFUL" {
 		t.Fatalf("status = %s, want SUCCESSFUL (reaper never re-executed the orphaned job)", status)
@@ -847,14 +856,14 @@ func TestE2E_AsyncSearch_AttemptCap_Fails(t *testing.T) {
 	// stale_claims = MaxAttempts - 1 = 0: the next staleness claim reaches the
 	// cap. (0 is also the default, but seed it explicitly so intent survives a
 	// change to the default MaxAttempts.)
-	jobID := insertRunningJobRow(t, model, 0)
-	backdateJobCreatedAt(t, jobID, time.Hour)
+	jobID := insertRunningJobRow(t, model, 0, time.Now().Add(-time.Minute))
+	backdateJobLiveness(t, jobID, time.Hour)
 
 	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "FAILED" {
 		t.Fatalf("status = %s, want FAILED (attempt cap not enforced)", status)
 	}
-	if msg := persistedJobErrorFor(t, jobID); msg != "search abandoned: executor lost repeatedly" {
-		t.Errorf("persisted error = %q, want the attempts-exhausted message", msg)
+	if msg, present := h.asyncJobFailureReason(t, jobID); !present || msg != "search abandoned: executor lost repeatedly" {
+		t.Errorf("failureReason = %q (present %v), want the attempts-exhausted message", msg, present)
 	}
 }
 
@@ -868,16 +877,58 @@ func TestE2E_AsyncSearch_AttemptCap_Fails(t *testing.T) {
 // behind it — the crashed-or-killed-node shape spi.AsyncSearchStore.ClaimStale
 // exists to recover — straight into the shared testcontainer. The column set
 // and values mirror the postgres store's CreateJob exactly (epoch persisted
-// as 1 per its contract, heartbeat_time left NULL so staleness is measured
-// from created_at, the SPI's documented baseline), so the row is
+// as 1 per its contract, heartbeat_time stamped at creation, the only column
+// staleness is measured from), so the row is
 // indistinguishable from one a real submit produced; what is missing is only
 // the executor, which is the point.
 //
-// The row is written under the callback harness's bootstrap tenant, so it is
-// visible to that stack's authenticated status reads. Returns the job id.
-func insertOrphanRunningJob(t *testing.T, model string) string {
+// The row is written under the callback harness's tenant, so it is visible
+// to that stack's authenticated status reads. Returns the job id.
+func insertOrphanRunningJob(t *testing.T, model string, pit time.Time) string {
 	t.Helper()
-	return insertRunningJobRow(t, model, 0)
+	return insertRunningJobRow(t, model, 0, pit)
+}
+
+// consistentInstant returns an instant at which every entity of the model that
+// has been created so far is visible and which the consistency time has
+// reached: the newest lastUpdateTime of the model's entities, once the
+// consistency time is at or past it. do issues a request against the stack
+// under test.
+func consistentInstant(t *testing.T, do func(method, path, body string) *http.Response, model string) time.Time {
+	t.Helper()
+	resp := do(http.MethodGet, fmt.Sprintf("/api/entity/%s/1", model), "")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var list []struct {
+		Meta struct {
+			LastUpdateTime time.Time `json:"lastUpdateTime"`
+		} `json:"meta"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(raw, &list) != nil || len(list) == 0 {
+		t.Fatalf("list %s: %d %s", model, resp.StatusCode, raw)
+	}
+	var newest time.Time
+	for _, e := range list {
+		if e.Meta.LastUpdateTime.After(newest) {
+			newest = e.Meta.LastUpdateTime
+		}
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		r := do(http.MethodGet, "/api/entity/consistency-time", "")
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		var dto struct {
+			ConsistencyTime time.Time `json:"consistencyTime"`
+		}
+		if r.StatusCode == http.StatusOK && json.Unmarshal(b, &dto) == nil && !dto.ConsistencyTime.Before(newest) {
+			return newest
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("consistency time did not reach %s: %d %s", newest, r.StatusCode, b)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // insertRunningJobRow is insertOrphanRunningJob generalised over the
@@ -892,17 +943,17 @@ func insertOrphanRunningJob(t *testing.T, model string) string {
 // point_in_time column (what GetAsyncResults' GetAsAt fetches entities at), so
 // the two must agree here too — otherwise the scan counts N but the results
 // endpoint fetches them as-of the zero time and returns nothing. The PIT is set
-// a minute ahead of every seeded commit (so any small Go/Postgres clock skew
-// still leaves it after them); a PIT past all commits resolves to "all
-// currently committed", exactly the match-all set. Re-execution now decodes
-// search_opts (decodeStoredJob), so unlike the pre-reclaim disposition neither
-// column can be NULL/zero.
-func insertRunningJobRow(t *testing.T, model string, staleClaims int64) string {
+// supplied by the caller: a real submit takes it from the consistency time, so
+// a stored PIT is never later than that. A scenario that reads results takes it
+// from consistentInstant (the instant its seeded entities are all visible at).
+// Re-execution now decodes search_opts (decodeStoredJob), so unlike the
+// pre-reclaim disposition neither column can be NULL/zero.
+func insertRunningJobRow(t *testing.T, model string, staleClaims int64, pit time.Time) string {
 	t.Helper()
-	const tenantID = "test-tenant" // callbackHarness's cfg.Bootstrap.TenantID
+	const tenantID = "test-tenant" // callbackHarness's default admin token tenant
 	jobID := uuid.NewString()
 
-	pit := time.Now().Add(time.Minute).UTC()
+	pit = pit.UTC()
 	optsJSON, err := json.Marshal(struct {
 		Limit       int       `json:"limit"`
 		PointInTime time.Time `json:"pointInTime"`
@@ -920,8 +971,8 @@ func insertRunningJobRow(t *testing.T, model string, staleClaims int64) string {
 	defer pool.Close()
 
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, calc_ms, epoch, stale_claims)
-		 VALUES ($1, $2, 'RUNNING', $3, '1', $4, $5, $6, 0, '', now(), 0, 1, $7)`,
+		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, heartbeat_time, calc_ms, epoch, stale_claims)
+		 VALUES ($1, $2, 'RUNNING', $3, '1', $4, $5, $6, 0, '', now(), now(), 0, 1, $7)`,
 		jobID, tenantID, model,
 		[]byte(`{"type":"group","operator":"AND","conditions":[]}`),
 		pit,
@@ -957,12 +1008,11 @@ func insertPartialResultRows(t *testing.T, jobID string, entityIDs []string) {
 	}
 }
 
-// backdateJobCreatedAt pushes a search job's created_at back by age via a
-// direct connection to the shared testcontainer, so the reaper's staleness
-// check (HeartbeatTime, or CreateTime as the baseline when never
-// heartbeated) treats it as long orphaned without waiting real wall-clock
-// time.
-func backdateJobCreatedAt(t *testing.T, jobID string, age time.Duration) {
+// backdateJobLiveness pushes a search job's heartbeat_time (the only column
+// ClaimStale judges staleness by) and created_at back by age via a direct
+// connection to the shared testcontainer, so the reaper treats the job as long
+// orphaned without waiting real wall-clock time.
+func backdateJobLiveness(t *testing.T, jobID string, age time.Duration) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -971,31 +1021,11 @@ func backdateJobCreatedAt(t *testing.T, jobID string, age time.Duration) {
 		t.Fatalf("open backdater pool: %v", err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, `UPDATE search_jobs SET created_at = created_at - ($2 * interval '1 microsecond') WHERE id = $1`,
+	if _, err := pool.Exec(ctx, `UPDATE search_jobs SET created_at = created_at - ($2 * interval '1 microsecond'),
+			heartbeat_time = heartbeat_time - ($2 * interval '1 microsecond') WHERE id = $1`,
 		jobID, age.Microseconds()); err != nil {
 		t.Fatalf("backdate search job %s: %v", jobID, err)
 	}
-}
-
-// persistedJobErrorFor mirrors storage_ceilings_e2e_test.go's
-// persistedJobError (kept package-private there without exporting) so this
-// file can read the job's persisted error message directly, independent of
-// which harness/app instance submitted it — the row is visible to any
-// connection against the shared Postgres backend.
-func persistedJobErrorFor(t *testing.T, jobID string) string {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "async-stream-job-reader"))
-	if err != nil {
-		t.Fatalf("open reader pool: %v", err)
-	}
-	defer pool.Close()
-	var msg string
-	if err := pool.QueryRow(ctx, `SELECT error FROM search_jobs WHERE id = $1`, jobID).Scan(&msg); err != nil {
-		t.Fatalf("read search job %s: %v", jobID, err)
-	}
-	return msg
 }
 
 // persistedJobResultCount reads the result_count a completed job recorded,
@@ -1035,37 +1065,6 @@ func persistedJobReleased(t *testing.T, jobID string) bool {
 	return released
 }
 
-// fetchClientToken obtains a JWT via client_credentials grant against an
-// arbitrary base URL — the package-level getTokenRaw hardcodes the shared
-// TestMain serverURL, which the standalone shutdown-drain app does not use.
-func fetchClientToken(t *testing.T, baseURL, clientID, clientSecret string) string {
-	t.Helper()
-	form := "grant_type=client_credentials"
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/oauth/token", strings.NewReader(form))
-	if err != nil {
-		t.Fatalf("new token request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(clientID, clientSecret)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("token request: %v", err)
-	}
-	body := readHTTPBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("token request: %d %s", resp.StatusCode, body)
-	}
-	var result map[string]any
-	if err := json.Unmarshal([]byte(body), &result); err != nil {
-		t.Fatalf("decode token response: %v; body=%s", err, body)
-	}
-	token, _ := result["access_token"].(string)
-	if token == "" {
-		t.Fatalf("no access_token in response: %s", body)
-	}
-	return token
-}
-
 // doAuthAgainst issues an authenticated request against an arbitrary base
 // URL with a caller-supplied bearer token.
 func doAuthAgainst(t *testing.T, baseURL, token, method, path, body string) *http.Response {
@@ -1076,7 +1075,7 @@ func doAuthAgainst(t *testing.T, baseURL, token, method, path, body string) *htt
 	} else {
 		reader = strings.NewReader("")
 	}
-	req, err := http.NewRequest(method, baseURL+path, reader)
+	req, err := e2eNewRequest(t, method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("new request %s %s: %v", method, path, err)
 	}
@@ -1165,28 +1164,35 @@ func newStandaloneApp(t *testing.T, configure func(*app.Config)) *standaloneApp 
 	cfg.IAM.JWTSigningKey = keyPEM
 	cfg.IAM.JWTIssuer = "cyoda-standalone-test"
 	cfg.IAM.JWTExpiry = 3600
-	cfg.Bootstrap = app.BootstrapConfig{
-		ClientID: "standalone-client-" + uuid.NewString(), ClientSecret: "standalone-secret",
-		TenantID: "test-tenant", UserID: "standalone-admin", Roles: "ROLE_ADMIN,ROLE_M2M",
-	}
 
 	srv := httptest.NewUnstartedServer(nil)
 	srv.Start()
 	t.Cleanup(srv.Close)
 	cfg.HTTPPort = srv.Listener.Addr().(*net.TCPAddr).Port
 
+	// No scheduler: this stack is on the shared database, where a claim
+	// (cross-tenant) would take tasks other tests' stacks armed. See
+	// newCalloutHarness.
+	cfg.Scheduler.Enabled = false
+
 	if configure != nil {
 		configure(&cfg)
 	}
 
 	a := app.New(cfg)
-	srv.Config.Handler = a.Handler()
+	srv.Config.Handler = validated(a.Handler())
 
 	var once sync.Once
 	closeNow := func() { once.Do(func() { _ = a.Close() }) }
 	t.Cleanup(closeNow)
 
-	token := fetchClientToken(t, srv.URL, cfg.Bootstrap.ClientID, cfg.Bootstrap.ClientSecret)
+	// A self-signed admin token in the shape of a client_credentials token —
+	// this stack has no M2M client of its own; signing directly with rsaKey
+	// (registered as this stack's default signing key) needs no round trip.
+	token, err := signServiceToken(rsaKey, cfg.IAM.JWTIssuer, cfg.IAM.JWTAudience, "suite-admin", "test-tenant", "standalone-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	if err != nil {
+		t.Fatalf("sign admin token: %v", err)
+	}
 	doAuth := func(method, path, body string) *http.Response {
 		return doAuthAgainst(t, srv.URL, token, method, path, body)
 	}

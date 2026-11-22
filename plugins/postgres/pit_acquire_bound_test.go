@@ -29,8 +29,8 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/postgres"
 )
 
 var pitAcquireModel = spi.ModelRef{EntityName: "pitacquire", ModelVersion: "1"}
@@ -59,6 +59,7 @@ func newPITAcquireFixture(t *testing.T, maxConns int32, acquire time.Duration, s
 	tm, pool := newTestTxManager(t, withMaxConns(maxConns), withAcquireTimeout(acquire))
 	factory := postgres.NewStoreFactoryWithTMAndAcquireTimeoutForTest(pool, tm, acquire)
 	ctx := ctxWithTenant(pitAcquireTenant)
+	lockModels(t, factory, ctx, pitAcquireModel)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {

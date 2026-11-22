@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // TestQueryGroupedStats_PushdownTypeDirectedWithFields proves the fields map
@@ -63,13 +63,13 @@ func TestQueryGroupedStats_PushdownTypeDirectedWithFields(t *testing.T) {
 	}
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	fields := map[string]schema.FieldDescriptor{
 		"$.age": {Path: "$.age", Types: []spi.DataType{spi.Integer}},
 	}
 
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 
 	// Typed: age 30 > 5 matches (e1), age 3 > 5 does not and no tag contains
 	// "zzz" (e2) → one bucket, count 1.
@@ -109,14 +109,14 @@ func TestQueryGroupedStats_FieldsFeedConditionToFilter(t *testing.T) {
 	}
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	fields := map[string]schema.FieldDescriptor{
 		"$.age": {Path: "$.age", Types: []spi.DataType{spi.Integer}},
 	}
 
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	if _, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, fields, req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

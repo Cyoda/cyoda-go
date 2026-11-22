@@ -17,10 +17,11 @@ package externalapi
 //
 // Schema notes (dictionary shape → cyoda-go accepted shape):
 //
-//   Processor "type":"calculator" — cyoda-go ProcessorDefinition.Type is a
-//     free-form string; the engine ignores it and dispatches by tag. The
-//     dictionary's SYNC/ASYNC_SAME_TX/ASYNC_NEW_TX is the
-//     ProcessorDefinition.ExecutionMode field directly.
+//   Processor "type":"calculator" → "type":"externalized" — import accepts
+//     only "externalized" (or an omitted type, stored as "externalized");
+//     the engine dispatches by tag. The dictionary's
+//     SYNC/ASYNC_SAME_TX/ASYNC_NEW_TX is the ProcessorDefinition.ExecutionMode
+//     field directly.
 //   Criterion: dictionary "function" criterion → cyoda-go
 //     {"type":"function","function":{"name":"<name>","config":{...}}}.
 //     This is the only criterion shape that the engine routes to the
@@ -39,12 +40,16 @@ package externalapi
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
+	"time"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	parityclient "github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/google/uuid"
+
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/errorcontract"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	parityclient "github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 func init() {
@@ -79,7 +84,7 @@ func externalProcessorWorkflow(workflowName, procName, executionMode string) str
 			"version": "1.1", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
-					"processors": [{"type": "calculator", "name": "` + procName + `", "executionMode": "` + executionMode + `",
+					"processors": [{"type": "externalized", "name": "` + procName + `", "executionMode": "` + executionMode + `",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"PROCESSED": {}
@@ -226,19 +231,19 @@ func RunExternalAPI_09_04_AsyncNewTxExceptionKeepsInitialSave(t *testing.T, fixt
 // RunExternalAPI_09_05_SyncErrorFlagRollsBack — dictionary 09/05.
 func RunExternalAPI_09_05_SyncErrorFlagRollsBack(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: cmd/compute-test-client/catalog.go has no error-flag processor; processorFunc signature does not expose the gRPC ProcessorResponse warnings/errors path. Adding it would require extending the processor signature — out of tranche-3 scope. Compute-test-client extension scheduled for a future tranche.")
+	t.Skip("pending: cmd/compute-test-client has no processor that sets the response's warnings/errors flags.")
 }
 
 // RunExternalAPI_09_06_AsyncSameTxErrorFlagRollsBack — dictionary 09/06.
 func RunExternalAPI_09_06_AsyncSameTxErrorFlagRollsBack(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: cmd/compute-test-client/catalog.go has no error-flag processor; processorFunc signature does not expose the gRPC ProcessorResponse warnings/errors path. Adding it would require extending the processor signature — out of tranche-3 scope. Compute-test-client extension scheduled for a future tranche.")
+	t.Skip("pending: cmd/compute-test-client has no processor that sets the response's warnings/errors flags.")
 }
 
 // RunExternalAPI_09_07_AsyncNewTxErrorFlagKeepsInitialSave — dictionary 09/07.
 func RunExternalAPI_09_07_AsyncNewTxErrorFlagKeepsInitialSave(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: cmd/compute-test-client/catalog.go has no error-flag processor; processorFunc signature does not expose the gRPC ProcessorResponse warnings/errors path. Adding it would require extending the processor signature — out of tranche-3 scope. Compute-test-client extension scheduled for a future tranche.")
+	t.Skip("pending: cmd/compute-test-client has no processor that sets the response's warnings/errors flags.")
 }
 
 // RunExternalAPI_09_08_NoExternalRegisteredFails — dictionary 09/08.
@@ -294,50 +299,136 @@ func RunExternalAPI_09_08_NoExternalRegisteredFails(t *testing.T, fixture parity
 	}
 }
 
+// failoverPair starts, under a FRESH tenant, a compute client with the given
+// behaviour and then a healthy one, both on tag — so the misbehaving one is
+// tried first — and imports a model whose one SYNC processor is routed to tag.
+// A fixture that cannot start compute clients skips here, before the server is
+// touched.
+func failoverPair(t *testing.T, fixture parity.BackendFixture, name, behaviour string, extraConfig map[string]any) (c *parityclient.Client, model string, bad, good parity.ComputeClient) {
+	t.Helper()
+	tenant := fixture.NewTenant(t)
+	tag := "ext-" + name
+	bad = parity.StartComputeClientOrSkip(t, fixture, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}, Behaviour: behaviour})
+	good = parity.StartComputeClientOrSkip(t, fixture, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}})
+	c = parityclient.NewClient(fixture.BaseURL(), tenant.Token)
+	model = "ext-" + name
+	setupExternalModel(t, c, model, 1, `{"k":1}`, parity.ComputeClientWorkflow("ext-"+name+"-wf", "noop", tag, "", extraConfig))
+	return c, model, bad, good
+}
+
+// assertRetryableProblem matches status and errorCode and requires
+// properties.retryable=true.
+func assertRetryableProblem(t *testing.T, status int, body []byte, wantStatus int, wantCode string) {
+	t.Helper()
+	errorcontract.Match(t, status, body, errorcontract.ExpectedError{HTTPStatus: wantStatus, ErrorCode: wantCode})
+	var problem struct {
+		Properties struct {
+			Retryable bool `json:"retryable"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &problem); err != nil {
+		t.Fatalf("failed to parse response body as JSON: %v\nbody: %s", err, body)
+	}
+	if !problem.Properties.Retryable {
+		t.Errorf("expected properties.retryable=true (body: %s)", body)
+	}
+}
+
+// assertTriedThenServed: bad received the work first, good served the same
+// request afterwards.
+func assertTriedThenServed(t *testing.T, bad, good parity.ComputeClient) {
+	t.Helper()
+	b := parity.AwaitReceived(t, bad, 1, 5*time.Second)
+	g := parity.AwaitReceived(t, good, 1, 5*time.Second)
+	if len(b) != 1 || len(g) != 1 {
+		t.Fatalf("first client received %d requests, second %d; want 1 and 1", len(b), len(g))
+	}
+	if b[0].RequestID == "" || b[0].RequestID != g[0].RequestID {
+		t.Errorf("request ids differ across tries: %q then %q", b[0].RequestID, g[0].RequestID)
+	}
+}
+
 // RunExternalAPI_09_09_ExternalDisconnectSucceedsOnRetry — dictionary 09/09.
+// The first compute node drops its connection on receiving the work; the
+// processor is declared idempotent, so the second is asked and the entity is
+// created.
 func RunExternalAPI_09_09_ExternalDisconnectSucceedsOnRetry(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: requires multi-member orchestration (one disconnects, another responds). The parity fixture exposes a single compute-test-client; adding member-lifecycle hooks is out of tranche-3 scope.")
+	c, model, bad, good := failoverPair(t, fixture, "0909", parity.ComputeBehaviourDrop, map[string]any{"idempotent": true})
+	id, err := c.CreateEntity(t, model, 1, `{"k":1}`)
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	if got, err := c.GetEntity(t, id); err != nil || got.Meta.State != "ACTIVE" {
+		t.Errorf("state = %q err=%v; want ACTIVE", got.Meta.State, err)
+	}
+	assertTriedThenServed(t, bad, good)
 }
 
 // RunExternalAPI_09_10_ExternalTimeoutFailover — dictionary 09/10.
+// The first compute node never answers; after the processor's own
+// responseTimeoutMs the second is asked.
 func RunExternalAPI_09_10_ExternalTimeoutFailover(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: requires per-call timeout config tunable from the test side AND multi-member failover. cyoda-go has ProcessorConfig.ResponseTimeoutMs but the parity fixture does not provide a fast/slow member pair. Out of tranche-3 scope.")
+	c, model, bad, good := failoverPair(t, fixture, "0910", parity.ComputeBehaviourStall,
+		map[string]any{"idempotent": true, "responseTimeoutMs": 300})
+	if _, err := c.CreateEntity(t, model, 1, `{"k":1}`); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	assertTriedThenServed(t, bad, good)
 }
 
 // RunExternalAPI_09_11_ProcessingNodeDisconnectsMidRequest — dictionary 09/11.
+// A compute node disconnects with the request in its hands while another
+// remains. What happens next is the workflow author's declaration: without
+// `idempotent` the operation fails with the try's own code and the other node
+// is never asked; with it, the other node serves the request.
 func RunExternalAPI_09_11_ProcessingNodeDisconnectsMidRequest(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: requires deterministic mid-request gRPC disconnect of a calc member while another member remains. The parity fixture exposes a single compute-test-client and no disconnect hook. Out of tranche-3 scope.")
+	t.Run("not-idempotent", func(t *testing.T) {
+		c, model, bad, good := failoverPair(t, fixture, "0911n", parity.ComputeBehaviourDrop, nil)
+		status, body, err := c.CreateEntityRaw(t, model, 1, `{"k":1}`)
+		if err != nil {
+			t.Fatalf("CreateEntityRaw: %v", err)
+		}
+		assertRetryableProblem(t, status, body, http.StatusServiceUnavailable, "COMPUTE_MEMBER_DISCONNECTED")
+		parity.AwaitReceived(t, bad, 1, 5*time.Second)
+		if got := good.Received(t); len(got) != 0 {
+			t.Errorf("the remaining compute node received %d requests; a processor not declared idempotent is not repeated", len(got))
+		}
+		if list, err := c.ListEntitiesByModel(t, model, 1); err != nil || len(list) != 0 {
+			t.Errorf("entities after the failed create: %d err=%v; want 0", len(list), err)
+		}
+	})
+	t.Run("idempotent", func(t *testing.T) {
+		c, model, bad, good := failoverPair(t, fixture, "0911i", parity.ComputeBehaviourDrop, map[string]any{"idempotent": true})
+		if _, err := c.CreateEntity(t, model, 1, `{"k":1}`); err != nil {
+			t.Fatalf("CreateEntity: %v", err)
+		}
+		assertTriedThenServed(t, bad, good)
+	})
 }
 
 // RunExternalAPI_09_12_ExternalizedCriterionSkipsCall — dictionary 09/12.
 //
-// A workflow where the auto-transition CREATED→PROCESSED is guarded by an
-// externalized `always-false` criterion. Because the criterion does not
-// match, the transition does not fire and the entity stays at CREATED.
+// Mirrors Cyoda Cloud's
+// ExternalizedGrpcProcessorIT.testExternalizedCriteriaConditionSkipsExternalCallWhenNotMatched:
+// the automated transition CREATED→PROCESSED is guarded by a function
+// criterion whose pre-check ($.flag == true) is evaluated before the callout.
 //
-// Schema notes:
-//   - The criterion uses cyoda-go's accepted shape:
-//     {"type":"function","function":{"name":"always-false"}}.
-//     This routes to the external calc member (see engine.go evaluateCriterion).
-//   - The "external_calls_count == 0" assertion in the dictionary is internal
-//     bookkeeping; cyoda-go does not expose a per-tenant call counter through
-//     the HTTP API. We assert the observable equivalent: the entity stays
-//     in the initial state, proving the externalized step did not fire (or
-//     fired and returned false — both observable as "transition not taken").
+//   - flag false: the pre-check does not match, the criterion is false and no
+//     criterion request is made; the entity stays at CREATED.
+//   - flag true: the pre-check matches, exactly one criterion request is made,
+//     the member answers true and the entity reaches PROCESSED. The
+//     TRANSITION_MAKE audit event records the callout.
 //
-// Note: the criterion always-false runs externally (it IS dispatched), then
-// returns false; the dictionary's tighter assertion that the call is
-// *suppressed entirely* by an upstream simple criterion in an AND group is
-// not observable through HTTP. We accept the looser shape: transition not
-// taken. The dictionary remains semantically satisfied (the externalized
-// criterion's outcome — false — does block the transition, just as the
-// dictionary expects).
+// The criterion requests are counted at a compute client started for this
+// scenario on a tag of its own, under a fresh tenant.
 func RunExternalAPI_09_12_ExternalizedCriterionSkipsCall(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	tenant := fixture.ComputeTenant(t)
+	tenant := fixture.NewTenant(t)
+	const tag = "ext-0912"
+	cc := parity.StartComputeClientOrSkip(t, fixture, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}})
 	c := parityclient.NewClient(fixture.BaseURL(), tenant.Token)
 
 	const modelName = "extCritSkip"
@@ -345,27 +436,54 @@ func RunExternalAPI_09_12_ExternalizedCriterionSkipsCall(t *testing.T, fixture p
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.1", "name": "ext-crit-skip-wf", "initialState": "CREATED", "active": true,
+			"version": "1.5", "name": "ext-crit-skip-wf", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
-					"criterion": {"type": "function", "function": {"name": "always-false"}}
+					"criterion": {"type":"function","function":{"name":"always-true","config":{"calculationNodesTags":"` + tag + `"},"criterion":{"type":"simple","jsonPath":"$.flag","operatorType":"EQUALS","value":true}}}
 				}]},
 				"PROCESSED": {}
 			}
 		}]
 	}`
-	setupExternalModel(t, c, modelName, modelVersion, `{"k":1}`, wf)
+	setupExternalModel(t, c, modelName, modelVersion, `{"k":1,"flag":false}`, wf)
 
-	id, err := c.CreateEntity(t, modelName, modelVersion, `{"k":1}`)
-	if err != nil {
-		t.Fatalf("CreateEntity: %v", err)
+	create := func(body string) uuid.UUID {
+		t.Helper()
+		id, err := c.CreateEntity(t, modelName, modelVersion, body)
+		if err != nil {
+			t.Fatalf("CreateEntity %s: %v", body, err)
+		}
+		return id
 	}
-	got, err := c.GetEntity(t, id)
-	if err != nil {
-		t.Fatalf("GetEntity: %v", err)
+	requireState := func(id uuid.UUID, want string) {
+		t.Helper()
+		got, err := c.GetEntity(t, id)
+		if err != nil {
+			t.Fatalf("GetEntity: %v", err)
+		}
+		if got.Meta.State != want {
+			t.Errorf("09/12: state = %q; want %q", got.Meta.State, want)
+		}
 	}
-	if got.Meta.State != "CREATED" {
-		t.Errorf("09/12: expected entity at CREATED (criterion=always-false → transition not taken), got %s", got.Meta.State)
+
+	notMatched := create(`{"k":1,"flag":false}`)
+	requireState(notMatched, "CREATED")
+	if got := parity.CriterionRequestNames(t, cc); len(got) != 0 {
+		t.Errorf("09/12: flag false: criterion requests = %q; want none (the pre-check did not match)", got)
+	}
+	const wantReason = "always-true: pre-check did not match, not called"
+	if got := parity.StateMachineEventData(t, c, notMatched, "TRANSITION_NOT_MATCH_CRITERION")["reason"]; got != wantReason {
+		t.Errorf("09/12: TRANSITION_NOT_MATCH_CRITERION reason = %v; want %q", got, wantReason)
+	}
+
+	matched := create(`{"k":1,"flag":true}`)
+	requireState(matched, "PROCESSED")
+	if got := parity.CriterionRequestNames(t, cc); len(got) != 1 || got[0] != "always-true" {
+		t.Errorf("09/12: flag true: criterion requests = %q; want exactly [always-true]", got)
+	}
+	fns := parity.FunctionRecords(t, parity.StateMachineEventData(t, c, matched, "TRANSITION_MAKE"))
+	if len(fns) != 1 || fns[0]["called"] != true {
+		t.Errorf("09/12: TRANSITION_MAKE functions = %v; want one entry with called true", fns)
 	}
 }
 
@@ -381,7 +499,7 @@ func externalProcessorWorkflowWithContext(workflowName, procName, contextValue s
 			"version": "1.1", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
-					"processors": [{"type": "calculator", "name": "` + procName + `", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "` + procName + `", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": "", "context": "` + contextValue + `"}}]
 				}]},
 				"PROCESSED": {}

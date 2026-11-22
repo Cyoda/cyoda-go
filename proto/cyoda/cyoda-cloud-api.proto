@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package org.cyoda.cloud.api.grpc;
 
-option go_package = "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda";
+option go_package = "github.com/cyoda/cyoda-go/api/grpc/cyoda";
 
 import "cloudevents/cloudevents.proto";
 

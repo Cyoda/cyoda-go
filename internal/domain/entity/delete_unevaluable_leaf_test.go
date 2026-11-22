@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // delete_unevaluable_leaf_test.go closes the review's Important-1 finding on
@@ -59,7 +60,7 @@ func saveBareLeafModelEntity(t *testing.T, ctx context.Context, factory *memory.
 	}
 }
 
-func newBareLeafDeleteFixture(t *testing.T) (h *entity.Handler, ctx context.Context, entityName, modelVersion string) {
+func newBareLeafDeleteFixture(t *testing.T) (h *entity.Handler, ctx context.Context, entityName string, modelVersion int) {
 	t.Helper()
 	base := memory.NewStoreFactory()
 	t.Cleanup(func() { base.Close() })
@@ -72,9 +73,9 @@ func newBareLeafDeleteFixture(t *testing.T) (h *entity.Handler, ctx context.Cont
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h = entity.New(cachedFactory(base), txMgr, common.NewDefaultUUIDGenerator(), nil, txcoord.New(txMgr), newTestConsistency(t, base), platformclock.Real())
 
-	return h, ctx, ref.EntityName, ref.ModelVersion
+	return h, ctx, ref.EntityName, 1
 }
 
 // TestDeleteEntitiesConditional_UnevaluableLeaf_SingleTx_MapsTo400 is the

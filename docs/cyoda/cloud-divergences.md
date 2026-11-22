@@ -17,7 +17,7 @@ divergence is identified.
 |---|---|---|---|
 | `ProcessorDefinitionDto.asyncResult` | Field declared in OpenAPI; OSS backend rejects `asyncResult=true` at workflow import (400 VALIDATION_FAILED). The explicit `asyncResult=false` and absent cases are accepted and round-tripped. Crossover semantics need durable suspend state + cluster-wide work-stealing recovery + a distributed timer — implementable only in the commercial backend. | Reject-at-import on OSS; enterprise-tier in the commercial backend (not yet implemented there either). | [#223](https://github.com/cyoda/cyoda-go/issues/223) |
 | `ProcessorDefinitionDto.crossoverToAsyncMs` | Field declared in OpenAPI; OSS backend rejects any non-nil `crossoverToAsyncMs` at workflow import (400 VALIDATION_FAILED), including the orphan case where `asyncResult` is absent or false. See `asyncResult` — same parity gap. | Reject-at-import on OSS; enterprise-tier in the commercial backend. | [#223](https://github.com/cyoda/cyoda-go/issues/223) |
-| Remaining 501 Not Implemented endpoints | Declared in OpenAPI but unhandled at runtime. As of v0.8.0 the keypair + trusted-key (`/oauth/keys/*`), OIDC provider (`/oauth/oidc/providers/*`), and `/clients` surfaces are conformant; the 1 endpoint below still returns 501 via `internal/api/unimplemented.go`. Re-derive with the snippet beneath this table whenever IAM/account surfaces move. | Deferred. | [#194](https://github.com/cyoda/cyoda-go/issues/194) |
+| Remaining 501 Not Implemented endpoints | Declared in OpenAPI but unhandled at runtime. The keypair + trusted-key (`/oauth/keys/*`) and `/clients` surfaces are conformant; the OIDC provider endpoints (`/oauth/oidc/providers/*`) no longer exist in cyoda-go (only M2M clients reach it, see `cyoda help auth integration`), though Cloud's mirrored spec under `docs/cyoda/` still carries them; the 1 endpoint below still returns 501 via `internal/api/unimplemented.go`. Re-derive with the snippet beneath this table whenever IAM/account surfaces move. | Deferred. | [#194](https://github.com/cyoda/cyoda-go/issues/194) |
 | `EdgeMessage.payload` content types beyond JSON | OpenAPI's `contentType` field suggests support for non-JSON; cyoda-go currently stores/returns JSON-encoded values only. Cloud has the same restriction today. | Future feature, would lead Cloud. | [#193](https://github.com/cyoda/cyoda-go/issues/193) |
 
 ## Resolved divergences
@@ -46,21 +46,16 @@ export CYODA_STORAGE_BACKEND=sqlite
 export CYODA_SQLITE_PATH=$(mktemp -t cyoda-stubs-XXXXXX.db)
 export CYODA_IAM_MODE=jwt
 export CYODA_JWT_SIGNING_KEY="$(openssl genrsa 2048 2>/dev/null)"
-export CYODA_BOOTSTRAP_CLIENT_ID=stub-probe
-export CYODA_BOOTSTRAP_CLIENT_SECRET=stub-probe-secret
 export CYODA_HTTP_PORT=18080
 export CYODA_ADMIN_PORT=18081
 export CYODA_GRPC_PORT=18082          # avoid the default 9090 clashing with a parallel instance
 export CYODA_SUPPRESS_BANNER=true
-bin/cyoda serve &
+bin/cyoda &
 CYODA_PID=$!
 sleep 3
 
-# 2. Acquire a bootstrap token.
-TOKEN=$(curl -fsS -u "$CYODA_BOOTSTRAP_CLIENT_ID:$CYODA_BOOTSTRAP_CLIENT_SECRET" \
-  -d "grant_type=client_credentials" \
-  http://127.0.0.1:18080/api/oauth/token \
-  | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+# 2. Sign an admin token with the same signing key.
+TOKEN=$(bin/cyoda token --tenant stub-probe --roles ROLE_ADMIN,ROLE_M2M)
 
 # 3. Probe every (method, path) tuple in the spec and record those returning 501.
 TOKEN="$TOKEN" python3 - <<'PYEOF'

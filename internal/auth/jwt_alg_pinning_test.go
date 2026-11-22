@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -9,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 // forgeTokenWithAlg produces a JWT whose header declares the given alg but
@@ -40,7 +41,7 @@ func forgeTokenWithAlg(t *testing.T, alg, kid string, claims map[string]any, key
 		sigB64 = base64.RawURLEncoding.EncodeToString([]byte("not-a-real-hmac"))
 	default:
 		// Legitimately sign with RS256 semantics so an RS256 header passes.
-		legit, err := auth.Sign(claims, key, kid)
+		legit, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(key), kid)
 		if err != nil {
 			t.Fatalf("sign: %v", err)
 		}
@@ -57,11 +58,10 @@ func forgeTokenWithAlg(t *testing.T, alg, kid string, claims map[string]any, key
 // header with alg:"none" should be rejected explicitly — before the
 // verifier even runs — to match the JWT security best practice.
 func TestJWKSValidator_RejectsAlgNone(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,
@@ -72,7 +72,7 @@ func TestJWKSValidator_RejectsAlgNone(t *testing.T) {
 	}
 
 	token := forgeTokenWithAlg(t, "none", kid, claims, key)
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("validator accepted alg:none token")
 	}
@@ -87,11 +87,10 @@ func TestJWKSValidator_RejectsAlgNone(t *testing.T) {
 // the RSA public key as the HMAC key; we don't even need to construct
 // that here because alg-pinning rejects the header long before.
 func TestJWKSValidator_RejectsAlgHS256(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,
@@ -102,7 +101,7 @@ func TestJWKSValidator_RejectsAlgHS256(t *testing.T) {
 	}
 
 	token := forgeTokenWithAlg(t, "HS256", kid, claims, key)
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("validator accepted alg:HS256 token")
 	}
@@ -115,11 +114,10 @@ func TestJWKSValidator_RejectsAlgHS256(t *testing.T) {
 // alg claim is stripped entirely — equally dangerous because some naive
 // validators treat missing alg as permission to skip checks.
 func TestJWKSValidator_RejectsMissingAlg(t *testing.T) {
-	_, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,
@@ -137,7 +135,7 @@ func TestJWKSValidator_RejectsMissingAlg(t *testing.T) {
 		base64.RawURLEncoding.EncodeToString(headerJSON),
 		base64.RawURLEncoding.EncodeToString(claimsJSON),
 	)
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("validator accepted token with no alg header")
 	}
@@ -149,11 +147,10 @@ func TestJWKSValidator_RejectsMissingAlg(t *testing.T) {
 // TestJWKSValidator_AcceptsAlgRS256 is the happy path — alg pinning must
 // not regress the expected case.
 func TestJWKSValidator_AcceptsAlgRS256(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,
@@ -164,7 +161,7 @@ func TestJWKSValidator_AcceptsAlgRS256(t *testing.T) {
 	}
 
 	token := forgeTokenWithAlg(t, "RS256", kid, claims, key)
-	if _, err := v.Validate(token); err != nil {
+	if _, _, err := v.Validate(token); err != nil {
 		t.Fatalf("validator rejected legitimate RS256 token: %v", err)
 	}
 }

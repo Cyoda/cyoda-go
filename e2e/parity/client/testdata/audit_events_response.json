@@ -2,6 +2,7 @@
   "items": [
     {
       "auditEventType": "StateMachine",
+      "eventId": "5f1c1b0e-6d1a-11f1-8000-000000000001",
       "state": "CREATED",
       "eventType": "FINISHED",
       "severity": "INFO",
@@ -31,6 +32,7 @@
     {
       "auditEventType": "EntityChange",
       "changeType": "CREATE",
+      "version": 2,
       "severity": "INFO",
       "utcTime": "2026-03-16T04:52:47.825Z",
       "microsTime": 1773636767825000,

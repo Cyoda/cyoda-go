@@ -1,0 +1,11 @@
+{
+  "schema": "QueryConditionDto",
+  "valid": false,
+  "value": {
+    "type": "group",
+    "operator": "AND",
+    "conditions": [
+      42
+    ]
+  }
+}

@@ -53,6 +53,38 @@ func TestOasdiffGatePremise(t *testing.T) {
 		}
 		t.Logf("oasdiff output (base→breaking): %s", out)
 	})
+
+	severity := filepath.Join("..", "..", ".github", "oasdiff-severity-levels.txt")
+	union := testdataDir + "/base_union.yaml"
+
+	// With the severity file, a new mapping key is an addition, while a removed
+	// mapping key and a grown response enum are the changes Rule 6 forbids.
+	t.Run("added_mapping_key_is_not_breaking", func(t *testing.T) {
+		out, err := exec.Command(bin, "breaking", union, testdataDir+"/union_added.yaml", "--fail-on", "ERR", "--severity-levels", severity).CombinedOutput()
+		if err != nil {
+			t.Fatalf("expected exit 0, got %v\noutput:\n%s", err, out)
+		}
+	})
+
+	t.Run("deleted_mapping_key_is_breaking", func(t *testing.T) {
+		out, err := exec.Command(bin, "breaking", union, testdataDir+"/union_deleted.yaml", "--fail-on", "ERR", "--severity-levels", severity).CombinedOutput()
+		if err == nil {
+			t.Fatalf("expected non-zero exit, got 0\noutput:\n%s", out)
+		}
+		if !strings.Contains(string(out), "[response-body-discriminator-mapping-deleted]") {
+			t.Fatalf("expected the %s check to fire, got:\n%s", "response-body-discriminator-mapping-deleted", out)
+		}
+	})
+
+	t.Run("added_response_enum_value_is_breaking", func(t *testing.T) {
+		out, err := exec.Command(bin, "breaking", union, testdataDir+"/enum_added.yaml", "--fail-on", "ERR", "--severity-levels", severity).CombinedOutput()
+		if err == nil {
+			t.Fatalf("expected non-zero exit, got 0\noutput:\n%s", out)
+		}
+		if !strings.Contains(string(out), "[response-property-enum-value-added]") {
+			t.Fatalf("expected the %s check to fire, got:\n%s", "response-property-enum-value-added", out)
+		}
+	})
 }
 
 // TestSpecHasNoSealedSchemas enforces ADR 0003 Decision 2 directly: the authored

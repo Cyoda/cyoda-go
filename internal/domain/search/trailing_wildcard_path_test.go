@@ -1,12 +1,14 @@
 package search
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // Whether a TRAILING array wildcard ("$.tags[*]") is a valid condition path is a
@@ -122,7 +124,7 @@ func TestValidateConditionTypes_TrailingWildcard(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateConditionValueTypes(model, &predicate.SimpleCondition{
+			err := ValidateConditionValueTypes(model.FieldsMap(), &predicate.SimpleCondition{
 				JsonPath: tc.path, OperatorType: tc.op, Value: tc.value,
 			})
 			if tc.wantReject {
@@ -141,7 +143,7 @@ func TestValidateConditionTypes_TrailingWildcard(t *testing.T) {
 // The rejection must be INVALID_FIELD_PATH — the path itself does not address
 // anything comparable — and must name the spelling the request actually sent.
 func TestValidateConditionTypes_TrailingWildcardOnContainer_IsInvalidFieldPath(t *testing.T) {
-	err := ValidateConditionValueTypes(buildTrailingWildcardModel(), &predicate.SimpleCondition{
+	err := ValidateConditionValueTypes(buildTrailingWildcardModel().FieldsMap(), &predicate.SimpleCondition{
 		JsonPath: "$.items[*]", OperatorType: "EQUALS", Value: "x",
 	})
 	if !errors.Is(err, errInvalidFieldPath) {
@@ -153,8 +155,8 @@ func TestValidateConditionTypes_TrailingWildcardOnContainer_IsInvalidFieldPath(t
 }
 
 // With NO schema bound the check is skipped, exactly as every other
-// schema-dependent validator in the stack skips (validateConditionPaths returns
-// nil on a nil FieldsMap; validateConditionTypes returns nil on a nil node).
+// schema-dependent validator in the stack skips (the path step of ValidateConditionForModel passes
+// on a nil FieldsMap; its type step passes on a nil node).
 // This is deliberate, not an oversight: with no schema there is no authority
 // that says the element is an object, the model may legitimately hold a
 // primitive array, and a 400 here would be a false rejection of a valid query.
@@ -165,7 +167,7 @@ func TestValidateConditionTypes_TrailingWildcard_NoSchemaAccepts(t *testing.T) {
 	if err := ValidateConditionValueTypes(nil, &predicate.SimpleCondition{
 		JsonPath: "$.items[*]", OperatorType: "EQUALS", Value: "x",
 	}); err != nil {
-		t.Fatalf("ValidateConditionValueTypes(nil model) = %v, want accepted", err)
+		t.Fatalf("ValidateConditionValueTypes(nil fields) = %v, want accepted", err)
 	}
 }
 
@@ -175,15 +177,14 @@ func TestValidateConditionTypes_TrailingWildcard_NoSchemaAccepts(t *testing.T) {
 // container is refused by the type pass above, with a diagnostic that says what
 // to do about it, rather than being reported as a field the model never
 // declared.
-func TestFindUnknownFieldPaths_TrailingWildcardIsKnown(t *testing.T) {
+func TestKnownPaths_TrailingWildcardIsKnown(t *testing.T) {
 	fm := buildTrailingWildcardModel().FieldsMap()
 	for _, path := range []string{"$.arr[*]", "$.mixed[*]", "$.items[*]", "$.items[*].name"} {
 		t.Run(path, func(t *testing.T) {
-			unknown := FindUnknownFieldPaths(&predicate.SimpleCondition{
-				JsonPath: path, OperatorType: "NOT_NULL",
-			}, fm)
-			if len(unknown) != 0 {
-				t.Errorf("FindUnknownFieldPaths(%q) = %v, want none", path, unknown)
+			paths := ConditionFieldPaths(&predicate.SimpleCondition{JsonPath: path, OperatorType: "NOT_NULL"})
+			if _, err := ValidateKnownPaths(context.Background(), nil,
+				spi.ModelRef{EntityName: "m", ModelVersion: "1"}, paths, fm); err != nil {
+				t.Errorf("ValidateKnownPaths(%q) = %v, want the path known", path, err)
 			}
 		})
 	}

@@ -7,18 +7,12 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
-
-// clientIDPattern enforces the OpenAPI schema for path-param + generated
-// clientId: ^[A-Za-z0-9]+$, length 1..100.
-var clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9]{1,100}$`)
 
 // clientIDLen is the number of base32-hex characters in a generated clientId.
 // 16 chars × 5 bits/char = 80 bits of entropy. Comfortably inside the
@@ -46,8 +40,7 @@ func generateClientID() (string, error) {
 // store is not wired (mock IAM mode). All four /clients adapters call this.
 func (h *Handler) requireM2MStore(w http.ResponseWriter, r *http.Request) bool {
 	if h.m2mClientStore == nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotImplemented,
-			common.ErrCodeNotImplemented, "M2M client management requires JWT IAM mode"))
+		writeRequiresJWTMode(w, r, "M2M client management")
 		return false
 	}
 	return true
@@ -65,9 +58,10 @@ func (h *Handler) gateM2MAdminRole(w http.ResponseWriter, r *http.Request) bool 
 }
 
 // validateClientID writes 400 BAD_REQUEST and returns false when the
-// path-param clientId is empty or violates the OpenAPI pattern.
+// path-param clientId is outside the client-id grammar (auth.ValidClientID,
+// the OpenAPI pattern ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$).
 func validateClientID(w http.ResponseWriter, r *http.Request, clientID string) bool {
-	if clientID == "" || !clientIDPattern.MatchString(clientID) {
+	if !auth.ValidClientID(clientID) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
 			common.ErrCodeBadRequest, "invalid clientId"))
 		return false
@@ -85,33 +79,77 @@ func toTechnicalUserDto(c *auth.M2MClient) genapi.TechnicalUserDto {
 		CreationDate:   c.CreatedAt,
 		LastUpdateDate: c.UpdatedAt,
 		Roles:          roles,
+		OnBehalfOf:     c.OnBehalfOf,
 	}
+}
+
+// grantTypeFor picks the grant_type a client's credentials DTO reports: the
+// token-exchange URN for an on-behalf-of client (§3.2 — it may only perform
+// token exchanges), client_credentials otherwise.
+func grantTypeFor(onBehalfOf bool) genapi.TechnicalUserCredentialsDtoGrantType {
+	if onBehalfOf {
+		return genapi.TechnicalUserCredentialsDtoGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange
+	}
+	return genapi.TechnicalUserCredentialsDtoGrantTypeClientCredentials
 }
 
 // toTechnicalUserCredentialsDto wraps a freshly-issued plaintext secret in
-// the spec-conformant response shape. The grant_type is always
-// "client_credentials" per RFC 7591 §3.2.1. expires_at=0 means "never expires".
-func toTechnicalUserCredentialsDto(clientID, plaintextSecret string, roles []string) genapi.TechnicalUserCredentialsDto {
-	rolesCopy := make([]string, len(roles))
-	copy(rolesCopy, roles)
+// the spec-conformant response shape. grant_type is the token-exchange URN
+// for an on-behalf-of client and client_credentials otherwise (§3.2).
+// expires_at=0 means "never expires".
+func toTechnicalUserCredentialsDto(c *auth.M2MClient, plaintextSecret string) genapi.TechnicalUserCredentialsDto {
+	rolesCopy := make([]string, len(c.Roles))
+	copy(rolesCopy, c.Roles)
 	return genapi.TechnicalUserCredentialsDto{
-		ClientId:              clientID,
+		ClientId:              c.ClientID,
 		ClientSecret:          plaintextSecret,
-		GrantType:             genapi.TechnicalUserCredentialsDtoGrantType("client_credentials"),
+		GrantType:             grantTypeFor(c.OnBehalfOf),
 		ClientSecretExpiresAt: 0,
 		Roles:                 rolesCopy,
+		OnBehalfOf:            c.OnBehalfOf,
 	}
 }
 
-// clientBelongsToTenant returns true iff the store record's TenantID matches
-// the caller's tenant. After Task 2 promoted M2MClient.TenantID to spi.TenantID,
-// the comparison is type-direct.
-func clientBelongsToTenant(c *auth.M2MClient, callerTenant spi.TenantID) bool {
-	return c.TenantID == callerTenant
+// writeM2MClientError answers a Delete or ResetSecret failure. The store
+// enforces tenant isolation, so an absent client and another tenant's client
+// are the same ErrM2MClientNotFound and get the same 404 — no cross-tenant
+// existence oracle. A reset with no free secret-check slot is 503
+// SERVER_BUSY. A reset that lost to another change (ErrM2MClientChanged) is
+// 409 CONFLICT, retryable. Anything else is the store failing: 503 when it reports
+// itself unavailable, otherwise 500 with a ticket.
+func writeM2MClientError(w http.ResponseWriter, r *http.Request, op string, err error) {
+	if errors.Is(err, auth.ErrM2MClientNotFound) {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound,
+			common.ErrCodeM2MClientNotFound, "M2M client not found"))
+		return
+	}
+	if writeSecretCheckBusy(w, r, err) {
+		return
+	}
+	if errors.Is(err, auth.ErrM2MClientChanged) {
+		common.WriteError(w, r, common.Operational(http.StatusConflict,
+			common.ErrCodeConflict, "the client changed during the request — retry").AsRetryable())
+		return
+	}
+	common.WriteError(w, r, common.Internal(op, err))
 }
 
-// CreateTechnicalUser implements POST /clients?withAdminRole=<bool>.
-// Generates a 16-char base32-hex clientId and returns the freshly issued
+// writeSecretCheckBusy answers ErrSecretCheckBusy — no free slot to hash a
+// new secret, nothing written — with a retryable 503 SERVER_BUSY and
+// Retry-After: 1, and reports whether it did.
+func writeSecretCheckBusy(w http.ResponseWriter, r *http.Request, err error) bool {
+	if !errors.Is(err, auth.ErrSecretCheckBusy) {
+		return false
+	}
+	w.Header().Set("Retry-After", "1")
+	common.WriteError(w, r, common.Operational(http.StatusServiceUnavailable,
+		common.ErrCodeServerBusy, "the node is busy and could not hash a client secret — retry").AsRetryable())
+	return true
+}
+
+// CreateTechnicalUser implements POST /clients?clientId=&withAdminRole=<bool>&onBehalfOf=<bool>.
+// The clientId is the caller's choice (unique in the caller's tenant) or, when
+// absent, a generated 16-char base32-hex one. Returns the freshly issued
 // plaintext secret exactly once.
 func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, params genapi.CreateTechnicalUserParams) {
 	if !auth.RequireAdmin(w, r) {
@@ -121,45 +159,76 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 
+	// A chosen id is checked before anything else about the request: an
+	// empty or malformed one is the caller's mistake whatever the flags say.
+	chosen := params.ClientId
+	if chosen != nil && !auth.ValidClientID(*chosen) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+			common.ErrCodeBadRequest, "invalid clientId"))
+		return
+	}
+
 	withAdmin := parseWithAdminRole(params.WithAdminRole)
 	if withAdmin && !h.gateM2MAdminRole(w, r) {
 		return
 	}
 
+	onBehalfOf := parseOnBehalfOf(params.OnBehalfOf)
+	if withAdmin && onBehalfOf {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+			common.ErrCodeBadRequest, "an on-behalf-of client cannot hold ROLE_ADMIN"))
+		return
+	}
+
 	tID := tenantFromCtx(r)
+	if onBehalfOf && tID == auth.PlatformTenantID {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+			common.ErrCodeBadRequest, "the PLATFORM tenant cannot hold an on-behalf-of client"))
+		return
+	}
+
 	roles := []string{"ROLE_M2M"}
 	if withAdmin {
 		roles = append(roles, "ROLE_ADMIN")
 	}
 
-	// Generate clientID and Create atomically — Store rejects collisions
-	// via ErrM2MClientExists. Retry once on the astronomical (~1 in 2^80)
-	// collision; a second collision is a defect (signals broken entropy
-	// source) and returns 500.
-	var clientID string
-	var secret string
-	for attempt := 0; attempt < 2; attempt++ {
-		cid, err := generateClientID()
-		if err != nil {
-			common.WriteError(w, r, common.Internal("generateClientID", err))
-			return
+	var clientID, secret string
+	for attempt := 0; ; attempt++ {
+		cid := ""
+		if chosen != nil {
+			cid = *chosen
+		} else {
+			generated, err := generateClientID()
+			if err != nil {
+				common.WriteError(w, r, common.Internal("generateClientID", err))
+				return
+			}
+			cid = generated
 		}
-		sec, createErr := h.m2mClientStore.Create(cid, tID, cid, roles)
-		if createErr == nil {
-			clientID = cid
-			secret = sec
+		sec, err := h.m2mClientStore.Create(r.Context(), tID, cid, roles, onBehalfOf)
+		if err == nil {
+			clientID, secret = cid, sec
 			break
 		}
-		if errors.Is(createErr, auth.ErrM2MClientExists) {
-			// Astronomical-probability collision; loop once more.
-			continue
+		switch {
+		case errors.Is(err, auth.ErrM2MClientExists) && chosen != nil:
+			common.WriteError(w, r, common.Operational(http.StatusConflict,
+				common.ErrCodeM2MClientExists, "the tenant already holds a client with this clientId"))
+			return
+		case errors.Is(err, auth.ErrM2MClientExists) && attempt == 0:
+			continue // a generated id collided (about 1 in 2^80): draw again, once
+		case errors.Is(err, auth.ErrM2MClientExists):
+			common.WriteError(w, r, common.Internal("generateClientID-collision", errors.New("clientId collision after retry")))
+			return
+		case errors.Is(err, auth.ErrM2MClientCapReached):
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+				common.ErrCodeM2MClientCapReached, "M2M client cap reached for tenant"))
+			return
 		}
-		common.WriteError(w, r, common.Internal("m2mClientStore.Create", createErr))
-		return
-	}
-	if clientID == "" {
-		common.WriteError(w, r, common.Internal("generateClientID-collision",
-			errors.New("clientId collision after retry")))
+		if writeSecretCheckBusy(w, r, err) {
+			return
+		}
+		common.WriteError(w, r, common.Internal("m2mClientStore.Create", err))
 		return
 	}
 
@@ -168,13 +237,24 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		"tenantId", tID,
 		"clientId", clientID,
 		"roles", roles,
+		"onBehalfOf", onBehalfOf,
 	)
+	auth.SetNoStore(w.Header())
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, roles))
+	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(
+		&auth.M2MClient{ClientID: clientID, Roles: roles, OnBehalfOf: onBehalfOf}, secret))
 }
 
 // parseWithAdminRole reads the *bool query param. nil/absent → false.
 func parseWithAdminRole(p *bool) bool {
+	if p == nil {
+		return false
+	}
+	return *p
+}
+
+// parseOnBehalfOf reads the *bool query param. nil/absent → false.
+func parseOnBehalfOf(p *bool) bool {
 	if p == nil {
 		return false
 	}
@@ -194,18 +274,8 @@ func (h *Handler) DeleteTechnicalUser(w http.ResponseWriter, r *http.Request, cl
 	}
 
 	tID := tenantFromCtx(r)
-	existing, err := h.m2mClientStore.Get(clientID)
-	if err != nil || !clientBelongsToTenant(existing, tID) {
-		// Identical 404 for "no such client" and "owned by another tenant"
-		// — no cross-tenant existence oracle (Gate 3).
-		common.WriteError(w, r, common.Operational(http.StatusNotFound,
-			common.ErrCodeM2MClientNotFound, "M2M client not found"))
-		return
-	}
-	if err := h.m2mClientStore.Delete(clientID); err != nil {
-		// Race with concurrent delete: same 404 shape.
-		common.WriteError(w, r, common.Operational(http.StatusNotFound,
-			common.ErrCodeM2MClientNotFound, "M2M client not found"))
+	if err := h.m2mClientStore.Delete(r.Context(), tID, clientID); err != nil {
+		writeM2MClientError(w, r, "m2mClientStore.Delete", err)
 		return
 	}
 
@@ -235,21 +305,9 @@ func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Reques
 	}
 
 	tID := tenantFromCtx(r)
-	existing, err := h.m2mClientStore.Get(clientID)
-	if err != nil || !clientBelongsToTenant(existing, tID) {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound,
-			common.ErrCodeM2MClientNotFound, "M2M client not found"))
-		return
-	}
-	secret, err := h.m2mClientStore.ResetSecret(clientID)
+	secret, client, err := h.m2mClientStore.ResetSecret(r.Context(), tID, clientID)
 	if err != nil {
-		// Race with concurrent delete: 404. Other failures: 500.
-		if errors.Is(err, auth.ErrM2MClientNotFound) {
-			common.WriteError(w, r, common.Operational(http.StatusNotFound,
-				common.ErrCodeM2MClientNotFound, "M2M client not found"))
-			return
-		}
-		common.WriteError(w, r, common.Internal("m2mClientStore.ResetSecret", err))
+		writeM2MClientError(w, r, "m2mClientStore.ResetSecret", err)
 		return
 	}
 
@@ -258,8 +316,9 @@ func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Reques
 		"tenantId", tID,
 		"clientId", clientID,
 	)
+	auth.SetNoStore(w.Header())
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, existing.Roles))
+	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(client, secret))
 }
 
 // ListTechnicalUsers implements GET /clients.
@@ -271,7 +330,11 @@ func (h *Handler) ListTechnicalUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tID := tenantFromCtx(r)
-	clients := h.m2mClientStore.List(tID)
+	clients, err := h.m2mClientStore.List(r.Context(), tID)
+	if err != nil {
+		common.WriteError(w, r, common.Internal("m2mClientStore.List", err))
+		return
+	}
 	out := make([]genapi.TechnicalUserDto, 0, len(clients))
 	for _, c := range clients {
 		out = append(out, toTechnicalUserDto(c))

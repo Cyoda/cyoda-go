@@ -27,7 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // hasStorageUnavailableMarker reports whether err carries the marker the
@@ -285,8 +285,9 @@ func newAbortFixture(t *testing.T, idle time.Duration) *abortFixture {
 	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT": idle.String(),
 	}))
+	migrateSharedSchema(t)
 	tm := NewTransactionManager(pool, newTestUUIDGenerator())
-	f := NewStoreFactory(pool)
+	f := newStoreFactoryWithKeys(pool, defaultStoreConfig(), tm.keys)
 	f.setTransactionManager(tm)
 	return &abortFixture{tm: tm, q: f.querier(), pool: pool}
 }
@@ -300,10 +301,30 @@ func newStatementCeilingFixture(t *testing.T, limit time.Duration) *abortFixture
 	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_STATEMENT_TIMEOUT": limit.String(),
 	}))
+	migrateSharedSchema(t)
 	tm := NewTransactionManager(pool, newTestUUIDGenerator())
-	f := NewStoreFactory(pool)
+	f := newStoreFactoryWithKeys(pool, defaultStoreConfig(), tm.keys)
 	f.setTransactionManager(tm)
 	return &abortFixture{tm: tm, q: f.querier(), pool: pool}
+}
+
+// migrateSharedSchema brings the shared test database's schema up to date,
+// on a pool of its own without the fixture's ceilings. Begin resolves the
+// tenant's marker key from consistency_tenant_keys (migration 000016), so a
+// fixture's transactions need the migrated schema even when they never
+// commit.
+func migrateSharedSchema(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, testDBURL(t))
+	if err != nil {
+		t.Fatalf("open migration pool: %v", err)
+	}
+	defer pool.Close()
+	if err := runMigrations(ctx, pool, defaultMigrateLockTimeout); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
 }
 
 func classifyTestCtx() context.Context {
@@ -433,6 +454,7 @@ func TestCommitAfterStatementTimeout_IsNotAConflict(t *testing.T) {
 	if !isStatementTimeout(stmtErr) {
 		t.Fatalf("the statement did not fail with 57014, so this scenario proves nothing: %v", stmtErr)
 	}
+	requireNoLostRace(t, fx.tm, ctx, txID, "a transaction the statement ceiling aborted lost no race")
 
 	commitErr := fx.tm.Commit(ctx, txID)
 	if commitErr == nil {
@@ -448,6 +470,17 @@ func TestCommitAfterStatementTimeout_IsNotAConflict(t *testing.T) {
 	}
 	if hasStorageUnavailableMarker(commitErr) {
 		t.Fatal("reported as a transient storage outage, which is the same lie in another shape")
+	}
+}
+
+// requireNoLostRace asserts LostRace answers (false, nil): a ceiling abort is
+// not a lost write race, and the transaction's failure must not be reported as
+// a conflict.
+func requireNoLostRace(t *testing.T, tm *TransactionManager, ctx context.Context, txID, msg string) {
+	t.Helper()
+	lost, err := tm.LostRace(ctx, txID)
+	if err != nil || lost {
+		t.Fatalf("LostRace = (%v, %v), want (false, nil): %s", lost, err, msg)
 	}
 }
 
@@ -486,6 +519,7 @@ func TestCommitAfterSavepointRollback_StillReportsAConflict(t *testing.T) {
 	if err := fx.tm.RollbackToSavepoint(ctx, txID, spID); err != nil {
 		t.Fatalf("rollback to savepoint: %v", err)
 	}
+	requireNoLostRace(t, fx.tm, ctx, txID, "a savepoint rollback that clears a ceiling leaves no lost race")
 	var one int
 	if err := fx.q.QueryRow(txCtx, "SELECT 1").Scan(&one); err != nil {
 		t.Fatalf("the transaction did not recover from the savepoint rollback: %v", err)
@@ -507,6 +541,64 @@ func TestCommitAfterSavepointRollback_StillReportsAConflict(t *testing.T) {
 	}
 	if !errors.Is(commitErr, spi.ErrConflict) {
 		t.Fatalf("an abort that is a retryable conflict lost that mapping: %v", commitErr)
+	}
+}
+
+// TestSavepointOps_StatementErrorIsClassified — the three savepoint methods run
+// a statement like any other method here, and their statement's failure must go
+// through the same classifier. Returning the driver's error raw hands the
+// workflow engine something with no domain meaning: the transaction is gone, yet
+// the caller is told neither that a retry in a moment would work (503) nor, for
+// the shape the server reclaimed, that the per-transaction bookkeeping is stale.
+//
+// The condition is provoked with the idle-in-transaction ceiling, so the
+// savepoint statement is the FIRST operation after the session went away and
+// nothing else has classified the transaction first.
+func TestSavepointOps_StatementErrorIsClassified(t *testing.T) {
+	ops := []struct {
+		name string
+		// preSavepoint reports whether the op needs a savepoint to exist first.
+		preSavepoint bool
+		run          func(fx *abortFixture, ctx context.Context, txID, spID string) error
+	}{
+		{name: "Savepoint", run: func(fx *abortFixture, ctx context.Context, txID, _ string) error {
+			_, err := fx.tm.Savepoint(ctx, txID)
+			return err
+		}},
+		{name: "RollbackToSavepoint", preSavepoint: true, run: func(fx *abortFixture, ctx context.Context, txID, spID string) error {
+			return fx.tm.RollbackToSavepoint(ctx, txID, spID)
+		}},
+		{name: "ReleaseSavepoint", preSavepoint: true, run: func(fx *abortFixture, ctx context.Context, txID, spID string) error {
+			return fx.tm.ReleaseSavepoint(ctx, txID, spID)
+		}},
+	}
+	for _, op := range ops {
+		t.Run(op.name, func(t *testing.T) {
+			fx := newAbortFixture(t, 300*time.Millisecond)
+			ctx := classifyTestCtx()
+			txID, _ := beginGuarded(t, fx.tm, ctx)
+
+			var spID string
+			if op.preSavepoint {
+				var err error
+				if spID, err = fx.tm.Savepoint(ctx, txID); err != nil {
+					t.Fatalf("savepoint: %v", err)
+				}
+			}
+			time.Sleep(2 * time.Second) // well past the fixture's ceiling
+
+			err := op.run(fx, ctx, txID, spID)
+			if err == nil {
+				t.Fatal("the savepoint operation succeeded on a reclaimed session; there is nothing to classify")
+			}
+			if !hasStorageUnavailableMarker(err) {
+				t.Fatalf("a savepoint operation on a reclaimed transaction was not reported as storage-unavailable: %v", err)
+			}
+			if registry, tenant, origin, state := fx.tm.txResidue(txID); registry || tenant || origin || state {
+				t.Fatalf("per-transaction bookkeeping survived the abort: registry=%v tenant=%v origin=%v txState=%v",
+					registry, tenant, origin, state)
+			}
+		})
 	}
 }
 
@@ -606,5 +698,20 @@ func TestClassifyAcquireErr_CallerCancelledStaysUnmarked(t *testing.T) {
 	err := classifyAcquireErr(callerCtx, acquireCtx, "begin", context.Canceled)
 	if hasStorageUnavailableMarker(err) {
 		t.Fatalf("a cancelled caller was reported as a server-side outage: %v", err)
+	}
+}
+
+// An acquire that ran out of its own deadline names the setting that bounds
+// it, so the log says which ceiling fired, as the statement and
+// idle-in-transaction ceilings do.
+func TestClassifyAcquireErr_DeadlineNamesTheSetting(t *testing.T) {
+	callerCtx := context.Background()
+	acquireCtx, cancel := context.WithTimeout(callerCtx, time.Nanosecond)
+	defer cancel()
+	<-acquireCtx.Done()
+
+	err := classifyAcquireErr(callerCtx, acquireCtx, "begin", context.DeadlineExceeded)
+	if !strings.Contains(err.Error(), "CYODA_POSTGRES_ACQUIRE_TIMEOUT") {
+		t.Fatalf("the acquire-deadline error does not name its setting: %v", err)
 	}
 }

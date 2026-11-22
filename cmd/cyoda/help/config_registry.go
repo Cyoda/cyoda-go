@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // ConfigVar documents one CYODA_* configuration variable for the
@@ -31,31 +31,31 @@ type ConfigVar struct {
 var rootConfigVars = []ConfigVar{
 	// --- server ---
 	{Name: "CYODA_HTTP_PORT", Topic: "server", Type: "int", Default: "8080", Description: "HTTP listen port."},
+	{Name: "CYODA_HTTP_BIND_ADDRESS", Topic: "server", Type: "string", Default: "127.0.0.1", Description: "HTTP API listener bind address: a bare host, IPv4 or IPv6, without brackets. Loopback by default; set 0.0.0.0 (or ::) for clients, cluster peers or a container's port mapping to reach it."},
 	{Name: "CYODA_HTTP_READ_HEADER_TIMEOUT", Topic: "server", Type: "duration", Default: "10s", Description: "Time allowed to receive a request's headers on the API and admin servers. 0 falls back to CYODA_HTTP_READ_TIMEOUT."},
 	{Name: "CYODA_HTTP_READ_TIMEOUT", Topic: "server", Type: "duration", Default: "5m", Description: "Time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables."},
 	{Name: "CYODA_HTTP_WRITE_TIMEOUT", Topic: "server", Type: "duration", Default: "0s", Description: "Time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests."},
 	{Name: "CYODA_HTTP_IDLE_TIMEOUT", Topic: "server", Type: "duration", Default: "2m", Description: "How long an idle keep-alive connection is held open between requests. 0 falls back to CYODA_HTTP_READ_TIMEOUT."},
 	{Name: "CYODA_CONTEXT_PATH", Topic: "server", Type: "string", Default: "/api", Description: "URL prefix for all routes."},
-	{Name: "CYODA_ERROR_RESPONSE_MODE", Topic: "server", Type: "string", Default: "sanitized", Description: "Error detail level: sanitized (generic message + ticket UUID for 5xx) or verbose (internal detail included; development only)."},
+	{Name: "CYODA_ERROR_RESPONSE_MODE", Topic: "server", Type: "string", Default: "sanitized", Description: "Error detail level: sanitized (generic message + ticket UUID for an unexpected server error) or verbose (internal detail included; development only)."},
 	{Name: "CYODA_LOG_LEVEL", Topic: "server", Type: "string", Default: "info", Description: "Log level: debug|info|warn|error."},
 	{Name: "CYODA_SUPPRESS_BANNER", Topic: "server", Type: "bool", Default: "false", Description: "Silence startup and mock-auth banners (CI/tests only)."},
 	{Name: "CYODA_STARTUP_TIMEOUT", Topic: "server", Type: "duration", Default: "30s", Description: "Deadline for plugin init, TM init, and (cluster mode) the gossip seed-join retry loop."},
 	{Name: "CYODA_MAX_STATE_VISITS", Topic: "server", Type: "int", Default: "10", Description: "Max visits per state in workflow cascade."},
-	{Name: "CYODA_MODEL_CACHE_LEASE", Topic: "server", Type: "duration", Default: "5m", Description: "Model cache lease duration; actual expiry is jittered ±10%."},
+	{Name: "CYODA_MODEL_CACHE_LEASE", Topic: "server", Type: "duration", Default: "5m", Description: "How long a node caches a locked model; actual expiry is jittered ±10%. The bound on a stale model when an invalidation broadcast is lost."},
 	{Name: "CYODA_STORAGE_BACKEND", Topic: "server", Type: "string", Default: "memory", Description: "Storage backend selection (memory|sqlite|postgres)."},
-	{Name: "CYODA_PROFILES", Topic: "server", Type: "csv", Default: "", Description: "Comma-separated profile names; loads cyoda.<name>.env files before the process's own environment is consulted."},
-	{Name: "CYODA_DEBUG", Topic: "server", Type: "", Default: "", Description: "Reserved; not currently read by the server."},
+	{Name: "CYODA_PROFILES", Topic: "server", Type: "csv", Default: "", Description: "Comma-separated profile names; for each name, loads ./.env.<name> after the system config, the user config and ./.env. Selects profile files only when set in the process environment, which wins over the same variable in any file."},
 
 	// --- admin ---
 	{Name: "CYODA_ADMIN_PORT", Topic: "admin", Type: "int", Default: "9091", Description: "Admin port for health and metrics."},
-	{Name: "CYODA_ADMIN_BIND_ADDRESS", Topic: "admin", Type: "string", Default: "127.0.0.1", Description: "Admin listener bind address."},
+	{Name: "CYODA_ADMIN_BIND_ADDRESS", Topic: "admin", Type: "string", Default: "127.0.0.1", Description: "Admin listener bind address: a bare host, IPv4 or IPv6, without brackets."},
 	{Name: "CYODA_METRICS_REQUIRE_AUTH", Topic: "admin", Type: "bool", Default: "false", Description: "Require Bearer auth on /metrics; startup fails if true and CYODA_METRICS_BEARER is empty."},
 	{Name: "CYODA_METRICS_BEARER", Topic: "admin", Type: "string", Default: "", Description: "Static Bearer token for GET /metrics. Supports _FILE suffix."},
 	{Name: "CYODA_OTEL_ENABLED", Topic: "admin", Type: "bool", Default: "false", Description: "Enable OpenTelemetry tracing and metrics."},
 
 	// --- search ---
-	{Name: "CYODA_SEARCH_SNAPSHOT_TTL", Topic: "search", Type: "duration", Default: "1h", Description: "Search snapshot TTL."},
-	{Name: "CYODA_SEARCH_REAP_INTERVAL", Topic: "search", Type: "duration", Default: "5m", Description: "Search snapshot reap interval."},
+	{Name: "CYODA_SEARCH_SNAPSHOT_TTL", Topic: "search", Type: "duration", Default: "1h", Description: "How long a finished async search job stays readable (its expirationDate is finish time + this TTL); must be > 0 and the same on every node."},
+	{Name: "CYODA_SEARCH_REAP_INTERVAL", Topic: "search", Type: "duration", Default: "5m", Description: "Search snapshot reap interval; must be > 0."},
 	{Name: "CYODA_SEARCH_MAX_SORT_KEYS", Topic: "search", Type: "int", Default: "16", Description: "Maximum number of sort keys per search request; values <= 0 clamp to the default."},
 	{Name: "CYODA_STATS_GROUP_MAX", Topic: "search", Type: "int", Default: "10000", Description: "Cardinality ceiling for grouped-stats results; also caps the request limit parameter. Values <= 0 clamp to the default."},
 	{Name: "CYODA_SEARCH_ASYNC_WORKERS", Topic: "search", Type: "int", Default: "8", Description: "Async-search worker pool size. Must be >= 1; startup fails otherwise."},
@@ -74,39 +74,31 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_GOSSIP_STABILITY_WINDOW", Topic: "cluster", Type: "duration", Default: "2s", Description: "Gossip stability window."},
 	{Name: "CYODA_SEED_NODES", Topic: "cluster", Type: "csv", Default: "", Description: "Comma-separated list of seed node addresses."},
 	{Name: "CYODA_HMAC_SECRET", Topic: "cluster", Type: "string", Default: "", Description: "Hex-encoded HMAC secret for inter-node dispatch authentication; required when CYODA_CLUSTER_ENABLED=true. Supports _FILE suffix."},
-	{Name: "CYODA_PROXY_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "Request proxy timeout."},
-	{Name: "CYODA_DISPATCH_WAIT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "5s", Description: "How long the dispatcher polls gossip for a compute member with matching tags."},
-	{Name: "CYODA_DISPATCH_FORWARD_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "HTTP timeout for the cross-node forwarding call."},
-	{Name: "CYODA_TX_TOKEN_TTL", Topic: "cluster", Type: "duration", Default: "1m30s", Description: "TTL of the signed transaction routing token minted on processor/criteria dispatch."},
+	{Name: "CYODA_PROXY_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "Bound on the wait for a transaction's owner to begin answering a forwarded request (HTTP response headers; gRPC response or first streamed message), the bound on one platform clock confirmation round, and the bound on each status ask of GET /platform/cluster; half of it bounds the database check of the node that answers. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_DISPATCH_WAIT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "5s", Description: "How long one callout waits, in total, for a compute member with matching tags to exist — on a single node as in a cluster, whatever its retryPolicy. 0 disables waiting. Must not be negative; startup fails otherwise."},
+	{Name: "CYODA_DISPATCH_CONNECT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "2s", Description: "Time allowed to open the connection when a callout is handed over to another node; a node that cannot be connected to costs no try. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_CALLOUT_HANDOVER_ALLOWANCE", Topic: "cluster", Type: "duration", Default: "30s", Description: "What the owning node allows a callout hand-over on top of (tries left x answer limit); also the last term of a callout's overall deadline. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_CALLOUT_PASS_ALLOWANCE", Topic: "cluster", Type: "duration", Default: "30s", Description: "How long the transaction token given to a compute member outlives its try's answer limit — the margin for routing a callback and for clocks that differ between nodes. Must be > 0; startup fails otherwise."},
 
 	// --- auth ---
 	{Name: "CYODA_IAM_MODE", Topic: "auth", Type: "string", Default: "mock", Description: "Authentication mode: mock or jwt."},
 	{Name: "CYODA_IAM_MOCK_ROLES", Topic: "auth", Type: "csv", Default: "ROLE_ADMIN,ROLE_M2M", Description: "Comma-separated default user roles assigned to all requests in mock mode."},
-	{Name: "CYODA_IAM_MOCK_KIND", Topic: "auth", Type: "string", Default: "user", Description: "Principal kind (user|service|system) assigned to the default UserContext in mock mode."},
-	{Name: "CYODA_JWT_SIGNING_KEY", Topic: "auth", Type: "string", Default: "", Description: "RSA private key in PEM format; required in jwt mode. Supports _FILE suffix."},
-	{Name: "CYODA_JWT_ISSUER", Topic: "auth", Type: "string", Default: "cyoda", Description: "JWT issuer claim (iss)."},
-	{Name: "CYODA_JWT_AUDIENCE", Topic: "auth", Type: "string", Default: "", Description: "Expected JWT audience (aud); empty disables the audience check."},
-	{Name: "CYODA_JWT_EXPIRY_SECONDS", Topic: "auth", Type: "int", Default: "3600", Description: "Token lifetime in seconds."},
+	{Name: "CYODA_IAM_MOCK_KIND", Topic: "auth", Type: "string", Default: "service", Description: "Principal kind (user|service|system) assigned to the default UserContext in mock mode. Any other value is a startup error, in either IAM mode."},
+	{Name: "CYODA_JWT_SIGNING_KEY", Topic: "auth", Type: "string", Default: "", Description: "RSA private key in PEM format; required in jwt mode; also encrypts stored signing key pairs. Supports _FILE suffix."},
+	{Name: "CYODA_JWT_ISSUER", Topic: "auth", Type: "string", Default: "cyoda", Description: "JWT issuer claim (iss). An empty value is a startup error."},
+	{Name: "CYODA_JWT_AUDIENCE", Topic: "auth", Type: "string", Default: "", Description: "Expected JWT audience (aud), and set as aud on issued tokens; empty disables the audience check."},
+	{Name: "CYODA_JWT_EXPIRY_SECONDS", Topic: "auth", Type: "int", Default: "300", Description: "Token lifetime in seconds, and the upper bound of cyoda token --ttl. Unset or empty means 300; otherwise an integer from 1 to 3600, and any other value is a startup error."},
 	{Name: "CYODA_REQUIRE_JWT", Topic: "auth", Type: "bool", Default: "false", Description: "Production safety floor; refuses to start unless IAM mode is jwt and a signing key is set."},
-	{Name: "CYODA_JWT_BOOTSTRAP_AUDIENCE", Topic: "auth", Type: "string", Default: "client", Description: "Audience for the bootstrap signing key derived from CYODA_JWT_SIGNING_KEY; client or human."},
 	{Name: "CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED", Topic: "auth", Type: "bool", Default: "false", Description: "Gates the /oauth/keys/trusted/* endpoints; disabled returns 404 FEATURE_DISABLED."},
-	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", Topic: "auth", Type: "int", Default: "10", Description: "Per-tenant cap on registered trusted keys; 0 means unbounded."},
+	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", Topic: "auth", Type: "int", Default: "10", Description: "Per-tenant cap on trusted keys that can verify: every active key whose validTo has not passed; an invalidated key frees its slot at once (trusted keys have no grace period); 0 means unbounded."},
 	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity for trusted keys when the registration request omits validTo."},
 	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", Topic: "auth", Type: "int", Default: "20", Description: "Caps the number of properties in a registered JWK."},
-	{Name: "CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity for the bootstrap signing key and runtime-issued keypairs."},
+	{Name: "CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity of a keypair issued via POST /oauth/keys/keypair without validTo. The bootstrap signing key has no window unless the key-pair API gave it one."},
 	{Name: "CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", Topic: "auth", Type: "bool", Default: "false", Description: "Gates the withAdminRole=true query parameter on POST /clients."},
-	{Name: "CYODA_AUTH_CACHE_RECONCILE_INTERVAL", Topic: "auth", Type: "duration", Default: "1m", Description: "Periodic KV-reconcile interval for the trusted-key and OIDC-provider caches; jittered ±10%; verification fails closed after 10× this without a successful reconcile."},
-	{Name: "CYODA_BOOTSTRAP_CLIENT_ID", Topic: "auth", Type: "string", Default: "", Description: "Bootstrap M2M client ID."},
-	{Name: "CYODA_BOOTSTRAP_CLIENT_SECRET", Topic: "auth", Type: "string", Default: "", Description: "Bootstrap M2M client secret; must be set when CYODA_BOOTSTRAP_CLIENT_ID is set. Supports _FILE suffix."},
-	{Name: "CYODA_BOOTSTRAP_TENANT_ID", Topic: "auth", Type: "string", Default: "default-tenant", Description: "Tenant for the bootstrap client."},
-	{Name: "CYODA_BOOTSTRAP_USER_ID", Topic: "auth", Type: "string", Default: "admin", Description: "User ID for the bootstrap client."},
-	{Name: "CYODA_BOOTSTRAP_ROLES", Topic: "auth", Type: "csv", Default: "ROLE_ADMIN,ROLE_M2M", Description: "Comma-separated roles granted to the bootstrap client."},
-	{Name: "CYODA_OIDC_REQUIRE_HTTPS", Topic: "auth", Type: "bool", Default: "true", Description: "Reject federated OIDC provider registration when the well-known config URI is not https."},
-	{Name: "CYODA_OIDC_CONNECT_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "TCP connect timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},
-	{Name: "CYODA_OIDC_SOCKET_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "HTTP read timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},
-	{Name: "CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "Connection-pool request timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},
-	{Name: "CYODA_OIDC_ALLOW_PRIVATE_NETWORKS", Topic: "auth", Type: "bool", Default: "false", Description: "Bypass the SSRF blocklist so private-network OIDC providers can be registered; test/dev only, never in production."},
-	{Name: "CYODA_OIDC_ROLES_CLAIM", Topic: "auth", Type: "string", Default: "roles", Description: "JWT claim name from which role values are read for tokens issued by a federated OIDC provider."},
+	{Name: "CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", Topic: "auth", Type: "int", Default: "100", Description: "Per-tenant cap on M2M clients; 0 means unbounded."},
+	{Name: "CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", Topic: "auth", Type: "int", Default: "600", Description: "Token requests each M2M client may make per minute on one node, across both grants (burst of the same size); over it POST /tenants/{tenant}/oauth/token answers 429 slow_down with Retry-After. 0 means unlimited; a negative value refuses to start."},
+	{Name: "CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS", Topic: "auth", Type: "int", Default: "GOMAXPROCS", Description: "Client-secret (bcrypt) operations that run at once on one node: the checks of POST /tenants/{tenant}/oauth/token and the secret hashing of POST /clients and PUT /clients/{clientId}/secret. The default is computed at startup: the number of CPUs the process may use (runtime.GOMAXPROCS, which follows a container CPU limit). An operation that gets no slot within 1s answers 503 with Retry-After (temporarily_unavailable on the token endpoint, SERVER_BUSY on /clients). Must be >= 1; startup fails otherwise."},
+	{Name: "CYODA_AUTH_CACHE_RECONCILE_INTERVAL", Topic: "auth", Type: "duration", Default: "1m", Description: "Periodic KV-reconcile interval for the signing-key cache; jittered ±10%; verification fails closed after 10× this without a successful reconcile."},
 
 	// --- cors ---
 	{Name: "CYODA_CORS_ENABLED", Topic: "cors", Type: "bool", Default: "true", Description: "Enable CORS middleware; false hands CORS handling to an upstream ingress."},
@@ -114,20 +106,34 @@ var rootConfigVars = []ConfigVar{
 
 	// --- grpc ---
 	{Name: "CYODA_GRPC_PORT", Topic: "grpc", Type: "int", Default: "9090", Description: "gRPC listen port."},
+	{Name: "CYODA_GRPC_BIND_ADDRESS", Topic: "grpc", Type: "string", Default: "127.0.0.1", Description: "gRPC listener bind address: a bare host, IPv4 or IPv6, without brackets. Loopback by default; set 0.0.0.0 (or ::) for compute nodes, cluster peers or a container's port mapping to reach it."},
 	{Name: "CYODA_KEEPALIVE_INTERVAL", Topic: "grpc", Type: "int", Default: "10", Description: "Seconds between server keep-alive pings to each compute member; also the transport keepalive idle time."},
 	{Name: "CYODA_KEEPALIVE_TIMEOUT", Topic: "grpc", Type: "int", Default: "30", Description: "Seconds of inbound silence or write stall before a compute member is evicted; also the transport keepalive ack timeout."},
+	{Name: "CYODA_RETRY_FIXED_NUM_RETRIES", Topic: "grpc", Type: "int", Default: "3", Description: "Retries after the first try of a compute-node callout whose retryPolicy is FIXED or unset; the normal number of tries is this plus one. Must be >= 0; startup fails otherwise."},
+	{Name: "CYODA_CALLOUT_RESPONSE_TIMEOUT_MS", Topic: "grpc", Type: "int", Default: "30000", Description: "How long a node waits for one compute member's answer when the callout sets no responseTimeoutMs of its own. Must be >= 1 and <= CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS; startup fails otherwise."},
+	{Name: "CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS", Topic: "grpc", Type: "int", Default: "60000", Description: "Upper bound on responseTimeoutMs for processors, criterion functions and scheduled-transition functions; workflow import refuses a larger value. Must be >= 1; startup fails otherwise."},
+	{Name: "CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES", Topic: "grpc", Type: "int", Default: "10485760", Description: "Ceiling on the answer to a compute member's callback, which is held in memory while the transaction is held. A larger answer fails the callback with 413 JOINED_RESPONSE_TOO_LARGE and is never sent in part. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_CALLOUT_JOINED_MAX_WAITERS", Topic: "grpc", Type: "int", Default: "128", Description: "How many of a compute member's callbacks may queue for one transaction behind the one holding it. Past the cap a callback is refused with a retryable 503 TOO_MANY_JOINED_REQUESTS rather than parked holding its request. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_COMPUTE_GRPC_ENDPOINT", Topic: "grpc", Type: "string", Default: "", Description: "gRPC endpoint for a compute node to connect to (compute-client side)."},
-	{Name: "CYODA_COMPUTE_TOKEN", Topic: "grpc", Type: "string", Default: "", Description: "Bearer token for compute-node authentication (compute-client side)."},
-	{Name: "CYODA_COMPUTE_HTTP_BASE", Topic: "grpc", Type: "string", Default: "", Description: "HTTP base URL of the cyoda instance a compute node calls back into (compute-client side)."},
+	{Name: "CYODA_COMPUTE_CLIENT_ID", Topic: "grpc", Type: "string", Default: "", Description: "Id of the M2M client a compute node authenticates as (compute-client side)."},
+	{Name: "CYODA_COMPUTE_TENANT_ID", Topic: "grpc", Type: "string", Default: "", Description: "Tenant of the M2M client a compute node authenticates as; its token comes from {CYODA_COMPUTE_HTTP_BASE}/api/tenants/{tenant}/oauth/token (compute-client side)."},
+	{Name: "CYODA_COMPUTE_CLIENT_SECRET", Topic: "grpc", Type: "string", Default: "", Description: "Secret of the M2M client a compute node authenticates as (compute-client side). Never logged."},
+	{Name: "CYODA_COMPUTE_HTTP_BASE", Topic: "grpc", Type: "string", Default: "", Description: "HTTP base URL of the cyoda instance a compute node gets its token from and calls back into (compute-client side)."},
 
 	// --- scheduler ---
-	{Name: "CYODA_SCHEDULER_ENABLED", Topic: "scheduler", Type: "bool", Default: "true", Description: "Kill switch for the scheduled-transition coordinator scan loop."},
-	{Name: "CYODA_SCHEDULER_SCAN_INTERVAL", Topic: "scheduler", Type: "duration", Default: "1s", Description: "Coordinator scan cadence."},
-	{Name: "CYODA_SCHEDULER_BATCH_SIZE", Topic: "scheduler", Type: "int", Default: "100", Description: "Max due tasks pulled per scan."},
-	{Name: "CYODA_SCHEDULER_DISTRIBUTION", Topic: "scheduler", Type: "string", Default: "round-robin", Description: "Dispatch-target selection strategy: round-robin or self. Forced to self when CYODA_CLUSTER_ENABLED=false."},
-	{Name: "CYODA_SCHEDULER_COORDINATOR", Topic: "scheduler", Type: "string", Default: "lowest-node-id", Description: "Coordinator-election strategy."},
-	{Name: "CYODA_SCHEDULER_REDISPATCH_BACKOFF", Topic: "scheduler", Type: "duration", Default: "30s", Description: "Best-effort re-dispatch throttle window after a due task is picked up."},
-	{Name: "CYODA_SCHEDULER_EXPIRY_GRACE", Topic: "scheduler", Type: "duration", Default: "100ms", Description: "Grace band above a scheduled transition's timeoutMs before it is expired instead of fired late; size to at least the max inter-node clock skew."},
+	{Name: "CYODA_SCHEDULER_ENABLED", Topic: "scheduler", Type: "bool", Default: "true", Description: "Kill switch: a node with false claims no scheduled task."},
+	{Name: "CYODA_SCHEDULER_SCAN_INTERVAL", Topic: "scheduler", Type: "duration", Default: "1s", Description: "How often a node claims due scheduled tasks. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_MAX_RUNS", Topic: "scheduler", Type: "int", Default: "8", Description: "Most scheduled runs one node holds at once. Must be >= 1; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_MAX_RUNS_PER_TENANT", Topic: "scheduler", Type: "int", Default: "4", Description: "Most scheduled runs of one tenant on one node. Must be between 1 and CYODA_SCHEDULER_MAX_RUNS; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_HEARTBEAT_INTERVAL", Topic: "scheduler", Type: "duration", Default: "15s", Description: "How often a node records that it is alive. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_STALE_AFTER", Topic: "scheduler", Type: "duration", Default: "2m", Description: "How long a node may go without a heartbeat before another node takes over its scheduled runs. Must be >= 50s + 3 x CYODA_SCHEDULER_HEARTBEAT_INTERVAL and the same on every node; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_MAX_LOST_OWNERS", Topic: "scheduler", Type: "int", Default: "3", Description: "A scheduled task whose node is lost this many times ends FAILED OWNER_LOST_REPEATEDLY. Must be >= 1; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_RETRY_DELAY", Topic: "scheduler", Type: "duration", Default: "30s", Description: "Delay before the first retry of a scheduled run that failed safely; it doubles on each further failure. Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_RETRY_DELAY_MAX", Topic: "scheduler", Type: "duration", Default: "15m", Description: "The retry delay never grows past this. Must be >= CYODA_SCHEDULER_RETRY_DELAY; startup fails otherwise."},
+	{Name: "CYODA_SCHEDULER_SHUTDOWN_DRAIN", Topic: "scheduler", Type: "duration", Default: "20s", Description: "On shutdown, how long a node waits for its scheduled runs before it cancels them; a run with an unsafe processor callout in flight is not cancelled. Must be >= 0; startup fails otherwise."},
+
+	// --- clock ---
+	{Name: "CYODA_CLOCK_CONTROL_ENABLED", Topic: "clock", Type: "bool", Default: "false", Description: "Test feature: build a controllable platform clock and accept POST /platform/clock. Instance-wide; never for production. Use the same value on every node."},
 }
 
 // RootConfigVars returns a copy of the root var table.

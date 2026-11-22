@@ -27,7 +27,7 @@
         },
         "retryable": {
           "type": "boolean",
-          "description": "Flag indicates whether this error is retryable (for example, whether cyoda should retry the calculation request)."
+          "description": "Whether the sender judges that repeating the request could succeed. On a calculation response this is the compute member's verdict: cyoda passes it on to the client of the failed operation and does not give the work to another compute member because of it."
         }
       },
       "required": [

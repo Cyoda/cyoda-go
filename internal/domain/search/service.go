@@ -10,23 +10,24 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/consistency"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/pagination"
+	"github.com/cyoda/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/match"
 
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go-spi/predicate"
 )
 
 // ErrSearchJobNotFound is returned by the async-job lookup paths
 // (GetAsyncStatus, GetAsyncResults, CancelAsync) when the job UUID is not
-// known. Handlers map this to HTTP 404 + SEARCH_JOB_NOT_FOUND — callers
+// known, or the job is past its expiration (see liveJob). Handlers map this to HTTP 404 + SEARCH_JOB_NOT_FOUND — callers
 // can use errors.Is to branch.
 var ErrSearchJobNotFound = errors.New("search job not found")
 
@@ -38,7 +39,7 @@ var ErrSearchJobNotComplete = errors.New("search job is not complete")
 // errJobReleased is the cancellation cause set when a job is released
 // (graceful shutdown handoff). The executor writes no terminal status for a
 // job cancelled with this cause: a peer, or this node's next sweep, reclaims
-// it. Every other cancellation cause keeps recording a terminal status.
+// it.
 var errJobReleased = errors.New("async search job released for reclaim")
 
 // errJobSuperseded cancels a stale in-process executor when this same node
@@ -47,6 +48,39 @@ var errJobReleased = errors.New("async search job released for reclaim")
 // from errJobReleased so its failure write is still suppressed but not
 // mistaken for a graceful handoff.
 var errJobSuperseded = errors.New("async search job superseded by self-reclaim")
+
+// errCancelledHere cancels an executor whose job CancelAsync has just written
+// CANCELLED on this node. It wraps spi.ErrAlreadyTerminal, the store's answer
+// to any later write, so every path reads this cancel as it reads one made on
+// another node: a lost claim (fencedRefusal).
+var errCancelledHere = fmt.Errorf("async search job cancelled on this node: %w", spi.ErrAlreadyTerminal)
+
+// errJobEnding is the cause a job's own executor, or its reclaim, cancels the
+// job with when it decides the outcome itself: before its terminal write, or
+// before releasing a reclaimed job it will not run. From then on the end is
+// its to record and report; the shutdown release still hands the job back,
+// silently, in case the recording fails once the store has closed.
+var errJobEnding = errors.New("async search job ending on this node")
+
+// settleJob cancels the job's context with cause and reports whether the end
+// is the caller's to carry out. A job's context is cancelled at most once in
+// effect (the first cause set wins), so whichever party sets it decides the
+// end, and only that party reports it:
+//   - released or superseded first: the next claim's; nothing to report.
+//   - ended on the store's refusal, or by a cancel here: a lost claim,
+//     reported once, here.
+//   - otherwise (the caller's own cause won): the caller's to carry out.
+func settleJob(jobCtx context.Context, cancel context.CancelCauseFunc, jobID string, cause error) bool {
+	cancel(cause)
+	switch got := context.Cause(jobCtx); {
+	case errors.Is(got, errJobReleased), errors.Is(got, errJobSuperseded):
+		return false
+	case fencedRefusal(got):
+		endLostClaim(jobID, got)
+		return false
+	}
+	return true
+}
 
 // jobLookupErr preserves why an async-job lookup failed.
 //
@@ -68,6 +102,27 @@ func jobLookupErr(jobID string, err error) error {
 	return fmt.Errorf("failed to look up search job %s: %w", jobID, err)
 }
 
+// JobError classifies an async-search job operation's error for both doors.
+// Results of a job not yet complete are 400 BAD_REQUEST; job-not-found is
+// 404 SEARCH_JOB_NOT_FOUND; an error that already is a *common.AppError (a
+// classified failure from the service, such as a refused point in time)
+// passes through unchanged; any other error is treated as an internal
+// failure, which routes a storage outage to a retryable 503 and everything
+// else to a 500 with a ticket.
+func JobError(err error) *common.AppError {
+	if errors.Is(err, ErrSearchJobNotComplete) {
+		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err))
+	}
+	if errors.Is(err, ErrSearchJobNotFound) {
+		return common.Operational(http.StatusNotFound, common.ErrCodeSearchJobNotFound, err.Error())
+	}
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	return common.Internal("job lookup failed", err)
+}
+
 // searchCeilingMessage is what a caller sees when their own async job exceeded
 // the backend's async search ceiling. Fixed and non-revealing: GetJob serves
 // this string straight back, so a raw driver error here would put SQL, a
@@ -83,15 +138,16 @@ const searchCeilingMessage = "search exceeded the backend's async search ceiling
 	"narrow the query, or have the operator raise or disable the ceiling " +
 	"(see the config.database help topic)"
 
-// jobFailureFallback replaces any failure described in terms the caller has no
-// business seeing — a driver error, a recovered panic. That text is operator
-// information, and the job record is caller-facing.
+// jobFailureFallback is the reason served for every failed job of a store
+// that executes its own searches (spi.SelfExecutingSearchStore): such a store
+// writes its own failure text, which cyoda-go has not classified, so that
+// text is not served.
 const jobFailureFallback = "search failed unexpectedly"
 
 // jobAttemptsExhausted is the caller-facing failure text for a job the reclaim
 // sweep abandons after its executor was lost (StaleClaims) more times than the
-// configured attempt cap allows. Distinct from jobFailureFallback so a caller
-// can tell a crash-looping job from a one-off internal failure.
+// configured attempt cap allows. Distinct from a ticketed server-side failure,
+// so a caller can tell a crash-looping job from a one-off internal failure.
 const jobAttemptsExhausted = "search abandoned: executor lost repeatedly"
 
 // searchCeilingExceeded is the marker a backend attaches when the async-search
@@ -113,28 +169,106 @@ type asyncScanScoper interface {
 // jobFailureMessage is what gets written into the job record when an async
 // search fails.
 //
-// It follows the same 4xx/5xx split as every other response: a classified
-// client error carries its own already-safe text, and everything else — a
-// storage failure, a driver error, an unclassified wrapper — collapses to a
-// fixed string with the detail left in the log.
+// It classifies the failure as the doors do (common.Internal for a raw
+// error): an operational error — one the request caused, a storage outage, a
+// lost race, a lost shard — carries its own client-safe text, code first, and
+// anything else is a server-side failure, recorded as the generic text with a
+// ticket and its detail logged under the ticket.
 //
-// No status surface serves this string today: neither SearchJobStatus nor
-// SnapshotStatus carries a failure message, so an async caller sees FAILED and
-// no reason. Hold it to the response contract regardless — it is a persisted,
-// servable artefact, and the day a status surface does carry it must not be
-// the day its sanitisation is first considered.
-func jobFailureMessage(err error) string {
+// The string reaches the caller: every status read of a FAILED job serves it
+// as the job's failure reason (SearchJobStatus.FailureReason and
+// SnapshotStatus.FailureReason — HTTP failureReason, and the gRPC snapshot
+// status's failureReason). It is therefore held to the response contract like
+// any error a client is shown; nothing else stands between this text and the
+// wire.
+//
+// It logs the failure once, with jobID, through the funnel both doors share
+// (common.LogError): an operational failure (one the request caused, a
+// storage outage, a lost race) at the error's level — INFO unless the refusing
+// site set another — with its detail and cause, and a server-side one at
+// ERROR, with the detail, under the ticket the record names.
+func jobFailureMessage(jobID string, err error) string {
 	var ceiling searchCeilingExceeded
 	if errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
+		// Its own line: the ceiling is a reason only an async job records,
+		// with no error code of its own for the funnel's line to carry.
+		slog.Info("async search job failed", "pkg", "search", "jobID", jobID, "reason", searchCeilingMessage)
 		return searchCeilingMessage
 	}
-	// AppError.Error() returns the client-safe Message alone; Operational
-	// captures no internal detail and Internal keeps it in Detail, not Message.
+	// Classify as the doors do: a raw error goes through common.Internal, which
+	// keeps a storage outage, a lost race or a lost shard their own codes and
+	// makes anything else a server-side failure.
 	var appErr *common.AppError
-	if errors.As(err, &appErr) {
+	if !errors.As(err, &appErr) {
+		appErr = common.Internal("async search failed", err)
+	}
+	// The one line, through the funnel both doors share.
+	ticket := common.LogError(context.Background(), appErr, "pkg", "search", "jobID", jobID)
+	if appErr.Level == common.LevelOperational {
 		return appErr.Error()
 	}
-	return jobFailureFallback
+	return ticketedReason(ticket)
+}
+
+// ticketedReason is the recorded reason of a server-side failure, as both
+// doors answer one: the generic text and the ticket its detail is logged under.
+func ticketedReason(ticket string) string {
+	return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
+}
+
+// endLostClaim ends an executor whose job is no longer its to record —
+// settled (cancelled, or a takeover's own terminal write), claimed by another
+// executor, or removed — and records nothing. It is the one report of that
+// event, whichever path met it first (the heartbeat, a result write, the
+// terminal write, the pre-run clear of a reclaimed job), logged at INFO: an
+// ordinary end on a cluster. One level for every such end, because which of
+// them it was depends on timing (a takeover whose new owner has already
+// finished reads as settled), and the cause names the store's answer.
+func endLostClaim(jobID string, cause error) {
+	slog.Info("async search job is no longer this executor's to record; stopping",
+		"pkg", "search", "jobID", jobID, "cause", cause)
+}
+
+// failureReason defers jobFailureMessage until writeAsyncFailure knows the
+// record will be written.
+func failureReason(jobID string, err error) jobFailure {
+	return jobFailure{render: func() string { return jobFailureMessage(jobID, err) }, err: err}
+}
+
+// fixedReason is a reason that needs no rendering, for a failure its site
+// has already logged.
+func fixedReason(msg string) jobFailure { return jobFailure{render: func() string { return msg }} }
+
+// jobFailure is a failure an executor may record: render builds the recorded
+// reason, logging the failure; err is the failure itself, for one the job's
+// end leaves unrecorded (nil when the site logged it).
+type jobFailure struct {
+	render func() string
+	err    error
+}
+
+// logUnrecordedJobFailure logs a server-side failure whose job ended without
+// it being recorded — released, superseded, or settled elsewhere — once,
+// under a ticket nothing records, marked discarded. An operational failure
+// behind such an end (a client error, a storage outage, a lost race) is
+// answered by no one and logged by the operation that met it, if at all: it
+// is not an event of its own here.
+func logUnrecordedJobFailure(jobID string, err error) {
+	// A step that failed because the job's own context ended reports that
+	// end, not a fault. (The job context carries no deadline, so a deadline
+	// here is a statement's own, and is one.) A ceiling breach is the
+	// request's own outcome, as recorded.
+	var ceiling searchCeilingExceeded
+	if err == nil || errors.Is(err, context.Canceled) || errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
+		return
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		appErr = common.Internal("async search failed", err)
+	}
+	if appErr.Level != common.LevelOperational {
+		common.LogError(context.Background(), appErr, "pkg", "search", "jobID", jobID, "attempt", "discarded")
+	}
 }
 
 // SearchOptions controls search behavior.
@@ -167,18 +301,30 @@ type SearchJobStatus struct {
 	CreateTime time.Time
 	FinishTime *time.Time
 	CalcTimeMs int64
+	// ExpirationDate is when the job stops being readable (see
+	// SearchService.expiration).
+	ExpirationDate time.Time
+	// FailureReason is the reason a FAILED job recorded (see
+	// jobFailureMessage). Empty for every other status.
+	FailureReason string
 }
 
 // SnapshotStatus is a transport-friendly summary of an async search job's state.
 type SnapshotStatus struct {
 	SnapshotID string
-	// Status is one of: RUNNING, SUCCESSFUL, FAILED, CANCELLED, NOT_FOUND.
-	// NOT_FOUND is emitted by the commercial self-executing search store on
-	// snapshot-expiry races (documented in the getAsyncSearchStatus spec); it
-	// is intentionally retained in the contract — do NOT remove this value
-	// even though OSS backends never set it.
+	// Status is one of: RUNNING, SUCCESSFUL, FAILED, CANCELLED. The contract's
+	// enum also has NOT_FOUND, which Cyoda Cloud can answer for a job deleted
+	// while its status is read; no store here records it, and a missing or
+	// expired job is ErrSearchJobNotFound instead. The value stays in the
+	// contract, which grows by addition only.
 	Status        string
 	EntitiesCount int
+	// ExpirationDate is when the job stops being readable (see
+	// SearchService.expiration).
+	ExpirationDate time.Time
+	// FailureReason is the reason a FAILED job recorded. Empty for every
+	// other status.
+	FailureReason string
 }
 
 // SearchService provides synchronous and asynchronous entity search over
@@ -187,24 +333,21 @@ type SearchService struct {
 	factory     spi.StoreFactory
 	uuids       spi.UUIDGenerator
 	searchStore spi.AsyncSearchStore
-
-	// pathCache is an optional negative cache for unknown field-path
-	// validation. nil-safe: when unset, validation falls back to the
-	// inner-store Get + bounded RefreshAndGet pair on every request.
-	pathCache *PathValidationCache
+	cons        *consistency.Service
+	clock       spi.Clock
 
 	// maxSortKeys caps the number of sort keys accepted per request across
 	// all entry points (HTTP, gRPC, sync, async). Zero means use the
 	// built-in default of 16.
 	maxSortKeys int
 
-	// healthFlag is the process-wide node-health flag the HTTP and gRPC
-	// recovery paths latch false on a recovered panic. The async-search
-	// executor latches the same one: a panic there runs the same engine
+	// healthLatch is the process-wide health latch the HTTP and gRPC
+	// recovery paths trip on a recovered panic. The async-search
+	// executor trips the same one: a panic there runs the same engine
 	// and store code, so it is the same evidence of unverified state.
 	// nil-safe — unit tests that do not care about node health leave it
 	// unset.
-	healthFlag *atomic.Bool
+	healthLatch *health.Latch
 
 	// pool is the bounded worker pool async submissions run on. Set via
 	// WithAsyncPool; when unset, asyncPool() lazily constructs a small
@@ -219,6 +362,10 @@ type SearchService struct {
 	// the zero value when WithHeartbeat is never called) falls back to
 	// defaultHeartbeatInterval via heartbeatEvery().
 	heartbeatInterval time.Duration
+
+	// snapshotTTL is how long a finished job stays readable, set by
+	// WithSnapshotTTL. <= 0 falls back to defaultSnapshotTTL via ttl().
+	snapshotTTL time.Duration
 
 	// maxPerTenant caps how many async-search jobs one tenant may have in
 	// flight on this node — queued and executing together, since the
@@ -245,6 +392,14 @@ type SearchService struct {
 	// registry (not derived by scanning it) so the cap check is O(1) under
 	// the same lock that makes check-then-register atomic.
 	tenantInFlight map[spi.TenantID]int
+
+	// secondPassMu guards owed and secondPassDone: the writes the reclaim
+	// sweep owes jobs it claimed but will not run, and the one goroutine per
+	// node that sends them (see ReclaimStaleJobs). secondPassDone is non-nil
+	// while that goroutine runs, and closed when it returns.
+	secondPassMu   sync.Mutex
+	owed           map[owedKey]owedWrite
+	secondPassDone chan struct{}
 }
 
 // asyncJobHandle is what the cancel registry keeps per in-flight (queued or
@@ -253,12 +408,15 @@ type asyncJobHandle struct {
 	// cancel cancels the job's own context (jobCtx), which is what the
 	// heartbeat ticker and the executor's scan/save loop both observe. It
 	// is the ONLY cancellation source a job has: the pool deliberately
-	// keeps none of its own (see jobFunc in pool.go). CancelCauseFunc so
-	// ReleaseRegisteredJobs can cancel with errJobReleased, distinguishing
-	// a graceful-shutdown handoff from every other cancellation (user
-	// cancel, heartbeat fencing, cross-node terminal write), which pass
-	// nil and keep recording a terminal status as before.
+	// keeps none of its own (see jobFunc in pool.go). The first cause set
+	// decides the job's end (settleJob): the store's refusal (the
+	// heartbeat), errCancelledHere (CancelRunning), errJobReleased
+	// (ReleaseRegisteredJobs), errJobSuperseded (registerReclaim), or
+	// errJobEnding (the executor or reclaim deciding the outcome itself).
 	cancel context.CancelCauseFunc
+	// ctx is jobCtx itself, so ReleaseRegisteredJobs can tell whether its
+	// own cancel decided the job's end.
+	ctx context.Context
 	// uc is the submitting user's tenant context, needed to build a fresh
 	// (non-cancelled) ctx for a shutdown-time fenced Release after cancel has
 	// already been called on jobCtx.
@@ -269,6 +427,27 @@ type asyncJobHandle struct {
 	// shutdown-time Release (ReleaseRegisteredJobs) fences against the same
 	// epoch the executor itself is running at.
 	epoch int64
+}
+
+// handBack issues the shutdown-time Release (uncounted, fenced by the job's
+// epoch) and reports whether it landed. A refusal means the job was settled,
+// claimed elsewhere or removed meanwhile; it is reported as a lost claim only
+// when the release is the job's last word (reportRefusal) — a job whose
+// executor is recording its outcome reports its own end.
+func (s *SearchService) handBack(ctx context.Context, jobID string, entry *asyncJobHandle, reportRefusal bool) bool {
+	relCtx := spi.WithUserContext(context.WithoutCancel(ctx), entry.uc)
+	err := s.searchStore.Release(relCtx, jobID, entry.epoch)
+	switch {
+	case err == nil:
+		return true
+	case fencedRefusal(err):
+		if reportRefusal {
+			endLostClaim(jobID, err)
+		}
+	default:
+		slog.Error("failed to release async search job at shutdown", "pkg", "search", "jobID", jobID, "err", err)
+	}
+	return false
 }
 
 // defaultAsyncPoolWorkers/defaultAsyncPoolQueue size the built-in pool
@@ -287,34 +466,35 @@ const (
 	// wired-in production interval via WithHeartbeat, this one only ever
 	// applies when WithHeartbeat is skipped entirely.
 	defaultHeartbeatInterval = 5 * time.Second
+	// defaultSnapshotTTL is ttl()'s fallback when WithSnapshotTTL is never
+	// called or is called with a non-positive value. It equals app.Config's
+	// CYODA_SEARCH_SNAPSHOT_TTL default, which production wires in.
+	defaultSnapshotTTL = time.Hour
 )
 
 // NewSearchService creates a SearchService backed by the given store factory.
-func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchStore spi.AsyncSearchStore) *SearchService {
+func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchStore spi.AsyncSearchStore, cons *consistency.Service, clock spi.Clock) *SearchService {
+	if cons == nil {
+		panic("search.NewSearchService: nil consistency service")
+	}
+	if clock == nil {
+		panic("search.NewSearchService: nil clock")
+	}
 	return &SearchService{
+		cons:        cons,
 		factory:     factory,
 		uuids:       uuids,
 		searchStore: searchStore,
+		clock:       clock,
 	}
 }
 
-// WithPathValidationCache wires a negative cache for field-path
-// validation. Returns the receiver so the call can chain after
-// NewSearchService. The cache is optional; without it every
-// validation attempt routes through the inner ModelStore. With it,
-// confirmed-absent paths short-circuit until a schema-change event
-// invalidates the (tenant, modelRef) bucket.
-func (s *SearchService) WithPathValidationCache(c *PathValidationCache) *SearchService {
-	s.pathCache = c
-	return s
-}
-
-// WithHealthFlag wires the node-health flag the async-search goroutine latches
-// false when it recovers a panic — the same flag the HTTP and gRPC recovery
+// WithHealthLatch wires the health latch the async-search goroutine trips
+// when it recovers a panic — the same latch the HTTP and gRPC recovery
 // paths hold, so any door reaching it takes the node out of service. Returns
 // the receiver for chaining after NewSearchService.
-func (s *SearchService) WithHealthFlag(f *atomic.Bool) *SearchService {
-	s.healthFlag = f
+func (s *SearchService) WithHealthLatch(f *health.Latch) *SearchService {
+	s.healthLatch = f
 	return s
 }
 
@@ -350,13 +530,76 @@ func (s *SearchService) WithAsyncMaxPerTenant(n int) *SearchService {
 }
 
 // WithHeartbeat sets the interval the async executor stamps job liveness on
-// (spi.AsyncSearchStore.Heartbeat) and polls for cross-node cancel/terminal
-// status, starting at submit time. interval <= 0 restores the built-in
+// (spi.AsyncSearchStore.Heartbeat), starting at submit time. The stamp's
+// fencing refusal is also how the executor learns of a cross-node cancel or
+// a lost claim. interval <= 0 restores the built-in
 // default (defaultHeartbeatInterval) via heartbeatEvery(). Returns the
 // receiver for chaining after NewSearchService.
 func (s *SearchService) WithHeartbeat(interval time.Duration) *SearchService {
 	s.heartbeatInterval = interval
 	return s
+}
+
+// WithSnapshotTTL sets how long a finished job stays readable: from its
+// finish time plus ttl on, every read of the job answers not found, and
+// ReapExpiredSnapshots deletes it. ttl <= 0 restores defaultSnapshotTTL.
+// Returns the receiver for chaining after NewSearchService.
+func (s *SearchService) WithSnapshotTTL(ttl time.Duration) *SearchService {
+	s.snapshotTTL = ttl
+	return s
+}
+
+// ttl returns the configured snapshot TTL, or defaultSnapshotTTL.
+func (s *SearchService) ttl() time.Duration {
+	if s.snapshotTTL > 0 {
+		return s.snapshotTTL
+	}
+	return defaultSnapshotTTL
+}
+
+// expiration is when job stops being readable. For a terminal job it is the
+// finish time plus the snapshot TTL, the age ReapExpired measures, and the
+// job is refused from then on (expired is true at or past it). A running job
+// is never refused; its expiration is a lower bound, createTime + TTL. The
+// executor stamps the finish time before it writes the terminal status, so a
+// read in that gap sees RUNNING with the finish already behind it: now + TTL
+// could be later than the date the job ends with, and createTime + TTL never
+// is. A terminal job without a finish time has no expiration: the read fails
+// closed (every writer here stamps one; a store that drops it is at fault).
+func (s *SearchService) expiration(job *spi.SearchJob, now time.Time) (expires time.Time, expired bool, err error) {
+	if job.Status == "RUNNING" {
+		return job.CreateTime.Add(s.ttl()), false, nil
+	}
+	if job.FinishTime == nil {
+		return time.Time{}, false, fmt.Errorf("search job %s is %s without a finish time", job.ID, job.Status)
+	}
+	expires = job.FinishTime.Add(s.ttl())
+	return expires, !now.Before(expires), nil
+}
+
+// liveJob reads a job for a caller. A terminal job at or past its expiration
+// is not found, whether or not the reaper has deleted it yet, so the
+// expirationDate a status reports is when reads of the job stop.
+func (s *SearchService) liveJob(ctx context.Context, jobID string) (*spi.SearchJob, time.Time, error) {
+	job, err := s.searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, time.Time{}, jobLookupErr(jobID, err)
+	}
+	expires, expired, err := s.expiration(job, s.clock.Now())
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if expired {
+		return nil, time.Time{}, fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
+	}
+	return job, expires, nil
+}
+
+// ReapExpiredSnapshots deletes the finished jobs past the snapshot TTL, the
+// same TTL their expirationDate reports. Cross-tenant, like
+// spi.AsyncSearchStore.ReapExpired.
+func (s *SearchService) ReapExpiredSnapshots(ctx context.Context) (int, error) {
+	return s.searchStore.ReapExpired(ctx, s.ttl())
 }
 
 // asyncPool returns the wired pool, lazily constructing a small built-in
@@ -405,7 +648,7 @@ func (s *SearchService) heartbeatEvery() time.Duration {
 // deregister then leaves the tenant permanently one slot short. Submit's fresh
 // time-UUIDs make that unreachable today, which is a property of the caller,
 // not of this function.
-func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) (*asyncJobHandle, bool) {
+func (s *SearchService) registerJob(jobID string, jobCtx context.Context, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) (*asyncJobHandle, bool) {
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
 	if s.registry == nil {
@@ -421,7 +664,7 @@ func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc
 	if s.maxPerTenant > 0 && s.tenantInFlight[tenant] >= s.maxPerTenant {
 		return nil, false
 	}
-	h := &asyncJobHandle{cancel: cancel, uc: uc, epoch: epoch}
+	h := &asyncJobHandle{cancel: cancel, ctx: jobCtx, uc: uc, epoch: epoch}
 	s.registry[jobID] = h
 	s.tenantInFlight[tenant]++
 	return h, true
@@ -432,8 +675,8 @@ func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc
 // cluster-wide) and, if this node still has a stale handle for the job (its
 // own paused executor), cancels that handle with errJobSuperseded and replaces
 // it. Returns the new handle.
-func (s *SearchService) registerReclaim(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) *asyncJobHandle {
-	h := &asyncJobHandle{cancel: cancel, uc: uc, epoch: epoch}
+func (s *SearchService) registerReclaim(jobID string, jobCtx context.Context, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) *asyncJobHandle {
+	h := &asyncJobHandle{cancel: cancel, ctx: jobCtx, uc: uc, epoch: epoch}
 	// IIFE so the lock is released via defer before old.cancel() runs below —
 	// same reasoning as CancelRunning/ReleaseRegisteredJobs: cancel() can
 	// synchronously wake the old executor or its heartbeat goroutine, either
@@ -519,14 +762,19 @@ func (s *SearchService) deregisterJobHandle(jobID string, h *asyncJobHandle) {
 	}
 }
 
-// tenantOf is the per-tenant cap's bucket key. SubmitAsync rejects a
-// missing UserContext before it ever registers anything, so the empty
-// tenant is unreachable from there; it is defined anyway so the accounting
-// stays total for any other caller.
+// tenantAtCapError is the refusal of a submission from a tenant holding its
+// full share of this node's async capacity: the queue-full 503, logged once
+// at WARN by the door's funnel with the tenant and the cap as its cause.
+func (s *SearchService) tenantAtCapError(uc *spi.UserContext) *common.AppError {
+	return QueueFullError().
+		WithCause(fmt.Errorf("tenant %s at its in-flight cap (%d)", uc.Tenant.ID, s.maxPerTenant)).
+		WithLogLevel(slog.LevelWarn)
+}
+
+// tenantOf is the per-tenant cap's bucket key. Every registered job carries
+// its tenant's UserContext: SubmitAsync rejects a missing one, and a reclaim
+// builds the job tenant's.
 func tenantOf(uc *spi.UserContext) spi.TenantID {
-	if uc == nil {
-		return ""
-	}
 	return uc.Tenant.ID
 }
 
@@ -535,7 +783,7 @@ func tenantOf(uc *spi.UserContext) spi.TenantID {
 // when the job is not registered here — not yet started on this node,
 // already finished, or owned by a different node in the cluster. Used by
 // CancelAsync for an immediate in-process abort that does not wait for the
-// next heartbeat poll to observe the store's CANCELLED write.
+// next heartbeat to be refused by the store's CANCELLED write.
 func (s *SearchService) CancelRunning(jobID string) bool {
 	// IIFE so the lock is released via defer before entry.cancel() runs —
 	// cancel() must not be called while holding registryMu, since it can
@@ -551,15 +799,18 @@ func (s *SearchService) CancelRunning(jobID string) bool {
 	if !ok {
 		return false
 	}
-	entry.cancel(nil)
+	entry.cancel(errCancelledHere)
 	return true
 }
 
 // ReleaseRegisteredJobs cancels every in-flight (queued or executing) job on
-// this node with errJobReleased and issues a fenced store Release for each,
-// so a peer (or this node's next startup sweep) reclaims and re-runs it
-// promptly instead of waiting for the heartbeat to age out. Returns the count
-// released. Called by App.Shutdown after the drain budget: jobs that finished
+// this node with errJobReleased and issues a fenced store Release for each
+// not already ended by a cancel or by the store's refusal (the store refuses
+// one that is no longer this node's claim), so a peer (or this node's next
+// startup sweep) reclaims and re-runs it promptly instead of waiting for the
+// heartbeat to age out. Returns the count of releases that landed; it
+// includes jobs whose executor was recording the outcome, which may then
+// finish. Called by App.Shutdown after the drain budget: jobs that finished
 // within the budget are already gone from the registry.
 //
 // The store Release is issued right after cancelling, without waiting for the
@@ -580,30 +831,41 @@ func (s *SearchService) ReleaseRegisteredJobs(ctx context.Context) int {
 		return snap
 	}()
 
+	released := 0
 	for jobID, entry := range entries {
 		entry.cancel(errJobReleased)
-		relCtx := ctx
-		if entry.uc != nil {
-			relCtx = spi.WithUserContext(context.WithoutCancel(ctx), entry.uc)
-		}
-		if err := s.searchStore.Release(relCtx, jobID, entry.epoch); err != nil {
-			if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
-				slog.Warn("async search job release lost the race; already settled or reclaimed", "pkg", "search", "jobID", jobID, "err", err)
-				continue
+		switch cause := context.Cause(entry.ctx); {
+		case errors.Is(cause, errJobReleased):
+			if s.handBack(ctx, jobID, entry, true) {
+				released++
 			}
-			slog.Error("failed to release async search job at shutdown", "pkg", "search", "jobID", jobID, "err", err)
+		case errors.Is(cause, errJobEnding):
+			// Its executor or reclaim is recording (or releasing) the job's
+			// end. Released anyway, now, while the store is still open: a
+			// recording that lands afterwards still finishes the job (Release
+			// keeps the epoch), one that fails leaves it handed back, and one
+			// a peer's claim overtakes is refused and reported by the
+			// executor. A refusal here means the recording landed first.
+			if s.handBack(ctx, jobID, entry, false) {
+				released++
+			}
 		}
+		// Any other cause — a cancel here or the store's refusal — ended the
+		// job before the release: nothing is this node's to hand back, and
+		// whoever met it reports it.
 	}
-	return len(entries)
+	return released
 }
 
 // structuralConditionErrCode classifies a ValidateCondition error for the
 // Search/SubmitAsync boundary: a jsonPath outside JSON Path nomenclature
 // (errInvalidFieldPath) maps to INVALID_FIELD_PATH — the same code the
 // schema-driven path check emits, because both mean "that is not a field this
-// request can address"; an object-operand shape violation, an unknown or
-// missing operatorType (operator-semantics.md §4: "on every surface that
-// carries a condition"), and an unknown group operator all wrap
+// request can address"; an object operand, an array operand outside BETWEEN,
+// a BETWEEN operand that is not a pair of two non-null scalar bounds (not a
+// two-element array, or a null or non-scalar bound), an unknown or missing
+// operatorType (operator-semantics.md §4: "on every surface that carries a
+// condition"), an unknown group operator and a malformed array clause all wrap
 // ErrInvalidCondition and map to INVALID_CONDITION; any other structural
 // failure (e.g. condition depth exceeded) keeps the BAD_REQUEST default —
 // nothing in the current validator set reaches it besides that one guard.
@@ -615,20 +877,6 @@ func structuralConditionErrCode(cErr error) string {
 		return common.ErrCodeInvalidCondition
 	}
 	return common.ErrCodeBadRequest
-}
-
-// StructuralConditionErrCode is the exported entry point for
-// structuralConditionErrCode, so a caller outside this package that
-// validates a condition via the exported ValidateCondition — currently
-// entity.Handler's delete paths, which select entities via their own
-// Iterate drain instead of Search and so must replicate Search's
-// pre-execution validation rather than inherit it as a side effect —
-// classifies a ValidateCondition failure identically to Search/SubmitAsync
-// instead of drifting onto a coarser code of its own. Mirrors the
-// LoadFieldsMap/loadFieldsMap exported-wrapper shape already used in this
-// package (path_validate.go).
-func StructuralConditionErrCode(cErr error) string {
-	return structuralConditionErrCode(cErr)
 }
 
 // Search performs a synchronous, bounded-or-fail entity search.
@@ -645,9 +893,9 @@ func StructuralConditionErrCode(cErr error) string {
 // No whole-model read exists anywhere in the engine.
 //
 // Pre-execution path validation: every condition path is checked against
-// the cached model schema's FieldsMap. When a path is unknown, the schema
-// cache is refreshed exactly once via RefreshAndGet so a search referencing
-// a peer's freshly-extended path succeeds after one authoritative read.
+// the cached model schema's FieldsMap. When a path is unknown, the model is
+// refreshed from storage exactly once so a search referencing a peer's
+// freshly-extended path succeeds after one authoritative read.
 // Truly-unknown paths surface as 400 INVALID_FIELD_PATH. Unregistered
 // models surface as 404 MODEL_NOT_FOUND.
 func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
@@ -668,35 +916,13 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
 	}
 
-	// Structural condition validation (canonical operator set, BETWEEN
-	// arity) — model-independent, so it runs before any model-store access.
-	// This is the single boundary every transport (HTTP, gRPC) funnels
-	// through; the HTTP handler no longer duplicates this check.
-	if cErr := ValidateCondition(cond); cErr != nil {
-		return nil, common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
-	}
-
-	modelStore, err := s.factory.ModelStore(ctx)
-	if err != nil {
-		return nil, common.Internal("failed to access model store", err)
-	}
-	if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
-		return nil, appErr
-	}
-
-	validatedFields, vErr := s.validateConditionPaths(ctx, modelStore, modelRef, cond)
+	// The one condition-validation sequence (structure, patterns, paths,
+	// types — see ValidateConditionForModel), shared with async submit,
+	// conditional delete and grouped stats. This is the single boundary
+	// every transport (HTTP, gRPC) funnels through.
+	validatedFields, vErr := s.validateConditionForModel(ctx, modelRef, cond)
 	if vErr != nil {
 		return nil, vErr
-	}
-	if rErr := ValidatePatterns(cond); rErr != nil {
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			rErr.Error())
-	}
-	// Condition type-soundness (correctness-over-availability): every
-	// transport funnels through Search, so this is the single boundary that
-	// closes the gap where gRPC previously bypassed HTTP-only validation.
-	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
-		return nil, tErr
 	}
 
 	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
@@ -717,6 +943,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			return nil, appErr
 		}
 		return nil, untranslatableCondition(translateErr)
+	}
+
+	// Every request check has passed; a read at an instant later than the
+	// consistency time is refused before the store is touched.
+	if opts.PointInTime != nil {
+		if err := s.cons.Fence(ctx, *opts.PointInTime); err != nil {
+			return nil, err
+		}
 	}
 	res, sErr := store.Search(ctx, filter, spi.SearchOptions{
 		ModelName:    modelRef.EntityName,
@@ -744,10 +978,10 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 // .ParseCondition builds only the five clause types, and a FunctionCondition
 // is refused earlier), so a caller loses no diagnostic detail here.
 func untranslatableCondition(translateErr error) *common.AppError {
-	slog.Warn("condition cleared validation but could not be translated",
-		"pkg", "search", "err", translateErr)
 	return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-		"condition cannot be translated to a backend predicate").WithCause(translateErr)
+		"condition cannot be translated to a backend predicate").
+		WithCause(fmt.Errorf("condition cleared validation but could not be translated: %w", translateErr)).
+		WithLogLevel(slog.LevelWarn)
 }
 
 // ClassifyStoreQueryError maps the cross-backend sentinels a storage plugin
@@ -808,7 +1042,8 @@ func untranslatableCondition(translateErr error) *common.AppError {
 //     it at WARN claimed a system inconsistency on every ordinary hit of the
 //     single most common cause, drowning out the rarer, genuinely anomalous
 //     ones (a malformed NOT node, an out-of-grammar path) the sentinel cannot
-//     be told apart from — so this one logs at DEBUG instead.
+//     be told apart from — so this one is logged at the client-error class
+//     level, INFO, by the door's funnel.
 //
 // match.ErrUnevaluableLeaf and match.ErrUnsupportedOperator are
 // internal/match's OWN Prepare (predicate.Condition side, a different
@@ -836,15 +1071,15 @@ func untranslatableCondition(translateErr error) *common.AppError {
 //
 // match.ErrUnevaluableLeaf and spi.ErrUnevaluableLeaf share both a name and
 // an error message ("unevaluable leaf") by design — two evaluators, one
-// disposition — so the two cases below are logged with an explicit "source"
-// field: a caller reaching for the wrong sentinel in a log-line search would
-// otherwise have no way to tell which evaluator actually rejected the leaf.
+// disposition — so the two cases below name their evaluator in the cause the
+// funnel logs: a caller reaching for the wrong sentinel in a log-line search
+// would otherwise have no way to tell which evaluator actually rejected the
+// leaf.
 //
 // Exported so callers outside this package that drive a store with an
-// engine-translated Filter (entity's grouped-stats service) or run
-// internal/match's residual evaluator directly (entity's conditional-delete
-// planner, grouped-stats' streaming tally) classify identically instead of
-// maintaining a second copy of the table.
+// engine-translated Filter (entity's grouped-stats service and conditional
+// delete) classify identically instead of maintaining a second copy of the
+// table.
 func ClassifyStoreQueryError(err error) *common.AppError {
 	switch {
 	case err == nil:
@@ -854,37 +1089,34 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 			common.ErrCodeSearchResultLimit,
 			"matched result count exceeds the configured limit").WithCause(err)
 	case errors.Is(err, spi.ErrInvalidFilterPath):
-		slog.Warn("storage backend rejected a path the boundary grammar accepted",
-			"pkg", "search", "err", err)
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidFieldPath,
-			"condition or sort references an invalid field path").WithCause(err)
+			"condition or sort references an invalid field path").
+			WithCause(fmt.Errorf("storage backend rejected a path the boundary grammar accepted: %w", err)).
+			WithLogLevel(slog.LevelWarn)
 	case errors.Is(err, spi.ErrUnevaluableLeaf):
-		// DEBUG, not WARN — see this function's doc comment: the dominant
-		// cause here (a field with no declared type) is a documented-normal
-		// 400, not a boundary/backend inconsistency.
-		slog.Debug("search condition leaf rejected by the evaluator: commonly a field with no declared type",
-			"pkg", "search", "source", "spi.Prepare", "err", err)
+		// The class default (INFO), not WARN — see this function's doc
+		// comment: the dominant cause here (a field with no declared type) is
+		// a documented-normal 400, not a boundary/backend inconsistency.
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
-			"condition contains a leaf the backend cannot evaluate").WithCause(err)
+			"condition contains a leaf the backend cannot evaluate").WithCause(fmt.Errorf("rejected by spi.Prepare: %w", err))
 	case errors.Is(err, spi.ErrInvalidPattern):
-		slog.Warn("storage backend could not compile a condition pattern the boundary accepted",
-			"pkg", "search", "source", "spi.ValidateLeafPattern", "err", err)
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
-			"condition contains a pattern operand the backend cannot compile").WithCause(err)
+			"condition contains a pattern operand the backend cannot compile").
+			WithCause(fmt.Errorf("storage backend could not compile a condition pattern the boundary accepted: %w", err)).
+			WithLogLevel(slog.LevelWarn)
 	case errors.Is(err, match.ErrUnevaluableLeaf):
-		// DEBUG, not WARN — same reasoning as the spi.ErrUnevaluableLeaf arm
-		// above: a NOT condition can route the identical no-declared-type
-		// leaf through this evaluator instead of spi.Prepare depending on
-		// translatability alone (the query PLAN, not the input), so the same
-		// documented-normal case reaches this arm just as often.
-		slog.Debug("search condition leaf rejected by the residual evaluator: commonly a field with no declared type",
-			"pkg", "search", "source", "match.Prepare", "err", err)
+		// The class default (INFO), not WARN — same reasoning as the
+		// spi.ErrUnevaluableLeaf arm above: a NOT condition can route the
+		// identical no-declared-type leaf through this evaluator instead of
+		// spi.Prepare depending on translatability alone (the query PLAN, not
+		// the input), so the same documented-normal case reaches this arm
+		// just as often.
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
-			"condition contains a leaf the evaluator cannot evaluate").WithCause(err)
+			"condition contains a leaf the evaluator cannot evaluate").WithCause(fmt.Errorf("rejected by match.Prepare: %w", err))
 	case errors.Is(err, match.ErrUnsupportedOperator):
 		return common.Operational(http.StatusBadRequest,
 			common.ErrCodeInvalidCondition,
@@ -912,39 +1144,16 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 			"condition is required")
 	}
 
-	// Structural condition validation (canonical operator set, BETWEEN
-	// arity) — same single boundary as Search, so an async job is never
-	// created for a structurally-malformed condition regardless of transport.
-	if cErr := ValidateCondition(cond); cErr != nil {
-		return "", common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
-	}
-
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context — cannot determine tenant")
 	}
 
-	modelStore, err := s.factory.ModelStore(ctx)
-	if err != nil {
-		return "", common.Internal("failed to access model store", err)
-	}
-	if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
-		return "", appErr
-	}
-
-	validatedFields, vErr := s.validateConditionPaths(ctx, modelStore, modelRef, cond)
+	// The same sequence as Search, so an async job is never created for a
+	// malformed or type-unsound condition regardless of transport.
+	validatedFields, vErr := s.validateConditionForModel(ctx, modelRef, cond)
 	if vErr != nil {
 		return "", vErr
-	}
-	if rErr := ValidatePatterns(cond); rErr != nil {
-		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			rErr.Error())
-	}
-	// Condition type-soundness (correctness-over-availability): same
-	// single-boundary guard as Search, so an async job is never created for
-	// a type-unsound condition regardless of transport.
-	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
-		return "", tErr
 	}
 
 	// Translate once at submission: a persisted job carries a condition that
@@ -968,11 +1177,6 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", oerr
 	}
 
-	if opts.PointInTime == nil {
-		now := time.Now()
-		opts.PointInTime = &now
-	}
-
 	// Cheap non-authoritative cap pre-check, placed here so that a tenant
 	// already at its cap costs the store NOTHING: without it every rejected
 	// submit still ran an INSERT and a compensating DELETE, write churn every
@@ -982,13 +1186,26 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// hides it. registerJob below remains the authority; this can only
 	// short-circuit to the same rejection it would have reached.
 	if s.tenantAtCap(uc) {
-		slog.Warn("async search submission rejected: tenant at its in-flight cap",
-			"pkg", "search", "tenant", uc.Tenant.ID, "maxPerTenant", s.maxPerTenant)
-		return "", QueueFullError()
+		return "", s.tenantAtCapError(uc)
+	}
+
+	// The job's instant: the caller's, fenced, or a fresh consistency time.
+	// Either way it is final, so every page and any reclaim on another node
+	// read the same answer.
+	if opts.PointInTime != nil {
+		if err := s.cons.Fence(ctx, *opts.PointInTime); err != nil {
+			return "", err
+		}
+	} else {
+		c, err := s.cons.Fresh(ctx)
+		if err != nil {
+			return "", err
+		}
+		opts.PointInTime = &c
 	}
 
 	jobID := uuid.UUID(s.uuids.NewTimeUUID()).String()
-	now := time.Now()
+	now := s.clock.Now()
 
 	// The job record carries the client's condition in DOMAIN wire syntax,
 	// untranslated, by design. A SelfExecutingSearchStore is its only reader
@@ -1057,7 +1274,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// handed to the pool: the submitter owns the queue entry, so both span
 	// the queued state, not just execution.
 	jobCtx, cancel := context.WithCancelCause(bgCtx)
-	handle, ok := s.registerJob(jobID, cancel, uc, 1)
+	handle, ok := s.registerJob(jobID, jobCtx, cancel, uc, 1)
 	if !ok {
 		// This tenant already holds its full share of this node's async
 		// capacity. Same disposition as a pool rejection below — the job
@@ -1068,9 +1285,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		if delErr := s.searchStore.DeleteJob(bgCtx, jobID); delErr != nil {
 			slog.Error("failed to delete search job after per-tenant cap rejection", "pkg", "search", "jobID", jobID, "err", delErr)
 		}
-		slog.Warn("async search submission rejected: tenant at its in-flight cap",
-			"pkg", "search", "tenant", uc.Tenant.ID, "maxPerTenant", s.maxPerTenant)
-		return "", QueueFullError()
+		return "", s.tenantAtCapError(uc)
 	}
 	s.startHeartbeat(jobCtx, cancel, jobID, 1)
 
@@ -1094,10 +1309,30 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 
 // startHeartbeat runs the dedicated heartbeat ticker goroutine for a job,
 // from submit time (queued or executing) until jobCtx is done. Every tick it
-// stamps liveness (Heartbeat) and polls GetJob for any terminal status —
-// cross-node cancel and terminal abort in one poll — cancelling jobCtx (and
-// so stopping itself) on either a Heartbeat error (fenced out — a stale
-// claim or an already-terminal job) or an observed non-RUNNING status.
+// stamps liveness (Heartbeat) and nothing else. The stamp is fenced by the
+// store (spi.AsyncSearchStore.Heartbeat): it refuses a job that is terminal
+// (ErrAlreadyTerminal), was reclaimed at a newer epoch (ErrStaleClaim) or is
+// gone (ErrNotFound). So a cancel written by any node, a completion, and a
+// lost claim all end the job here in one statement, and jobCtx is cancelled
+// on any such fencing refusal (fencedRefusal), with the refusal as its cause.
+// The heartbeat logs nothing for it: the executor reports the end once
+// (endLostClaim).
+//
+// The tick issues no other store statement. A backend may run Heartbeat on a
+// pool of its own so that a main pool exhausted by entity transactions cannot
+// starve liveness; a second, main-pool statement in this loop would undo that.
+//
+// Any other error is a missed tick, not a lost claim, and the job keeps
+// running; the next tick stamps again. A busy tick (spi.ErrTaskBusy — a
+// store, PostgreSQL, answers it for a lock its own job's SaveResults chunk
+// holds) is expected and logged at DEBUG; any other error (a dropped
+// connection, a timeout) is logged at WARN. Leaving stamps missed is safe:
+// every later write of the job — each SaveResults chunk and the terminal
+// status — is fenced against its epoch and a terminal status, so a cancel
+// or a reclaim that lands meanwhile still stops the executor; and if the
+// stamps keep failing, the store's staleness window passes and another node
+// takes the job over at a newer epoch. memory and sqlite never return
+// spi.ErrTaskBusy (their Heartbeat never lock-waits).
 func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.CancelCauseFunc, jobID string, epoch int64) {
 	interval := s.heartbeatEvery()
 	go func() {
@@ -1108,19 +1343,22 @@ func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.Ca
 			case <-jobCtx.Done():
 				return
 			case <-ticker.C:
-				if err := s.searchStore.Heartbeat(jobCtx, jobID, epoch); err != nil {
-					slog.Warn("async search heartbeat failed; aborting job", "pkg", "search", "jobID", jobID, "err", err)
-					cancel(nil)
+				hbErr := s.searchStore.Heartbeat(jobCtx, jobID, epoch)
+				switch {
+				case fencedRefusal(hbErr):
+					// Settled, claimed by another executor, or removed: the
+					// executor ends, and reports why once (endLostClaim), with
+					// this refusal as the cause.
+					cancel(hbErr)
 					return
-				}
-				job, err := s.searchStore.GetJob(jobCtx, jobID)
-				if err != nil {
-					slog.Warn("async search heartbeat status poll failed", "pkg", "search", "jobID", jobID, "err", err)
-					continue
-				}
-				if job.Status != "RUNNING" {
-					cancel(nil)
+				case jobCtx.Err() != nil:
+					// The job ended (or was released) while the stamp was in
+					// flight; its cut-off statement is no missed tick.
 					return
+				case errors.Is(hbErr, spi.ErrTaskBusy):
+					slog.Debug("async search heartbeat missed a busy tick", "pkg", "search", "jobID", jobID, "err", hbErr)
+				case hbErr != nil:
+					slog.Warn("async search heartbeat missed a tick; the job keeps running", "pkg", "search", "jobID", jobID, "err", hbErr)
 				}
 			}
 		}
@@ -1151,41 +1389,41 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	defer cancel(nil)
 	defer s.deregisterJobHandle(jobID, handle)
 
-	start := time.Now()
+	start := time.Now() // realtime: search job duration
 
 	// A panic anywhere in this function (or anything it calls) runs with no
 	// HTTP handler above it to recover it — net/http's per-connection
 	// recover has nothing to do with a pool worker goroutine. Left
 	// unrecovered, it takes the whole process down, the same class of gap
-	// the gRPC and HTTP mux doors had. Mirrors the scheduler's own dispatch
-	// goroutine (internal/scheduler/service.go): log the full panic detail
+	// the gRPC and HTTP mux doors had. Mirrors the scheduler's run
+	// goroutines (internal/scheduler/service.go): log the full panic detail
 	// (value + stack) and record the job FAILED with a non-revealing
 	// message — a job left RUNNING forever after its executor died would be
 	// its own defect (Gate 3: no panic value or stack leaves the log).
 	defer func() {
 		if rec := recover(); rec != nil {
+			ticket := uuid.New().String()
 			slog.Error("panic recovered in async search job", "pkg", "search",
-				"jobID", jobID, "err", fmt.Errorf("panic: %v", rec),
+				"jobID", jobID, "ticket", ticket, "err", fmt.Errorf("panic: %v", rec),
 				"stack", string(debug.Stack()))
 			// Same latch as the HTTP and gRPC doors: this executor runs the
 			// same engine and store code, so a panic here is the same
 			// evidence that the node's state is unverified. Nothing resets
 			// it — the node reports 503 on /health and /readyz and stops
 			// taking client traffic.
-			if s.healthFlag != nil {
-				s.healthFlag.Store(false)
-			}
-			// jobCtx may or may not be cancelled at this point, but the write
-			// must land regardless — writeAsyncFailure strips cancellation
-			// itself (keeping the UserContext value), so a store that aborts
+			s.healthLatch.Trip()
+			// jobCtx may or may not be cancelled at this point. Unless its cause
+			// leaves the job to another claim (writeAsyncFailure decides), the
+			// write must land: writeAsyncFailure strips cancellation itself
+			// (keeping the UserContext value), so a store that aborts
 			// in-flight work on ctx.Err() still accepts it.
-			s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureFallback, time.Now(), 0)
+			s.writeAsyncFailure(jobCtx, handle, jobID, epoch, fixedReason(ticketedReason(ticket)), s.clock.Now(), 0)
 		}
 	}()
 
 	modelStore, err := s.factory.ModelStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 	// Fail the job rather than answering without the schema. This load is
@@ -1197,14 +1435,14 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	// the job would record a short result set as SUCCESSFUL.
 	fields, fieldsErr := loadFieldsMap(jobCtx, modelStore, modelRef)
 	if fieldsErr != nil {
-		// Classify before recording. A raw error falls through
-		// jobFailureMessage to the generic fallback, so a tenant whose model
-		// store is down would read an actionable code on /search/direct and
-		// "search failed unexpectedly" here, for one and the same outage.
-		// common.Internal always returns a non-nil *AppError, and only its
-		// Message reaches the persisted job record — never its Detail.
+		// Classify before recording, naming the step: jobFailureMessage
+		// would classify a raw error the same way, and the explicit wrap
+		// only gives the log line its message.
+		// common.Internal always returns a non-nil *AppError; the job record
+		// gets the ticketed generic text, and its Message and Detail are logged
+		// under the ticket.
 		appErr := common.Internal("failed to load model schema for condition validation", fieldsErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(appErr), time.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, appErr), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1212,7 +1450,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// Ordinary error handling, not a designed branch: a condition that
 		// translated at submission translates here (schema changes after
 		// locking are additive). Anything else is an unexpected failure.
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(common.Internal("failed to translate search condition", translateErr)), time.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, common.Internal("failed to translate search condition", translateErr)), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 
@@ -1224,7 +1462,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	entityStore, err := s.factory.EntityStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 
@@ -1243,11 +1481,10 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	})
 	if iterErr != nil {
 		// Classify exactly as the synchronous door does. The job record
-		// is the only report an async caller gets, and jobFailureMessage
-		// renders an *AppError's client-safe text while collapsing
-		// anything else to the generic fallback — so an unclassified
-		// sentinel turned a client's own malformed request into
-		// "search failed unexpectedly". Reaching a plugin's path
+		// is the only report an async caller gets, and only
+		// ClassifyStoreQueryError knows the store-query sentinels that are the
+		// client's own malformed request (a 400); without it they would be
+		// recorded as a server-side failure. Reaching a plugin's path
 		// rejection at all means the boundary grammar and that plugin
 		// disagree; the caller is still owed the 400.
 		prodErr = iterErr
@@ -1277,11 +1514,16 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// SUCCESSFUL with a truncated result set, indistinguishable
 			// from a complete one.
 			defer func() {
-				if closeErr := it.Close(); closeErr != nil {
-					slog.Warn("failed to close async search iterator", "pkg", "search", "jobID", jobID, "err", closeErr)
+				closeErr := it.Close()
+				if closeErr != nil {
 					pErr = closeErr
 				}
 				if errErr := it.Err(); errErr != nil {
+					// The scan error is the job's failure; a Close error beside
+					// it is logged here, as nothing else reports it.
+					if closeErr != nil {
+						slog.Warn("failed to close async search iterator", "pkg", "search", "jobID", jobID, "err", closeErr)
+					}
 					pErr = errErr
 					// A sticky scan error carries the same
 					// cross-backend sentinels Iterate's own error
@@ -1311,89 +1553,88 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		}()
 	}
 
-	finishTime := time.Now()
-	calcTimeMs := time.Since(start).Milliseconds()
+	finishTime := s.clock.Now()
+	calcTimeMs := time.Since(start).Milliseconds() // realtime: search job duration
 
 	switch {
 	case jobCtx.Err() != nil:
-		// Cancelled — in-process CancelRunning, a cross-node cancel or
-		// terminal status the heartbeat poll observed, or a heartbeat
-		// fencing failure. context.WithoutCancel so the recovery READ below
-		// is not itself aborted by the same cancellation (the write that
-		// follows strips cancellation on its own).
-		recoveryCtx := context.WithoutCancel(jobCtx)
-		job, getErr := s.searchStore.GetJob(recoveryCtx, jobID)
-		if getErr == nil && job.Status == "CANCELLED" {
-			// The store already stamped the terminal write (Cancel, or a
-			// takeover's own terminal write) — nothing left to record.
-			return
+		// Cancelled: by the heartbeat on the store's refusal, by a cancel on
+		// this node (errCancelledHere), or by a release or self-reclaim. The
+		// cause says which, and none leaves a failure of this executor's to
+		// record: a refusal (or a cancel here) is a lost claim, reported once;
+		// a released or superseded job is the next claim's. A server-side
+		// fault the scan or the result save met is still logged, once, as
+		// unrecorded — whether the cancel landed before this check or after.
+		settleJob(jobCtx, cancel, jobID, errJobEnding)
+		logUnrecordedJobFailure(jobID, prodErr)
+		if !fencedRefusal(saveErr) {
+			logUnrecordedJobFailure(jobID, saveErr)
 		}
-		// jobCtx, not recoveryCtx: writeAsyncFailure's own release-cause
-		// guard reads context.Cause(ctx) before stripping cancellation, and
-		// context.Cause on a WithoutCancel derivative always reports nil
-		// (its Err() is unconditionally nil) — recoveryCtx would silently
-		// defeat the guard. writeAsyncFailure strips cancellation itself
-		// right after the guard, so passing jobCtx costs nothing here.
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureFallback, finishTime, calcTimeMs)
 		return
 	case prodErr != nil:
-		slog.Warn("async search job failed", "pkg", "search", "jobID", jobID, "err", prodErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(prodErr), finishTime, calcTimeMs)
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, prodErr), finishTime, calcTimeMs)
 		return
 	case saveErr != nil:
-		slog.Error("failed to save search results", "pkg", "search", "jobID", jobID, "err", saveErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(saveErr), finishTime, calcTimeMs)
+		if fencedRefusal(saveErr) {
+			// A result write refused because the job was cancelled, claimed
+			// by another executor or removed: usually the first sign of it,
+			// before the heartbeat's next tick.
+			settleJob(jobCtx, cancel, jobID, saveErr)
+			return
+		}
+		s.writeAsyncFailure(jobCtx, handle, jobID, epoch, failureReason(jobID, saveErr), finishTime, calcTimeMs)
 		return
 	}
 
-	// context.WithoutCancel, exactly as the panic path above: the switch has
-	// just established that jobCtx was live, but the heartbeat goroutine
-	// cancels it from a different goroutine — a fenced-out Heartbeat or a
-	// poll that observes a terminal status — and a cancel landing in the
-	// window between that check and this call would abort the write and
-	// leave a finished job RUNNING until the stale-job reaper failed it. The
-	// UserContext (and so the tenant scope) is preserved.
+	// Settle the end first, so that a heartbeat refusal or a shutdown release
+	// landing from now on leaves the outcome to this write; then write on
+	// context.WithoutCancel, since settleJob has just cancelled jobCtx. The
+	// UserContext (and so the tenant scope) is preserved. Settling also stops
+	// the heartbeat: a write that hangs past the stale threshold lets the job
+	// be reclaimed rather than look alive.
+	if !settleJob(jobCtx, cancel, jobID, errJobEnding) {
+		return
+	}
 	if err := s.searchStore.UpdateJobStatus(context.WithoutCancel(jobCtx), jobID, epoch, "SUCCESSFUL", count, "", finishTime, calcTimeMs); err != nil {
-		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
-			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)
+		if fencedRefusal(err) {
+			endLostClaim(jobID, err)
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
 	}
 }
 
-// writeAsyncFailure records jobID FAILED via an epoch-fenced write. A lost
-// race against the job's own (or a takeover's) terminal write
-// (ErrAlreadyTerminal/ErrStaleClaim) is expected and logged at Warn, not
-// treated as a failure of the caller — the correct state is already
-// recorded.
+// writeAsyncFailure records jobID FAILED via an epoch-fenced write, for every
+// failure path of an executor. It first settles the job's end (settleJob): a
+// release or self-reclaim leaves the job to the next claim, and a store
+// refusal (or a cancel here, which wraps one) means the job ended under the
+// executor — reported once and not recorded. A write the store then refuses
+// for the same reason is reported the same way.
 //
 // The write runs on context.WithoutCancel(ctx), and that is decided HERE
-// rather than at each of the six call sites: this is a terminal write by
-// definition, so no caller wants it cancellable. Two of the call sites are
-// reached only after `jobCtx.Err() != nil` evaluated false, which makes them a
-// TOCTOU — the heartbeat goroutine cancels jobCtx from another goroutine (a
-// fenced-out Heartbeat, or a poll that observes a terminal status), and a
-// cancel landing between the check and the write aborts it, leaving a finished
-// job RUNNING until the stale-job reaper fails it with a generic message
-// instead of the real reason recorded here. Stripping cancellation keeps the
-// UserContext (and so the tenant scope) intact; wrapping an already-stripped
-// context again is a no-op, so the cancellation-recovery call site loses
-// nothing by it.
-func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epoch int64, msg string, finishTime time.Time, calcTimeMs int64) {
-	if c := context.Cause(ctx); errors.Is(c, errJobReleased) || errors.Is(c, errJobSuperseded) {
-		// Released for reclaim, or superseded by this node's own self-reclaim:
-		// a peer, this node's next sweep, or the replacing executor re-runs
-		// it. Recording FAILED here would defeat the handoff, and the old
-		// executor's writes are fenced by epoch regardless. Must be checked
-		// before WithoutCancel below — cancellation propagation is stripped
-		// there, but the cause is still readable from ctx itself.
+// rather than at each call site: this is a terminal write by definition, so
+// no caller wants it cancellable — settleJob has just cancelled ctx itself.
+// Stripping cancellation keeps the UserContext (and so the tenant scope)
+// intact.
+func (s *SearchService) writeAsyncFailure(ctx context.Context, handle *asyncJobHandle, jobID string, epoch int64, reason jobFailure, finishTime time.Time, calcTimeMs int64) {
+	if !settleJob(ctx, handle.cancel, jobID, errJobEnding) {
+		// Released or superseded (the next claim's), or ended on the store's
+		// own answer that the job is settled, claimed elsewhere or removed —
+		// whichever step was failing. That answer is final, so it needs no
+		// read: not a failure of this executor's to record. A server-side
+		// fault behind it is still logged, once, as unrecorded.
+		logUnrecordedJobFailure(jobID, reason.err)
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
-	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, msg, finishTime, calcTimeMs); err != nil {
-		if errors.Is(err, spi.ErrAlreadyTerminal) || errors.Is(err, spi.ErrStaleClaim) {
-			slog.Warn("async search terminal write lost the race; state already settled", "pkg", "search", "jobID", jobID, "err", err)
+	// Rendered only now, past the release check: a reason built by
+	// failureReason logs the failure and may mint a ticket, so a released job
+	// records none for it. (The panic path logs its ticket where the failure
+	// happens, and passes a fixedReason.) A write that then loses its race leaves a logged
+	// ticket that no record carries.
+	if err := s.searchStore.UpdateJobStatus(ctx, jobID, epoch, "FAILED", 0, reason.render(), finishTime, calcTimeMs); err != nil {
+		if fencedRefusal(err) {
+			endLostClaim(jobID, err)
 			return
 		}
 		slog.Error("failed to update search job status", "pkg", "search", "jobID", jobID, "err", err)
@@ -1402,19 +1643,33 @@ func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epo
 
 // GetAsyncStatus returns the current status of an async search job.
 func (s *SearchService) GetAsyncStatus(ctx context.Context, jobID string) (SearchJobStatus, error) {
-	job, err := s.searchStore.GetJob(ctx, jobID)
+	job, expires, err := s.liveJob(ctx, jobID)
 	if err != nil {
-		return SearchJobStatus{}, jobLookupErr(jobID, err)
+		return SearchJobStatus{}, err
 	}
 
-	return SearchJobStatus{
-		JobID:      job.ID,
-		Status:     job.Status,
-		Total:      job.ResultCount,
-		CreateTime: job.CreateTime,
-		FinishTime: job.FinishTime,
-		CalcTimeMs: job.CalcTimeMs,
-	}, nil
+	status := SearchJobStatus{
+		JobID:          job.ID,
+		Status:         job.Status,
+		Total:          job.ResultCount,
+		CreateTime:     job.CreateTime,
+		FinishTime:     job.FinishTime,
+		CalcTimeMs:     job.CalcTimeMs,
+		ExpirationDate: expires,
+	}
+	// Only a failed job has a reason; a message on any other record is not
+	// one and is not served as one.
+	if job.Status == "FAILED" {
+		status.FailureReason = job.Error
+		// A store that executes its own searches wrote that text itself, not
+		// through jobFailureMessage: it may carry driver or internal detail, so
+		// the caller gets the fixed fallback instead. Fail closed until the
+		// SPI gives a plugin a way to state a client-safe reason.
+		if _, ok := s.searchStore.(spi.SelfExecutingSearchStore); ok {
+			status.FailureReason = jobFailureFallback
+		}
+	}
+	return status, nil
 }
 
 // AsyncResultsPage holds a page of async search results along with the total count.
@@ -1425,9 +1680,9 @@ type AsyncResultsPage struct {
 
 // GetAsyncResults returns the results of a completed async search job.
 func (s *SearchService) GetAsyncResults(ctx context.Context, jobID string, opts ResultOptions) (AsyncResultsPage, error) {
-	job, err := s.searchStore.GetJob(ctx, jobID)
+	job, _, err := s.liveJob(ctx, jobID)
 	if err != nil {
-		return AsyncResultsPage{}, jobLookupErr(jobID, err)
+		return AsyncResultsPage{}, err
 	}
 
 	if job.Status != "SUCCESSFUL" {
@@ -1457,27 +1712,16 @@ func (s *SearchService) GetAsyncResults(ctx context.Context, jobID string, opts 
 		return AsyncResultsPage{}, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
-	// A result id whose entity is genuinely gone — hard-deleted since the scan
-	// recorded it — is skipped, and the page comes back short by it while `total`
-	// still counts the recorded ids. That is the documented shape of this
-	// endpoint and is unchanged.
-	//
-	// A read that merely FAILED is not that. Skipping it too would answer 200
-	// with a page silently short by however many entities the store could not
-	// serve, which is a wrong-but-available result
-	// (.claude/rules/correctness-over-availability.md) and the same substituted
-	// answer as reporting an outage as not-found. It fails the page instead,
-	// carrying the cause so a storage outage reaches the door as a retryable 503.
+	// Every recorded result id was read at the job's instant, which the
+	// consistency fence at submission made final, so its entity is readable
+	// at that instant. Any failure to read one — a miss included — fails the
+	// page: skipping it would answer 200 with a page silently short, a
+	// wrong-but-available result (.claude/rules/correctness-over-availability.md).
 	var results []*spi.Entity
 	for _, id := range ids {
 		e, err := entityStore.GetAsAt(ctx, id, job.PointInTime)
 		if err != nil {
-			if !errors.Is(err, spi.ErrNotFound) {
-				return AsyncResultsPage{}, fmt.Errorf("failed to fetch entity %s for async result: %w", id, err)
-			}
-			slog.Warn("async result id has no entity — hard-deleted since the scan recorded it",
-				"pkg", "search", "entityId", id, "err", err)
-			continue
+			return AsyncResultsPage{}, common.Internal("failed to read an async search result", err)
 		}
 		results = append(results, e)
 	}
@@ -1494,26 +1738,37 @@ type CancelResult struct {
 // CancelAsync attempts to cancel a running async search job.
 // Returns a CancelResult indicating whether the job was cancelled and its current status.
 func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelResult, error) {
-	job, err := s.searchStore.GetJob(ctx, jobID)
+	job, _, err := s.liveJob(ctx, jobID)
 	if err != nil {
-		return CancelResult{}, jobLookupErr(jobID, err)
+		return CancelResult{}, err
 	}
 
 	if job.Status != "RUNNING" {
 		return CancelResult{Cancelled: false, CurrentStatus: job.Status}, nil
 	}
 
-	finishTime := time.Now()
+	finishTime := s.clock.Now()
 	if err := s.searchStore.Cancel(ctx, jobID, finishTime); err != nil {
 		return CancelResult{}, fmt.Errorf("failed to cancel job: %w", err)
+	}
+	// Cancel is idempotent on a terminal job, so its nil does not say this
+	// call ended the job: one that finished (or failed) in the meantime is
+	// left as it ended. The job is terminal now, and a terminal status is
+	// final, so this read is what happened.
+	job, err = s.searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		return CancelResult{}, jobLookupErr(jobID, err)
+	}
+	if job.Status != "CANCELLED" {
+		return CancelResult{Cancelled: false, CurrentStatus: job.Status}, nil
 	}
 
 	// Best-effort in-process abort: if this node happens to be running (or
 	// still has queued) the job, stop it immediately rather than waiting up
-	// to one heartbeat interval for its own poll to observe the CANCELLED
-	// write above. A cross-node cancel (the job runs on a different node)
-	// still lands — that node's own heartbeat poll picks up the terminal
-	// status within one interval.
+	// to one heartbeat interval for the store to refuse its next stamp. A
+	// cross-node cancel (the job runs on a different node) still lands — the
+	// store refuses that node's next heartbeat as already terminal within
+	// one interval.
 	s.CancelRunning(jobID)
 
 	return CancelResult{Cancelled: true, CurrentStatus: "CANCELLED"}, nil
@@ -1539,12 +1794,14 @@ func (s *SearchService) DirectSearch(ctx context.Context, modelRef spi.ModelRef,
 func (s *SearchService) GetAsyncSearchStatus(ctx context.Context, snapshotID string) (*SnapshotStatus, error) {
 	status, err := s.GetAsyncStatus(ctx, snapshotID)
 	if err != nil {
-		return nil, err
+		return nil, JobError(err)
 	}
 	return &SnapshotStatus{
-		SnapshotID:    status.JobID,
-		Status:        status.Status,
-		EntitiesCount: status.Total,
+		SnapshotID:     status.JobID,
+		Status:         status.Status,
+		EntitiesCount:  status.Total,
+		ExpirationDate: status.ExpirationDate,
+		FailureReason:  status.FailureReason,
 	}, nil
 }
 
@@ -1559,30 +1816,49 @@ func (s *SearchService) GetAsyncSearchResults(ctx context.Context, snapshotID st
 	}
 	resultPage, err := s.GetAsyncResults(ctx, snapshotID, opts)
 	if err != nil {
-		return nil, err
+		return nil, JobError(err)
 	}
 	return resultPage.Results, nil
 }
 
-// CancelAsyncSearch attempts to cancel a running async search job.
+// CancelAsyncSearch cancels a running async search job. A job that has
+// already ended — before the call, or while the cancel was landing — is
+// refused with AlreadyTerminalError, as the HTTP door refuses it.
 func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string) error {
-	_, err := s.CancelAsync(ctx, snapshotID)
-	return err
+	result, err := s.CancelAsync(ctx, snapshotID)
+	if err != nil {
+		return JobError(err)
+	}
+	if !result.Cancelled {
+		return AlreadyTerminalError(snapshotID, result.CurrentStatus)
+	}
+	return nil
+}
+
+// AlreadyTerminalError is the refusal of a cancel of a job that has already
+// ended (400 SEARCH_JOB_ALREADY_TERMINAL), the same on both doors. Its Props
+// carry the job's currentStatus and snapshotId.
+func AlreadyTerminalError(jobID, currentStatus string) *common.AppError {
+	appErr := common.Operational(http.StatusBadRequest, common.ErrCodeSearchJobAlreadyTerminal,
+		fmt.Sprintf("snapshot by id=%s is not running. current status=%s", jobID, currentStatus))
+	appErr.Props = map[string]any{
+		"currentStatus": currentStatus,
+		"snapshotId":    jobID,
+	}
+	return appErr
 }
 
 // validateConditionPaths runs the pre-execution field-path validation
-// step for Search. The cached schema is consulted first; if any path
-// referenced by the condition is absent, exactly one RefreshAndGet is
-// issued (when the store implements it) and the recheck decides the
-// outcome. This mirrors the semantics of
-// entity.Handler.ValidateWithRefresh — a stale-schema search referencing
-// a peer's freshly-extended path succeeds after one bounded refresh,
-// and a truly-unknown path surfaces as 4xx without a refresh loop.
+// step for Search. The model's schema is read first; if any path referenced by
+// the condition is absent, refreshOnUnknownPaths issues exactly one refresh
+// and the recheck decides the outcome. A stale-schema search referencing a
+// freshly-extended path succeeds after one bounded refresh, and a truly-unknown path surfaces as 4xx without a
+// refresh loop. No refusal is remembered: the next request reads again.
 //
 // Returns nil when validation passes or when no data-field paths are
 // addressed (lifecycle-only conditions). A genuinely unknown path surfaces
 // as a 4xx common.AppError listing the missing paths; a failed bounded
-// refresh (RefreshAndGet errored for a reason other than the model being
+// refresh (the refresh errored for a reason other than the model being
 // deleted) instead returns a plain error wrapping ErrPathRefreshInfra — the
 // caller must classify that as a 5xx, not fold it into the same 4xx (see
 // ErrPathRefreshInfra's doc).
@@ -1598,16 +1874,6 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 		// schema here anyway would fail requests that are answerable, which
 		// is availability spent for no correctness.
 		return nil, nil
-	}
-
-	// Negative cache fast-path: if any path is recorded as confirmed
-	// absent for this (tenant, modelRef) at the current generation,
-	// short-circuit without touching the inner store. This collapses
-	// a serial flood of bad requests into one inner-store round-trip
-	// per (tenant, modelRef, path) tuple between schema events.
-	tenant := common.TenantFromContext(ctx)
-	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, surfaceCondition, paths); len(cachedMissing) > 0 {
-		return nil, invalidPathError(cachedMissing)
 	}
 
 	fields, err := loadFieldsMap(ctx, modelStore, modelRef)
@@ -1630,191 +1896,22 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 	// A nil fields map is NOT "nothing to validate against" — it is a model
 	// declaring no fields, against which every data path the condition names
 	// is unknown. findUnknownPaths reports exactly that, and the bounded
-	// single-refresh retry below still gets its chance to discover a schema
-	// this node has not yet seen. Returning early here accepted any path at
-	// all on such a model.
-	missing := findUnknownPaths(paths, fields)
-	if len(missing) == 0 {
-		s.markPathsPresent(tenant, modelRef, surfaceCondition, paths)
-		return fields, nil
-	}
-
-	// Some paths are unknown to the cached schema. Refresh exactly once
-	// before declaring the request invalid — the bound is required to
-	// avoid amplifying a misconfigured client into a refresh storm.
-	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, modelRef)
-	if !refreshed {
-		// Store has no cache layer — the cached miss is authoritative.
-		s.markPathsAbsent(tenant, modelRef, surfaceCondition, missing)
-		return nil, invalidPathError(missing)
-	}
-	if refreshErr != nil {
-		if errors.Is(refreshErr, spi.ErrNotFound) {
-			// Model was deleted between Get and RefreshAndGet — fall
-			// back to the cached fields outcome (paths are unknown
-			// because there is no model). Do NOT populate the negative
-			// cache: there is no schema authority to invalidate against.
-			return nil, invalidPathError(missing)
-		}
-		// A refresh failure that is NOT "the model is gone" means we cannot
-		// tell "these fields are genuinely undeclared" from "the cache is
-		// merely stale and we couldn't confirm which" — the two are
-		// indistinguishable without a successful refresh. Per
-		// correctness-over-availability this is infrastructure, not a
-		// client fault, and must not fold into the same 400
-		// INVALID_FIELD_PATH the genuine-unknown-path case above returns:
-		// that would report a model-store outage as the caller's own
-		// mistake, in exactly the peer-added-field window the refresh
-		// exists to serve. Mirrors ValidateKnownPaths' own ErrPathRefreshInfra
-		// branch (path_validate.go) — this method predates that shared
-		// helper and keeps its own negative-cache-aware implementation, but
-		// the two must not diverge on THIS classification. Deliberately NOT
-		// negative-cached: an infra failure says nothing about whether the
-		// path exists.
-		slog.Warn("schema refresh failed during pre-execution validation; reporting infra, not a client fault",
-			"pkg", "search",
-			"entityName", modelRef.EntityName,
-			"modelVersion", modelRef.ModelVersion,
-			"error", refreshErr)
-		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
-			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
-	}
-	if freshFields == nil {
-		// The refresh produced no schema, so the descriptor carries none.
-		// Deliberately NOT negative-cached, for the same reason as the
-		// ErrNotFound branch above: the cache records "this path is absent
-		// from a schema we read", and here there is no schema to have read
-		// it from. The cost is a Get + RefreshAndGet per repeat request on
-		// such a model. Unreachable through the model API — every Save
-		// writes marshalled schema bytes, and an empty schema still yields a
-		// non-nil fields map that takes the cached route above — so this is
-		// a bound on an out-of-band or legacy row, not on anything a caller
-		// can provoke.
-		return nil, invalidPathError(missing)
-	}
-
-	stillMissing := findUnknownPaths(missing, freshFields)
-	if len(stillMissing) == 0 {
-		s.markPathsPresent(tenant, modelRef, surfaceCondition, paths)
-		// The refresh is authoritative — hand back the schema the paths
-		// actually validated against, not the stale one.
-		return freshFields, nil
-	}
-	s.markPathsAbsent(tenant, modelRef, surfaceCondition, stillMissing)
-	return nil, invalidPathError(stillMissing)
-}
-
-// pathSurface discriminates WHICH validation surface asked the negative
-// cache about a path. The condition surface (validateConditionPaths) and
-// the sort-key surface (resolveSortKeys) share one *PathValidationCache
-// instance, but they do NOT agree on what "absent" means for the same
-// spelling: a sort key must denote an exact scalar leaf, so resolveOrderBy
-// (via findUnknownSortPaths) rejects a container path ("$.address" when
-// only "$.address.street" is declared) or an array-container path
-// ("$.tags" when the schema records only "$.tags[*]") that the CONDITION
-// surface deliberately ACCEPTS (a bare path may legitimately address a
-// container or array field for a condition — see isPathKnown /
-// TestSearch_SimpleConditionOnContainerPath_NotNull_IsAccepted).
-//
-// Without a namespace, a rejected sort key on "$.tags" would call
-// markPathsAbsent("$.tags"), and the very next legitimate condition on
-// "$.tags" would hit cachedAbsentPaths and 400 — a valid search
-// permanently broken by an unrelated sort request on a stable schema,
-// until a schema change fires InvalidateRef or otter evicts. Namespacing
-// the cache KEY (not the underlying otter cache/bucket — one instance,
-// one bucket per (tenant, ref), namespaced keys within it) keeps each
-// surface reading back only what it wrote. sort→sort and condition→sort
-// need no isolation (resolveOrderBy can never reject a key
-// findUnknownPaths would also reject, and condition→sort is a strict
-// subset), so ONLY the sort surface needs its own namespace; the
-// condition surface keeps the bare, unnamespaced spelling other callers
-// (see FindUnknownFieldPaths) already reason about.
-type pathSurface string
-
-const (
-	// surfaceCondition is validateConditionPaths' namespace — the bare
-	// path spelling, unchanged from before this type existed.
-	surfaceCondition pathSurface = ""
-	// surfaceSort is resolveSortKeys' namespace.
-	surfaceSort pathSurface = "sort"
-)
-
-// namespacedCacheKey prefixes path with surface's discriminator so the
-// condition and sort surfaces can never read back an entry the other
-// wrote. surfaceCondition's empty discriminator keeps its keys identical
-// to the path itself — no behavior change for the surface that owned this
-// cache before resolveSortKeys started using it.
-func namespacedCacheKey(surface pathSurface, path string) string {
-	if surface == surfaceCondition {
-		return path
-	}
-	return string(surface) + "\x00" + path
-}
-
-// cachedAbsentPaths returns the subset of paths recorded as confirmed
-// absent in the negative cache for (tenant, modelRef, surface) at the
-// current generation. Returns nil when the cache is unset or no path
-// matches. Returned paths keep the caller's own spelling — only the
-// cache KEY is namespaced.
-func (s *SearchService) cachedAbsentPaths(tenant string, ref spi.ModelRef, surface pathSurface, paths []string) []string {
-	if s.pathCache == nil {
-		return nil
-	}
-	var out []string
-	for _, p := range paths {
-		if s.pathCache.IsAbsent(tenant, ref, namespacedCacheKey(surface, p)) {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// markPathsAbsent records each path as confirmed absent for (tenant,
-// modelRef, surface). No-op when the cache is unset.
-func (s *SearchService) markPathsAbsent(tenant string, ref spi.ModelRef, surface pathSurface, paths []string) {
-	if s.pathCache == nil {
-		return
-	}
-	for _, p := range paths {
-		s.pathCache.MarkAbsent(tenant, ref, namespacedCacheKey(surface, p))
-	}
-}
-
-// markPathsPresent removes each path from the negative cache for
-// (tenant, modelRef, surface). Defensive: ensures a path that previously
-// resolved as absent and now resolves as present is reflected without
-// waiting for an invalidation event. No-op when the cache is unset.
-func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, surface pathSurface, paths []string) {
-	if s.pathCache == nil {
-		return
-	}
-	for _, p := range paths {
-		s.pathCache.MarkPresent(tenant, ref, namespacedCacheKey(surface, p))
-	}
+	// refresh still gets its chance to discover a schema this node has not
+	// yet seen. On a refresh the returned map is the refreshed one — the
+	// schema the paths actually validated against, not the stale one.
+	return ValidateKnownPaths(ctx, modelStore, modelRef, paths, fields)
 }
 
 // resolveSortKeys turns the request OrderKeys into typed OrderSpecs, validating
 // scalar-leaf data paths and the meta allowlist. Returns a 400-classified
 // AppError on bad input.
 //
-// A DATA sort key absent from the cached schema is refreshed exactly once
-// before it is refused — mirroring validateConditionPaths' bounded-refresh
-// contract for condition paths. Without this, a field a peer
-// node had just added sorted successfully on the node that already saw the
-// extension and 400'd on one still running the stale cache — the same field
-// answering two ways depending only on which node's cache happened to be
-// warm. The bound is required: an unbounded refresh turns a misconfigured
-// client naming a field that will never exist into a refresh storm.
-//
-// The refresh bound is per-REQUEST on its own — one RefreshAndGet per call —
-// which is not enough: a repeated bogus sort key would still pay one
-// RefreshAndGet (an authoritative model-store read plus a full schema
-// re-parse, and RefreshAndGet repopulates the shared model-descriptor cache,
-// pushing the cost onto legitimate concurrent readers of the same model)
-// PER REQUEST, indefinitely. So this routes through the same negative cache
-// validateConditionPaths uses — s.cachedAbsentPaths / s.markPathsAbsent /
-// s.markPathsPresent — bounding it per (tenant, model, path) the way the
-// condition-path equivalent already is.
+// A DATA sort key absent from the schema is refreshed exactly once before it
+// is refused (refreshOnUnknownPaths), as for condition paths: a field a peer
+// node had just added sorts on every node, not only the ones that already saw
+// the extension. The bound is required: an unbounded refresh turns a
+// misconfigured client naming a field that will never exist into a refresh
+// storm. No refusal is remembered between requests.
 func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelRef, keys []OrderKey) ([]spi.OrderSpec, error) {
 	if len(keys) == 0 {
 		return nil, nil
@@ -1832,18 +1929,6 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, cerr.Error())
 	}
 
-	// Negative cache fast-path, mirroring validateConditionPaths: if every
-	// DATA sort key this request names is already recorded absent for this
-	// (tenant, modelRef) at the current generation, refuse without touching
-	// the model store at all. Only SourceData keys are candidates — a META
-	// key's outcome never depends on the model schema, so it is never
-	// negative-cached and never gates this fast path.
-	tenant := common.TenantFromContext(ctx)
-	dataPaths := normalisedDataSortPaths(keys)
-	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, surfaceSort, dataPaths); len(cachedMissing) > 0 {
-		return nil, unknownSortFieldError(cachedMissing)
-	}
-
 	modelStore, err := s.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get model store: %w", err)
@@ -1854,80 +1939,43 @@ func (s *SearchService) resolveSortKeys(ctx context.Context, modelRef spi.ModelR
 	}
 	specs, rerr := resolveOrderBy(keys, fields)
 	if rerr == nil {
-		s.markPathsPresent(tenant, modelRef, surfaceSort, dataPaths)
 		return specs, nil
 	}
 	if !errors.Is(rerr, errUnknownSortField) {
 		// Grammar, an unknown META field, an array field or an unresolvable
 		// sort kind — none of these can change on refresh, and none of them
-		// is schema-path absence, so none of them is negative-cached.
+		// is schema-path absence.
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
 
 	// The exact missing subset, independent of resolveOrderBy's
 	// first-error short-circuit. findUnknownSortPaths — not
-	// validateConditionPaths' findUnknownPaths — applies resolveOrderBy's
-	// own exact-key membership test: a sort key must denote a single
-	// scalar leaf, so the CONDITION-path predicate's container/array
-	// widening (correct there, where a bare path may legitimately address
-	// a container) would silently under-report what is actually missing
-	// here and leave the negative cache never engaging for those shapes.
-	missing := findUnknownSortPaths(dataPaths, fields)
+	// findUnknownPaths — applies resolveOrderBy's own exact-key membership
+	// test: a sort key must denote a single scalar leaf, so the
+	// condition-path predicate's container/array widening would
+	// under-report what is missing here.
+	missing := findUnknownSortPaths(normalisedDataSortPaths(keys), fields)
 
-	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, modelRef)
-	if !refreshed {
-		// Store has no cache layer — the cached miss is authoritative,
-		// exactly the validateConditionPaths case of the same name.
-		s.markPathsAbsent(tenant, modelRef, surfaceSort, missing)
+	fresh, _, err := refreshOnUnknownPaths(ctx, modelStore, modelRef, missing, func(f map[string]schema.FieldDescriptor) []string {
+		return findUnknownSortPaths(missing, f)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if fresh == nil {
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
-	if refreshErr != nil {
-		if errors.Is(refreshErr, spi.ErrNotFound) {
-			// Model was deleted between Get and RefreshAndGet — no schema
-			// authority left, the cached miss stands. Deliberately NOT
-			// negative-cached: there is no schema authority to invalidate
-			// this entry against later, same as validateConditionPaths.
-			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
-		}
-		// A refresh failure that is NOT "the model is gone" means we cannot
-		// tell "these sort fields are genuinely undeclared" from "the cache
-		// is merely stale and we couldn't confirm which" — the two are
-		// indistinguishable without a successful refresh. Per
-		// correctness-over-availability this is infrastructure, not a
-		// client fault — mirrors ValidateKnownPaths' and
-		// validateConditionPaths' own ErrPathRefreshInfra branch (this
-		// method predates the shared helper and keeps its own
-		// negative-cache-aware implementation, but all three "known field
-		// path" surfaces must not diverge on THIS classification).
-		// Deliberately NOT negative-cached: an infra failure says nothing
-		// about whether the sort field exists.
-		slog.Warn("schema refresh failed during sort-key validation; reporting infra, not a client fault",
-			"pkg", "search", "entityName", modelRef.EntityName,
-			"modelVersion", modelRef.ModelVersion, "error", refreshErr)
-		return nil, fmt.Errorf("%w: schema refresh failed for %s/%s: %w",
-			ErrPathRefreshInfra, modelRef.EntityName, modelRef.ModelVersion, refreshErr)
-	}
-	if freshFields == nil {
-		// The refresh produced no schema. Deliberately NOT negative-cached,
-		// same as validateConditionPaths: there is no schema authority to
-		// invalidate this entry against later.
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
-	}
-	specs, rerr = resolveOrderBy(keys, freshFields)
+	specs, rerr = resolveOrderBy(keys, fresh)
 	if rerr != nil {
-		if errors.Is(rerr, errUnknownSortField) {
-			s.markPathsAbsent(tenant, modelRef, surfaceSort, findUnknownSortPaths(missing, freshFields))
-		}
 		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, rerr.Error())
 	}
-	s.markPathsPresent(tenant, modelRef, surfaceSort, dataPaths)
 	return specs, nil
 }
 
 // normalisedDataSortPaths returns the deduplicated, canonicalised
-// (spi.NormalisePath) paths of the DATA sort keys in keys — the subset the
-// negative cache applies to. A META key carries no data-schema dependency
-// and is never included.
+// (spi.NormalisePath) paths of the DATA sort keys in keys — the subset
+// that depends on the model schema. A META key carries none and is never
+// included.
 func normalisedDataSortPaths(keys []OrderKey) []string {
 	seen := make(map[string]struct{}, len(keys))
 	var out []string
@@ -1943,16 +1991,6 @@ func normalisedDataSortPaths(keys []OrderKey) []string {
 		out = append(out, p)
 	}
 	return out
-}
-
-// unknownSortFieldError builds the 4xx response for one or more sort-key
-// paths the negative cache already knows to be absent from the model schema.
-func unknownSortFieldError(paths []string) error {
-	return common.Operational(
-		http.StatusBadRequest,
-		common.ErrCodeInvalidFieldPath,
-		fmt.Sprintf("unknown sort field(s): %s", strings.Join(paths, ", ")),
-	)
 }
 
 // invalidPathError builds the 4xx response surfaced when one or more

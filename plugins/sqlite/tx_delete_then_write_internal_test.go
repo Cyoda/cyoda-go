@@ -5,7 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // Deletes and DeleteAttribution always cover the same key set (SPI
@@ -23,6 +24,7 @@ func TestSave_AfterDelete_UnstagesBothMaps(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	ref := spi.ModelRef{EntityName: "m-unstage", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, f, ctx, ref)
 	e := &spi.Entity{Meta: spi.EntityMeta{ID: "e1", TenantID: "tenant-A", ModelRef: ref}, Data: []byte(`{}`)}
 	if _, err := store.Save(ctx, e); err != nil {
 		t.Fatalf("seed Save: %v", err)

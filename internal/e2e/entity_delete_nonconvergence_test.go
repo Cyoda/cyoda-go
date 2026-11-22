@@ -8,15 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/getkin/kin-openapi/openapi3"
-
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
+	spi "github.com/cyoda/cyoda-go-spi"
+	genapi "github.com/cyoda/cyoda-go/api"
+	internalapi "github.com/cyoda/cyoda-go/internal/api"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
 )
 
 // ---------------------------------------------------------------------------
@@ -63,13 +61,18 @@ func newLowBudgetDeleteServer(t *testing.T, maxCycles int) string {
 		testApp.TransactionManager(),
 		common.NewDefaultUUIDGenerator(),
 		testApp.WorkflowEngine(),
-		txgate.New(),
+		txcoord.New(testApp.TransactionManager()), newTestConsistency(t, testApp.StoreFactory()),
+		platformclock.Real(),
 	).WithMaxDeleteCycles(maxCycles)
 
+	spec, err := genapi.GetSwagger()
+	if err != nil {
+		t.Fatal(err)
+	}
 	apiServer := internalapi.NewServer()
 	apiServer.Entity = h
 	apiHandler := genapi.HandlerWithOptions(apiServer, genapi.StdHTTPServerOptions{
-		BaseRouter:       internalapi.NewChiMux(),
+		BaseRouter:       internalapi.NewChiMux(internalapi.NewQueryRules(spec)),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
 	})
 
@@ -81,17 +84,7 @@ func newLowBudgetDeleteServer(t *testing.T, maxCycles int) string {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", http.StripPrefix("/api", withTenant))
 
-	swagger, err := genapi.GetSwagger()
-	if err != nil {
-		t.Fatalf("get swagger: %v", err)
-	}
-	swagger.Servers = openapi3.Servers{{URL: "/api"}}
-	validator, err := openapivalidator.NewValidator(swagger)
-	if err != nil {
-		t.Fatalf("build validator: %v", err)
-	}
-
-	srv := httptest.NewServer(openapivalidator.NewMiddleware(validator)(mux))
+	srv := httptest.NewServer(validated(mux))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }

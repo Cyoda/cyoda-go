@@ -10,8 +10,9 @@ see_also:
   - errors.SEARCH_JOB_NOT_FOUND
   - errors.SEARCH_JOB_ALREADY_TERMINAL
   - errors.SEARCH_RESULT_LIMIT
-  - errors.SEARCH_SHARD_TIMEOUT
   - errors.SEARCH_QUEUE_FULL
+  - errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
+  - errors.CONSISTENCY_TIME_UNAVAILABLE
   - errors.INVALID_FIELD_PATH
   - errors.CONDITION_TYPE_MISMATCH
   - errors.INVALID_CONDITION
@@ -79,10 +80,10 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 
 - `type`: `"simple"`
 - `jsonPath`: JSON Path string, `$.` leader **required** (e.g., `"$.year"`, `"$.laureates[0].firstname"`) — see **JSONPath grammar** below
-- `operatorType` (also accepted as `operator` or `operation`): operator string (see valid values below)
+- `operatorType` (also accepted as `operator` or `operation`; a clause writes one of the three, and two are refused with `400 INVALID_CONDITION`): operator string (see valid values below)
 - `value`: any JSON scalar
 
-**Valid `operatorType` values** (exhaustive): `EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `GREATER_OR_EQUAL`, `LESS_THAN`, `LESS_OR_EQUAL`, `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `LIKE`, `IS_NULL`, `NOT_NULL`, `BETWEEN`, `BETWEEN_INCLUSIVE`, `MATCHES_PATTERN`, `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH`. `BETWEEN`/`BETWEEN_INCLUSIVE` require `value` to be a two-element array `[low, high]`. Comparison is type-directed and same-type only (a JSON number and a numeric-looking string are treated identically); a missing/null field never matches any binary operator, including the `NOT_*`/`INOT_*` negatives. Full per-operator semantics, LIKE grammar, and validation rules are in the `predicates` topic.
+**Valid `operatorType` values** (exhaustive): `EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `GREATER_OR_EQUAL`, `LESS_THAN`, `LESS_OR_EQUAL`, `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `LIKE`, `IS_NULL`, `NOT_NULL`, `BETWEEN`, `BETWEEN_INCLUSIVE`, `MATCHES_PATTERN`, `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH`. `BETWEEN`/`BETWEEN_INCLUSIVE` require `value` to be a two-element array `[low, high]` of two non-null scalar bounds. Comparison is type-directed and same-type only (a JSON number and a numeric-looking string are treated identically); a missing/null field never matches any binary operator, including the `NOT_*`/`INOT_*` negatives. Full per-operator semantics, LIKE grammar, and validation rules are in the `predicates` topic.
 
 `IS_CHANGED`/`IS_UNCHANGED` are not supported.
 
@@ -105,7 +106,7 @@ The `$.` leader is **required**. A bare `amount` is not a path and is rejected `
 
 An empty array answers the three path forms differently, because each addresses something different. A bare `$.a` addresses the array itself, which exists when it is empty, so `NOT_NULL` is **true**. `$.a[*]` addresses the elements and never the array's own nullness, so over `[]` both `IS_NULL` and `NOT_NULL` are **false** — on a wildcard path the two are complements only where at least one element exists. `$.a[0]` addresses one position, which is absent and therefore null, so `IS_NULL` is **true**. Full addressing, branch and vacuity rules: `docs/cloud-parity/path-grammar.md`.
 
-Every other bracket spelling is rejected `400 errors.INVALID_FIELD_PATH`: unclosed or unmatched (`$.a[`, `$.a[0`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), whitespace inside (`$.a[ 0]`), or a positional index too large to fit a signed 32-bit integer (`$.a[2147483648]`) — `2147483647` is the largest index accepted, and no entity array is long enough for a larger one to address a real position. The path is scanned to the end, so trailing junk after a valid subscript is caught too (`$.a[0]b`, `$.a[0];DROP`, `$.a[*]..b`). These used to go unvalidated and return `200` with an empty page.
+Every other bracket spelling is rejected `400 errors.INVALID_FIELD_PATH`: unclosed or unmatched (`$.a[`, `$.a[0`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), whitespace inside (`$.a[ 0]`), or a positional index too large to fit a signed 32-bit integer (`$.a[2147483648]`) — `2147483647` is the largest index accepted, and no entity array is long enough for a larger one to address a real position. The path is scanned to the end, so trailing junk after a valid subscript is caught too (`$.a[0]b`, `$.a[0];DROP`, `$.a[*]..b`).
 
 Metadata is not addressed through `jsonPath` at all — a `lifecycle` condition names a meta field directly (see **LifecycleCondition**) and is not subject to this grammar. A *data* path that happens to spell `$._meta.state` is an ordinary dotted path.
 
@@ -126,10 +127,10 @@ Operator strings outside this list are rejected with `errors.INVALID_CONDITION` 
 
 - `type`: `"lifecycle"`
 - `field`: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`
-- `operatorType` (also accepted as `operator` or `operation`): operator string — same valid values as for `SimpleCondition`
+- `operatorType` (also accepted as `operator` or `operation`; a clause writes one of the three, and two are refused with `400 INVALID_CONDITION`): operator string — same valid values as for `SimpleCondition`
 - `value`: any JSON scalar
 
-`creationDate`/`lastUpdateTime` are temporal: compared chronologically at millisecond resolution. A comparison/range operand (`EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, `BETWEEN_INCLUSIVE`) must parse as a temporal value — an offset-bearing RFC3339 instant, or a **coarser** value (`"2024"`, `"2024-09"`, an offset-less date-time) which **upscales** to an instant; only an operand that parses into no temporal form is rejected `400 CONDITION_TYPE_MISMATCH`. String and pattern operators (`CONTAINS`, `LIKE`, `MATCHES_PATTERN`, the case-insensitive family, …) do not apply to these fields and are rejected `400 INVALID_CONDITION` — not a type mismatch, since no operand could make the operator valid here. `IS_NULL`/`NOT_NULL` test presence and carry no type constraint. An unknown meta filter field is rejected `400 INVALID_FIELD_PATH`.
+`creationDate`/`lastUpdateTime` are temporal: compared chronologically at millisecond resolution. A comparison/range operand (`EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, `BETWEEN_INCLUSIVE`) must parse as a temporal value — an offset-bearing RFC3339 instant, or a **coarser** value (`"2024"`, `"2024-09"`, an offset-less date-time) which **upscales** to an instant; only an operand that parses into no temporal form is rejected `400 CONDITION_TYPE_MISMATCH`. String and pattern operators (`CONTAINS`, `LIKE`, `MATCHES_PATTERN`, the case-insensitive family, …) do not apply to a date/time and are rejected `400 CONDITION_TYPE_MISMATCH`, as on a data field (see `predicates`). `IS_NULL`/`NOT_NULL` test presence and carry no type constraint. An unknown meta filter field is rejected `400 INVALID_FIELD_PATH`.
 
 **GroupCondition** — combine conditions with a logical operator:
 
@@ -160,23 +161,24 @@ There is no `ALL(P)` ("every element satisfies P") operator, and no sound way to
 
 A `NOT` anywhere in a condition makes the whole query residual: no backend pushes a `NOT` into its own query language, so a condition containing one is not bounded by a pushed SQL `LIMIT` clause. It is evaluated in memory by the kernel, streaming through the model and stopping once enough matches accumulate to satisfy the request's own `limit`, rather than narrowing in SQL first.
 
-**EMPTY CONDITION**: Submitting an empty body (`{}`) or a body with no `type` field as the top-level search condition is rejected with `errors.BAD_REQUEST` — the parser requires a valid `type` field. Submitting a valid `AND` group with an empty `conditions` array (`{"type":"group","operator":"AND","conditions":[]}`) is accepted and matches all entities — this is the correct way to retrieve all entities without filtering.
+**EMPTY CONDITION**: Submitting an empty body (`{}`) or a body with no `type` field as the top-level search condition is rejected with `errors.INVALID_CONDITION` — the parser requires a valid `type` field. Submitting a valid `AND` group with an empty `conditions` array (`{"type":"group","operator":"AND","conditions":[]}`) is accepted and matches all entities — this is the correct way to retrieve all entities without filtering.
 
-**ArrayCondition** — match positional values in a JSON array:
+**ArrayCondition** — test the elements of one array by position:
 
 ```json
 {
   "type": "array",
-  "jsonPath": "$.laureates[*]",
-  "values": ["John", null, "Hopfield"]
+  "jsonPath": "$.scores[*]",
+  "operatorType": "GREATER_THAN",
+  "values": [50, null, 70]
 }
 ```
 
-- `type`: `"array"`
-- `jsonPath`: JSON Path to the array's elements, and **must carry a trailing `[*]`** (see **JSONPath grammar** below) — a bare path (`$.laureates`) addresses the array itself, not its elements, and is rejected `400 errors.INVALID_FIELD_PATH`
-- `values`: positional values, one per array index in order; a `null` entry tests nothing at that index and is skipped
+- `jsonPath`: the array's elements. It **must end in `[*]`** and contain no other `[*]`; otherwise `400 errors.INVALID_FIELD_PATH`. To test one inner array of an outer array, index the outer one: `$.orders[0].lines[*]`.
+- `operatorType` (required): any operator a `simple` clause accepts (see `predicates`). It is applied at every tested position.
+- `values`: one entry per position, from index 0. A `null` entry does not test that position. An entry is a scalar, or for `BETWEEN`/`BETWEEN_INCLUSIVE` a `[low, high]` pair of two non-null scalar bounds; an array entry under any other operator is `400 errors.INVALID_CONDITION`. For `IS_NULL`/`NOT_NULL` a non-null entry only selects the position.
 
-Each non-null entry is a positional test: `values[i]` compared against element `i`. The clause is read as an `AND` of those positional comparisons — `["John", null, "Hopfield"]` means element 0 equals `"John"` and element 2 equals `"Hopfield"`. `values` made entirely of `null` matches every entity.
+The clause means an `AND` of one `simple` clause per tested position: the example is `$.scores[0] > 50` AND `$.scores[2] > 70`. Every rule of a `simple` clause applies to those positional clauses, including the type check (`CONDITION_TYPE_MISMATCH`). A clause must test at least one position: a missing, empty or all-`null` `values` is `400 errors.INVALID_CONDITION`. To match every entity, send an empty `AND` group. A whole condition tests at most 10,000 entries: each entry in an `array` clause's `values` counts one, `null` entries included, a `function` clause counts one plus the entries of its pre-check, and every other clause counts one. A condition over the limit is `400 errors.INVALID_CONDITION`, refused before any other check of the condition's structure. The limit bounds how far a condition expands; it does not bound the total cost of a request.
 
 **FunctionCondition** — server-side function predicate dispatched to a compute member. **Criteria only — search requests reject it.** Documented here because criteria and search share the one `Condition` DSL; a search, async-search, grouped-stats or conditional-delete body carrying a `function` clause at any depth is rejected `400 INVALID_CONDITION`. Use it in a workflow or transition `criterion` (see `workflows`).
 
@@ -198,9 +200,11 @@ Each non-null entry is a positional test: `values[i]` compared against element `
 - `function.name`: string — identifies the function; becomes `criteriaId` / `criteriaName` in the dispatch request; required for routing
 - `function.config.calculationNodesTags`: string — comma-separated tags used to select a registered compute member; follows the same tag-intersection rules as processor dispatch
 - `function.config.attachEntity`: boolean (optional, default `true`) — when `true`, the full entity payload is included in the dispatch request
-- `function.config.responseTimeoutMs`: int64 (optional, default `30000`) — timeout in milliseconds
+- `function.config.responseTimeoutMs`: int64 (optional; when absent or `0` the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` applies, default `30000`; bounded by `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS`) — how long to wait for the compute member's answer, in milliseconds
+- `function.config.retryPolicy`: string (optional) — `NONE` or `FIXED`; omitted means `FIXED`. Validated at workflow import. A criterion is always treated as safe to repeat — see `cyoda help workflows`
+- `function.criterion`: Condition (optional) — the pre-check: `simple`, `lifecycle`, `array` and `group` conditions only, never a function condition, at any depth. Validated at workflow import
 
-When used as a criterion, the function is dispatched as `EntityCriteriaCalculationRequest` to the matching compute member — see the `grpc` topic for the request/response shape — and must be the whole criterion; one nested inside a `group` fails the evaluation. Search has no dispatcher: `FunctionCondition` cannot be translated to a storage-plugin pushdown filter and the in-process kernel has no evaluator for it, which is why it is rejected up front rather than attempted.
+In a workflow or transition criterion a function condition is valid at any depth — as the whole criterion or inside `AND`, `OR` and `NOT` groups — and each one evaluation reaches is dispatched as an `EntityCriteriaCalculationRequest` to the matching compute member (see the `grpc` topic for the request/response shape). Its optional `function.criterion` is a pre-check of local conditions only, evaluated first: when it does not match, the function is `false` and is not called (see `cyoda help workflows`, *Function conditions*). In a search condition a function condition is never valid, at any depth. Search has no dispatcher: `FunctionCondition` cannot be translated to a storage-plugin pushdown filter and the in-process kernel has no evaluator for it, which is why it is rejected up front rather than attempted.
 
 ## ENDPOINTS
 
@@ -209,8 +213,9 @@ When used as a criterion, the function is dispatched as `EntityCriteriaCalculati
 - `entityName` (path): string
 - `modelVersion` (path): int32
 - `pointInTime` (query, optional): RFC 3339 date-time — search against entity state at this instant.
-  Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
-  see `cyoda help crud` ("Point-in-time semantics").
+  Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound,
+  and the instant must be at or before the consistency time — see
+  `cyoda help crud` ("Point-in-time semantics").
 - `limit` (query, optional): string-encoded integer, minimum 1, maximum 10000; default 1000
 - `trackingRead` (query, optional): boolean, default `false`. Only meaningful inside an active transaction (see `crud` topic and `docs/CONSISTENCY.md` §3c for the transactional read-set): when `true`, the entities this search returns are recorded into the transaction's read-set, so a concurrent commit touching any of them aborts with `409 Conflict` at commit time. When `false` (default), the search is a plain snapshot read that records nothing — cheap, but it does not protect the returned rows from concurrent writes, and neither setting protects against phantoms (a new entity matching the predicate after the snapshot was taken). Ignored outside a transaction.
 - `timeoutMillis` (query, optional): int64, no default — when absent, the search has no server-side deadline. When present, the search is aborted once it elapses and the request fails `408 errors.SEARCH_TIMEOUT` with no partial results returned. Rejected with `400 BAD_REQUEST` on a non-positive value or on a request that joins an open transaction (a routed compute-node callback cannot impose its own deadline on a transaction it does not own).
@@ -232,7 +237,7 @@ The stream is truncated on encode failure after the header has been sent; the cl
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
-- `pointInTime` (query, optional): RFC 3339 — if not provided, the current time is captured at submission
+- `pointInTime` (query, optional): RFC 3339 — if not provided, the consistency time at submission is used; a given instant must be at or before the consistency time. Either way the instant is recorded on the job, so every result page reads at it
 
 Request body: `Condition` JSON document.
 
@@ -248,7 +253,7 @@ Submission is bounded by a fixed-size worker pool (`CYODA_SEARCH_ASYNC_WORKERS`,
 
 Results stream incrementally as the scan runs rather than being materialized in memory and saved all at once. A running job stamps its own liveness on a fixed cadence (`CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, default 15s) starting from the moment it is submitted — including while it is still queued, not only while it is scanning — and the same poll also picks up a cancellation or an externally-recorded terminal status.
 
-If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval), clears any partial results the dead executor left, and re-runs it on a live node as-at its originally stored `pointInTime` — the job still completes `SUCCESSFUL`. It is `FAILED` (with a generic message) only after `CYODA_SEARCH_JOB_MAX_ATTEMPTS` executor losses (default 3): the status is contractual, the message text is not. A graceful node shutdown or restart releases its in-flight jobs immediately for reclaim rather than waiting for them to go stale, so a planned handoff is prompt. The reaper runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (default 15s) plus once at startup — not `CYODA_SEARCH_REAP_INTERVAL`, which drives only the unrelated snapshot-TTL cleanup — so actual detection latency for a crash is up to `CYODA_SEARCH_JOB_STALE_AFTER` + one heartbeat interval (~5m15s at the defaults).
+If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval), clears any partial results the dead executor left, and re-runs it on a live node as-at its originally stored `pointInTime` — the job still completes `SUCCESSFUL`. It is `FAILED` only after `CYODA_SEARCH_JOB_MAX_ATTEMPTS` executor losses (default 3), with the `failureReason` `search abandoned: executor lost repeatedly`. A graceful node shutdown or restart releases its in-flight jobs immediately for reclaim rather than waiting for them to go stale, so a planned handoff is prompt. The reaper runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (default 15s) plus once at startup — not `CYODA_SEARCH_REAP_INTERVAL`, which drives only the unrelated snapshot-TTL cleanup — so actual detection latency for a crash is up to `CYODA_SEARCH_JOB_STALE_AFTER` + one heartbeat interval (~5m15s at the defaults).
 
 **GET /api/search/async/{jobId}/status** — Get async job status
 
@@ -263,18 +268,29 @@ Response: `200 OK`, `application/json`:
   "entitiesCount": 42,
   "calculationTimeMillis": 145,
   "finishTime": "2025-08-01T10:00:00.145000000Z",
-  "expirationDate": "2025-08-02T10:00:00.000000000Z"
+  "expirationDate": "2025-08-01T11:00:00.145000000Z"
 }
 ```
 
-- `searchJobStatus`: `"RUNNING"`, `"SUCCESSFUL"`, `"FAILED"`, `"CANCELLED"`, or `"NOT_FOUND"` (snapshot expired or not found on commercial backends)
+- `searchJobStatus`: `"RUNNING"`, `"SUCCESSFUL"`, `"FAILED"` or `"CANCELLED"`. cyoda-go never answers `"NOT_FOUND"`: a job that does not exist or has expired answers `404 SEARCH_JOB_NOT_FOUND`. The value is in the contract for Cyoda Cloud, which can answer it for a job deleted while its status is read; treat it as the `404`.
 - `createTime`: RFC 3339 with nanoseconds
 - `entitiesCount`: total matching entities (0 while running)
 - `calculationTimeMillis`: elapsed search time in milliseconds
 - `finishTime`: RFC 3339 with nanoseconds; absent when status is `RUNNING`
-- `expirationDate`: `createTime + 24h` — job results expire after this time
+- `expirationDate`: when the job stops being readable — `finishTime` + `CYODA_SEARCH_SNAPSHOT_TTL` (default `1h`). From that instant on, the job's status, results and cancel answer `404 SEARCH_JOB_NOT_FOUND`, whether or not the background reap (every `CYODA_SEARCH_REAP_INTERVAL`) has deleted it yet. While the job is `RUNNING` it is a lower bound, `createTime` + the TTL: the job stays readable at least until then, and is never refused while it runs. The date is final once the job ends. Nodes stamp these times with their own clocks, so in a cluster the instant can differ by the clock skew between nodes. The gRPC answers to `SnapshotGetStatusRequest` and `SnapshotCancelRequest` (a refused cancel included) carry the same value in `status.expirationDate`.
+- `failureReason`: why the job failed; present only when `searchJobStatus` is `FAILED`, absent for every other status (see below)
 
 A job ends `FAILED` when the search itself failed, when the reaper's reclaim of a dead node's job exhausts `CYODA_SEARCH_JOB_MAX_ATTEMPTS`, or when the model's schema becomes unloadable between submit and execution — the executor re-reads the schema, and a job that cannot validate its condition against it fails rather than finishing `SUCCESSFUL` with a short page.
+
+`failureReason` follows the same rule as an error response. A failure the request itself caused carries the client error a direct search would answer, error code first — for example `INVALID_FIELD_PATH: condition or sort references an invalid field path`. Any other failure carries a text that names no internal detail, and the detail stays in the server log. Among them:
+
+- `SERVER_ERROR: internal error [ticket: <uuid>]` — a server-side failure, its detail logged under the ticket, as an error response gives it
+- `STORAGE_UNAVAILABLE: storage is temporarily unavailable — retry` — storage was unavailable, during the scan or anywhere else in the job
+- `search failed unexpectedly` — every failure of a storage backend that runs async searches itself
+- `search abandoned: executor lost repeatedly` — the attempt cap above
+- `search exceeded the backend's async search ceiling — narrow the query, or have the operator raise or disable the ceiling (see the config.database help topic)` — PostgreSQL's async search ceiling (`CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT`)
+
+The leading error code, when there is one, is stable; the rest of the text is for people, not for parsing. The gRPC `SnapshotGetStatusRequest` answer carries the same text in `status.failureReason`, on the same rule.
 
 **GET /api/search/async/{jobId}** — Retrieve async job results (paginated)
 
@@ -316,7 +332,7 @@ Results are fetched from the stored entity snapshots at the job's `pointInTime`.
 
 - `jobId` (path): UUID
 
-Cancellation succeeds only when the job status is `RUNNING`. If the job has already reached a terminal state (`SUCCESSFUL`, `FAILED`, or `CANCELLED`), the server returns `400 Bad Request`:
+Cancellation succeeds only when the job status is `RUNNING`. If the job has already reached a terminal state (`SUCCESSFUL`, `FAILED`, or `CANCELLED`) — before the call, or while the cancel is landing — the server returns `400 Bad Request`:
 
 ```json
 {
@@ -373,17 +389,20 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 
 ## ERRORS
 
+A condition is checked in one fixed order, and the first failing step gives the code: the body must parse (`INVALID_CONDITION`), then the model must exist (`404 MODEL_NOT_FOUND`, before any check of a condition that parses), then structure (`INVALID_CONDITION`, or `INVALID_FIELD_PATH` for a malformed path), then patterns (`INVALID_CONDITION`), then the model's paths (`INVALID_FIELD_PATH`), then types (`CONDITION_TYPE_MISMATCH`, or `INVALID_FIELD_PATH` for a `lifecycle` field that is not a meta field) — the same on direct and async search, conditional delete and grouped stats.
+
 - `errors.MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant (search, async submit)
-- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
+- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist in the caller's tenant, or the job is past its `expirationDate` (status, results or cancel).
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; body carries `currentStatus` and `snapshotId`
 - `errors.SEARCH_RESULT_LIMIT` — `400` — direct search's matched entity count exceeded the requested `limit`; enforced by the backend's bounded-or-fail `Search`. Async search never returns this code — an oversized `pageSize`/`pageNumber` on result retrieval is `errors.BAD_REQUEST` instead
 - `errors.SEARCH_TIMEOUT` — `408` — direct search's client-supplied `timeoutMillis` elapsed before the result set was collected; retryable, and nothing partial is returned
-- `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
 - `errors.SEARCH_QUEUE_FULL` — `503` — async submit refused for capacity: either the node's worker pool and submit queue are both exhausted, or the tenant is at its in-flight share of this node; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`/`CYODA_SEARCH_ASYNC_MAX_PER_TENANT`
-- `errors.INVALID_FIELD_PATH` — `400` — a `jsonPath` is not valid JSON Path syntax (missing `$.` leader, bracket-quoted access, empty/trailing segment, disallowed character), or references field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path and why
-- `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType, e.g. an operand that parses into no temporal form on a temporal meta field (`creationDate`/`lastUpdateTime`); a string or pattern operator on one of those fields is `INVALID_CONDITION` instead, see **LifecycleCondition** above
-- `errors.INVALID_CONDITION` — `400` — a condition fails a structural or shape check rather than a path or type check: an unknown or missing `operatorType`, a `null`/object/complex operand on a binary or range operator, a malformed `LIKE`/`MATCHES_PATTERN` operand, a string or pattern operator on a temporal meta field, an `array` clause on a bare path or with a badly-shaped `values` entry, or a `function` clause at any depth (criteria only — see `predicates`)
-- `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
+- `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — a `pointInTime` later than the consistency time (direct search, and async submit with a `pointInTime`); `properties.consistencyTime` carries the current one
+- `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not provide a consistency time in time (a direct search with a `pointInTime`, or an async submit)
+- `errors.INVALID_FIELD_PATH` — `400` — a `jsonPath` is not valid JSON Path syntax (missing `$.` leader, bracket-quoted access, empty/trailing segment, disallowed character), or references field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field, or an `array` clause's path does not end in `[*]` or has another `[*]` before it; the response detail names each offending path and why
+- `errors.CONDITION_TYPE_MISMATCH` — `400` — a comparison or range operand fits none of the declared types the operator applies to, or the operator applies to none of them: a string or pattern operator on a field with no text type (a number, boolean, UUID or date/time, `creationDate`/`lastUpdateTime` included), an ordering or range operator on a field with no ordered type (a boolean or UUID), or a range operator on a field whose only ordered type is `CHARACTER`; see `predicates`
+- `errors.INVALID_CONDITION` — `400` — a body that does not parse as a condition, or a condition that fails a structural or shape check rather than a path or type check: an unknown or missing `operatorType`, an operator written twice (two of `operatorType`, `operator`, `operation`), a member name its clause does not declare (another letter case included) or written twice, a missing or `null` operand on an operator that takes one (every operator except `IS_NULL` and `NOT_NULL`), an object/complex operand, a `BETWEEN`/`BETWEEN_INCLUSIVE` value that is not a two-element array of two non-null scalar bounds, an array operand on an operator other than `BETWEEN`/`BETWEEN_INCLUSIVE`, a malformed `LIKE`/`MATCHES_PATTERN` operand, an `array` clause that has no `operatorType` or tests no position (`values` missing, empty or all `null`), an object entry in an `array` clause's `values`, a condition that tests more than 10,000 entries (an `array` clause counts one per entry in `values`, `null` entries included; a `function` clause counts one plus the entries of its pre-check; every other clause counts one), or a `function` clause at any depth (criteria only — see `predicates`)
+- `errors.BAD_REQUEST` — `400` — an unreadable request body, invalid limit/pageSize/pageNumber (a body that does not parse as a condition is `errors.INVALID_CONDITION`, not this), result retrieval on a job that has not finished `SUCCESSFUL`
 - `errors.SERVER_ERROR` — `500` — the target model's schema could not be loaded or parsed, so the condition could not be checked against it. The request fails with a ticket id and no result set rather than skipping validation: without declared types, comparison and ordering leaves match nothing, so the answer would be a short page indistinguishable from a complete one. HTTP and gRPC fail alike — over gRPC it is an envelope error, never an empty stream. A condition built only of `lifecycle` clauses needs no schema and is unaffected
 
 ## EXAMPLES
@@ -392,7 +411,7 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"simple","jsonPath":"$.category","operatorType":"EQUALS","value":"physics"}' \
   "http://localhost:8080/api/search/direct/nobel-prize/1"
@@ -402,7 +421,7 @@ curl -s -X POST \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"APPROVED"}' \
   "http://localhost:8080/api/search/direct/nobel-prize/1"
@@ -412,7 +431,7 @@ curl -s -X POST \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "type": "group",
@@ -429,7 +448,7 @@ curl -s -X POST \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"group","operator":"AND","conditions":[]}' \
   "http://localhost:8080/api/search/direct/nobel-prize/1?pointInTime=2025-08-01T00:00:00Z&limit=100"
@@ -439,7 +458,7 @@ curl -s -X POST \
 
 ```
 JOB_ID=$(curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"simple","jsonPath":"$.year","operatorType":"EQUALS","value":"2024"}' \
   "http://localhost:8080/api/search/async/nobel-prize/1" | tr -d '"')
@@ -448,14 +467,14 @@ JOB_ID=$(curl -s -X POST \
 **Poll async job status:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/search/async/$JOB_ID/status"
 ```
 
 **Retrieve async results (page 0):**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/search/async/$JOB_ID?pageNumber=0&pageSize=500"
 ```
 
@@ -463,7 +482,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/search/async/$JOB_ID/cancel"
 ```
 
@@ -478,8 +497,9 @@ curl -s -X PUT \
 - errors.SEARCH_JOB_NOT_FOUND
 - errors.SEARCH_JOB_ALREADY_TERMINAL
 - errors.SEARCH_RESULT_LIMIT
-- errors.SEARCH_SHARD_TIMEOUT
 - errors.SEARCH_QUEUE_FULL
+- errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
+- errors.CONSISTENCY_TIME_UNAVAILABLE
 - errors.INVALID_FIELD_PATH
 - errors.CONDITION_TYPE_MISMATCH
 - errors.INVALID_CONDITION

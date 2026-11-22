@@ -5,8 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
 )
 
 // txScope owns the lifecycle of the transaction an entity write flow runs in.
@@ -24,52 +24,57 @@ import (
 //	...
 //	scope.Advance(result.FinalCtx, result.FinalTxID) // first statement after every engine call
 //	...
+//	if err := scope.Seal(); err != nil {
+//	    return nil, classifyCommitErr(err)
+//	}
+//	... // the final writes
 //	err := scope.Commit()
 //
-// beginScope deliberately does NOT touch the joined gate. Folding it in would
-// leave the gate permanently held on the joined path, where Release is a no-op —
-// and it is a non-reentrant mutex, so every later joined callback on that txID
-// would block forever.
+// An owned scope seals before it commits or rolls back (txcoord's Seal): the
+// seal waits for the callback scopes of the transaction still in progress,
+// refuses every later one, and reports a transaction a failed joined write made
+// rollback-only. A flow seals before its final writes, so nothing joined runs
+// beside them; Commit and Release seal too, and a second seal is the first
+// one's answer. The coordination forgets the transaction once the commit or
+// rollback is done.
 //
-// Flows therefore acquire it themselves and register `defer releaseGate()` AFTER
-// `defer scope.Release()`, so LIFO frees the gate before Release runs. That
-// ordering is lock-order hygiene, NOT a fix for a live deadlock: Release acquires
-// nothing on the joined-entry path (it returns early), and on the joined-segment
-// path it takes a DIFFERENT txID's gate, so reversing the two defers today merely
-// holds both at once. It becomes a self-deadlock the moment Release is hardened to
-// gate the entry transaction too — which is why the ordering is pinned by a test
-// rather than left to be rediscovered.
+// A joined scope neither seals nor commits nor rolls back: the transaction is
+// the owner's, and the join layer's scope decides what becomes of the
+// request's writes.
+//
+// A joined scope never moves off the transaction it joined: the engine refuses
+// the only step that opens a segment (a COMMIT_BEFORE_DISPATCH processor) on a
+// joined chain, before the transaction is flushed or committed.
 type txScope struct {
 	h *Handler
 
-	// entryTxID is the transaction beginScope returned. It never changes, and
-	// distinguishing it from txID is what lets a joined call release a segment
-	// the engine opened without releasing its owner's transaction.
-	entryTxID string
-
 	// ctx and txID name the segment currently open. Advance moves them when the
-	// engine segments via COMMIT_BEFORE_DISPATCH; Release always targets these,
-	// never entryTxID.
+	// engine segments via COMMIT_BEFORE_DISPATCH, which only an owned scope
+	// does; Release always targets these.
 	ctx  context.Context
 	txID string
 
 	owned bool
 	done  bool
+
+	// finish forgets the sealed transaction in the coordination; nil until
+	// the scope seals. sealErr is the seal's answer.
+	finish  func()
+	sealErr error
 }
 
 // beginScope begins a transaction, or joins one already on ctx (a routed
-// compute-node callback). It performs no gating — see the type comment.
+// compute-node callback).
 func (h *Handler) beginScope(ctx context.Context) (*txScope, error) {
 	txID, txCtx, owned, err := h.beginOrJoin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &txScope{h: h, entryTxID: txID, ctx: txCtx, txID: txID, owned: owned}, nil
+	return &txScope{h: h, ctx: txCtx, txID: txID, owned: owned}, nil
 }
 
 func (s *txScope) Ctx() context.Context { return s.ctx }
 func (s *txScope) TxID() string         { return s.txID }
-func (s *txScope) Owned() bool          { return s.owned }
 
 // Advance moves the scope onto whichever segment the engine left open.
 //
@@ -86,7 +91,25 @@ func (s *txScope) Advance(ctx context.Context, txID string) {
 	s.ctx, s.txID = ctx, txID
 }
 
-// Commit commits when this flow owns the transaction. Before committing it
+// Seal cuts the owned transaction off before the flow's final writes: it
+// waits for the callback scopes in progress and refuses every later joined
+// request. It reports the lost write race (spi.ErrTxAborted), the cause that
+// broke the transaction, or common.TransactionRollbackOnly when a joined write
+// failed; the flow then fails, and Release rolls back. A second call returns
+// the first one's answer. A joined scope does not seal: nil.
+func (s *txScope) Seal() error {
+	if !s.owned || s.txID == "" {
+		return nil
+	}
+	if s.finish == nil {
+		s.finish, s.sealErr = s.h.coord.Seal(s.ctx, s.txID)
+	}
+	return s.sealErr
+}
+
+// Commit commits when this flow owns the transaction. It seals first — a flow
+// that sealed before its final writes gets that seal's answer — and a refused
+// seal leaves the scope for Release to roll back. Before committing it
 // performs the spec-D2 pre-commit check: an expired/cancelled context fails
 // closed WITHOUT marking the scope done, so the deferred Release still rolls
 // the transaction back — the 408 contract ("nothing committed") depends on
@@ -100,52 +123,44 @@ func (s *txScope) Advance(ctx context.Context, txID string) {
 //
 // After a commit ATTEMPT the scope is done regardless of outcome: the commit
 // may be partially applied, and aborting one another goroutine is running
-// trips memory's ErrTxCommitInProgress path.
+// trips memory's ErrTxCommitInProgress path. The coordination forgets the
+// transaction after the attempt.
 func (s *txScope) Commit() error {
 	if s.owned {
+		if err := s.Seal(); err != nil {
+			return err
+		}
 		if err := s.ctx.Err(); err != nil {
 			return err
 		}
 	}
 	s.done = true
+	if s.finish != nil {
+		defer s.finish()
+	}
 	return s.h.commitOwned(s.ctx, s.txID, s.owned)
 }
 
 // Release rolls back the segment currently open, unless the scope is already
-// done or the transaction belongs to somebody else.
+// done or the transaction belongs to somebody else. It seals first, ignoring
+// the answer — a rollback is what a refused seal asks for — and forgets the
+// transaction after the rollback.
 //
 // A joined callback never rolls back its owner's transaction — an error on the
-// joined path surfaces to the owner, which decides its fate. The exception is a
-// segment the engine opened during this call: that one is nobody else's, so it
-// is released regardless of ownership whenever the scope has advanced past its
-// entry txID.
+// joined path surfaces to the owner, which decides its fate.
 func (s *txScope) Release() {
 	if s.done {
 		return
 	}
 	s.done = true
-	if s.txID == "" {
+	if s.txID == "" || !s.owned {
 		return
 	}
-	if !s.owned && s.txID == s.entryTxID {
-		return
-	}
+	_ = s.Seal()
+	defer s.finish()
 
-	// Acquire the per-tx gate so the rollback is mutually exclusive with any
-	// joined callback's access to the same transaction handle. No self-deadlock:
-	// every `defer h.gate.Acquire(...)()` site in this package is inside an IIFE,
-	// so the gate is free by outer-defer time.
-	//
-	// What this does NOT preserve is failed-Save-then-rollback as one atomic
-	// gated section: a joined callback can win the gate in the window between an
-	// IIFE releasing it and Release re-acquiring, Save successfully, return 200
-	// to its caller, and then have its write discarded by this rollback. That is
-	// strictly better than the alternative it replaces — a leaked transaction —
-	// and the joined caller's write was doomed either way once the owner failed.
-	defer s.h.gate.Acquire(s.txID)()
-
-	// Derive the budget only once the gate is held. RollbackContext bounds the
-	// Rollback call, not the queue in front of it; charging the gate wait
+	// Derive the budget only once the seal is done. RollbackContext bounds the
+	// Rollback call, not the wait in front of it; charging the seal's wait
 	// against it would hand txMgr.Rollback an already-expired context, which on
 	// postgres fails the rollback and destroys the pooled connection instead of
 	// returning it — the outcome this scope exists to prevent.

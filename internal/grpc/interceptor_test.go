@@ -1,31 +1,121 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // mockAuthService is a test double for contract.AuthenticationService.
 type mockAuthService struct {
-	user *spi.UserContext
-	err  error
+	user   *spi.UserContext
+	client *contract.ClientToken
+	err    error
 }
 
-func (m *mockAuthService) Authenticate(_ context.Context, _ *http.Request) (*spi.UserContext, error) {
+func (m *mockAuthService) Authenticate(ctx context.Context, _ *http.Request) (context.Context, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return m.user, nil
+	ctx = spi.WithUserContext(ctx, m.user)
+	if m.client != nil {
+		ctx = contract.WithClientToken(ctx, *m.client)
+	}
+	return ctx, nil
+}
+
+// bareCtxAuthService reports success but returns a context with no principal.
+type bareCtxAuthService struct{}
+
+func (bareCtxAuthService) Authenticate(ctx context.Context, _ *http.Request) (context.Context, error) {
+	return ctx, nil
+}
+
+// TestInterceptor_NoPrincipalIsUnauthenticated: an authentication service
+// that reports success without a principal in the context is refused, on
+// unary calls and on streams, instead of reaching the handler (or panicking).
+func TestInterceptor_NoPrincipalIsUnauthenticated(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer t"))
+	assertUnauthenticated := func(t *testing.T, err error) {
+		t.Helper()
+		if st, ok := status.FromError(err); !ok || st.Code() != codes.Unauthenticated || st.Message() != "authentication failed" {
+			t.Fatalf("err = %v, want Unauthenticated \"authentication failed\"", err)
+		}
+	}
+	t.Run("unary", func(t *testing.T) {
+		_, err := UnaryAuthInterceptor(bareCtxAuthService{})(ctx, "req", &googlegrpc.UnaryServerInfo{FullMethod: "/t.S/M"}, func(context.Context, any) (any, error) {
+			t.Fatal("handler reached without a principal")
+			return nil, nil
+		})
+		assertUnauthenticated(t, err)
+	})
+	t.Run("stream", func(t *testing.T) {
+		err := StreamAuthInterceptor(bareCtxAuthService{})(nil, &mockServerStream{ctx: ctx}, &googlegrpc.StreamServerInfo{FullMethod: "/t.S/S"}, func(any, googlegrpc.ServerStream) error {
+			t.Fatal("handler reached without a principal")
+			return nil
+		})
+		assertUnauthenticated(t, err)
+	})
+}
+
+// TestInterceptor_ClientTokenMarkerReachesHandler:both interceptors hand the
+// handler the context Authenticate returned, so the client-token marker
+// travels beside the principal on unary calls and on streams.
+func TestInterceptor_ClientTokenMarkerReachesHandler(t *testing.T) {
+	uc := &spi.UserContext{UserID: "CLIENT0000000001", Kind: spi.PrincipalService, Tenant: spi.Tenant{ID: "t1"}}
+	marker := contract.ClientToken{ClientID: "CLIENT0000000001", Gen: 7}
+	authSvc := &mockAuthService{user: uc, client: &marker}
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer t"))
+
+	check := func(t *testing.T, got context.Context) {
+		t.Helper()
+		if spi.GetUserContext(got) != uc {
+			t.Errorf("UserContext = %+v, want %+v", spi.GetUserContext(got), uc)
+		}
+		if ct, ok := contract.ClientTokenFrom(got); !ok || ct != marker {
+			t.Errorf("ClientTokenFrom = %+v, %v; want %+v, true", ct, ok, marker)
+		}
+	}
+
+	t.Run("unary", func(t *testing.T) {
+		var handlerCtx context.Context
+		_, err := UnaryAuthInterceptor(authSvc)(ctx, "req", &googlegrpc.UnaryServerInfo{}, func(c context.Context, _ any) (any, error) {
+			handlerCtx = c
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("interceptor: %v", err)
+		}
+		check(t, handlerCtx)
+	})
+	t.Run("stream", func(t *testing.T) {
+		var handlerCtx context.Context
+		err := StreamAuthInterceptor(authSvc)(nil, &mockServerStream{ctx: ctx}, &googlegrpc.StreamServerInfo{}, func(_ any, ss googlegrpc.ServerStream) error {
+			handlerCtx = ss.Context()
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("interceptor: %v", err)
+		}
+		check(t, handlerCtx)
+	})
 }
 
 // mockServerStream is a minimal test double for grpc.ServerStream.
@@ -175,5 +265,168 @@ func TestInterceptor_StreamAuthFailure(t *testing.T) {
 	}
 	if strings.Contains(st.Message(), "expired token") {
 		t.Error("error message must not contain internal auth error details")
+	}
+}
+
+// TestInterceptor_UnaryRejectsClaimOutsideCheck proves gRPC inherits the
+// claim checks: the interceptor delegates to the same AuthenticationService
+// the HTTP middleware uses, so a tenant claim outside the tenant grammar, or a
+// user claim outside the user-id check, is Unauthenticated here too, with the
+// same generic message.
+func TestInterceptor_UnaryRejectsClaimOutsideCheck(t *testing.T) {
+	for name, tc := range map[string]struct{ user, tenant string }{
+		"tenant":              {user: "user-1", tenant: "../victim"},
+		"user":                {user: "user\nvictim", tenant: "tenant-1"},
+		"reserved":            {user: "SYSTEM", tenant: "tenant-1"},
+		"system tenant":       {user: "user-1", tenant: "SYSTEM"},
+		"system tenant lower": {user: "user-1", tenant: "system"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertUnaryRejectsClaims(t, tc.user, tc.tenant)
+		})
+	}
+}
+
+// TestInterceptor_UnaryAcceptsClaimsInsideCheck is the positive control for
+// the test above: the same setup with both claims valid reaches the handler,
+// so a rejection there comes from the claim under test and nothing else.
+func TestInterceptor_UnaryAcceptsClaimsInsideCheck(t *testing.T) {
+	ctx, interceptor := claimTokenCall(t, "user-1", "tenant-1")
+	called := false
+	handler := func(_ context.Context, _ any) (any, error) {
+		called = true
+		return nil, nil
+	}
+	if _, err := interceptor(ctx, "request",
+		&googlegrpc.UnaryServerInfo{FullMethod: "/test.Service/Method"}, handler); err != nil {
+		t.Fatalf("interceptor rejected valid claims: %v", err)
+	}
+	if !called {
+		t.Fatal("handler was not called for valid claims")
+	}
+}
+
+// claimTokenCall builds an auth interceptor over a fresh signing key and an
+// incoming context carrying a first-party token with the given user (as both
+// caas_user_id and sub) and tenant.
+func claimTokenCall(t *testing.T, user, tenant string) (context.Context, googlegrpc.UnaryServerInterceptor) {
+	t.Helper()
+	ctx, authSvc := claimTokenAuth(t, user, tenant)
+	return ctx, UnaryAuthInterceptor(authSvc)
+}
+
+// claimTokenAuth is claimTokenCall's authenticator and context, for the stream
+// interceptor as well as the unary one.
+func claimTokenAuth(t *testing.T, user, tenant string) (context.Context, contract.AuthenticationService) {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	const issuer = "cyoda-grpc-test"
+
+	// The key store signs with priv as its bootstrap key.
+	systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "system", Tenant: spi.Tenant{ID: spi.SystemTenantID, Name: "System"},
+	})
+	kv, err := memory.NewStoreFactory().KeyValueStore(systemCtx)
+	if err != nil {
+		t.Fatalf("memory KV: %v", err)
+	}
+	ks, err := auth.NewKVKeyStore(systemCtx, kv, auth.KVKeyStoreConfig{Bootstrap: priv})
+	if err != nil {
+		t.Fatalf("key store: %v", err)
+	}
+	kid, err := auth.DeriveKID(&priv.PublicKey)
+	if err != nil {
+		t.Fatalf("derive KID: %v", err)
+	}
+
+	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(ks), issuer)
+	authSvc := auth.NewDelegatingAuthenticator(validator)
+
+	now := time.Now()
+	tok, err := auth.Sign(context.Background(), map[string]any{
+		"iss":          issuer,
+		"sub":          user,
+		"caas_user_id": user,
+		"caas_org_id":  tenant,
+		"iat":          float64(now.Unix()),
+		"exp":          float64(now.Add(time.Hour).Unix()),
+	}, auth.NewRSASigner(priv), kid)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(),
+		metadata.MD{"authorization": []string{"Bearer " + tok}})
+	return ctx, authSvc
+}
+
+// TestInterceptor_StreamRejectsSystemTenant: the stream door refuses the
+// machinery's tenant claim like the unary one.
+func TestInterceptor_StreamRejectsSystemTenant(t *testing.T) {
+	for _, tenant := range []string{"SYSTEM", "system"} {
+		ctx, authSvc := claimTokenAuth(t, "user-1", tenant)
+		err := StreamAuthInterceptor(authSvc)(nil, &mockServerStream{ctx: ctx},
+			&googlegrpc.StreamServerInfo{FullMethod: "/test.Service/Stream"},
+			func(any, googlegrpc.ServerStream) error {
+				t.Fatal("handler must not be called")
+				return nil
+			})
+		if st, _ := status.FromError(err); st.Code() != codes.Unauthenticated {
+			t.Errorf("tenant %q: err = %v, want Unauthenticated", tenant, err)
+		}
+	}
+}
+
+// assertUnaryRejectsClaims signs a first-party token carrying user and tenant,
+// both chosen so that the rejected one contains "victim", and asserts the
+// interceptor rejects it without the value reaching the error or a log record.
+func assertUnaryRejectsClaims(t *testing.T, user, tenant string) {
+	t.Helper()
+	ctx, interceptor := claimTokenCall(t, user, tenant)
+
+	handler := func(_ context.Context, _ any) (any, error) {
+		t.Fatal("handler must not be called when a claim is rejected")
+		return nil, nil
+	}
+
+	// Capture the default logger for the duration of the call: the rejected
+	// claim is attacker-chosen, so it must reach neither the envelope nor a
+	// log field.
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	_, err := interceptor(ctx, "request",
+		&googlegrpc.UnaryServerInfo{FullMethod: "/test.Service/Method"}, handler)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected a gRPC status error, got %v", err)
+	}
+	if st.Code() != codes.Unauthenticated {
+		t.Errorf("code = %v, want Unauthenticated", st.Code())
+	}
+	if st.Message() != "authentication failed" {
+		t.Errorf("message = %q, want the generic %q", st.Message(), "authentication failed")
+	}
+	// The whole error, details included, and every log record written while
+	// the claim was rejected: neither may carry the rejected value. The
+	// emptiness guard keeps the log assertion from passing for the wrong
+	// reason — the rejection path does write records, and if it stopped, a
+	// silent buffer would look like a clean one.
+	if logBuf.Len() == 0 {
+		t.Fatal("no log record captured; the log assertion below would be vacuous")
+	}
+	if strings.Contains(err.Error(), "victim") {
+		t.Errorf("gRPC error echoes the rejected claim: %v", err)
+	}
+	if strings.Contains(logBuf.String(), "victim") {
+		t.Errorf("a log record echoes the rejected claim:\n%s", logBuf.String())
 	}
 }

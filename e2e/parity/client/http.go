@@ -943,7 +943,6 @@ type MessageHeaderInput struct {
 	ContentType     string
 	ContentEncoding string
 	MessageID       string
-	UserID          string
 	Recipient       string
 	ReplyTo         string
 	CorrelationID   string
@@ -1044,9 +1043,6 @@ func (c *Client) CreateMessageWithHeaders(t *testing.T, subject, payload string,
 	if header.MessageID != "" {
 		h.Set("X-Message-ID", header.MessageID)
 	}
-	if header.UserID != "" {
-		h.Set("X-User-ID", header.UserID)
-	}
 	if header.Recipient != "" {
 		h.Set("X-Recipient", header.Recipient)
 	}
@@ -1084,6 +1080,15 @@ func (c *Client) GetMessage(t *testing.T, messageID string) (map[string]any, err
 		return nil, err
 	}
 	return result, nil
+}
+
+// GetMessageRaw issues GET /api/message/{messageId} and returns the HTTP
+// status code without decoding the body. Used by tests that expect a
+// specific non-200 response (e.g., a deleted message → 404).
+func (c *Client) GetMessageRaw(t *testing.T, messageID string) (int, error) {
+	t.Helper()
+	path := "/api/message/" + messageID
+	return c.doJSON(t, http.MethodGet, path, nil, nil)
 }
 
 // DeleteMessage issues DELETE /api/message/{messageId}.
@@ -1207,18 +1212,28 @@ func (c *Client) SubmitAsyncSearchSorted(t *testing.T, modelName string, modelVe
 // Canonical: api/openapi.yaml /search/async/{jobId}/status.
 func (c *Client) GetAsyncSearchStatus(t *testing.T, jobID string) (string, error) {
 	t.Helper()
-	path := fmt.Sprintf("/api/search/async/%s/status", jobID)
-	raw, err := c.doRaw(t, http.MethodGet, path, "")
+	st, err := c.GetAsyncSearchStatusBody(t, jobID)
 	if err != nil {
 		return "", err
 	}
-	var resp struct {
-		SearchJobStatus string `json:"searchJobStatus"`
+	return st.SearchJobStatus, nil
+}
+
+// GetAsyncSearchStatusBody issues GET /api/search/async/{jobId}/status and
+// returns the whole status body, failureReason included.
+// Canonical: api/openapi.yaml AsyncSearchStatusDto.
+func (c *Client) GetAsyncSearchStatusBody(t *testing.T, jobID string) (AsyncSearchStatus, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/status", jobID)
+	raw, err := c.doRaw(t, http.MethodGet, path, "")
+	if err != nil {
+		return AsyncSearchStatus{}, err
 	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return "", fmt.Errorf("decode GetAsyncSearchStatus response: %w (body=%s)", err, string(raw))
+	var st AsyncSearchStatus
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return AsyncSearchStatus{}, fmt.Errorf("decode GetAsyncSearchStatus response: %w (body=%s)", err, string(raw))
 	}
-	return resp.SearchJobStatus, nil
+	return st, nil
 }
 
 // GetAsyncSearchResults issues GET /api/search/async/{jobId}. Returns
@@ -1263,8 +1278,8 @@ func (c *Client) AwaitAsyncSearchResults(t *testing.T, modelName string, modelVe
 	if err != nil {
 		return PagedEntityResults{}, fmt.Errorf("submit: %w", err)
 	}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := time.Now().Add(timeout) // realtime: test poll deadline
+	for time.Now().Before(deadline) {   // realtime: test poll deadline
 		status, err := c.GetAsyncSearchStatus(t, jobID)
 		if err != nil {
 			return PagedEntityResults{}, fmt.Errorf("status (jobId=%s): %w", jobID, err)
@@ -1290,6 +1305,49 @@ func (c *Client) AwaitAsyncSearchResults(t *testing.T, modelName string, modelVe
 func (c *Client) GetEntityStatsRaw(t *testing.T) (int, error) {
 	t.Helper()
 	return c.doJSON(t, http.MethodGet, "/api/entity/stats", nil, nil)
+}
+
+// GetConsistencyTime issues GET /api/entity/consistency-time and returns the
+// consistencyTime string exactly as the server rendered it, so a caller can
+// pass it back verbatim as a pointInTime.
+func (c *Client) GetConsistencyTime(t *testing.T) (string, error) {
+	t.Helper()
+	var dto struct {
+		ConsistencyTime string `json:"consistencyTime"`
+	}
+	if _, err := c.doJSON(t, http.MethodGet, "/api/entity/consistency-time", nil, &dto); err != nil {
+		return "", err
+	}
+	if dto.ConsistencyTime == "" {
+		return "", fmt.Errorf("consistency-time response carries no consistencyTime")
+	}
+	return dto.ConsistencyTime, nil
+}
+
+// DoRaw issues an arbitrary request with a raw string body and returns
+// status+body without erroring on non-2xx. The fenced operations take their
+// pointInTime as a query parameter or a body field, so the consistency-time
+// scenarios build the path and body themselves; an empty body sends none.
+func (c *Client) DoRaw(t *testing.T, method, path, body string) (int, []byte, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
 }
 
 // SyncSearchRaw issues POST /api/search/direct/{name}/{version} and
@@ -1475,14 +1533,21 @@ func (c *Client) GetAuditEvents(t *testing.T, entityID uuid.UUID) (EntityAuditEv
 	return resp, nil
 }
 
-// SetLogLevel issues POST /api/admin/log-level to change the target node's
-// runtime log level (e.g. "debug", "info"). Requires a ROLE_ADMIN token.
-// Used by cross-node scenarios that need a peer node to emit its (Debug-level)
-// scheduled-fire log lines so a test can positively assert peer execution.
-func (c *Client) SetLogLevel(t *testing.T, level string) error {
+// GetAuditEventsPage issues GET /api/audit/entity/{entityId} with the given
+// query parameters (limit, cursor, eventType, ...) and returns the decoded
+// page, including its CursorPaginationInfo. Used by scenarios that walk the
+// cursor rather than fetching the whole trail via GetAuditEvents.
+func (c *Client) GetAuditEventsPage(t *testing.T, entityID uuid.UUID, query url.Values) (EntityAuditEventsResponse, error) {
 	t.Helper()
-	_, err := c.doJSON(t, http.MethodPost, "/api/admin/log-level", map[string]string{"level": level}, nil)
-	return err
+	path := "/api/audit/entity/" + entityID.String()
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	var resp EntityAuditEventsResponse
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &resp); err != nil {
+		return EntityAuditEventsResponse{}, err
+	}
+	return resp, nil
 }
 
 // DeleteEntitiesByModel issues DELETE /api/entity/{name}/{version},
@@ -1612,6 +1677,49 @@ func (c *Client) LockModelRaw(t *testing.T, name string, version int) (int, []by
 	return resp.StatusCode, raw, nil
 }
 
+// DeleteModelRaw issues DELETE /api/model/{name}/{version} and returns the HTTP
+// status code + raw body without raising on non-2xx.
+func (c *Client) DeleteModelRaw(t *testing.T, name string, version int) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, c.baseURL+path, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// UnlockModelRaw issues PUT /api/model/{name}/{version}/unlock and returns the
+// HTTP status code + raw body without raising on non-2xx.
+func (c *Client) UnlockModelRaw(t *testing.T, name string, version int) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/unlock", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // SetChangeLevelRaw issues POST /api/model/{name}/{version}/changeLevel/{level}
 // and returns status+body for negative-path assertions via errorcontract.Match.
 func (c *Client) SetChangeLevelRaw(t *testing.T, name string, version int, level string) (int, []byte, error) {
@@ -1686,7 +1794,19 @@ func (c *Client) UpdateEntityRaw(t *testing.T, id uuid.UUID, transition, body st
 // UpdateEntityData for the no-precondition path.
 func (c *Client) UpdateEntityDataWithIfMatchRaw(t *testing.T, id uuid.UUID, body, ifMatch string) (int, []byte, error) {
 	t.Helper()
+	return c.UpdateEntityWithIfMatchRaw(t, id, "", body, ifMatch)
+}
+
+// UpdateEntityWithIfMatchRaw issues PUT /api/entity/JSON/{entityId}, or
+// PUT /api/entity/JSON/{entityId}/{transition} when transition is not empty,
+// with an `If-Match` HTTP header carrying ifMatch when it is not empty.
+// Returns status + body for negative-path assertions.
+func (c *Client) UpdateEntityWithIfMatchRaw(t *testing.T, id uuid.UUID, transition, body, ifMatch string) (int, []byte, error) {
+	t.Helper()
 	path := "/api/entity/JSON/" + id.String()
+	if transition != "" {
+		path += "/" + transition
+	}
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(body))
 	if err != nil {
 		return 0, nil, fmt.Errorf("build request: %w", err)
@@ -1806,8 +1926,8 @@ func (c *Client) QueryGroupedStats(t *testing.T, modelName string, modelVersion 
 // and returns (status, body, transport-error) without raising on non-2xx.
 // This is the general-purpose negative-path companion to doJSON, following
 // the *Raw naming convention established by the rest of the parity client.
-// OIDC helpers (and any future domain client) call this instead of duplicating
-// the pattern. The body argument may be nil for methods that send no payload.
+// Domain clients call this instead of duplicating the pattern. The body
+// argument may be nil for methods that send no payload.
 func (c *Client) DoJSONBodyRaw(t *testing.T, method, path string, body any) (int, []byte, error) {
 	t.Helper()
 

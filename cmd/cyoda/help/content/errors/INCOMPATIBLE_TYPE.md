@@ -33,11 +33,11 @@ The problem-detail body carries the structured fields below in `properties`, so 
 - `expectedType` — array of declared DataType names for that path (e.g. `["INTEGER"]`); usually one entry, more than one when the schema's TypeSet has been widened by a prior extension
 - `actualType` — the DataType inferred from the supplied value (e.g. `"DOUBLE"`, `"STRING"`)
 
-Not retryable. The caller must either correct the payload (cast/format the value into the declared type) or, if the model's `changeLevel` permits, request a schema extension that widens the field's TypeSet.
+Not retryable. The caller must either correct the payload (cast/format the value into the declared type) or have the model's `changeLevel` permit the widening (`TYPE` or above; `ARRAY_ELEMENTS` or above for the element of an array), so that the write extends the field's TypeSet (`cyoda help models`, SCHEMA EXTENSION).
 
 This code is distinct from:
 
-- `errors.CONDITION_TYPE_MISMATCH` — search-side equivalent, raised when a search condition's literal value does not match the field's locked DataType.
+- `errors.CONDITION_TYPE_MISMATCH` — search-side equivalent, raised when a search condition's operator applies to none of the field's declared DataTypes, or a comparison or range operand parses into none of the types the operator applies to.
 - `errors.VALIDATION_FAILED` — every validation failure that is not a leaf type mismatch: a value whose KIND the field does not declare (an object where a scalar is declared), an undeclared field, a structural shape mismatch, or a change the `changeLevel` does not permit. A kind mismatch carries no `expectedType`/`actualType` — there is no `DataType` to report for an object or an array.
 
 ## SEE ALSO

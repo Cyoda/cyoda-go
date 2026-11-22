@@ -2,26 +2,23 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 272 (guarded by TestParityScenarioCount — bump
-// wantParityScenarioCount in registry_count_test.go when adding/removing an
-// entry, or the test fails).
-// (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
-// distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
-// + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
-// + Phase 9.5 OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E
-// + Phase 9.6 Audit fixes + grouped stats + unknown-model 404 contract).
-// ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/,
-// scheduled-transition-runtime scenarios registered via parity.Register()
-// in e2e/parity/scheduledtransition/, and scheduled-transition Function
-// scenarios registered via parity.Register() in e2e/parity/scheduledfunction/
-// are additional to this count.
+// allTests holds 276 scenarios in this package: the entries of its literal
+// below, and those that files of this package add with Register from init()
+// (callback_txjoin_conflict.go,
+// schema_extension_contract.go).
+// TestParityScenarioCount (registry_count_test.go) checks the number: change
+// it there and here in the change that adds or removes a scenario. The
+// scenarios cover model and workflow import and export, entity CRUD and
+// paging, bi-temporal reads, audit and history, tenant isolation, messaging,
+// search (operators, paths, temporal filters, sort, negation, grouped
+// statistics), workflows with processors and criteria, compute-node callbacks
+// and callout failover, schema extensions and type admission, entity PATCH,
+// composite unique keys, attribution and on-behalf-of writes, scheduled tasks,
+// signing keys, M2M clients, trusted keys and the token exchange.
 //
-// Unmigrated internal/e2e/ tests (40 remaining): entity lifecycle,
-// model extension, transaction stress tests, workflow failure paths,
-// workflow loopback/cascade-depth/multi-processor, search string operators,
-// message batch delete, workflow overwrite/export-empty. These continue
-// to run as postgres-only tests and will be migrated to the parity suite
-// in a follow-up effort.
+// The packages e2e/parity/externalapi, e2e/parity/scheduledtransition and
+// e2e/parity/scheduledfunction add further scenarios with Register; they are
+// not in that number.
 
 // NamedTest is a single parity scenario plus the name under which it
 // shows up in subtest output.
@@ -46,7 +43,14 @@ var allTests = []NamedTest{
 	{"ModelLockAndUnlock", RunModelLockAndUnlock},
 	{"ModelListModels", RunModelListModels},
 	{"ModelDelete", RunModelDelete},
+	{"UnlockWithEntities", RunUnlockWithEntities},
 	{"WorkflowImportExport", RunWorkflowImportExport},
+	{"WorkflowImportManualRequired", RunWorkflowImportManualRequired},
+	// What import accepts and refuses in a callout's configuration, and that
+	// the accepted fields survive each backend's storage.
+	{"WorkflowImportCalloutRetryPolicyValidated", RunWorkflowImportCalloutRetryPolicyValidated},
+	{"WorkflowImportResponseTimeoutBounded", RunWorkflowImportResponseTimeoutBounded},
+	{"WorkflowCalloutFieldsRoundTrip", RunWorkflowCalloutFieldsRoundTrip},
 	{"WorkflowAnnotationsRoundTrip", RunWorkflowAnnotationsRoundTrip},
 	{"WorkflowProcCriterionAnnotationsRoundTrip", RunWorkflowProcCriterionAnnotationsRoundTrip},
 	{"WorkflowProcAttachEntityDefaultRoundTrip", RunWorkflowProcAttachEntityDefaultRoundTrip},
@@ -77,17 +81,35 @@ var allTests = []NamedTest{
 	{"TemporalPointInTimeRetrieval", RunTemporalPointInTimeRetrieval},
 	{"TemporalGetAsAtPopulatesFullMeta", RunTemporalGetAsAtPopulatesFullMeta},
 	{"PITBoundaryExactT", RunPITBoundaryExactT},
+	{"PITDeletedSinceInstant", RunPITDeletedSinceInstant},
+	{"PITCreatedAfterInstant", RunPITCreatedAfterInstant},
 
 	// Phase 4a — audit (Task 4a.4)
 	{"AuditEntityHistory", RunAuditEntityHistory},
 	{"AuditWorkflowEvents", RunAuditWorkflowEvents},
 	{"AuditPostTxIdMatchesWorkflowFinished", RunAuditPostTxIdMatchesWorkflowFinished},
+	{"AuditCommitInstantSharedWithVersionHistory", RunAuditCommitInstantSharedWithVersionHistory},
+	{"AuditIdentityJoinedSaves", RunAuditIdentityJoinedSaves},
+	{"AuditOBOIdentity", RunAuditOBOIdentity},
+	{"AuditCursorWalkOverTie", RunAuditCursorWalkOverTie},
+	{"AuditFinishedEventIDMatchesSearch", RunAuditFinishedEventIDMatchesSearch},
+	{"AuditFinishedEventIsLatestOfTransaction", RunAuditFinishedEventIsLatestOfTransaction},
+	{"AuditCreateEventData", RunAuditCreateEventData},
+	{"AuditFinishAllCriteriaRejected", RunAuditFinishAllCriteriaRejected},
+	{"AuditDataEventTypeMatchesOuter", RunAuditDataEventTypeMatchesOuter},
+	// A COMMIT_BEFORE_DISPATCH processor that fails after its segment boundary
+	// committed still has its result in the trail.
+	{"AuditCBDFailedProcessorRecorded", RunAuditCBDFailedProcessorRecorded},
 
 	// History reads (task E6): getEntityChangesMetadata's
 	// newest-first/Version-DESC-tiebreak/tombstone-HasEntity contract and
 	// getOneEntity's by-transaction lookup, both now backed by
 	// spi.EntityStore.GetVersionMetadata / GetVersionByTransaction.
 	{"HistoryReadsChangesMetadataAndTransactionLookup", RunHistoryReadsChangesMetadataAndTransactionLookup},
+	// One version per entity per transaction, seen through /changes, and the
+	// by-transaction read: X's final entity once X commits, 404 before,
+	// inside X too.
+	{"HistoryOneVersionPerTransaction", RunHistoryOneVersionPerTransaction},
 
 	// Phase 4a — tenant isolation (Task 4a.5)
 	{"TenantIsolationEntities", RunTenantIsolationEntities},
@@ -99,11 +121,16 @@ var allTests = []NamedTest{
 	{"TenantIsolationTransitionsTransactionIDRejected", RunTenantIsolationTransitionsTransactionIDRejected},
 	{"TenantIsolationPointInTimeInvisible", RunTenantIsolationPointInTimeInvisible},
 	{"TenantIsolationChangesAtPITInvisible", RunTenantIsolationChangesAtPITInvisible},
+	{"TenantIsolationWorkflowFinishedInvisible", RunTenantIsolationWorkflowFinishedInvisible},
 
 	// Phase 4a — messaging (Task 4a.6)
 	{"MessageCreateAndGet", RunMessageCreateAndGet},
 	{"MessageDelete", RunMessageDelete},
 	{"MessageLargePayload", RunMessageLargePayload},
+	// A batch delete naming an absent id alongside a present one still
+	// succeeds and deletes the present one (storage-SPI absent-key Delete
+	// contract).
+	{"MessageDeleteBatchWithAbsentID", RunMessageDeleteBatchWithAbsentID},
 
 	// Edge message — flat metaData round-trip (Task 7, group 4)
 	{"MessageRoundTrip", RunMessageRoundTrip},
@@ -149,6 +176,11 @@ var allTests = []NamedTest{
 	{"SearchPathRequiresJSONPathLeader", RunSearchPathRequiresJSONPathLeader},
 	{"SearchArraySubscriptPathStillServed", RunSearchArraySubscriptPathStillServed},
 	{"SearchPathTypeMismatch400", RunSearchPathTypeMismatch400},
+	// An operator that does not apply to the field's type — a string or pattern
+	// operator on a non-text field, an ordering operator on a boolean — is
+	// refused, not answered with an empty (or, negated, a full) result set.
+	{"SearchTextOperatorOnNonTextField400", RunSearchTextOperatorOnNonTextField400},
+	{"SearchOrderingOperatorOnUnorderedField400", RunSearchOrderingOperatorOnUnorderedField400},
 	// The same grammar governs a workflow/transition criterion, enforced at
 	// workflow import; and a path addressing one array element by position
 	// resolves to that element on every surface. Both are per-backend claims:
@@ -184,6 +216,9 @@ var allTests = []NamedTest{
 	// union rule and the presence/nullness table, which apply to the array
 	// clause's desugared form the same as to every other path.
 	{"ArrayClausePositional", RunArrayClausePositional},
+	// ArrayClauseOperator: the clause's operatorType applies at every tested
+	// position, pushed down, in memory (inside NOT) and through async search.
+	{"ArrayClauseOperator", RunArrayClauseOperator},
 	{"PathAddressingByDeclaredShape", RunPathAddressingByDeclaredShape},
 	{"PathVacuity", RunPathVacuity},
 
@@ -208,6 +243,50 @@ var allTests = []NamedTest{
 	{"CallbackTxJoin_CBDPostJoinsTxPost", RunCallback_CBDPostJoinsTxPost},
 	{"CallbackTxJoin_AsyncNewTxDiscardOnFailure", RunCallback_AsyncNewTxDiscardOnFailure},
 	{"CallbackTxJoin_PITCommittedOnly", RunPITCommittedOnlyInJoinedTx},
+	// A callout under the token reads its anchor as the workflow has it.
+	{"CallbackReadCurrent_UpdateSync", RunCallbackReadCurrent_UpdateSync},
+	{"CallbackReadCurrent_CreateSync", RunCallbackReadCurrent_CreateSync},
+	{"CallbackReadCurrent_FunctionCriterion", RunCallbackReadCurrent_FunctionCriterion},
+	{"CallbackPayloadTxID_IdenticalUpdate", RunCallbackPayloadTxID_IdenticalUpdate},
+	{"ConsistencyTime_Endpoint", RunConsistencyTimeEndpoint},
+	{"ConsistencyTime_FenceRefusesLater", RunConsistencyTimeFenceRefuses},
+	{"ConsistencyTime_ReadAtCServed", RunConsistencyTimeReadAtC},
+	{"ConsistencyTime_AsyncDefaultIncludesConfirmedSaves", RunConsistencyTimeAsyncDefault},
+	{"ConsistencyTime_StatsHonourPointInTime", RunConsistencyTimeStatsAsAt},
+	{"CallbackTxJoin_CommitBeforeDispatchRefused", RunCallbackJoinedCommitBeforeDispatchRefused},
+
+	// Callback scopes — a joined request is all-or-nothing, the same on every
+	// backend. Sequential shapes only; races are isolated e2e.
+	{"CallbackScope_FailedJoinedWriteDoomsOwner", RunCallbackScope_FailedJoinedWriteDoomsOwner},
+	{"CallbackScope_RetryableFailureRetriedInTx", RunCallbackScope_RetryableFailureRetriedInTx},
+	{"CallbackScope_FailedReadKeepsTx", RunCallbackScope_FailedReadKeepsTx},
+	{"CallbackScope_AsyncNewTxAbsorbs", RunCallbackScope_AsyncNewTxAbsorbs},
+	{"CallbackScope_MessageOutsideTx", RunCallbackScope_MessageOutsideTx},
+
+	// Compute-client capability self-tests: a fixture that can start further
+	// compute clients proves it here; one that cannot skips.
+	{"ComputeClientJoinServeLeave", RunComputeClientJoinServeLeave},
+	{"ComputeClientBehaviours", RunComputeClientBehaviours},
+
+	// Callout failover: what ends a callout and what the client is told. Each
+	// case starts its own compute clients under a fresh tenant; a fixture that
+	// cannot start them skips.
+	{"CalloutNoAnswerNotIdempotentStops", RunCalloutNoAnswerNotIdempotentStops},
+	{"CalloutCriterionFailsOver", RunCalloutCriterionFailsOver},
+	{"CalloutFunctionFailsOver", RunCalloutFunctionFailsOver},
+	{"CalloutMemberFailedStops", RunCalloutMemberFailedStops},
+	{"CalloutRetryPolicyNoneOneTry", RunCalloutRetryPolicyNoneOneTry},
+	{"CalloutEveryTryUsed", RunCalloutEveryTryUsed},
+
+	// Function conditions in criteria groups and the function pre-check: the
+	// stop rule, workflow selection and the manual refusal message. Each case
+	// starts its own compute client under a fresh tenant; a fixture that
+	// cannot start one skips.
+	{"CriterionFunction_GroupStopRule", RunCriterionFunction_GroupStopRule},
+	{"CriterionFunction_SelectionPreCheck", RunCriterionFunction_SelectionPreCheck},
+	{"CriterionFunction_SelectionGroup", RunCriterionFunction_SelectionGroup},
+	{"CriterionFunction_ManualRefusedReason", RunCriterionFunction_ManualRefusedReason},
+	{"CriterionFunction_AuditKeepsPreCheckNumbers", RunCriterionFunction_AuditKeepsPreCheckNumbers},
 
 	// A.1 — numeric classifier parity (HTTP round-trip)
 	{"NumericClassification18DigitDecimal", RunNumericClassification18DigitDecimal},
@@ -222,10 +301,11 @@ var allTests = []NamedTest{
 	{"SchemaExtensionCrossBackendByteIdentity", RunSchemaExtensionCrossBackendByteIdentity},
 	{"SchemaExtensionAtomicRejection", RunSchemaExtensionAtomicRejection},
 	{"SchemaExtensionConcurrentConvergence", RunSchemaExtensionConcurrentConvergence},
-	{"SchemaExtensionSavepointOnLockFoldEquivalence", RunSchemaExtensionSavepointOnLockFoldEquivalence},
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 	{"SchemaNumericFoldCarveout", RunSchemaNumericFoldCarveout},
+	{"SchemaExtensionSurvivesUnlockAndReimport", RunSchemaExtensionSurvivesUnlockAndReimport},
+	{"SchemaExtensionDoesNotOutliveModel", RunSchemaExtensionDoesNotOutliveModel},
 
 	// Type admission (design §4-9): one traversal judging each value against
 	// the stored model, rather than converting the document to a throwaway
@@ -243,135 +323,6 @@ var allTests = []NamedTest{
 	{"ModelKindEnforcementRejected", RunModelKindEnforcementRejected},
 	{"ModelKindBranchExtension", RunModelKindBranchExtension},
 	{"ModelSampleDataCollectionImport", RunModelSampleDataCollectionImport},
-
-	// Phase 9.2 — OIDC CRUD + authz
-	// Rows 1-6: CRUD happy-path.
-	{"OidcRegister", RunOidcRegister},
-	{"OidcListAll", RunOidcListAll},
-	{"OidcListActiveOnly", RunOidcListActiveOnly},
-	{"OidcUpdateIssuers", RunOidcUpdateIssuers},
-	{"OidcInvalidate", RunOidcInvalidate},
-	{"OidcDelete", RunOidcDelete},
-	// D7 — expectedAudiences + rolesClaim round-trip (response-mapper bug)
-	{"OidcRegisterAudiencesRoundTrip", RunOidcRegisterAudiencesRoundTrip},
-	{"OidcListAudiencesRoundTrip", RunOidcListAudiencesRoundTrip},
-	{"OidcUpdateAudiencesRoundTrip", RunOidcUpdateAudiencesRoundTrip},
-	{"OidcReactivateAudiencesRoundTrip", RunOidcReactivateAudiencesRoundTrip},
-	// Rows 7-10: CRUD negative (404 / duplicate).
-	{"OidcUpdateNonExistent", RunOidcUpdateNonExistent},
-	{"OidcInvalidateNonExistent", RunOidcInvalidateNonExistent},
-	{"OidcReactivateNonExistent", RunOidcReactivateNonExistent},
-	{"OidcDuplicateRegister", RunOidcDuplicateRegister},
-	// Rows 11-16: Authz negative — non-admin token → 403 FORBIDDEN.
-	{"OidcNonAdminRegister", RunOidcNonAdminRegister},
-	{"OidcNonAdminUpdate", RunOidcNonAdminUpdate},
-	{"OidcNonAdminInvalidate", RunOidcNonAdminInvalidate},
-	{"OidcNonAdminReactivate", RunOidcNonAdminReactivate},
-	{"OidcNonAdminDelete", RunOidcNonAdminDelete},
-	{"OidcNonAdminReload", RunOidcNonAdminReload},
-
-	// Phase 9.3 — OIDC validation + rotation + isolation (rows 17-27)
-	// JWT validation integration (rows 17-20): register mock IdP, sign JWT,
-	// assert accept/reject across lifecycle state changes.
-	{"OidcJWTValidation_RegisterAndAccept", RunOidcJWTValidation_RegisterAndAccept},
-	{"OidcJWTValidation_InvalidateRejects", RunOidcJWTValidation_InvalidateRejects},
-	{"OidcJWTValidation_ReactivateRecovers", RunOidcJWTValidation_ReactivateRecovers},
-	{"OidcJWTValidation_DeletePermanent", RunOidcJWTValidation_DeletePermanent},
-	// Issuer-list update affects validation (row 21).
-	{"OidcJWTValidation_IssuerListUpdate", RunOidcJWTValidation_IssuerListUpdate},
-	// Reload endpoint keeps warm key sources in service.
-	{"OidcReload_PreservesTokenAcceptance", RunOidcReload_PreservesTokenAcceptance},
-	{"OidcReload_AfterReactivateKeepsTokenAcceptance", RunOidcReload_AfterReactivateKeepsTokenAcceptance},
-	// Key rotation/revocation (rows 22-26b).
-	{"OidcKeyRotation_NewKidAccepted", RunOidcKeyRotation_NewKidAccepted},
-	{"OidcKeyRotation_OldKidStillAccepted", RunOidcKeyRotation_OldKidStillAccepted},
-	{"OidcKeyRevocation_RevokedKidRejected", RunOidcKeyRevocation_RevokedKidRejected},
-	{"OidcKeyRotation_ColdStartReturnsErrUnknownKID", RunOidcKeyRotation_ColdStartReturnsErrUnknownKID},
-	{"OidcReactivate_RemoteRemovalSync", RunOidcReactivate_RemoteRemovalSync},
-	{"OidcReactivate_RemoteKeysPreservedSync", RunOidcReactivate_RemoteKeysPreservedSync},
-	// Multi-provider isolation (row 27).
-	{"OidcMultiProvider_Isolation", RunOidcMultiProvider_Isolation},
-
-	// Phase 9.4 — OIDC divergences (rows 28-46)
-	// D5 inactive-update (row 28).
-	{"OidcInactiveUpdate_Returns409Conflict", RunOidcInactiveUpdate_Returns409Conflict},
-	// Tenant isolation (rows 29-30).
-	{"OidcCrossTenantManagementIsolation", RunOidcCrossTenantManagementIsolation},
-	{"OidcTenantBindingViaOwnerLegalEntityID", RunOidcTenantBindingViaOwnerLegalEntityID},
-	// D17 iat-binding accidental (row 31).
-	{"OidcD17_IatBindingPreTransition", RunOidcD17_IatBindingPreTransition},
-	// D17 mandatory iss-validation (rows 32-33).
-	{"OidcD17_KidCollisionRoutesByIss", RunOidcD17_KidCollisionRoutesByIss},
-	{"OidcD17_EmptyIssuersUsesDiscoveryDoc", RunOidcD17_EmptyIssuersUsesDiscoveryDoc},
-	// D17 iat skew (rows 34-35).
-	{"OidcD17_IatWithinSkewAccepted", RunOidcD17_IatWithinSkewAccepted},
-	{"OidcD17_IatOutsideSkewRejected", RunOidcD17_IatOutsideSkewRejected},
-	// D3 chain order (row 36).
-	{"OidcD3_ChainOrderJWKSValidatorFirst", RunOidcD3_ChainOrderJWKSValidatorFirst},
-	// D6 self-heal (rows 37, 37b).
-	{"OidcD6_MaliciousTenantPublishesFirstPartyKid", RunOidcD6_MaliciousTenantPublishesFirstPartyKid},
-	{"OidcD6_ColdPathTwoIssEligibleCandidates", RunOidcD6_ColdPathTwoIssEligibleCandidates},
-	// D11 register race (rows 38a, 38b, 39).
-	{"OidcD11_SequentialRegisterDeterministic", RunOidcD11_SequentialRegisterDeterministic},
-	{"OidcD11_ConcurrentRegisterFaultInjected", RunOidcD11_ConcurrentRegisterFaultInjected},
-	{"OidcD11_OrphanIndexCleanup", RunOidcD11_OrphanIndexCleanup},
-	// D8 two-phase warmup (rows 40-42).
-	{"OidcD8_ListenerBindsBeforeWarmup", RunOidcD8_ListenerBindsBeforeWarmup},
-	{"OidcD8_Phase2FailureNonFatal", RunOidcD8_Phase2FailureNonFatal},
-	{"OidcD8_Phase2PendingFallsThroughToErrUnknownKID", RunOidcD8_Phase2PendingFallsThroughToErrUnknownKID},
-	// D18 broadcast (rows 43-46).
-	{"OidcD18_HandlerPanicIsolation", RunOidcD18_HandlerPanicIsolation},
-	{"OidcD18_SingleflightDebounce", RunOidcD18_SingleflightDebounce},
-	{"OidcD18_ReloadInvalidateSerializeLocally", RunOidcD18_ReloadInvalidateSerializeLocally},
-	{"OidcD18_ReloadAllSerializesWithReloadOne", RunOidcD18_ReloadAllSerializesWithReloadOne},
-
-	// Phase 9.5 — OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E (rows 47-68)
-	// D10 SSRF (rows 47-49).
-	{"OidcD10_SSRF_FetchTimeDNSRebind", RunOidcD10_SSRF_FetchTimeDNSRebind},
-	{"OidcD10_SSRF_IPv6BlockedRanges", RunOidcD10_SSRF_IPv6BlockedRanges},
-	{"OidcD10_SSRF_NoRedirectFollowing", RunOidcD10_SSRF_NoRedirectFollowing},
-	// D10 malicious jwks_uri in discovery doc (unit-level coverage; skipped at parity level).
-	{"OidcD10_MaliciousDiscoveryJWKSURI_Skip", RunOidcD10_MaliciousDiscoveryJWKSURI_Skip},
-	// Critical-2 fix — non-UUID tenant rejection (unit-level coverage; skipped at parity level).
-	{"OidcInvalidTenantUUIDRejected_Skip", RunOidcInvalidTenantUUIDRejected_Skip},
-	// D19 reactivate (rows 50-51).
-	{"OidcD19_ReactivateSuccessPath", RunOidcD19_ReactivateSuccessPath},
-	{"OidcD19_ReactivateWithFailedUpstreamPreservesCache", RunOidcD19_ReactivateWithFailedUpstreamPreservesCache},
-	// D20 audience (rows 52-53).
-	{"OidcD20_AudienceMismatchRejected", RunOidcD20_AudienceMismatchRejected},
-	{"OidcD20_EmptyExpectedAudiencesAcceptsAny", RunOidcD20_EmptyExpectedAudiencesAcceptsAny},
-	// D23 UserContext (rows 54-56).
-	{"OidcD23_CrossIdPSubCollisionDistinctUserIDs", RunOidcD23_CrossIdPSubCollisionDistinctUserIDs},
-	{"OidcD23_PerProviderRolesClaim", RunOidcD23_PerProviderRolesClaim},
-	{"OidcD23_RolesParsingMultiFormat", RunOidcD23_RolesParsingMultiFormat},
-	{"OidcD23_RolesParsingObjectKeys_Zitadel", RunOidcD23_RolesParsingObjectKeys_Zitadel},
-	// D23 sub bounds (rows 57-59).
-	{"OidcD23_SubControlCharRejected", RunOidcD23_SubControlCharRejected},
-	{"OidcD23_SubTooLong", RunOidcD23_SubTooLong},
-	{"OidcD23_SubContainingColonAccepted", RunOidcD23_SubContainingColonAccepted},
-	// D25 ownership transition (rows 60-62).
-	{"OidcD25_CrossTenantRegisterEmitsAuditLog", RunOidcD25_CrossTenantRegisterEmitsAuditLog},
-	{"OidcD25_RestartSurvivesInKV", RunOidcD25_RestartSurvivesInKV},
-	{"OidcD25_ReceivingNodeDoesNotReEmitAudit", RunOidcD25_ReceivingNodeDoesNotReEmitAudit},
-	// D21 list authz (row 63).
-	{"OidcD21_NonAdminTenantMemberCanList", RunOidcD21_NonAdminTenantMemberCanList},
-	// I9 broadcast (row 64).
-	{"OidcI9_BroadcastForUnknownProviderHandledGracefully", RunOidcI9_BroadcastForUnknownProviderHandledGracefully},
-	// State transitions (rows 65-66).
-	{"OidcStateTransitions_ActiveInvalidatedDeleted", RunOidcStateTransitions_ActiveInvalidatedDeleted},
-	{"OidcStateTransitions_InvalidatedReactivatedInvalidated", RunOidcStateTransitions_InvalidatedReactivatedInvalidated},
-	// E2E coverage (rows 67-68).
-	{"OidcE2E_TokenValidation", RunOidcE2E_TokenValidation},
-	{"OidcE2E_MultiNodeEviction", RunOidcE2E_MultiNodeEviction},
-
-	// Phase 9.6 — Audit fixes
-	// Critical: non-deterministic cross-tenant routing fix (audience disambiguation).
-	{"OidcCriticalAuditFix_AudienceDisambiguatesSharedIdP", RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP},
-	{"OidcCriticalAuditFix_AmbiguousProviderRejected_Skip", RunOidcCriticalAuditFix_AmbiguousProviderRejected_Skip},
-
-	// Phase 9.7 — Audit fixes round 2
-	// I-1: reactivateKeys=false cache-preservation (unit-level coverage; skipped at parity level).
-	{"OidcReactivate_KeysFalse_PreservesCache_Skip", RunOidcReactivate_KeysFalse_PreservesCache_Skip},
 
 	// Entity PATCH (RFC 7386 merge-patch) — cross-backend contract matrix.
 	// Normal operation.
@@ -409,6 +360,13 @@ var allTests = []NamedTest{
 	// Centerpiece: a processor rewrites the key field → enforcement is on the
 	// POST-MERGE value, not the input (two distinct inputs collide → 409).
 	{"UniqueKeys_ProcessorRewritesKeyField", RunUniqueKeys_ProcessorRewritesKeyField},
+	// Keys checked at commit on the transaction's final entities
+	// (unique_keys_commit_time.go).
+	{"UniqueSwapInOneTx", RunUniqueSwapInOneTx},
+	{"UniqueChainOfMoves", RunUniqueChainOfMoves},
+	{"UniqueFreeAfterClaim", RunUniqueFreeAfterClaim},
+	{"UniqueSameValueTwiceInTx", RunUniqueSameValueTwiceInTx},
+	{"UniqueIntermediateDuplicateFixed", RunUniqueIntermediateDuplicateFixed},
 
 	// Search sort — cross-backend sort ordering contract (Task 15).
 	// Each scenario seeds entities, issues a sorted sync search, and asserts
@@ -452,6 +410,13 @@ var allTests = []NamedTest{
 	// audit reason is backend-agnostic (durable via the AUTOMATED cascade path).
 	{"CriterionReasonInlineDefault", RunCriterionReasonInlineDefault},
 
+	// A compute member's reason holding U+0000 makes its answer unreadable: the
+	// create fails with 400 and commits nothing, on every backend.
+	{"AuditNULAnswerRefused", RunAuditNULAnswerRefused},
+	// A transition name holding U+0000 is refused with 400 before the run
+	// records anything, and the entity is unchanged, on every backend.
+	{"TransitionNameNULRefused", RunTransitionNameNULRefused},
+
 	// Follow-on-action attribution — the {attributed principal, executor} pair
 	// recorded on change history must be IDENTICAL on every backend. Guards the
 	// 3-way delete-tombstone divergence staying fixed, plus the executor
@@ -461,6 +426,15 @@ var allTests = []NamedTest{
 	{"AttributionExecutorRoundTrip", RunAttributionExecutorRoundTrip},
 	{"AttributionScheduledArmedByFire", RunAttributionScheduledArmedByFire},
 	{"AttributionCascadeJoinedWrite", RunAttributionCascadeJoinedWrite},
+	// On-behalf-of: an OBO write records its user executed by the OBO client;
+	// a compute write-back in that user's transaction records the user
+	// executed by the compute client.
+	{"AttributionOBOWrite", RunAttributionOBOWrite},
+	{"AttributionOBOWriteBack", RunAttributionOBOWriteBack},
+	// Edge messages: the same OBO attribution contract as entity writes,
+	// rendered on the message header (userId/attributedKind/executedBy)
+	// instead of change history.
+	{"MessageAttribution", RunMessageAttribution},
 
 	// Spec §10 backend-agnostic scenarios that lacked a dedicated named
 	// parity scenario (search_type_directed.go). Data-field temporal
@@ -511,6 +485,65 @@ var allTests = []NamedTest{
 	// tie-break — set+pairwise-key assertions, no cross-engine sequence
 	// compare (see async_ordering.go's doc comment).
 	{"AsyncOrderingRespected", RunAsyncOrderingRespected},
+
+	// The async status serves failureReason only for a FAILED job; a
+	// SUCCESSFUL one carries none (see async_failure_reason.go for why the
+	// FAILED half is covered outside parity).
+	{"AsyncStatusNoFailureReasonUnlessFailed", RunAsyncStatusNoFailureReasonUnlessFailed},
+
+	// GET /scheduled-tasks: paging, filters and tenant isolation of the
+	// scheduled-task query.
+	{"ScheduledTasksQueryPaging", RunScheduledTasksQueryPaging},
+	{"ScheduledTasksQueryFilters", RunScheduledTasksQueryFilters},
+	{"ScheduledTasksQueryTenantIsolation", RunScheduledTasksQueryTenantIsolation},
+
+	// Signing key-pair lifecycle: issue, current, JWKS, invalidate,
+	// reactivate, delete — the same lifecycle now round-trips through
+	// each plugin's shared KV store rather than a per-node in-memory one.
+	// Signing key pairs are server-global, not tenant-scoped, and there is
+	// no audience to isolate a scenario's own key from the others: other
+	// scenarios must not leave an issued key pair active inside its window
+	// on the shared server, or rotate/invalidate the server's keys; use
+	// their own cluster/stack for that.
+	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
+	{"KeyPairNoAudience", RunKeyPairNoAudience},
+	{"PlatformOperatorGate", RunPlatformOperatorGate},
+
+	// The platform clock, each scenario on a fresh stack of its own with
+	// clock control on (FreshStackFixture); skipped on a fixture without it.
+	{"PlatformClockPastStart", RunPlatformClockPastStart},
+	{"PlatformClockAdvanceOneDay", RunPlatformClockAdvanceOneDay},
+	{"PlatformClockBeforeRecordedTime409", RunPlatformClockBeforeRecordedTime409},
+	{"PlatformClockPastStartAsyncSearch", RunPlatformClockPastStartAsyncSearch},
+	{"PlatformClockAsyncSearchExpiry", RunPlatformClockAsyncSearchExpiry},
+	{"PlatformClockChangeListsNodes", RunPlatformClockChangeListsNodes},
+	// The cluster status read, platform operator only.
+	{"PlatformClusterStatus", RunPlatformClusterStatus},
+
+	// M2M clients in each backend's own spi.KeyValueStore: create, token,
+	// list, reset and delete, with another tenant's id answering 404 on
+	// delete and reset and never listed; and the per-tenant cap — refused
+	// at the cap with 400 M2M_CLIENT_CAP_REACHED, a delete freeing a slot.
+	{"M2MClientLifecycle", RunM2MClientLifecycle},
+	{"M2MClientCap", RunM2MClientCap},
+	{"M2MClientOnBehalfOf", RunM2MClientOnBehalfOf},
+	{"M2MClientSameIDTwoTenants", RunM2MClientSameIDTwoTenants},
+	{"M2MClientChosenIDExists", RunM2MClientChosenIDExists},
+
+	// Trusted keys in each backend's own spi.KeyValueStore, one namespace
+	// per tenant: one kid registered in two tenants is two independent keys —
+	// each tenant lists only its own, and invalidating or deleting one leaves
+	// the other unchanged.
+	{"TrustedKeyPerTenantKid", RunTrustedKeyPerTenantKid},
+
+	// The token exchange on every backend: an on-behalf-of client exchanges
+	// a user assertion for a token of that user carrying the client as
+	// act.sub and the client's roles only; a plain client is refused.
+	{"OBOExchange", RunOBOExchange},
+
+	// An on-behalf-of token never administers: every client and trusted-key
+	// route of its tenant answers 403 FORBIDDEN.
+	{"OBOTokenCannotAdminister", RunOBOTokenCannotAdminister},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

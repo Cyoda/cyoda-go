@@ -3,9 +3,11 @@
   "$id": "https://cyoda.com/cloud/event/search/EntityChangesMetadataResponse.json",
   "title": "EntityChangesMetadataResponse",
   "type": "object",
-  "extends": {
-    "$ref": "../common/BaseEvent.json"
-  },
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
   "properties": {
     "requestId": {
       "type": "string",

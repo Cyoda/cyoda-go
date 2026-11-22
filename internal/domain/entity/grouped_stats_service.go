@@ -3,42 +3,36 @@ package entity
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"net/http"
 	"sort"
 
 	"github.com/tidwall/gjson"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/consistency"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/match"
 )
-
-// ErrInvalidCondition wraps any predicate.ParseCondition failure that
-// surfaces from the service-layer dispatch. The HTTP handler maps this
-// (via errors.Is) to 400 INVALID_CONDITION per spec §3. We need the
-// sentinel because the predicate package returns plain fmt.Errorf
-// values, so the handler has no other typed signal to distinguish a
-// malformed condition (client fault) from an upstream/storage error
-// (5xx with ticket).
-var ErrInvalidCondition = errors.New("invalid condition")
 
 // GroupedStatsService is the per-request dispatcher described in spec §4.
 // It decides between native pushdown (spi.GroupedAggregator) and the
 // streaming-tally fallback (EntityStore.Iterate + in-process accumulator).
 type GroupedStatsService struct {
 	maxBuckets int
+	cons       *consistency.Service
 }
 
 // NewGroupedStatsService constructs a service with the configured
 // cardinality ceiling. The ceiling is the value of CYODA_STATS_GROUP_MAX
 // and is enforced inside both the pushdown and the streaming branches.
-func NewGroupedStatsService(maxBuckets int) *GroupedStatsService {
-	return &GroupedStatsService{maxBuckets: maxBuckets}
+func NewGroupedStatsService(maxBuckets int, cons *consistency.Service) *GroupedStatsService {
+	if cons == nil {
+		panic("entity.NewGroupedStatsService: nil consistency service")
+	}
+	return &GroupedStatsService{maxBuckets: maxBuckets, cons: cons}
 }
 
 // QueryGroupedStats runs the grouped-stats query and translates the known
@@ -70,26 +64,14 @@ func classifyGroupedStatsError(err error) error {
 	case errors.Is(err, spi.ErrGroupCardinalityExceeded):
 		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeGroupCardinalityExceeded,
 			"group cardinality exceeds the configured maximum").WithCause(err)
-	case errors.Is(err, ErrInvalidCondition):
-		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
-	case errors.Is(err, search.ErrInvalidCondition):
-		// The queryGroupedStatsInner ValidateConditionValueTypes call
-		// (below) propagates this sentinel unwrapped, not re-wrapped under
-		// this package's own ErrInvalidCondition above — same disposition
-		// (400 INVALID_CONDITION) via the search package's own sentinel, for
-		// an operator that is not a supported predicate for the field it's
-		// applied to (e.g. a string/pattern operator on a temporal meta
-		// field, operator-semantics.md §4/§7).
-		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
-	case errors.Is(err, search.ErrInvalidFieldPath):
-		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
 	case errors.Is(err, spi.ErrInvalidFilterPath),
 		errors.Is(err, spi.ErrUnevaluableLeaf),
 		errors.Is(err, spi.ErrInvalidPattern),
 		errors.Is(err, match.ErrUnevaluableLeaf),
 		errors.Is(err, match.ErrUnsupportedOperator):
-		// spi.ErrInvalidFilterPath is the PLUGIN-side twin of the arm above: a
-		// backend's own backstop rejecting a path outside the model's syntax.
+		// spi.ErrInvalidFilterPath is a backend's own backstop rejecting a path
+		// outside the model's syntax; request validation has already refused
+		// such a path, so it surfaces here only from a backend.
 		//
 		// spi.ErrUnevaluableLeaf / spi.ErrInvalidPattern reach here from the
 		// streaming tally's own store.Iterate call (tallyStreaming passes it
@@ -108,8 +90,6 @@ func classifyGroupedStatsError(err error) error {
 		// that function's doc). Delegating keeps one mapping table instead of
 		// several.
 		return search.ClassifyStoreQueryError(err)
-	case errors.Is(err, search.ErrConditionTypeMismatch):
-		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch, err.Error()).WithCause(err)
 	}
 	return err
 }
@@ -136,100 +116,21 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
 ) ([]GroupedStatsBucket, error) {
-	// Parse Condition once. A nil/empty Condition is the "match all" case
-	// (no predicate filtering). Any parse error here is the first sign of
-	// a malformed condition — surface it so the handler can return 400.
-	var parsedCond predicate.Condition
-	if len(req.Condition) > 0 {
-		c, err := predicate.ParseCondition(req.Condition)
-		if err != nil {
-			// Wrap with ErrInvalidCondition sentinel so the handler can
-			// route this to 400 INVALID_CONDITION via errors.Is. The
-			// underlying predicate error message is preserved in the
-			// chain (and surfaces in server-side logs) but the client
-			// sees a stable error code.
-			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, err)
-		}
-		parsedCond = c
-	}
+	// A nil Condition is the "match all" case (no predicate filtering). The
+	// request carries it already parsed.
+	parsedCond := req.Condition
 
-	// Structural condition validation (canonical operator set, BETWEEN
-	// arity) — model-independent, mirrors the single boundary the search
-	// path enforces in SearchService.Search/SubmitAsync via the same
-	// search.ValidateCondition call. Without this, a malformed-arity BETWEEN
-	// (or an unknown operatorType) slips past every downstream layer here:
-	// ConditionToFilter's translate-time check catches some shapes, but both
-	// it and match.Prepare now FAIL CLOSED WITH AN ERROR on an unevaluable
-	// leaf (never silently non-matching) — so without this earlier,
-	// better-classified check the request would surface as a generic
-	// internal error instead of a clean 400 INVALID_CONDITION naming the
-	// actual structural fault.
-	if parsedCond != nil {
-		if cErr := search.ValidateCondition(parsedCond); cErr != nil {
-			// A jsonPath outside JSON Path nomenclature is propagated
-			// unwrapped so classifyGroupedStatsError sees the
-			// search.ErrInvalidFieldPath sentinel and emits INVALID_FIELD_PATH
-			// — the same code /search returns for the same input. Re-wrapping
-			// in ErrInvalidCondition would shadow it: that arm is tested first.
-			if errors.Is(cErr, search.ErrInvalidFieldPath) {
-				return nil, cErr
-			}
-			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, cErr)
-		}
-	}
-
-	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
-	// before any backend runs. Every plugin's residual filter evaluator
-	// (sqlite's evaluateFilter, postgres's evalPostFilter) delegates to the
-	// error-free spi.PreparedFilter.Match kernel, which returns false
-	// (non-match) rather than erroring on a bad pattern — so an unvalidated
-	// malformed pattern would silently under-include buckets instead of
-	// failing the request. Validating here, in the backend-independent domain
-	// layer, makes every backend reject identically. It runs after the
-	// structural validation above, as it does on the search path: the pattern
-	// error names the leaf by the jsonPath the caller wrote, and that string
-	// should have cleared the path grammar first.
-	if parsedCond != nil {
-		if rErr := search.ValidatePatterns(parsedCond); rErr != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, rErr)
-		}
-	}
-
-	// Condition type-soundness (correctness-over-availability): mirrors the
-	// search path's validateConditionTypes boundary for its model-independent
-	// parts — the lifecycle/temporal/meta-field rules validateLifecycleType
-	// enforces (known meta field; a supported operator + RFC3339 operand on
-	// temporal fields), which need no schema. Without this, e.g. a CONTAINS
-	// operator against the temporal creationDate meta field would silently
-	// produce an empty result here instead of the 400 INVALID_CONDITION the
-	// equivalent /search request returns.
-	//
-	// A nil model is passed because this layer has none. The SCHEMA-dependent
-	// arm — an operand parsing into none of a declared field's types — runs at
-	// the handler, which holds the model store and validates the condition's,
-	// groupBy's and aggregates' paths against the model in the same place. A
-	// direct caller of this service that bypasses the handler gets only the
-	// model-independent half, which is why the handler is the boundary.
-	if parsedCond != nil {
-		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
-			// Propagate tErr directly (not re-wrapped): it already wraps
-			// search.ErrConditionTypeMismatch, search.ErrInvalidCondition or
-			// search.ErrInvalidFieldPath, so classifyGroupedStatsError
-			// classifies it via errors.Is against those same exported
-			// sentinels — the identical classification the search path's
-			// validateConditionTypes performs — and maps to the matching
-			// CONDITION_TYPE_MISMATCH / INVALID_CONDITION / INVALID_FIELD_PATH
-			// code.
-			return nil, tErr
-		}
-	}
+	// The condition was validated by the handler through
+	// search.ValidateConditionForModel (structure, patterns, paths, types),
+	// the one sequence every surface runs; this layer translates and
+	// executes it.
 
 	// Translate to a pushdown Filter. A nil parsedCond yields the zero-value
 	// Filter ("match all").
 	//
 	// One path, as on search and conditional delete: the condition either
 	// translates or the request is refused. A translation failure is
-	// unreachable from input that cleared search.ValidateCondition above —
+	// unreachable from input that cleared search.ValidateConditionForModel —
 	// the same pairing search runs, checked by
 	// TestDeleteAndGroupedStats_ClearingImpliesTranslates — so refusing
 	// costs no valid request.
@@ -254,6 +155,14 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 				"condition cannot be translated to a backend predicate")
 		}
 		pushFilter = f
+	}
+
+	// Every request error above wins over the fence; a read at an instant
+	// later than the consistency time is refused before any backend runs.
+	if req.PointInTime != nil {
+		if err := s.cons.Fence(ctx, *req.PointInTime); err != nil {
+			return nil, err
+		}
 	}
 
 	inTx := spi.GetTransaction(ctx) != nil

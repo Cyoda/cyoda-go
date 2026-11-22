@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 // TestPlanDeleteSelection_RefreshableUnknownPath_Succeeds pins the fix for
@@ -18,7 +18,7 @@ import (
 // falsely 400ed on a field a peer node had already extended the model with
 // (multi-node is this project's primary target — see
 // .claude/rules/multi-node-primary.md). planDeleteSelection's cached
-// descriptor map only knows field "a"; the store's RefreshAndGet reveals a
+// descriptor map only knows field "a"; the store's refresh reveals a
 // second field "b" the condition references. One bounded refresh must be
 // enough to accept it — exactly what /search/direct already gets via
 // validateConditionPaths.

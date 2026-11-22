@@ -49,216 +49,6 @@ func (e AggregateOp) Valid() bool {
 	}
 }
 
-// Defines values for ArrayConditionDtoOperatorType.
-const (
-	ArrayConditionDtoOperatorTypeAND                 ArrayConditionDtoOperatorType = "AND"
-	ArrayConditionDtoOperatorTypeBETWEEN             ArrayConditionDtoOperatorType = "BETWEEN"
-	ArrayConditionDtoOperatorTypeBETWEENINCLUSIVE    ArrayConditionDtoOperatorType = "BETWEEN_INCLUSIVE"
-	ArrayConditionDtoOperatorTypeCONTAINS            ArrayConditionDtoOperatorType = "CONTAINS"
-	ArrayConditionDtoOperatorTypeCONTAINSFIELD       ArrayConditionDtoOperatorType = "CONTAINS_FIELD"
-	ArrayConditionDtoOperatorTypeCONTAINSPATTERN     ArrayConditionDtoOperatorType = "CONTAINS_PATTERN"
-	ArrayConditionDtoOperatorTypeENDSWITH            ArrayConditionDtoOperatorType = "ENDS_WITH"
-	ArrayConditionDtoOperatorTypeENDSWITHFIELD       ArrayConditionDtoOperatorType = "ENDS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeENDSWITHPATTERN     ArrayConditionDtoOperatorType = "ENDS_WITH_PATTERN"
-	ArrayConditionDtoOperatorTypeEQUALBYATTRIBUTES   ArrayConditionDtoOperatorType = "EQUAL_BY_ATTRIBUTES"
-	ArrayConditionDtoOperatorTypeEQUALS              ArrayConditionDtoOperatorType = "EQUALS"
-	ArrayConditionDtoOperatorTypeEQUALSFIELD         ArrayConditionDtoOperatorType = "EQUALS_FIELD"
-	ArrayConditionDtoOperatorTypeGREATEROREQUAL      ArrayConditionDtoOperatorType = "GREATER_OR_EQUAL"
-	ArrayConditionDtoOperatorTypeGREATEROREQUALFIELD ArrayConditionDtoOperatorType = "GREATER_OR_EQUAL_FIELD"
-	ArrayConditionDtoOperatorTypeGREATERTHAN         ArrayConditionDtoOperatorType = "GREATER_THAN"
-	ArrayConditionDtoOperatorTypeGREATERTHANFIELD    ArrayConditionDtoOperatorType = "GREATER_THAN_FIELD"
-	ArrayConditionDtoOperatorTypeIBETWEENINCLUSIVE   ArrayConditionDtoOperatorType = "IBETWEEN_INCLUSIVE"
-	ArrayConditionDtoOperatorTypeICONTAINS           ArrayConditionDtoOperatorType = "ICONTAINS"
-	ArrayConditionDtoOperatorTypeICONTAINSFIELD      ArrayConditionDtoOperatorType = "ICONTAINS_FIELD"
-	ArrayConditionDtoOperatorTypeICONTAINSPATTERN    ArrayConditionDtoOperatorType = "ICONTAINS_PATTERN"
-	ArrayConditionDtoOperatorTypeIENDSWITH           ArrayConditionDtoOperatorType = "IENDS_WITH"
-	ArrayConditionDtoOperatorTypeIENDSWITHFIELD      ArrayConditionDtoOperatorType = "IENDS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeIENDSWITHPATTERN    ArrayConditionDtoOperatorType = "IENDS_WITH_PATTERN"
-	ArrayConditionDtoOperatorTypeIEQUALS             ArrayConditionDtoOperatorType = "IEQUALS"
-	ArrayConditionDtoOperatorTypeIEQUALSFIELD        ArrayConditionDtoOperatorType = "IEQUALS_FIELD"
-	ArrayConditionDtoOperatorTypeIMATCHESPATTERN     ArrayConditionDtoOperatorType = "IMATCHES_PATTERN"
-	ArrayConditionDtoOperatorTypeINOTCONTAINS        ArrayConditionDtoOperatorType = "INOT_CONTAINS"
-	ArrayConditionDtoOperatorTypeINOTCONTAINSFIELD   ArrayConditionDtoOperatorType = "INOT_CONTAINS_FIELD"
-	ArrayConditionDtoOperatorTypeINOTENDSWITH        ArrayConditionDtoOperatorType = "INOT_ENDS_WITH"
-	ArrayConditionDtoOperatorTypeINOTENDSWITHFIELD   ArrayConditionDtoOperatorType = "INOT_ENDS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeINOTEQUAL           ArrayConditionDtoOperatorType = "INOT_EQUAL"
-	ArrayConditionDtoOperatorTypeINOTEQUALFIELD      ArrayConditionDtoOperatorType = "INOT_EQUAL_FIELD"
-	ArrayConditionDtoOperatorTypeINOTSTARTSWITH      ArrayConditionDtoOperatorType = "INOT_STARTS_WITH"
-	ArrayConditionDtoOperatorTypeINOTSTARTSWITHFIELD ArrayConditionDtoOperatorType = "INOT_STARTS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeINSET               ArrayConditionDtoOperatorType = "IN_SET"
-	ArrayConditionDtoOperatorTypeINSTANCEOF          ArrayConditionDtoOperatorType = "INSTANCE_OF"
-	ArrayConditionDtoOperatorTypeIREGEXP             ArrayConditionDtoOperatorType = "IREGEXP"
-	ArrayConditionDtoOperatorTypeISCHANGED           ArrayConditionDtoOperatorType = "IS_CHANGED"
-	ArrayConditionDtoOperatorTypeISNULL              ArrayConditionDtoOperatorType = "IS_NULL"
-	ArrayConditionDtoOperatorTypeISTARTSWITH         ArrayConditionDtoOperatorType = "ISTARTS_WITH"
-	ArrayConditionDtoOperatorTypeISTARTSWITHFIELD    ArrayConditionDtoOperatorType = "ISTARTS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeISTARTSWITHPATTERN  ArrayConditionDtoOperatorType = "ISTARTS_WITH_PATTERN"
-	ArrayConditionDtoOperatorTypeISUNCHANGED         ArrayConditionDtoOperatorType = "IS_UNCHANGED"
-	ArrayConditionDtoOperatorTypeLESSOREQUAL         ArrayConditionDtoOperatorType = "LESS_OR_EQUAL"
-	ArrayConditionDtoOperatorTypeLESSOREQUALFIELD    ArrayConditionDtoOperatorType = "LESS_OR_EQUAL_FIELD"
-	ArrayConditionDtoOperatorTypeLESSTHAN            ArrayConditionDtoOperatorType = "LESS_THAN"
-	ArrayConditionDtoOperatorTypeLESSTHANFIELD       ArrayConditionDtoOperatorType = "LESS_THAN_FIELD"
-	ArrayConditionDtoOperatorTypeLIKE                ArrayConditionDtoOperatorType = "LIKE"
-	ArrayConditionDtoOperatorTypeMATCHESPATTERN      ArrayConditionDtoOperatorType = "MATCHES_PATTERN"
-	ArrayConditionDtoOperatorTypeNOT                 ArrayConditionDtoOperatorType = "NOT"
-	ArrayConditionDtoOperatorTypeNOTCONTAINS         ArrayConditionDtoOperatorType = "NOT_CONTAINS"
-	ArrayConditionDtoOperatorTypeNOTCONTAINSFIELD    ArrayConditionDtoOperatorType = "NOT_CONTAINS_FIELD"
-	ArrayConditionDtoOperatorTypeNOTENDSWITH         ArrayConditionDtoOperatorType = "NOT_ENDS_WITH"
-	ArrayConditionDtoOperatorTypeNOTENDSWITHFIELD    ArrayConditionDtoOperatorType = "NOT_ENDS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeNOTEQUAL            ArrayConditionDtoOperatorType = "NOT_EQUAL"
-	ArrayConditionDtoOperatorTypeNOTEQUALFIELD       ArrayConditionDtoOperatorType = "NOT_EQUAL_FIELD"
-	ArrayConditionDtoOperatorTypeNOTINSET            ArrayConditionDtoOperatorType = "NOT_IN_SET"
-	ArrayConditionDtoOperatorTypeNOTNULL             ArrayConditionDtoOperatorType = "NOT_NULL"
-	ArrayConditionDtoOperatorTypeNOTSTARTSWITH       ArrayConditionDtoOperatorType = "NOT_STARTS_WITH"
-	ArrayConditionDtoOperatorTypeNOTSTARTSWITHFIELD  ArrayConditionDtoOperatorType = "NOT_STARTS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeOBJECTEQUALS        ArrayConditionDtoOperatorType = "OBJECT_EQUALS"
-	ArrayConditionDtoOperatorTypeOR                  ArrayConditionDtoOperatorType = "OR"
-	ArrayConditionDtoOperatorTypeREGEXP              ArrayConditionDtoOperatorType = "REGEXP"
-	ArrayConditionDtoOperatorTypeSTARTSWITH          ArrayConditionDtoOperatorType = "STARTS_WITH"
-	ArrayConditionDtoOperatorTypeSTARTSWITHFIELD     ArrayConditionDtoOperatorType = "STARTS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeSTARTSWITHPATTERN   ArrayConditionDtoOperatorType = "STARTS_WITH_PATTERN"
-)
-
-// Valid indicates whether the value is a known member of the ArrayConditionDtoOperatorType enum.
-func (e ArrayConditionDtoOperatorType) Valid() bool {
-	switch e {
-	case ArrayConditionDtoOperatorTypeAND:
-		return true
-	case ArrayConditionDtoOperatorTypeBETWEEN:
-		return true
-	case ArrayConditionDtoOperatorTypeBETWEENINCLUSIVE:
-		return true
-	case ArrayConditionDtoOperatorTypeCONTAINS:
-		return true
-	case ArrayConditionDtoOperatorTypeCONTAINSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeCONTAINSPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeENDSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeENDSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeENDSWITHPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeEQUALBYATTRIBUTES:
-		return true
-	case ArrayConditionDtoOperatorTypeEQUALS:
-		return true
-	case ArrayConditionDtoOperatorTypeEQUALSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeGREATEROREQUAL:
-		return true
-	case ArrayConditionDtoOperatorTypeGREATEROREQUALFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeGREATERTHAN:
-		return true
-	case ArrayConditionDtoOperatorTypeGREATERTHANFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeIBETWEENINCLUSIVE:
-		return true
-	case ArrayConditionDtoOperatorTypeICONTAINS:
-		return true
-	case ArrayConditionDtoOperatorTypeICONTAINSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeICONTAINSPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeIENDSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeIENDSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeIENDSWITHPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeIEQUALS:
-		return true
-	case ArrayConditionDtoOperatorTypeIEQUALSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeIMATCHESPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTCONTAINS:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTCONTAINSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTENDSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTENDSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTEQUAL:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTEQUALFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTSTARTSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTSTARTSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeINSET:
-		return true
-	case ArrayConditionDtoOperatorTypeINSTANCEOF:
-		return true
-	case ArrayConditionDtoOperatorTypeIREGEXP:
-		return true
-	case ArrayConditionDtoOperatorTypeISCHANGED:
-		return true
-	case ArrayConditionDtoOperatorTypeISNULL:
-		return true
-	case ArrayConditionDtoOperatorTypeISTARTSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeISTARTSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeISTARTSWITHPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeISUNCHANGED:
-		return true
-	case ArrayConditionDtoOperatorTypeLESSOREQUAL:
-		return true
-	case ArrayConditionDtoOperatorTypeLESSOREQUALFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeLESSTHAN:
-		return true
-	case ArrayConditionDtoOperatorTypeLESSTHANFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeLIKE:
-		return true
-	case ArrayConditionDtoOperatorTypeMATCHESPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeNOT:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTCONTAINS:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTCONTAINSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTENDSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTENDSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTEQUAL:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTEQUALFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTINSET:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTNULL:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTSTARTSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTSTARTSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeOBJECTEQUALS:
-		return true
-	case ArrayConditionDtoOperatorTypeOR:
-		return true
-	case ArrayConditionDtoOperatorTypeREGEXP:
-		return true
-	case ArrayConditionDtoOperatorTypeSTARTSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeSTARTSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeSTARTSWITHPATTERN:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for AsyncSearchStatusDtoSearchJobStatus.
 const (
 	AsyncSearchStatusDtoSearchJobStatusCANCELLED  AsyncSearchStatusDtoSearchJobStatus = "CANCELLED"
@@ -286,24 +76,24 @@ func (e AsyncSearchStatusDtoSearchJobStatus) Valid() bool {
 	}
 }
 
-// Defines values for AuditEventDtoSeverity.
+// Defines values for AuditEventSeverity.
 const (
-	AuditEventDtoSeverityDEBUG AuditEventDtoSeverity = "DEBUG"
-	AuditEventDtoSeverityERROR AuditEventDtoSeverity = "ERROR"
-	AuditEventDtoSeverityINFO  AuditEventDtoSeverity = "INFO"
-	AuditEventDtoSeverityWARN  AuditEventDtoSeverity = "WARN"
+	AuditEventSeverityDEBUG AuditEventSeverity = "DEBUG"
+	AuditEventSeverityERROR AuditEventSeverity = "ERROR"
+	AuditEventSeverityINFO  AuditEventSeverity = "INFO"
+	AuditEventSeverityWARN  AuditEventSeverity = "WARN"
 )
 
-// Valid indicates whether the value is a known member of the AuditEventDtoSeverity enum.
-func (e AuditEventDtoSeverity) Valid() bool {
+// Valid indicates whether the value is a known member of the AuditEventSeverity enum.
+func (e AuditEventSeverity) Valid() bool {
 	switch e {
-	case AuditEventDtoSeverityDEBUG:
+	case AuditEventSeverityDEBUG:
 		return true
-	case AuditEventDtoSeverityERROR:
+	case AuditEventSeverityERROR:
 		return true
-	case AuditEventDtoSeverityINFO:
+	case AuditEventSeverityINFO:
 		return true
-	case AuditEventDtoSeverityWARN:
+	case AuditEventSeverityWARN:
 		return true
 	default:
 		return false
@@ -337,45 +127,84 @@ func (e CancelAsyncSearchDtoCurrentSearchJobStatus) Valid() bool {
 	}
 }
 
-// Defines values for EntityChangeAuditEventDtoChangeType.
+// Defines values for ClusterNodeStatusDtoReachability.
 const (
-	EntityChangeAuditEventDtoChangeTypeCREATE EntityChangeAuditEventDtoChangeType = "CREATE"
-	EntityChangeAuditEventDtoChangeTypeDELETE EntityChangeAuditEventDtoChangeType = "DELETE"
-	EntityChangeAuditEventDtoChangeTypeUPDATE EntityChangeAuditEventDtoChangeType = "UPDATE"
+	ClusterNodeStatusDtoReachabilityDOWN ClusterNodeStatusDtoReachability = "DOWN"
+	ClusterNodeStatusDtoReachabilityUP   ClusterNodeStatusDtoReachability = "UP"
 )
 
-// Valid indicates whether the value is a known member of the EntityChangeAuditEventDtoChangeType enum.
-func (e EntityChangeAuditEventDtoChangeType) Valid() bool {
+// Valid indicates whether the value is a known member of the ClusterNodeStatusDtoReachability enum.
+func (e ClusterNodeStatusDtoReachability) Valid() bool {
 	switch e {
-	case EntityChangeAuditEventDtoChangeTypeCREATE:
+	case ClusterNodeStatusDtoReachabilityDOWN:
 		return true
-	case EntityChangeAuditEventDtoChangeTypeDELETE:
-		return true
-	case EntityChangeAuditEventDtoChangeTypeUPDATE:
+	case ClusterNodeStatusDtoReachabilityUP:
 		return true
 	default:
 		return false
 	}
 }
 
-// Defines values for EntityChangeAuditEventDtoSeverity.
+// Defines values for ClusterNodeStatusDtoState.
 const (
-	EntityChangeAuditEventDtoSeverityDEBUG EntityChangeAuditEventDtoSeverity = "DEBUG"
-	EntityChangeAuditEventDtoSeverityERROR EntityChangeAuditEventDtoSeverity = "ERROR"
-	EntityChangeAuditEventDtoSeverityINFO  EntityChangeAuditEventDtoSeverity = "INFO"
-	EntityChangeAuditEventDtoSeverityWARN  EntityChangeAuditEventDtoSeverity = "WARN"
+	ClusterNodeStatusDtoStateDRAINING  ClusterNodeStatusDtoState = "DRAINING"
+	ClusterNodeStatusDtoStateNORMAL    ClusterNodeStatusDtoState = "NORMAL"
+	ClusterNodeStatusDtoStateSTARTING  ClusterNodeStatusDtoState = "STARTING"
+	ClusterNodeStatusDtoStateUNHEALTHY ClusterNodeStatusDtoState = "UNHEALTHY"
 )
 
-// Valid indicates whether the value is a known member of the EntityChangeAuditEventDtoSeverity enum.
-func (e EntityChangeAuditEventDtoSeverity) Valid() bool {
+// Valid indicates whether the value is a known member of the ClusterNodeStatusDtoState enum.
+func (e ClusterNodeStatusDtoState) Valid() bool {
 	switch e {
-	case EntityChangeAuditEventDtoSeverityDEBUG:
+	case ClusterNodeStatusDtoStateDRAINING:
 		return true
-	case EntityChangeAuditEventDtoSeverityERROR:
+	case ClusterNodeStatusDtoStateNORMAL:
 		return true
-	case EntityChangeAuditEventDtoSeverityINFO:
+	case ClusterNodeStatusDtoStateSTARTING:
 		return true
-	case EntityChangeAuditEventDtoSeverityWARN:
+	case ClusterNodeStatusDtoStateUNHEALTHY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClusterStateCountDtoReachability.
+const (
+	ClusterStateCountDtoReachabilityDOWN ClusterStateCountDtoReachability = "DOWN"
+	ClusterStateCountDtoReachabilityUP   ClusterStateCountDtoReachability = "UP"
+)
+
+// Valid indicates whether the value is a known member of the ClusterStateCountDtoReachability enum.
+func (e ClusterStateCountDtoReachability) Valid() bool {
+	switch e {
+	case ClusterStateCountDtoReachabilityDOWN:
+		return true
+	case ClusterStateCountDtoReachabilityUP:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClusterStateCountDtoState.
+const (
+	ClusterStateCountDtoStateDRAINING  ClusterStateCountDtoState = "DRAINING"
+	ClusterStateCountDtoStateNORMAL    ClusterStateCountDtoState = "NORMAL"
+	ClusterStateCountDtoStateSTARTING  ClusterStateCountDtoState = "STARTING"
+	ClusterStateCountDtoStateUNHEALTHY ClusterStateCountDtoState = "UNHEALTHY"
+)
+
+// Valid indicates whether the value is a known member of the ClusterStateCountDtoState enum.
+func (e ClusterStateCountDtoState) Valid() bool {
+	switch e {
+	case ClusterStateCountDtoStateDRAINING:
+		return true
+	case ClusterStateCountDtoStateNORMAL:
+		return true
+	case ClusterStateCountDtoStateSTARTING:
+		return true
+	case ClusterStateCountDtoStateUNHEALTHY:
 		return true
 	default:
 		return false
@@ -384,19 +213,19 @@ func (e EntityChangeAuditEventDtoSeverity) Valid() bool {
 
 // Defines values for EntityChangeMetaChangeType.
 const (
-	EntityChangeMetaChangeTypeCREATE EntityChangeMetaChangeType = "CREATE"
-	EntityChangeMetaChangeTypeDELETE EntityChangeMetaChangeType = "DELETE"
-	EntityChangeMetaChangeTypeUPDATE EntityChangeMetaChangeType = "UPDATE"
+	CREATE EntityChangeMetaChangeType = "CREATE"
+	DELETE EntityChangeMetaChangeType = "DELETE"
+	UPDATE EntityChangeMetaChangeType = "UPDATE"
 )
 
 // Valid indicates whether the value is a known member of the EntityChangeMetaChangeType enum.
 func (e EntityChangeMetaChangeType) Valid() bool {
 	switch e {
-	case EntityChangeMetaChangeTypeCREATE:
+	case CREATE:
 		return true
-	case EntityChangeMetaChangeTypeDELETE:
+	case DELETE:
 		return true
-	case EntityChangeMetaChangeTypeUPDATE:
+	case UPDATE:
 		return true
 	default:
 		return false
@@ -405,15 +234,15 @@ func (e EntityChangeMetaChangeType) Valid() bool {
 
 // Defines values for ErrorResponseDtoError.
 const (
-	AccessDenied         ErrorResponseDtoError = "access_denied"
-	InvalidClient        ErrorResponseDtoError = "invalid_client"
-	InvalidGrant         ErrorResponseDtoError = "invalid_grant"
-	InvalidRequest       ErrorResponseDtoError = "invalid_request"
-	InvalidScope         ErrorResponseDtoError = "invalid_scope"
-	MethodNotAllowed     ErrorResponseDtoError = "method_not_allowed"
-	ServerError          ErrorResponseDtoError = "server_error"
-	UnauthorizedClient   ErrorResponseDtoError = "unauthorized_client"
-	UnsupportedGrantType ErrorResponseDtoError = "unsupported_grant_type"
+	AccessDenied           ErrorResponseDtoError = "access_denied"
+	InvalidClient          ErrorResponseDtoError = "invalid_client"
+	InvalidRequest         ErrorResponseDtoError = "invalid_request"
+	MethodNotAllowed       ErrorResponseDtoError = "method_not_allowed"
+	ServerError            ErrorResponseDtoError = "server_error"
+	SlowDown               ErrorResponseDtoError = "slow_down"
+	TemporarilyUnavailable ErrorResponseDtoError = "temporarily_unavailable"
+	UnauthorizedClient     ErrorResponseDtoError = "unauthorized_client"
+	UnsupportedGrantType   ErrorResponseDtoError = "unsupported_grant_type"
 )
 
 // Valid indicates whether the value is a known member of the ErrorResponseDtoError enum.
@@ -423,115 +252,19 @@ func (e ErrorResponseDtoError) Valid() bool {
 		return true
 	case InvalidClient:
 		return true
-	case InvalidGrant:
-		return true
 	case InvalidRequest:
-		return true
-	case InvalidScope:
 		return true
 	case MethodNotAllowed:
 		return true
 	case ServerError:
 		return true
+	case SlowDown:
+		return true
+	case TemporarilyUnavailable:
+		return true
 	case UnauthorizedClient:
 		return true
 	case UnsupportedGrantType:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ExternalizedFunctionConfigDtoRetryPolicy.
-const (
-	ExternalizedFunctionConfigDtoRetryPolicyFIXED ExternalizedFunctionConfigDtoRetryPolicy = "FIXED"
-	ExternalizedFunctionConfigDtoRetryPolicyNONE  ExternalizedFunctionConfigDtoRetryPolicy = "NONE"
-)
-
-// Valid indicates whether the value is a known member of the ExternalizedFunctionConfigDtoRetryPolicy enum.
-func (e ExternalizedFunctionConfigDtoRetryPolicy) Valid() bool {
-	switch e {
-	case ExternalizedFunctionConfigDtoRetryPolicyFIXED:
-		return true
-	case ExternalizedFunctionConfigDtoRetryPolicyNONE:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ExternalizedProcessorConfigDtoRetryPolicy.
-const (
-	ExternalizedProcessorConfigDtoRetryPolicyFIXED ExternalizedProcessorConfigDtoRetryPolicy = "FIXED"
-	ExternalizedProcessorConfigDtoRetryPolicyNONE  ExternalizedProcessorConfigDtoRetryPolicy = "NONE"
-)
-
-// Valid indicates whether the value is a known member of the ExternalizedProcessorConfigDtoRetryPolicy enum.
-func (e ExternalizedProcessorConfigDtoRetryPolicy) Valid() bool {
-	switch e {
-	case ExternalizedProcessorConfigDtoRetryPolicyFIXED:
-		return true
-	case ExternalizedProcessorConfigDtoRetryPolicyNONE:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ExternalizedProcessorDefinitionDtoExecutionMode.
-const (
-	ASYNCNEWTX           ExternalizedProcessorDefinitionDtoExecutionMode = "ASYNC_NEW_TX"
-	ASYNCSAMETX          ExternalizedProcessorDefinitionDtoExecutionMode = "ASYNC_SAME_TX"
-	COMMITBEFOREDISPATCH ExternalizedProcessorDefinitionDtoExecutionMode = "COMMIT_BEFORE_DISPATCH"
-	SYNC                 ExternalizedProcessorDefinitionDtoExecutionMode = "SYNC"
-)
-
-// Valid indicates whether the value is a known member of the ExternalizedProcessorDefinitionDtoExecutionMode enum.
-func (e ExternalizedProcessorDefinitionDtoExecutionMode) Valid() bool {
-	switch e {
-	case ASYNCNEWTX:
-		return true
-	case ASYNCSAMETX:
-		return true
-	case COMMITBEFOREDISPATCH:
-		return true
-	case SYNC:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ExternalizedProcessorDefinitionDtoType.
-const (
-	ExternalizedProcessorDefinitionDtoTypeExternalized ExternalizedProcessorDefinitionDtoType = "externalized"
-)
-
-// Valid indicates whether the value is a known member of the ExternalizedProcessorDefinitionDtoType enum.
-func (e ExternalizedProcessorDefinitionDtoType) Valid() bool {
-	switch e {
-	case ExternalizedProcessorDefinitionDtoTypeExternalized:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for GroupConditionDtoOperator.
-const (
-	GroupConditionDtoOperatorAND GroupConditionDtoOperator = "AND"
-	GroupConditionDtoOperatorNOT GroupConditionDtoOperator = "NOT"
-	GroupConditionDtoOperatorOR  GroupConditionDtoOperator = "OR"
-)
-
-// Valid indicates whether the value is a known member of the GroupConditionDtoOperator enum.
-func (e GroupConditionDtoOperator) Valid() bool {
-	switch e {
-	case GroupConditionDtoOperatorAND:
-		return true
-	case GroupConditionDtoOperatorNOT:
-		return true
-	case GroupConditionDtoOperatorOR:
 		return true
 	default:
 		return false
@@ -580,24 +313,6 @@ func (e IssueJwtKeyPairRequestDtoAlgorithm) Valid() bool {
 	}
 }
 
-// Defines values for IssueJwtKeyPairRequestDtoAudience.
-const (
-	IssueJwtKeyPairRequestDtoAudienceClient IssueJwtKeyPairRequestDtoAudience = "client"
-	IssueJwtKeyPairRequestDtoAudienceHuman  IssueJwtKeyPairRequestDtoAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the IssueJwtKeyPairRequestDtoAudience enum.
-func (e IssueJwtKeyPairRequestDtoAudience) Valid() bool {
-	switch e {
-	case IssueJwtKeyPairRequestDtoAudienceClient:
-		return true
-	case IssueJwtKeyPairRequestDtoAudienceHuman:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for JwtKeyPairResponseDtoAlgorithm.
 const (
 	JwtKeyPairResponseDtoAlgorithmES256 JwtKeyPairResponseDtoAlgorithm = "ES256"
@@ -640,249 +355,6 @@ func (e JwtKeyPairResponseDtoAlgorithm) Valid() bool {
 	}
 }
 
-// Defines values for LifecycleConditionDtoOperatorType.
-const (
-	LifecycleConditionDtoOperatorTypeAND                 LifecycleConditionDtoOperatorType = "AND"
-	LifecycleConditionDtoOperatorTypeBETWEEN             LifecycleConditionDtoOperatorType = "BETWEEN"
-	LifecycleConditionDtoOperatorTypeBETWEENINCLUSIVE    LifecycleConditionDtoOperatorType = "BETWEEN_INCLUSIVE"
-	LifecycleConditionDtoOperatorTypeCONTAINS            LifecycleConditionDtoOperatorType = "CONTAINS"
-	LifecycleConditionDtoOperatorTypeCONTAINSFIELD       LifecycleConditionDtoOperatorType = "CONTAINS_FIELD"
-	LifecycleConditionDtoOperatorTypeCONTAINSPATTERN     LifecycleConditionDtoOperatorType = "CONTAINS_PATTERN"
-	LifecycleConditionDtoOperatorTypeENDSWITH            LifecycleConditionDtoOperatorType = "ENDS_WITH"
-	LifecycleConditionDtoOperatorTypeENDSWITHFIELD       LifecycleConditionDtoOperatorType = "ENDS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeENDSWITHPATTERN     LifecycleConditionDtoOperatorType = "ENDS_WITH_PATTERN"
-	LifecycleConditionDtoOperatorTypeEQUALBYATTRIBUTES   LifecycleConditionDtoOperatorType = "EQUAL_BY_ATTRIBUTES"
-	LifecycleConditionDtoOperatorTypeEQUALS              LifecycleConditionDtoOperatorType = "EQUALS"
-	LifecycleConditionDtoOperatorTypeEQUALSFIELD         LifecycleConditionDtoOperatorType = "EQUALS_FIELD"
-	LifecycleConditionDtoOperatorTypeGREATEROREQUAL      LifecycleConditionDtoOperatorType = "GREATER_OR_EQUAL"
-	LifecycleConditionDtoOperatorTypeGREATEROREQUALFIELD LifecycleConditionDtoOperatorType = "GREATER_OR_EQUAL_FIELD"
-	LifecycleConditionDtoOperatorTypeGREATERTHAN         LifecycleConditionDtoOperatorType = "GREATER_THAN"
-	LifecycleConditionDtoOperatorTypeGREATERTHANFIELD    LifecycleConditionDtoOperatorType = "GREATER_THAN_FIELD"
-	LifecycleConditionDtoOperatorTypeIBETWEENINCLUSIVE   LifecycleConditionDtoOperatorType = "IBETWEEN_INCLUSIVE"
-	LifecycleConditionDtoOperatorTypeICONTAINS           LifecycleConditionDtoOperatorType = "ICONTAINS"
-	LifecycleConditionDtoOperatorTypeICONTAINSFIELD      LifecycleConditionDtoOperatorType = "ICONTAINS_FIELD"
-	LifecycleConditionDtoOperatorTypeICONTAINSPATTERN    LifecycleConditionDtoOperatorType = "ICONTAINS_PATTERN"
-	LifecycleConditionDtoOperatorTypeIENDSWITH           LifecycleConditionDtoOperatorType = "IENDS_WITH"
-	LifecycleConditionDtoOperatorTypeIENDSWITHFIELD      LifecycleConditionDtoOperatorType = "IENDS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeIENDSWITHPATTERN    LifecycleConditionDtoOperatorType = "IENDS_WITH_PATTERN"
-	LifecycleConditionDtoOperatorTypeIEQUALS             LifecycleConditionDtoOperatorType = "IEQUALS"
-	LifecycleConditionDtoOperatorTypeIEQUALSFIELD        LifecycleConditionDtoOperatorType = "IEQUALS_FIELD"
-	LifecycleConditionDtoOperatorTypeIMATCHESPATTERN     LifecycleConditionDtoOperatorType = "IMATCHES_PATTERN"
-	LifecycleConditionDtoOperatorTypeINOTCONTAINS        LifecycleConditionDtoOperatorType = "INOT_CONTAINS"
-	LifecycleConditionDtoOperatorTypeINOTCONTAINSFIELD   LifecycleConditionDtoOperatorType = "INOT_CONTAINS_FIELD"
-	LifecycleConditionDtoOperatorTypeINOTENDSWITH        LifecycleConditionDtoOperatorType = "INOT_ENDS_WITH"
-	LifecycleConditionDtoOperatorTypeINOTENDSWITHFIELD   LifecycleConditionDtoOperatorType = "INOT_ENDS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeINOTEQUAL           LifecycleConditionDtoOperatorType = "INOT_EQUAL"
-	LifecycleConditionDtoOperatorTypeINOTEQUALFIELD      LifecycleConditionDtoOperatorType = "INOT_EQUAL_FIELD"
-	LifecycleConditionDtoOperatorTypeINOTSTARTSWITH      LifecycleConditionDtoOperatorType = "INOT_STARTS_WITH"
-	LifecycleConditionDtoOperatorTypeINOTSTARTSWITHFIELD LifecycleConditionDtoOperatorType = "INOT_STARTS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeINSET               LifecycleConditionDtoOperatorType = "IN_SET"
-	LifecycleConditionDtoOperatorTypeINSTANCEOF          LifecycleConditionDtoOperatorType = "INSTANCE_OF"
-	LifecycleConditionDtoOperatorTypeIREGEXP             LifecycleConditionDtoOperatorType = "IREGEXP"
-	LifecycleConditionDtoOperatorTypeISCHANGED           LifecycleConditionDtoOperatorType = "IS_CHANGED"
-	LifecycleConditionDtoOperatorTypeISNULL              LifecycleConditionDtoOperatorType = "IS_NULL"
-	LifecycleConditionDtoOperatorTypeISTARTSWITH         LifecycleConditionDtoOperatorType = "ISTARTS_WITH"
-	LifecycleConditionDtoOperatorTypeISTARTSWITHFIELD    LifecycleConditionDtoOperatorType = "ISTARTS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeISTARTSWITHPATTERN  LifecycleConditionDtoOperatorType = "ISTARTS_WITH_PATTERN"
-	LifecycleConditionDtoOperatorTypeISUNCHANGED         LifecycleConditionDtoOperatorType = "IS_UNCHANGED"
-	LifecycleConditionDtoOperatorTypeLESSOREQUAL         LifecycleConditionDtoOperatorType = "LESS_OR_EQUAL"
-	LifecycleConditionDtoOperatorTypeLESSOREQUALFIELD    LifecycleConditionDtoOperatorType = "LESS_OR_EQUAL_FIELD"
-	LifecycleConditionDtoOperatorTypeLESSTHAN            LifecycleConditionDtoOperatorType = "LESS_THAN"
-	LifecycleConditionDtoOperatorTypeLESSTHANFIELD       LifecycleConditionDtoOperatorType = "LESS_THAN_FIELD"
-	LifecycleConditionDtoOperatorTypeLIKE                LifecycleConditionDtoOperatorType = "LIKE"
-	LifecycleConditionDtoOperatorTypeMATCHESPATTERN      LifecycleConditionDtoOperatorType = "MATCHES_PATTERN"
-	LifecycleConditionDtoOperatorTypeNOT                 LifecycleConditionDtoOperatorType = "NOT"
-	LifecycleConditionDtoOperatorTypeNOTCONTAINS         LifecycleConditionDtoOperatorType = "NOT_CONTAINS"
-	LifecycleConditionDtoOperatorTypeNOTCONTAINSFIELD    LifecycleConditionDtoOperatorType = "NOT_CONTAINS_FIELD"
-	LifecycleConditionDtoOperatorTypeNOTENDSWITH         LifecycleConditionDtoOperatorType = "NOT_ENDS_WITH"
-	LifecycleConditionDtoOperatorTypeNOTENDSWITHFIELD    LifecycleConditionDtoOperatorType = "NOT_ENDS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeNOTEQUAL            LifecycleConditionDtoOperatorType = "NOT_EQUAL"
-	LifecycleConditionDtoOperatorTypeNOTEQUALFIELD       LifecycleConditionDtoOperatorType = "NOT_EQUAL_FIELD"
-	LifecycleConditionDtoOperatorTypeNOTINSET            LifecycleConditionDtoOperatorType = "NOT_IN_SET"
-	LifecycleConditionDtoOperatorTypeNOTNULL             LifecycleConditionDtoOperatorType = "NOT_NULL"
-	LifecycleConditionDtoOperatorTypeNOTSTARTSWITH       LifecycleConditionDtoOperatorType = "NOT_STARTS_WITH"
-	LifecycleConditionDtoOperatorTypeNOTSTARTSWITHFIELD  LifecycleConditionDtoOperatorType = "NOT_STARTS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeOBJECTEQUALS        LifecycleConditionDtoOperatorType = "OBJECT_EQUALS"
-	LifecycleConditionDtoOperatorTypeOR                  LifecycleConditionDtoOperatorType = "OR"
-	LifecycleConditionDtoOperatorTypeREGEXP              LifecycleConditionDtoOperatorType = "REGEXP"
-	LifecycleConditionDtoOperatorTypeSTARTSWITH          LifecycleConditionDtoOperatorType = "STARTS_WITH"
-	LifecycleConditionDtoOperatorTypeSTARTSWITHFIELD     LifecycleConditionDtoOperatorType = "STARTS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeSTARTSWITHPATTERN   LifecycleConditionDtoOperatorType = "STARTS_WITH_PATTERN"
-)
-
-// Valid indicates whether the value is a known member of the LifecycleConditionDtoOperatorType enum.
-func (e LifecycleConditionDtoOperatorType) Valid() bool {
-	switch e {
-	case LifecycleConditionDtoOperatorTypeAND:
-		return true
-	case LifecycleConditionDtoOperatorTypeBETWEEN:
-		return true
-	case LifecycleConditionDtoOperatorTypeBETWEENINCLUSIVE:
-		return true
-	case LifecycleConditionDtoOperatorTypeCONTAINS:
-		return true
-	case LifecycleConditionDtoOperatorTypeCONTAINSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeCONTAINSPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeENDSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeENDSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeENDSWITHPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeEQUALBYATTRIBUTES:
-		return true
-	case LifecycleConditionDtoOperatorTypeEQUALS:
-		return true
-	case LifecycleConditionDtoOperatorTypeEQUALSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeGREATEROREQUAL:
-		return true
-	case LifecycleConditionDtoOperatorTypeGREATEROREQUALFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeGREATERTHAN:
-		return true
-	case LifecycleConditionDtoOperatorTypeGREATERTHANFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeIBETWEENINCLUSIVE:
-		return true
-	case LifecycleConditionDtoOperatorTypeICONTAINS:
-		return true
-	case LifecycleConditionDtoOperatorTypeICONTAINSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeICONTAINSPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeIENDSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeIENDSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeIENDSWITHPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeIEQUALS:
-		return true
-	case LifecycleConditionDtoOperatorTypeIEQUALSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeIMATCHESPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTCONTAINS:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTCONTAINSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTENDSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTENDSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTEQUAL:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTEQUALFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTSTARTSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTSTARTSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeINSET:
-		return true
-	case LifecycleConditionDtoOperatorTypeINSTANCEOF:
-		return true
-	case LifecycleConditionDtoOperatorTypeIREGEXP:
-		return true
-	case LifecycleConditionDtoOperatorTypeISCHANGED:
-		return true
-	case LifecycleConditionDtoOperatorTypeISNULL:
-		return true
-	case LifecycleConditionDtoOperatorTypeISTARTSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeISTARTSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeISTARTSWITHPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeISUNCHANGED:
-		return true
-	case LifecycleConditionDtoOperatorTypeLESSOREQUAL:
-		return true
-	case LifecycleConditionDtoOperatorTypeLESSOREQUALFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeLESSTHAN:
-		return true
-	case LifecycleConditionDtoOperatorTypeLESSTHANFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeLIKE:
-		return true
-	case LifecycleConditionDtoOperatorTypeMATCHESPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOT:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTCONTAINS:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTCONTAINSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTENDSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTENDSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTEQUAL:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTEQUALFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTINSET:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTNULL:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTSTARTSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTSTARTSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeOBJECTEQUALS:
-		return true
-	case LifecycleConditionDtoOperatorTypeOR:
-		return true
-	case LifecycleConditionDtoOperatorTypeREGEXP:
-		return true
-	case LifecycleConditionDtoOperatorTypeSTARTSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeSTARTSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeSTARTSWITHPATTERN:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ProcessorDefinitionDtoType.
-const (
-	ProcessorDefinitionDtoTypeExternalized ProcessorDefinitionDtoType = "externalized"
-)
-
-// Valid indicates whether the value is a known member of the ProcessorDefinitionDtoType enum.
-func (e ProcessorDefinitionDtoType) Valid() bool {
-	switch e {
-	case ProcessorDefinitionDtoTypeExternalized:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for RegisterTrustedKeyRequestDtoAudience.
-const (
-	RegisterTrustedKeyRequestDtoAudienceClient RegisterTrustedKeyRequestDtoAudience = "client"
-	RegisterTrustedKeyRequestDtoAudienceHuman  RegisterTrustedKeyRequestDtoAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the RegisterTrustedKeyRequestDtoAudience enum.
-func (e RegisterTrustedKeyRequestDtoAudience) Valid() bool {
-	switch e {
-	case RegisterTrustedKeyRequestDtoAudienceClient:
-		return true
-	case RegisterTrustedKeyRequestDtoAudienceHuman:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for ScheduleFunctionDtoResultKind.
 const (
 	Schedule ScheduleFunctionDtoResultKind = "Schedule"
@@ -898,300 +370,18 @@ func (e ScheduleFunctionDtoResultKind) Valid() bool {
 	}
 }
 
-// Defines values for SimpleConditionDtoOperatorType.
+// Defines values for ScheduleFunctionDtoRetryPolicy.
 const (
-	SimpleConditionDtoOperatorTypeAND                 SimpleConditionDtoOperatorType = "AND"
-	SimpleConditionDtoOperatorTypeBETWEEN             SimpleConditionDtoOperatorType = "BETWEEN"
-	SimpleConditionDtoOperatorTypeBETWEENINCLUSIVE    SimpleConditionDtoOperatorType = "BETWEEN_INCLUSIVE"
-	SimpleConditionDtoOperatorTypeCONTAINS            SimpleConditionDtoOperatorType = "CONTAINS"
-	SimpleConditionDtoOperatorTypeCONTAINSFIELD       SimpleConditionDtoOperatorType = "CONTAINS_FIELD"
-	SimpleConditionDtoOperatorTypeCONTAINSPATTERN     SimpleConditionDtoOperatorType = "CONTAINS_PATTERN"
-	SimpleConditionDtoOperatorTypeENDSWITH            SimpleConditionDtoOperatorType = "ENDS_WITH"
-	SimpleConditionDtoOperatorTypeENDSWITHFIELD       SimpleConditionDtoOperatorType = "ENDS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeENDSWITHPATTERN     SimpleConditionDtoOperatorType = "ENDS_WITH_PATTERN"
-	SimpleConditionDtoOperatorTypeEQUALBYATTRIBUTES   SimpleConditionDtoOperatorType = "EQUAL_BY_ATTRIBUTES"
-	SimpleConditionDtoOperatorTypeEQUALS              SimpleConditionDtoOperatorType = "EQUALS"
-	SimpleConditionDtoOperatorTypeEQUALSFIELD         SimpleConditionDtoOperatorType = "EQUALS_FIELD"
-	SimpleConditionDtoOperatorTypeGREATEROREQUAL      SimpleConditionDtoOperatorType = "GREATER_OR_EQUAL"
-	SimpleConditionDtoOperatorTypeGREATEROREQUALFIELD SimpleConditionDtoOperatorType = "GREATER_OR_EQUAL_FIELD"
-	SimpleConditionDtoOperatorTypeGREATERTHAN         SimpleConditionDtoOperatorType = "GREATER_THAN"
-	SimpleConditionDtoOperatorTypeGREATERTHANFIELD    SimpleConditionDtoOperatorType = "GREATER_THAN_FIELD"
-	SimpleConditionDtoOperatorTypeIBETWEENINCLUSIVE   SimpleConditionDtoOperatorType = "IBETWEEN_INCLUSIVE"
-	SimpleConditionDtoOperatorTypeICONTAINS           SimpleConditionDtoOperatorType = "ICONTAINS"
-	SimpleConditionDtoOperatorTypeICONTAINSFIELD      SimpleConditionDtoOperatorType = "ICONTAINS_FIELD"
-	SimpleConditionDtoOperatorTypeICONTAINSPATTERN    SimpleConditionDtoOperatorType = "ICONTAINS_PATTERN"
-	SimpleConditionDtoOperatorTypeIENDSWITH           SimpleConditionDtoOperatorType = "IENDS_WITH"
-	SimpleConditionDtoOperatorTypeIENDSWITHFIELD      SimpleConditionDtoOperatorType = "IENDS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeIENDSWITHPATTERN    SimpleConditionDtoOperatorType = "IENDS_WITH_PATTERN"
-	SimpleConditionDtoOperatorTypeIEQUALS             SimpleConditionDtoOperatorType = "IEQUALS"
-	SimpleConditionDtoOperatorTypeIEQUALSFIELD        SimpleConditionDtoOperatorType = "IEQUALS_FIELD"
-	SimpleConditionDtoOperatorTypeIMATCHESPATTERN     SimpleConditionDtoOperatorType = "IMATCHES_PATTERN"
-	SimpleConditionDtoOperatorTypeINOTCONTAINS        SimpleConditionDtoOperatorType = "INOT_CONTAINS"
-	SimpleConditionDtoOperatorTypeINOTCONTAINSFIELD   SimpleConditionDtoOperatorType = "INOT_CONTAINS_FIELD"
-	SimpleConditionDtoOperatorTypeINOTENDSWITH        SimpleConditionDtoOperatorType = "INOT_ENDS_WITH"
-	SimpleConditionDtoOperatorTypeINOTENDSWITHFIELD   SimpleConditionDtoOperatorType = "INOT_ENDS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeINOTEQUAL           SimpleConditionDtoOperatorType = "INOT_EQUAL"
-	SimpleConditionDtoOperatorTypeINOTEQUALFIELD      SimpleConditionDtoOperatorType = "INOT_EQUAL_FIELD"
-	SimpleConditionDtoOperatorTypeINOTSTARTSWITH      SimpleConditionDtoOperatorType = "INOT_STARTS_WITH"
-	SimpleConditionDtoOperatorTypeINOTSTARTSWITHFIELD SimpleConditionDtoOperatorType = "INOT_STARTS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeINSET               SimpleConditionDtoOperatorType = "IN_SET"
-	SimpleConditionDtoOperatorTypeINSTANCEOF          SimpleConditionDtoOperatorType = "INSTANCE_OF"
-	SimpleConditionDtoOperatorTypeIREGEXP             SimpleConditionDtoOperatorType = "IREGEXP"
-	SimpleConditionDtoOperatorTypeISCHANGED           SimpleConditionDtoOperatorType = "IS_CHANGED"
-	SimpleConditionDtoOperatorTypeISNULL              SimpleConditionDtoOperatorType = "IS_NULL"
-	SimpleConditionDtoOperatorTypeISTARTSWITH         SimpleConditionDtoOperatorType = "ISTARTS_WITH"
-	SimpleConditionDtoOperatorTypeISTARTSWITHFIELD    SimpleConditionDtoOperatorType = "ISTARTS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeISTARTSWITHPATTERN  SimpleConditionDtoOperatorType = "ISTARTS_WITH_PATTERN"
-	SimpleConditionDtoOperatorTypeISUNCHANGED         SimpleConditionDtoOperatorType = "IS_UNCHANGED"
-	SimpleConditionDtoOperatorTypeLESSOREQUAL         SimpleConditionDtoOperatorType = "LESS_OR_EQUAL"
-	SimpleConditionDtoOperatorTypeLESSOREQUALFIELD    SimpleConditionDtoOperatorType = "LESS_OR_EQUAL_FIELD"
-	SimpleConditionDtoOperatorTypeLESSTHAN            SimpleConditionDtoOperatorType = "LESS_THAN"
-	SimpleConditionDtoOperatorTypeLESSTHANFIELD       SimpleConditionDtoOperatorType = "LESS_THAN_FIELD"
-	SimpleConditionDtoOperatorTypeLIKE                SimpleConditionDtoOperatorType = "LIKE"
-	SimpleConditionDtoOperatorTypeMATCHESPATTERN      SimpleConditionDtoOperatorType = "MATCHES_PATTERN"
-	SimpleConditionDtoOperatorTypeNOT                 SimpleConditionDtoOperatorType = "NOT"
-	SimpleConditionDtoOperatorTypeNOTCONTAINS         SimpleConditionDtoOperatorType = "NOT_CONTAINS"
-	SimpleConditionDtoOperatorTypeNOTCONTAINSFIELD    SimpleConditionDtoOperatorType = "NOT_CONTAINS_FIELD"
-	SimpleConditionDtoOperatorTypeNOTENDSWITH         SimpleConditionDtoOperatorType = "NOT_ENDS_WITH"
-	SimpleConditionDtoOperatorTypeNOTENDSWITHFIELD    SimpleConditionDtoOperatorType = "NOT_ENDS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeNOTEQUAL            SimpleConditionDtoOperatorType = "NOT_EQUAL"
-	SimpleConditionDtoOperatorTypeNOTEQUALFIELD       SimpleConditionDtoOperatorType = "NOT_EQUAL_FIELD"
-	SimpleConditionDtoOperatorTypeNOTINSET            SimpleConditionDtoOperatorType = "NOT_IN_SET"
-	SimpleConditionDtoOperatorTypeNOTNULL             SimpleConditionDtoOperatorType = "NOT_NULL"
-	SimpleConditionDtoOperatorTypeNOTSTARTSWITH       SimpleConditionDtoOperatorType = "NOT_STARTS_WITH"
-	SimpleConditionDtoOperatorTypeNOTSTARTSWITHFIELD  SimpleConditionDtoOperatorType = "NOT_STARTS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeOBJECTEQUALS        SimpleConditionDtoOperatorType = "OBJECT_EQUALS"
-	SimpleConditionDtoOperatorTypeOR                  SimpleConditionDtoOperatorType = "OR"
-	SimpleConditionDtoOperatorTypeREGEXP              SimpleConditionDtoOperatorType = "REGEXP"
-	SimpleConditionDtoOperatorTypeSTARTSWITH          SimpleConditionDtoOperatorType = "STARTS_WITH"
-	SimpleConditionDtoOperatorTypeSTARTSWITHFIELD     SimpleConditionDtoOperatorType = "STARTS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeSTARTSWITHPATTERN   SimpleConditionDtoOperatorType = "STARTS_WITH_PATTERN"
+	ScheduleFunctionDtoRetryPolicyFIXED ScheduleFunctionDtoRetryPolicy = "FIXED"
+	ScheduleFunctionDtoRetryPolicyNONE  ScheduleFunctionDtoRetryPolicy = "NONE"
 )
 
-// Valid indicates whether the value is a known member of the SimpleConditionDtoOperatorType enum.
-func (e SimpleConditionDtoOperatorType) Valid() bool {
+// Valid indicates whether the value is a known member of the ScheduleFunctionDtoRetryPolicy enum.
+func (e ScheduleFunctionDtoRetryPolicy) Valid() bool {
 	switch e {
-	case SimpleConditionDtoOperatorTypeAND:
+	case ScheduleFunctionDtoRetryPolicyFIXED:
 		return true
-	case SimpleConditionDtoOperatorTypeBETWEEN:
-		return true
-	case SimpleConditionDtoOperatorTypeBETWEENINCLUSIVE:
-		return true
-	case SimpleConditionDtoOperatorTypeCONTAINS:
-		return true
-	case SimpleConditionDtoOperatorTypeCONTAINSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeCONTAINSPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeENDSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeENDSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeENDSWITHPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeEQUALBYATTRIBUTES:
-		return true
-	case SimpleConditionDtoOperatorTypeEQUALS:
-		return true
-	case SimpleConditionDtoOperatorTypeEQUALSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeGREATEROREQUAL:
-		return true
-	case SimpleConditionDtoOperatorTypeGREATEROREQUALFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeGREATERTHAN:
-		return true
-	case SimpleConditionDtoOperatorTypeGREATERTHANFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeIBETWEENINCLUSIVE:
-		return true
-	case SimpleConditionDtoOperatorTypeICONTAINS:
-		return true
-	case SimpleConditionDtoOperatorTypeICONTAINSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeICONTAINSPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeIENDSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeIENDSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeIENDSWITHPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeIEQUALS:
-		return true
-	case SimpleConditionDtoOperatorTypeIEQUALSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeIMATCHESPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTCONTAINS:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTCONTAINSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTENDSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTENDSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTEQUAL:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTEQUALFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTSTARTSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTSTARTSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeINSET:
-		return true
-	case SimpleConditionDtoOperatorTypeINSTANCEOF:
-		return true
-	case SimpleConditionDtoOperatorTypeIREGEXP:
-		return true
-	case SimpleConditionDtoOperatorTypeISCHANGED:
-		return true
-	case SimpleConditionDtoOperatorTypeISNULL:
-		return true
-	case SimpleConditionDtoOperatorTypeISTARTSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeISTARTSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeISTARTSWITHPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeISUNCHANGED:
-		return true
-	case SimpleConditionDtoOperatorTypeLESSOREQUAL:
-		return true
-	case SimpleConditionDtoOperatorTypeLESSOREQUALFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeLESSTHAN:
-		return true
-	case SimpleConditionDtoOperatorTypeLESSTHANFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeLIKE:
-		return true
-	case SimpleConditionDtoOperatorTypeMATCHESPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeNOT:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTCONTAINS:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTCONTAINSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTENDSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTENDSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTEQUAL:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTEQUALFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTINSET:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTNULL:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTSTARTSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTSTARTSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeOBJECTEQUALS:
-		return true
-	case SimpleConditionDtoOperatorTypeOR:
-		return true
-	case SimpleConditionDtoOperatorTypeREGEXP:
-		return true
-	case SimpleConditionDtoOperatorTypeSTARTSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeSTARTSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeSTARTSWITHPATTERN:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for StateMachineAuditEventDtoEventType.
-const (
-	CANCEL                      StateMachineAuditEventDtoEventType = "CANCEL"
-	FORCESUCCESS                StateMachineAuditEventDtoEventType = "FORCE_SUCCESS"
-	PAUSEFORPROCESSING          StateMachineAuditEventDtoEventType = "PAUSE_FOR_PROCESSING"
-	PROCESSNOTMATCHCRITERION    StateMachineAuditEventDtoEventType = "PROCESS_NOT_MATCH_CRITERION"
-	SCHEDULEDTRANSITIONARM      StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_ARM"
-	SCHEDULEDTRANSITIONCANCEL   StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_CANCEL"
-	SCHEDULEDTRANSITIONEXPIRE   StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_EXPIRE"
-	SCHEDULEDTRANSITIONFIRE     StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_FIRE"
-	STATEMACHINEFINISH          StateMachineAuditEventDtoEventType = "STATE_MACHINE_FINISH"
-	STATEMACHINESTART           StateMachineAuditEventDtoEventType = "STATE_MACHINE_START"
-	STATEPROCESSRESULT          StateMachineAuditEventDtoEventType = "STATE_PROCESS_RESULT"
-	TRANSITIONABORTED           StateMachineAuditEventDtoEventType = "TRANSITION_ABORTED"
-	TRANSITIONMAKE              StateMachineAuditEventDtoEventType = "TRANSITION_MAKE"
-	TRANSITIONNOTFOUND          StateMachineAuditEventDtoEventType = "TRANSITION_NOT_FOUND"
-	TRANSITIONNOTMATCHCRITERION StateMachineAuditEventDtoEventType = "TRANSITION_NOT_MATCH_CRITERION"
-	WORKFLOWFOUND               StateMachineAuditEventDtoEventType = "WORKFLOW_FOUND"
-	WORKFLOWNOTFOUND            StateMachineAuditEventDtoEventType = "WORKFLOW_NOT_FOUND"
-	WORKFLOWSKIP                StateMachineAuditEventDtoEventType = "WORKFLOW_SKIP"
-)
-
-// Valid indicates whether the value is a known member of the StateMachineAuditEventDtoEventType enum.
-func (e StateMachineAuditEventDtoEventType) Valid() bool {
-	switch e {
-	case CANCEL:
-		return true
-	case FORCESUCCESS:
-		return true
-	case PAUSEFORPROCESSING:
-		return true
-	case PROCESSNOTMATCHCRITERION:
-		return true
-	case SCHEDULEDTRANSITIONARM:
-		return true
-	case SCHEDULEDTRANSITIONCANCEL:
-		return true
-	case SCHEDULEDTRANSITIONEXPIRE:
-		return true
-	case SCHEDULEDTRANSITIONFIRE:
-		return true
-	case STATEMACHINEFINISH:
-		return true
-	case STATEMACHINESTART:
-		return true
-	case STATEPROCESSRESULT:
-		return true
-	case TRANSITIONABORTED:
-		return true
-	case TRANSITIONMAKE:
-		return true
-	case TRANSITIONNOTFOUND:
-		return true
-	case TRANSITIONNOTMATCHCRITERION:
-		return true
-	case WORKFLOWFOUND:
-		return true
-	case WORKFLOWNOTFOUND:
-		return true
-	case WORKFLOWSKIP:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for StateMachineAuditEventDtoSeverity.
-const (
-	StateMachineAuditEventDtoSeverityDEBUG StateMachineAuditEventDtoSeverity = "DEBUG"
-	StateMachineAuditEventDtoSeverityERROR StateMachineAuditEventDtoSeverity = "ERROR"
-	StateMachineAuditEventDtoSeverityINFO  StateMachineAuditEventDtoSeverity = "INFO"
-	StateMachineAuditEventDtoSeverityWARN  StateMachineAuditEventDtoSeverity = "WARN"
-)
-
-// Valid indicates whether the value is a known member of the StateMachineAuditEventDtoSeverity enum.
-func (e StateMachineAuditEventDtoSeverity) Valid() bool {
-	switch e {
-	case StateMachineAuditEventDtoSeverityDEBUG:
-		return true
-	case StateMachineAuditEventDtoSeverityERROR:
-		return true
-	case StateMachineAuditEventDtoSeverityINFO:
-		return true
-	case StateMachineAuditEventDtoSeverityWARN:
+	case ScheduleFunctionDtoRetryPolicyNONE:
 		return true
 	default:
 		return false
@@ -1222,39 +412,18 @@ func (e SubscriptionLimitDtoTimeIntervalBound) Valid() bool {
 	}
 }
 
-// Defines values for SystemAuditEventDtoSeverity.
-const (
-	SystemAuditEventDtoSeverityDEBUG SystemAuditEventDtoSeverity = "DEBUG"
-	SystemAuditEventDtoSeverityERROR SystemAuditEventDtoSeverity = "ERROR"
-	SystemAuditEventDtoSeverityINFO  SystemAuditEventDtoSeverity = "INFO"
-	SystemAuditEventDtoSeverityWARN  SystemAuditEventDtoSeverity = "WARN"
-)
-
-// Valid indicates whether the value is a known member of the SystemAuditEventDtoSeverity enum.
-func (e SystemAuditEventDtoSeverity) Valid() bool {
-	switch e {
-	case SystemAuditEventDtoSeverityDEBUG:
-		return true
-	case SystemAuditEventDtoSeverityERROR:
-		return true
-	case SystemAuditEventDtoSeverityINFO:
-		return true
-	case SystemAuditEventDtoSeverityWARN:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for TechnicalUserCredentialsDtoGrantType.
 const (
-	TechnicalUserCredentialsDtoGrantTypeClientCredentials TechnicalUserCredentialsDtoGrantType = "client_credentials"
+	TechnicalUserCredentialsDtoGrantTypeClientCredentials                        TechnicalUserCredentialsDtoGrantType = "client_credentials"
+	TechnicalUserCredentialsDtoGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange TechnicalUserCredentialsDtoGrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // Valid indicates whether the value is a known member of the TechnicalUserCredentialsDtoGrantType enum.
 func (e TechnicalUserCredentialsDtoGrantType) Valid() bool {
 	switch e {
 	case TechnicalUserCredentialsDtoGrantTypeClientCredentials:
+		return true
+	case TechnicalUserCredentialsDtoGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange:
 		return true
 	default:
 		return false
@@ -1263,15 +432,12 @@ func (e TechnicalUserCredentialsDtoGrantType) Valid() bool {
 
 // Defines values for TokenResponseDtoIssuedTokenType.
 const (
-	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeAccessToken TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:access_token"
-	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt         TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:jwt"
+	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:jwt"
 )
 
 // Valid indicates whether the value is a known member of the TokenResponseDtoIssuedTokenType enum.
 func (e TokenResponseDtoIssuedTokenType) Valid() bool {
 	switch e {
-	case TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeAccessToken:
-		return true
 	case TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt:
 		return true
 	default:
@@ -1288,24 +454,6 @@ const (
 func (e TokenResponseDtoTokenType) Valid() bool {
 	switch e {
 	case Bearer:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for TrustedKeyResponseDtoAudience.
-const (
-	TrustedKeyResponseDtoAudienceClient TrustedKeyResponseDtoAudience = "client"
-	TrustedKeyResponseDtoAudienceHuman  TrustedKeyResponseDtoAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the TrustedKeyResponseDtoAudience enum.
-func (e TrustedKeyResponseDtoAudience) Valid() bool {
-	switch e {
-	case TrustedKeyResponseDtoAudienceClient:
-		return true
-	case TrustedKeyResponseDtoAudienceHuman:
 		return true
 	default:
 		return false
@@ -1356,22 +504,22 @@ func (e SearchEntityAuditEventsParamsEventType) Valid() bool {
 
 // Defines values for SearchEntityAuditEventsParamsSeverity.
 const (
-	DEBUG SearchEntityAuditEventsParamsSeverity = "DEBUG"
-	ERROR SearchEntityAuditEventsParamsSeverity = "ERROR"
-	INFO  SearchEntityAuditEventsParamsSeverity = "INFO"
-	WARN  SearchEntityAuditEventsParamsSeverity = "WARN"
+	SearchEntityAuditEventsParamsSeverityDEBUG SearchEntityAuditEventsParamsSeverity = "DEBUG"
+	SearchEntityAuditEventsParamsSeverityERROR SearchEntityAuditEventsParamsSeverity = "ERROR"
+	SearchEntityAuditEventsParamsSeverityINFO  SearchEntityAuditEventsParamsSeverity = "INFO"
+	SearchEntityAuditEventsParamsSeverityWARN  SearchEntityAuditEventsParamsSeverity = "WARN"
 )
 
 // Valid indicates whether the value is a known member of the SearchEntityAuditEventsParamsSeverity enum.
 func (e SearchEntityAuditEventsParamsSeverity) Valid() bool {
 	switch e {
-	case DEBUG:
+	case SearchEntityAuditEventsParamsSeverityDEBUG:
 		return true
-	case ERROR:
+	case SearchEntityAuditEventsParamsSeverityERROR:
 		return true
-	case INFO:
+	case SearchEntityAuditEventsParamsSeverityINFO:
 		return true
-	case WARN:
+	case SearchEntityAuditEventsParamsSeverityWARN:
 		return true
 	default:
 		return false
@@ -1585,18 +733,21 @@ func (e SetEntityModelChangeLevelParamsChangeLevel) Valid() bool {
 	}
 }
 
-// Defines values for GetCurrentJwtKeyPairParamsAudience.
+// Defines values for ListScheduledTasksParamsStatus.
 const (
-	GetCurrentJwtKeyPairParamsAudienceClient GetCurrentJwtKeyPairParamsAudience = "client"
-	GetCurrentJwtKeyPairParamsAudienceHuman  GetCurrentJwtKeyPairParamsAudience = "human"
+	FAILED  ListScheduledTasksParamsStatus = "FAILED"
+	RUNNING ListScheduledTasksParamsStatus = "RUNNING"
+	WAITING ListScheduledTasksParamsStatus = "WAITING"
 )
 
-// Valid indicates whether the value is a known member of the GetCurrentJwtKeyPairParamsAudience enum.
-func (e GetCurrentJwtKeyPairParamsAudience) Valid() bool {
+// Valid indicates whether the value is a known member of the ListScheduledTasksParamsStatus enum.
+func (e ListScheduledTasksParamsStatus) Valid() bool {
 	switch e {
-	case GetCurrentJwtKeyPairParamsAudienceClient:
+	case FAILED:
 		return true
-	case GetCurrentJwtKeyPairParamsAudienceHuman:
+	case RUNNING:
+		return true
+	case WAITING:
 		return true
 	default:
 		return false
@@ -1623,25 +774,17 @@ func (e GetTechnicalUserTokenFormdataBodyGrantType) Valid() bool {
 
 // Defines values for GetTechnicalUserTokenFormdataBodySubjectTokenType.
 const (
-	GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeAccessToken GetTechnicalUserTokenFormdataBodySubjectTokenType = "urn:ietf:params:oauth:token-type:access_token"
-	GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeJwt         GetTechnicalUserTokenFormdataBodySubjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
+	GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeJwt GetTechnicalUserTokenFormdataBodySubjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
 )
 
 // Valid indicates whether the value is a known member of the GetTechnicalUserTokenFormdataBodySubjectTokenType enum.
 func (e GetTechnicalUserTokenFormdataBodySubjectTokenType) Valid() bool {
 	switch e {
-	case GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeAccessToken:
-		return true
 	case GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeJwt:
 		return true
 	default:
 		return false
 	}
-}
-
-// AbstractConditionDto defines model for AbstractConditionDto.
-type AbstractConditionDto struct {
-	Type string `json:"type"`
 }
 
 // AggregateOp Aggregation operator. `sum`, `avg`, `min`, `max`, and `stdev` apply to scalar numeric fields; non-numeric or missing values are skipped per spec §3 (D4 semantics — see grouped-stats design doc).
@@ -1659,18 +802,6 @@ type AggregationExpr struct {
 	Op AggregateOp `json:"op"`
 }
 
-// ArrayConditionDto defines model for ArrayConditionDto.
-type ArrayConditionDto struct {
-	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses.
-	JsonPath     *string                        `json:"jsonPath,omitempty"`
-	OperatorType *ArrayConditionDtoOperatorType `json:"operatorType,omitempty"`
-	Type         string                         `json:"type"`
-	Value        *[]string                      `json:"value,omitempty"`
-}
-
-// ArrayConditionDtoOperatorType defines model for ArrayConditionDto.OperatorType.
-type ArrayConditionDtoOperatorType string
-
 // AsyncSearchStatusDto defines model for AsyncSearchStatusDto.
 type AsyncSearchStatusDto struct {
 	// CalculationTimeMillis Time taken to calculate the search job in milliseconds
@@ -1682,8 +813,11 @@ type AsyncSearchStatusDto struct {
 	// EntitiesCount Number of entities found by the search
 	EntitiesCount int64 `json:"entitiesCount"`
 
-	// ExpirationDate When the search job will expire and be automatically deleted
+	// ExpirationDate When the search job stops being readable: its finish time plus `CYODA_SEARCH_SNAPSHOT_TTL`. From then on its status, results and cancel answer 404 SEARCH_JOB_NOT_FOUND. While the job is RUNNING, a lower bound, createTime plus the TTL; final once the job ends.
 	ExpirationDate time.Time `json:"expirationDate"`
+
+	// FailureReason Why the search job failed. Present only when `searchJobStatus` is FAILED, and absent for every other status. For a failure the request itself caused, it is the same client error a direct search would answer, code first (for example `INVALID_FIELD_PATH: condition or sort references an invalid field path`); for any other failure it names no internal detail: a server-side failure is `SERVER_ERROR: internal error [ticket: <uuid>]`, its detail logged under the ticket, and a known cause carries a fixed text (for example `search abandoned: executor lost repeatedly`).
+	FailureReason *string `json:"failureReason,omitempty"`
 
 	// FinishTime When the search job completed (null if still running)
 	FinishTime      *time.Time                          `json:"finishTime,omitempty"`
@@ -1700,6 +834,9 @@ type AuditActorInfoDto struct {
 
 	// Id Identifier of the actor
 	Id string `json:"id"`
+
+	// Kind Open value set. Known values are user, service and system.
+	Kind *string `json:"kind,omitempty"`
 
 	// LegalId Legal entity identifier of the actor
 	LegalId string `json:"legalId"`
@@ -1730,7 +867,7 @@ type AuditEventDto struct {
 	MicrosTime int64 `json:"microsTime"`
 
 	// Severity Severity level of the event
-	Severity AuditEventDtoSeverity `json:"severity"`
+	Severity AuditEventSeverity `json:"severity"`
 
 	// System Flag indicating whether this is a system-level event
 	System *bool `json:"system,omitempty"`
@@ -1742,8 +879,16 @@ type AuditEventDto struct {
 	UtcTime time.Time `json:"utcTime"`
 }
 
-// AuditEventDtoSeverity Severity level of the event
-type AuditEventDtoSeverity string
+// AuditEventSeverity Severity level of the event
+type AuditEventSeverity string
+
+// AuditPrincipalDto The principal that executed the request — that made a change or sent a message — independent of the attributed principal. Present only when one was recorded.
+type AuditPrincipalDto struct {
+	Id string `json:"id"`
+
+	// Kind Open value set. Known values are user, service and system.
+	Kind string `json:"kind"`
+}
 
 // CancelAsyncSearchDto defines model for CancelAsyncSearchDto.
 type CancelAsyncSearchDto struct {
@@ -1758,12 +903,87 @@ type CancelAsyncSearchDto struct {
 // CancelAsyncSearchDtoCurrentSearchJobStatus defines model for CancelAsyncSearchDto.CurrentSearchJobStatus.
 type CancelAsyncSearchDtoCurrentSearchJobStatus string
 
+// ClusterNodeClockDto The node's platform clock setting, without its times. Only when the node is `UP`. A node without clock control answers `controllable` false, `version` 0 and `writer` empty.
+type ClusterNodeClockDto struct {
+	// Controllable Whether clock control is on at the node.
+	Controllable bool `json:"controllable"`
+
+	// Version The version of the node's clock setting.
+	Version int64 `json:"version"`
+
+	// Writer The id of the node that wrote the setting.
+	Writer string `json:"writer"`
+}
+
+// ClusterNodeStatusDto defines model for ClusterNodeStatusDto.
+type ClusterNodeStatusDto struct {
+	// Clock The node's platform clock setting, without its times. Only when the node is `UP`. A node without clock control answers `controllable` false, `version` 0 and `writer` empty.
+	Clock *ClusterNodeClockDto `json:"clock,omitempty"`
+
+	// Database Whether the node's database check passed. Only when `UP`.
+	Database *bool `json:"database,omitempty"`
+
+	// Id The node's id; `local` without clustering.
+	Id string `json:"id"`
+
+	// Reachability `UP` when the node answered the status ask; `DOWN` when it did not: no answer within `CYODA_PROXY_TIMEOUT`, a connection that did not open, an answer that did not validate, or no usable address.
+	Reachability ClusterNodeStatusDtoReachability `json:"reachability"`
+
+	// State The node's lifecycle state: from its answer when `UP`, from its gossip metadata when `DOWN`. Absent for a `DOWN` node whose metadata does not parse or names no valid state.
+	State *ClusterNodeStatusDtoState `json:"state,omitempty"`
+
+	// Version The node's build version. Only when `UP`.
+	Version *string `json:"version,omitempty"`
+}
+
+// ClusterNodeStatusDtoReachability `UP` when the node answered the status ask; `DOWN` when it did not: no answer within `CYODA_PROXY_TIMEOUT`, a connection that did not open, an answer that did not validate, or no usable address.
+type ClusterNodeStatusDtoReachability string
+
+// ClusterNodeStatusDtoState The node's lifecycle state: from its answer when `UP`, from its gossip metadata when `DOWN`. Absent for a `DOWN` node whose metadata does not parse or names no valid state.
+type ClusterNodeStatusDtoState string
+
+// ClusterStateCountDto defines model for ClusterStateCountDto.
+type ClusterStateCountDto struct {
+	// Count How many nodes have this reachability and state.
+	Count int32 `json:"count"`
+
+	// Reachability Whether the nodes counted answered.
+	Reachability ClusterStateCountDtoReachability `json:"reachability"`
+
+	// State The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse or names no valid state.
+	State *ClusterStateCountDtoState `json:"state,omitempty"`
+}
+
+// ClusterStateCountDtoReachability Whether the nodes counted answered.
+type ClusterStateCountDtoReachability string
+
+// ClusterStateCountDtoState The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse or names no valid state.
+type ClusterStateCountDtoState string
+
+// ClusterStatusDto defines model for ClusterStatusDto.
+type ClusterStatusDto struct {
+	// Counts One item per combination of reachability and state present among the nodes, with its count: `UP` before `DOWN`, then in the order `STARTING`, `NORMAL`, `DRAINING`, `UNHEALTHY`, with the item without a state last. A combination no node has is absent.
+	Counts []ClusterStateCountDto `json:"counts"`
+
+	// Nodes One item per member of the cluster directory, in ascending `id` order.
+	Nodes []ClusterNodeStatusDto `json:"nodes"`
+
+	// Operational True only when every node is `UP` and `NORMAL` with `database` true, all nodes have the same `version` and the same `clock`, and, with `waitForNodes`, at least that many nodes are `UP` and `NORMAL`.
+	Operational bool `json:"operational"`
+}
+
+// ConsistencyTimeDto defines model for ConsistencyTimeDto.
+type ConsistencyTimeDto struct {
+	// ConsistencyTime The consistency time, at the store's full precision. Pass it unchanged as pointInTime.
+	ConsistencyTime time.Time `json:"consistencyTime"`
+}
+
 // CursorPaginationInfoDto defines model for CursorPaginationInfoDto.
 type CursorPaginationInfoDto struct {
 	// HasNext Indicates whether there are more results available
 	HasNext bool `json:"hasNext"`
 
-	// NextCursor Cursor to use for fetching the next page of results. Can be omit when hasNext is false.
+	// NextCursor Opaque position of the last event on this page. Absent when hasNext is false.
 	NextCursor *string `json:"nextCursor,omitempty"`
 }
 
@@ -1793,17 +1013,24 @@ type EdgeMessageDto struct {
 
 // EdgeMessageHeader defines model for EdgeMessageHeader.
 type EdgeMessageHeader struct {
-	ContentEncoding string `json:"contentEncoding"`
-	ContentLength   int64  `json:"contentLength"`
+	// AttributedKind Kind of userId. Open value set. Known values are user, service and system.
+	AttributedKind  *string `json:"attributedKind,omitempty"`
+	ContentEncoding string  `json:"contentEncoding"`
+	ContentLength   int64   `json:"contentLength"`
 
 	// ContentType Informational only; see EdgeMessagePayload note. Proper content-type handling is a planned future feature.
 	ContentType   string  `json:"contentType"`
 	CorrelationId *string `json:"correlationId,omitempty"`
-	MessageId     *string `json:"messageId,omitempty"`
-	Recipient     *string `json:"recipient,omitempty"`
-	ReplyTo       *string `json:"replyTo,omitempty"`
-	Subject       string  `json:"subject"`
-	UserId        *string `json:"userId,omitempty"`
+
+	// ExecutedBy The principal that executed the request — that made a change or sent a message — independent of the attributed principal. Present only when one was recorded.
+	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
+	MessageId  *string            `json:"messageId,omitempty"`
+	Recipient  *string            `json:"recipient,omitempty"`
+	ReplyTo    *string            `json:"replyTo,omitempty"`
+	Subject    string             `json:"subject"`
+
+	// UserId The attributed user — the principal the message is recorded for.
+	UserId *string `json:"userId,omitempty"`
 }
 
 // EdgeMessageMetaData Flat map of the message's metadata key-value pairs, symmetric with the `metaData` supplied at creation. All values are indexed for search.
@@ -1820,66 +1047,15 @@ type EdgeMessagePayload = interface{}
 // EntityAuditEventsResponseDto defines model for EntityAuditEventsResponseDto.
 type EntityAuditEventsResponseDto struct {
 	// Items Audit events for the entity
-	Items      *[]EntityAuditEventsResponseDto_Items_Item `json:"items,omitempty"`
-	Pagination CursorPaginationInfoDto                    `json:"pagination"`
+	Items      *[]AuditEventDto        `json:"items,omitempty"`
+	Pagination CursorPaginationInfoDto `json:"pagination"`
 }
-
-// EntityAuditEventsResponseDto_Items_Item defines model for EntityAuditEventsResponseDto.items.Item.
-type EntityAuditEventsResponseDto_Items_Item struct {
-	union json.RawMessage
-}
-
-// EntityChangeAuditEventDto defines model for EntityChangeAuditEventDto.
-type EntityChangeAuditEventDto struct {
-	// Actor Actor related to this event
-	Actor          *AuditActorInfoDto `json:"actor,omitempty"`
-	AuditEventType string             `json:"auditEventType"`
-
-	// ChangeType Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
-	ChangeType *EntityChangeAuditEventDtoChangeType `json:"changeType,omitempty"`
-
-	// Changes Changes made to the entity
-	Changes *EntityChangesDto `json:"changes,omitempty"`
-
-	// ConsistencyTime Cyoda consistency time
-	ConsistencyTime *time.Time `json:"consistencyTime,omitempty"`
-
-	// Details Details of the event
-	Details *string `json:"details,omitempty"`
-
-	// EntityId Identifier of the entity related to this event
-	EntityId *openapi_types.UUID `json:"entityId,omitempty"`
-
-	// EntityModel Type of the entity related to this event (model.version)
-	EntityModel *string `json:"entityModel,omitempty"`
-
-	// MicrosTime time in microseconds when the event occurred
-	MicrosTime int64 `json:"microsTime"`
-
-	// Severity Severity level of the event
-	Severity EntityChangeAuditEventDtoSeverity `json:"severity"`
-
-	// System Flag indicating whether this is a system-level event
-	System *bool `json:"system,omitempty"`
-
-	// TransactionId Transaction identifier related to this event
-	TransactionId *openapi_types.UUID `json:"transactionId,omitempty"`
-
-	// UtcTime UTC time when the event occurred
-	UtcTime time.Time `json:"utcTime"`
-}
-
-// EntityChangeAuditEventDtoChangeType Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
-type EntityChangeAuditEventDtoChangeType string
-
-// EntityChangeAuditEventDtoSeverity Severity level of the event
-type EntityChangeAuditEventDtoSeverity string
 
 // EntityChangeMeta One entry in an entity's change history. `user` is the attributed
 // actor and is always present. `attributedKind` and `executedBy` are
 // present only when attribution was recorded for the change; absent on
-// legacy rows. Typed-but-open: known fields are enumerated, the object
-// is not sealed.
+// legacy rows. A DELETE entry carries no `transactionId`. Typed-but-open:
+// known fields are enumerated, the object is not sealed.
 type EntityChangeMeta struct {
 	// AttributedKind Kind of the attributed `user` above (e.g. "user", "service", "system"). Absent on legacy rows.
 	AttributedKind *string                    `json:"attributedKind,omitempty"`
@@ -1898,15 +1074,6 @@ type EntityChangeMeta struct {
 
 // EntityChangeMetaChangeType defines model for EntityChangeMeta.ChangeType.
 type EntityChangeMetaChangeType string
-
-// EntityChangesDto defines model for EntityChangesDto.
-type EntityChangesDto struct {
-	// After Entity after changes
-	After *JsonNode `json:"after,omitempty"`
-
-	// Before Entity before changes
-	Before *JsonNode `json:"before,omitempty"`
-}
 
 // EntityMetadata System-managed entity metadata. Mirrors the canonical
 // docs/cyoda/schema/common/EntityMetadata.json. Typed-but-open: known
@@ -2024,8 +1191,14 @@ type EntityResultDto struct {
 // Per-item ENTITY_MODIFIED conflicts surface inside the `200`
 // response body via the `failed[]` array, not as a `4xx` envelope.
 // Inspect `failed[]` to detect them. The `4xx` envelope is reserved
-// for chunk-wide infrastructure failures (malformed JSON, missing
-// entity, validation failure, non-conflict engine error).
+// for chunk-wide failures: malformed JSON, missing entity, validation
+// failure, a non-conflict engine error, a transaction conflict
+// (`409 CONFLICT`, retryable) — another transaction committed a
+// change to an item's entity after the chunk read it, or a processor's
+// joined callback lost a write race — and `412 ENTITY_MODIFIED` when
+// another transaction changed an item's entity while a
+// COMMIT_BEFORE_DISPATCH processor's callout ran. A conflict is never
+// isolated to its item.
 //
 // `entityIds` contains UUID strings (server is source of truth — the
 // server emits []string, not []object).
@@ -2041,7 +1214,7 @@ type EntityTransactionResponse struct {
 		// Code AppError code (e.g. MODEL_NOT_FOUND, ENTITY_NOT_FOUND).
 		Code string `json:"code"`
 
-		// Message Operator-facing failure message; safe for client display.
+		// Message Failure message, safe for client display: a client error's code-prefixed message, or for a server-side failure the generic SERVER_ERROR text with the ticket its detail is logged under.
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
 
@@ -2063,7 +1236,7 @@ type EntityTransactionResponse struct {
 			// chunk's request slice (per-chunk relative).
 			ItemIndex int32 `json:"itemIndex"`
 
-			// Message Operator-facing failure message; safe for client display.
+			// Message Failure message, safe for client display: a client error's code-prefixed message, or for a server-side failure the generic SERVER_ERROR text with the ticket its detail is logged under.
 			Message string `json:"message"`
 		} `json:"error"`
 	} `json:"failed,omitempty"`
@@ -2103,160 +1276,6 @@ type ErrorResponseDto struct {
 // ErrorResponseDtoError Error codes from RFC 6749 Section 5.2 (OAuth 2.0 Error Response) identifying the type of error
 type ErrorResponseDtoError string
 
-// ExternalizedFunctionConfigDto defines model for ExternalizedFunctionConfigDto.
-type ExternalizedFunctionConfigDto struct {
-	// AttachEntity Whether to attach the full entity payload to the criterion function calculation request. Defaults to true.
-	AttachEntity *bool `json:"attachEntity,omitempty"`
-
-	// CalculationNodesTags Comma-separated list of calculation node tags
-	CalculationNodesTags *string `json:"calculationNodesTags,omitempty"`
-
-	// Context Pass-through string forwarded verbatim as the `parameters` JSON
-	// node of the outgoing `EntityCriteriaCalculationRequest`. The value
-	// is encoded as a JSON string (pass-as-string); the receiver gets a
-	// JSON-quoted string in `parameters`. Empty value causes the
-	// `parameters` field to be omitted entirely. Use to distinguish
-	// multiple workflow roles served by a single externalized criterion
-	// implementation without registering a separate name per role.
-	Context *string `json:"context,omitempty"`
-
-	// ResponseTimeoutMs Response timeout in milliseconds
-	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
-
-	// RetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
-	// up to N additional attempts with fixed delay between tries
-	// (N and delay are server-configured). When omitted, defaults
-	// to FIXED at engine fire. Import-time validation rejects any
-	// other value.
-	RetryPolicy *ExternalizedFunctionConfigDtoRetryPolicy `json:"retryPolicy,omitempty"`
-}
-
-// ExternalizedFunctionConfigDtoRetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
-// up to N additional attempts with fixed delay between tries
-// (N and delay are server-configured). When omitted, defaults
-// to FIXED at engine fire. Import-time validation rejects any
-// other value.
-type ExternalizedFunctionConfigDtoRetryPolicy string
-
-// ExternalizedFunctionDto defines model for ExternalizedFunctionDto.
-type ExternalizedFunctionDto struct {
-	Config *ExternalizedFunctionConfigDto `json:"config,omitempty"`
-
-	// Criterion Optional criterion to check before calling an expensive function, used when the result can be confidently determined from entity data
-	Criterion *QueryConditionDto `json:"criterion,omitempty"`
-
-	// Name Name of the function that returns boolean
-	Name string `json:"name"`
-}
-
-// ExternalizedProcessorConfigDto defines model for ExternalizedProcessorConfigDto.
-type ExternalizedProcessorConfigDto struct {
-	// AsyncResult Whether to await the result asynchronously, outside of the
-	// transaction. Behavior is storage-engine-plugin dependent — not
-	// every plugin implements crossover semantics; consult the runtime
-	// plugin's documentation for the supported behavior. This backend
-	// does not implement async/crossover semantics; imports that set
-	// asyncResult=true are rejected with HTTP 400 VALIDATION_FAILED.
-	// The field is round-tripped for nil (absent) and the explicit-
-	// false case.
-	AsyncResult *bool `json:"asyncResult,omitempty"`
-
-	// AttachEntity Whether to attach the full entity payload to the processor calculation request. Defaults to true.
-	AttachEntity *bool `json:"attachEntity,omitempty"`
-
-	// CalculationNodesTags Comma-separated list of calculation node tags
-	CalculationNodesTags *string `json:"calculationNodesTags,omitempty"`
-
-	// Context Pass-through string forwarded verbatim as the `parameters` JSON
-	// node of the outgoing `EntityProcessorCalculationRequest`. The
-	// value is encoded as a JSON string (pass-as-string); the receiver
-	// gets a JSON-quoted string in `parameters`. Empty value causes the
-	// `parameters` field to be omitted entirely. Use to distinguish
-	// multiple workflow roles served by a single externalized processor
-	// implementation without registering a separate name per role.
-	Context *string `json:"context,omitempty"`
-
-	// CrossoverToAsyncMs Crossover delay to switch to asynchronous processing (ms),
-	// effective only when asyncResult is true. Behavior is
-	// storage-engine-plugin dependent — see asyncResult. This
-	// backend does not implement async/crossover semantics; imports
-	// that set any value for crossoverToAsyncMs are rejected with
-	// HTTP 400 VALIDATION_FAILED.
-	CrossoverToAsyncMs *int64 `json:"crossoverToAsyncMs,omitempty"`
-
-	// ResponseTimeoutMs Response timeout in milliseconds
-	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
-
-	// RetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
-	// up to N additional attempts with fixed delay between tries
-	// (N and delay are server-configured). When omitted, defaults
-	// to FIXED at engine fire. Import-time validation rejects any
-	// other value.
-	RetryPolicy *ExternalizedProcessorConfigDtoRetryPolicy `json:"retryPolicy,omitempty"`
-}
-
-// ExternalizedProcessorConfigDtoRetryPolicy Retry policy selector. NONE → single attempt, no retry. FIXED →
-// up to N additional attempts with fixed delay between tries
-// (N and delay are server-configured). When omitted, defaults
-// to FIXED at engine fire. Import-time validation rejects any
-// other value.
-type ExternalizedProcessorConfigDtoRetryPolicy string
-
-// ExternalizedProcessorDefinitionDto defines model for ExternalizedProcessorDefinitionDto.
-type ExternalizedProcessorDefinitionDto struct {
-	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
-	Annotations *WorkflowElementAnnotations     `json:"annotations,omitempty"`
-	Config      *ExternalizedProcessorConfigDto `json:"config,omitempty"`
-
-	// ExecutionMode Processor execution semantics. SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX
-	// run inside the cascade transaction. COMMIT_BEFORE_DISPATCH commits
-	// the cascade transaction before dispatch and opens a new one on
-	// return; the processor's result is applied via CompareAndSave
-	// using the prior commit's transaction ID as the expected version.
-	ExecutionMode *ExternalizedProcessorDefinitionDtoExecutionMode `json:"executionMode,omitempty"`
-
-	// Name Name of the processor
-	Name string `json:"name"`
-
-	// StartNewTxOnDispatch Only meaningful when executionMode is COMMIT_BEFORE_DISPATCH. If
-	// true, a new transaction is opened before dispatching the
-	// processor so the processor can perform transactional work
-	// during its execution. Connection is held in that new
-	// transaction during dispatch. If false (default), the processor
-	// runs with no transaction context; the connection is released
-	// entirely during processor execution.
-	StartNewTxOnDispatch *bool `json:"startNewTxOnDispatch,omitempty"`
-
-	// Type Processor execution-location axis. `externalized` dispatches the
-	// processor via gRPC to a calculation node selected by
-	// `calculationNodesTags`. Empty or omitted is treated as
-	// `externalized` by the runtime. The engine reserves the value
-	// `internalized` for an in-process execution location not yet
-	// implemented; any payload carrying `type: "internalized"` is
-	// rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
-	// reserved value is intentionally absent from this enum until the
-	// in-process subtype lands together with its schema.
-	Type *ExternalizedProcessorDefinitionDtoType `json:"type,omitempty"`
-}
-
-// ExternalizedProcessorDefinitionDtoExecutionMode Processor execution semantics. SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX
-// run inside the cascade transaction. COMMIT_BEFORE_DISPATCH commits
-// the cascade transaction before dispatch and opens a new one on
-// return; the processor's result is applied via CompareAndSave
-// using the prior commit's transaction ID as the expected version.
-type ExternalizedProcessorDefinitionDtoExecutionMode string
-
-// ExternalizedProcessorDefinitionDtoType Processor execution-location axis. `externalized` dispatches the
-// processor via gRPC to a calculation node selected by
-// `calculationNodesTags`. Empty or omitted is treated as
-// `externalized` by the runtime. The engine reserves the value
-// `internalized` for an in-process execution location not yet
-// implemented; any payload carrying `type: "internalized"` is
-// rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
-// reserved value is intentionally absent from this enum until the
-// in-process subtype lands together with its schema.
-type ExternalizedProcessorDefinitionDtoType string
-
 // FieldConfigDto defines model for FieldConfigDto.
 type FieldConfigDto struct {
 	ArrayFields   *[]FieldConfigDto `json:"arrayFields,omitempty"`
@@ -2269,33 +1288,12 @@ type FieldConfigDto struct {
 	IsArray       *bool             `json:"isArray,omitempty"`
 }
 
-// FunctionConditionDto defines model for FunctionConditionDto.
-type FunctionConditionDto struct {
-	Function *ExternalizedFunctionDto `json:"function,omitempty"`
-	Type     string                   `json:"type"`
-}
-
-// GroupConditionDto defines model for GroupConditionDto.
-type GroupConditionDto struct {
-	Conditions *[]GroupConditionDto_Conditions_Item `json:"conditions,omitempty"`
-	Operator   *GroupConditionDtoOperator           `json:"operator,omitempty"`
-	Type       string                               `json:"type"`
-}
-
-// GroupConditionDto_Conditions_Item defines model for GroupConditionDto.conditions.Item.
-type GroupConditionDto_Conditions_Item struct {
-	union json.RawMessage
-}
-
-// GroupConditionDtoOperator defines model for GroupConditionDto.Operator.
-type GroupConditionDtoOperator string
-
 // GroupKeyEntry One (path, value) pair in a bucket's ordered group key. `path` echoes the corresponding `groupBy` dimension; `value` is the observed value (any JSON scalar) or `null` when the field is absent or non-scalar (D4 semantics).
 type GroupKeyEntry struct {
 	// Path Group-by dimension (echoes the request entry).
 	Path string `json:"path"`
 
-	// Value Observed value for this dimension, or null.
+	// Value Observed value for this dimension: a string, number or boolean, or `null`. Never an object or an array.
 	Value interface{} `json:"value"`
 }
 
@@ -2316,8 +1314,8 @@ type GroupedStatsRequest struct {
 	// Aggregations Optional per-group aggregations.
 	Aggregations *[]AggregationExpr `json:"aggregations,omitempty"`
 
-	// Condition Optional Condition DSL predicate restricting the population. Uses the same union shape as the async-search endpoint.
-	Condition *GroupedStatsRequest_Condition `json:"condition,omitempty"`
+	// Condition Optional Condition DSL predicate restricting the population, as in a search body. A `function` condition, at any depth, is refused here with 400 `INVALID_CONDITION`.
+	Condition *QueryConditionDto `json:"condition,omitempty"`
 
 	// GroupBy Ordered list of group-by dimensions. Each entry is either the reserved token `state` (a token, not a path — no leader) or a scalar JSONPath. At least one entry is required. A JSONPath is a REQUIRED `$.` leader followed by dot-separated segments of ASCII letters, digits, `_` and `-`. Anything else — a missing leader (`country`), bracket-quoted property access (`$['country']`), array projections, recursive descent, whitespace, quotes, non-ASCII — is rejected with 400 `INVALID_GROUP_BY_PATH`. Paths are validated, never rewritten: the response `groupKey` path echoes exactly what the request sent.
 	GroupBy []string `json:"groupBy"`
@@ -2325,18 +1323,13 @@ type GroupedStatsRequest struct {
 	// Limit Optional cap on the number of buckets returned. Must be positive and less than or equal to the server-configured `CYODA_STATS_GROUP_MAX` (default 10000); a value outside that range is rejected with 400 `INVALID_LIMIT` rather than clamped.
 	Limit *int32 `json:"limit,omitempty"`
 
-	// PointInTime Optional point-in-time for the query in ISO 8601 / RFC 3339 format. Absent means the current committed state.
+	// PointInTime Optional point-in-time for the query in RFC 3339 format. Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `json:"pointInTime,omitempty"`
 }
 
-// GroupedStatsRequest_Condition Optional Condition DSL predicate restricting the population. Uses the same union shape as the async-search endpoint.
-type GroupedStatsRequest_Condition struct {
-	union json.RawMessage
-}
-
-// InvalidateKeyRequestDto defines model for InvalidateKeyRequestDto.
+// InvalidateKeyRequestDto Body of the key-pair invalidate request. Trusted keys have no grace period, and their invalidate request has no body.
 type InvalidateKeyRequestDto struct {
-	// GracePeriodSec Number of seconds to keep the key valid after invalidation. Default is 0 (immediate invalidation).
+	// GracePeriodSec Number of seconds the key keeps verifying tokens after invalidation; its validTo becomes now plus this, never later than its current validTo. Default is 0 (it stops verifying at once). Invalidating the key again with 0 ends a running grace period at once. At most 3600, the longest token lifetime (CYODA_JWT_EXPIRY_SECONDS), which no token outlives. A larger value is 400 BAD_REQUEST.
 	GracePeriodSec *int64 `json:"gracePeriodSec,omitempty"`
 }
 
@@ -2344,12 +1337,11 @@ type InvalidateKeyRequestDto struct {
 type IssueJwtKeyPairRequestDto struct {
 	// Algorithm Signing algorithm. Only `RS256` is honoured in this version.
 	Algorithm IssueJwtKeyPairRequestDtoAlgorithm `json:"algorithm"`
-	Audience  IssueJwtKeyPairRequestDtoAudience  `json:"audience"`
 
-	// InvalidateCurrent If true, invalidates the currently active key-pair for this audience.
+	// InvalidateCurrent If true, invalidates every issued key-pair whose window is open, the first rotation included. The signing key from `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays active and signs again whenever no issued key-pair is active and inside its window, so a rotation does not end the tokens the bootstrap key signed; to end a leaked token, invalidate the key-pair named by the `kid` in its header. An invalidated key-pair never signs again unless reactivated.
 	InvalidateCurrent *bool `json:"invalidateCurrent,omitempty"`
 
-	// InvalidateGracePeriodSec Number of seconds to keep the old key valid after invalidation. Only applicable when invalidateCurrent is true.
+	// InvalidateGracePeriodSec Number of seconds the invalidated key-pairs keep verifying tokens; each one's validTo becomes now plus this, never later than its current validTo. Default is 0 (they stop verifying at once). Only applicable when invalidateCurrent is true. At most 3600, the longest token lifetime (CYODA_JWT_EXPIRY_SECONDS), which no token outlives. A larger value is 400 BAD_REQUEST.
 	InvalidateGracePeriodSec *int64 `json:"invalidateGracePeriodSec,omitempty"`
 
 	// ValidFrom When the key-pair becomes valid. Defaults to current date-time if not specified.
@@ -2361,12 +1353,6 @@ type IssueJwtKeyPairRequestDto struct {
 
 // IssueJwtKeyPairRequestDtoAlgorithm Signing algorithm. Only `RS256` is honoured in this version.
 type IssueJwtKeyPairRequestDtoAlgorithm string
-
-// IssueJwtKeyPairRequestDtoAudience defines model for IssueJwtKeyPairRequestDto.Audience.
-type IssueJwtKeyPairRequestDtoAudience string
-
-// JsonNode defines model for JsonNode.
-type JsonNode = map[string]interface{}
 
 // JwtKeyPairResponseDto defines model for JwtKeyPairResponseDto.
 type JwtKeyPairResponseDto struct {
@@ -2407,17 +1393,6 @@ type LegalEntityInfoDto struct {
 	// Name Name of the legal entity
 	Name string `json:"name"`
 }
-
-// LifecycleConditionDto defines model for LifecycleConditionDto.
-type LifecycleConditionDto struct {
-	Field        *string                            `json:"field,omitempty"`
-	OperatorType *LifecycleConditionDtoOperatorType `json:"operatorType,omitempty"`
-	Type         string                             `json:"type"`
-	Value        *JsonNode                          `json:"value,omitempty"`
-}
-
-// LifecycleConditionDtoOperatorType defines model for LifecycleConditionDto.OperatorType.
-type LifecycleConditionDtoOperatorType string
 
 // MessageDeleteBatchResponse One element of the array returned by deleteMessages (batch delete).
 // Contains the IDs of deleted entities and a success flag.
@@ -2469,30 +1444,6 @@ type NewMessageRequest struct {
 	Payload EdgeMessagePayload `json:"payload"`
 }
 
-// OidcProviderResponseDto defines model for OidcProviderResponseDto.
-type OidcProviderResponseDto struct {
-	// Active Whether this OIDC provider is currently active and used for JWT validation
-	Active bool `json:"active"`
-
-	// CreatedAt When this OIDC provider was registered
-	CreatedAt time.Time `json:"createdAt"`
-
-	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
-	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
-
-	// Id ID for this OIDC provider entity
-	Id openapi_types.UUID `json:"id"`
-
-	// Issuers List of allowed `iss` claim values for tokens from this provider. When present and non-empty, the JWT `iss` claim must match one of these values bytewise. When absent or empty, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
-	Issuers *[]string `json:"issuers,omitempty"`
-
-	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
-	RolesClaim *string `json:"rolesClaim,omitempty"`
-
-	// WellKnownConfigUri URI to the OIDC provider's well-known configuration endpoint
-	WellKnownConfigUri string `json:"wellKnownConfigUri"`
-}
-
 // PageMetadataDto defines model for PageMetadataDto.
 type PageMetadataDto struct {
 	// Number Current page number (zero-based)
@@ -2513,6 +1464,45 @@ type PagedEntityResultsDto struct {
 	// Content List of entity results for the current page
 	Content *[]EntityResultDto `json:"content,omitempty"`
 	Page    *PageMetadataDto   `json:"page,omitempty"`
+}
+
+// PlatformClockChangeDto defines model for PlatformClockChangeDto.
+type PlatformClockChangeDto struct {
+	// AdvanceByMs Milliseconds to move the clock forward from now; the target may not lie past the year 9000. Exclusive with `time`.
+	AdvanceByMs *int64 `json:"advanceByMs,omitempty"`
+
+	// Rate Platform seconds per real second, with at most six fractional digits.
+	Rate *float32 `json:"rate,omitempty"`
+
+	// Time The platform time to go to; RFC 3339, in the years 1970 to 9000. Exclusive with `advanceByMs`.
+	Time *time.Time `json:"time,omitempty"`
+}
+
+// PlatformClockChangeResultDto defines model for PlatformClockChangeResultDto.
+type PlatformClockChangeResultDto struct {
+	// Controllable Whether this node accepts changes to the clock.
+	Controllable bool `json:"controllable"`
+
+	// Nodes The ids of every node that holds the new setting, this node included, in ascending order; `["local"]` without clustering (`CYODA_CLUSTER_ENABLED=false`).
+	Nodes []string `json:"nodes"`
+
+	// Now This node's platform time.
+	Now time.Time `json:"now"`
+
+	// Rate Platform seconds per real second; 1 without clock control.
+	Rate float32 `json:"rate"`
+}
+
+// PlatformClockDto defines model for PlatformClockDto.
+type PlatformClockDto struct {
+	// Controllable Whether this node accepts changes to the clock.
+	Controllable bool `json:"controllable"`
+
+	// Now This node's platform time.
+	Now time.Time `json:"now"`
+
+	// Rate Platform seconds per real second; 1 without clock control.
+	Rate float32 `json:"rate"`
 }
 
 // Prize defines model for Prize.
@@ -2537,6 +1527,12 @@ type ProblemDetail struct {
 	// Status The HTTP status code
 	Status *int32 `json:"status,omitempty"`
 
+	// Ticket Correlation id of an unexpected server error (500). The server
+	// logged the failure under the same id, so quoting it lets an
+	// operator find that log line. Absent on every other response, the
+	// 503s included.
+	Ticket *openapi_types.UUID `json:"ticket,omitempty"`
+
 	// Title A short, human-readable summary of the problem type
 	Title *string `json:"title,omitempty"`
 
@@ -2552,92 +1548,49 @@ type ProcessorDefinitionDto struct {
 	// Name Name of the processor
 	Name string `json:"name"`
 
-	// Type Processor execution-location axis. `externalized` dispatches the
-	// processor via gRPC to a calculation node selected by
-	// `calculationNodesTags`. Empty or omitted is treated as
-	// `externalized` by the runtime. The engine reserves the value
-	// `internalized` for an in-process execution location not yet
-	// implemented; any payload carrying `type: "internalized"` is
-	// rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
-	// reserved value is intentionally absent from this enum until the
-	// in-process subtype lands together with its schema.
-	Type *ProcessorDefinitionDtoType `json:"type,omitempty"`
+	// Type Processor execution-location axis; the mapping lists the known
+	// values. `externalized` dispatches the processor via gRPC to a
+	// calculation node selected by `calculationNodesTags`. Workflow
+	// import accepts `externalized` only: an omitted or empty value is
+	// stored, and exported, as `externalized`, and any other value is
+	// refused with `VALIDATION_FAILED` (400).
+	Type *string `json:"type,omitempty"`
 }
 
-// ProcessorDefinitionDtoType Processor execution-location axis. `externalized` dispatches the
-// processor via gRPC to a calculation node selected by
-// `calculationNodesTags`. Empty or omitted is treated as
-// `externalized` by the runtime. The engine reserves the value
-// `internalized` for an in-process execution location not yet
-// implemented; any payload carrying `type: "internalized"` is
-// rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
-// reserved value is intentionally absent from this enum until the
-// in-process subtype lands together with its schema.
-type ProcessorDefinitionDtoType string
-
-// QueryConditionDto defines model for QueryConditionDto.
+// QueryConditionDto A condition. `type` names its form; the mapping lists the known forms. Every condition position (a search, async search, grouped-stats or conditional-delete body, a workflow or transition `criterion`, a group's `conditions`, a function's pre-check) takes any of them; where a `function` condition is refused, the position's description says so.
 type QueryConditionDto struct {
 	Type string `json:"type"`
 }
 
 // ReactivateKeyRequestDto defines model for ReactivateKeyRequestDto.
 type ReactivateKeyRequestDto struct {
-	// ValidFrom Optional; defaults to now if absent.
+	// ValidFrom Optional; defaults to now if absent. The key-pair reactivate endpoint refuses a value in the future.
 	ValidFrom *time.Time `json:"validFrom,omitempty"`
 
 	// ValidTo Required. Must be > now and > validFrom.
 	ValidTo time.Time `json:"validTo"`
 }
 
-// ReactivateOidcProviderRequestDto defines model for ReactivateOidcProviderRequestDto.
-type ReactivateOidcProviderRequestDto struct {
-	// ReactivateKeys If true, also reactivates all related JWK keys that were invalidated with this provider
-	ReactivateKeys *bool `json:"reactivateKeys,omitempty"`
-}
-
-// RegisterOidcProviderRequestDto defines model for RegisterOidcProviderRequestDto.
-type RegisterOidcProviderRequestDto struct {
-	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
-	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
-
-	// Issuers Optional list of allowed `iss` claim values for tokens from this provider. When present, the JWT `iss` claim must match one of these values bytewise. When omitted, null, or empty array, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
-	Issuers *[]string `json:"issuers,omitempty"`
-
-	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
-	RolesClaim *string `json:"rolesClaim,omitempty"`
-
-	// WellKnownConfigUri URI to the OIDC provider's well-known configuration endpoint
-	WellKnownConfigUri string `json:"wellKnownConfigUri"`
-}
-
 // RegisterTrustedKeyRequestDto defines model for RegisterTrustedKeyRequestDto.
 type RegisterTrustedKeyRequestDto struct {
-	Audience RegisterTrustedKeyRequestDtoAudience `json:"audience"`
-
-	// InvalidateGracePeriodSec Grace period in seconds for invalidating previous keys (only used when invalidatePrevious is true). Default is 0 (immediate invalidation).
-	InvalidateGracePeriodSec *int64 `json:"invalidateGracePeriodSec,omitempty"`
-
-	// InvalidatePrevious If true, invalidates all other keys for the same audience belonging to the caller's tenant. Enables atomic key rotation.
+	// InvalidatePrevious If true, invalidates every other key of the tenant at once.
 	InvalidatePrevious *bool `json:"invalidatePrevious,omitempty"`
 
-	// Issuers List of allowed issuer URIs. When this parameter is configured, the JWT must contain an iss claim, and its value must match one of the entries in this list.
+	// Issuers List of accepted issuer values. When it is set, the assertion must carry an iss claim exactly equal to one of the entries. The entries are plain strings compared byte for byte; no URI form is required.
 	Issuers *[]string `json:"issuers,omitempty"`
 
-	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Must contain the public key components only. Supported key types: RSA (`kty: "RSA"`), EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC 7518, and RFC 8037 for field definitions. Only RSA (`kty: "RSA"`) is honoured in this version.
+	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Only RSA (`kty: "RSA"`) is honoured in this version, with a modulus of 2048 to 4096 bits and a positive odd public exponent. A `kid`, if present, must equal `keyId`. A JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`) is refused with 400 BAD_REQUEST. Only the public members `kty`, `kid`, `n`, `e`, `alg` and `use` are stored; any other member is dropped. See RFC 7517 and RFC 7518 for field definitions.
 	Jwk map[string]interface{} `json:"jwk"`
 
-	// KeyId Unique key identifier. Will be matched against the `kid` header in JWTs.
+	// KeyId Key identifier, unique within the caller's tenant. Will be matched against the `kid` header in JWTs. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format).
 	KeyId string `json:"keyId"`
 
 	// ValidFrom When the key becomes valid. Defaults to current time if not specified.
 	ValidFrom *time.Time `json:"validFrom,omitempty"`
 
-	// ValidTo When the key expires. Defaults to the system-configured maximum validity.
+	// ValidTo When the key expires. Defaults to validFrom plus CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS days (365 by default); a value that is given is not limited by that setting.
 	ValidTo *time.Time `json:"validTo,omitempty"`
 }
-
-// RegisterTrustedKeyRequestDtoAudience defines model for RegisterTrustedKeyRequestDto.Audience.
-type RegisterTrustedKeyRequestDtoAudience string
 
 // ScheduleFunctionDto A Function callout that computes a scheduled transition's firing
 // time (and optionally its expiry) per entity, in place of a static
@@ -2660,34 +1613,110 @@ type ScheduleFunctionDto struct {
 	// Name Name of the registered function to call.
 	Name string `json:"name"`
 
-	// ResponseTimeoutMs Response timeout in milliseconds.
+	// ResponseTimeoutMs How long to wait for the compute member's answer, in milliseconds.
+	// When absent or 0 the server's CYODA_CALLOUT_RESPONSE_TIMEOUT_MS
+	// applies (default 30000). Must not exceed the server's
+	// CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS (default 60000); import
+	// rejects a larger or a negative value with HTTP 400
+	// VALIDATION_FAILED. The bound is a server setting, so a workflow
+	// exported from one deployment can be refused by another with a
+	// lower bound.
 	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
 
 	// ResultKind Result-shape discriminator the calculation node must echo back.
 	// Only `Schedule` is supported for scheduled-transition timing.
 	ResultKind ScheduleFunctionDtoResultKind `json:"resultKind"`
+
+	// RetryPolicy Retry policy selector. NONE → one try. FIXED → the
+	// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
+	// retries after the first). The number of tries is
+	// server-configured, and is the normal number, not a hard limit.
+	// When omitted, FIXED applies. Import-time validation rejects any
+	// other value with HTTP 400 VALIDATION_FAILED.
+	RetryPolicy *ScheduleFunctionDtoRetryPolicy `json:"retryPolicy,omitempty"`
 }
 
 // ScheduleFunctionDtoResultKind Result-shape discriminator the calculation node must echo back.
 // Only `Schedule` is supported for scheduled-transition timing.
 type ScheduleFunctionDtoResultKind string
 
+// ScheduleFunctionDtoRetryPolicy Retry policy selector. NONE → one try. FIXED → the
+// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
+// retries after the first). The number of tries is
+// server-configured, and is the normal number, not a hard limit.
+// When omitted, FIXED applies. Import-time validation rejects any
+// other value with HTTP 400 VALIDATION_FAILED.
+type ScheduleFunctionDtoRetryPolicy string
+
+// ScheduledTaskArmedByDto The principal whose write armed the task. Present when known.
+type ScheduledTaskArmedByDto struct {
+	Id string `json:"id"`
+
+	// Kind Open value set. Known values are user, service and system.
+	Kind string `json:"kind"`
+}
+
+// ScheduledTaskDto One scheduled transition's task: fire `transition` of the entity at `scheduledTime`. Claim tokens, arm tokens and node identities are never returned.
+type ScheduledTaskDto struct {
+	// ArmedBy The principal whose write armed the task. Present when known.
+	ArmedBy *ScheduledTaskArmedByDto `json:"armedBy,omitempty"`
+
+	// ArmedTime When the task was last armed.
+	ArmedTime time.Time `json:"armedTime"`
+
+	// Attempts Failed attempts recorded since the task was last armed.
+	Attempts int32              `json:"attempts"`
+	EntityId openapi_types.UUID `json:"entityId"`
+
+	// ExpiresTime Present when the transition's schedule sets `timeoutMs` — `scheduledTime` plus `timeoutMs`.
+	ExpiresTime *time.Time `json:"expiresTime,omitempty"`
+
+	// FailedTime Present when `status` is FAILED.
+	FailedTime *time.Time `json:"failedTime,omitempty"`
+
+	// FailureReason Present when `status` is FAILED. Open value set; accept values not listed here. Known values: UNSAFE_WORK_NOT_COMPLETED — a processor not declared `idempotent` was handed to a compute node and the run did not commit, so it is not repeated; OWNER_LOST_REPEATEDLY — the node running the task was lost too many times; EXPIRED_AFTER_FAILED_ATTEMPTS — `expiresTime` passed after a failed attempt or a lost node; RUN_PANICKED — the run failed with an internal error; STOPPED_AFTER_PARTIAL_COMMIT — the run committed the entity into another state and then stopped.
+	FailureReason *string `json:"failureReason,omitempty"`
+
+	// LastAttemptTime Present after a failed attempt.
+	LastAttemptTime *time.Time `json:"lastAttemptTime,omitempty"`
+
+	// LastError For a FAILED task, present with the failure's text (pairs with `failedTime`), even when the text is empty. For every other status, present when `lastAttemptTime` is set, paired with it. Client-safe text — a `CODE: detail` message, a compute node's own message, or `internal error [ticket: <uuid>]`.
+	LastError *string `json:"lastError,omitempty"`
+
+	// LostOwners Times the node running the task was lost since the task was last armed.
+	LostOwners   int32  `json:"lostOwners"`
+	ModelName    string `json:"modelName"`
+	ModelVersion int32  `json:"modelVersion"`
+
+	// NextAttemptTime Present when `status` is WAITING — the earliest time the next attempt may start.
+	NextAttemptTime *time.Time `json:"nextAttemptTime,omitempty"`
+
+	// ScheduledTime When the transition is due.
+	ScheduledTime time.Time `json:"scheduledTime"`
+
+	// SourceState The state the entity must be in for the transition to fire.
+	SourceState string `json:"sourceState"`
+
+	// Status Open value set; accept values not listed here. Known values: WAITING — due at `nextAttemptTime`; RUNNING — a node has claimed it and is running it; FAILED — it will not run again and never moves the entity (see `failureReason`). A write to the entity in `sourceState` arms it again; the entity leaving `sourceState` removes it.
+	Status string `json:"status"`
+
+	// TaskId Opaque, stable identifier. The same (entity, source state, transition) keeps the same id when it is armed again.
+	TaskId     string `json:"taskId"`
+	Transition string `json:"transition"`
+}
+
+// ScheduledTaskPageDto defines model for ScheduledTaskPageDto.
+type ScheduledTaskPageDto struct {
+	// Items The tasks on this page, in (`scheduledTime`, `taskId`) order.
+	Items      []ScheduledTaskDto      `json:"items"`
+	Pagination CursorPaginationInfoDto `json:"pagination"`
+}
+
 // SetUniqueKeysRequest defines model for SetUniqueKeysRequest.
 type SetUniqueKeysRequest struct {
+	// UniqueKeys The model's composite unique keys. They replace the keys the model has; an empty array removes them all.
 	UniqueKeys []UniqueKeyDto `json:"uniqueKeys"`
 }
-
-// SimpleConditionDto defines model for SimpleConditionDto.
-type SimpleConditionDto struct {
-	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses.
-	JsonPath     *string                         `json:"jsonPath,omitempty"`
-	OperatorType *SimpleConditionDtoOperatorType `json:"operatorType,omitempty"`
-	Type         string                          `json:"type"`
-	Value        *JsonNode                       `json:"value,omitempty"`
-}
-
-// SimpleConditionDtoOperatorType defines model for SimpleConditionDto.OperatorType.
-type SimpleConditionDtoOperatorType string
 
 // SingleDeleteResult defines model for SingleDeleteResult.
 type SingleDeleteResult struct {
@@ -2714,8 +1743,8 @@ type StateMachineAuditEventDto struct {
 	// ConsistencyTime Cyoda consistency time
 	ConsistencyTime *time.Time `json:"consistencyTime,omitempty"`
 
-	// Data Optional event-specific payload. Present for some event types (e.g. STATE_MACHINE_FINISH includes {"success": true}, STATE_PROCESS_RESULT includes {"success": false}). TRANSITION_NOT_MATCH_CRITERION carries {workflowName, transition, criterion, reason} and WORKFLOW_SKIP carries {workflowName, reason}, where reason explains why the criterion blocked the passage. Null for most event types.
-	Data *map[string]interface{} `json:"data,omitempty"`
+	// Data The event's data. The server always sends it, never null. Its `eventType` repeats the outer `eventType` and selects the schema: each event type's schema states its fields and when an optional field is present. A field is present only when the server knows its value. It is not a required property so that a client can read an event of a type it does not know: the client reads that event's data as empty, and the outer `eventType` still names it.
+	Data *StateMachineEventDto `json:"data,omitempty"`
 
 	// Details Details of the event
 	Details *string `json:"details,omitempty"`
@@ -2726,21 +1755,22 @@ type StateMachineAuditEventDto struct {
 	// EntityModel Type of the entity related to this event (model.version)
 	EntityModel *string `json:"entityModel,omitempty"`
 
-	// EventType Type of the state machine event. `TRANSITION_ABORTED` is
-	// a cyoda-go extension emitted as a
-	// compensating event when an in-flight transition is
-	// rejected by a stale `ifMatch` precondition; its `data`
-	// payload carries `{reason: "ENTITY_MODIFIED",
-	// transitionName, expectedTxId, actualTxId}` so consumers
-	// can pair the entry-side `STATE_MACHINE_START` with a
-	// terminal abort event in the audit log.
-	EventType *StateMachineAuditEventDtoEventType `json:"eventType,omitempty"`
+	// EventId The event's identity: a time-based UUID the server assigned when it recorded the event. The same on every read.
+	EventId *openapi_types.UUID `json:"eventId,omitempty"`
+
+	// EventType Type of the state machine event. Its known values are the
+	// keys of the mapping of `StateMachineEventDto`, the schema of
+	// `data`. The set grows: a client accepts any other value.
+	EventType *string `json:"eventType,omitempty"`
+
+	// ExecutedBy The principal that executed the request, independent of the attributed principal. Present only when one was recorded.
+	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
 
 	// MicrosTime time in microseconds when the event occurred
 	MicrosTime int64 `json:"microsTime"`
 
 	// Severity Severity level of the event
-	Severity StateMachineAuditEventDtoSeverity `json:"severity"`
+	Severity AuditEventSeverity `json:"severity"`
 
 	// State State of the entity where the event occurred within the state machine
 	State *string `json:"state,omitempty"`
@@ -2755,18 +1785,10 @@ type StateMachineAuditEventDto struct {
 	UtcTime time.Time `json:"utcTime"`
 }
 
-// StateMachineAuditEventDtoEventType Type of the state machine event. `TRANSITION_ABORTED` is
-// a cyoda-go extension emitted as a
-// compensating event when an in-flight transition is
-// rejected by a stale `ifMatch` precondition; its `data`
-// payload carries `{reason: "ENTITY_MODIFIED",
-// transitionName, expectedTxId, actualTxId}` so consumers
-// can pair the entry-side `STATE_MACHINE_START` with a
-// terminal abort event in the audit log.
-type StateMachineAuditEventDtoEventType string
-
-// StateMachineAuditEventDtoSeverity Severity level of the event
-type StateMachineAuditEventDtoSeverity string
+// StateMachineEventDto The data of a state-machine audit event. `eventType` is the event's type, the same value as the outer event's `eventType`, and selects the schema of the rest of the object.
+type StateMachineEventDto struct {
+	EventType string `json:"eventType"`
+}
 
 // StreamDataDeleteResult defines model for StreamDataDeleteResult.
 type StreamDataDeleteResult struct {
@@ -2827,88 +1849,33 @@ type SubscriptionsResponseDto struct {
 	Subscriptions []SubscriptionDto `json:"subscriptions"`
 }
 
-// SystemAuditEventDto defines model for SystemAuditEventDto.
-type SystemAuditEventDto struct {
-	// Actor Actor related to this event
-	Actor          *AuditActorInfoDto `json:"actor,omitempty"`
-	AuditEventType string             `json:"auditEventType"`
-
-	// ConsistencyTime Cyoda consistency time
-	ConsistencyTime *time.Time `json:"consistencyTime,omitempty"`
-
-	// Data Object containing specific event data with technical information
-	Data *JsonNode `json:"data,omitempty"`
-
-	// Details Details of the event
-	Details *string `json:"details,omitempty"`
-
-	// DoneTime Time when the operation completed, if applicable
-	DoneTime *time.Time `json:"doneTime,omitempty"`
-
-	// EntityId Identifier of the entity related to this event
-	EntityId *openapi_types.UUID `json:"entityId,omitempty"`
-
-	// EntityModel Type of the entity related to this event (model.version)
-	EntityModel *string `json:"entityModel,omitempty"`
-
-	// ErrorTime Time when an error occurred, if applicable
-	ErrorTime *time.Time `json:"errorTime,omitempty"`
-
-	// MicrosTime time in microseconds when the event occurred
-	MicrosTime int64 `json:"microsTime"`
-
-	// QueueName Name of the queue involved in the operation, if applicable
-	QueueName *string `json:"queueName,omitempty"`
-
-	// Severity Severity level of the event
-	Severity SystemAuditEventDtoSeverity `json:"severity"`
-
-	// ShardId Identifier of the shard involved in the operation, if applicable
-	ShardId *string `json:"shardId,omitempty"`
-
-	// Status Status of the system operation, if applicable
-	Status *string `json:"status,omitempty"`
-
-	// System Flag indicating whether this is a system-level event
-	System *bool `json:"system,omitempty"`
-
-	// TransactionId Transaction identifier related to this event
-	TransactionId *openapi_types.UUID `json:"transactionId,omitempty"`
-
-	// UtcTime UTC time when the event occurred
-	UtcTime time.Time `json:"utcTime"`
-}
-
-// SystemAuditEventDtoSeverity Severity level of the event
-type SystemAuditEventDtoSeverity string
-
 // TechnicalUserCredentialsDto defines model for TechnicalUserCredentialsDto.
 type TechnicalUserCredentialsDto struct {
-	// ClientId The client identifier for the M2M client
+	// ClientId Chosen by the caller (query parameter clientId) or generated: 16 characters from 0-9 and A-V. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved.
 	ClientId string `json:"client_id"`
 
-	// ClientIdIssuedAt Time at which the client identifier was issued, as the number of seconds from 1970-01-01T00:00:00Z (Unix epoch) per RFC 7591 Section 3.2.1.
-	ClientIdIssuedAt *int64 `json:"client_id_issued_at,omitempty"`
-
-	// ClientSecret The client secret for authentication
+	// ClientSecret The client secret for authentication, 64 lower-case hex characters. Returned only by this response; store it at once.
 	ClientSecret string `json:"client_secret"`
 
 	// ClientSecretExpiresAt Time at which the client secret will expire, as the number of seconds from 1970-01-01T00:00:00Z (Unix epoch), or 0 if it will not expire. Per RFC 7591 Section 3.2.1, this field is required when a client_secret is issued.
 	ClientSecretExpiresAt int64 `json:"client_secret_expires_at"`
 
-	// GrantType The OAuth2 grant type (must be 'client_credentials')
+	// GrantType The OAuth2 grant type this client uses: `client_credentials`, or the token-exchange URN for an on-behalf-of client (`onBehalfOf: true`).
 	GrantType TechnicalUserCredentialsDtoGrantType `json:"grant_type"`
+
+	// OnBehalfOf Whether this is an on-behalf-of (OBO) client: it may only perform token exchanges, never `client_credentials`. Set at creation and immutable.
+	OnBehalfOf bool `json:"onBehalfOf"`
 
 	// Roles The roles assigned to the M2M client
 	Roles []string `json:"roles"`
 }
 
-// TechnicalUserCredentialsDtoGrantType The OAuth2 grant type (must be 'client_credentials')
+// TechnicalUserCredentialsDtoGrantType The OAuth2 grant type this client uses: `client_credentials`, or the token-exchange URN for an on-behalf-of client (`onBehalfOf: true`).
 type TechnicalUserCredentialsDtoGrantType string
 
 // TechnicalUserDto defines model for TechnicalUserDto.
 type TechnicalUserDto struct {
-	// ClientId The client identifier for the M2M client
+	// ClientId The client identifier for the M2M client. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved.
 	ClientId string `json:"clientId"`
 
 	// CreationDate The date and time when the M2M client was created
@@ -2917,26 +1884,23 @@ type TechnicalUserDto struct {
 	// LastUpdateDate The date and time when the M2M client was last updated
 	LastUpdateDate time.Time `json:"lastUpdateDate"`
 
+	// OnBehalfOf Whether this is an on-behalf-of (OBO) client: it may only perform token exchanges, never `client_credentials`. Set at creation and immutable.
+	OnBehalfOf bool `json:"onBehalfOf"`
+
 	// Roles The roles assigned to the M2M client
 	Roles []string `json:"roles"`
 }
 
 // TokenResponseDto defines model for TokenResponseDto.
 type TokenResponseDto struct {
-	// AccessToken The JWT access token for API authentication
+	// AccessToken The JWT access token for API authentication, signed RS256 by one of cyoda's key pairs
 	AccessToken string `json:"access_token"`
 
-	// ExpiresIn The lifetime in seconds of the access token
+	// ExpiresIn The access token's remaining lifetime in seconds (its exp minus now), at most CYODA_JWT_EXPIRY_SECONDS, which is at most 3600. No refresh token is issued; request a new token before this runs out.
 	ExpiresIn int32 `json:"expires_in"`
 
 	// IssuedTokenType The type of the issued token (present only for token-exchange responses, per RFC 8693)
 	IssuedTokenType *TokenResponseDtoIssuedTokenType `json:"issued_token_type,omitempty"`
-
-	// RefreshToken The refresh token for obtaining new access tokens
-	RefreshToken *string `json:"refresh_token,omitempty"`
-
-	// Scope The scope of the access token, as per RFC 6749 Section 3.3. See https://datatracker.ietf.org/doc/html/rfc6749#section-3.3
-	Scope *string `json:"scope,omitempty"`
 
 	// TokenType The type of token issued (currently always 'Bearer')
 	TokenType TokenResponseDtoTokenType `json:"token_type"`
@@ -2951,8 +1915,10 @@ type TokenResponseDtoTokenType string
 // TransitionDefinitionDto defines model for TransitionDefinitionDto.
 type TransitionDefinitionDto struct {
 	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
-	Annotations *WorkflowElementAnnotations        `json:"annotations,omitempty"`
-	Criterion   *TransitionDefinitionDto_Criterion `json:"criterion,omitempty"`
+	Annotations *WorkflowElementAnnotations `json:"annotations,omitempty"`
+
+	// Criterion Optional criterion the transition requires. Any condition is valid here, a `function` condition at any depth included.
+	Criterion *QueryConditionDto `json:"criterion,omitempty"`
 
 	// CriterionAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
 	CriterionAnnotations *WorkflowElementAnnotations `json:"criterionAnnotations,omitempty"`
@@ -2960,7 +1926,7 @@ type TransitionDefinitionDto struct {
 	// Disabled Flag indicating if the transition is disabled
 	Disabled *bool `json:"disabled,omitempty"`
 
-	// Manual Whether this transition requires manual triggering
+	// Manual Whether the engine fires this transition on its own: `false` means the engine evaluates it after every write (unless it has a `schedule`, which fires it instead), `true` means it fires only when a client names it on a save. A client can name any transition that is not disabled and has no `schedule`, whatever its `manual`. Required, with no default; an import whose transition omits it or sends `null` is rejected with 400 VALIDATION_FAILED.
 	Manual bool `json:"manual"`
 
 	// Name Name of the transition
@@ -2970,12 +1936,12 @@ type TransitionDefinitionDto struct {
 	Next string `json:"next"`
 
 	// Processors List of processors to execute for this transition
-	Processors *[]TransitionDefinitionDto_Processors_Item `json:"processors,omitempty"`
+	Processors *[]ProcessorDefinitionDto `json:"processors,omitempty"`
 
 	// Schedule Optional scheduling configuration. Presence marks the transition
-	// as scheduled — it fires automatically at a computed time (driven
-	// by a coordinator-only background scan loop) rather than by an API
-	// call or automated cascade. The firing time comes from either a
+	// as scheduled — it fires automatically at a computed time (every
+	// node's claim loop claims due scheduled tasks and runs them) rather
+	// than by an API call or automated cascade. The firing time comes from either a
 	// static `delayMs` or a per-entity `function` callout — see
 	// `TransitionScheduleDto`. Mutually exclusive with `manual=true`.
 	// Explicit fires of a scheduled transition by name return HTTP 400
@@ -2983,16 +1949,6 @@ type TransitionDefinitionDto struct {
 	// `cyoda help workflows` (authoring) and `cyoda help config scheduler`
 	// (runtime tuning).
 	Schedule *TransitionScheduleDto `json:"schedule,omitempty"`
-}
-
-// TransitionDefinitionDto_Criterion defines model for TransitionDefinitionDto.Criterion.
-type TransitionDefinitionDto_Criterion struct {
-	union json.RawMessage
-}
-
-// TransitionDefinitionDto_Processors_Item defines model for TransitionDefinitionDto.processors.Item.
-type TransitionDefinitionDto_Processors_Item struct {
-	union json.RawMessage
 }
 
 // TransitionNameList An ordered list of workflow transition names available from the entity's current state. Each entry is the name of a configured transition (e.g. "APPROVE", "REJECT") or a virtual loopback transition name. An empty array means no transitions are available from the current state.
@@ -3050,15 +2006,14 @@ type TransitionScheduleDto struct {
 
 // TrustedKeyResponseDto defines model for TrustedKeyResponseDto.
 type TrustedKeyResponseDto struct {
-	// Active Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
-	Active   bool                          `json:"active"`
-	Audience TrustedKeyResponseDtoAudience `json:"audience"`
-	Issuers  *[]string                     `json:"issuers,omitempty"`
+	// Active Whether the key is active. False after invalidation; true after reactivation. It does not change when validTo passes, but a key outside its validFrom..validTo window verifies no assertion whatever this value says.
+	Active  bool      `json:"active"`
+	Issuers *[]string `json:"issuers,omitempty"`
 
-	// Jwk The registered public key in JWK format (RFC 7517). Contains only public key components.
+	// Jwk The registered public key in JWK format (RFC 7517): `kty`, `kid`, `n` and `e`, plus `alg` and `use` when they were registered. No other member is stored or returned.
 	Jwk map[string]interface{} `json:"jwk"`
 
-	// KeyId Unique key identifier
+	// KeyId Key identifier, unique within the tenant
 	KeyId string `json:"keyId"`
 
 	// LegalEntityId The tenant this key is bound to
@@ -3067,12 +2022,9 @@ type TrustedKeyResponseDto struct {
 	// ValidFrom When this key became valid
 	ValidFrom time.Time `json:"validFrom"`
 
-	// ValidTo When this key expires
+	// ValidTo When this key expires. Every registration and reactivation sets it (registration defaults it to validFrom plus CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS days), so cyoda-go always returns it. Exchanges with the key fail once it passes; rotate before then.
 	ValidTo *time.Time `json:"validTo,omitempty"`
 }
-
-// TrustedKeyResponseDtoAudience defines model for TrustedKeyResponseDto.Audience.
-type TrustedKeyResponseDtoAudience string
 
 // UniqueKeyDto A composite unique key definition over one or more scalar leaf fields.
 type UniqueKeyDto struct {
@@ -3081,18 +2033,6 @@ type UniqueKeyDto struct {
 
 	// Id Unique identifier for this key definition.
 	Id string `json:"id"`
-}
-
-// UpdateOidcProviderRequestDto defines model for UpdateOidcProviderRequestDto.
-type UpdateOidcProviderRequestDto struct {
-	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
-	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
-
-	// Issuers Optional list of allowed `iss` claim values for tokens from this provider. When present, the JWT `iss` claim must match one of these values bytewise. When omitted, null, or empty array, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
-	Issuers *[]string `json:"issuers,omitempty"`
-
-	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
-	RolesClaim *string `json:"rolesClaim,omitempty"`
 }
 
 // UserAccountInfoDto defines model for UserAccountInfoDto.
@@ -3140,11 +2080,12 @@ type WorkflowConfigurationDto struct {
 	// (absent) criterion matches unconditionally. If no active
 	// workflow matches — and `active=false` workflows are skipped
 	// entirely during selection — the engine falls back to the
-	// embedded default workflow and emits both a body warning and
-	// an operator-visible `slog.Warn` line. Workflow-level criteria
+	// embedded default workflow and emits both a warning (in a
+	// `Cyoda-Warning` header of an HTTP response and in the `warnings`
+	// of a gRPC response) and an operator-visible `slog.Warn` line. Workflow-level criteria
 	// use the same Condition DSL as search and transition-level
-	// criteria.
-	Criterion *WorkflowConfigurationDto_Criterion `json:"criterion,omitempty"`
+	// criteria, and a `function` condition is valid at any depth.
+	Criterion *QueryConditionDto `json:"criterion,omitempty"`
 
 	// CriterionAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
 	CriterionAnnotations *WorkflowElementAnnotations `json:"criterionAnnotations,omitempty"`
@@ -3172,22 +2113,6 @@ type WorkflowConfigurationDto struct {
 	// equivalent CLI `cyoda help workflows schema-version
 	// versions`).
 	Version string `json:"version"`
-}
-
-// WorkflowConfigurationDto_Criterion Optional selection criterion evaluated against the entity to
-// decide which of several workflows applies. When a model has
-// multiple workflow definitions, the engine iterates them in
-// declaration order and picks the first one whose `active` flag
-// is true AND whose `criterion` matches the entity. A `null`
-// (absent) criterion matches unconditionally. If no active
-// workflow matches — and `active=false` workflows are skipped
-// entirely during selection — the engine falls back to the
-// embedded default workflow and emits both a body warning and
-// an operator-visible `slog.Warn` line. Workflow-level criteria
-// use the same Condition DSL as search and transition-level
-// criteria.
-type WorkflowConfigurationDto_Criterion struct {
-	union json.RawMessage
 }
 
 // WorkflowElementAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
@@ -3248,17 +2173,38 @@ type WorkflowImportSuccessDto struct {
 	Success bool `json:"success"`
 }
 
+// TxToken defines model for TxToken.
+type TxToken = string
+
 // Forbidden defines model for Forbidden.
 type Forbidden = ProblemDetail
 
 // InternalServerError defines model for InternalServerError.
 type InternalServerError = ProblemDetail
 
+// JoinedPayloadTooLarge defines model for JoinedPayloadTooLarge.
+type JoinedPayloadTooLarge = ProblemDetail
+
 // NotImplemented defines model for NotImplemented.
 type NotImplemented = ProblemDetail
 
+// QueryParameterRefused defines model for QueryParameterRefused.
+type QueryParameterRefused = ProblemDetail
+
+// ScheduleFunctionInvalidResult defines model for ScheduleFunctionInvalidResult.
+type ScheduleFunctionInvalidResult = ProblemDetail
+
 // ServiceUnavailable defines model for ServiceUnavailable.
 type ServiceUnavailable = ProblemDetail
+
+// TransactionGone defines model for TransactionGone.
+type TransactionGone = ProblemDetail
+
+// TransactionNotFound defines model for TransactionNotFound.
+type TransactionNotFound = ProblemDetail
+
+// TransactionRollbackOnly defines model for TransactionRollbackOnly.
+type TransactionRollbackOnly = ProblemDetail
 
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ProblemDetail
@@ -3286,11 +2232,20 @@ type SearchEntityAuditEventsParams struct {
 	// TransactionId Filter by transaction identifier
 	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
 
-	// Cursor Cursor for pagination. Use the `nextCursor` value from the previous response to fetch the next page of results. Omit for the first page.
+	// Cursor Position to continue from: pass `nextCursor` from the previous response. Opaque. A cursor that cannot be read is rejected with 400. Omit for the first page.
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 
 	// Limit Maximum number of audit events to return per page
 	Limit *string `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // SearchEntityAuditEventsParamsEventType defines parameters for SearchEntityAuditEvents.
@@ -3299,64 +2254,169 @@ type SearchEntityAuditEventsParamsEventType string
 // SearchEntityAuditEventsParamsSeverity defines parameters for SearchEntityAuditEvents.
 type SearchEntityAuditEventsParamsSeverity string
 
+// GetStateMachineFinishedEventParams defines parameters for GetStateMachineFinishedEvent.
+type GetStateMachineFinishedEventParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
 // CreateTechnicalUserParams defines parameters for CreateTechnicalUser.
 type CreateTechnicalUserParams struct {
-	// WithAdminRole When true, the created M2M client will additionally receive the ADMIN role. Requires the M2M admin role feature flag to be enabled.
+	// ClientId The new client's id, chosen by the caller and unique in the caller's tenant. Letters, digits, '.', '_' and '-', starting with a letter or digit, at most 100 characters, case significant; 'system' in any letter case is reserved. Absent: an id is generated (16 characters from 0-9 and A-V). An id the tenant already holds answers 409 M2M_CLIENT_EXISTS.
+	ClientId *string `form:"clientId,omitempty" json:"clientId,omitempty"`
+
+	// WithAdminRole When true, the created M2M client will additionally receive ROLE_ADMIN. Requires the M2M admin role feature flag to be enabled.
 	WithAdminRole *bool `form:"withAdminRole,omitempty" json:"withAdminRole,omitempty"`
+
+	// OnBehalfOf When true, the created client is an on-behalf-of (OBO) client: it may only perform token exchanges (`urn:ietf:params:oauth:grant-type:token-exchange`), never `client_credentials`. The flag is immutable and never combined with `withAdminRole=true`, and the client is never created in the `PLATFORM` tenant.
+	OnBehalfOf *bool `form:"onBehalfOf,omitempty" json:"onBehalfOf,omitempty"`
 }
 
 // GetEntityStatisticsParams defines parameters for GetEntityStatistics.
 type GetEntityStatisticsParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
+	// PointInTime The point-in-time for statistics in RFC 3339 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetEntityStatisticsByStateParams defines parameters for GetEntityStatisticsByState.
 type GetEntityStatisticsByStateParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
+	// PointInTime The point-in-time for statistics in RFC 3339 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
 	States *[]string `form:"states,omitempty" json:"states,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetEntityStatisticsByStateForModelParams defines parameters for GetEntityStatisticsByStateForModel.
 type GetEntityStatisticsByStateForModelParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
+	// PointInTime The point-in-time for statistics in RFC 3339 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
 	States *[]string `form:"states,omitempty" json:"states,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetEntityStatisticsForModelParams defines parameters for GetEntityStatisticsForModel.
 type GetEntityStatisticsForModelParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
+	// PointInTime The point-in-time for statistics in RFC 3339 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// QueryGroupedEntityStatisticsForModelParams defines parameters for QueryGroupedEntityStatisticsForModel.
+type QueryGroupedEntityStatisticsForModelParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// DeleteSingleEntityParams defines parameters for DeleteSingleEntity.
+type DeleteSingleEntityParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetOneEntityParams defines parameters for GetOneEntity.
 type GetOneEntityParams struct {
-	// PointInTime The point-in-time for loading the entity, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
+	// PointInTime The point-in-time for loading the entity, in RFC 3339 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
-	// TransactionId Load the entity as it was at the end of the specified transaction with the given transactionId
+	// TransactionId Load the entity as the specified transaction left it — the one version a transaction records of each entity it writes. Committed transactions only; a transaction that has not committed (also when the request joins it), never wrote the entity, or deleted it answers 404.
 	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetEntityChangesMetadataParams defines parameters for GetEntityChangesMetadata.
 type GetEntityChangesMetadataParams struct {
-	// PointInTime The point-in-time for loading the entity changes, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
+	// PointInTime The point-in-time for loading the entity changes, in RFC 3339 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetEntityTransitionsParams defines parameters for GetEntityTransitions.
 type GetEntityTransitionsParams struct {
-	// PointInTime Evaluate available transitions as of this point in time (ISO 8601 / RFC 3339). Mutually exclusive with transactionId.
+	// PointInTime Evaluate available transitions as of this point in time (RFC 3339). Mutually exclusive with transactionId. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// TransactionId Evaluate available transitions as of the submit time of this transaction. Mutually exclusive with pointInTime. The transaction must belong to the caller's tenant; an unknown or foreign transaction ID is rejected with 400.
 	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // DeleteEntitiesParams defines parameters for DeleteEntities.
@@ -3368,17 +2428,27 @@ type DeleteEntitiesParams struct {
 	// single transaction.
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
 
-	// PointInTime Select the entities that existed at this instant, in ISO 8601
-	// format (e.g. '2035-01-01T12:00:00Z'), and delete their current
+	// PointInTime Select the entities that existed at this instant, in RFC 3339
+	// format (e.g. '2026-01-01T12:00:00Z'), and delete their current
 	// rows. Absent means the current committed state. An entity
 	// selected at the instant but already gone is reported in
 	// idToError.
+	// Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// Verbose Include the list of entity IDs the delete attempted in the
 	// response; an ID whose delete failed also appears in idToError.
 	// When false, only statistics are returned.
 	Verbose *bool `form:"verbose,omitempty" json:"verbose,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetAllEntitiesParams defines parameters for GetAllEntities.
@@ -3389,8 +2459,17 @@ type GetAllEntitiesParams struct {
 	// PageNumber Page number to retrieve, starting from 0. Must be greater than or equal to 0.
 	PageNumber *int32 `form:"pageNumber,omitempty" json:"pageNumber,omitempty"`
 
-	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
+	// PointInTime The point-in-time for loading the entities, in RFC 3339 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // CreateCollectionJSONBody defines parameters for CreateCollection.
@@ -3410,6 +2489,11 @@ type CreateCollectionParams struct {
 	// multiple transactional batches committed sequentially. The
 	// response is an array with one element per chunk in commit order;
 	// chunks committed before any later failure remain durable.
+	// A request that joins an open transaction (it carries an
+	// `X-Tx-Token`) commits nothing itself, so it is never split: an
+	// explicit transactionWindow is rejected with 400 BAD_REQUEST, and
+	// without one the collection runs as one unit, so a failure in any
+	// item fails the request.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
 	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
@@ -3418,6 +2502,15 @@ type CreateCollectionParams struct {
 	// supported on requests joining an open transaction (400). Absent
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // CreateCollectionParamsFormat defines parameters for CreateCollection.
@@ -3454,6 +2547,11 @@ type UpdateCollectionParams struct {
 	// multiple transactional batches committed sequentially. The
 	// response is an array with one element per chunk in commit order;
 	// chunks committed before any later failure remain durable.
+	// A request that joins an open transaction (it carries an
+	// `X-Tx-Token`) commits nothing itself, so it is never split: an
+	// explicit transactionWindow is rejected with 400 BAD_REQUEST, and
+	// without one the collection runs as one unit, so a failure in any
+	// item fails the request.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
 	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
@@ -3462,6 +2560,15 @@ type UpdateCollectionParams struct {
 	// supported on requests joining an open transaction (400). Absent
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // UpdateCollectionParamsFormat defines parameters for UpdateCollection.
@@ -3482,8 +2589,17 @@ type PatchSingleWithLoopbackParams struct {
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
-	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
+	// IfMatch transactionId from the last read, or "*" for unconditional. Absent or empty returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // PatchSingleWithLoopbackParamsFormat defines parameters for PatchSingleWithLoopback.
@@ -3503,6 +2619,15 @@ type UpdateSingleWithLoopbackParams struct {
 
 	// IfMatch Transaction ID of the entity version the client last read. If the entity has been modified since, returns 412 Precondition Failed.
 	IfMatch *string `json:"If-Match,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // UpdateSingleWithLoopbackParamsFormat defines parameters for UpdateSingleWithLoopback.
@@ -3523,8 +2648,17 @@ type PatchSingleParams struct {
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
-	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
+	// IfMatch transactionId from the last read, or "*" for unconditional. Absent or empty returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // PatchSingleParamsFormat defines parameters for PatchSingle.
@@ -3544,26 +2678,39 @@ type UpdateSingleParams struct {
 
 	// IfMatch Transaction ID of the entity version the client last read. If the entity has been modified since, returns 412 Precondition Failed.
 	IfMatch *string `json:"If-Match,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // UpdateSingleParamsFormat defines parameters for UpdateSingle.
 type UpdateSingleParamsFormat string
 
 // CreateJSONBody defines parameters for Create.
-type CreateJSONBody struct {
-	union json.RawMessage
-}
+type CreateJSONBody = interface{}
 
 // CreateParams defines parameters for Create.
 type CreateParams struct {
 	// TransactionWindow Maximum number of entities per transactional batch. Applies only
 	// when the request body is a JSON array; ignored for single-object
-	// bodies. Default 100, maximum 1000; values outside (0, 1000] are
+	// bodies, except that a joined request rejects it whatever the body
+	// (below). Default 100, maximum 1000; values outside (0, 1000] are
 	// rejected with 400 BAD_REQUEST. Array bodies exceeding the window
 	// are split into multiple transactional batches committed
 	// sequentially. The response is then an array with one element per
 	// chunk in commit order; chunks committed before any later failure
 	// remain durable.
+	// A request that joins an open transaction (it carries an
+	// `X-Tx-Token`) commits nothing itself, so it is never split: an
+	// explicit transactionWindow is rejected with 400 BAD_REQUEST, and
+	// without one the collection runs as one unit, so a failure in any
+	// item fails the request.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
 	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
@@ -3572,16 +2719,19 @@ type CreateParams struct {
 	// supported on requests joining an open transaction (400). Absent
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // CreateParamsFormat defines parameters for Create.
 type CreateParamsFormat string
-
-// CreateJSONBody0 defines parameters for Create.
-type CreateJSONBody0 map[string]interface{}
-
-// CreateJSONBody1 defines parameters for Create.
-type CreateJSONBody1 = []map[string]interface{}
 
 // DeleteMessagesJSONBody defines parameters for DeleteMessages.
 type DeleteMessagesJSONBody = []openapi_types.UUID
@@ -3594,6 +2744,15 @@ type DeleteMessagesParams struct {
 	// requests joining an open transaction (400). Absent means a
 	// single call.
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // NewMessageParams defines parameters for NewMessage.
@@ -3617,9 +2776,6 @@ type NewMessageParams struct {
 	// XMessageID Custom message identifier
 	XMessageID *string `json:"X-Message-ID,omitempty"`
 
-	// XUserID ID of the message sender
-	XUserID *string `json:"X-User-ID,omitempty"`
-
 	// XRecipient Intended message recipient
 	XRecipient *string `json:"X-Recipient,omitempty"`
 
@@ -3628,15 +2784,46 @@ type NewMessageParams struct {
 
 	// XCorrelationID Correlation ID for message tracking
 	XCorrelationID *string `json:"X-Correlation-ID,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// DeleteMessageParams defines parameters for DeleteMessage.
+type DeleteMessageParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// GetMessageParams defines parameters for GetMessage.
+type GetMessageParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // ExportMetadataParamsConverter defines parameters for ExportMetadata.
 type ExportMetadataParamsConverter string
 
 // ImportEntityModelJSONBody defines parameters for ImportEntityModel.
-type ImportEntityModelJSONBody struct {
-	union json.RawMessage
-}
+type ImportEntityModelJSONBody = interface{}
 
 // ImportEntityModelParamsDataFormat defines parameters for ImportEntityModel.
 type ImportEntityModelParamsDataFormat string
@@ -3644,54 +2831,11 @@ type ImportEntityModelParamsDataFormat string
 // ImportEntityModelParamsConverter defines parameters for ImportEntityModel.
 type ImportEntityModelParamsConverter string
 
-// ImportEntityModelJSONBody0 defines parameters for ImportEntityModel.
-type ImportEntityModelJSONBody0 map[string]interface{}
-
-// ImportEntityModelJSONBody1 defines parameters for ImportEntityModel.
-type ImportEntityModelJSONBody1 = []map[string]interface{}
-
 // ValidateEntityModelJSONBody defines parameters for ValidateEntityModel.
 type ValidateEntityModelJSONBody = map[string]interface{}
 
 // SetEntityModelChangeLevelParamsChangeLevel defines parameters for SetEntityModelChangeLevel.
 type SetEntityModelChangeLevelParamsChangeLevel string
-
-// GetCurrentJwtKeyPairParams defines parameters for GetCurrentJwtKeyPair.
-type GetCurrentJwtKeyPairParams struct {
-	Audience GetCurrentJwtKeyPairParamsAudience `form:"audience" json:"audience"`
-}
-
-// GetCurrentJwtKeyPairParamsAudience defines parameters for GetCurrentJwtKeyPair.
-type GetCurrentJwtKeyPairParamsAudience string
-
-// ListOidcProvidersParams defines parameters for ListOidcProviders.
-type ListOidcProvidersParams struct {
-	// ActiveOnly When true, return only active (non-invalidated) providers.
-	ActiveOnly *bool `form:"activeOnly,omitempty" json:"activeOnly,omitempty"`
-}
-
-// GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
-type GetTechnicalUserTokenFormdataBody struct {
-	// GrantType The OAuth 2.0 grant type
-	GrantType *GetTechnicalUserTokenFormdataBodyGrantType `form:"grant_type,omitempty" json:"grant_type,omitempty"`
-
-	// SubjectToken The subject token to exchange
-	SubjectToken *string `form:"subject_token,omitempty" json:"subject_token,omitempty"`
-
-	// SubjectTokenType The type of the subject token
-	SubjectTokenType *GetTechnicalUserTokenFormdataBodySubjectTokenType `form:"subject_token_type,omitempty" json:"subject_token_type,omitempty"`
-}
-
-// GetTechnicalUserTokenParams defines parameters for GetTechnicalUserToken.
-type GetTechnicalUserTokenParams struct {
-	Authorization *string `json:"Authorization,omitempty"`
-}
-
-// GetTechnicalUserTokenFormdataBodyGrantType defines parameters for GetTechnicalUserToken.
-type GetTechnicalUserTokenFormdataBodyGrantType string
-
-// GetTechnicalUserTokenFormdataBodySubjectTokenType defines parameters for GetTechnicalUserToken.
-type GetTechnicalUserTokenFormdataBodySubjectTokenType string
 
 // FetchEntityTransitionsParams defines parameters for FetchEntityTransitions.
 type FetchEntityTransitionsParams struct {
@@ -3700,20 +2844,66 @@ type FetchEntityTransitionsParams struct {
 
 	// EntityId The unique identifier (UUID) of the entity
 	EntityId openapi_types.UUID `form:"entityId" json:"entityId"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
-// SubmitAsyncSearchJobJSONBody defines parameters for SubmitAsyncSearchJob.
-type SubmitAsyncSearchJobJSONBody struct {
-	union json.RawMessage
+// GetPlatformClusterParams defines parameters for GetPlatformCluster.
+type GetPlatformClusterParams struct {
+	// WaitForNodes Answer once at least this many nodes are `UP` and `NORMAL`, or at `timeoutMs`, with the last counted round (one whose every ask returned before then). Absent, the answer follows one round. 1 to 1000.
+	WaitForNodes *int32 `form:"waitForNodes,omitempty" json:"waitForNodes,omitempty"`
+
+	// TimeoutMs The longest wait for `waitForNodes`, in milliseconds; the answer comes at the later of this and the end of the first round. 1 to 600000; defaults to 30000 when `waitForNodes` is given. Only together with `waitForNodes`; alone it is refused with 400.
+	TimeoutMs *int32 `form:"timeoutMs,omitempty" json:"timeoutMs,omitempty"`
 }
+
+// ListScheduledTasksParams defines parameters for ListScheduledTasks.
+type ListScheduledTasksParams struct {
+	// Status Return tasks in any of these statuses. Repeat the parameter for several. Any other value is rejected with 400.
+	Status *[]ListScheduledTasksParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// ModelName Return tasks of entities of this model.
+	ModelName *string `form:"modelName,omitempty" json:"modelName,omitempty"`
+
+	// ModelVersion Return tasks of entities of this model version. Only together with `modelName`; alone it is rejected with 400.
+	ModelVersion *int32 `form:"modelVersion,omitempty" json:"modelVersion,omitempty"`
+
+	// EntityId Return the tasks of this entity.
+	EntityId *openapi_types.UUID `form:"entityId,omitempty" json:"entityId,omitempty"`
+
+	// Cursor Position to continue from: pass `nextCursor` from the previous response. Opaque. A cursor that cannot be read is rejected with 400, and its value is not echoed. Omit for the first page.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum number of tasks per page, 1 to 1000. A value outside the range is rejected with 400, not clamped.
+	Limit *int32 `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ListScheduledTasksParamsStatus defines parameters for ListScheduledTasks.
+type ListScheduledTasksParamsStatus string
 
 // SubmitAsyncSearchJobParams defines parameters for SubmitAsyncSearchJob.
 type SubmitAsyncSearchJobParams struct {
-	// PointInTime The point-in-time for the report, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
+	// PointInTime The point-in-time for the report, in RFC 3339 format (e.g., '2026-01-01T12:00:00Z'). Absent: the consistency time at submission. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.
 	Sort *[]string `form:"sort,omitempty" json:"sort,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // GetAsyncSearchResultsParams defines parameters for GetAsyncSearchResults.
@@ -3723,16 +2913,44 @@ type GetAsyncSearchResultsParams struct {
 
 	// PageNumber Zero-based page number
 	PageNumber *string `form:"pageNumber,omitempty" json:"pageNumber,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
-// SearchEntitiesJSONBody defines parameters for SearchEntities.
-type SearchEntitiesJSONBody struct {
-	union json.RawMessage
+// CancelAsyncSearchParams defines parameters for CancelAsyncSearch.
+type CancelAsyncSearchParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
+}
+
+// GetAsyncSearchStatusParams defines parameters for GetAsyncSearchStatus.
+type GetAsyncSearchStatusParams struct {
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
 // SearchEntitiesParams defines parameters for SearchEntities.
 type SearchEntitiesParams struct {
-	// PointInTime The point-in-time for searching the entities, in ISO 8601 format. Absent means the current committed state.
+	// PointInTime The point-in-time for searching the entities, in RFC 3339 format. Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// Limit Caps the matched result set; not a page size. Defaults to 1000 if not provided. Accepts 1-10000; values outside this range, including 0, are rejected with 400. A matched set larger than `limit` fails 400 `SEARCH_RESULT_LIMIT` rather than returning a truncated prefix.
@@ -3749,13 +2967,45 @@ type SearchEntitiesParams struct {
 	// partial results are returned. Absent means no server-side timeout.
 	// Not supported on requests joining an open transaction (400).
 	TimeoutMillis *int64 `form:"timeoutMillis,omitempty" json:"timeoutMillis,omitempty"`
+
+	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has written so far and its own writes commit with it. Before the callout (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity), the engine reads the entity the callout runs for in that open transaction and writes it there (not committed) when a read of it in the transaction finds nothing (a create) or the stored data or state differ from the engine's copy. The write commits or rolls back with the transaction, and a later write of the entity in the same transaction replaces it, so the transaction records one version of the entity. A read of the entity under the token therefore returns it as the workflow has it: found on a create, with the changes earlier processors returned, in the transition's source state while its processors run. A callout never writes or deletes the entity it runs for; a processor changes it only through the data it returns (see `cyoda help workflows`).
+	//
+	// Optional. A request without the header opens its own transaction, as any other client request does.
+	//
+	// The token is checked before the operation runs: one that is malformed or not signed by this cluster is refused 401, one naming another tenant's transaction 403, one whose transaction is no longer open 404, and one that has expired or whose callout has been handed to another compute member 410. A joined request that exceeds the join layer's size ceilings is refused 413. A joined write whose workflow reaches a COMMIT_BEFORE_DISPATCH processor is refused 409 COMMIT_IN_JOINED_TRANSACTION before the transaction is flushed or committed and before the processor is dispatched: only the operation that began a transaction commits it.
+	//
+	// Declared on the operations a callout calls back into. It is not declared on the entity-model and workflow operations, because changing a model or a workflow from inside a callout is not supported, nor on the administrative OAuth, client and account operations.
+	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
+
+// GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
+type GetTechnicalUserTokenFormdataBody struct {
+	// GrantType The OAuth 2.0 grant type. Required; missing or any other value is 400 unsupported_grant_type.
+	GrantType GetTechnicalUserTokenFormdataBodyGrantType `form:"grant_type" json:"grant_type"`
+
+	// SubjectToken The user assertion to exchange. Required for the token exchange (400 invalid_request without it); not read by client_credentials.
+	SubjectToken *string `form:"subject_token,omitempty" json:"subject_token,omitempty"`
+
+	// SubjectTokenType The type of the subject token. Required for the token exchange (400 invalid_request without it); not read by client_credentials.
+	SubjectTokenType *GetTechnicalUserTokenFormdataBodySubjectTokenType `form:"subject_token_type,omitempty" json:"subject_token_type,omitempty"`
+}
+
+// GetTechnicalUserTokenParams defines parameters for GetTechnicalUserToken.
+type GetTechnicalUserTokenParams struct {
+	Authorization *string `json:"Authorization,omitempty"`
+}
+
+// GetTechnicalUserTokenFormdataBodyGrantType defines parameters for GetTechnicalUserToken.
+type GetTechnicalUserTokenFormdataBodyGrantType string
+
+// GetTechnicalUserTokenFormdataBodySubjectTokenType defines parameters for GetTechnicalUserToken.
+type GetTechnicalUserTokenFormdataBodySubjectTokenType string
 
 // QueryGroupedEntityStatisticsForModelJSONRequestBody defines body for QueryGroupedEntityStatisticsForModel for application/json ContentType.
 type QueryGroupedEntityStatisticsForModelJSONRequestBody = GroupedStatsRequest
 
 // DeleteEntitiesJSONRequestBody defines body for DeleteEntities for application/json ContentType.
-type DeleteEntitiesJSONRequestBody = AbstractConditionDto
+type DeleteEntitiesJSONRequestBody = QueryConditionDto
 
 // CreateCollectionJSONRequestBody defines body for CreateCollection for application/json ContentType.
 type CreateCollectionJSONRequestBody = CreateCollectionJSONBody
@@ -3782,7 +3032,7 @@ type PatchSingleApplicationMergePatchPlusJSONRequestBody = PatchSingleApplicatio
 type UpdateSingleJSONRequestBody = UpdateSingleJSONBody
 
 // CreateJSONRequestBody defines body for Create for application/json ContentType.
-type CreateJSONRequestBody CreateJSONBody
+type CreateJSONRequestBody = CreateJSONBody
 
 // DeleteMessagesJSONRequestBody defines body for DeleteMessages for application/json ContentType.
 type DeleteMessagesJSONRequestBody = DeleteMessagesJSONBody
@@ -3791,7 +3041,7 @@ type DeleteMessagesJSONRequestBody = DeleteMessagesJSONBody
 type NewMessageJSONRequestBody = NewMessageRequest
 
 // ImportEntityModelJSONRequestBody defines body for ImportEntityModel for application/json ContentType.
-type ImportEntityModelJSONRequestBody ImportEntityModelJSONBody
+type ImportEntityModelJSONRequestBody = ImportEntityModelJSONBody
 
 // ValidateEntityModelJSONRequestBody defines body for ValidateEntityModel for application/json ContentType.
 type ValidateEntityModelJSONRequestBody = ValidateEntityModelJSONBody
@@ -3814,29 +3064,20 @@ type ReactivateJwtKeyPairJSONRequestBody = ReactivateKeyRequestDto
 // RegisterTrustedKeyJSONRequestBody defines body for RegisterTrustedKey for application/json ContentType.
 type RegisterTrustedKeyJSONRequestBody = RegisterTrustedKeyRequestDto
 
-// InvalidateTrustedKeyJSONRequestBody defines body for InvalidateTrustedKey for application/json ContentType.
-type InvalidateTrustedKeyJSONRequestBody = InvalidateKeyRequestDto
-
 // ReactivateTrustedKeyJSONRequestBody defines body for ReactivateTrustedKey for application/json ContentType.
 type ReactivateTrustedKeyJSONRequestBody = ReactivateKeyRequestDto
 
-// RegisterOidcProviderJSONRequestBody defines body for RegisterOidcProvider for application/json ContentType.
-type RegisterOidcProviderJSONRequestBody = RegisterOidcProviderRequestDto
+// ChangePlatformClockJSONRequestBody defines body for ChangePlatformClock for application/json ContentType.
+type ChangePlatformClockJSONRequestBody = PlatformClockChangeDto
 
-// UpdateOidcProviderJSONRequestBody defines body for UpdateOidcProvider for application/json ContentType.
-type UpdateOidcProviderJSONRequestBody = UpdateOidcProviderRequestDto
+// SubmitAsyncSearchJobJSONRequestBody defines body for SubmitAsyncSearchJob for application/json ContentType.
+type SubmitAsyncSearchJobJSONRequestBody = QueryConditionDto
 
-// ReactivateOidcProviderJSONRequestBody defines body for ReactivateOidcProvider for application/json ContentType.
-type ReactivateOidcProviderJSONRequestBody = ReactivateOidcProviderRequestDto
+// SearchEntitiesJSONRequestBody defines body for SearchEntities for application/json ContentType.
+type SearchEntitiesJSONRequestBody = QueryConditionDto
 
 // GetTechnicalUserTokenFormdataRequestBody defines body for GetTechnicalUserToken for application/x-www-form-urlencoded ContentType.
 type GetTechnicalUserTokenFormdataRequestBody GetTechnicalUserTokenFormdataBody
-
-// SubmitAsyncSearchJobJSONRequestBody defines body for SubmitAsyncSearchJob for application/json ContentType.
-type SubmitAsyncSearchJobJSONRequestBody SubmitAsyncSearchJobJSONBody
-
-// SearchEntitiesJSONRequestBody defines body for SearchEntities for application/json ContentType.
-type SearchEntitiesJSONRequestBody SearchEntitiesJSONBody
 
 // Getter for additional properties for WorkflowElementAnnotations. Returns the specified
 // element and whether it was found
@@ -3921,1021 +3162,6 @@ func (a WorkflowElementAnnotations) MarshalJSON() ([]byte, error) {
 	return json.Marshal(object)
 }
 
-// AsEntityChangeAuditEventDto returns the union data inside the EntityAuditEventsResponseDto_Items_Item as a EntityChangeAuditEventDto
-func (t EntityAuditEventsResponseDto_Items_Item) AsEntityChangeAuditEventDto() (EntityChangeAuditEventDto, error) {
-	var body EntityChangeAuditEventDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromEntityChangeAuditEventDto overwrites any union data inside the EntityAuditEventsResponseDto_Items_Item as the provided EntityChangeAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) FromEntityChangeAuditEventDto(v EntityChangeAuditEventDto) error {
-	v.AuditEventType = "EntityChange"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeEntityChangeAuditEventDto performs a merge with any union data inside the EntityAuditEventsResponseDto_Items_Item, using the provided EntityChangeAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) MergeEntityChangeAuditEventDto(v EntityChangeAuditEventDto) error {
-	v.AuditEventType = "EntityChange"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsStateMachineAuditEventDto returns the union data inside the EntityAuditEventsResponseDto_Items_Item as a StateMachineAuditEventDto
-func (t EntityAuditEventsResponseDto_Items_Item) AsStateMachineAuditEventDto() (StateMachineAuditEventDto, error) {
-	var body StateMachineAuditEventDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromStateMachineAuditEventDto overwrites any union data inside the EntityAuditEventsResponseDto_Items_Item as the provided StateMachineAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) FromStateMachineAuditEventDto(v StateMachineAuditEventDto) error {
-	v.AuditEventType = "StateMachine"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeStateMachineAuditEventDto performs a merge with any union data inside the EntityAuditEventsResponseDto_Items_Item, using the provided StateMachineAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) MergeStateMachineAuditEventDto(v StateMachineAuditEventDto) error {
-	v.AuditEventType = "StateMachine"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSystemAuditEventDto returns the union data inside the EntityAuditEventsResponseDto_Items_Item as a SystemAuditEventDto
-func (t EntityAuditEventsResponseDto_Items_Item) AsSystemAuditEventDto() (SystemAuditEventDto, error) {
-	var body SystemAuditEventDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSystemAuditEventDto overwrites any union data inside the EntityAuditEventsResponseDto_Items_Item as the provided SystemAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) FromSystemAuditEventDto(v SystemAuditEventDto) error {
-	v.AuditEventType = "System"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSystemAuditEventDto performs a merge with any union data inside the EntityAuditEventsResponseDto_Items_Item, using the provided SystemAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) MergeSystemAuditEventDto(v SystemAuditEventDto) error {
-	v.AuditEventType = "System"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t EntityAuditEventsResponseDto_Items_Item) Discriminator() (string, error) {
-	var discriminator struct {
-		Discriminator string `json:"auditEventType"`
-	}
-	err := json.Unmarshal(t.union, &discriminator)
-	return discriminator.Discriminator, err
-}
-
-func (t EntityAuditEventsResponseDto_Items_Item) ValueByDiscriminator() (interface{}, error) {
-	discriminator, err := t.Discriminator()
-	if err != nil {
-		return nil, err
-	}
-	switch discriminator {
-	case "EntityChange":
-		return t.AsEntityChangeAuditEventDto()
-	case "StateMachine":
-		return t.AsStateMachineAuditEventDto()
-	case "System":
-		return t.AsSystemAuditEventDto()
-	default:
-		return nil, errors.New("unknown discriminator value: " + discriminator)
-	}
-}
-
-func (t EntityAuditEventsResponseDto_Items_Item) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *EntityAuditEventsResponseDto_Items_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the GroupConditionDto_Conditions_Item as a ArrayConditionDto
-func (t GroupConditionDto_Conditions_Item) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided ArrayConditionDto
-func (t *GroupConditionDto_Conditions_Item) FromArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided ArrayConditionDto
-func (t *GroupConditionDto_Conditions_Item) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the GroupConditionDto_Conditions_Item as a GroupConditionDto
-func (t GroupConditionDto_Conditions_Item) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided GroupConditionDto
-func (t *GroupConditionDto_Conditions_Item) FromGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided GroupConditionDto
-func (t *GroupConditionDto_Conditions_Item) MergeGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the GroupConditionDto_Conditions_Item as a LifecycleConditionDto
-func (t GroupConditionDto_Conditions_Item) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided LifecycleConditionDto
-func (t *GroupConditionDto_Conditions_Item) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided LifecycleConditionDto
-func (t *GroupConditionDto_Conditions_Item) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the GroupConditionDto_Conditions_Item as a SimpleConditionDto
-func (t GroupConditionDto_Conditions_Item) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided SimpleConditionDto
-func (t *GroupConditionDto_Conditions_Item) FromSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided SimpleConditionDto
-func (t *GroupConditionDto_Conditions_Item) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t GroupConditionDto_Conditions_Item) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *GroupConditionDto_Conditions_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the GroupedStatsRequest_Condition as a ArrayConditionDto
-func (t GroupedStatsRequest_Condition) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided ArrayConditionDto
-func (t *GroupedStatsRequest_Condition) FromArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided ArrayConditionDto
-func (t *GroupedStatsRequest_Condition) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the GroupedStatsRequest_Condition as a GroupConditionDto
-func (t GroupedStatsRequest_Condition) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided GroupConditionDto
-func (t *GroupedStatsRequest_Condition) FromGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided GroupConditionDto
-func (t *GroupedStatsRequest_Condition) MergeGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the GroupedStatsRequest_Condition as a LifecycleConditionDto
-func (t GroupedStatsRequest_Condition) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided LifecycleConditionDto
-func (t *GroupedStatsRequest_Condition) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided LifecycleConditionDto
-func (t *GroupedStatsRequest_Condition) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the GroupedStatsRequest_Condition as a SimpleConditionDto
-func (t GroupedStatsRequest_Condition) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided SimpleConditionDto
-func (t *GroupedStatsRequest_Condition) FromSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided SimpleConditionDto
-func (t *GroupedStatsRequest_Condition) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t GroupedStatsRequest_Condition) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *GroupedStatsRequest_Condition) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a ArrayConditionDto
-func (t TransitionDefinitionDto_Criterion) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided ArrayConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided ArrayConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsFunctionConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a FunctionConditionDto
-func (t TransitionDefinitionDto_Criterion) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided FunctionConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided FunctionConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a GroupConditionDto
-func (t TransitionDefinitionDto_Criterion) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided GroupConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided GroupConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a LifecycleConditionDto
-func (t TransitionDefinitionDto_Criterion) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided LifecycleConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided LifecycleConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a SimpleConditionDto
-func (t TransitionDefinitionDto_Criterion) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided SimpleConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided SimpleConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t TransitionDefinitionDto_Criterion) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *TransitionDefinitionDto_Criterion) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsExternalizedProcessorDefinitionDto returns the union data inside the TransitionDefinitionDto_Processors_Item as a ExternalizedProcessorDefinitionDto
-func (t TransitionDefinitionDto_Processors_Item) AsExternalizedProcessorDefinitionDto() (ExternalizedProcessorDefinitionDto, error) {
-	var body ExternalizedProcessorDefinitionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromExternalizedProcessorDefinitionDto overwrites any union data inside the TransitionDefinitionDto_Processors_Item as the provided ExternalizedProcessorDefinitionDto
-func (t *TransitionDefinitionDto_Processors_Item) FromExternalizedProcessorDefinitionDto(v ExternalizedProcessorDefinitionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeExternalizedProcessorDefinitionDto performs a merge with any union data inside the TransitionDefinitionDto_Processors_Item, using the provided ExternalizedProcessorDefinitionDto
-func (t *TransitionDefinitionDto_Processors_Item) MergeExternalizedProcessorDefinitionDto(v ExternalizedProcessorDefinitionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t TransitionDefinitionDto_Processors_Item) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *TransitionDefinitionDto_Processors_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a ArrayConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided ArrayConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided ArrayConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsFunctionConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a FunctionConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided FunctionConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided FunctionConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a GroupConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided GroupConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided GroupConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a LifecycleConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided LifecycleConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided LifecycleConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a SimpleConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided SimpleConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided SimpleConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t WorkflowConfigurationDto_Criterion) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *WorkflowConfigurationDto_Criterion) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsCreateJSONBody0 returns the union data inside the CreateJSONBody as a CreateJSONBody0
-func (t CreateJSONBody) AsCreateJSONBody0() (CreateJSONBody0, error) {
-	var body CreateJSONBody0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromCreateJSONBody0 overwrites any union data inside the CreateJSONBody as the provided CreateJSONBody0
-func (t *CreateJSONBody) FromCreateJSONBody0(v CreateJSONBody0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeCreateJSONBody0 performs a merge with any union data inside the CreateJSONBody, using the provided CreateJSONBody0
-func (t *CreateJSONBody) MergeCreateJSONBody0(v CreateJSONBody0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsCreateJSONBody1 returns the union data inside the CreateJSONBody as a CreateJSONBody1
-func (t CreateJSONBody) AsCreateJSONBody1() (CreateJSONBody1, error) {
-	var body CreateJSONBody1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromCreateJSONBody1 overwrites any union data inside the CreateJSONBody as the provided CreateJSONBody1
-func (t *CreateJSONBody) FromCreateJSONBody1(v CreateJSONBody1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeCreateJSONBody1 performs a merge with any union data inside the CreateJSONBody, using the provided CreateJSONBody1
-func (t *CreateJSONBody) MergeCreateJSONBody1(v CreateJSONBody1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t CreateJSONBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *CreateJSONBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsImportEntityModelJSONBody0 returns the union data inside the ImportEntityModelJSONBody as a ImportEntityModelJSONBody0
-func (t ImportEntityModelJSONBody) AsImportEntityModelJSONBody0() (ImportEntityModelJSONBody0, error) {
-	var body ImportEntityModelJSONBody0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromImportEntityModelJSONBody0 overwrites any union data inside the ImportEntityModelJSONBody as the provided ImportEntityModelJSONBody0
-func (t *ImportEntityModelJSONBody) FromImportEntityModelJSONBody0(v ImportEntityModelJSONBody0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeImportEntityModelJSONBody0 performs a merge with any union data inside the ImportEntityModelJSONBody, using the provided ImportEntityModelJSONBody0
-func (t *ImportEntityModelJSONBody) MergeImportEntityModelJSONBody0(v ImportEntityModelJSONBody0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsImportEntityModelJSONBody1 returns the union data inside the ImportEntityModelJSONBody as a ImportEntityModelJSONBody1
-func (t ImportEntityModelJSONBody) AsImportEntityModelJSONBody1() (ImportEntityModelJSONBody1, error) {
-	var body ImportEntityModelJSONBody1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromImportEntityModelJSONBody1 overwrites any union data inside the ImportEntityModelJSONBody as the provided ImportEntityModelJSONBody1
-func (t *ImportEntityModelJSONBody) FromImportEntityModelJSONBody1(v ImportEntityModelJSONBody1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeImportEntityModelJSONBody1 performs a merge with any union data inside the ImportEntityModelJSONBody, using the provided ImportEntityModelJSONBody1
-func (t *ImportEntityModelJSONBody) MergeImportEntityModelJSONBody1(v ImportEntityModelJSONBody1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t ImportEntityModelJSONBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *ImportEntityModelJSONBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a ArrayConditionDto
-func (t SubmitAsyncSearchJobJSONBody) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided ArrayConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) FromArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided ArrayConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a GroupConditionDto
-func (t SubmitAsyncSearchJobJSONBody) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided GroupConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) FromGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided GroupConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) MergeGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a LifecycleConditionDto
-func (t SubmitAsyncSearchJobJSONBody) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided LifecycleConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided LifecycleConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a SimpleConditionDto
-func (t SubmitAsyncSearchJobJSONBody) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided SimpleConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) FromSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided SimpleConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t SubmitAsyncSearchJobJSONBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *SubmitAsyncSearchJobJSONBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the SearchEntitiesJSONBody as a ArrayConditionDto
-func (t SearchEntitiesJSONBody) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided ArrayConditionDto
-func (t *SearchEntitiesJSONBody) FromArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided ArrayConditionDto
-func (t *SearchEntitiesJSONBody) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the SearchEntitiesJSONBody as a GroupConditionDto
-func (t SearchEntitiesJSONBody) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided GroupConditionDto
-func (t *SearchEntitiesJSONBody) FromGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided GroupConditionDto
-func (t *SearchEntitiesJSONBody) MergeGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the SearchEntitiesJSONBody as a LifecycleConditionDto
-func (t SearchEntitiesJSONBody) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided LifecycleConditionDto
-func (t *SearchEntitiesJSONBody) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided LifecycleConditionDto
-func (t *SearchEntitiesJSONBody) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the SearchEntitiesJSONBody as a SimpleConditionDto
-func (t SearchEntitiesJSONBody) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided SimpleConditionDto
-func (t *SearchEntitiesJSONBody) FromSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided SimpleConditionDto
-func (t *SearchEntitiesJSONBody) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t SearchEntitiesJSONBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *SearchEntitiesJSONBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// Retrieve information about the current user's account, including current subscription.
@@ -4949,7 +3175,7 @@ type ServerInterface interface {
 	SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params SearchEntityAuditEventsParams)
 	// Get latest workflow finished event for transaction
 	// (GET /audit/entity/{entityId}/workflow/{transactionId}/finished)
-	GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID)
+	GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID, params GetStateMachineFinishedEventParams)
 	// List all M2M clients
 	// (GET /clients)
 	ListTechnicalUsers(w http.ResponseWriter, r *http.Request)
@@ -4962,6 +3188,9 @@ type ServerInterface interface {
 	// Reset M2M client secret
 	// (PUT /clients/{clientId}/secret)
 	ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Request, clientId string)
+	// Get the consistency time
+	// (GET /entity/consistency-time)
+	GetConsistencyTime(w http.ResponseWriter, r *http.Request)
 	// Retrieve entity statistics
 	// (GET /entity/stats)
 	GetEntityStatistics(w http.ResponseWriter, r *http.Request, params GetEntityStatisticsParams)
@@ -4976,10 +3205,10 @@ type ServerInterface interface {
 	GetEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params GetEntityStatisticsForModelParams)
 	// Query grouped entity statistics for a specific model
 	// (POST /entity/stats/{entityName}/{modelVersion}/query)
-	QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32)
+	QueryGroupedEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params QueryGroupedEntityStatisticsForModelParams)
 	// Delete a single entity
 	// (DELETE /entity/{entityId})
-	DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID)
+	DeleteSingleEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params DeleteSingleEntityParams)
 	// Get a  single entity
 	// (GET /entity/{entityId})
 	GetOneEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params GetOneEntityParams)
@@ -5024,10 +3253,10 @@ type ServerInterface interface {
 	NewMessage(w http.ResponseWriter, r *http.Request, subject string, params NewMessageParams)
 	// Delete a single edge message by ID
 	// (DELETE /message/{messageId})
-	DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID)
+	DeleteMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, params DeleteMessageParams)
 	// Retrieve an edge message by ID
 	// (GET /message/{messageId})
-	GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID)
+	GetMessage(w http.ResponseWriter, r *http.Request, messageId openapi_types.UUID, params GetMessageParams)
 	// List Available Entity Models
 	// (GET /model/)
 	GetAvailableEntityModels(w http.ResponseWriter, r *http.Request)
@@ -5066,7 +3295,7 @@ type ServerInterface interface {
 	IssueJwtKeyPair(w http.ResponseWriter, r *http.Request)
 	// Get current active JWT signing key-pair
 	// (GET /oauth/keys/keypair/current)
-	GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params GetCurrentJwtKeyPairParams)
+	GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request)
 	// Delete JWT signing key-pair
 	// (DELETE /oauth/keys/keypair/{keyId})
 	DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string)
@@ -5091,33 +3320,21 @@ type ServerInterface interface {
 	// Reactivate a trusted public key
 	// (POST /oauth/keys/trusted/{keyId}/reactivate)
 	ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string)
-	// List all registered OIDC providers
-	// (GET /oauth/oidc/providers)
-	ListOidcProviders(w http.ResponseWriter, r *http.Request, params ListOidcProvidersParams)
-	// Register a new trusted OIDC provider
-	// (POST /oauth/oidc/providers)
-	RegisterOidcProvider(w http.ResponseWriter, r *http.Request)
-	// Force to reload all OIDC providers and synchronize keys with remote JWKS
-	// (POST /oauth/oidc/providers/reload)
-	ReloadOidcProviders(w http.ResponseWriter, r *http.Request)
-	// Delete OIDC provider
-	// (DELETE /oauth/oidc/providers/{id})
-	DeleteOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
-	// Update OIDC provider
-	// (PATCH /oauth/oidc/providers/{id})
-	UpdateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
-	// Invalidate OIDC provider
-	// (POST /oauth/oidc/providers/{id}/invalidate)
-	InvalidateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
-	// Reactivate OIDC provider
-	// (POST /oauth/oidc/providers/{id}/reactivate)
-	ReactivateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
-	// Obtain access token for M2M client
-	// (POST /oauth/token)
-	GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params GetTechnicalUserTokenParams)
 	// Fetch available transitions (platform-library format)
 	// (GET /platform-api/entity/fetch/transitions)
 	FetchEntityTransitions(w http.ResponseWriter, r *http.Request, params FetchEntityTransitionsParams)
+	// Get the platform clock
+	// (GET /platform/clock)
+	GetPlatformClock(w http.ResponseWriter, r *http.Request)
+	// Change the platform clock
+	// (POST /platform/clock)
+	ChangePlatformClock(w http.ResponseWriter, r *http.Request)
+	// Get the cluster status
+	// (GET /platform/cluster)
+	GetPlatformCluster(w http.ResponseWriter, r *http.Request, params GetPlatformClusterParams)
+	// List the tenant's scheduled tasks
+	// (GET /scheduled-tasks)
+	ListScheduledTasks(w http.ResponseWriter, r *http.Request, params ListScheduledTasksParams)
 	// Submit async search job
 	// (POST /search/async/{entityName}/{modelVersion})
 	SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params SubmitAsyncSearchJobParams)
@@ -5126,13 +3343,16 @@ type ServerInterface interface {
 	GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, params GetAsyncSearchResultsParams)
 	// Cancel a running async search job
 	// (PUT /search/async/{jobId}/cancel)
-	CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID)
+	CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, params CancelAsyncSearchParams)
 	// Get async search job status
 	// (GET /search/async/{jobId}/status)
-	GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID)
+	GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID, params GetAsyncSearchStatusParams)
 	// Perform synchronous entity search
 	// (POST /search/direct/{entityName}/{modelVersion})
 	SearchEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params SearchEntitiesParams)
+	// Obtain access token for M2M client
+	// (POST /tenants/{tenant}/oauth/token)
+	GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, tenant string, params GetTechnicalUserTokenParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -5299,6 +3519,27 @@ func (siw *ServerInterfaceWrapper) SearchEntityAuditEvents(w http.ResponseWriter
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SearchEntityAuditEvents(w, r, entityId, params)
 	}))
@@ -5340,8 +3581,32 @@ func (siw *ServerInterfaceWrapper) GetStateMachineFinishedEvent(w http.ResponseW
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetStateMachineFinishedEventParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetStateMachineFinishedEvent(w, r, entityId, transactionId)
+		siw.Handler.GetStateMachineFinishedEvent(w, r, entityId, transactionId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5386,6 +3651,19 @@ func (siw *ServerInterfaceWrapper) CreateTechnicalUser(w http.ResponseWriter, r 
 	// Parameter object where we will unmarshal all parameters from the context
 	var params CreateTechnicalUserParams
 
+	// ------------- Optional query parameter "clientId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "clientId", r.URL.Query(), &params.ClientId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "clientId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "clientId", Err: err})
+		}
+		return
+	}
+
 	// ------------- Optional query parameter "withAdminRole" -------------
 
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "withAdminRole", r.URL.Query(), &params.WithAdminRole, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
@@ -5395,6 +3673,19 @@ func (siw *ServerInterfaceWrapper) CreateTechnicalUser(w http.ResponseWriter, r 
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "withAdminRole"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "withAdminRole", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "onBehalfOf" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "onBehalfOf", r.URL.Query(), &params.OnBehalfOf, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "onBehalfOf"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "onBehalfOf", Err: err})
 		}
 		return
 	}
@@ -5474,6 +3765,26 @@ func (siw *ServerInterfaceWrapper) ResetTechnicalUserSecret(w http.ResponseWrite
 	handler.ServeHTTP(w, r)
 }
 
+// GetConsistencyTime operation middleware
+func (siw *ServerInterfaceWrapper) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetConsistencyTime(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetEntityStatistics operation middleware
 func (siw *ServerInterfaceWrapper) GetEntityStatistics(w http.ResponseWriter, r *http.Request) {
 
@@ -5500,6 +3811,27 @@ func (siw *ServerInterfaceWrapper) GetEntityStatistics(w http.ResponseWriter, r 
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pointInTime", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5552,6 +3884,27 @@ func (siw *ServerInterfaceWrapper) GetEntityStatisticsByState(w http.ResponseWri
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "states", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5624,6 +3977,27 @@ func (siw *ServerInterfaceWrapper) GetEntityStatisticsByStateForModel(w http.Res
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetEntityStatisticsByStateForModel(w, r, entityName, modelVersion, params)
 	}))
@@ -5681,6 +4055,27 @@ func (siw *ServerInterfaceWrapper) GetEntityStatisticsForModel(w http.ResponseWr
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetEntityStatisticsForModel(w, r, entityName, modelVersion, params)
 	}))
@@ -5722,8 +4117,32 @@ func (siw *ServerInterfaceWrapper) QueryGroupedEntityStatisticsForModel(w http.R
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params QueryGroupedEntityStatisticsForModelParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.QueryGroupedEntityStatisticsForModel(w, r, entityName, modelVersion)
+		siw.Handler.QueryGroupedEntityStatisticsForModel(w, r, entityName, modelVersion, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5754,8 +4173,32 @@ func (siw *ServerInterfaceWrapper) DeleteSingleEntity(w http.ResponseWriter, r *
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteSingleEntityParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteSingleEntity(w, r, entityId)
+		siw.Handler.DeleteSingleEntity(w, r, entityId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5815,6 +4258,27 @@ func (siw *ServerInterfaceWrapper) GetOneEntity(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetOneEntity(w, r, entityId, params)
 	}))
@@ -5861,6 +4325,27 @@ func (siw *ServerInterfaceWrapper) GetEntityChangesMetadata(w http.ResponseWrite
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pointInTime", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5922,6 +4407,27 @@ func (siw *ServerInterfaceWrapper) GetEntityTransitions(w http.ResponseWriter, r
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionId", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6007,6 +4513,27 @@ func (siw *ServerInterfaceWrapper) DeleteEntities(w http.ResponseWriter, r *http
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteEntities(w, r, entityName, modelVersion, params)
 	}))
@@ -6090,6 +4617,27 @@ func (siw *ServerInterfaceWrapper) GetAllEntities(w http.ResponseWriter, r *http
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetAllEntities(w, r, entityName, modelVersion, params)
 	}))
@@ -6151,6 +4699,27 @@ func (siw *ServerInterfaceWrapper) CreateCollection(w http.ResponseWriter, r *ht
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateCollection(w, r, format, params)
 	}))
@@ -6210,6 +4779,27 @@ func (siw *ServerInterfaceWrapper) UpdateCollection(w http.ResponseWriter, r *ht
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionTimeoutMillis", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6290,6 +4880,25 @@ func (siw *ServerInterfaceWrapper) PatchSingleWithLoopback(w http.ResponseWriter
 
 	}
 
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PatchSingleWithLoopback(w, r, format, entityId, params)
 	}))
@@ -6365,6 +4974,25 @@ func (siw *ServerInterfaceWrapper) UpdateSingleWithLoopback(w http.ResponseWrite
 		}
 
 		params.IfMatch = &IfMatch
+
+	}
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
 
 	}
 
@@ -6455,6 +5083,25 @@ func (siw *ServerInterfaceWrapper) PatchSingle(w http.ResponseWriter, r *http.Re
 
 	}
 
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PatchSingle(w, r, format, entityId, transition, params)
 	}))
@@ -6542,6 +5189,25 @@ func (siw *ServerInterfaceWrapper) UpdateSingle(w http.ResponseWriter, r *http.R
 
 	}
 
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateSingle(w, r, format, entityId, transition, params)
 	}))
@@ -6621,6 +5287,27 @@ func (siw *ServerInterfaceWrapper) Create(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.Create(w, r, format, entityName, modelVersion, params)
 	}))
@@ -6658,6 +5345,27 @@ func (siw *ServerInterfaceWrapper) DeleteMessages(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionSize", Err: err})
 		}
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6794,25 +5502,6 @@ func (siw *ServerInterfaceWrapper) NewMessage(w http.ResponseWriter, r *http.Req
 
 	}
 
-	// ------------- Optional header parameter "X-User-ID" -------------
-	if valueList, found := headers[http.CanonicalHeaderKey("X-User-ID")]; found {
-		var XUserID string
-		n := len(valueList)
-		if n != 1 {
-			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-User-ID", Count: n})
-			return
-		}
-
-		err = runtime.BindStyledParameterWithOptions("simple", "X-User-ID", valueList[0], &XUserID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
-		if err != nil {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-User-ID", Err: err})
-			return
-		}
-
-		params.XUserID = &XUserID
-
-	}
-
 	// ------------- Optional header parameter "X-Recipient" -------------
 	if valueList, found := headers[http.CanonicalHeaderKey("X-Recipient")]; found {
 		var XRecipient string
@@ -6870,6 +5559,25 @@ func (siw *ServerInterfaceWrapper) NewMessage(w http.ResponseWriter, r *http.Req
 
 	}
 
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.NewMessage(w, r, subject, params)
 	}))
@@ -6902,8 +5610,32 @@ func (siw *ServerInterfaceWrapper) DeleteMessage(w http.ResponseWriter, r *http.
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteMessageParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteMessage(w, r, messageId)
+		siw.Handler.DeleteMessage(w, r, messageId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -6934,8 +5666,32 @@ func (siw *ServerInterfaceWrapper) GetMessage(w http.ResponseWriter, r *http.Req
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetMessageParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetMessage(w, r, messageId)
+		siw.Handler.GetMessage(w, r, messageId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7434,33 +6190,14 @@ func (siw *ServerInterfaceWrapper) IssueJwtKeyPair(w http.ResponseWriter, r *htt
 // GetCurrentJwtKeyPair operation middleware
 func (siw *ServerInterfaceWrapper) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 
-	var err error
-	_ = err
-
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
 
 	r = r.WithContext(ctx)
 
-	// Parameter object where we will unmarshal all parameters from the context
-	var params GetCurrentJwtKeyPairParams
-
-	// ------------- Required query parameter "audience" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, true, "audience", r.URL.Query(), &params.Audience, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "audience"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "audience", Err: err})
-		}
-		return
-	}
-
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetCurrentJwtKeyPair(w, r, params)
+		siw.Handler.GetCurrentJwtKeyPair(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7702,260 +6439,6 @@ func (siw *ServerInterfaceWrapper) ReactivateTrustedKey(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
-// ListOidcProviders operation middleware
-func (siw *ServerInterfaceWrapper) ListOidcProviders(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params ListOidcProvidersParams
-
-	// ------------- Optional query parameter "activeOnly" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "activeOnly", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "activeOnly"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "activeOnly", Err: err})
-		}
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListOidcProviders(w, r, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// RegisterOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) RegisterOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.RegisterOidcProvider(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ReloadOidcProviders operation middleware
-func (siw *ServerInterfaceWrapper) ReloadOidcProviders(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ReloadOidcProviders(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// DeleteOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) DeleteOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// UpdateOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) UpdateOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.UpdateOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// InvalidateOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) InvalidateOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.InvalidateOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ReactivateOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) ReactivateOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ReactivateOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// GetTechnicalUserToken operation middleware
-func (siw *ServerInterfaceWrapper) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BasicAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params GetTechnicalUserTokenParams
-
-	headers := r.Header
-
-	// ------------- Optional header parameter "Authorization" -------------
-	if valueList, found := headers[http.CanonicalHeaderKey("Authorization")]; found {
-		var Authorization string
-		n := len(valueList)
-		if n != 1 {
-			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Authorization", Count: n})
-			return
-		}
-
-		err = runtime.BindStyledParameterWithOptions("simple", "Authorization", valueList[0], &Authorization, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
-		if err != nil {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Authorization", Err: err})
-			return
-		}
-
-		params.Authorization = &Authorization
-
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetTechnicalUserToken(w, r, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // FetchEntityTransitions operation middleware
 func (siw *ServerInterfaceWrapper) FetchEntityTransitions(w http.ResponseWriter, r *http.Request) {
 
@@ -7997,8 +6480,225 @@ func (siw *ServerInterfaceWrapper) FetchEntityTransitions(w http.ResponseWriter,
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.FetchEntityTransitions(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPlatformClock operation middleware
+func (siw *ServerInterfaceWrapper) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPlatformClock(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ChangePlatformClock operation middleware
+func (siw *ServerInterfaceWrapper) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ChangePlatformClock(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPlatformCluster operation middleware
+func (siw *ServerInterfaceWrapper) GetPlatformCluster(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetPlatformClusterParams
+
+	// ------------- Optional query parameter "waitForNodes" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForNodes", r.URL.Query(), &params.WaitForNodes, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForNodes"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForNodes", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "timeoutMs" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "timeoutMs", r.URL.Query(), &params.TimeoutMs, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "timeoutMs"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "timeoutMs", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPlatformCluster(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListScheduledTasks operation middleware
+func (siw *ServerInterfaceWrapper) ListScheduledTasks(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListScheduledTasksParams
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "modelName" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "modelName", r.URL.Query(), &params.ModelName, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "modelName"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "modelName", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "modelVersion" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "modelVersion", r.URL.Query(), &params.ModelVersion, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "modelVersion"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "modelVersion", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "entityId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "entityId", r.URL.Query(), &params.EntityId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "entityId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListScheduledTasks(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8067,6 +6767,27 @@ func (siw *ServerInterfaceWrapper) SubmitAsyncSearchJob(w http.ResponseWriter, r
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SubmitAsyncSearchJob(w, r, entityName, modelVersion, params)
 	}))
@@ -8128,6 +6849,27 @@ func (siw *ServerInterfaceWrapper) GetAsyncSearchResults(w http.ResponseWriter, 
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetAsyncSearchResults(w, r, jobId, params)
 	}))
@@ -8160,8 +6902,32 @@ func (siw *ServerInterfaceWrapper) CancelAsyncSearch(w http.ResponseWriter, r *h
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CancelAsyncSearchParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CancelAsyncSearch(w, r, jobId)
+		siw.Handler.CancelAsyncSearch(w, r, jobId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8192,8 +6958,32 @@ func (siw *ServerInterfaceWrapper) GetAsyncSearchStatus(w http.ResponseWriter, r
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetAsyncSearchStatusParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetAsyncSearchStatus(w, r, jobId)
+		siw.Handler.GetAsyncSearchStatus(w, r, jobId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8301,8 +7091,85 @@ func (siw *ServerInterfaceWrapper) SearchEntities(w http.ResponseWriter, r *http
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Tx-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Tx-Token")]; found {
+		var XTxToken TxToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Tx-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Tx-Token", valueList[0], &XTxToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Tx-Token", Err: err})
+			return
+		}
+
+		params.XTxToken = &XTxToken
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SearchEntities(w, r, entityName, modelVersion, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetTechnicalUserToken operation middleware
+func (siw *ServerInterfaceWrapper) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "tenant" -------------
+	var tenant string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenant", r.PathValue("tenant"), &tenant, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tenant", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BasicAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTechnicalUserTokenParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Authorization" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Authorization")]; found {
+		var Authorization string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Authorization", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Authorization", valueList[0], &Authorization, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Authorization", Err: err})
+			return
+		}
+
+		params.Authorization = &Authorization
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTechnicalUserToken(w, r, tenant, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8440,6 +7307,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/clients", wrapper.CreateTechnicalUser)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/clients/{clientId}", wrapper.DeleteTechnicalUser)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/clients/{clientId}/secret", wrapper.ResetTechnicalUserSecret)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/consistency-time", wrapper.GetConsistencyTime)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/stats", wrapper.GetEntityStatistics)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/stats/states", wrapper.GetEntityStatisticsByState)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/stats/states/{entityName}/{modelVersion}", wrapper.GetEntityStatisticsByStateForModel)
@@ -8483,20 +7351,17 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}", wrapper.DeleteTrustedKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}/invalidate", wrapper.InvalidateTrustedKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}/reactivate", wrapper.ReactivateTrustedKey)
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/oauth/oidc/providers", wrapper.ListOidcProviders)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers", wrapper.RegisterOidcProvider)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers/reload", wrapper.ReloadOidcProviders)
-	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/oauth/oidc/providers/{id}", wrapper.DeleteOidcProvider)
-	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/oauth/oidc/providers/{id}", wrapper.UpdateOidcProvider)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers/{id}/invalidate", wrapper.InvalidateOidcProvider)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers/{id}/reactivate", wrapper.ReactivateOidcProvider)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/token", wrapper.GetTechnicalUserToken)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform-api/entity/fetch/transitions", wrapper.FetchEntityTransitions)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform/clock", wrapper.GetPlatformClock)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/platform/clock", wrapper.ChangePlatformClock)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform/cluster", wrapper.GetPlatformCluster)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scheduled-tasks", wrapper.ListScheduledTasks)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/search/async/{entityName}/{modelVersion}", wrapper.SubmitAsyncSearchJob)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/search/async/{jobId}", wrapper.GetAsyncSearchResults)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/search/async/{jobId}/cancel", wrapper.CancelAsyncSearch)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/search/async/{jobId}/status", wrapper.GetAsyncSearchStatus)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/search/direct/{entityName}/{modelVersion}", wrapper.SearchEntities)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/tenants/{tenant}/oauth/token", wrapper.GetTechnicalUserToken)
 
 	return m
 }

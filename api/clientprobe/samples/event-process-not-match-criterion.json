@@ -1,0 +1,11 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineProcessCriterionNotMatchedDto",
+  "value": {
+    "eventType": "PROCESS_NOT_MATCH_CRITERION",
+    "workflowName": "orders",
+    "processorClassName": "com.example.Enrich",
+    "criterion": "simple",
+    "reason": "amount below threshold"
+  }
+}

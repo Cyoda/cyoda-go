@@ -2,11 +2,12 @@ package grpc
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/contract"
 )
 
 // resolveGRPCAddr returns the gRPC dial target for a peer node: the peer's
@@ -32,5 +33,5 @@ func resolveGRPCAddr(ni contract.NodeInfo, localGRPCPort int) (string, error) {
 	if host == "" {
 		return "", fmt.Errorf("parse peer HTTP addr %q: no host", ni.Addr)
 	}
-	return host + ":" + strconv.Itoa(localGRPCPort), nil
+	return net.JoinHostPort(host, strconv.Itoa(localGRPCPort)), nil
 }

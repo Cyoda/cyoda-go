@@ -1,0 +1,9 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineScheduledTransitionExpiredDto",
+  "value": {
+    "eventType": "SCHEDULED_TRANSITION_EXPIRE",
+    "transition": "expire",
+    "sourceState": "PENDING"
+  }
+}

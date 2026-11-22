@@ -1,0 +1,5 @@
+{
+  "body": "POST /entity/{format}/{entityName}/{modelVersion}",
+  "valid": false,
+  "value": "physics"
+}

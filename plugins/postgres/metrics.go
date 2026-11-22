@@ -10,16 +10,21 @@ import (
 )
 
 // meterName is the instrumentation scope for this plugin's instruments.
-const meterName = "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+const meterName = "github.com/cyoda/cyoda-go/plugins/postgres"
 
 // registerPoolMetrics exports pgxpool.Stat on every scrape as observable
 // instruments. Pool saturation is the dominant outage mode of this design;
 // empty_acquire_wait (time callers spent waiting because the pool was
-// empty) is the signal to alarm on. One pool per process is assumed: two
-// factories would both observe backend="postgres" and the last observation
-// per cycle would win. The returned func unregisters the callback and must
-// run before the pool is closed.
-func registerPoolMetrics(meter metric.Meter, pool *pgxpool.Pool) (func(), error) {
+// empty) is the signal to alarm on. The connections gauge reports each pool
+// under pool="main", "scheduler", "heartbeat" or "model", so a saturated
+// scheduler or model pool is told apart from a saturated main pool; the other
+// instruments are the main pool's. sched and models may be nil, and a pool
+// that is not open is not reported (models returns nil for it; it never opens
+// one). One factory per process is assumed: two factories would
+// both observe backend="postgres" and the last observation per cycle would
+// win. The returned func unregisters the callback and must run before the
+// pools are closed.
+func registerPoolMetrics(meter metric.Meter, pool *pgxpool.Pool, sched *schedulerPools, models func() *pgxpool.Pool) (func(), error) {
 	connections, err := meter.Int64ObservableGauge("cyoda.storage.pool.connections",
 		metric.WithDescription("Pool connections by state"))
 	if err != nil {
@@ -57,16 +62,31 @@ func registerPoolMetrics(meter metric.Meter, pool *pgxpool.Pool) (func(), error)
 	}
 
 	backend := attribute.String("backend", "postgres")
-	acquired := metric.WithAttributes(backend, attribute.String("state", "acquired"))
-	idle := metric.WithAttributes(backend, attribute.String("state", "idle"))
-	constructing := metric.WithAttributes(backend, attribute.String("state", "constructing"))
 	plain := metric.WithAttributes(backend)
+	observeConnections := func(o metric.Observer, name string, st *pgxpool.Stat) {
+		p := attribute.String("pool", name)
+		o.ObserveInt64(connections, int64(st.AcquiredConns()), metric.WithAttributes(backend, p, attribute.String("state", "acquired")))
+		o.ObserveInt64(connections, int64(st.IdleConns()), metric.WithAttributes(backend, p, attribute.String("state", "idle")))
+		o.ObserveInt64(connections, int64(st.ConstructingConns()), metric.WithAttributes(backend, p, attribute.String("state", "constructing")))
+	}
 
 	reg, err := meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		st := pool.Stat()
-		o.ObserveInt64(connections, int64(st.AcquiredConns()), acquired)
-		o.ObserveInt64(connections, int64(st.IdleConns()), idle)
-		o.ObserveInt64(connections, int64(st.ConstructingConns()), constructing)
+		observeConnections(o, "main", st)
+		if sched != nil {
+			work, heartbeat := sched.snapshot()
+			if work != nil {
+				observeConnections(o, "scheduler", work.Stat())
+			}
+			if heartbeat != nil {
+				observeConnections(o, "heartbeat", heartbeat.Stat())
+			}
+		}
+		if models != nil {
+			if m := models(); m != nil {
+				observeConnections(o, "model", m.Stat())
+			}
+		}
 		o.ObserveInt64(maxConns, int64(st.MaxConns()), plain)
 		o.ObserveInt64(acquires, st.AcquireCount(), plain)
 		o.ObserveInt64(emptyAcquires, st.EmptyAcquireCount(), plain)

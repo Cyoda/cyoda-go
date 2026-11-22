@@ -35,9 +35,10 @@ func setupNulModel(t *testing.T, model string) {
 // The two collection bodies use %q, not %s, and that is load-bearing: the
 // collection endpoints declare Payload as a string (a JSON-ENCODED document,
 // see internal/domain/entity/handler.go). Embedding a raw object instead makes
-// the outer array parse fail with "invalid JSON array" — still a 400, so the
-// assertion passes, but from the array parser rather than from the guard under
-// test. These two subtests shipped that way and were vacuous.
+// the outer decode refuse the body ("a JSON object where a string is
+// expected") — still a 400, so the assertion passes, but from the decoder
+// rather than from the guard under test. These two subtests shipped that way
+// and were vacuous.
 func TestEntity_NulInPayload_400(t *testing.T) {
 	const model = "e2e-nul-payload"
 	setupNulModel(t, model)

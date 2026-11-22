@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func TestPatchEntity_MergeAndStrictValidate(t *testing.T) {
@@ -77,7 +78,54 @@ func TestPatchEntity_StarIsUnconditional(t *testing.T) {
 	}
 }
 
+// Stored data that does not decode is a server fault, as on GET: the patch is
+// not the caller's error.
+func TestPatchEntity_UndecodableStoredDataIs5xx(t *testing.T) {
+	h, ctx := newPatchTestHandler(t)
+	id := createPersonEntity(t, h, ctx, map[string]any{"name": "A"})
+	overwriteStoredData(t, h, ctx, id, `{"name":`)
+	_, err := h.PatchEntity(ctx, PatchEntityInput{
+		EntityID: id, Patch: []byte(`{"age":2}`), PatchFormat: "MERGE_PATCH", IfMatch: "*",
+	})
+	assertStatus(t, err, http.StatusInternalServerError)
+}
+
+// The merge base is read as GET reads stored data: content after the first
+// value is not a reason to refuse the patch.
+func TestPatchEntity_StoredTrailingContentMerges(t *testing.T) {
+	h, ctx := newPatchTestHandler(t)
+	id := createPersonEntity(t, h, ctx, map[string]any{"name": "A"})
+	overwriteStoredData(t, h, ctx, id, `{"name":"A"} trailing`)
+	if _, err := h.PatchEntity(ctx, PatchEntityInput{
+		EntityID: id, Patch: []byte(`{"age":2}`), PatchFormat: "MERGE_PATCH", IfMatch: "*",
+	}); err != nil {
+		t.Fatalf("patch over stored data GET reads: %v", err)
+	}
+	got := getEntityData(t, h, ctx, id)
+	if got["name"] != "A" || got["age"].(json.Number).String() != "2" {
+		t.Errorf("merge wrong: %#v", got)
+	}
+}
+
 // --- helpers ---
+
+// overwriteStoredData replaces an entity's stored bytes directly in the store,
+// bypassing every write door's validation.
+func overwriteStoredData(t *testing.T, h *Handler, ctx context.Context, id, data string) {
+	t.Helper()
+	store, err := h.factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	e, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	e.Data = []byte(data)
+	if _, err := store.Save(ctx, e); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+}
 
 // newPatchTestHandler builds a Handler wired to a fresh in-memory store with a
 // real workflow engine, and a context carrying the test user. The model "Person/1"
@@ -99,8 +147,8 @@ func newPatchTestHandler(t *testing.T) (*Handler, context.Context) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	engine := wfengine.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	h := New(cachedFactory(factory), txMgr, common.NewDefaultUUIDGenerator(), engine, txcoord.New(txMgr), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	// Build a strict (ChangeLevel == "") schema for Person: {name: String, age: Integer}.
 	node := schema.NewObjectNode()

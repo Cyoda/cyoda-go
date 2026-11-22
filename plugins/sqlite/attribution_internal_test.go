@@ -6,7 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 func attrInternalCtx(tenant, userID string, kind spi.PrincipalKind) context.Context {
@@ -31,6 +32,7 @@ func TestTombstone_HasMetaBlobWithAttribution(t *testing.T) {
 	defer f.Close()
 
 	ctx := attrInternalCtx("tenant-A", "alice", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, f, ctx, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -88,6 +90,7 @@ func TestLegacyNullMetaTombstone_ReadsBackZeroValues(t *testing.T) {
 	defer f.Close()
 
 	ctx := attrInternalCtx("tenant-A", "alice", spi.PrincipalUser)
+	spitest.EnsureLockedModel(t, f, ctx, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	store, err := f.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)

@@ -13,13 +13,15 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/app"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/app"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/common/commontest"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	_ "github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {
@@ -142,7 +144,7 @@ func TestCreateEntity_JSONArrayCreatesBatch(t *testing.T) {
 }
 
 func TestNewHandler(t *testing.T) {
-	h := entity.New(nil, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h := entity.New(cachedFactory(nil), nil, common.NewDefaultUUIDGenerator(), nil, txcoord.New(nil), newFixedConsistency(), platformclock.Real())
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}
@@ -1336,6 +1338,19 @@ func TestCreateCollectionInvalidJSON(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestCreateCollection_UnstorableBody: text no store can hold anywhere in the
+// body is refused by the unstorable check before any item runs, as on update
+// collection and the gRPC collection events, naming the reason.
+func TestCreateCollection_UnstorableBody(t *testing.T) {
+	srv := newTestServer(t)
+	body := `[{"model":{"name":"Batch\u0000Nul","version":1},"payload":"{\"name\":\"Bob\"}"}]`
+	resp := doCreateCollection(t, srv.URL, "JSON", body)
+	b := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "NUL character") {
+		t.Fatalf("status %d: %s; want 400 from the unstorable check", resp.StatusCode, b)
+	}
+}
+
 func TestCreateCollectionModelNotFound(t *testing.T) {
 	srv := newTestServer(t)
 	body := `[{"model":{"name":"NoSuchModel","version":1},"payload":"{\"name\":\"Bob\"}"}]`
@@ -1493,8 +1508,9 @@ func TestGetEntityChangesMetadata_PointInTime(t *testing.T) {
 }
 
 // TestGetEntityChangesMetadata_PointInTimeFuture asserts that a pointInTime
-// strictly after the latest change returns the full history — equivalent to
-// omitting the parameter. Boundary case.
+// later than the consistency time is refused with a 400, and that a
+// pointInTime at the consistency time returns the full history — equivalent
+// to omitting the parameter. Boundary case.
 func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "ChangesMetaPITFuture", 1, `{"k":1}`)
@@ -1507,7 +1523,7 @@ func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
 	expectStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
 
-	// pointInTime strictly after the latest change.
+	// pointInTime later than the consistency time is refused.
 	future := time.Now().UTC().Add(1 * time.Hour)
 	pitURL := fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
 		srv.URL, entityID, future.Format(time.RFC3339Nano))
@@ -1515,14 +1531,28 @@ func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get changes (future pit): %v", err)
 	}
+	expectStatus(t, resp, http.StatusBadRequest)
+	if body := readBody(t, resp); !strings.Contains(string(body), common.ErrCodePointInTimeAfterConsistencyTime) {
+		t.Fatalf("future pointInTime: want %s in body, got %s", common.ErrCodePointInTimeAfterConsistencyTime, body)
+	}
+
+	// pointInTime at the present (not after the consistency time) returns the
+	// full history.
+	present := time.Now().UTC()
+	pitURL = fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
+		srv.URL, entityID, present.Format(time.RFC3339Nano))
+	resp, err = http.Get(pitURL)
+	if err != nil {
+		t.Fatalf("get changes (present pit): %v", err)
+	}
 	expectStatus(t, resp, http.StatusOK)
 	body := readBody(t, resp)
 	var futureResult []map[string]any
 	if err := json.Unmarshal(body, &futureResult); err != nil {
-		t.Fatalf("parse future result: %v", err)
+		t.Fatalf("parse present result: %v", err)
 	}
 	if len(futureResult) != 3 {
-		t.Fatalf("future pointInTime: expected full history (3 entries), got %d", len(futureResult))
+		t.Fatalf("present pointInTime: expected full history (3 entries), got %d", len(futureResult))
 	}
 
 	// Cross-check: omitting the parameter yields the same result set.
@@ -1653,8 +1683,8 @@ func TestGetEntityChangesMetadata_AttributionModern(t *testing.T) {
 	if user, _ := entry["user"].(string); user != "mock-user-001" {
 		t.Errorf("user: got %v, want mock-user-001", entry["user"])
 	}
-	if kind, _ := entry["attributedKind"].(string); kind != "user" {
-		t.Errorf("attributedKind: got %v, want user", entry["attributedKind"])
+	if kind, _ := entry["attributedKind"].(string); kind != "service" {
+		t.Errorf("attributedKind: got %v, want service", entry["attributedKind"])
 	}
 	executedBy, ok := entry["executedBy"].(map[string]any)
 	if !ok {
@@ -1663,28 +1693,43 @@ func TestGetEntityChangesMetadata_AttributionModern(t *testing.T) {
 	if id, _ := executedBy["id"].(string); id != "mock-user-001" {
 		t.Errorf("executedBy.id: got %v, want mock-user-001", executedBy["id"])
 	}
-	if kind, _ := executedBy["kind"].(string); kind != "user" {
-		t.Errorf("executedBy.kind: got %v, want user", executedBy["kind"])
+	if kind, _ := executedBy["kind"].(string); kind != "service" {
+		t.Errorf("executedBy.kind: got %v, want service", executedBy["kind"])
 	}
 }
 
 // TestGetEntityChangesMetadata_AttributionLegacy asserts that a change-history
 // entry with zero attribution (no AttributedKind, no Executor — the shape of
-// rows written before follow-on-action attribution existed) surfaces "user"
-// unchanged and emits NEITHER "attributedKind" NOR "executedBy" — no JSON
-// null, the key is simply absent.
+// a version a backend stored without attribution) surfaces "user" unchanged
+// and emits NEITHER "attributedKind" NOR "executedBy" — no JSON null, the key
+// is simply absent. Every request carries an attributed principal, so the
+// version is written straight into the store.
 func TestGetEntityChangesMetadata_AttributionLegacy(t *testing.T) {
 	cfg := app.DefaultConfig()
 	cfg.ContextPath = ""
-	// Zero out the mock principal so spi.AttributionFor(ctx) yields the zero
-	// Principal for both attributed and executor, reproducing a legacy row
-	// with no attribution recorded.
-	cfg.IAM.MockUserID = ""
-	cfg.IAM.MockKind = ""
-	srv := newTestServerWithConfig(t, cfg)
+	a := app.New(cfg)
+	srv := httptest.NewServer(a.Handler())
+	t.Cleanup(srv.Close)
 
 	importAndLockModel(t, srv.URL, "ChangesMetaAttrLegacy", 1, `{"k":1}`)
 	entityID := createEntityAndGetID(t, srv.URL, "ChangesMetaAttrLegacy", 1, `{"k":1}`)
+
+	ctx := commontest.SystemUserContext(spi.TenantID(cfg.IAM.MockTenantID))
+	es, err := a.StoreFactory().EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	ent, err := es.Get(ctx, entityID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	ent.Meta.ChangeUser = ""
+	ent.Meta.ChangeUserKind = ""
+	ent.Meta.ChangeExecutor = spi.Principal{}
+	ent.Data = []byte(`{"k":2}`)
+	if _, err := es.Save(ctx, ent); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
 
 	url := fmt.Sprintf("%s/entity/%s/changes", srv.URL, entityID)
 	resp, err := http.Get(url)
@@ -1698,19 +1743,20 @@ func TestGetEntityChangesMetadata_AttributionLegacy(t *testing.T) {
 	if err := json.Unmarshal(body, &changes); err != nil {
 		t.Fatalf("failed to parse changes response: %v", err)
 	}
-	if len(changes) != 1 {
-		t.Fatalf("expected 1 change entry, got %d", len(changes))
+	var legacy map[string]any
+	for _, c := range changes {
+		if _, attributed := c["attributedKind"]; !attributed {
+			legacy = c
+		}
 	}
-
-	entry := changes[0]
-	if _, present := entry["user"]; !present {
+	if len(changes) != 2 || legacy == nil {
+		t.Fatalf("expected 2 change entries, one without attribution; got %v", changes)
+	}
+	if _, present := legacy["user"]; !present {
 		t.Errorf("expected user key to remain present (even if empty)")
 	}
-	if _, present := entry["attributedKind"]; present {
-		t.Errorf("expected no attributedKind key on legacy row, got %v", entry["attributedKind"])
-	}
-	if _, present := entry["executedBy"]; present {
-		t.Errorf("expected no executedBy key on legacy row, got %v", entry["executedBy"])
+	if _, present := legacy["executedBy"]; present {
+		t.Errorf("expected no executedBy key on an unattributed version, got %v", legacy["executedBy"])
 	}
 }
 

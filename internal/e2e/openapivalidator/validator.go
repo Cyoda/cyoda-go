@@ -3,7 +3,6 @@ package openapivalidator
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,8 +20,8 @@ import (
 // the matched operation's declared schema.
 //
 // IncludeResponseStatus=true is load-bearing: openapi3filter's default
-// behavior is to silently pass undeclared status codes (verified against
-// kin-openapi v0.137.0 openapi3filter/validate_response.go:48-58). Without
+// behavior is to silently pass undeclared status codes (kin-openapi v0.153.0
+// openapi3filter/validate_response.go:52-58). Without
 // this flag the validator misses an entire class of drift.
 //
 // MultiError=true accumulates all schema errors per response rather than
@@ -45,7 +44,13 @@ type Validator struct {
 }
 
 // NewValidator builds a Validator from a parsed OpenAPI 3.1 document.
+//
+// The document is rewritten in place into the view of ApplyView; pass one
+// freshly loaded (api.GetSwagger parses a new one on every call).
 func NewValidator(doc *openapi3.T) (*Validator, error) {
+	if err := ApplyView(doc); err != nil {
+		return nil, fmt.Errorf("apply spec view: %w", err)
+	}
 	router, err := gorillamux.NewRouter(doc)
 	if err != nil {
 		return nil, fmt.Errorf("build router: %w", err)
@@ -53,21 +58,27 @@ func NewValidator(doc *openapi3.T) (*Validator, error) {
 	return &Validator{
 		doc:    doc,
 		router: router,
-		opts: &openapi3filter.Options{
-			IncludeResponseStatus: true,
-			MultiError:            true,
-			AuthenticationFunc: func(ctx context.Context, ai *openapi3filter.AuthenticationInput) error {
-				return nil // skip auth checks; we validate shape only
-			},
-		},
+		opts:   validatorOptions(),
 	}, nil
+}
+
+// validatorOptions returns the options the Validator passes to
+// openapi3filter.ValidateResponse.
+func validatorOptions() *openapi3filter.Options {
+	return &openapi3filter.Options{
+		IncludeResponseStatus: true,
+		MultiError:            true,
+		AuthenticationFunc: func(ctx context.Context, ai *openapi3filter.AuthenticationInput) error {
+			return nil // skip auth checks; we validate shape only
+		},
+	}
 }
 
 // Validate runs the response through openapi3filter.ValidateResponse and
 // returns any mismatches it finds. Returns an empty slice on success.
 //
 // Records the matched operationId in the package's exercised set, regardless
-// of whether validation passed.
+// of whether validation passed, and the response's error-code triple.
 //
 // Wraps the underlying call in a panic recovery so that bugs in kin-openapi
 // (or in our spec/wire data hitting an untested code path) surface as
@@ -100,7 +111,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		// No matching route — the request hit a path the spec doesn't declare.
 		// This is a real mismatch (handler exists for an undeclared route).
 		return []Mismatch{{
-			Operation: "<unmatched>",
+			Operation: unmatchedOperation,
 			Method:    req.Method,
 			Path:      req.URL.Path,
 			Status:    resp.StatusCode,
@@ -129,7 +140,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 			return nil
 		}
 		return []Mismatch{{
-			Operation: "<unmatched>",
+			Operation: unmatchedOperation,
 			Method:    req.Method,
 			Path:      req.URL.Path,
 			Status:    resp.StatusCode,
@@ -171,8 +182,10 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		return nil
 	}
 
-	// Read response body for validation. The middleware passed the captured
-	// bytes via resp.Body; we consume them here.
+	body := resp.Body
+	if body == nil {
+		body = http.NoBody // kin closes the body it reads
+	}
 	// Options must be set on ResponseValidationInput — ValidateResponse reads
 	// input.Options (not input.RequestValidationInput.Options).
 	input := &openapi3filter.ResponseValidationInput{
@@ -182,13 +195,14 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		},
 		Status:  resp.StatusCode,
 		Header:  resp.Header,
-		Body:    resp.Body,
+		Body:    body,
 		Options: v.opts,
 	}
-	if err := openapi3filter.ValidateResponse(ctx, input); err != nil {
-		return v.toMismatches(err, opId, req, resp.StatusCode)
+	kinErr := openapi3filter.ValidateResponse(ctx, input)
+	if kinErr != nil {
+		mismatches = v.toMismatches(kinErr, opId, req, resp.StatusCode)
 	}
-	return nil
+	return mismatches
 }
 
 // isStreaming reports whether the matched operation declares
@@ -428,25 +442,53 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 // toMismatches converts the kin-openapi error tree into one or more Mismatch
 // records. MultiError is unwrapped so each schema problem becomes its own row.
 func (v *Validator) toMismatches(err error, opId string, req *http.Request, status int) []Mismatch {
-	var multi openapi3.MultiError
-	if errors.As(err, &multi) {
-		out := make([]Mismatch, 0, len(multi))
-		for _, e := range multi {
-			out = append(out, Mismatch{
-				Operation: opId,
-				Method:    req.Method,
-				Path:      req.URL.Path,
-				Status:    status,
-				Reason:    e.Error(),
-			})
-		}
-		return out
+	errs := schemaErrors(err)
+	out := make([]Mismatch, 0, len(errs))
+	for _, e := range errs {
+		out = append(out, Mismatch{
+			Operation: opId,
+			Method:    req.Method,
+			Path:      req.URL.Path,
+			Status:    status,
+			Reason:    e.Error(),
+		})
 	}
-	return []Mismatch{{
-		Operation: opId,
-		Method:    req.Method,
-		Path:      req.URL.Path,
-		Status:    status,
-		Reason:    err.Error(),
-	}}
+	return out
+}
+
+// schemaErrors returns the rows of a kin-openapi error. It splits kin's
+// top-level MultiError — err itself, or the cause of a response error — into
+// its errors, so each schema problem kin's own visitor finds becomes its own
+// row; a MultiError nested inside one problem, such as the errors of a
+// union's members, stays in its row. An error of kin's JSON Schema 2020-12
+// validator, which covers the whole value, becomes the rows jsonSchemaRows
+// writes from it. Any other error is returned alone.
+func schemaErrors(err error) []error {
+	errs := []error{err}
+	if re, ok := err.(*openapi3filter.ResponseError); ok {
+		if rows, ok := jsonSchemaRows(re.Err); ok {
+			if strings.HasPrefix(re.Reason, "response body ") {
+				return rows
+			}
+			for i, r := range rows { // a header's rows name the header
+				rows[i] = fmt.Errorf("%s: %w", re.Reason, r)
+			}
+			return rows
+		}
+		if multi, ok := re.Err.(openapi3.MultiError); ok {
+			errs = multi
+		}
+	}
+	if multi, ok := err.(openapi3.MultiError); ok {
+		errs = multi
+	}
+	var out []error
+	for _, e := range errs {
+		if rows, ok := jsonSchemaRows(e); ok {
+			out = append(out, rows...)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

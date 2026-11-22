@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 // --- Phase 4b: Distributed-safety contract tests (Tasks 4b.9-10) ---
@@ -102,7 +102,7 @@ func RunConcurrentTransitionsDifferentEntities(t *testing.T, fixture BackendFixt
 	if err := c.LockModel(t, modelName, modelVersion); err != nil {
 		t.Fatalf("LockModel: %v", err)
 	}
-	wf := `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"concurrent-wf","initialState":"NONE","active":true,"states":{"NONE":{"transitions":[{"name":"create","next":"CREATED","manual":false,"processors":[{"type":"calculator","name":"tag-with-foo","executionMode":"SYNC","config":{"attachEntity":true,"calculationNodesTags":""}}]}]},"CREATED":{}}}]}`
+	wf := `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"concurrent-wf","initialState":"NONE","active":true,"states":{"NONE":{"transitions":[{"name":"create","next":"CREATED","manual":false,"processors":[{"type":"externalized","name":"tag-with-foo","executionMode":"SYNC","config":{"attachEntity":true,"calculationNodesTags":""}}]}]},"CREATED":{}}}]}`
 	if err := c.ImportWorkflow(t, modelName, modelVersion, wf); err != nil {
 		t.Fatalf("ImportWorkflow: %v", err)
 	}

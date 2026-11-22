@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 type searchJobEntry struct {
@@ -20,20 +20,17 @@ type searchJobEntry struct {
 // AsyncSearchStore is a tenant-scoped, in-memory implementation of spi.AsyncSearchStore.
 type AsyncSearchStore struct {
 	mu    sync.RWMutex
-	clock Clock
+	clock Clock // physical: liveness (heartbeats, stale reclaim)
+	biz   Clock // business: reaping cutoff against FinishTime
 	data  map[spi.TenantID]map[string]*searchJobEntry
 }
 
-// NewAsyncSearchStore creates a new in-memory AsyncSearchStore using the wall clock.
-// Prefer newAsyncSearchStore for internal construction so the factory clock is shared.
-func NewAsyncSearchStore() *AsyncSearchStore {
-	return newAsyncSearchStore(wallClock{})
-}
-
-// newAsyncSearchStore creates a new in-memory AsyncSearchStore with the given clock.
-func newAsyncSearchStore(clock Clock) *AsyncSearchStore {
+// newAsyncSearchStore creates a new in-memory AsyncSearchStore with the given
+// physical and business clocks.
+func newAsyncSearchStore(clock, biz Clock) *AsyncSearchStore {
 	return &AsyncSearchStore{
 		clock: clock,
+		biz:   biz,
 		data:  make(map[spi.TenantID]map[string]*searchJobEntry),
 	}
 }
@@ -93,6 +90,10 @@ func (s *AsyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 	copied := copySearchJob(*job)
 	copied.Epoch = 1
 	copied.StaleClaims = 0
+	// Liveness starts at creation, on the store's physical clock; ClaimStale
+	// measures staleness from HeartbeatTime alone.
+	hb := s.clock.Now()
+	copied.HeartbeatTime = &hb
 	tenantJobs[job.ID] = &searchJobEntry{job: copied}
 	return nil
 }
@@ -345,8 +346,8 @@ func (s *AsyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch in
 }
 
 // ClaimStale atomically claims up to limit RUNNING jobs, across ALL
-// tenants, whose staleness baseline — HeartbeatTime, falling back to
-// CreateTime when never heartbeated — is older than staleAfter (measured
+// tenants, whose staleness baseline — HeartbeatTime, stamped at
+// CreateJob — is older than staleAfter (measured
 // against the store's clock, the same domain Heartbeat stamps into). A
 // claimed job has its Epoch bumped and HeartbeatTime refreshed to now, so a
 // concurrent or immediately-following claim cannot re-take it. Terminal
@@ -385,11 +386,7 @@ func (s *AsyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 				continue
 			}
 			if !entry.released {
-				baseline := entry.job.CreateTime
-				if entry.job.HeartbeatTime != nil {
-					baseline = *entry.job.HeartbeatTime
-				}
-				if !baseline.Before(cutoff) {
+				if !entry.job.HeartbeatTime.Before(cutoff) {
 					continue
 				}
 			}
@@ -423,9 +420,11 @@ func (s *AsyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	return claimed, nil
 }
 
-// ClearResults deletes the job's persisted result IDs. Idempotent: a
-// missing job is a no-op, matching the interface contract.
-func (s *AsyncSearchStore) ClearResults(ctx context.Context, jobID string) error {
+// ClearResults deletes the job's persisted result IDs, fenced like the write
+// methods (missing/terminal/epoch): a refused clear deletes nothing. The
+// fence and the delete run under one lock hold. Idempotent at the current
+// epoch.
+func (s *AsyncSearchStore) ClearResults(ctx context.Context, jobID string, epoch int64) error {
 	tid, err := s.resolveTenant(ctx)
 	if err != nil {
 		return err
@@ -434,10 +433,9 @@ func (s *AsyncSearchStore) ClearResults(ctx context.Context, jobID string) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entry, err := s.findEntryLocked(tid, jobID)
+	entry, err := s.guardWrite(tid, jobID, epoch)
 	if err != nil {
-		// Unknown job: idempotent no-op, not an error.
-		return nil
+		return err
 	}
 	entry.entityIDs = nil
 	return nil
@@ -467,7 +465,7 @@ func (s *AsyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cutoff := s.clock.Now().Add(-ttl)
+	cutoff := s.biz.Now().Add(-ttl)
 	reaped := 0
 
 	for _, tenantJobs := range s.data {

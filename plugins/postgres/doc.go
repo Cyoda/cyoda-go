@@ -14,6 +14,8 @@
 //	CYODA_POSTGRES_MIN_CONNS          default 5
 //	CYODA_POSTGRES_MAX_CONN_IDLE_TIME default 5m
 //	CYODA_POSTGRES_AUTO_MIGRATE       default true  (runs embedded SQL migrations at startup)
+//	CYODA_POSTGRES_SCHEDULER_CONNS    default 10    (scheduler's own pool; at least 2)
+//	CYODA_POSTGRES_MODEL_CONNS        default 8     (model store's own pool; extensions use at most half; at least 2)
 //
 // Ceilings, each accepting 0 to disable. All but the acquire timeout are
 // applied server-side; pgxpool.Config has no acquire-timeout field, so that
@@ -21,7 +23,8 @@
 //
 //	CYODA_POSTGRES_STATEMENT_TIMEOUT        default 5m   max run time for one statement
 //	CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT       default 5m   max idle time inside an open transaction
-//	CYODA_POSTGRES_ACQUIRE_TIMEOUT          default 10s  max wait for a free pooled connection
+//	CYODA_POSTGRES_ACQUIRE_TIMEOUT          default 10s  max wait for a free pooled connection when
+//	                                                     opening a transaction or a second one inside it
 //	CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT default 30m  statement ceiling for async search scans
 //	CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT     default 5m   max lock wait during schema migration
 //
@@ -39,7 +42,7 @@
 //
 // Not plugin-namespaced, but read here and advertised via ConfigVars():
 //
-//	CYODA_SCHEMA_SAVEPOINT_INTERVAL   default 64  rows per savepoint when folding schema extensions
+//	CYODA_SCHEMA_SAVEPOINT_INTERVAL   default 64  a model's deltas per savepoint; bounds the deltas a read folds
 //
 // # Migrations and context cancellation
 //
@@ -60,9 +63,29 @@
 // the handle in the registry. Stores hold a ctxQuerier that re-resolves
 // the underlying pgx.Tx on every call from the passed-in context — so
 // the active tx, discovered via spi.GetTransaction(ctx), is always used
-// when one is present, and the pool is used otherwise.
+// when one is present, and the pool is used otherwise. The model store is
+// the exception: it never joins a transaction on ctx (Model pool, below).
+//
+// # Model pool
+//
+// Model reads, schema extensions and model administration run on a pool of
+// their own (CYODA_POSTGRES_MODEL_CONNS) with lock_timeout 0, so entity
+// transactions cannot starve them, and never join a transaction on ctx: a
+// read returns the latest committed model in one statement, and each
+// extension commits in a short READ COMMITTED transaction of its own under
+// the model row's FOR NO KEY UPDATE lock. Extensions hold at most half the
+// pool's connections. See model_pool.go and modelStore.ExtendSchema.
+//
+// # Scheduler pool
+//
+// The scheduled-task store's never-joining methods, and the async-search
+// heartbeat and claim, run on a pool of their own (CYODA_POSTGRES_SCHEDULER_CONNS)
+// with fixed ceilings: READ COMMITTED, statement_timeout 30s,
+// idle_in_transaction_session_timeout 10s, lock_timeout 2s, and a 5s acquire.
+// The scheduler heartbeat has one more connection of its own. See
+// scheduler_pool.go.
 //
 // Registration:
 //
-//	import _ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+//	import _ "github.com/cyoda/cyoda-go/plugins/postgres"
 package postgres

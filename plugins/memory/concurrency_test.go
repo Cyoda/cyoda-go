@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func ctxForConcurrency(tid spi.TenantID) context.Context {
@@ -22,6 +22,7 @@ func ctxForConcurrency(tid spi.TenantID) context.Context {
 
 func TestConcurrentCrossStoreAccess(t *testing.T) {
 	factory := memory.NewStoreFactory()
+	lockModels(t, factory, ctxWithTenant("tenant-A"), spi.ModelRef{EntityName: "ConcTest", ModelVersion: "1"})
 	ctx := ctxForConcurrency("tenant-A")
 
 	const goroutinesPerStore = 20

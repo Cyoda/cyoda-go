@@ -1,0 +1,12 @@
+response-property-enum-value-added err
+response-property-enum-value-removed err
+response-mediatype-enum-value-removed err
+response-body-discriminator-mapping-deleted err
+response-property-discriminator-mapping-deleted err
+response-body-discriminator-property-name-changed err
+response-property-discriminator-property-name-changed err
+request-body-enum-value-removed err
+request-body-discriminator-mapping-deleted err
+request-property-discriminator-mapping-deleted err
+request-body-discriminator-property-name-changed err
+request-property-discriminator-property-name-changed err

@@ -168,9 +168,10 @@ scenarios:
     name: Externalized criterion skips the external call when upstream filter excludes entity
     source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizedGrpcProcessorIT.kt#testExternalizedCriteriaConditionSkipsExternalCallWhenNotMatched
     description: |
-      When a transition has both a simple (jsonPath-based) criterion AND
-      an externalized (function) criterion combined under AND, and the
-      simple one evaluates to false, the external call must not be made.
+      When a transition's criterion is an externalized (function) criterion
+      whose own condition (the pre-check, `function.criterion`, here a
+      simple jsonPath condition) evaluates to false, the external call must
+      not be made and the criterion is false.
     data:
       model: { name: extCritSkip, version: 1 }
     assertions:

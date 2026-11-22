@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/spitest"
 )
 
 // seedPageDeleteEntities saves n entities with byte-wise-ordered IDs
@@ -46,6 +47,7 @@ func TestGetPageTx_DeletesAtHeadOfPage(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-pgdel", "u1", spi.PrincipalUser)
 	modelRef := spi.ModelRef{EntityName: "m-pgdel-head", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, modelRef)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -86,6 +88,7 @@ func TestGetPageTx_DeletesSpanningPageBoundary(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-pgdel", "u1", spi.PrincipalUser)
 	modelRef := spi.ModelRef{EntityName: "m-pgdel-span", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, modelRef)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
@@ -130,6 +133,7 @@ func TestGetPageTx_DeletesWithOffset(t *testing.T) {
 	factory, tm := newAttrFactory(t)
 	ctx := attrCtx("tenant-pgdel", "u1", spi.PrincipalUser)
 	modelRef := spi.ModelRef{EntityName: "m-pgdel-offset", ModelVersion: "1"}
+	spitest.EnsureLockedModel(t, factory, ctx, modelRef)
 
 	store, err := factory.EntityStore(ctx)
 	if err != nil {

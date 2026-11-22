@@ -20,15 +20,16 @@ package grpc
 // narrower classifier-level pin.
 
 import (
+	"context"
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
 func TestBuildErrorFields_SearchQueueFull(t *testing.T) {
-	code, message, retryable := buildErrorFields(search.QueueFullError())
+	code, message, retryable := buildErrorFields(context.Background(), search.QueueFullError())
 
 	if code != "CLIENT_ERROR" {
 		t.Errorf("code = %q, want CLIENT_ERROR — a retryable 503 is an operational classification, not a server fault", code)

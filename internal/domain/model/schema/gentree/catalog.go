@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // Fixture is one named, hand-crafted test case.
@@ -116,7 +116,7 @@ var Catalog = []Fixture{
 		// refuses any name the wire jsonPath grammar cannot address. One
 		// already stored by a deployment that predates the rule still has to
 		// survive every schema operation unchanged, though: codec round-trip,
-		// Extend, Diff and Apply all carry it through untouched, and only the
+		// Extend, Diff and ApplyMany all carry it through untouched, and only the
 		// NEW field has to be addressable. That upgrade-path contract is what
 		// this fixture pins.
 		Name:          "LegacyUnicodeKeySurvivesExtension",

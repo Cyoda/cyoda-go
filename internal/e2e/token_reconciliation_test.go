@@ -1,22 +1,46 @@
 package e2e_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 )
 
-// postToken issues a POST to /api/oauth/token with the given form values and
-// optional HTTP Basic credentials. It does NOT use authRequest because the
-// token endpoint does not require a pre-existing bearer token.
-func postToken(t *testing.T, form url.Values, basicUser, basicPass string) *http.Response {
+// postToken issues a POST to the shared server's
+// /api/tenants/{tenant}/oauth/token with the given form values and optional HTTP Basic credentials. It does NOT use
+// authRequest because the token endpoint does not require a pre-existing
+// bearer token.
+func postToken(t *testing.T, tenant string, form url.Values, basicUser, basicPass string) *http.Response {
 	t.Helper()
-	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/token", strings.NewReader(form.Encode()))
+	return postTokenTo(t, serverURL, tenant, form, basicUser, basicPass)
+}
+
+// postTokenTo is postToken against the server at baseURL — the shared server
+// or a harness stack. basicUser and basicPass are sent as given, so a caller
+// can pass a form-urlencoded client id (the endpoint decodes both parts).
+func postTokenTo(t *testing.T, baseURL, tenant string, form url.Values, basicUser, basicPass string) *http.Response {
+	t.Helper()
+	resp, err := postTokenRaw(e2eCtx(t), baseURL, tenant, form, basicUser, basicPass)
 	if err != nil {
-		t.Fatalf("postToken: new request: %v", err)
+		t.Fatalf("postToken: %v", err)
+	}
+	return resp
+}
+
+// postTokenRaw is the one /api/tenants/{tenant}/oauth/token request every token helper
+// sends: form as the body, basicUser and basicPass as HTTP Basic credentials
+// when basicUser is set. It never touches *testing.T, so it is safe to call
+// from a goroutine.
+func postTokenRaw(ctx context.Context, baseURL, tenant string, form url.Values, basicUser, basicPass string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/tenants/"+tenant+"/oauth/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if basicUser != "" {
@@ -24,9 +48,9 @@ func postToken(t *testing.T, form url.Values, basicUser, basicPass string) *http
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("postToken: do: %v", err)
+		return nil, fmt.Errorf("token request: %w", err)
 	}
-	return resp
+	return resp, nil
 }
 
 // assertOAuthError asserts the flat RFC-6749 error shape (application/json,
@@ -64,7 +88,8 @@ func TestToken_ClientCredentials_Accepted(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, "testclient", "testsecret")
+	id, secret := createClient(t, false, false)
+	resp := postToken(t, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, secret)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -92,6 +117,14 @@ func TestToken_ClientCredentials_Accepted(t *testing.T) {
 	if tok.ExpiresIn <= 0 {
 		t.Fatalf("client_credentials: expires_in: got %d, want >0; body=%s", tok.ExpiresIn, raw)
 	}
+	// §4.2: the client is sub and caas_user_id, and cgen is its secret
+	// generation: for a client whose secret was never reset, the random start
+	// drawn at creation, an integer in [1, 2^52].
+	claims := decodeJWTPayload(t, tok.AccessToken)
+	gen, _ := claims["cgen"].(float64)
+	if claims["sub"] != id || claims["caas_user_id"] != id || gen < 1 || gen > 1<<52 || gen != math.Trunc(gen) {
+		t.Errorf("claims sub=%v caas_user_id=%v cgen=%v, want %s, %s, an integer in [1, 2^52]", claims["sub"], claims["caas_user_id"], claims["cgen"], id, id)
+	}
 }
 
 // TestToken_BadGrantType_400UnsupportedGrantType verifies that an unknown
@@ -100,7 +133,8 @@ func TestToken_BadGrantType_400UnsupportedGrantType(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := postToken(t, url.Values{"grant_type": {"password"}}, "testclient", "testsecret")
+	id, secret := createClient(t, false, false)
+	resp := postToken(t, suiteTenant, url.Values{"grant_type": {"password"}}, id, secret)
 	assertOAuthError(t, resp, http.StatusBadRequest, "unsupported_grant_type")
 }
 
@@ -110,50 +144,20 @@ func TestToken_BadClient_401InvalidClient(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, "testclient", "wrongsecret")
+	id, _ := createClient(t, false, false)
+	resp := postToken(t, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, "wrongsecret")
+	if got := resp.Header.Get("WWW-Authenticate"); got != `Basic realm="cyoda"` {
+		t.Errorf(`WWW-Authenticate = %q, want Basic realm="cyoda"`, got)
+	}
 	assertOAuthError(t, resp, http.StatusUnauthorized, "invalid_client")
 }
 
-// TestToken_TokenExchange_InvalidGrant_BadSubjectTokenType verifies that a
-// token-exchange request with an unsupported subject_token_type returns 400
-// invalid_grant. This exercises a trigger in handleTokenExchange without
-// requiring private-key material (wrong type is rejected before verification).
-func TestToken_TokenExchange_InvalidGrant_BadSubjectTokenType(t *testing.T) {
-	if testing.Short() {
-		t.Skip("e2e: requires Docker + PostgreSQL")
-	}
-	form := url.Values{
-		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
-		"subject_token":      {"fake.token.here"},
-		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"}, // not jwt — rejected
-	}
-	resp := postToken(t, form, "testclient", "testsecret")
-	assertOAuthError(t, resp, http.StatusBadRequest, "invalid_grant")
-}
-
-// TestToken_TokenExchange_InvalidGrant_MalformedToken verifies that a
-// token-exchange request with a structurally invalid subject_token returns 400
-// invalid_grant. The JWT parser rejects the non-JWT string before any key lookup.
-func TestToken_TokenExchange_InvalidGrant_MalformedToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("e2e: requires Docker + PostgreSQL")
-	}
-	form := url.Values{
-		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
-		"subject_token":      {"not-a-jwt"},
-		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
-	}
-	resp := postToken(t, form, "testclient", "testsecret")
-	assertOAuthError(t, resp, http.StatusBadRequest, "invalid_grant")
-}
-
-// NOTE: access_denied (403 tenant mismatch) requires constructing a valid
-// signed JWT whose caas_org_id differs from the authenticating M2M client's
-// tenant. That requires private-key material for a registered trusted key.
-// The E2E harness does not retain private keys after registration (see
-// oauth_keys_test.go NOTE at line ~570). This case is waived at E2E level;
-// the unit-level invariant is asserted in internal/auth tests.
+// NOTE: every token-exchange refusal is covered by
+// TestToken_TokenExchange_Refusals in token_exchange_test.go.
 //
-// NOTE: server_error (500) is an internal-fault path only. No producing test
-// is provided; the enum addition in ErrorResponseDto is sufficient per the
-// task brief.
+// NOTE: 503 temporarily_unavailable for a store that cannot be read, and 500
+// server_error for other store and signing failures, are failures a running
+// backend cannot be made to produce on demand; they are covered by the unit
+// tests in internal/auth/token_test.go. 503 temporarily_unavailable for no
+// free secret-check slot is covered on a stack of its own by
+// TestSecretCheckBound_NoFreeSlot_503.

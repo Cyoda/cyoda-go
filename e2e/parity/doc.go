@@ -12,7 +12,7 @@
 //
 // TODO(plan-6-or-later): The following raw-store scenarios are now
 // covered at the SPI layer by spitest.StoreFactoryConformance in
-// github.com/cyoda-platform/cyoda-go-spi/spitest, and are candidates
+// github.com/cyoda/cyoda-go-spi/spitest, and are candidates
 // for retirement from this HTTP-stack parity suite once spitest has
 // been in production for a release cycle:
 //

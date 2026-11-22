@@ -3,16 +3,23 @@ package workflow
 import (
 	"context"
 	"errors"
+	"math"
+	"reflect"
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // fixedClock returns a clock function pinned to a fixed instant, for
 // deterministic scheduledTime/armedAt assertions.
+// funcClock adapts a time function to spi.Clock.
+type funcClock func() time.Time
+
+func (f funcClock) Now() time.Time { return f() }
+
 func fixedClock(ms int64) func() time.Time {
 	t := time.UnixMilli(ms)
 	return func() time.Time { return t }
@@ -25,7 +32,7 @@ func setupEngineWithClock(t *testing.T, nowMs int64) (*Engine, spi.StoreFactory)
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, WithScheduledClock(fixedClock(nowMs)))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, funcClock(fixedClock(nowMs)))
 	return engine, factory
 }
 
@@ -52,7 +59,7 @@ func setupEngineWithSteppableClock(t *testing.T, initialMs int64) (*Engine, spi.
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
 	clock, advance := steppableClock(initialMs)
-	engine := NewEngine(factory, uuids, txMgr, WithScheduledClock(clock))
+	engine := NewEngine(cachedFactory(factory), uuids, txMgr, funcClock(clock))
 	return engine, factory, advance
 }
 
@@ -86,7 +93,7 @@ func TestReconcile_ArmsCurrentStateSchedules(t *testing.T) {
 	entity := makeEntity("sched-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID
 
-	_, err = engine.Execute(txCtx, entity, "")
+	_, err = engine.Execute(txCtx, entity)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -99,7 +106,7 @@ func TestReconcile_ArmsCurrentStateSchedules(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "sched-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -170,7 +177,7 @@ func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 	}
 	entity := makeEntity("loop-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID1
-	if _, err := engine.Execute(txCtx1, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx1, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID1); err != nil {
@@ -182,7 +189,7 @@ func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
-	firstTask, found, err := sts.Get(ctx, wantID)
+	firstTask, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -211,14 +218,14 @@ func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	entity.Meta.TransactionID = txID2
-	if _, err := engine.Loopback(txCtx2, entity); err != nil {
+	if _, err := engine.Loopback(txCtx2, entity, IfMatch{}); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID2); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -311,7 +318,7 @@ func TestReconcile_ArmedByCapturesUserOrigin(t *testing.T) {
 
 	entity := makeEntity("armedby-user-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID); err != nil {
@@ -323,7 +330,7 @@ func TestReconcile_ArmedByCapturesUserOrigin(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "armedby-user-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ctx, wantID)
+	task, found, err := sts.Get(ctx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -338,11 +345,14 @@ func TestReconcile_ArmedByCapturesUserOrigin(t *testing.T) {
 
 // TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor covers §5.2
 // case (b): a service-kind executor staging inside another principal's
-// (user's) transaction arms with the TX ORIGIN, not the service executor —
-// this deliberately differs from the write-stamp rule (spi.AttributionFor),
-// which records the service as ChangeExecutor while inheriting the origin
-// only for ChangeUser. Arming has no executor/attributed split: ArmedBy is
-// always the chain origin.
+// (user's) transaction arms with the TX ORIGIN, not the service executor.
+// arm.go computes ArmedBy via spi.AttributionFor(ctx) and keeps only its
+// attributed return value — for a plain service executor (no OBO Executor
+// field) that is the same tx-origin inheritance AttributionFor already gives
+// the write's ChangeUser; arming simply never records the discarded executor
+// half. See TestReconcile_ArmedByIsTheOBOUser and
+// TestReconcile_ArmedByWriteBackIsTheOrigin for the OBO and write-back cases
+// AttributionFor distinguishes that ResolveOrigin could not.
 func TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor(t *testing.T) {
 	const nowMs = int64(1_700_000_000_000)
 	engine, factory := setupEngineWithClock(t, nowMs)
@@ -377,7 +387,7 @@ func TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor(t *testing.T) {
 
 	entity := makeEntity("armedby-chain-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = ownerTxID
-	if _, err := engine.Execute(joinedCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(joinedCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ownerTxCtx, ownerTxID); err != nil {
@@ -389,7 +399,7 @@ func TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor(t *testing.T) {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
 	wantID := taskID(testTenant, "armedby-chain-e1", "OPEN", "AutoClose")
-	task, found, err := sts.Get(ownerCtx, wantID)
+	task, found, err := sts.Get(ownerCtx, testTenant, wantID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -402,7 +412,86 @@ func TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor(t *testing.T) {
 	}
 	notWant := spi.Principal{ID: "arm-service", Kind: spi.PrincipalService}
 	if task.ArmedBy == notWant {
-		t.Error("ArmedBy must not be the service executor — arming always uses the chain origin")
+		t.Error("ArmedBy must not be the service executor — a service executor's write inherits the transaction's origin")
+	}
+}
+
+// armedBy runs one entity through the AutoClose workflow: the transaction is
+// begun under beginCtx and the entity executed under the UserContext of
+// writerCtx; it returns the armed task's ArmedBy.
+func armedBy(t *testing.T, beginCtx context.Context, writer *spi.UserContext, name string) spi.Principal {
+	t.Helper()
+	engine, factory := setupEngineWithClock(t, 1_700_000_000_000)
+	modelRef := spi.ModelRef{EntityName: name, ModelVersion: "1.0"}
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: name + "WF", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}}}},
+			"CLOSED": {},
+		},
+	}
+	saveWorkflow(t, factory, beginCtx, modelRef, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, factory, beginCtx, modelRef)
+	txMgr, err := factory.TransactionManager(beginCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txID, txCtx, err := txMgr.Begin(beginCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entity := makeEntity(name+"-e1", modelRef, map[string]any{})
+	entity.Meta.TransactionID = txID
+	if _, err := engine.Execute(spi.WithUserContext(txCtx, writer), entity); err != nil {
+		t.Fatal(err)
+	}
+	if err := txMgr.Commit(beginCtx, txID); err != nil {
+		t.Fatal(err)
+	}
+	sts, _ := factory.ScheduledTaskStore(beginCtx)
+	task, found, err := sts.Get(beginCtx, testTenant, taskID(testTenant, name+"-e1", "OPEN", "AutoClose"))
+	if err != nil || !found {
+		t.Fatalf("task: found=%v err=%v", found, err)
+	}
+	return task.ArmedBy
+}
+
+// TestReconcile_ArmedByIsTheWritesAttributedUser covers §5.1/§7.4: ArmedBy is
+// the write's attributed principal (spi.AttributionFor), not the
+// transaction's origin (spi.ResolveOrigin) — alice writes inside a
+// transaction bob began, and the arm stamps alice, not bob.
+func TestReconcile_ArmedByIsTheWritesAttributedUser(t *testing.T) {
+	alice := *spi.GetUserContext(armOriginUserCtx("alice"))
+	got := armedBy(t, armOriginUserCtx("bob"), &alice, "armedby-attr")
+	if want := (spi.Principal{ID: "alice", Kind: spi.PrincipalUser}); got != want {
+		t.Fatalf("ArmedBy = %+v, want %+v", got, want)
+	}
+}
+
+// TestReconcile_ArmedByIsTheOBOUser covers §5.1/§7.4: an on-behalf-of write
+// arms with the OBO user (alice), never the OBO client executor — true both
+// directly and when the OBO request is joined into its own transaction (from
+// AttributionFor's perspective the two are indistinguishable: what matters is
+// the UserContext in effect at write time, not how the transaction began).
+func TestReconcile_ArmedByIsTheOBOUser(t *testing.T) {
+	alice := *spi.GetUserContext(armOriginUserCtx("alice"))
+	alice.Executor = &spi.Principal{ID: "OBOCLIENT0000001", Kind: spi.PrincipalService}
+	got := armedBy(t, spi.WithUserContext(context.Background(), &alice), &alice, "armedby-obo")
+	if want := (spi.Principal{ID: "alice", Kind: spi.PrincipalUser}); got != want {
+		t.Fatalf("ArmedBy = %+v, want %+v", got, want)
+	}
+}
+
+// TestReconcile_ArmedByWriteBackIsTheOrigin covers §5.1/§7.4: a compute
+// write-back (service executor, no Executor/OBO field) joined into alice's
+// transaction arms with alice — the transaction's origin — not the compute
+// client's own identity.
+func TestReconcile_ArmedByWriteBackIsTheOrigin(t *testing.T) {
+	compute := &spi.UserContext{UserID: "COMPUTE0000001", Kind: spi.PrincipalService,
+		Tenant: spi.Tenant{ID: testTenant}, Roles: []string{"ROLE_M2M"}}
+	got := armedBy(t, armOriginUserCtx("alice"), compute, "armedby-wb")
+	if want := (spi.Principal{ID: "alice", Kind: spi.PrincipalUser}); got != want {
+		t.Fatalf("ArmedBy = %+v, want %+v", got, want)
 	}
 }
 
@@ -440,7 +529,7 @@ func TestReconcile_TransitionCancelsOldState(t *testing.T) {
 	}
 	entity := makeEntity("cancel-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID1
-	if _, err := engine.Execute(txCtx1, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx1, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID1); err != nil {
@@ -452,7 +541,7 @@ func TestReconcile_TransitionCancelsOldState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScheduledTaskStore: %v", err)
 	}
-	if _, found, _ := sts.Get(ctx, openTaskID); !found {
+	if _, found, _ := sts.Get(ctx, testTenant, openTaskID); !found {
 		t.Fatalf("expected task %q armed after entering OPEN", openTaskID)
 	}
 
@@ -462,21 +551,21 @@ func TestReconcile_TransitionCancelsOldState(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	entity.Meta.TransactionID = txID2
-	if _, err := engine.ManualTransition(txCtx2, entity, "advance"); err != nil {
+	if _, err := engine.ManualTransition(txCtx2, entity, "advance", IfMatch{}); err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID2); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	if _, found, err := sts.Get(ctx, openTaskID); err != nil {
+	if _, found, err := sts.Get(ctx, testTenant, openTaskID); err != nil {
 		t.Fatalf("Get(openTaskID): %v", err)
 	} else if found {
 		t.Errorf("expected OPEN's scheduled task %q to be cancelled after leaving the state", openTaskID)
 	}
 
 	reviewTaskID := taskID(testTenant, "cancel-e1", "REVIEW", "AutoExpire")
-	if _, found, err := sts.Get(ctx, reviewTaskID); err != nil {
+	if _, found, err := sts.Get(ctx, testTenant, reviewTaskID); err != nil {
 		t.Fatalf("Get(reviewTaskID): %v", err)
 	} else if !found {
 		t.Errorf("expected REVIEW's scheduled task %q to be armed", reviewTaskID)
@@ -490,20 +579,15 @@ func TestReconcile_TransitionCancelsOldState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
-	var sawCancel, sawArm bool
-	for _, ev := range events {
-		if ev.EventType == spi.SMEventScheduledTransitionCancelled {
-			sawCancel = true
-		}
-		if ev.EventType == spi.SMEventScheduledTransitionArmed {
-			sawArm = true
-		}
+	// The arm-time cancel names no workflow: the task was armed under an
+	// earlier state, so the current workflow is not necessarily its own.
+	cancelled := onlyEvent(t, events, spi.SMEventScheduledTransitionCancelled)
+	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN"}; !reflect.DeepEqual(cancelled.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL data = %v, want %v", cancelled.Data, want)
 	}
-	if !sawCancel {
-		t.Error("expected a SCHEDULED_TRANSITION_CANCEL audit event")
-	}
-	if !sawArm {
-		t.Error("expected a SCHEDULED_TRANSITION_ARM audit event for REVIEW's schedule")
+	armed := onlyEvent(t, events, spi.SMEventScheduledTransitionArmed)
+	if want := map[string]any{"transition": "AutoExpire", "sourceState": "REVIEW", "scheduledTime": nowMs + 5000}; !reflect.DeepEqual(armed.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_ARM data = %v, want %v", armed.Data, want)
 	}
 }
 
@@ -571,7 +655,7 @@ func TestReconcile_StoreFailureIsMarkedInfra(t *testing.T) {
 			t.Cleanup(func() { base.Close() })
 			uuids := common.NewTestUUIDGenerator()
 			txMgr := base.NewTransactionManager(uuids)
-			engine := NewEngine(tc.wrap(base), uuids, txMgr, WithScheduledClock(fixedClock(nowMs)))
+			engine := NewEngine(cachedFactory(tc.wrap(base)), uuids, txMgr, funcClock(fixedClock(nowMs)))
 
 			ctx := ctxWithTenant(testTenant)
 			modelRef := spi.ModelRef{EntityName: "sched-infra", ModelVersion: "1.0"}
@@ -594,7 +678,7 @@ func TestReconcile_StoreFailureIsMarkedInfra(t *testing.T) {
 			entity := makeEntity("sched-infra-1", modelRef, map[string]any{})
 			entity.Meta.TransactionID = txID
 
-			_, err = engine.Execute(txCtx, entity, "")
+			_, err = engine.Execute(txCtx, entity)
 			if err == nil {
 				t.Fatal("expected the scheduled-task store failure to surface")
 			}
@@ -605,5 +689,436 @@ func TestReconcile_StoreFailureIsMarkedInfra(t *testing.T) {
 				t.Errorf("error must keep the store cause in the chain for logging; got: %v", err)
 			}
 		})
+	}
+}
+
+// --- Static Schedule.DelayMs producing an unrenderable time must fail the arm ---
+
+// TestReconcile_StaticDelayUnrenderableFailsArm is the static-delay
+// counterpart to resolveSchedule's Function-result range check
+// (schedule_function_test.go): an arm whose armMs+DelayMs, or (when
+// TimeoutMs is set) scheduledTime+TimeoutMs, cannot be rendered as an RFC
+// 3339 time.Time (years 0000-9999) must fail the arm and never reach the
+// store — fail-closed, never a partial commit with the entity moved but no
+// task armed. DelayMs is workflow config, not caller input, so the failure
+// carries ErrScheduledTaskInfra, the same family every other settle-time
+// arm/cancel failure uses (TestReconcile_StoreFailureIsMarkedInfra), rather
+// than a 4xx that would blame the caller of an ordinary write for a value
+// they never supplied.
+func TestReconcile_StaticDelayUnrenderableFailsArm(t *testing.T) {
+	cases := []struct {
+		name      string
+		nowMs     int64
+		delayMs   int64
+		timeoutMs *int64
+	}{
+		{"delay overflows int64", 1, math.MaxInt64, nil},
+		{"delay lands past the max renderable time", 0, maxScheduleMs + 1, nil},
+		{"in-range delay but timeout overflows int64", 0, 1000, ptr(int64(math.MaxInt64))},
+		{"in-range delay but timeout pushes expiry past the max", 0, 1000, ptr(int64(maxScheduleMs))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, factory := setupEngineWithClock(t, tc.nowMs)
+			ctx := ctxWithTenant(testTenant)
+			modelRef := spi.ModelRef{EntityName: "static-delay-range", ModelVersion: "1.0"}
+			saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{{
+				Version: "1.1", Name: "StaticDelayRangeWF", InitialState: "OPEN", Active: true,
+				States: map[string]spi.StateDefinition{
+					"OPEN": {Transitions: []spi.TransitionDefinition{
+						{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: tc.delayMs, TimeoutMs: tc.timeoutMs}},
+					}},
+					"CLOSED": {},
+				},
+			}})
+
+			txMgr, err := factory.TransactionManager(ctx)
+			if err != nil {
+				t.Fatalf("TransactionManager: %v", err)
+			}
+			txID, txCtx, err := txMgr.Begin(ctx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			t.Cleanup(func() { _ = txMgr.Rollback(ctx, txID) })
+
+			entity := makeEntity("static-delay-range-e1", modelRef, map[string]any{})
+			entity.Meta.TransactionID = txID
+
+			_, err = engine.Execute(txCtx, entity)
+			if err == nil {
+				t.Fatal("expected an unrenderable static delay/timeout to fail the arm")
+			}
+			if !errors.Is(err, ErrScheduledTaskInfra) {
+				t.Errorf("error must wrap ErrScheduledTaskInfra (fail-closed, same family as every other arm-path failure); got: %v", err)
+			}
+
+			sts, err := factory.ScheduledTaskStore(ctx)
+			if err != nil {
+				t.Fatalf("ScheduledTaskStore: %v", err)
+			}
+			wantID := taskID(testTenant, "static-delay-range-e1", "OPEN", "AutoClose")
+			if _, found, _ := sts.Get(ctx, testTenant, wantID); found {
+				t.Error("a task whose time cannot be rendered must never be armed")
+			}
+		})
+	}
+}
+
+// armsOnSchedule is the one arm rule.
+func TestArmsOnSchedule(t *testing.T) {
+	sched := &spi.TransitionSchedule{DelayMs: 1000}
+	for _, tc := range []struct {
+		name string
+		tr   spi.TransitionDefinition
+		want bool
+	}{
+		{"scheduled", spi.TransitionDefinition{Name: "T", Schedule: sched}, true},
+		{"not scheduled", spi.TransitionDefinition{Name: "T"}, false},
+		{"scheduled but manual", spi.TransitionDefinition{Name: "T", Schedule: sched, Manual: true}, false},
+		{"scheduled but disabled", spi.TransitionDefinition{Name: "T", Schedule: sched, Disabled: true}, false},
+	} {
+		if got := armsOnSchedule(&tc.tr); got != tc.want {
+			t.Errorf("%s: armsOnSchedule = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The model-level flag counts a workflow whether it is active or not, and
+// counts only a transition the arm rule arms: a model whose only scheduled
+// transitions are manual or disabled has no task to reconcile.
+func TestModelHasSchedule_CountsOnlyArmingTransitions(t *testing.T) {
+	sched := &spi.TransitionSchedule{DelayMs: 1000}
+	wf := func(active bool, tr spi.TransitionDefinition) spi.WorkflowDefinition {
+		return spi.WorkflowDefinition{Version: "1.1", Name: "wf", InitialState: "OPEN", Active: active,
+			States: map[string]spi.StateDefinition{"OPEN": {Transitions: []spi.TransitionDefinition{tr}}, "CLOSED": {}}}
+	}
+	for _, tc := range []struct {
+		name string
+		wfs  []spi.WorkflowDefinition
+		want bool
+	}{
+		{"no workflow", nil, false},
+		{"active, arming", []spi.WorkflowDefinition{wf(true, spi.TransitionDefinition{Name: "T", Next: "CLOSED", Schedule: sched})}, true},
+		{"inactive, arming", []spi.WorkflowDefinition{wf(false, spi.TransitionDefinition{Name: "T", Next: "CLOSED", Schedule: sched})}, true},
+		{"manual schedule only", []spi.WorkflowDefinition{wf(true, spi.TransitionDefinition{Name: "T", Next: "CLOSED", Schedule: sched, Manual: true})}, false},
+		{"disabled schedule only", []spi.WorkflowDefinition{wf(true, spi.TransitionDefinition{Name: "T", Next: "CLOSED", Schedule: sched, Disabled: true})}, false},
+		{"no schedule", []spi.WorkflowDefinition{wf(true, spi.TransitionDefinition{Name: "T", Next: "CLOSED"})}, false},
+	} {
+		if got := modelHasSchedule(tc.wfs); got != tc.want {
+			t.Errorf("%s: modelHasSchedule = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// loopbackInTx runs Loopback on the stored entity in a transaction of its own and commits.
+func loopbackInTx(t *testing.T, engine *Engine, factory spi.StoreFactory, ctx context.Context, entityID string) {
+	t.Helper()
+	txMgr, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	es, err := factory.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	entity, err := es.Get(txCtx, entityID)
+	if err != nil {
+		t.Fatalf("Get entity: %v", err)
+	}
+	entity.Meta.TransactionID = txID
+	if _, err := engine.Loopback(txCtx, entity, IfMatch{}); err != nil {
+		t.Fatalf("Loopback: %v", err)
+	}
+	if _, err := es.Save(txCtx, entity); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := txMgr.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+}
+
+func TestReconcile_ModelLevelFlag_RemovesTaskArmedByAnotherWorkflow(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "flag-order", ModelVersion: "1.0"}
+	setupKindModel(t, factory, ctx, modelRef, []spi.WorkflowDefinition{
+		{Version: "1.1", Name: "kind-a-wf", InitialState: "OPEN", Active: true,
+			Criterion: simpleCriterion("$.kind", "EQUALS", "a"),
+			States: map[string]spi.StateDefinition{
+				"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}}}},
+				"CLOSED": {},
+			}},
+		{Version: "1.1", Name: "kind-b-wf", InitialState: "OPEN", Active: true,
+			Criterion: simpleCriterion("$.kind", "EQUALS", "b"),
+			States: map[string]spi.StateDefinition{
+				"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "close", Next: "CLOSED", Manual: true}}},
+				"CLOSED": {},
+			}},
+	})
+	// Armed under kind-a-wf; the entity's data now binds it to kind-b-wf, which schedules nothing.
+	seedFireEntity(t, factory, ctx, "flag-e1", modelRef, "OPEN", true, map[string]any{"kind": "b"})
+	id := taskID(testTenant, "flag-e1", "OPEN", "AutoClose")
+	armTask(t, factory, ctx, spi.ScheduledTask{ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: nowMs + 1000, EntityID: "flag-e1", ModelName: modelRef.EntityName,
+		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: nowMs})
+
+	loopbackInTx(t, engine, factory, ctx, "flag-e1")
+
+	if _, found := getTask(t, factory, ctx, id); found {
+		t.Error("a task the selected workflow does not arm must be removed at the next write")
+	}
+	if n := countAuditEvents(t, factory, ctx, "flag-e1", spi.SMEventScheduledTransitionCancelled); n != 1 {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL events = %d, want 1", n)
+	}
+}
+
+func TestReconcile_LoopbackStateNotInWorkflow_RemovesTasks(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "legacy-order", ModelVersion: "1.0"}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "wf", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}}}},
+			"CLOSED": {},
+		},
+	}})
+	lockTestModel(t, factory, ctx, modelRef)
+	seedFireEntity(t, factory, ctx, "legacy-e1", modelRef, "LEGACY", true, map[string]any{})
+	id := taskID(testTenant, "legacy-e1", "LEGACY", "Tick")
+	armTask(t, factory, ctx, spi.ScheduledTask{ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: nowMs + 1000, EntityID: "legacy-e1", ModelName: modelRef.EntityName,
+		Transition: "Tick", SourceState: "LEGACY", ArmedAt: nowMs})
+
+	loopbackInTx(t, engine, factory, ctx, "legacy-e1")
+
+	if _, found := getTask(t, factory, ctx, id); found {
+		t.Error("a write to an entity whose state the selected workflow does not declare must remove its tasks")
+	}
+	if n := countAuditEvents(t, factory, ctx, "legacy-e1", spi.SMEventScheduledTransitionCancelled); n != 1 {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL events = %d, want 1", n)
+	}
+}
+
+func TestReconcile_FailedTaskReArmedAsNewLife(t *testing.T) {
+	env := newRunEnv(t, nil)
+	claimed := env.claimed(t, "failed-e1", oneHopWF("CLOSED", nil, nil))
+	ref := spi.TaskRef{TenantID: testTenant, ID: claimed.ID, ArmToken: claimed.ArmToken, ClaimToken: claimed.Claim.Token}
+	if err := env.sts.MarkUnsafe(env.ctx, ref); err != nil {
+		t.Fatalf("MarkUnsafe: %v", err)
+	}
+	if err := env.sts.Fail(env.ctx, ref, spi.Failure{Reason: spi.FailureUnsafeWorkNotCompleted, Error: "x", AtMs: env.nowMs()}); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+
+	loopbackInTx(t, env.engine, env.factory, env.ctx, "failed-e1")
+
+	got, found := env.task(t, claimed.ID)
+	if !found {
+		t.Fatal("an update in the state must re-arm the FAILED task")
+	}
+	if got.ArmToken == claimed.ArmToken || got.Status != spi.ScheduledTaskWaiting || got.Attempts != 0 ||
+		got.LostOwners != 0 || got.UnsafeMarked || got.FailureReason != "" || got.LastError != "" || got.Claim != nil {
+		t.Errorf("task = %+v, want a fresh WAITING life with no mark", got)
+	}
+}
+
+func TestReconcile_FailedTaskCancelledWhenEntityLeavesState(t *testing.T) {
+	env := newRunEnv(t, nil)
+	wf := oneHopWF("CLOSED", nil, nil)
+	st := wf.States["OPEN"]
+	st.Transitions = append(st.Transitions, spi.TransitionDefinition{Name: "advance", Next: "CLOSED", Manual: true})
+	wf.States["OPEN"] = st
+	claimed := env.claimed(t, "leave-e1", wf)
+	ref := spi.TaskRef{TenantID: testTenant, ID: claimed.ID, ArmToken: claimed.ArmToken, ClaimToken: claimed.Claim.Token}
+	if err := env.sts.Fail(env.ctx, ref, spi.Failure{Reason: spi.FailureOwnerLostRepeatedly, AtMs: env.nowMs()}); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+
+	txID, txCtx, err := env.txMgr.Begin(env.ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	es, _ := env.factory.EntityStore(txCtx)
+	entity, err := es.Get(txCtx, "leave-e1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	entity.Meta.TransactionID = txID
+	if _, err := env.engine.ManualTransition(txCtx, entity, "advance", IfMatch{}); err != nil {
+		t.Fatalf("ManualTransition: %v", err)
+	}
+	if _, err := es.Save(txCtx, entity); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := env.txMgr.Commit(env.ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	if _, found := env.task(t, claimed.ID); found {
+		t.Error("a FAILED task must be removed when the entity leaves its state")
+	}
+	if n := countAuditEvents(t, env.factory, env.ctx, "leave-e1", spi.SMEventScheduledTransitionCancelled); n != 1 {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL events = %d, want 1", n)
+	}
+}
+
+func TestReconcile_ReArmResetsPartialCommit(t *testing.T) {
+	env := newRunEnv(t, nil)
+	claimed := env.claimed(t, "partial-e1", oneHopWF("CLOSED", nil, nil))
+	ref := spi.TaskRef{TenantID: testTenant, ID: claimed.ID, ArmToken: claimed.ArmToken, ClaimToken: claimed.Claim.Token}
+	if err := env.sts.StampSegment(env.ctx, ref, true); err != nil {
+		t.Fatalf("StampSegment: %v", err)
+	}
+
+	loopbackInTx(t, env.engine, env.factory, env.ctx, "partial-e1")
+
+	if got, _ := env.task(t, claimed.ID); got.PartialCommit {
+		t.Errorf("task = %+v, want PartialCommit false on the new life", got)
+	}
+}
+
+// countingWorkflowFactory counts WorkflowStore().Get calls.
+type countingWorkflowFactory struct {
+	spi.StoreFactory
+	gets *int
+}
+
+type countingWorkflowStore struct {
+	spi.WorkflowStore
+	gets *int
+}
+
+func (f countingWorkflowFactory) WorkflowStore(ctx context.Context) (spi.WorkflowStore, error) {
+	ws, err := f.StoreFactory.WorkflowStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return countingWorkflowStore{WorkflowStore: ws, gets: f.gets}, nil
+}
+
+func (s countingWorkflowStore) Get(ctx context.Context, ref spi.ModelRef) ([]spi.WorkflowDefinition, error) {
+	*s.gets++
+	return s.WorkflowStore.Get(ctx, ref)
+}
+
+func TestReconcile_ModelFlagNeedsNoExtraWorkflowRead(t *testing.T) {
+	gets := 0
+	env := newRunEnvWith(t, nil, func(f spi.StoreFactory) spi.StoreFactory {
+		return countingWorkflowFactory{StoreFactory: f, gets: &gets}
+	}, nil)
+	env.setup(t, "reads-e1", oneHopWF("CLOSED", nil, nil))
+	gets = 0
+
+	loopbackInTx(t, env.engine, env.factory, env.ctx, "reads-e1")
+
+	if gets != 1 {
+		t.Errorf("workflow reads per write = %d, want 1", gets)
+	}
+}
+
+// executeInTx creates entity through Execute in a transaction of its own and commits.
+func executeInTx(t *testing.T, engine *Engine, factory spi.StoreFactory, ctx context.Context, entity *spi.Entity) {
+	t.Helper()
+	txMgr, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	entity.Meta.TransactionID = txID
+	if _, err := engine.Execute(txCtx, entity); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if err := txMgr.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+}
+
+// The arm filter applies the arm rule: a scheduled transition that is
+// disabled or manual is not armed, even when the model has another
+// transition that is (so reconcile runs).
+func TestReconcile_DisabledScheduledTransitionNotArmed(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "disabled-order", ModelVersion: "1.0"}
+	sched := &spi.TransitionSchedule{DelayMs: 1000}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "wf", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "CLOSED", Schedule: sched, Disabled: true},
+				{Name: "Escalate", Next: "CLOSED", Schedule: sched, Manual: true},
+			}},
+			"CLOSED": {Transitions: []spi.TransitionDefinition{{Name: "Reopen", Next: "OPEN", Schedule: sched}}},
+		},
+	}})
+
+	executeInTx(t, engine, factory, ctx, makeEntity("disabled-e1", modelRef, map[string]any{}))
+
+	for _, tr := range []string{"AutoClose", "Escalate"} {
+		if _, found := getTask(t, factory, ctx, taskID(testTenant, "disabled-e1", "OPEN", tr)); found {
+			t.Errorf("a task was armed for %s, which the arm rule does not arm", tr)
+		}
+	}
+}
+
+// With no workflow imported, the model-level flag is computed on the
+// workflows the engine runs: the default workflow. A default workflow with a
+// scheduled transition arms it.
+func TestReconcile_ModelFlagCountsDefaultWorkflow(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	engine.defaultWorkflows = []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "default-sched", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}}}},
+			"CLOSED": {},
+		},
+	}}
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "no-wf-order", ModelVersion: "1.0"}
+
+	executeInTx(t, engine, factory, ctx, makeEntity("default-e1", modelRef, map[string]any{}))
+
+	if _, found := getTask(t, factory, ctx, taskID(testTenant, "default-e1", "OPEN", "AutoClose")); !found {
+		t.Error("the default workflow's scheduled transition must be armed")
+	}
+}
+
+// When stored workflows exist but none matches the entity, the engine falls
+// back to the default workflow; the model-level flag counts it there too.
+func TestReconcile_ModelFlagCountsDefaultWorkflowWhenNoneMatches(t *testing.T) {
+	const nowMs = int64(1_700_000_000_000)
+	engine, factory := setupEngineWithClock(t, nowMs)
+	engine.defaultWorkflows = []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "default-sched", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}}}},
+			"CLOSED": {},
+		},
+	}}
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "unmatched-order", ModelVersion: "1.0"}
+	setupKindModel(t, factory, ctx, modelRef, []spi.WorkflowDefinition{{
+		Version: "1.1", Name: "kind-a-wf", InitialState: "NEW", Active: true,
+		Criterion: simpleCriterion("$.kind", "EQUALS", "a"),
+		States:    map[string]spi.StateDefinition{"NEW": {}},
+	}})
+
+	executeInTx(t, engine, factory, ctx, makeEntity("unmatched-e1", modelRef, map[string]any{"kind": "b"}))
+
+	if _, found := getTask(t, factory, ctx, taskID(testTenant, "unmatched-e1", "OPEN", "AutoClose")); !found {
+		t.Error("the default workflow's scheduled transition must be armed when no stored workflow matches")
 	}
 }

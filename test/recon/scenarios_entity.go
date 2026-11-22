@@ -57,7 +57,7 @@ func entityCRUDFlow() Scenario {
 			{
 				Name:         "Create entity",
 				Method:       "POST",
-				PathTemplate: "/entity/JSON/{model}/1?waitForConsistencyAfter=true",
+				PathTemplate: "/entity/JSON/{model}/1",
 				Body:         `{"name":"Alice","age":30}`,
 				ExpectStatus: 200,
 				Exclusions:   EntityExclusions,
@@ -147,7 +147,7 @@ func entityCRUDFlow() Scenario {
 			{
 				Name:         "Update entity",
 				Method:       "PUT",
-				PathTemplate: "/entity/JSON/{entityId}/UPDATE?waitForConsistencyAfter=true",
+				PathTemplate: "/entity/JSON/{entityId}/UPDATE",
 				Body:         `{"name":"Alice","age":31}`,
 				ExpectStatus: 200,
 				Exclusions:   EntityExclusions,
@@ -209,7 +209,7 @@ func batchAndStatsFlow() Scenario {
 				Name:   "Batch create entities",
 				Method: "POST",
 				// POST /entity/{format} — CreateCollection
-				PathTemplate: "/entity/JSON?waitForConsistencyAfter=true",
+				PathTemplate: "/entity/JSON",
 				Body:         `[{"model":{"name":"{model}","version":1},"payload":"{\"name\":\"Alice\",\"age\":30}"},{"model":{"name":"{model}","version":1},"payload":"{\"name\":\"Bob\",\"age\":25}"}]`,
 				ExpectStatus: 200,
 				Exclusions:   EntityExclusions,

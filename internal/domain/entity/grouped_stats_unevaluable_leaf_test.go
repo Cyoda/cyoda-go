@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
 )
 
 // TestQueryGroupedStats_BareLeafField_UnevaluableLeaf_MapsTo400 is the Gate-6
@@ -31,7 +31,7 @@ import (
 // same kernel a production backend uses — no aggregator capability is given,
 // so queryGroupedStatsInner has no choice but the streaming path.
 func TestQueryGroupedStats_BareLeafField_UnevaluableLeaf_MapsTo400(t *testing.T) {
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	iter := &fakeIterable{entities: []*spi.Entity{
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"score":5}`)},
 	}}
@@ -47,7 +47,7 @@ func TestQueryGroupedStats_BareLeafField_UnevaluableLeaf_MapsTo400(t *testing.T)
 	}
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: cond,
+		Condition: mustParseCond(t, cond),
 	}
 
 	_, gsErr := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, fields, req)

@@ -38,14 +38,20 @@ an OTel collector. When it is `false`, tracing is off and nothing is pushed, but
 application metrics are still exposed at `/metrics`.
 
 Which application metrics appear:
-- **OIDC subsystem metrics** (`oidc_*`) — always exposed when IAM runs in `jwt`
-  mode (the OIDC subsystem is active).
+- **Auth metrics** (`cyoda.auth.secret_checks.refused`,
+  `auth.signingkeys.reconcile_*`) — always exposed when IAM runs in `jwt` mode.
 - **Transaction and dispatch metrics** (`cyoda_tx_*`, `cyoda_dispatch_*`) —
   exposed when `CYODA_OTEL_ENABLED=true` (their instrumentation decorators are
   enabled with full observability).
 - Go runtime and process metrics are always present.
 
-The instrumentation name is `github.com/cyoda-platform/cyoda-go`.
+cyoda's own instrumentation scope names are `github.com/cyoda/cyoda-go`
+(the server's spans and metrics), `github.com/cyoda/cyoda-go/workflow` (the
+workflow engine's spans) and `github.com/cyoda/cyoda-go/plugins/postgres`
+(the postgres storage plugin's pool metrics); the HTTP and gRPC
+instrumentation that `CYODA_OTEL_ENABLED=true` adds has scopes of its own.
+The scope appears on OTLP-pushed traces and metrics only: the
+`:9091/metrics` scrape carries no scope label.
 
 ## ENV VARS
 
@@ -73,10 +79,10 @@ The instrumentation name is `github.com/cyoda-platform/cyoda-go`.
 
 Traces are exported via `otlptracehttp`. Spans are created by:
 
-- `otelhttp.NewMiddleware("cyoda")` — wraps the HTTP API handler when `CYODA_OTEL_ENABLED=true`; creates one span per inbound HTTP request.
+- `otelhttp.NewMiddleware("cyoda")` — wraps the whole HTTP handler when `CYODA_OTEL_ENABLED=true`; creates one span per inbound HTTP request, on every route.
 - `otelgrpc.NewServerHandler()` — installed as a gRPC stats handler when `CYODA_OTEL_ENABLED=true`; creates one span per inbound gRPC RPC.
 - `observability.TracingTransactionManager` — decorator around the storage `TransactionManager`; creates spans for `tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`, `tx.rollback_to_savepoint`, `tx.release_savepoint`.
-- `observability.TracingExternalProcessingService` — decorator around the processor dispatcher; creates spans for `dispatch.processor` and `dispatch.criteria`.
+- `observability.TracingExternalProcessingService` — decorator around the callout path; creates one span per callout, `dispatch.processor`, `dispatch.criteria` or `dispatch.function`, however many tries the callout takes. The span carries `callout.tries`, `callout.handover` and `callout.waited_ms`.
 
 **Metrics**
 
@@ -85,18 +91,29 @@ Metrics are exported via `otlpmetrichttp` with a periodic reader. The following 
 - `cyoda.tx.duration` — `Float64Histogram`, unit `s` — transaction operation duration; labeled by `op` (`begin`, `commit`, `rollback`)
 - `cyoda.tx.active` — `Int64UpDownCounter` — count of active (begun but not committed/rolled-back) transactions
 - `cyoda.tx.conflicts` — `Int64Counter` — count of transaction serialization conflicts (commit returning `spi.ErrConflict`)
-- `cyoda.dispatch.duration` — `Float64Histogram`, unit `s` — processor/criteria dispatch duration; labeled by `type` (`processor`, `criteria`)
-- `cyoda.dispatch.count` — `Int64Counter` — total processor/criteria dispatch calls; labeled by `type` (`processor`, `criteria`)
+- `cyoda.dispatch.duration` — `Float64Histogram`, unit `s` — duration of one whole callout, all its tries, waits and hand-overs included; labeled by `type` (`processor`, `criteria`, `function`). Bucket boundaries run to 300 s: a callout may take `tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT + CYODA_CALLOUT_HANDOVER_ALLOWANCE` — 155 s at the defaults
+- `cyoda.dispatch.count` — `Int64Counter` — callouts, however many tries each took; labeled by `type`
 
-OIDC subsystem metrics (`oidc_*`) are exposed at `/metrics` whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`.
+The `cyoda.callout.*` instruments are one family, and they break down one callout
+into tries, waits, hand-overs and callbacks the fence overtook. Where each is
+registered differs, and so does what turns it on:
+
+- `cyoda.callout.tries` — `Int64Counter` — tries made; labeled by `type` and `outcome` (`ok`, `no_handoff`, `no_answer`, `member_failed`, `terminal`, `abandoned` — the caller went away while the try was in progress). A rising share of `no_answer` or `no_handoff` means compute members that do not answer or do not read. On the tracing decorator above, so `CYODA_OTEL_ENABLED=true`
+- `cyoda.callout.wait.duration` — `Float64Histogram`, unit `s` — how long a callout waited for a compute member to exist; recorded only for callouts that waited, so its count is the number of callouts that waited; labeled by `type`. On the same decorator
+- `cyoda.callout.handovers` — `Int64Counter` — callouts handed over to another node; labeled by `outcome` (`ok`, `no_handoff`, `no_answer`, `member_failed`, `terminal`, `not_connected`). `not_connected` is a node the connection to which could not be opened — no try was used; `no_answer` includes every hand-over whose answer was lost (no reply, a non-2xx status, an answer that does not authenticate). A rising `no_answer` share with healthy compute nodes points at the network between nodes or at node clocks more than 30 s apart. On the peer router, so `CYODA_CLUSTER_ENABLED=true`, regardless of `CYODA_OTEL_ENABLED`
+- `cyoda.callout.superseded` — `Int64Counter` — callbacks refused or overtaken because their compute member was replaced or its callout ended; labeled by `outcome`: `refused_on_entry` (the pass was stale when the callback joined its transaction, or by the time the callback took its turn on the transaction; the callback did not run), `superseded_in_progress` (the callback ran, but its pass had gone stale by the time it finished; its work in the transaction was discarded and it was answered `410 CALLOUT_SUPERSEDED`). On the join layer at startup, regardless of `CYODA_OTEL_ENABLED`
+
+No `cyoda.callout.*` metric carries a tenant, a callout id, a member id, a node
+id or a pass: every label is drawn from a closed vocabulary.
 
 Postgres connection-pool metrics (`cyoda_storage_pool_*`) are Postgres-only — exposed
 whenever the Postgres storage plugin is active — and always on, regardless of
 `CYODA_OTEL_ENABLED`: pool saturation is the dominant outage mode this instrumentation
 guards against, so it does not wait on OTLP push. Every data point carries a `backend`
-attribute (`postgres`):
+attribute (`postgres`). Only `cyoda.storage.pool.connections` covers every pool,
+labeled by `pool` (`main`, `scheduler`, `heartbeat`, `model`); every other instrument below covers the main pool only:
 
-- `cyoda.storage.pool.connections` — `Int64ObservableGauge` — pool connections by state; labeled by `backend` and `state` (`acquired`, `idle`, `constructing`)
+- `cyoda.storage.pool.connections` — `Int64ObservableGauge` — pool connections by state; labeled by `backend`, `pool` and `state` (`acquired`, `idle`, `constructing`)
 - `cyoda.storage.pool.max_connections` — `Int64ObservableGauge` — configured maximum pool size; labeled by `backend`
 - `cyoda.storage.pool.acquires` — `Int64ObservableCounter` — successful connection acquires; labeled by `backend`
 - `cyoda.storage.pool.empty_acquires` — `Int64ObservableCounter` — acquires that found the pool empty and had to wait; labeled by `backend`
@@ -105,6 +122,30 @@ attribute (`postgres`):
 - `cyoda.storage.pool.empty_acquire_wait` — `Float64ObservableCounter`, unit `s` — cumulative time callers waited because the pool was empty; labeled by `backend`
 
 `cyoda.storage.pool.empty_acquire_wait` is the saturation signal to alarm on — it isolates the time callers spent waiting because the pool was empty; `cyoda.storage.pool.acquire_duration` includes instant acquires alongside it and so dilutes the signal.
+
+Cluster membership metrics are exposed whenever `CYODA_CLUSTER_ENABLED=true`,
+regardless of `CYODA_OTEL_ENABLED`:
+
+- `cyoda.cluster.tags.send_failures` — `Int64Counter` — reliable tag-list messages to a peer that failed to send; labeled by `msg` (`list`, `request`). A failed send is repaired by the peer fetching the list; a steady rate points at a peer that gossip reaches and TCP does not.
+- `cyoda.cluster.tags.lists_outstanding` — `Int64ObservableGauge` — alive peers whose announced tag list this node does not hold yet. Briefly non-zero after a join or a compute node attaching; alarm when it stays non-zero, because callouts are not handed to a peer whose tags are unknown.
+- `cyoda.cluster.member.count` — `Int64ObservableGauge`, unit `{member}` — live cluster members, this node included, per lifecycle state; labeled by `cyoda.cluster.member.state` (`starting`, `normal`, `draining`, `unhealthy`). All four states are reported on every collection, `0` for a state no member holds. A member whose gossip metadata cannot be read is not counted.
+
+Auth metrics are exposed whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`:
+
+- `cyoda.auth.secret_checks.refused` — `Int64Counter` — client-secret (bcrypt) operations refused because none of the node's `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` slots freed up within 1 second: token requests answered `503 temporarily_unavailable`, and `POST /clients` or secret resets answered `503 SERVER_BUSY`. A refusal is not logged, so this counter is the only signal; a steady rate means the node is saturated with token requests. No labels.
+- `auth.signingkeys.reconcile_consecutive_failures` — `Int64Gauge` — failed re-reads of the signing-key store in a row on this node; `0` after a successful one. Each failure is also logged at WARN, and at ERROR once the failures persist.
+- `auth.signingkeys.reconcile_staleness_seconds` — `Float64Gauge` — seconds since this node's copy of the signing keys was last refreshed, set when a re-read fails and reset to `0` when one succeeds. Alarm well before it reaches 10 × `CYODA_AUTH_CACHE_RECONCILE_INTERVAL`: a copy that old refuses every token (`401`) and answers JWKS with `503` (see `cyoda help config auth`).
+
+Scheduler metrics are exposed on every node that runs the scheduler (`CYODA_SCHEDULER_ENABLED=true`), regardless of `CYODA_OTEL_ENABLED`:
+
+- `cyoda.scheduler.runs` — `Int64Counter` — scheduled runs that ended; labeled by `outcome`: `fired`, `declined`, `expired`, `cancelled`, `attempt_failed` (a safe failure, to be retried), `failed` (the task ended `FAILED`), `superseded` (an entity write or another claim replaced the run), `self_cancelled` (the node's own heartbeats failed), `shutdown_cancelled`, `panicked`. Alarm on `failed` and `panicked`
+- `cyoda.scheduler.run.duration` — `Float64Histogram`, unit `s` — duration of one run, from claim to recorded outcome; labeled by `outcome`
+- `cyoda.scheduler.runs.in_progress` — `Int64UpDownCounter` — runs in progress on this node; at most `CYODA_SCHEDULER_MAX_RUNS`
+- `cyoda.scheduler.claims` — `Int64Counter` — tasks claimed; labeled by `reason`: `due`, or `owner_lost` (taken over from a node whose heartbeats stopped). A steady `owner_lost` rate points at nodes that crash or lose the database
+- `cyoda.scheduler.heartbeat.failures` — `Int64Counter` — heartbeats that failed. Failures that last make the node cancel its runs (`self_cancelled`)
+- `cyoda.scheduler.bookkeeping.retries` — `Int64Counter` — retried writes of a run's outcome. A rising count means the database is refusing or blocking them; each retry is also logged at WARN
+
+No `cyoda.scheduler.*` metric carries a tenant, a task, an entity or a node id. Each run has a `scheduler.run` span carrying its outcome. The tasks behind a `failed` count are listed by `GET /scheduled-tasks?status=FAILED` (see `cyoda help scheduled-tasks`).
 
 **Logs**
 
@@ -129,7 +170,14 @@ Cyoda-specific span attribute keys defined in `internal/observability/attrs.go`:
 - `processor.tags` — comma-separated `calculationNodesTags` used for member routing
 - `criterion.target` — criteria target type (`TRANSITION`, `WORKFLOW`)
 - `criteria.matches` — boolean result of a criteria evaluation
-- `type` — dispatch type label for `cyoda.dispatch.duration` and `cyoda.dispatch.count` (`processor` or `criteria`)
+- `type` — callout kind label for the `cyoda.dispatch.*` and `cyoda.callout.*` metrics (`processor`, `criteria` or `function`)
+- `outcome` — outcome label of `cyoda.callout.tries`, `cyoda.callout.handovers`, `cyoda.callout.superseded`, `cyoda.scheduler.runs` and `cyoda.scheduler.run.duration`; a closed set for each
+- `cyoda.cluster.member.state` — lifecycle-state label of `cyoda.cluster.member.count` (`starting`, `normal`, `draining`, `unhealthy`)
+- `reason` — claim label of `cyoda.scheduler.claims` (`due` or `owner_lost`)
+- `pool` — PostgreSQL pool label of `cyoda.storage.pool.connections`: `main` (entity transactions and `GET /scheduled-tasks`), `scheduler` (the scheduler's claims and its retry writes (`RecordAttempt`), and the async-search heartbeat and claim; a FAILED outcome commits with its audit event on the main pool), `heartbeat` (the scheduler heartbeat's own connection) or `model` (the model store: model reads, administration and schema extensions)
+- `callout.tries` — number of tries a callout made, on its span
+- `callout.handover` — boolean; `true` when the callout was handed over to another cluster node at least once
+- `callout.waited_ms` — milliseconds the callout waited for a compute member to exist
 - `entity.count` — count of entities in a batch operation
 - `cql.name` — CQL statement name (Cassandra plugin)
 - `cql.op` — CQL operation type (Cassandra plugin)
@@ -152,8 +200,6 @@ cyoda-go uses **W3C Trace Context** (`traceparent`, `tracestate`) and **W3C Bagg
 
 **gRPC**: `otelgrpc.NewServerHandler()` extracts trace context from inbound gRPC metadata automatically.
 
-**Messaging / internal**: `observability.InjectTraceContext(ctx, headers)` writes `traceparent` and `tracestate` into a `map[string]string` carrier. `observability.ExtractTraceContext(baseCtx, headers)` restores the remote span context. Both use the global text map propagator.
-
 ## METRICS ENDPOINT
 
 **GET :9091/metrics**
@@ -164,8 +210,8 @@ The handler is backed by a dedicated `prometheus.Registry` that collects from th
 OTel SDK meter provider (via the OpenTelemetry → Prometheus bridge), so
 application metrics registered through the OTel API appear here automatically.
 Go runtime metrics (GC, goroutine count, memory) and process metrics (CPU, open
-FDs) are always present. OIDC subsystem metrics (`oidc_*`) appear whenever IAM
-runs in `jwt` mode. Transaction and dispatch metrics (`cyoda_tx_*`,
+FDs) are always present. Auth metrics (`cyoda.auth.*`, `auth.signingkeys.*`)
+appear whenever IAM runs in `jwt` mode. Transaction and dispatch metrics (`cyoda_tx_*`,
 `cyoda_dispatch_*`) appear when `CYODA_OTEL_ENABLED=true`.
 
 ## AUTHENTICATION
@@ -194,8 +240,8 @@ The `/livez` and `/readyz` probe endpoints stay unauthenticated regardless of bi
 
 The trace sampler is runtime-configurable via:
 
-- `POST :8080/api/admin/trace-sampler` — replaces the sampler atomically; requires `Authorization: Bearer <token>`
-- `GET :8080/api/admin/trace-sampler` — returns the current sampler config
+- `POST :8080/api/admin/trace-sampler` — replaces the sampler atomically; requires a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)
+- `GET :8080/api/admin/trace-sampler` — returns the current sampler config; also requires a platform operator
 
 Request and response body:
 
@@ -235,6 +281,9 @@ docker run --rm \
   -p 127.0.0.1:8080:8080 \
   -p 127.0.0.1:9090:9090 \
   -p 127.0.0.1:9091:9091 \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_STORAGE_BACKEND=memory \
   -e CYODA_OTEL_ENABLED=true \
   -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 \
@@ -251,8 +300,10 @@ curl -s http://localhost:9091/metrics | grep "^go_"
 **Scrape metrics with bearer auth:**
 
 ```
+# -H @- reads the header from stdin: a command line is visible to other
+# local users, stdin is not.
 curl -s \
-  -H "Authorization: Bearer $CYODA_METRICS_BEARER" \
+  -H @- <<<"Authorization: Bearer $CYODA_METRICS_BEARER" \
   http://localhost:9091/metrics
 ```
 
@@ -260,7 +311,7 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   http://localhost:8080/api/admin/trace-sampler
 ```
 
@@ -268,7 +319,7 @@ curl -s \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"sampler":"ratio","ratio":0.1,"parent_based":true}' \
   http://localhost:8080/api/admin/trace-sampler

@@ -1,0 +1,14 @@
+{
+  "schema": "QueryConditionDto",
+  "valid": false,
+  "value": {
+    "type": "simple",
+    "jsonPath": "$.amount",
+    "operatorType": "BETWEEN",
+    "value": [
+      1,
+      2,
+      3
+    ]
+  }
+}

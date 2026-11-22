@@ -6,11 +6,12 @@ import (
 	"sync"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
 )
 
 // refreshingModelStore is a ModelStore fake that:
@@ -132,7 +133,8 @@ func (f *fakeStoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledT
 func (f *fakeStoreFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
 	return nil, errUnused
 }
-func (f *fakeStoreFactory) Close() error { return nil }
+func (f *fakeStoreFactory) Close() error               { return nil }
+func (f *fakeStoreFactory) Ping(context.Context) error { return nil }
 
 // TestImportModel_StaleCacheAfterRemoteDelete_ProceedsAfterRefresh verifies
 // that when the cached ModelStore.Get returns a stale LOCKED descriptor
@@ -152,7 +154,7 @@ func TestImportModel_StaleCacheAfterRemoteDelete_ProceedsAfterRefresh(t *testing
 		refreshDescriptor: nil, // peer's delete propagated authoritatively
 	}
 
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	// A trivial JSON sample — the importer only needs parseable sample data.
 	result, err := h.ImportModel(context.Background(), model.ImportModelInput{
@@ -188,7 +190,7 @@ func TestImportModel_StaleCacheAfterRemoteDelete_ProceedsAfterRefresh(t *testing
 //
 // This test documents the pattern applied to LockModel, UnlockModel,
 // DeleteModel, and SetChangeLevel — all four sites have the same shape
-// and share the getModelFresh helper.
+// and share the modelcache.GetFresh helper.
 func TestLockModel_StaleCacheAfterRemoteDelete_404Not409(t *testing.T) {
 	staleRef := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
 	stale := &spi.ModelDescriptor{
@@ -200,7 +202,7 @@ func TestLockModel_StaleCacheAfterRemoteDelete_404Not409(t *testing.T) {
 		refreshDescriptor: nil, // peer's delete propagated authoritatively
 	}
 
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	_, err := h.LockModel(context.Background(), "Dataset", "1")
 	if err == nil {
@@ -232,7 +234,7 @@ func TestExportModel_ClassifiesModelStoreErrors(t *testing.T) {
 
 	t.Run("ErrNotFound maps to 404", func(t *testing.T) {
 		ms := &refreshingModelStore{getErr: spi.ErrNotFound}
-		h := model.New(&fakeStoreFactory{modelStore: ms})
+		h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 		_, err := h.ExportModel(context.Background(), "Dataset", "1", "JSON_SCHEMA")
 		if err == nil {
@@ -250,7 +252,7 @@ func TestExportModel_ClassifiesModelStoreErrors(t *testing.T) {
 	t.Run("arbitrary error maps to 5xx", func(t *testing.T) {
 		synthetic := errors.New("synthetic fold failure")
 		ms := &refreshingModelStore{getErr: synthetic}
-		h := model.New(&fakeStoreFactory{modelStore: ms})
+		h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 		_, err := h.ExportModel(context.Background(), "Dataset", "1", "JSON_SCHEMA")
 		if err == nil {
@@ -289,7 +291,7 @@ func TestImportModel_OnLockedModel_ReturnsModelAlreadyLocked(t *testing.T) {
 		refreshDescriptor: locked,
 	}
 
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	_, err := h.ImportModel(context.Background(), model.ImportModelInput{
 		EntityName:   "Dataset",
@@ -327,7 +329,7 @@ func TestUnlockModel_AlreadyUnlocked_ReturnsModelAlreadyUnlocked(t *testing.T) {
 		refreshDescriptor: unlocked,
 	}
 
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	_, err := h.UnlockModel(context.Background(), "Dataset", "1")
 	if err == nil {
@@ -358,7 +360,7 @@ func TestSetChangeLevel_Invalid_400(t *testing.T) {
 		refreshDescriptor: desc,
 	}
 
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	err := h.SetChangeLevel(context.Background(), "Dataset", "1", "BOGUS")
 	if err == nil {
@@ -411,7 +413,7 @@ func mustBuildSchema(t *testing.T) []byte {
 func TestSetUniqueKeys_UnsupportedBackend_Returns422(t *testing.T) {
 	ms := &refreshingModelStore{}
 	// fakeStoreFactory does NOT implement CompositeUniqueKeyCapable.
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	_, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", []spi.UniqueKey{
 		{ID: "uk1", Fields: []string{"$.name"}},
@@ -439,7 +441,7 @@ func TestSetUniqueKeys_ModelNotFound_Returns404(t *testing.T) {
 	h := model.New(&capableStoreFactory{
 		fakeStoreFactory: fakeStoreFactory{modelStore: ms},
 		supports:         true,
-	})
+	}, platformclock.Real())
 
 	_, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", []spi.UniqueKey{
 		{ID: "uk1", Fields: []string{"$.name"}},
@@ -473,7 +475,7 @@ func TestSetUniqueKeys_LockedModel_Returns409(t *testing.T) {
 	h := model.New(&capableStoreFactory{
 		fakeStoreFactory: fakeStoreFactory{modelStore: ms},
 		supports:         true,
-	})
+	}, platformclock.Real())
 
 	_, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", []spi.UniqueKey{
 		{ID: "uk1", Fields: []string{"$.name"}},
@@ -507,7 +509,7 @@ func TestSetUniqueKeys_UnknownField_Returns422_INVALID_UNIQUE_KEY_DEFINITION(t *
 	h := model.New(&capableStoreFactory{
 		fakeStoreFactory: fakeStoreFactory{modelStore: ms},
 		supports:         true,
-	})
+	}, platformclock.Real())
 
 	_, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", []spi.UniqueKey{
 		{ID: "uk1", Fields: []string{"$.nonexistent"}},
@@ -541,7 +543,7 @@ func TestSetUniqueKeys_HappyPath_PersistsKeys(t *testing.T) {
 	h := model.New(&capableStoreFactory{
 		fakeStoreFactory: fakeStoreFactory{modelStore: ms},
 		supports:         true,
-	})
+	}, platformclock.Real())
 
 	keys := []spi.UniqueKey{
 		{ID: "uk1", Fields: []string{"$.name", "$.age"}},
@@ -569,6 +571,36 @@ func TestSetUniqueKeys_HappyPath_PersistsKeys(t *testing.T) {
 	}
 }
 
+// TestSetUniqueKeys_DoesNotMutateTheDescriptorItRead pins that SetUniqueKeys
+// saves a copy: the descriptor a model read returns can be shared with other
+// readers of the same model (one coalesced storage read), so writing into it
+// would change what they hold.
+func TestSetUniqueKeys_DoesNotMutateTheDescriptorItRead(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	read := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelUnlocked,
+		Schema: mustBuildSchema(t),
+	}
+	ms := &refreshingModelStore{refreshDescriptor: read}
+	h := model.New(&capableStoreFactory{
+		fakeStoreFactory: fakeStoreFactory{modelStore: ms},
+		supports:         true,
+	}, platformclock.Real())
+
+	if _, err := h.SetUniqueKeys(context.Background(), "Dataset", "1", []spi.UniqueKey{
+		{ID: "uk1", Fields: []string{"$.name"}},
+	}); err != nil {
+		t.Fatalf("SetUniqueKeys: %v", err)
+	}
+	if read.UniqueKeys != nil {
+		t.Errorf("SetUniqueKeys wrote into the descriptor it read: %+v", read.UniqueKeys)
+	}
+	if saved := ms.Saved(); saved == nil || len(saved.UniqueKeys) != 1 {
+		t.Fatalf("expected the saved descriptor to carry the key, got %+v", saved)
+	}
+}
+
 // TestImportModel_PreservesUniqueKeys_WhenReimporting verifies that when
 // an existing model already has UniqueKeys set, a re-import carries those
 // keys forward (analogous to how ChangeLevel is preserved).
@@ -588,7 +620,7 @@ func TestImportModel_PreservesUniqueKeys_WhenReimporting(t *testing.T) {
 		refreshDescriptor: existing,
 	}
 
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	// Re-import with a JSON sample that contains the same fields (no removal).
 	result, err := h.ImportModel(context.Background(), model.ImportModelInput{
@@ -650,7 +682,7 @@ func TestImportModel_KeyReferencesAbsentField_Rejected(t *testing.T) {
 		refreshDescriptor: existing,
 	}
 
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	// The descriptor is pre-seeded with $.score in the key but NOT in the
 	// schema, simulating out-of-band corruption (additive merge cannot drop a
@@ -690,7 +722,7 @@ func TestLockModel_AlreadyLocked_ReturnsSpecificCode(t *testing.T) {
 		refreshDescriptor: locked,
 	}
 
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	_, err := h.LockModel(context.Background(), "Dataset", "1")
 	if err == nil {
@@ -736,7 +768,7 @@ func TestImportModel_InvalidUniqueKeyDefinition_422(t *testing.T) {
 	ms := &refreshingModelStore{
 		refreshDescriptor: corrupted,
 	}
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	_, err := h.ImportModel(context.Background(), model.ImportModelInput{
 		EntityName:   "Dataset",
@@ -774,7 +806,7 @@ func TestExportModel_UnsupportedConverter_400(t *testing.T) {
 		Schema: mustBuildSchema(t),
 	}
 	ms := &refreshingModelStore{getDescriptor: desc}
-	h := model.New(&fakeStoreFactory{modelStore: ms})
+	h := model.New(&fakeStoreFactory{modelStore: ms}, platformclock.Real())
 
 	_, err := h.ExportModel(context.Background(), "Dataset", "1", "SAMPLE_DATA")
 	if err == nil {
@@ -790,5 +822,39 @@ func TestExportModel_UnsupportedConverter_400(t *testing.T) {
 	if appErr.Code != common.ErrCodeBadRequest {
 		t.Errorf("expected code %q, got %q (message: %s)",
 			common.ErrCodeBadRequest, appErr.Code, appErr.Message)
+	}
+}
+
+// A model import reads the existing model to refuse re-importing a locked one.
+// A read that fails is not "no model": treating it so skipped the 409 and saved
+// a fresh descriptor over a locked model, without its unique keys. Only
+// not-found means absent; any other failure refuses the import.
+func TestImportModel_ReadFailure_RefusesWithoutSaving(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	locked := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}
+	input := model.ImportModelInput{
+		EntityName:   "Dataset",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         []byte(`{"field":"value"}`),
+	}
+
+	failing := &refreshingModelStore{getDescriptor: locked, refreshErr: errors.New("connection reset")}
+	_, err := model.New(&fakeStoreFactory{modelStore: failing}, platformclock.Real()).ImportModel(context.Background(), input)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Status < 500 {
+		t.Errorf("read failure: err = %v, want a 5xx", err)
+	}
+	if failing.saveCount != 0 {
+		t.Errorf("read failure: %d saves, want none", failing.saveCount)
+	}
+
+	absent := &refreshingModelStore{refreshErr: spi.ErrNotFound}
+	if _, err := model.New(&fakeStoreFactory{modelStore: absent}, platformclock.Real()).ImportModel(context.Background(), input); err != nil {
+		t.Errorf("not found: %v, want the import to proceed", err)
+	}
+	if absent.saveCount != 1 {
+		t.Errorf("not found: %d saves, want 1", absent.saveCount)
 	}
 }

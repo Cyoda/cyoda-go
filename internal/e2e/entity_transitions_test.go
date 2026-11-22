@@ -11,14 +11,16 @@ import (
 // TestFetchEntityTransitions exercises operationId: fetchEntityTransitions
 // GET /platform-api/entity/fetch/transitions?entityClass=<Name>.<Version>&entityId=<uuid>
 //
-// This endpoint is routed outside the generated ServerInterface dispatch —
-// it is registered on the inner mux at /platform-api/entity/fetch/transitions
-// and is reachable as /api/platform-api/entity/fetch/transitions when the
-// app is mounted under the /api context path.
+// It is served by the generated router and is reachable as
+// /api/platform-api/entity/fetch/transitions when the app is mounted under
+// the /api context path.
 //
 // The test registers a model+workflow, creates an entity that auto-transitions
-// from NONE to CREATED, then calls fetchEntityTransitions and asserts a 200
-// response whose body is a JSON array.
+// from NONE to CREATED, then calls fetchEntityTransitions and
+// GET /entity/{entityId}/transitions. Both list the transitions a client can
+// name on a save from CREATED, in declaration order: the manual ones and the
+// automated one whose criterion did not match, but not the disabled one and
+// not the scheduled one (naming either is refused).
 func TestFetchEntityTransitions(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -33,8 +35,12 @@ func TestFetchEntityTransitions(t *testing.T) {
 			"states": {
 				"NONE":    {"transitions": [{"name": "init",    "next": "CREATED",  "manual": false}]},
 				"CREATED": {"transitions": [
-					{"name": "approve", "next": "APPROVED", "manual": true},
-					{"name": "reject",  "next": "REJECTED", "manual": true}
+					{"name": "approve",  "next": "APPROVED", "manual": true},
+					{"name": "parked",   "next": "REJECTED", "manual": true, "disabled": true},
+					{"name": "expire",   "next": "REJECTED", "manual": false, "schedule": {"delayMs": 3600000}},
+					{"name": "escalate", "next": "APPROVED", "manual": false,
+					 "criterion": {"type": "simple", "jsonPath": "$.amount", "operatorType": "GREATER_THAN", "value": 1000}},
+					{"name": "reject",   "next": "REJECTED", "manual": true}
 				]},
 				"APPROVED": {},
 				"REJECTED": {}
@@ -45,8 +51,8 @@ func TestFetchEntityTransitions(t *testing.T) {
 
 	entityID := createEntityE2E(t, model, 1, `{"name":"test","amount":1,"status":"draft"}`)
 	// The entity auto-transitions NONE→CREATED via the automated "init"
-	// transition; fetchEntityTransitions now returns the manual transitions
-	// available from the CREATED state (approve, reject).
+	// transition and stays there: escalate's criterion does not match and
+	// expire is scheduled.
 
 	entityClass := url.QueryEscape(fmt.Sprintf("%s.1", model))
 	path := fmt.Sprintf("/api/platform-api/entity/fetch/transitions?entityClass=%s&entityId=%s",
@@ -58,20 +64,26 @@ func TestFetchEntityTransitions(t *testing.T) {
 		t.Fatalf("fetchEntityTransitions: expected 200, got %d: %s", resp.StatusCode, body)
 	}
 
-	// Response is a TransitionNameList (JSON array of strings). The entity is in
-	// CREATED after the automated init; the available manual transitions are
-	// exactly "approve" and "reject".
-	var result []string
-	if err := json.Unmarshal([]byte(body), &result); err != nil {
-		t.Fatalf("fetchEntityTransitions: expected JSON array of strings; parse error: %v; body: %s", err, body)
+	// Response is a TransitionNameList (JSON array of strings).
+	want := []string{"approve", "escalate", "reject"}
+	assertTransitionList(t, "fetchEntityTransitions", body, want)
+
+	resp = doAuth(t, http.MethodGet, "/api/entity/"+entityID+"/transitions", "")
+	body = readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /entity/{id}/transitions: expected 200, got %d: %s", resp.StatusCode, body)
 	}
-	got := map[string]bool{}
-	for _, tr := range result {
-		got[tr] = true
+	assertTransitionList(t, "GET /entity/{id}/transitions", body, want)
+}
+
+// assertTransitionList: body is a JSON array of exactly want, in order.
+func assertTransitionList(t *testing.T, what, body string, want []string) {
+	t.Helper()
+	var got []string
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("%s: expected JSON array of strings; parse error: %v; body: %s", what, err, body)
 	}
-	for _, want := range []string{"approve", "reject"} {
-		if !got[want] {
-			t.Errorf("fetchEntityTransitions: expected transition %q in returned list %v", want, result)
-		}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("%s: got %v, want %v (not disabled, not scheduled, whatever manual)", what, got, want)
 	}
 }

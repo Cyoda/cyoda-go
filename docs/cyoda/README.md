@@ -17,13 +17,13 @@ api/openapi.yml             # aggregator
 api/openapi-audit.yml       # audit operations
 api/openapi-common.yml      # common schemas
 api/openapi-entity-search.yml
-api/openapi-iam.yml         # OAuth, OIDC, technical users
+api/openapi-iam.yml         # OAuth, technical users (Cloud's file also carries OIDC providers, which cyoda-go no longer has)
 api/openapi-workflow.yml
 ```
 
 Byte-identical mirror of `Cyoda/cyoda` `develop` branch at
 `client/src/main/resources/api/`. This is the form maintainers read
-when checking parity ("does cyoda-go's `OidcProviderResponseDto`
+when checking parity ("does cyoda-go's `TechnicalUserCredentialsDto`
 match upstream?"). The split files are easier to diff against
 upstream than the bundled form.
 

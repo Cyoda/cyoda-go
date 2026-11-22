@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,25 +18,27 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	cyodapb "github.com/cyoda/cyoda-go/api/grpc/cyoda"
+	events "github.com/cyoda/cyoda-go/api/grpc/events"
+	"github.com/cyoda/cyoda-go/internal/cluster/token"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/domain/entity"
+	"github.com/cyoda/cyoda-go/internal/domain/model"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/health"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/internal/testing/localproc"
+	"github.com/cyoda/cyoda-go/internal/txcoord"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 func TestUnaryRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
-	var health atomic.Bool
-	health.Store(true)
+	latch := health.NewLatch()
 
-	interceptor := UnaryRecoveryInterceptor(&health)
+	interceptor := UnaryRecoveryInterceptor(latch)
 	handler := func(ctx context.Context, req any) (any, error) { panic("injected") }
 
 	resp, err := interceptor(context.Background(), nil,
@@ -49,8 +50,8 @@ func TestUnaryRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 	if resp != nil {
 		t.Fatalf("resp = %v, want nil", resp)
 	}
-	if health.Load() {
-		t.Fatal("health flag not marked; a node that has panicked has unknown state")
+	if !latch.Tripped() {
+		t.Fatal("health latch not tripped; a node that has panicked has unknown state")
 	}
 	if strings.Contains(err.Error(), "injected") {
 		t.Fatal("panic value leaked to the client")
@@ -58,10 +59,9 @@ func TestUnaryRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 }
 
 func TestStreamRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
-	var health atomic.Bool
-	health.Store(true)
+	latch := health.NewLatch()
 
-	interceptor := StreamRecoveryInterceptor(&health)
+	interceptor := StreamRecoveryInterceptor(latch)
 	handler := func(srv any, ss googlegrpc.ServerStream) error { panic("injected") }
 
 	err := interceptor(nil, nil,
@@ -70,8 +70,8 @@ func TestStreamRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 	if err == nil {
 		t.Fatal("panic was not converted to an error; the process would have died")
 	}
-	if health.Load() {
-		t.Fatal("health flag not marked")
+	if !latch.Tripped() {
+		t.Fatal("health latch not tripped")
 	}
 	if strings.Contains(err.Error(), "injected") {
 		t.Fatal("panic value leaked to the client")
@@ -86,10 +86,9 @@ func TestStreamRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 // recovered panic is the failure class that most needs one for monitoring and
 // retry dispatch.
 func TestUnaryRecoveryInterceptor_ReturnsCodesInternal(t *testing.T) {
-	var health atomic.Bool
-	health.Store(true)
+	latch := health.NewLatch()
 
-	interceptor := UnaryRecoveryInterceptor(&health)
+	interceptor := UnaryRecoveryInterceptor(latch)
 	handler := func(ctx context.Context, req any) (any, error) { panic("injected") }
 
 	_, err := interceptor(context.Background(), nil,
@@ -114,10 +113,9 @@ func TestUnaryRecoveryInterceptor_ReturnsCodesInternal(t *testing.T) {
 func TestUnaryRecoveryInterceptor_TicketCorrelatesClientAndLog(t *testing.T) {
 	records := captureSlog(t)
 
-	var health atomic.Bool
-	health.Store(true)
+	latch := health.NewLatch()
 
-	interceptor := UnaryRecoveryInterceptor(&health)
+	interceptor := UnaryRecoveryInterceptor(latch)
 	handler := func(ctx context.Context, req any) (any, error) { panic("injected") }
 
 	_, err := interceptor(context.Background(), nil,
@@ -229,11 +227,11 @@ func findRecord(t *testing.T, records *[]capturedLogRecord, msg string) captured
 	return capturedLogRecord{}
 }
 
-// TestUnaryRecoveryInterceptor_NilHealthFlag proves the nil-healthFlag guard:
+// TestUnaryRecoveryInterceptor_NilHealthLatch proves the nil-healthLatch guard:
 // test constructors (and any future caller) that pass nil must not panic on
 // the Store call inside the panic handler itself — that would defeat the
 // entire point of the interceptor.
-func TestUnaryRecoveryInterceptor_NilHealthFlag(t *testing.T) {
+func TestUnaryRecoveryInterceptor_NilHealthLatch(t *testing.T) {
 	interceptor := UnaryRecoveryInterceptor(nil)
 	handler := func(ctx context.Context, req any) (any, error) { panic("injected") }
 
@@ -264,10 +262,9 @@ func TestUnaryRecoveryInterceptor_NilHealthFlag(t *testing.T) {
 // panic unwinds through the deferred rollback Tasks 1-5 built, so by the time
 // it reaches this interceptor the transaction it opened must already be gone.
 func TestServer_HandlerPanic_ProcessSurvives(t *testing.T) {
-	var health atomic.Bool
-	health.Store(true)
+	latch := health.NewLatch()
 
-	env := startRecoveryTestServer(t, &health)
+	env := startRecoveryTestServer(t, latch)
 
 	// Import and lock a model with an automated transition out of its initial
 	// state, guarded by a FUNCTION criterion that panics.
@@ -315,8 +312,8 @@ func TestServer_HandlerPanic_ProcessSurvives(t *testing.T) {
 	if _, parseErr := uuid.Parse(extractTicket(t, st.Message())); parseErr != nil {
 		t.Fatalf("client-visible message %q does not carry a valid correlation ticket: %v", st.Message(), parseErr)
 	}
-	if health.Load() {
-		t.Fatal("health flag not marked through the real server path")
+	if !latch.Tripped() {
+		t.Fatal("health latch not tripped through the real server path")
 	}
 
 	if open := env.tracker.openTxIDs(); len(open) != 0 {
@@ -371,7 +368,7 @@ func (env *recoveryTestServer) importAndLockModel(t *testing.T, entityName, vers
 	if err != nil {
 		t.Fatalf("marshal sample data: %v", err)
 	}
-	mh := model.New(env.raw)
+	mh := model.New(cachedFactory(env.raw), platformclock.Real())
 	if _, err := mh.ImportModel(ctx, model.ImportModelInput{
 		EntityName:   entityName,
 		ModelVersion: version,
@@ -415,17 +412,22 @@ func (m *recoveryTrackingTxMgr) Begin(ctx context.Context) (string, context.Cont
 	if err != nil {
 		return txID, txCtx, err
 	}
-	m.mu.Lock()
-	m.begun = append(m.begun, txID)
-	m.mu.Unlock()
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.begun = append(m.begun, txID)
+	}()
 	return txID, txCtx, nil
 }
 
 func (m *recoveryTrackingTxMgr) openTxIDs() []string {
-	m.mu.Lock()
-	ids := make([]string, len(m.begun))
-	copy(ids, m.begun)
-	m.mu.Unlock()
+	ids := func() []string {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		ids := make([]string, len(m.begun))
+		copy(ids, m.begun)
+		return ids
+	}()
 
 	probeCtx := context.Background()
 	var open []string
@@ -440,29 +442,35 @@ func (m *recoveryTrackingTxMgr) openTxIDs() []string {
 // fixedAuthService is a contract.AuthenticationService test double that
 // authenticates any request as the same fixed principal, regardless of the
 // bearer token presented. Real JWT validation is exercised elsewhere
-// (internal/auth); this test is only about panic recovery.
+// (internal/auth); this test is only about panic recovery. A principal of
+// kind service is authenticated as a client token, with the client-token
+// marker a member stream requires.
 type fixedAuthService struct {
 	uc *spi.UserContext
 }
 
-func (a *fixedAuthService) Authenticate(context.Context, *http.Request) (*spi.UserContext, error) {
-	return a.uc, nil
+func (a *fixedAuthService) Authenticate(ctx context.Context, _ *http.Request) (context.Context, error) {
+	ctx = spi.WithUserContext(ctx, a.uc)
+	if a.uc.Kind == spi.PrincipalService {
+		ctx = contract.WithClientToken(ctx, contract.ClientToken{ClientID: a.uc.UserID, Gen: 1})
+	}
+	return ctx, nil
 }
 
 // startRecoveryTestServer builds a real, network-listening gRPC server wired
 // with an in-memory backend and a localproc external-processing service, so a
 // test can drive genuine production code paths (including panics deep inside
 // workflow criterion evaluation) over an actual gRPC connection.
-func startRecoveryTestServer(t *testing.T, healthFlag *atomic.Bool) *recoveryTestServer {
+func startRecoveryTestServer(t *testing.T, healthLatch *health.Latch) *recoveryTestServer {
 	t.Helper()
-	return startRecoveryTestServerWithKeepAlive(t, healthFlag,
+	return startRecoveryTestServerWithKeepAlive(t, healthLatch,
 		KeepAliveConfig{Interval: 10 * time.Second, Timeout: 30 * time.Second})
 }
 
 // startRecoveryTestServerWithKeepAlive is startRecoveryTestServer with the
 // keep-alive configuration under the test's control, for tests whose subject
 // is the keep-alive itself and which cannot wait out the production timings.
-func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool, ka KeepAliveConfig) *recoveryTestServer {
+func startRecoveryTestServerWithKeepAlive(t *testing.T, healthLatch *health.Latch, ka KeepAliveConfig) *recoveryTestServer {
 	t.Helper()
 
 	factory := memory.NewStoreFactory()
@@ -475,23 +483,24 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 	tracker := &recoveryTrackingTxMgr{TransactionManager: realTxMgr}
 
 	localProc := localproc.New()
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), tracker,
-		wfengine.WithExternalProcessing(localProc))
+	engine := wfengine.NewEngine(cachedFactory(factory), common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
+		wfengine.WithExternalProcessing(localProc), wfengine.WithCoordination(txcoord.New(tracker)))
 
 	searchStore, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New())
-	modelHandler := model.New(factory)
+	searchSvc := search.NewSearchService(cachedFactory(factory), common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(cachedFactory(factory), tracker, common.NewDefaultUUIDGenerator(), engine, txcoord.New(tracker), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(cachedFactory(factory), platformclock.Real())
 
 	uc := &spi.UserContext{
 		UserID:   "recovery-test-user",
 		UserName: "Recovery Test",
 		Tenant:   spi.Tenant{ID: "recovery-tenant", Name: "Recovery Tenant"},
-		// ROLE_M2M in addition to ADMIN: the member stream refuses a principal
-		// without it, and the keep-alive tests join over this same fixture.
+		// A client token with ROLE_M2M: the member stream refuses any other
+		// principal, and the keep-alive tests join over this same fixture.
+		Kind:  spi.PrincipalService,
 		Roles: []string{"ADMIN", "ROLE_M2M"},
 	}
 	authSvc := &fixedAuthService{uc: uc}
@@ -502,9 +511,9 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 	}
 
 	registry := NewMemberRegistry()
-	srv := NewServer(authSvc, registry, tracker, entityHandler, modelHandler, searchSvc,
-		tokenSigner, nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
-		false, 0, true, healthFlag, ka)
+	srv := NewServer(authSvc, nil, registry, tracker, entityHandler, modelHandler, searchSvc,
+		tokenSigner, noCalloutJoiner(t, tokenSigner, tracker), nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
+		false, 0, true, testProxyTimeout, healthLatch, ka, newFixedConsistency(), func() platformclock.State { return platformclock.State{} }, func() error { return nil })
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

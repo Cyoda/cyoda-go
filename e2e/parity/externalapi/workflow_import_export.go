@@ -20,9 +20,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
-	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda/cyoda-go/e2e/externalapi/errorcontract"
+	"github.com/cyoda/cyoda-go/e2e/parity"
 )
 
 func init() {
@@ -94,10 +94,10 @@ func RunExternalAPI_08_01_SimpleAutomatedTransition(t *testing.T, fixture parity
 }
 
 // RunExternalAPI_08_02_DefaultsAppliedAndReturned — dictionary 08/02.
-// Import a partially-specified workflow (transition omits manual/criterion);
-// export must round-trip the workflow with the transition name intact.
-// cyoda-go stores what was sent and applies active=true as the only server
-// default; omitted boolean fields default to false (Go zero value).
+// Import a partially-specified workflow (the workflow omits active, the
+// transition omits disabled and criterion); export must round-trip the
+// workflow with the transition name intact. The transition sends manual, as
+// the dictionary's does: manual is required and has no default.
 func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -105,17 +105,13 @@ func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parit
 	if err := d.CreateModelFromSample("wf2", 1, `{"k":1}`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// Import a workflow that omits "manual" on the transition.
-	// dictionary uses "automated" field; cyoda-go uses "manual" (inverted) —
-	// different_naming_same_level. Omitting both → manual defaults to false
-	// (i.e., automated=true in dictionary terms).
 	body := `{
 		"workflows": [{
 			"name": "defaults",
 			"version": "1.1",
 			"initialState": "s1",
 			"states": {
-				"s1": {"transitions": [{"name": "MOVE", "next": "s2"}]},
+				"s1": {"transitions": [{"name": "MOVE", "next": "s2", "manual": true}]},
 				"s2": {"transitions": []}
 			}
 		}]
@@ -127,17 +123,39 @@ func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parit
 	if err != nil {
 		t.Fatalf("ExportWorkflow: %v", err)
 	}
-	var shape map[string]any
-	if err := json.Unmarshal(raw, &shape); err != nil {
+	var exported struct {
+		Workflows []struct {
+			Active *bool `json:"active"`
+			States map[string]struct {
+				Transitions []struct {
+					Name     string `json:"name"`
+					Manual   *bool  `json:"manual"`
+					Disabled *bool  `json:"disabled"`
+				} `json:"transitions"`
+			} `json:"states"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(raw, &exported); err != nil {
 		t.Fatalf("decode export: %v", err)
 	}
-	wfs, ok := shape["workflows"].([]any)
-	if !ok || len(wfs) == 0 {
-		t.Fatalf("export missing workflows: %v", shape)
+	if len(exported.Workflows) != 1 {
+		t.Fatalf("export must hold one workflow: %s", raw)
 	}
-	// Assert the transition name survived the round-trip.
-	if !strings.Contains(string(raw), `"MOVE"`) {
-		t.Errorf("export missing transition name MOVE: %s", string(raw))
+	wf := exported.Workflows[0]
+	// The dictionary's defaults: an omitted active is true, an omitted
+	// disabled is false. The export leaves a false disabled out.
+	if wf.Active == nil || !*wf.Active {
+		t.Errorf("exported active must be true: %s", raw)
+	}
+	trs := wf.States["s1"].Transitions
+	if len(trs) != 1 || trs[0].Name != "MOVE" {
+		t.Fatalf("export must hold transition MOVE out of s1: %s", raw)
+	}
+	if trs[0].Manual == nil || !*trs[0].Manual {
+		t.Errorf("exported manual must be true, as sent: %s", raw)
+	}
+	if trs[0].Disabled != nil && *trs[0].Disabled {
+		t.Errorf("exported disabled = true, want false or absent: %s", raw)
 	}
 }
 
@@ -150,7 +168,7 @@ func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parit
 //     → "type":"group","operator":"AND","conditions":[...]  — different_naming_same_level
 //   - Inner criteria: "type":"jsonpath","path","equals"
 //     → "type":"simple","jsonPath","operatorType","value"  — different_naming_same_level
-//   - Processor: bare {"name","config"} → requires "type" field — different_naming_same_level
+//   - Processor: bare {"name","config"} → accepted as sent; the omitted "type" is stored as "externalized"
 func RunExternalAPI_08_03_AdvancedCriteriaAndProcessors(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -163,8 +181,8 @@ func RunExternalAPI_08_03_AdvancedCriteriaAndProcessors(t *testing.T, fixture pa
 	// dictionary uses criterion type "jsonpath" with "path"/"equals";
 	// cyoda-go uses type "simple" with "jsonPath"/"operatorType"/"value" —
 	// different_naming_same_level.
-	// dictionary processor omits "type"; cyoda-go ProcessorDefinition.Type is required —
-	// different_naming_same_level.
+	// dictionary processor omits "type"; cyoda-go accepts that and stores the
+	// omitted type as "externalized".
 	body := `{
 		"workflows": [{
 			"name": "advanced",
@@ -184,7 +202,7 @@ func RunExternalAPI_08_03_AdvancedCriteriaAndProcessors(t *testing.T, fixture pa
 								{"type": "simple", "jsonPath": "$.value", "operatorType": "GREATER_THAN", "value": 10}
 							]
 						},
-						"processors": [{"name": "noop", "type": "FUNCTION"}]
+						"processors": [{"name": "noop"}]
 					}]
 				},
 				"done": {"transitions": []}
@@ -467,6 +485,10 @@ func RunExternalAPI_08_07_ScheduledTransitionRoundtrip(t *testing.T, fixture par
 //     schedule.function is required" in the detail. delayMs=0 is falsy
 //     under the delayMs/function XOR (hasDelay := DelayMs > 0), so this
 //     is the "neither present" shape, not a dedicated delayMs<=0 message.
+//  3. schedule.delayMs:0 beside schedule.function — HTTP 400 +
+//     VALIDATION_FAILED with "schedule.delayMs and schedule.function are
+//     mutually exclusive" in the detail. The decoded delay reads 0 as
+//     omitted; import refuses it from the raw request.
 func RunExternalAPI_08_08_ScheduledTransitionRejects(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -521,6 +543,30 @@ func RunExternalAPI_08_08_ScheduledTransitionRejects(t *testing.T, fixture parit
 	})
 	if detail := rfc9457Detail(body); !strings.Contains(detail, "exactly one of schedule.delayMs or schedule.function is required") {
 		t.Errorf("zero-delay: expected detail substring 'exactly one of schedule.delayMs or schedule.function is required'; got %q (body=%s)", detail, string(body))
+	}
+
+	// Sub-case 3: delayMs:0 beside a function.
+	zeroDelayWithFunction := `{"workflows":[{
+		"version":"1.3","name":"Zero Delay Function Schedule",
+		"initialState":"start","active":true,
+		"states":{
+			"start":{"transitions":[{
+				"name":"BadZeroDelayFn","next":"end","manual":false,
+				"schedule":{"delayMs":0,"function":{"name":"calcFire","resultKind":"Schedule","calculationNodesTags":"sched"}}
+			}]},
+			"end":{"transitions":[]}
+		}
+	}]}`
+	status, body, err = d.ImportWorkflowRaw("wfSchedRej", 1, zeroDelayWithFunction)
+	if err != nil {
+		t.Fatalf("ImportWorkflowRaw (zero delay beside function): %v", err)
+	}
+	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
+		HTTPStatus: http.StatusBadRequest,
+		ErrorCode:  "VALIDATION_FAILED",
+	})
+	if detail := rfc9457Detail(body); !strings.Contains(detail, "schedule.delayMs and schedule.function are mutually exclusive") {
+		t.Errorf("zero-delay beside function: expected detail substring 'schedule.delayMs and schedule.function are mutually exclusive'; got %q (body=%s)", detail, string(body))
 	}
 }
 

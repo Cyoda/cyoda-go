@@ -4,43 +4,37 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
+	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	spi "github.com/cyoda/cyoda-go-spi"
+	"github.com/cyoda/cyoda-go-spi/predicate"
+	"github.com/cyoda/cyoda-go/internal/contract"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
 )
 
-// Processor execution-mode tokens. Sourced from the OpenAPI enum in
-// api/openapi.yaml (mirrored in api/generated.go's
-// ExternalizedProcessorDefinitionDtoExecutionMode constants). Centralised
-// here as untyped strings so engine logic, validator rules, and tests can
-// compare against a single source — the SPI's ExecutionMode field is itself
-// a plain string, so an enum type would not buy compile-time safety.
+// Processor execution-mode tokens: the executionMode enum of
+// ExternalizedProcessorDefinitionDto in api/openapi.yaml, for which
+// api/generated.go declares no constants. Centralised here as untyped strings
+// so engine logic, validator rules, and tests can compare against a single
+// source — the SPI's ExecutionMode field is itself a plain string, so an enum
+// type would not buy compile-time safety.
 const (
-	ExecutionModeSync                 = "SYNC"
+	ExecutionModeSync                 = contract.ExecutionModeSync // also the mode of a processor with none configured
 	ExecutionModeAsyncSameTx          = "ASYNC_SAME_TX"
 	ExecutionModeAsyncNewTx           = "ASYNC_NEW_TX"
 	ExecutionModeCommitBeforeDispatch = "COMMIT_BEFORE_DISPATCH"
 )
 
-// Processor execution-location tokens. Sourced from the OpenAPI enum in
-// api/openapi.yaml (mirrored in api/generated.go's ProcessorDefinitionDto
-// type constants). Centralised here as untyped strings so engine logic,
-// validator rules, and tests can compare against a single source — the
-// SPI's ProcessorDefinition.Type field is itself a plain string, so an
-// enum type would not buy compile-time safety.
-//
-// Empty value is treated as ProcessorTypeExternalized at dispatch. Any
-// value other than ProcessorTypeInternalized falls through to the
-// ExecutionMode dispatch path at engine fire time; the only Type
-// rejection performed by the engine is on the exact value
-// ProcessorTypeInternalized.
-const (
-	ProcessorTypeExternalized = "externalized"
-	ProcessorTypeInternalized = "internalized"
-)
+// ProcessorTypeExternalized is the one processor execution-location token:
+// the only value in the ProcessorDefinitionDto discriminator mapping of
+// api/openapi.yaml. Import refuses any other value and stores an omitted or
+// empty one as this value (applyProcessorTypeDefault), so every stored and
+// exported processor carries it. The SPI's ProcessorDefinition.Type field is
+// a plain string, so an enum type would not buy compile-time safety.
+const ProcessorTypeExternalized = "externalized"
 
 // validExecutionModes is the set of accepted ExecutionMode values for
 // import-time validation (audit §H4). Empty string is also accepted —
@@ -53,33 +47,129 @@ var validExecutionModes = map[string]struct{}{
 	ExecutionModeCommitBeforeDispatch: {},
 }
 
-// Processor retry-policy tokens. Sourced from the workflow author's
-// selector across the two server-resolved retry strategies (audit §M1).
-// Centralised here as untyped strings so engine logic, validator rules,
-// and tests can compare against a single source — the SPI's
-// ProcessorConfig.RetryPolicy field is itself a plain string, so an enum
-// type would not buy compile-time safety.
+// Callout retry-policy tokens: the workflow author's selector between the two
+// server-resolved strategies, on a processor, a criterion function and a
+// scheduled-transition function alike. Centralised here as untyped strings so
+// engine logic, validator rules, and tests compare against a single source —
+// the SPI fields are plain strings, so an enum type would not buy
+// compile-time safety.
 //
-//   - NONE  — single attempt, no retry on member-level failure.
-//   - FIXED — default when unset. Up to N additional attempts with a
-//     fixed delay between tries; N and delay come from server-side
-//     config and are not carried in the workflow.
-//
-// cyoda-go currently captures the policy at import time but does not yet
-// honour it at dispatch — the dispatcher remains single-shot. The full
-// retry loop is not yet implemented.
+//   - NONE  — one try.
+//   - FIXED — default when unset. The server-configured number of tries. The
+//     number is the normal one, not a hard limit, and there is no pause
+//     between tries; neither is carried in the workflow.
 const (
 	RetryPolicyNone  = "NONE"
 	RetryPolicyFixed = "FIXED"
 )
 
-// validRetryPolicies is the set of accepted RetryPolicy values for
-// import-time validation (audit §M1). Empty string is also accepted —
-// the server defaults to FIXED when RetryPolicy is unset.
+// validRetryPolicies is the set of accepted retryPolicy values for
+// import-time validation. Empty is accepted — the server treats it as FIXED.
 var validRetryPolicies = map[string]struct{}{
 	"":               {},
 	RetryPolicyNone:  {},
 	RetryPolicyFixed: {},
+}
+
+// checkRetryPolicy is the one spelling of the retryPolicy rule. location
+// names the callout, e.g. `workflow "w" state "s" transition "t" processor "p"`.
+func checkRetryPolicy(policy, location string) error {
+	if _, ok := validRetryPolicies[policy]; !ok {
+		return fmt.Errorf("%s: unknown retryPolicy %q (allowed: NONE, FIXED, or empty)", location, policy)
+	}
+	return nil
+}
+
+// validateCalloutLimits enforces the server's bound on responseTimeoutMs for
+// every callout an incoming workflow configures: each processor, each
+// schedule function, and each function condition in a criterion
+// (workflow-level and transition-level). A negative value is refused whatever
+// the bound. Zero means "use the server default" and is always accepted.
+//
+// Separate from validateWorkflowStructure because the bound is a server
+// setting (CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS) handed to the Handler at
+// construction, and the structural rules are setting-free. States are walked
+// in name order so a workflow with several violations always reports the same
+// one.
+func validateCalloutLimits(workflows []spi.WorkflowDefinition, maxResponseTimeout time.Duration) error {
+	maxMs := maxResponseTimeout.Milliseconds()
+	for _, wf := range workflows {
+		wfLoc := fmt.Sprintf("workflow %q", wf.Name)
+		if err := checkCriterionResponseTimeout(wf.Criterion, wfLoc, maxMs); err != nil {
+			return err
+		}
+		for _, stateName := range sortedStateNames(wf.States) {
+			for _, tr := range wf.States[stateName].Transitions {
+				trLoc := fmt.Sprintf("workflow %q state %q transition %q", wf.Name, stateName, tr.Name)
+				if err := checkCriterionResponseTimeout(tr.Criterion, trLoc, maxMs); err != nil {
+					return err
+				}
+				if tr.Schedule != nil && tr.Schedule.Function != nil {
+					if err := checkResponseTimeout(tr.Schedule.Function.ResponseTimeoutMs, maxMs,
+						trLoc+" schedule.function"); err != nil {
+						return err
+					}
+				}
+				for _, p := range tr.Processors {
+					if err := checkResponseTimeout(p.Config.ResponseTimeoutMs, maxMs,
+						fmt.Sprintf("%s processor %q", trLoc, p.Name)); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkCriterionResponseTimeout applies checkResponseTimeout to every
+// function condition in a criterion, at any depth; a criterion without one
+// has no callout and passes.
+func checkCriterionResponseTimeout(criterion json.RawMessage, location string, maxMs int64) error {
+	trimmed := bytes.TrimSpace(criterion)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	cond, err := predicate.ParseCondition(trimmed)
+	if err != nil {
+		return nil // validateCriterion has already refused a criterion that does not parse
+	}
+	root, err := buildCriterionTree(cond, "")
+	if err != nil {
+		// Not this rule's to report: validateCriterion builds the same tree,
+		// with the same location strings, and the import handler runs it
+		// first.
+		return nil
+	}
+	_, fns := collectCriterion(root)
+	for _, f := range fns {
+		if err := checkResponseTimeout(f.fn.Config.ResponseTimeoutMs, maxMs,
+			fmt.Sprintf("%s criterion function %q%s", location, f.fn.Name, atPointer(f.ptr))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkResponseTimeout compares in milliseconds: converting an arbitrary
+// client int64 to a time.Duration first could overflow.
+func checkResponseTimeout(ms, maxMs int64, location string) error {
+	if ms < 0 {
+		return fmt.Errorf("%s: responseTimeoutMs must not be negative (got %d)", location, ms)
+	}
+	if ms > maxMs {
+		return fmt.Errorf("%s: responseTimeoutMs %d exceeds this server's upper bound of %d ms (CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS)",
+			location, ms, maxMs)
+	}
+	return nil
+}
+
+// sortedStateNames returns the names of states in lexicographic order. A
+// check that returns the first violation it finds walks the states in this
+// order, so that two states breaking one rule are reported the same way on
+// every request; Go randomises a map's iteration order.
+func sortedStateNames[V any](states map[string]V) []string {
+	return slices.Sorted(maps.Keys(states))
 }
 
 // maxIdentifierLen caps the length of workflow / state / transition /
@@ -120,10 +210,7 @@ func canonicalizeAnnotations(raw json.RawMessage, location string) (json.RawMess
 		return nil, fmt.Errorf("%s: annotations must be a JSON object", location)
 	}
 	var buf bytes.Buffer
-	if err := json.Compact(&buf, trimmed); err != nil {
-		// Unreachable in practice (decoder already validated); defensive.
-		return nil, fmt.Errorf("%s: annotations is not valid JSON: %v", location, err)
-	}
+	_ = json.Compact(&buf, trimmed) // the strict decoder validated it: cannot fail
 	if buf.Len() > maxAnnotationsBytes {
 		return nil, fmt.Errorf("%s: annotations size %d bytes exceeds the %d-byte limit",
 			location, buf.Len(), maxAnnotationsBytes)
@@ -155,7 +242,8 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 			return err
 		}
 		wf.CriterionAnnotations = wfCrit
-		for stateName, stateDef := range wf.States {
+		for _, stateName := range sortedStateNames(wf.States) {
+			stateDef := wf.States[stateName]
 			sCanon, err := canonicalizeAnnotations(stateDef.Annotations,
 				fmt.Sprintf("workflow %q state %q", wf.Name, stateName))
 			if err != nil {
@@ -197,18 +285,25 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 	return nil
 }
 
-// validateCriterion rejects a criterion that is malformed in any of four
+// validateCriterion rejects a criterion that is malformed in any of these
 // ways:
+//   - more entries than search.MaxConditionEntries, counted over the whole
+//     criterion, every pre-check included.
+//   - a function condition, at any depth, whose `function` member is missing
+//     or cannot be read, that has no name, whose `retryPolicy` is outside
+//     NONE/FIXED/empty, or whose pre-check holds a function condition; or a
+//     group around a function condition whose operator is not AND, OR or
+//     NOT-of-one. It would fail every dispatch, or be silently ignored.
 //   - a jsonPath that is not JSON Path nomenclature — a bare "amount" is not
 //     a path. Delegates to search.ValidateConditionJSONPath, the same grammar
 //     the search API boundary enforces: a criterion and a search condition are
 //     one model syntax and must agree on which paths exist.
 //   - an operatorType outside the canonical set, or an operand shape/arity
-//     violation (an object operand, or a BETWEEN with other than two
-//     entries). Delegates to search.ValidateCriterionCondition — the same
-//     operator table search.ValidateCondition enforces, minus the
-//     FUNCTION-clause rejection a criterion is exempt from (spec §4: "on
-//     every surface that carries a condition, workflow import included").
+//     violation (an object operand, an array operand outside BETWEEN, or a
+//     BETWEEN without exactly two non-null bounds). Delegates to
+//     search.ValidateCriterionCondition — the same operator table
+//     search.ValidateCondition enforces (spec §4: "on every surface that
+//     carries a condition, workflow import included").
 //   - a MATCHES_PATTERN or LIKE operand the kernel cannot compile. Delegates
 //     to search.ValidatePatterns — the kernel's own derivation, the same call
 //     the search API boundary makes — so import accepts exactly the operands
@@ -222,19 +317,19 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //     through the same match.Prepare/(Prepared).Match path, so both entry
 //     points reject the same malformed conditions.
 //
-// Criteria are stored opaquely (json.RawMessage) and previously were only
-// parsed at transition-evaluation time (engine.go's evaluateCriterion ->
-// match.Prepare, whose leaf expansion — including MATCHES_PATTERN
-// compilation — happens inside spi.ExpandLeaf), so a malformed criterion
-// imported successfully and then errored (or silently misbehaved) on every
-// subsequent evaluation of that transition. A bad path was worse still: it
-// errored nowhere and simply resolved, so the criterion worked. An unknown
-// operator is worse again: it fails closed on every subsequent evaluation
-// with no error surfaced anywhere, so the transition it guards silently
-// never fires. These four checks are grammar-only and belong at import,
-// which a stored workflow crosses exactly once, rather than at evaluation,
-// where the failure would land on a save (or, for the unknown-operator case,
-// never surface at all).
+// Function conditions are accepted at any depth. The path, operator, operand
+// and pattern checks run once per local unit (buildCriterionTree): each
+// function-free subtree of the criterion and each pre-check. A refusal names
+// the unit's position in the criterion.
+//
+// Criteria are stored opaquely (json.RawMessage). Import checks everything
+// that depends only on the criterion itself: that it parses, its path
+// grammar, its operators and operands, and its patterns. These are
+// grammar-only checks, made once at import, where a stored workflow crosses
+// the boundary exactly once; an unchecked defect would otherwise surface on
+// every evaluation of the transition it guards, or never surface at all
+// (an unknown operator fails closed and the transition silently never
+// fires).
 //
 // Import is NOT the only boundary a criterion crosses, though: whether the
 // model DECLARES a path this validator has already approved is checked
@@ -248,10 +343,8 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //
 // location names the workflow/state/transition the criterion belongs to, for
 // the error message. Empty/null criteria are skipped. A criterion that does
-// not parse as a predicate.Condition at all is left alone — this validator
-// only tightens already-parseable conditions, it does not newly reject
-// shapes ParseCondition already rejects (that is out of scope for this
-// check; those criteria fail at evaluation time exactly as before).
+// not parse as a predicate.Condition at all is refused: it can never be
+// evaluated, so every save that reached its transition would fail.
 func validateCriterion(criterion json.RawMessage, location string) error {
 	trimmed := bytes.TrimSpace(criterion)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -259,20 +352,46 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 	}
 	cond, err := predicate.ParseCondition(trimmed)
 	if err != nil {
-		return nil
+		return fmt.Errorf("%s: criterion is not a valid condition: %w", location, err)
 	}
-	// Paths and lifecycle type-soundness first, then operator/operand shape,
-	// then pattern operands — a criterion naming a field that does not exist
-	// is reported as the path problem it is, not shadowed by a complaint
-	// about its operator or operand.
-	if err := walkCriterion(cond, location); err != nil {
-		return err
-	}
-	if err := search.ValidateCriterionCondition(cond); err != nil {
+	// The entry limit counts the whole criterion, every pre-check included.
+	if err := search.ValidateConditionSize(cond); err != nil {
 		return fmt.Errorf("%s: %w", location, err)
 	}
-	if err := search.ValidatePatterns(cond); err != nil {
+	// Function conditions at any depth: each has a `function` object and a
+	// name, its config parses, and its pre-check holds only local
+	// conditions; a group around a function condition has a valid operator.
+	root, err := buildCriterionTree(cond, "")
+	if err != nil {
 		return fmt.Errorf("%s: %w", location, err)
+	}
+	units, fns := collectCriterion(root)
+	for _, f := range fns {
+		if err := checkRetryPolicy(f.fn.Config.RetryPolicy,
+			fmt.Sprintf("%s criterion function %q%s", location, f.fn.Name, atPointer(f.ptr))); err != nil {
+			return err
+		}
+	}
+	// The local checks run once per local unit — each function-free subtree
+	// and each pre-check — naming the unit's position. Paths and lifecycle
+	// type-soundness first, then operator/operand shape, then pattern
+	// operands: a criterion naming a field that does not exist is reported
+	// as the path problem it is, not shadowed by a complaint about its
+	// operator or operand.
+	for _, u := range units {
+		loc := location
+		if u.ptr != "" {
+			loc += " condition at " + u.ptr
+		}
+		if err := walkCriterion(u.cond, loc); err != nil {
+			return err
+		}
+		if err := search.ValidateCriterionCondition(u.cond); err != nil {
+			return fmt.Errorf("%s: %w", loc, err)
+		}
+		if err := search.ValidatePatterns(u.cond); err != nil {
+			return fmt.Errorf("%s: %w", loc, err)
+		}
 	}
 	return nil
 }
@@ -290,10 +409,10 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 //     not apply to it.
 //
 // Pattern operands are not checked here — validateCriterion runs them over the
-// whole tree afterwards, via search.ValidatePatterns.
+// same local unit afterwards, via search.ValidatePatterns.
 //
-// FunctionCondition carries neither a path nor an operator and is silently
-// skipped — that is how a FUNCTION criterion is exempted from these checks.
+// walkCriterion runs on local units only (see buildCriterionTree); it never
+// meets a function condition.
 //
 // SimpleCondition's path check uses search.ValidateConditionJSONPath, the
 // same grammar and the same implementation the search API boundary enforces
@@ -352,7 +471,10 @@ func walkCriterion(cond predicate.Condition, location string) error {
 //   - H6.e — Transition Names must be unique within a single state.
 //   - H4  — ExecutionMode must be one of SYNC, ASYNC_SAME_TX,
 //     ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty (defaults to SYNC).
-//   - M1  — RetryPolicy must be one of NONE, FIXED, or empty (defaults to FIXED).
+//   - Type — a processor's Type must be exactly externalized, or empty
+//     (stored as externalized by applyProcessorTypeDefault).
+//   - M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, every
+//     schedule function, and every function condition in a criterion.
 //
 // Scope: called only on the **incoming** import request. Legacy stored
 // workflows are not retroactively re-checked against these rules, so an
@@ -458,11 +580,13 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	//   L-1 — Processor Name non-empty.
 	//   L-2 — Processor Name length cap.
 	//   H4  — ExecutionMode ∈ {SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}.
-	//   M1  — RetryPolicy ∈ {NONE, FIXED, ""}.
+	//   M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, every
+	//     schedule function, and every function condition in a criterion.
 	//   Transition.Criterion — every data-addressing jsonPath must be JSON
 	//     Path; a MATCHES_PATTERN regex, if present, must compile; a
 	//     lifecycle/meta clause, if present, must be type-sound.
-	for stateName, stateDef := range wf.States {
+	for _, stateName := range sortedStateNames(wf.States) {
+		stateDef := wf.States[stateName]
 		if stateName == "" {
 			return fmt.Errorf("workflow %q: empty state name is not allowed in the states map",
 				wf.Name)
@@ -504,6 +628,16 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 					wf.Name, stateName, tr.Name)
 			}
 			if tr.Schedule != nil {
+				// timeoutMs's published minimum (api/openapi.yaml
+				// TransitionScheduleDto: minimum 0) applies whichever way
+				// the fire time is computed — static delayMs or function —
+				// so it is checked before either path below.
+				if tr.Schedule.TimeoutMs != nil && *tr.Schedule.TimeoutMs < 0 {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q: schedule.timeoutMs must not be negative (got %d)",
+						wf.Name, stateName, tr.Name, *tr.Schedule.TimeoutMs)
+				}
+
 				hasDelay := tr.Schedule.DelayMs > 0
 				hasFn := tr.Schedule.Function != nil
 				// Exactly one of delayMs or function is required — a static
@@ -511,13 +645,29 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 				// per entity. Both-present and neither-present are rejected
 				// alike; the mutual-exclusion is not expressible in the
 				// OpenAPI schema (see TransitionScheduleDto), so it is
-				// enforced here.
+				// enforced here. A delayMs sent as 0 or null beside a
+				// function is invisible at this layer (the SPI's int64
+				// reads it as omitted); the import handler refuses that
+				// shape from the raw request (checkDelayBesideFunction).
 				if hasDelay == hasFn {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q: exactly one of schedule.delayMs or schedule.function is required",
 						wf.Name, stateName, tr.Name)
 				}
 				if hasFn {
+					// hasDelay is false for ANY non-positive DelayMs,
+					// including negative — so the XOR check above sees a
+					// negative delayMs alongside a function as "function
+					// only" and passes it without ever looking at the
+					// field's own published minimum (delayMs: minimum 1).
+					// Unused once a function governs timing, but still
+					// client input that must be rejected, not silently
+					// ignored.
+					if tr.Schedule.DelayMs < 0 {
+						return fmt.Errorf(
+							"workflow %q state %q transition %q: schedule.delayMs must not be negative (got %d)",
+							wf.Name, stateName, tr.Name, tr.Schedule.DelayMs)
+					}
 					f := tr.Schedule.Function
 					if f.ResultKind != "Schedule" {
 						return fmt.Errorf(
@@ -529,13 +679,23 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 							"workflow %q state %q transition %q: schedule.function requires name and calculationNodesTags",
 							wf.Name, stateName, tr.Name)
 					}
+					if err := checkRetryPolicy(f.RetryPolicy, fmt.Sprintf(
+						"workflow %q state %q transition %q schedule.function", wf.Name, stateName, tr.Name)); err != nil {
+						return err
+					}
 				}
-				// No separate `else if DelayMs <= 0` branch: once the XOR
-				// check above has passed with hasFn == false, hasDelay must
-				// be true (DelayMs > 0), so a dedicated delayMs<=0 rejection
-				// here would be unreachable. DelayMs <= 0 with no function
-				// is already caught by the XOR check as the "neither
-				// present" shape.
+				// No separate `else if DelayMs <= 0` branch for the
+				// no-function case: once the XOR check above has passed
+				// with hasFn == false, hasDelay must be true (DelayMs > 0),
+				// so a dedicated delayMs<=0 rejection there would be
+				// unreachable — DelayMs <= 0 with no function is already
+				// caught by the XOR check as the "neither present" shape.
+				// That unreachability does NOT extend to the has-function
+				// case: there hasDelay is false whatever DelayMs's sign, so
+				// the XOR check alone lets a negative DelayMs through
+				// silently alongside a valid function — the explicit
+				// `DelayMs < 0` check inside `if hasFn` above exists for
+				// exactly that gap.
 			}
 
 			for _, p := range tr.Processors {
@@ -572,13 +732,17 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 						"workflow %q state %q transition %q processor %q: crossoverToAsyncMs is not supported on this backend (async/crossover semantics are not implemented)",
 						wf.Name, stateName, tr.Name, p.Name)
 				}
+				if p.Type != "" && p.Type != ProcessorTypeExternalized {
+					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown type %q (allowed: externalized, or empty)",
+						wf.Name, stateName, tr.Name, p.Name, p.Type)
+				}
 				if _, ok := validExecutionModes[p.ExecutionMode]; !ok {
 					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown executionMode %q (allowed: SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty)",
 						wf.Name, stateName, tr.Name, p.Name, p.ExecutionMode)
 				}
-				if _, ok := validRetryPolicies[p.Config.RetryPolicy]; !ok {
-					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown retryPolicy %q (allowed: NONE, FIXED, or empty)",
-						wf.Name, stateName, tr.Name, p.Name, p.Config.RetryPolicy)
+				if err := checkRetryPolicy(p.Config.RetryPolicy, fmt.Sprintf(
+					"workflow %q state %q transition %q processor %q", wf.Name, stateName, tr.Name, p.Name)); err != nil {
+					return err
 				}
 			}
 		}
@@ -594,14 +758,14 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 // nil/false are equally valid (the flag just defaults to false). We never
 // inspect the flag for COMMIT_BEFORE_DISPATCH processors.
 func validateProcessorFlags(wf spi.WorkflowDefinition) error {
-	for _, st := range wf.States {
-		for _, tr := range st.Transitions {
+	for _, stateName := range sortedStateNames(wf.States) {
+		for _, tr := range wf.States[stateName].Transitions {
 			for _, p := range tr.Processors {
-				if p.Config.StartNewTxOnDispatch != nil && *p.Config.StartNewTxOnDispatch &&
+				if p.StartNewTxOnDispatch != nil && *p.StartNewTxOnDispatch &&
 					p.ExecutionMode != ExecutionModeCommitBeforeDispatch {
 					return fmt.Errorf(
-						"workflow %q transition %q processor %q: startNewTxOnDispatch=true is only valid with executionMode=COMMIT_BEFORE_DISPATCH (got %q)",
-						wf.Name, tr.Name, p.Name, p.ExecutionMode)
+						"workflow %q state %q transition %q processor %q: startNewTxOnDispatch=true is only valid with executionMode=COMMIT_BEFORE_DISPATCH (got %q)",
+						wf.Name, stateName, tr.Name, p.Name, p.ExecutionMode)
 				}
 			}
 		}
@@ -684,11 +848,7 @@ func validateWorkflowLoops(wf spi.WorkflowDefinition) error {
 	// randomised per process, which previously made the reported cycle
 	// vary across CI runs on a workflow with multiple disjoint cycles.
 	// Lexicographic order is an arbitrary but stable choice.
-	stateNames := make([]string, 0, len(wf.States))
-	for stateName := range wf.States {
-		stateNames = append(stateNames, stateName)
-	}
-	sort.Strings(stateNames)
+	stateNames := sortedStateNames(wf.States)
 	for _, stateName := range stateNames {
 		if color[stateName] == white {
 			if err := dfs(stateName); err != nil {

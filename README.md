@@ -1,6 +1,6 @@
 [![CI](https://github.com/cyoda/cyoda-go/actions/workflows/ci.yml/badge.svg)](https://github.com/cyoda/cyoda-go/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/cyoda/cyoda-go)](https://github.com/cyoda/cyoda-go/releases)
-[![Go Reference](https://pkg.go.dev/badge/github.com/cyoda-platform/cyoda-go.svg)](https://pkg.go.dev/github.com/cyoda-platform/cyoda-go)
+[![Go Reference](https://pkg.go.dev/badge/github.com/cyoda/cyoda-go.svg)](https://pkg.go.dev/github.com/cyoda/cyoda-go)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 # cyoda-go
@@ -33,7 +33,7 @@ curl http://localhost:8080/api/health
 # {"status":"UP"}
 ```
 
-`cyoda init` writes a sqlite-backed user config (default path `~/.local/share/cyoda/cyoda.db`); `cyoda` then starts the server with that config and mock auth. See **Install** for non-Homebrew options and **First real call** for jwt + a real authenticated request.
+`cyoda init` writes a sqlite-backed user config (default path `~/.local/share/cyoda/cyoda.db`); `cyoda` then starts the server with that config and mock auth. Every listener binds `127.0.0.1` by default, so mock auth is reachable only from your own machine; set `CYODA_HTTP_BIND_ADDRESS` and `CYODA_GRPC_BIND_ADDRESS` (and `CYODA_ADMIN_BIND_ADDRESS`) to `0.0.0.0` for other hosts or a container's port mapping — see `cyoda help run`. See **Install** for non-Homebrew options and **First real call** for jwt + a real authenticated request.
 
 ## Install
 
@@ -49,124 +49,153 @@ brew install cyoda/cyoda-go/cyoda
 curl -fsSL https://github.com/cyoda/cyoda-go/releases/latest/download/install.sh | sh
 ```
 
-Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Pin a version with `CYODA_VERSION=v0.7.1 curl ... | sh`. The installer SHA256-verifies the archive and, if [`cosign`](https://docs.sigstore.dev/cosign/installation/) is on `PATH`, also verifies a Sigstore keyless signature from the cyoda-go release workflow.
+Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Pin a version with `curl ... | CYODA_VERSION=v0.8.4 sh` (the variable goes on `sh`, after the pipe); add `CYODA_COSIGN_VERIFY=required` to refuse an install that cosign cannot verify. The installer SHA256-verifies the archive and, if [`cosign`](https://docs.sigstore.dev/cosign/installation/) is on `PATH`, also verifies a Sigstore keyless signature from the cyoda-go release workflow.
 
 ### Debian / Ubuntu / Fedora / RHEL
 
-```bash
-# Debian / Ubuntu
-wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
-sudo dpkg -i cyoda_linux_amd64.deb
+Set `V` to the release you install. The commands check with `cosign` that the release workflow signed `SHA256SUMS` from that tag, then check the package against it, and install it only if both checks pass:
 
-# Fedora / RHEL
-wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.rpm
-sudo rpm -i cyoda_linux_amd64.rpm
+```bash
+V=v0.8.4
+R=https://github.com/cyoda/cyoda-go/releases/download/$V
+curl -fsSLO "$R/cyoda_linux_amd64.deb"
+curl -fsSLO "$R/SHA256SUMS" -O "$R/SHA256SUMS.sig" -O "$R/SHA256SUMS.pem"
+cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
+  --certificate-identity "https://github.com/Cyoda/cyoda-go/.github/workflows/release.yml@refs/tags/$V" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-trigger push \
+  --certificate-github-workflow-ref "refs/tags/$V" \
+  SHA256SUMS \
+  && sha256sum --ignore-missing -c SHA256SUMS \
+  && sudo dpkg -i cyoda_linux_amd64.deb
 ```
 
-Replace `amd64` with `arm64` for ARM hosts. Both packages drop `/usr/bin/cyoda` and `/etc/cyoda/cyoda.env` (sqlite as the system-wide default, preserved across upgrades).
+For Fedora or RHEL, download `cyoda_linux_amd64.rpm` instead and end with `sudo rpm -i cyoda_linux_amd64.rpm`. Replace `amd64` with `arm64` for ARM hosts. Both packages drop `/usr/bin/cyoda` and `/etc/cyoda/cyoda.env` (sqlite as the system-wide default, preserved across upgrades).
+
+### Container image
+
+`ghcr.io/cyoda/cyoda`, tagged with the version without the `v`. The release workflow signs it; a tag can be moved, so check the signature for the release you want and pull by the digest the check printed (needs `cosign` and `jq`):
+
+```bash
+V=0.8.4
+OUT=$(cosign verify "ghcr.io/cyoda/cyoda:$V" \
+  --certificate-identity "https://github.com/Cyoda/cyoda-go/.github/workflows/release.yml@refs/tags/v$V" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-trigger push \
+  --certificate-github-workflow-ref "refs/tags/v$V") \
+  && D=$(printf '%s' "$OUT" | jq -r '.[0].critical.image."docker-manifest-digest"') \
+  && docker pull "ghcr.io/cyoda/cyoda@$D"
+```
 
 ### From source
 
-Requires **Go 1.26+**.
+Requires **Go 1.27.4+**.
 
 ```bash
-go install github.com/cyoda-platform/cyoda-go/cmd/cyoda@latest
+go install github.com/cyoda/cyoda-go/cmd/cyoda@latest
 ```
 
 This binary uses the in-memory backend by default. Run `cyoda init` for sqlite persistence, or set `CYODA_STORAGE_BACKEND` directly.
 
 ## First real call
 
-The 30-second example uses mock auth. To exercise the real auth chain end-to-end with sqlite + jwt — without leaking the bootstrap secret into your shell history or `ps` output — use the project's profile pattern:
+The 30-second example uses mock auth. To exercise the real auth chain end-to-end with sqlite + jwt, use the project's profile pattern. The only credential is the JWT signing key; `cyoda token` signs the first admin token with it, offline:
 
 ```bash
-# Generate a JWT signing key (openssl writes it 0600 by default; make it explicit)
+# Generate a JWT signing key. openssl writes it 0600 by default, and chmod makes it explicit.
 openssl genrsa -out /tmp/jwt.key 2048
 chmod 600 /tmp/jwt.key
 
-# Write a local profile with sqlite + jwt + bootstrap creds. .env.local is
-# gitignored; chmod 600 keeps the secret off other users' eyes on shared boxes.
+# Write a local profile with sqlite + jwt. .env.local is gitignored.
 cat > .env.local <<'EOF'
 CYODA_STORAGE_BACKEND=sqlite
 CYODA_IAM_MODE=jwt
 CYODA_JWT_SIGNING_KEY_FILE=/tmp/jwt.key
-CYODA_BOOTSTRAP_CLIENT_ID=demo
-CYODA_BOOTSTRAP_CLIENT_SECRET=demo-secret
 EOF
-chmod 600 .env.local
 
 # Start cyoda with the local profile (loads .env.local automatically)
 CYODA_PROFILES=local cyoda &
 
-# Read the secret from the file at the moment we need it — never `export` it
-SECRET=$(grep '^CYODA_BOOTSTRAP_CLIENT_SECRET=' .env.local | cut -d= -f2-)
-
-# Get an OAuth 2.0 token via client_credentials
-TOKEN=$(curl -sX POST http://localhost:8080/api/oauth/token \
-  -u "demo:$SECRET" \
-  -d "grant_type=client_credentials" | jq -r .access_token)
+# Sign a short-lived admin token for tenant "demo" with the same key
+TOKEN=$(CYODA_PROFILES=local cyoda token --tenant demo)
 
 # Make an authenticated call
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/account
+curl -H @- <<<"Authorization: Bearer $TOKEN" http://localhost:8080/api/account
 ```
 
-The `/api/account` response confirms the bootstrap client's tenant and roles. From here, follow the **Build an app** link below to register an entity model and start creating entities.
+The `/api/account` response confirms the token's tenant and roles. With that token, create the M2M clients that applications and compute nodes use (`POST /api/clients`; see `cyoda help auth clients` and `cyoda help cli token`). Every data operation — models, entities, search, messages — requires `ROLE_M2M`: an M2M client's tokens carry it, and a `cyoda token` carries it only when signed with `--roles ROLE_ADMIN,ROLE_M2M` (see `cyoda help auth`). From here, follow the **Build an app** link below to register an entity model and start creating entities.
 
-**Optional IAM feature flags** (all default `false`):
+**Optional IAM settings:**
 
 | Env var | Default | Effect |
 |---------|---------|--------|
+| `CYODA_JWT_ISSUER` | `cyoda` | The `iss` of every token cyoda-go issues, and the value every user assertion's `aud` must contain. It names this deployment, not an identity provider. An empty value refuses to start. |
+| `CYODA_JWT_EXPIRY_SECONDS` | `300` | Maximum lifetime of a token cyoda-go issues, in seconds (`cyoda token --ttl` and an on-behalf-of token can be shorter), and the upper bound of `cyoda token --ttl`. Must be an integer from 1 to 3600; any other value refuses to start. A token exchange's token also ends no later than its assertion's `exp`. |
 | `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | When `true`, enables the 5 `/oauth/keys/trusted/*` admin endpoints. When `false`, those endpoints return `404 FEATURE_DISABLED`. |
+| `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` | `10` | Per-tenant cap on trusted keys that can verify (active, `validTo` not passed); registering or reactivating past it returns `400 TRUSTED_KEY_CAP_REACHED`. `0` means unbounded. |
+| `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` | `365` | Validity, in days from `validFrom`, of a trusted key registered without `validTo` (not a cap on a `validTo` you send). Rotate keys before it ends. |
 | `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
+| `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` | `100` | Per-tenant cap on M2M clients; `POST /clients` at the cap returns `400 M2M_CLIENT_CAP_REACHED`. `0` means unbounded; a negative value refuses to start. |
+| `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` | `600` | Token requests each M2M client may make per minute on one node, across both grants; over it `POST /tenants/{tenant}/oauth/token` returns `429 slow_down` with `Retry-After`. `0` means unlimited; a negative value refuses to start. |
+| `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` | the number of CPUs the process may use (GOMAXPROCS) | Client-secret (bcrypt) operations that run at once on one node: `POST /tenants/{tenant}/oauth/token` checks and the secret hashing of `POST /clients` and the secret reset. An operation that gets no slot within 1 s returns `503` with `Retry-After` (`temporarily_unavailable` on the token endpoint, `SERVER_BUSY` on `/clients`). Must be at least `1`. The bound protects the node, not the endpoint: put a per-source rate limit in front of `/api/tenants/{tenant}/oauth/token` at the ingress. |
 
-In mock mode, `CYODA_IAM_MOCK_KIND` (default `user`) sets the principal kind
-(`user`/`service`/`system`) on the mock default UserContext, so local/CI setups
-can exercise service- or system-attributed code paths without real JWT auth.
+In mock mode, `CYODA_IAM_MOCK_KIND` (default `service`) sets the principal kind
+(`user`/`service`/`system`) of the fixed mock principal every request runs as. The default makes
+every mock-mode caller a client, as in `jwt` mode; `user` or `system` lets
+local/CI setups exercise user- or system-attributed code paths without real
+JWT auth. Any other value, in either mode, refuses to start.
 
-### Federated OIDC providers
+## Access
 
-cyoda-go can accept JWTs issued by external OIDC providers — Auth0, Cognito, Keycloak, or any spec-compliant issuer — alongside its own first-party tokens. Each tenant registers its own providers; tokens are validated against the provider's JWKS endpoint.
+Only M2M clients connect to cyoda-go; users never call it directly. An
+application signs its own users in, decides what each user may do, and calls
+cyoda-go for them. cyoda-go has no per-user permissions: it records what the
+client states about the user and does not verify the user. Like any database,
+it cannot protect data from an application that is itself compromised.
 
-**Validation order:** cyoda-go tries the built-in JWKSValidator first (trusted keys registered via `/oauth/keys/trusted/*`), then the OIDCValidator. The first validator that recognises the issuer wins.
+- **M2M clients** (`POST /clients`) belong to one tenant and get tokens with
+  `client_credentials`. A plain client holds `ROLE_M2M`, which every data
+  operation requires; an admin client also holds `ROLE_ADMIN`. A service or a
+  compute node uses a client of its own, and its changes are recorded as the
+  client's.
+- **On-behalf-of clients** (`POST /clients?onBehalfOf=true`) act for the
+  application's users. They use only the token exchange (RFC 8693): the
+  client presents a short user assertion the application signed, and gets a
+  token for that user carrying the client's roles. Every change made with it
+  is recorded for the user, with the client as its executor, and both reach
+  compute nodes in each callout. An on-behalf-of client never holds
+  `ROLE_ADMIN` and never exists in the `PLATFORM` tenant.
+- **Trusted keys** (`/oauth/keys/trusted*`) are the public keys a tenant admin
+  registers for the application's user assertions. A trusted key verifies
+  only an assertion presented to the token exchange, in its own tenant; it is
+  never accepted as a bearer token.
 
-**Management endpoints** (JWT mode, `CYODA_IAM_MODE=jwt`):
+The platform operator's first admin token comes from `cyoda token` (see
+*First real call*).
 
-| Method | Path | Auth |
-|--------|------|------|
-| `POST` | `/oauth/oidc/providers` | `ROLE_ADMIN` |
-| `GET` | `/oauth/oidc/providers` | any authenticated tenant member |
-| `PATCH` | `/oauth/oidc/providers/{id}` | `ROLE_ADMIN` |
-| `POST` | `/oauth/oidc/providers/{id}/invalidate` | `ROLE_ADMIN` |
-| `POST` | `/oauth/oidc/providers/{id}/reactivate` | `ROLE_ADMIN` |
-| `DELETE` | `/oauth/oidc/providers/{id}` | `ROLE_ADMIN` |
-| `POST` | `/oauth/oidc/providers/reload` | `ROLE_ADMIN` |
-
-The `reload` endpoint flushes the in-memory JWKS cache and re-fetches keys from every active provider for the tenant — useful after a key rotation at the IdP.
-
-**Register a provider:**
-
-```bash
-curl -sX POST http://localhost:8080/api/oauth/oidc/providers \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "my-auth0",
-    "wellKnownConfigUri": "https://example.auth0.com/.well-known/openid-configuration",
-    "audienceClaim": "https://api.example.com",
-    "rolesClaim": "https://example.com/roles"
-  }'
-```
-
-**Configuration:** see `cyoda help config auth` (the "Federated OIDC providers" section) for the six `CYODA_OIDC_*` env vars that control HTTPS enforcement, SSRF blocking, default roles claim, and HTTP timeouts for discovery and JWKS fetches.
+**Integrating an application?** `cyoda help auth integration` is the
+step-by-step guide: which clients to create, how to register a trusted key,
+how to sign and exchange user assertions, how compute nodes connect and read
+the user and executor of each callout, every token-endpoint error with its
+retry rule, rotation, incidents, a local end-to-end recipe, and the move from
+forwarded identity-provider tokens.
+[`docs/access-to-the-cyoda-api.html`](docs/access-to-the-cyoda-api.html) is
+the same guide with scenario diagrams; `cyoda help auth` is the reference.
 
 ### Auth cache reconciliation
 
-The trusted-key and OIDC-provider caches push updates to peers on write and
-fall back to a periodic KV-reconcile if a broadcast is missed.
+The signing-key cache pushes updates to peers on write and falls back to a
+periodic KV-reconcile if a broadcast is missed. No node keeps a copy of a
+trusted key or an M2M client: every token request and every client or
+trusted-key call reads the store, so a delete, a secret reset or a key
+invalidation stops new tokens at once on every node. Tokens already issued
+keep verifying until their `exp` (a compute-node stream closes within a
+minute instead); to cut them off, see *A leaked platform admin-client secret*
+in `cyoda help config auth`.
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` | `60s` | Reconcile interval for the trusted-key / OIDC-provider caches; verification fails closed after 10× this without a successful KV reconcile. |
+| `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` | `60s` | Reconcile interval for the signing-key cache; verification fails closed after 10× this without a successful KV reconcile. |
 
 ## Composite unique keys
 
@@ -196,10 +225,8 @@ This call is idempotent — it replaces the model's entire key list. The keys ar
 - **Scope:** per `(tenant, model name, model version)`, live entities only. Soft-deleting an entity frees its key value-set.
 - **Null rule (all-or-nothing):** if all fields in a key are absent or null, the entity is exempt. If some but not all fields are present, the write is rejected with `422 INVALID_UNIQUE_KEY`. If all fields are present, uniqueness is enforced.
 - **String comparison is byte-exact:** case-sensitive, no Unicode normalization, no whitespace trimming — the bytes the application wrote are what is compared. Applications that want case-insensitive matching must normalize before writing.
-- **Enforced on create and update.** Moving a key value to a free slot is allowed; moving it to a slot already taken by another entity returns `409 UNIQUE_VIOLATION`.
+- **Enforced on create and update, at commit.** Keys are checked when a transaction commits, on the entities as the transaction leaves them, with the unique-key definitions the stored model holds. A `COMMIT_BEFORE_DISPATCH` processor commits the transaction it runs in before its callout, and that commit is checked too. Moving a key value to a free slot is allowed — including a slot another entity of the same transaction frees, in either order, so swaps commit; moving it to a slot an entity outside the transaction holds returns `409 UNIQUE_VIOLATION`.
 - **Supported backends:** memory, sqlite, postgres. The commercial backend returns `422 COMPOSITE_KEY_UNSUPPORTED` until its own support lands.
-
-**Multi-node note:** see the `cluster` help topic — *Composite unique key staleness* — for a bounded operational limitation when changing a key on a live multi-node postgres deployment.
 
 ## Search result sorting
 
@@ -223,17 +250,46 @@ Grammar: `[@]path[:asc|desc]` — a bare dotted path sorts by a scalar entity-da
 
 ## Scheduled transitions
 
-A workflow transition with a `schedule` fires automatically after a delay, driven by a coordinator-only scan loop rather than a manual trigger. The delay can be a static `delayMs`, or a `function` callout computing the firing time (and optional expiry) per entity at arm time — mutually exclusive with `delayMs`. See `cyoda help config scheduler` for the full topic.
+A workflow transition with a `schedule` fires automatically after a delay. The delay can be a static `delayMs`, or a `function` callout computing the firing time (and optional expiry) per entity at arm time — mutually exclusive with `delayMs`. Every node claims due scheduled tasks and runs them itself. See `cyoda help config scheduler` for the full topic.
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `CYODA_SCHEDULER_ENABLED` | `true` | Kill switch for the scan loop. |
-| `CYODA_SCHEDULER_SCAN_INTERVAL` | `1s` | Coordinator scan cadence. |
-| `CYODA_SCHEDULER_BATCH_SIZE` | `100` | Max due tasks pulled per scan. |
-| `CYODA_SCHEDULER_DISTRIBUTION` | `round-robin` | Dispatch-target strategy: `round-robin` or `self`. Forced to `self` when `CYODA_CLUSTER_ENABLED=false`. |
-| `CYODA_SCHEDULER_COORDINATOR` | `lowest-node-id` | Coordinator-election strategy. |
-| `CYODA_SCHEDULER_REDISPATCH_BACKOFF` | `30s` | Best-effort re-dispatch throttle window after a due task is picked up. |
-| `CYODA_SCHEDULER_EXPIRY_GRACE` | `100ms` | Grace band above a transition's `timeoutMs` before it expires instead of firing late; size to at least the max inter-node clock skew. |
+| `CYODA_SCHEDULER_ENABLED` | `true` | Kill switch: a node with `false` claims no scheduled task. |
+| `CYODA_SCHEDULER_SCAN_INTERVAL` | `1s` | How often a node claims due tasks. |
+| `CYODA_SCHEDULER_MAX_RUNS` | `8` | Most scheduled runs one node holds at once. |
+| `CYODA_SCHEDULER_MAX_RUNS_PER_TENANT` | `4` | Most runs of one tenant on one node (per node, not per cluster); at most `CYODA_SCHEDULER_MAX_RUNS`. |
+| `CYODA_SCHEDULER_HEARTBEAT_INTERVAL` | `15s` | How often a node records that it is alive. |
+| `CYODA_SCHEDULER_STALE_AFTER` | `2m` | Time without a heartbeat before another node takes over a node's runs; at least `50s + 3 × heartbeat`, the same on every node. |
+| `CYODA_SCHEDULER_MAX_LOST_OWNERS` | `3` | A task whose node is lost this many times ends FAILED. |
+| `CYODA_SCHEDULER_RETRY_DELAY` | `30s` | Delay before the first retry of a safe failure; doubles on each further one. |
+| `CYODA_SCHEDULER_RETRY_DELAY_MAX` | `15m` | The retry delay never grows past this. |
+| `CYODA_SCHEDULER_SHUTDOWN_DRAIN` | `20s` | On shutdown, how long a node waits for its runs before it cancels them. |
+
+## Platform clock (test feature)
+
+A test can move business time — entity and audit dates, transition times, scheduled due times — through `POST /platform/clock`. Off by default; never for production. The clock is instance-wide and affects every tenant. See `cyoda help config clock`.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `CYODA_CLOCK_CONTROL_ENABLED` | `false` | Build a controllable platform clock and accept `POST /platform/clock`. Use the same value on every node. |
+
+## Compute-node callouts
+
+A processor, criterion or function request to a compute member is a *callout*.
+
+| Variable | Default | Description |
+|---|---|---|
+| `CYODA_RETRY_FIXED_NUM_RETRIES` | `3` | Retries after the first try when `retryPolicy` is `FIXED` or unset. |
+| `CYODA_CALLOUT_RESPONSE_TIMEOUT_MS` | `30000` | Answer limit when the callout sets no `responseTimeoutMs`. |
+| `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` | `60000` | Upper bound on `responseTimeoutMs`; workflow import refuses more. |
+| `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | The patience: how long a callout waits, in total, for a compute member to exist. `0` disables waiting. |
+| `CYODA_DISPATCH_CONNECT_TIMEOUT` | `2s` | Time allowed to open the connection when a callout is handed over to another node. |
+| `CYODA_CALLOUT_HANDOVER_ALLOWANCE` | `30s` | What the owning node allows a hand-over on top of `tries left × answer limit`. |
+| `CYODA_CALLOUT_PASS_ALLOWANCE` | `30s` | How long a compute member's transaction token outlives its try's answer limit. |
+| `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` | `10485760` | Ceiling on the answer to a compute member's callback, held in memory while the transaction is. A larger answer fails with `413 JOINED_RESPONSE_TOO_LARGE`. |
+| `CYODA_CALLOUT_JOINED_MAX_WAITERS` | `128` | How many of a compute member's callbacks may queue for one transaction. Past the cap: `503 TOO_MANY_JOINED_REQUESTS`, retryable. |
+
+See `cyoda help config grpc` and `cyoda help config cluster`.
 
 ## Where to go next
 
@@ -250,6 +306,7 @@ Run `cyoda help config all` for the complete env-var reference (add `--format=js
 | Deploy with Helm              | [docs.cyoda.net/help/helm](https://docs.cyoda.net/help/helm)           |
 | Deploy with Docker Compose    | [examples/compose-with-observability/](examples/compose-with-observability/) |
 | Architecture                  | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)      |
+| Transactions and consistency  | [docs/CONSISTENCY.md](docs/CONSISTENCY.md); timing per storage backend: [docs/submit-times-snapshots-consistency-time.html](docs/submit-times-snapshots-consistency-time.html) |
 | Application examples          | [docs/PRD.md#target-applications](docs/PRD.md#target-applications) |
 | Product overview              | [docs/PRD.md](docs/PRD.md)                        |
 | Feature & API inventory       | [docs/FEATURES.md](docs/FEATURES.md)              |

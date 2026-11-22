@@ -1,0 +1,9 @@
+{
+  "schema": "QueryConditionDto",
+  "class": "GroupConditionDto",
+  "value": {
+    "type": "group",
+    "operator": "OR",
+    "conditions": []
+  }
+}

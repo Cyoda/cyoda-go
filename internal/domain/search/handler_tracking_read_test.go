@@ -7,11 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+	spi "github.com/cyoda/cyoda-go-spi"
+	genapi "github.com/cyoda/cyoda-go/api"
+	"github.com/cyoda/cyoda-go/internal/common"
+	"github.com/cyoda/cyoda-go/internal/domain/search"
+	"github.com/cyoda/cyoda-go/internal/platformclock"
+	"github.com/cyoda/cyoda-go/plugins/memory"
 )
 
 // TestHandlerDirectSearch_TrackingReadTrue_ReachesSearchOptions verifies that
@@ -95,7 +96,7 @@ func newTrackingReadTestHandler(t *testing.T) (func() spi.SearchOptions, *search
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(cachedFactory(factory), uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	return func() spi.SearchOptions { return captured }, search.NewHandler(svc)
 }

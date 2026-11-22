@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	spi "github.com/cyoda/cyoda-go-spi"
 )
 
 // attributionUserCtx builds a plain user ctx for the "user records itself"

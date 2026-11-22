@@ -1,0 +1,68 @@
+package registry
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
+
+	"github.com/cyoda/cyoda-go/internal/lifecycle"
+	"github.com/cyoda/cyoda-go/internal/observability"
+)
+
+// tagMetrics are the membership instruments an operator alerts on: sends that
+// failed, and peers whose list this pnode is still waiting for. A lasting
+// non-zero lists_outstanding means callouts are not being handed to a pnode
+// that could take them.
+type tagMetrics struct {
+	sendFailures metric.Int64Counter
+	registration metric.Registration
+}
+
+func newTagMetrics(meter metric.Meter, outstanding func() int64, memberStates func() map[lifecycle.State]int64) (*tagMetrics, error) {
+	if meter == nil {
+		meter = noop.NewMeterProvider().Meter("")
+	}
+	failures, err := meter.Int64Counter("cyoda.cluster.tags.send_failures",
+		metric.WithDescription("Reliable tag-list messages to a peer that failed to send"))
+	if err != nil {
+		return nil, fmt.Errorf("instrument send_failures: %w", err)
+	}
+	gauge, err := meter.Int64ObservableGauge("cyoda.cluster.tags.lists_outstanding",
+		metric.WithDescription("Alive peers whose announced tag list is not the one held"))
+	if err != nil {
+		return nil, fmt.Errorf("instrument lists_outstanding: %w", err)
+	}
+	members, err := meter.Int64ObservableGauge("cyoda.cluster.member.count",
+		metric.WithDescription("Live cluster members per lifecycle state"),
+		metric.WithUnit("{member}"))
+	if err != nil {
+		return nil, fmt.Errorf("instrument member.count: %w", err)
+	}
+	reg, err := meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		o.ObserveInt64(gauge, outstanding())
+		counts := memberStates()
+		// Every state is observed, 0 for one no member holds, so a state a
+		// member left drops to 0 instead of keeping its last value.
+		for _, st := range lifecycle.States() {
+			o.ObserveInt64(members, counts[st], metric.WithAttributes(
+				observability.AttrClusterMemberState.String(strings.ToLower(string(st)))))
+		}
+		return nil
+	}, gauge, members)
+	if err != nil {
+		return nil, fmt.Errorf("register lists_outstanding and member.count callback: %w", err)
+	}
+	return &tagMetrics{sendFailures: failures, registration: reg}, nil
+}
+
+func (m *tagMetrics) sendFailed(kind string) {
+	m.sendFailures.Add(context.Background(), 1, metric.WithAttributes(attribute.String("msg", kind)))
+}
+
+func (m *tagMetrics) close() {
+	_ = m.registration.Unregister()
+}

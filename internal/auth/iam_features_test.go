@@ -3,7 +3,7 @@ package auth_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda/cyoda-go/internal/auth"
 )
 
 func TestIAMFeatures_Validate_Defaults(t *testing.T) {
@@ -17,9 +17,8 @@ func TestIAMFeatures_Validate_Rejections(t *testing.T) {
 		name string
 		mut  func(*auth.IAMFeatures)
 	}{
-		{"BootstrapAudience invalid", func(c *auth.IAMFeatures) { c.BootstrapAudience = "robot" }},
-		{"BootstrapAudience empty", func(c *auth.IAMFeatures) { c.BootstrapAudience = "" }},
 		{"TrustedKeyMaxPerTenant negative", func(c *auth.IAMFeatures) { c.TrustedKeyMaxPerTenant = -1 }},
+		{"M2MClientMaxPerTenant negative", func(c *auth.IAMFeatures) { c.M2MClientMaxPerTenant = -1 }},
 		{"TrustedKeyMaxValidityDays zero", func(c *auth.IAMFeatures) { c.TrustedKeyMaxValidityDays = 0 }},
 		{"TrustedKeyMaxJWKProperties zero", func(c *auth.IAMFeatures) { c.TrustedKeyMaxJWKProperties = 0 }},
 		{"KeypairDefaultValidityDays zero", func(c *auth.IAMFeatures) { c.KeypairDefaultValidityDays = 0 }},
@@ -38,7 +37,14 @@ func TestIAMFeatures_Validate_Rejections(t *testing.T) {
 func TestIAMFeatures_Validate_MaxPerTenantZeroIsUnbounded(t *testing.T) {
 	c := auth.DefaultIAMFeatures()
 	c.TrustedKeyMaxPerTenant = 0
+	c.M2MClientMaxPerTenant = 0
 	if err := c.Validate(); err != nil {
 		t.Errorf("MaxPerTenant=0 means unbounded; got %v", err)
+	}
+}
+
+func TestIAMFeatures_M2MClientMaxPerTenantDefault(t *testing.T) {
+	if got := auth.DefaultIAMFeatures().M2MClientMaxPerTenant; got != 100 {
+		t.Errorf("default M2MClientMaxPerTenant = %d, want 100", got)
 	}
 }

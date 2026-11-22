@@ -9,18 +9,18 @@
 // e2e/parity/contracts.go — "no storage handle... verification is
 // API-only") and every backend under it runs cyoda-go as a real OS
 // subprocess (e2e/parity/fixtureutil.LaunchCyodaAndCompute), so there is
-// no in-process engine or clock to inject — WithScheduledClock (used by
+// no in-process engine or clock to inject — WithClock (used by
 // internal/domain/workflow's unit tests) is not reachable from here, and
 // never will be for any backend under this harness, including memory.
-// Exact scheduledTime/lateness arithmetic and grace-band boundaries are
-// therefore Unit-only (see internal/domain/workflow/arm_test.go and
-// fire_scheduled_test.go) — never asserted here.
+// Exact scheduledTime, lateness, retry-delay and deadline arithmetic is
+// therefore Unit-only (internal/domain/workflow and internal/scheduler unit
+// tests) — never asserted here.
 //
 // What IS asserted here is OBSERVABLE, coarse behavior: does a task get
 // armed (a SCHEDULED_TRANSITION_ARM audit event appears), does it fire
 // and land the entity in the expected state, does a state exit cancel it,
 // does a loopback re-arm it without a spurious cancel. Scenarios that
-// need the runtime scan loop to actually pick up a due task use a small
+// need the runtime claim loop to actually pick up a due task use a small
 // Schedule.DelayMs plus generous, bounded polling (the same
 // non-boundary, non-flaky methodology the design doc prescribes for
 // internal/e2e — see its §11 "Time control" note) rather than any exact
@@ -31,14 +31,16 @@
 package scheduledtransition
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda/cyoda-go/e2e/parity"
+	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
 func init() {
@@ -68,17 +70,32 @@ const (
 	eventTransitionMade   = "TRANSITION_MAKE"
 )
 
-// fireTimeout bounds every poll loop in this file. It is sized generously
-// above the worst case a tuned-down scan interval should need (the parity
-// fixtures set CYODA_SCHEDULER_SCAN_INTERVAL=50ms — see each backend's
-// fixture.go) while still tolerating the untuned 1s default plus slow-CI /
-// postgres-subprocess startup overhead, so a real bug (not scheduler
-// cadence) is what trips this timeout.
+// fireTimeout is the slack of every fireWait in this package. It is sized
+// generously above the worst case a tuned-down scan interval should need (the
+// parity fixtures set CYODA_SCHEDULER_SCAN_INTERVAL to 50ms — see
+// fixtureutil.TunedServerEnv) while still tolerating the untuned 1s default
+// plus slow-CI / postgres-subprocess startup overhead, so a real bug (not
+// scheduler cadence) is what trips this timeout.
 const fireTimeout = 15 * time.Second
 
-// pollInterval is the sleep between polls in awaitEntityState /
-// awaitStateMachineEvent.
-const pollInterval = 50 * time.Millisecond
+// fireWait is a wait of slack on fixture's scheduler (parity.AwaitScheduler).
+type fireWait struct {
+	fixture parity.BackendFixture
+	slack   time.Duration
+}
+
+// waitOn is a fireWait of slack on fixture's scheduler.
+func waitOn(fixture parity.BackendFixture, slack time.Duration) fireWait {
+	return fireWait{fixture: fixture, slack: slack}
+}
+
+// await polls check until it reports done, and fails t at the wait's
+// deadline. what names the awaited outcome; check's last describes the state
+// it last saw.
+func (w fireWait) await(t *testing.T, what string, check func() (done bool, last string)) {
+	t.Helper()
+	parity.AwaitScheduler(t, w.fixture, w.slack, what, check)
+}
 
 // setupModelWithWorkflow imports a model from sampleDoc, locks it, and
 // imports the given workflow JSON — the scheduledtransition-package
@@ -100,26 +117,19 @@ func setupModelWithWorkflow(t *testing.T, c *client.Client, modelName string, mo
 }
 
 // awaitEntityState polls GetEntity until Meta.State == wantState, or fails
-// the test once timeout elapses.
-func awaitEntityState(t *testing.T, c *client.Client, id uuid.UUID, wantState string, timeout time.Duration) client.EntityResult {
+// the test at w's deadline.
+func awaitEntityState(t *testing.T, c *client.Client, id uuid.UUID, wantState string, w fireWait) client.EntityResult {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var last client.EntityResult
-	for {
+	w.await(t, fmt.Sprintf("entity %s in state %q", id, wantState), func() (bool, string) {
 		got, err := c.GetEntity(t, id)
 		if err != nil {
 			t.Fatalf("GetEntity: %v", err)
 		}
 		last = got
-		if got.Meta.State == wantState {
-			return got
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for entity %s to reach state %q; last observed state %q",
-				timeout, id, wantState, last.Meta.State)
-		}
-		time.Sleep(pollInterval)
-	}
+		return got.Meta.State == wantState, fmt.Sprintf("state %q", got.Meta.State)
+	})
+	return last
 }
 
 // stateMachineEvents fetches and decodes every StateMachine-typed audit
@@ -160,25 +170,42 @@ func hasStateMachineEvent(events []client.StateMachineAuditEvent, eventType, sta
 	return false
 }
 
+// onlyEventData decodes the data of the single event of eventType.
+func onlyEventData(t *testing.T, events []client.StateMachineAuditEvent, eventType string) map[string]any {
+	t.Helper()
+	var found []client.StateMachineAuditEvent
+	for _, ev := range events {
+		if ev.EventType == eventType {
+			found = append(found, ev)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d %s events, want 1: %+v", len(found), eventType, events)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(found[0].Data, &data); err != nil {
+		t.Fatalf("decode %s data: %v (%s)", eventType, err, found[0].Data)
+	}
+	return data
+}
+
 // awaitStateMachineEvent polls GetAuditEvents until an event matching
 // eventType (and, if state is non-empty, State too) appears, or fails the
-// test once timeout elapses.
-func awaitStateMachineEvent(t *testing.T, c *client.Client, id uuid.UUID, eventType, state string, timeout time.Duration) client.StateMachineAuditEvent {
+// test at w's deadline.
+func awaitStateMachineEvent(t *testing.T, c *client.Client, id uuid.UUID, eventType, state string, w fireWait) client.StateMachineAuditEvent {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
+	var found client.StateMachineAuditEvent
+	w.await(t, fmt.Sprintf("StateMachine event %q (state=%q) on entity %s", eventType, state, id), func() (bool, string) {
 		events := stateMachineEvents(t, c, id)
 		for _, ev := range events {
 			if ev.EventType == eventType && (state == "" || ev.State == state) {
-				return ev
+				found = ev
+				return true, ""
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for StateMachine event %q (state=%q) on entity %s; got events: %+v",
-				timeout, eventType, state, id, events)
-		}
-		time.Sleep(pollInterval)
-	}
+		return false, fmt.Sprintf("events: %+v", events)
+	})
+	return found
 }
 
 // RunScheduledTransition_ArmsOnEntry verifies that an entity landing in a
@@ -215,6 +242,14 @@ func RunScheduledTransition_ArmsOnEntry(t *testing.T, fixture parity.BackendFixt
 	events := stateMachineEvents(t, c, entityID)
 	if !hasStateMachineEvent(events, eventArmed, "OPEN") {
 		t.Errorf("expected a %s audit event for state OPEN after entity creation; got events: %+v", eventArmed, events)
+	}
+	armed := onlyEventData(t, events, eventArmed)
+	if ms, ok := armed["scheduledTime"].(float64); !ok || ms <= 0 {
+		t.Errorf("%s scheduledTime = %v, want Unix milliseconds", eventArmed, armed["scheduledTime"])
+	}
+	delete(armed, "scheduledTime")
+	if want := map[string]any{"eventType": eventArmed, "transition": "AutoClose", "sourceState": "OPEN"}; !reflect.DeepEqual(armed, want) {
+		t.Errorf("%s data = %v, want %v and scheduledTime", eventArmed, armed, want)
 	}
 
 	got, err := c.GetEntity(t, entityID)
@@ -254,11 +289,18 @@ func RunScheduledTransition_FiresOnTime(t *testing.T, fixture parity.BackendFixt
 		t.Fatalf("CreateEntity: %v", err)
 	}
 
-	awaitEntityState(t, c, entityID, "CLOSED", fireTimeout)
+	awaitEntityState(t, c, entityID, "CLOSED", waitOn(fixture, fireTimeout))
 
 	events := stateMachineEvents(t, c, entityID)
 	if !hasStateMachineEvent(events, eventFired, "CLOSED") {
 		t.Errorf("expected a %s audit event with state CLOSED; got events: %+v", eventFired, events)
+	}
+	fired := onlyEventData(t, events, eventFired)
+	if want := map[string]any{"eventType": eventFired, "transition": "AutoClose", "sourceState": "OPEN", "workflowName": "fires-wf"}; !reflect.DeepEqual(fired, want) {
+		t.Errorf("%s data = %v, want %v", eventFired, fired, want)
+	}
+	if task := taskOf(t, c, entityID, "AutoClose"); task != nil {
+		t.Errorf("the fired task is still listed: %+v; a fired task is removed", *task)
 	}
 }
 
@@ -293,7 +335,7 @@ func RunScheduledTransition_DeclineCriterionFalse(t *testing.T, fixture parity.B
 		t.Fatalf("CreateEntity: %v", err)
 	}
 
-	awaitStateMachineEvent(t, c, entityID, eventCriterionNoMatch, "OPEN", fireTimeout)
+	awaitStateMachineEvent(t, c, entityID, eventCriterionNoMatch, "OPEN", waitOn(fixture, fireTimeout))
 
 	got, err := c.GetEntity(t, entityID)
 	if err != nil {
@@ -306,6 +348,9 @@ func RunScheduledTransition_DeclineCriterionFalse(t *testing.T, fixture parity.B
 	events := stateMachineEvents(t, c, entityID)
 	if hasStateMachineEvent(events, eventFired, "") {
 		t.Errorf("expected no %s event on a declined scheduled transition; got events: %+v", eventFired, events)
+	}
+	if task := taskOf(t, c, entityID, "AutoClose"); task != nil {
+		t.Errorf("the declined task is still listed: %+v; a declined task is removed", *task)
 	}
 }
 
@@ -344,7 +389,7 @@ func RunScheduledTransition_NoExpireWhenNilTimeout(t *testing.T, fixture parity.
 	// so arriving "late" to the check must not matter.
 	time.Sleep(500 * time.Millisecond)
 
-	awaitEntityState(t, c, entityID, "CLOSED", fireTimeout)
+	awaitEntityState(t, c, entityID, "CLOSED", waitOn(fixture, fireTimeout))
 
 	events := stateMachineEvents(t, c, entityID)
 	if !hasStateMachineEvent(events, eventFired, "CLOSED") {
@@ -500,7 +545,7 @@ func RunScheduledTransition_ReArmClockReset(t *testing.T, fixture parity.Backend
 	}`, delayMs)
 	setupModelWithWorkflow(t, c, modelName, modelVersion, `{"k":1}`, wf)
 
-	createdAt := time.Now()
+	createdAt := time.Now() // realtime: elapsed wall time of a test wait
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"k":1}`)
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
@@ -511,8 +556,8 @@ func RunScheduledTransition_ReArmClockReset(t *testing.T, fixture parity.Backend
 		t.Fatalf("UpdateEntityData (loopback): %v", err)
 	}
 
-	awaitEntityState(t, c, entityID, "CLOSED", fireTimeout)
-	elapsed := time.Since(createdAt)
+	awaitEntityState(t, c, entityID, "CLOSED", waitOn(fixture, fireTimeout))
+	elapsed := time.Since(createdAt) // realtime: elapsed wall time of a test wait
 	if elapsed < minElapsedForCorrectReArm {
 		t.Errorf("entity fired %s after creation — too soon: expected the loopback to re-arm the task to fire "+
 			"around %s (loopback offset + delay), not the original %dms", elapsed, loopbackOffset+delayMs*time.Millisecond, delayMs)
@@ -559,7 +604,7 @@ func RunScheduledTransition_CascadeAfterFire(t *testing.T, fixture parity.Backen
 		t.Fatalf("CreateEntity: %v", err)
 	}
 
-	awaitEntityState(t, c, entityID, "DONE", fireTimeout)
+	awaitEntityState(t, c, entityID, "DONE", waitOn(fixture, fireTimeout))
 
 	events := stateMachineEvents(t, c, entityID)
 	if !hasStateMachineEvent(events, eventFired, "DONE") {
