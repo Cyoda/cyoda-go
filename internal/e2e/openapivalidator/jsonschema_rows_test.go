@@ -71,6 +71,12 @@ components:
               b: '#/components/schemas/UB'
         mk:
           $ref: '#/components/schemas/Uni2'
+        nomap:
+          oneOf:
+            - $ref: '#/components/schemas/IA'
+            - $ref: '#/components/schemas/IB'
+          discriminator:
+            propertyName: kind
         al:
           oneOf:
             - { type: object, required: [y] }
@@ -104,6 +110,14 @@ components:
       required: [y]
       properties:
         y: { type: integer }
+    IA:
+      type: object
+      properties:
+        kind: { type: string, const: a }
+    IB:
+      type: object
+      properties:
+        kind: { type: string, const: b }
     Uni2:
       oneOf:
         - $ref: '#/components/schemas/UC'
@@ -294,5 +308,32 @@ func TestJSONSchemaRows_PropertyNameRowsPerObject(t *testing.T) {
 	}
 	if got := holderRows(t, `{"arr":[{"abc":1},{"abd":2}]}`, nil); len(got) != 2 {
 		t.Errorf("two objects with a refused property name: want two rows, got %q", got)
+	}
+}
+
+// Equal array indexes spelled differently ("01", "1") are ordered by their
+// spelling, so the rows come out in the same order on every run.
+func TestJSONSchemaRows_OrderIsStable(t *testing.T) {
+	want := []string{
+		`Error at "/m/001": got string, want integer`,
+		`Error at "/m/01": got string, want integer`,
+		`Error at "/m/1": got string, want integer`,
+	}
+	for range 20 {
+		if got := holderRows(t, `{"m":{"01":"s","1":"s","001":"s"}}`, nil); !slices.Equal(got, want) {
+			t.Fatalf("\n got  %q\n want %q", got, want)
+		}
+	}
+}
+
+// A discriminator without a mapping names no keys, so no key row is
+// written: the members' own rows say why the value is refused.
+func TestJSONSchemaRows_DiscriminatorWithoutMapping(t *testing.T) {
+	want := []string{
+		`Error at "/nomap/kind": value must be 'a'`,
+		`Error at "/nomap/kind": value must be 'b'`,
+	}
+	if got := holderRows(t, `{"nomap":{"kind":"IA"}}`, nil); !slices.Equal(got, want) {
+		t.Errorf("\n got  %q\n want %q", got, want)
 	}
 }
