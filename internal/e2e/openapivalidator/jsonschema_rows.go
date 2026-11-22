@@ -20,7 +20,7 @@ import (
 // validator (santhosh-tekuri/jsonschema) unless the schema holds a component
 // reference and reaches no JSON Schema 2020-12 keyword, or the library cannot
 // compile it for another reason than an unresolved reference (kin
-// openapi3/schema_jsonschema_validator.go:400-424). The library returns one
+// openapi3/schema_jsonschema_validator.go:400-421). The library returns one
 // error for the whole value. kin converts its tree of errors into a tree of
 // SchemaErrors: each node carries the JSON pointer of the failing value and
 // the failing keyword, each leaf the library's error. A node that wraps one
@@ -36,7 +36,8 @@ import (
 // The library checks a property name as a value of its own and gives the
 // error no reliable location (v6.0.3 validator.go:296 stores its location
 // without copying it), so a row below a propertyNames failure says it is about
-// a property name and gives no pointer.
+// a property name and gives no pointer. Such rows are told apart per failing
+// property name, so two objects' failures are two rows.
 //
 // Below a oneOf or anyOf, only the members the value can be are followed.
 // Whether a member refuses the value is judged from the member's own errors,
@@ -96,22 +97,28 @@ func boolInt(b bool) int {
 var rowPrinter = message.NewPrinter(language.English)
 
 type rowBuilder struct {
-	rows         []jsonSchemaRow
-	seen         map[string]bool
-	propertyName bool // below a propertyNames failure
+	rows []jsonSchemaRow
+	seen map[string]bool
+	// propertyName is the propertyNames failure the current node is below,
+	// or nil.
+	propertyName *openapi3.SchemaError
 }
 
 func (b *rowBuilder) add(r jsonSchemaRow) {
-	if !b.seen[r.Error()] {
-		b.seen[r.Error()] = true
+	key := r.Error()
+	if r.propertyName {
+		key = fmt.Sprintf("%p %s", b.propertyName, key)
+	}
+	if !b.seen[key] {
+		b.seen[key] = true
 		b.rows = append(b.rows, r)
 	}
 }
 
 func (b *rowBuilder) node(se *openapi3.SchemaError) {
-	if se.SchemaField == "propertyNames" && !b.propertyName {
-		b.propertyName = true
-		defer func() { b.propertyName = false }()
+	if se.SchemaField == "propertyNames" && b.propertyName == nil {
+		b.propertyName = se
+		defer func() { b.propertyName = nil }()
 	}
 	kids := children(se)
 	if len(kids) == 0 {
@@ -136,7 +143,7 @@ func (b *rowBuilder) leaf(se *openapi3.SchemaError) {
 	if errors.As(se, &ve) {
 		msg = ve.ErrorKind.LocalizedString(rowPrinter)
 	}
-	if b.propertyName {
+	if b.propertyName != nil {
 		b.add(jsonSchemaRow{message: msg, propertyName: true})
 		return
 	}
@@ -161,7 +168,7 @@ func (b *rowBuilder) members(se *openapi3.SchemaError, kids []*openapi3.SchemaEr
 	}
 	d := se.Schema.Discriminator
 	keyed := slices.DeleteFunc(slices.Clone(fits), func(k *openapi3.SchemaError) bool {
-		return refusesKey(k, at, d.PropertyName)
+		return !isUnion(k) && refusesKey(k, at, d.PropertyName)
 	})
 	if len(keyed) > 0 {
 		return keyed
@@ -170,8 +177,8 @@ func (b *rowBuilder) members(se *openapi3.SchemaError, kids []*openapi3.SchemaEr
 	key, present := obj[d.PropertyName]
 	if s, ok := key.(string); ok {
 		if _, mapped := d.Mapping[s]; mapped {
-			// A mapped key is not the defect. A node that wraps the union
-			// (a failing $ref) gets here too, with the union as its member.
+			// A mapped key is not the defect, even when the member it
+			// maps to refuses it: that member's rows say why.
 			return fits
 		}
 	}

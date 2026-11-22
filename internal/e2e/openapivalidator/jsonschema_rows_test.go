@@ -58,6 +58,64 @@ components:
                 - { type: object, required: [x] }
         u:
           $ref: '#/components/schemas/K'
+        viaref:
+          $ref: '#/components/schemas/Uni'
+        inline:
+          oneOf:
+            - $ref: '#/components/schemas/UA'
+            - $ref: '#/components/schemas/UB'
+          discriminator:
+            propertyName: kind
+            mapping:
+              a: '#/components/schemas/UA'
+              b: '#/components/schemas/UB'
+        mk:
+          $ref: '#/components/schemas/Uni2'
+        al:
+          oneOf:
+            - { type: object, required: [y] }
+            - allOf:
+                - oneOf:
+                    - { type: string }
+                    - { type: object, required: [x] }
+                - { type: object, required: [q] }
+        arr:
+          type: array
+          items:
+            type: object
+            propertyNames: { maxLength: 2 }
+            additionalProperties: { type: integer }
+    Uni:
+      oneOf:
+        - $ref: '#/components/schemas/UA'
+        - $ref: '#/components/schemas/UB'
+      discriminator:
+        propertyName: kind
+        mapping:
+          a: '#/components/schemas/UA'
+          b: '#/components/schemas/UB'
+    UA:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string, const: a }
+    UB:
+      type: object
+      required: [y]
+      properties:
+        y: { type: integer }
+    Uni2:
+      oneOf:
+        - $ref: '#/components/schemas/UC'
+      discriminator:
+        propertyName: kind
+        mapping:
+          c: '#/components/schemas/UC'
+    UC:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string, const: x }
     K:
       type: object
       required: [kind]
@@ -186,5 +244,55 @@ func TestJSONSchemaRows_PropertyNameRow(t *testing.T) {
 	want := []string{`Error at a property name: 'Bad' does not match pattern '^[a-z]+$'`}
 	if got := holderRows(t, `{"Bad":1}`, nil); !slices.Equal(got, want) {
 		t.Errorf("\n got  %q\n want %q", got, want)
+	}
+}
+
+// A union below a wrapper (a $ref) is judged by its own members: the wrapper
+// does not refuse the key because one member does. B takes any key, so its
+// defect is the row, through a $ref and inline alike.
+func TestJSONSchemaRows_UnionBelowAWrapperJudgedByItsMembers(t *testing.T) {
+	want := []string{
+		`Error at "/inline/y": got string, want integer`,
+		`Error at "/viaref/y": got string, want integer`,
+	}
+	if got := holderRows(t, `{"viaref":{"kind":"z","y":"s"},"inline":{"kind":"z","y":"s"}}`, nil); !slices.Equal(got, want) {
+		t.Errorf("\n got  %q\n want %q", got, want)
+	}
+}
+
+// A mapped key is never reported as unmapped: when the member it maps to
+// refuses it, the member's own row says why.
+func TestJSONSchemaRows_MappedKeyFollowsItsMember(t *testing.T) {
+	want := []string{`Error at "/mk/kind": value must be 'x'`}
+	if got := holderRows(t, `{"mk":{"kind":"c"}}`, nil); !slices.Equal(got, want) {
+		t.Errorf("\n got  %q\n want %q", got, want)
+	}
+}
+
+// A member holding a union inside an allOf is not dropped for one branch of
+// that union.
+func TestJSONSchemaRows_UnionInsideAMemberIgnoredForItsKind(t *testing.T) {
+	want := []string{
+		`Error at "/al": missing property 'x'`,
+		`Error at "/al": missing property 'y'`,
+	}
+	if got := holderRows(t, `{"al":{"q":1}}`, nil); !slices.Equal(got, want) {
+		t.Errorf("\n got  %q\n want %q", got, want)
+	}
+}
+
+// A property-name row covers only the failure below its propertyNames: the
+// next object's defect keeps its pointer. Property-name rows come last, and
+// two objects' failures are two rows.
+func TestJSONSchemaRows_PropertyNameRowsPerObject(t *testing.T) {
+	want := []string{
+		`Error at "/arr/1/n": got string, want integer`,
+		`Error at a property name: maxLength: got 3, want 2`,
+	}
+	if got := holderRows(t, `{"arr":[{"abc":1},{"n":"s"}]}`, nil); !slices.Equal(got, want) {
+		t.Errorf("\n got  %q\n want %q", got, want)
+	}
+	if got := holderRows(t, `{"arr":[{"abc":1},{"abd":2}]}`, nil); len(got) != 2 {
+		t.Errorf("two objects with a refused property name: want two rows, got %q", got)
 	}
 }
