@@ -970,6 +970,9 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	attributed, executor := spi.AttributionFor(ctx)
 	current.Meta.Version = nextVersion
 	current.Meta.ChangeType = "DELETED"
+	// The tombstone is not a transition's result: drop the name carried over
+	// from the previous version's _meta.
+	current.Meta.TransitionForLatestSave = ""
 	current.Meta.ChangeUser = attributed.ID
 	current.Meta.ChangeUserKind = attributed.Kind
 	current.Meta.ChangeExecutor = executor
@@ -1454,6 +1457,7 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 			AttributedKind: spi.PrincipalKind(meta.ChangeUserKind),
 			Executor:       spi.Principal{ID: meta.ChangeExecutorID, Kind: spi.PrincipalKind(meta.ChangeExecutorKind)},
 			TransactionID:  meta.TransactionID,
+			Transition:     meta.Transition,
 			Deleted:        meta.ChangeType == "DELETED",
 		})
 	}
