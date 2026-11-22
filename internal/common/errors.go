@@ -436,7 +436,7 @@ func writeProblem(w http.ResponseWriter, r *http.Request, appErr *AppError, tick
 	pd.Detail = clientText(appErr, pd.Ticket, getErrorResponseMode() == "verbose")
 
 	// A copy: the error, and its Props map, may be shared.
-	pd.Props = make(map[string]any, len(appErr.Props)+2)
+	pd.Props = make(map[string]any, len(appErr.Props))
 	for k, v := range appErr.Props {
 		pd.Props[k] = v
 	}

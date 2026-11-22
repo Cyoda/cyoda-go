@@ -309,7 +309,8 @@ func (r *Registry) reapOrphans() {
 	if !r.usable() {
 		return
 	}
-	lock, err := os.OpenFile(filepath.Join(r.dir, reaperLock), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	// Read-only: the lock file is only flocked, never written.
+	lock, err := os.OpenFile(filepath.Join(r.dir, reaperLock), os.O_CREATE|os.O_RDONLY|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		r.logf("childproc: cannot reap orphans in %s: %v", r.dir, err)
 		return

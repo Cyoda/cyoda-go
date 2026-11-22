@@ -1346,6 +1346,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   breaking change. See `cyoda help openapi` and
   `docs/adr/0005-openapi-client-generation.md`.
 
+- **`TechnicalUserCredentialsDto.grant_type` gains the value
+  `urn:ietf:params:oauth:grant-type:token-exchange`**, which `POST /clients`
+  and `PUT /clients/{clientId}/secret` answer for an on-behalf-of client. A
+  value added to a response `enum` is a breaking change: a client generated
+  from the v0.8.4 document cannot read it. Regenerate the client.
+
 - **Workflow import refuses a processor `type` other than `externalized`
   (`400 VALIDATION_FAILED`), `internalized` included, and stores an omitted or
   empty `type` as `externalized`.** Before, any value was imported and stored
@@ -2098,8 +2104,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `cyoda help audit`.
 
 - **`POST /clients?onBehalfOf=true` creates an on-behalf-of client; client
-  DTOs carry `onBehalfOf`, and the credentials DTO's `grant_type` is the
-  token-exchange URN for such a client.**
+  DTOs carry `onBehalfOf`.**
 
 ### Fixed
 

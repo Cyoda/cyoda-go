@@ -1503,3 +1503,18 @@ error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transac
 error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the `WORKFLOW_NOT_FOUND` enum value from the `allOf[subschema #2]/eventType` response property for the response status `200` [response-property-enum-value-removed]. 
 error at api/openapi.yaml, in API GET /audit/entity/{entityId}/workflow/{transactionId}/finished removed the `WORKFLOW_SKIP` enum value from the `allOf[subschema #2]/eventType` response property for the response status `200` [response-property-enum-value-removed]. 
 #
+
+# Release PR v0.9.0 (release/v0.9.0 → main): four changes the diff from v0.8.4 reports and no
+# entry above matches.
+# - grant_type gains the token-exchange value an on-behalf-of client is created with. Adding a
+#   value to a response enum is breaking (cyoda help openapi); v0.9.0 declares it under
+#   CHANGELOG [0.9.0] ### Breaking. It landed before the severity levels made the rule an ERR,
+#   so no milestone PR recorded it.
+# - A workflow and transition criterion is a $ref to QueryConditionDto, a base with a
+#   discriminator mapping over the same five forms, instead of an inline oneOf: the accepted
+#   wire shapes are unchanged. The milestone PRs accepted this against their own bases, in
+#   wording the cumulative diff does not repeat.
+error at api/openapi.yaml, in API POST /clients added the new `urn:ietf:params:oauth:grant-type:token-exchange` enum value to the `grant_type` response property for the response status `200` [response-property-enum-value-added]. Adding new enum values to a response can be unexpected for clients; use x-extensible-enum instead.
+error at api/openapi.yaml, in API PUT /clients/{clientId}/secret added the new `urn:ietf:params:oauth:grant-type:token-exchange` enum value to the `grant_type` response property for the response status `200` [response-property-enum-value-added]. Adding new enum values to a response can be unexpected for clients; use x-extensible-enum instead.
+error at api/openapi.yaml, in API POST /model/{entityName}/{modelVersion}/workflow/import removed `#/components/schemas/ArrayConditionDto, #/components/schemas/FunctionConditionDto, #/components/schemas/GroupConditionDto, #/components/schemas/LifecycleConditionDto, #/components/schemas/SimpleConditionDto` from the `workflows/items/criterion` request property `oneOf` list [request-property-one-of-removed]. 
+error at api/openapi.yaml, in API POST /model/{entityName}/{modelVersion}/workflow/import removed `#/components/schemas/ArrayConditionDto, #/components/schemas/FunctionConditionDto, #/components/schemas/GroupConditionDto, #/components/schemas/LifecycleConditionDto, #/components/schemas/SimpleConditionDto` from the `workflows/items/states/additionalProperties/transitions/items/criterion` request property `oneOf` list [request-property-one-of-removed]. 

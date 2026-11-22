@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 
 	spi "github.com/cyoda/cyoda-go-spi"
 	"github.com/cyoda/cyoda-go/internal/common"
@@ -53,9 +54,7 @@ func scheduledTransitions(wfs []spi.WorkflowDefinition) func(sourceState, transi
 //
 // tenant is the request's tenant, the one the workflow save used.
 func (h *Handler) removeUnscheduledTasks(ctx context.Context, tenant spi.TenantID, name string, version int, wfs []spi.WorkflowDefinition) *common.AppError {
-	all := make([]spi.WorkflowDefinition, 0, len(wfs)+len(h.engine.defaultWorkflows))
-	all = append(append(all, wfs...), h.engine.defaultWorkflows...)
-	keep := scheduledTransitions(all)
+	keep := scheduledTransitions(slices.Concat(wfs, h.engine.defaultWorkflows))
 
 	err := common.RetryOnTaskConflict(ctx, true, func() error {
 		return h.removeUnscheduledTasksOwned(ctx, tenant, name, version, keep)
