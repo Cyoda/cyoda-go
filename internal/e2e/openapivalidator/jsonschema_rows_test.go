@@ -311,16 +311,23 @@ func TestJSONSchemaRows_PropertyNameRowsPerObject(t *testing.T) {
 	}
 }
 
-// Equal array indexes spelled differently ("01", "1") are ordered by their
-// spelling, so the rows come out in the same order on every run.
+// Integer tokens come before other tokens and are ordered by value, then by
+// spelling ("01" before "1"); other tokens by text. The rows come out in the
+// same order on every run.
 func TestJSONSchemaRows_OrderIsStable(t *testing.T) {
 	want := []string{
 		`Error at "/m/001": got string, want integer`,
 		`Error at "/m/01": got string, want integer`,
 		`Error at "/m/1": got string, want integer`,
+		`Error at "/m/2": got string, want integer`,
+		`Error at "/m/9": got string, want integer`,
+		`Error at "/m/10": got string, want integer`,
+		`Error at "/m/1a": got string, want integer`,
+		`Error at "/m/1b": got string, want integer`,
 	}
-	for range 20 {
-		if got := holderRows(t, `{"m":{"01":"s","1":"s","001":"s"}}`, nil); !slices.Equal(got, want) {
+	for range 50 {
+		got := holderRows(t, `{"m":{"9":"s","10":"s","1a":"s","2":"s","1b":"s","01":"s","1":"s","001":"s"}}`, nil)
+		if !slices.Equal(got, want) {
 			t.Fatalf("\n got  %q\n want %q", got, want)
 		}
 	}

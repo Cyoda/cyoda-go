@@ -46,11 +46,14 @@ import (
 //   - a member that refuses the kind of the value (an object for null, say)
 //     is left out, unless every member does;
 //   - under a discriminator, a member that refuses the value's key is left
-//     out; when every member does and the key is absent or not one of the
-//     mapping's keys, the key is the defect, and one row says so.
+//     out; when every member does, the discriminator has a mapping, and the
+//     key is absent or not one of the mapping's keys, the key is the defect,
+//     and one row says so.
 //
-// The rows are sorted by JSON pointer, a pointer before those below it and
-// array indexes in numeric order, then by message, property-name rows last. A
+// The rows are sorted by JSON pointer, a pointer before those below it, then
+// by message, property-name rows last. Pointers compare token by token: an
+// integer token before any other, integers by value and then spelling, other
+// tokens by text. A
 // row whose text equals another's is left out, except a property-name row of
 // another failing property name.
 func jsonSchemaRows(err error) ([]error, bool) {
@@ -138,12 +141,12 @@ func isUnion(se *openapi3.SchemaError) bool {
 	return se.SchemaField == "oneOf" || se.SchemaField == "anyOf"
 }
 
+// leaf adds the row of a leaf of kin's tree. kin records the library's error
+// on every node of the tree (withCause), and a leaf unwraps to it.
 func (b *rowBuilder) leaf(se *openapi3.SchemaError) {
-	msg := se.Reason
 	var ve *jsonschema.ValidationError
-	if errors.As(se, &ve) {
-		msg = ve.ErrorKind.LocalizedString(rowPrinter)
-	}
+	errors.As(se, &ve)
+	msg := ve.ErrorKind.LocalizedString(rowPrinter)
 	if b.propertyName != nil {
 		b.add(jsonSchemaRow{message: msg, propertyName: true})
 		return
@@ -228,18 +231,16 @@ func refusesKey(k *openapi3.SchemaError, at, property string) bool {
 	})
 }
 
-// children returns the SchemaErrors a node of kin's tree holds as its causes.
+// children returns the SchemaErrors a node of kin's tree holds as its
+// causes; kin builds each cause as a SchemaError.
 func children(se *openapi3.SchemaError) []*openapi3.SchemaError {
 	var multi openapi3.MultiError
 	if !errors.As(se.Origin, &multi) {
 		return nil
 	}
-	out := make([]*openapi3.SchemaError, 0, len(multi))
-	for _, e := range multi {
-		var k *openapi3.SchemaError
-		if errors.As(e, &k) {
-			out = append(out, k)
-		}
+	out := make([]*openapi3.SchemaError, len(multi))
+	for i, e := range multi {
+		out[i] = e.(*openapi3.SchemaError)
 	}
 	return out
 }
@@ -256,14 +257,18 @@ func ownLeaf(se *openapi3.SchemaError, f func(*openapi3.SchemaError) bool) bool 
 	})
 }
 
-// comparePointers orders JSON pointers token by token, comparing two array
-// indexes as numbers first and then, if equal, as text.
+// comparePointers orders JSON pointers token by token: an integer token
+// before any other, two integers by value and then by spelling, other tokens
+// by text; a pointer before the pointers below it.
 func comparePointers(x, y string) int {
 	xs, ys := strings.Split(x, "/"), strings.Split(y, "/")
 	for i := 0; i < len(xs) && i < len(ys); i++ {
 		xn, xerr := strconv.Atoi(xs[i])
 		yn, yerr := strconv.Atoi(ys[i])
-		if xerr == nil && yerr == nil {
+		if c := cmp.Compare(boolInt(xerr != nil), boolInt(yerr != nil)); c != 0 {
+			return c
+		}
+		if xerr == nil {
 			if c := cmp.Compare(xn, yn); c != 0 {
 				return c
 			}

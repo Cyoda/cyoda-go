@@ -135,7 +135,8 @@ decision 4 to the forms of Rule 1; it does not change that decision.
   base, is refused when the view is built. That validator returns one error for
   the whole value; the e2e validator writes it as one row per defect, at the
   failing value's JSON pointer, leaving out the union members that refuse the
-  value's kind or key, and as one row for an absent or unmapped key. The
+  value's kind or key, and as one row for an absent key or one the
+  discriminator's mapping lacks. The
   library gives a property name's error no reliable location, so its row names
   no pointer. Each untyped schema whose `not` does not exclude `null` is given
   every JSON type, `null` included: for a 3.1 document kin ignores `nullable`
