@@ -21,7 +21,7 @@ copy is a field the backend must then protect against its own request paths.
 
 - Every change-history entry carries the transition its request named.
 - The value is right on every door that writes a version — create, update
-  with a named transition (HTTP PUT/PATCH, gRPC update, gRPC
+  with a named transition (HTTP PUT/PATCH, gRPC update, gRPC patch, gRPC
   `EntityTransitionRequest`), loopback update, collection create and collection update (HTTP and
   gRPC), scheduled firing, delete — and on every version a cascade commits,
   including the version a `COMMIT_BEFORE_DISPATCH` segment boundary commits.
@@ -78,32 +78,45 @@ Builder's calls:
      criteria see in `transitionForLatestSave` (alias `previousTransition`)
      depends on the door: on a named update (HTTP, gRPC update, gRPC
      transition, gRPC collection item) the request's own transition name; on
-     a create, a loopback update, and every HTTP collection create or update
-     item, an empty string; on a scheduled firing, the name the previous
+     a create, a loopback update, every collection create item (HTTP and
+     gRPC) and every HTTP collection update item, an empty string; on a scheduled firing, the name the previous
      request saved.
    - After: for the whole run, on every door, the name of the version the
      request started from, as its transaction sees it (its own earlier writes
      included); on a create, none. A `COMMIT_BEFORE_DISPATCH` boundary does
      not change it: where a processor's dispatch mode sits never changes what
-     a criterion sees. The request's own name is written only on the versions
-     cyoda commits for the request: the version a segment boundary flushes,
-     and the final save. A read of the entity during the run returns the
-     stored version, whatever it carries.
-   - Reason: the help tells applications to select workflows on fields the
-     caller cannot rewrite, and the request's own transition name is chosen by
-     the caller. The rule also matches what `GET /entity/{entityId}/transitions`
-     evaluates (the stored version) and the alias `previousTransition`.
+     a criterion sees. Every save cyoda makes for the request — the save
+     before a callout, the boundary flush, the `CompareAndSave` that opens
+     TX_post, the final save — writes the request's own name; only what the
+     run evaluates sees the start version's value. So a read of the entity
+     during the run, joined or not, sees one value: the request's name once
+     cyoda has saved the entity in the transaction, the stored version's
+     before.
+   - Reason: no request chooses, through the transition it names, which
+     workflow definition and which guards apply to itself (the help's advice
+     on workflow selection); the value is the same on every door; and it is
+     what `GET /entity/{entityId}/transitions` evaluates (the stored version)
+     and what the alias `previousTransition` says. The previous request's
+     name is also caller-chosen, so selection on it is selection on stored
+     data, like any other stored field.
+   - Migration (CHANGELOG `### Breaking`): a lifecycle criterion
+     `transitionForLatestSave == "X"` on an automated transition fires today
+     only in the cascade of a request that names X; after the change it fires
+     in the cascade of any request that follows a version saved by X. There is
+     no field for the current request's name; route on the state instead.
 
 Defects fixed in this change (each: today → after):
 
 7. **Scheduled firing.** Today: the version a scheduled firing makes keeps
    the transition name of the request before it (the firing restamps actor and
    executor only, `fire_scheduled.go`), so an entity read shows that stale
-   name in `meta.transitionForLatestSave`. After: the version records the
-   scheduled transition's name.
+   name in `meta.transitionForLatestSave`; so does a version the firing's
+   `COMMIT_BEFORE_DISPATCH` boundary flushes. After: every version the
+   firing saves records the scheduled transition's name.
 8. **`COMMIT_BEFORE_DISPATCH` boundary version.** Today: on a create, a
-   loopback update, and every item of an HTTP collection create or update
-   (also an item that names a transition), the version the boundary flushes
+   loopback update, every item of a collection create (HTTP and gRPC), and
+   every item of an HTTP collection update (also an item that names a
+   transition), the version the boundary flushes
    (`flushAndCommitSegment`, `es.Save` in TX_pre) has an empty name, and the
    final version has the request's name (`loopback` or the item's
    transition). After: both carry the request's name.
@@ -118,8 +131,10 @@ Defects fixed in this change (each: today → after):
    returns the row without the meta fields: `GetVersionMetadata` and
    `GetVersionByTransaction` (empty attribution), and `scanEntityFromRow` /
    `scanVersionEntity` (empty tenant, state, transition, attribution), which
-   serve `Get`, search, grouped stats and the transaction overlay. Postgres
-   fails the read. After: every sqlite read fails on unparseable meta.
+   serve `Get`, search, grouped stats and the transaction overlay. A NULL or empty meta is
+   skipped the same way. Postgres fails the read. After: every sqlite read
+   fails on unparseable, NULL or empty meta (every writer stores meta,
+   tombstones included).
 11. **Help on `transitionForLatestSave`.** Today: `crud` says a create stores
    the literal `"workflow"` (it stores `loopback`); the `crud` example shows
    `"UPDATE"`, which reads as a change type rather than a transition name; `search` lists the field among
@@ -163,11 +178,12 @@ No migration; each already keeps the name per version.
 ### Engine and service
 
 The request's name is known on every door: the named transition, `loopback`,
-or the scheduled task's transition. The versions cyoda commits for the request
-carry that name: the boundary flush in `flushAndCommitSegment` (TX_pre), the
-`CompareAndSave` that opens TX_post, the service's final saves, and the
-scheduled firing's final `CompareAndSave`. The save before a callout and
-everything evaluated during the run carry the value of decision 6.
+or the scheduled task's transition. Every save cyoda makes for the request
+writes that name: the save before a callout (`saveAnchorBeforeCallout`), the
+boundary flush in `flushAndCommitSegment` (TX_pre), the `CompareAndSave` that
+opens TX_post, the service's final saves, and the scheduled firing's final
+`CompareAndSave`. What the run evaluates (workflow selection, criteria) sees
+the start version's value (decision 6).
 
 ### Wire
 
@@ -225,15 +241,19 @@ Waiver: the error cells are unchanged by this change and are not re-tested.
   cycle; an application that needs that walks the history further itself.)
 
   Conditions the application follows:
+  - The approve transition is `manual: true`, and the check is a function
+    criterion of that transition (not a processor, not elsewhere), with
+    `attachEntity` not set to `false`.
   - The approval is a single-entity request from the backend naming the
     approve transition: never an item of a collection update (step 2's OBO
     client allow-list already excludes compute-node write-backs). So the
     version the approval starts from is the newest committed version.
   - Nothing writes the entity between the submit and the approval. A write in
     between makes the check refuse; the entity is submitted again.
-  - The approval request carries no data change: `PATCH` with `{}` on the
-    named-transition route, or gRPC `EntityTransitionRequest`. The check
-    enforces it (below).
+  - The approval request carries no data change: HTTP `PATCH` with `{}` and
+    `If-Match` (the submit entry's `transactionId`, or `*`) on the
+    named-transition route, gRPC `EntityPatchRequest` with `{}`, or gRPC
+    `EntityTransitionRequest`. The check enforces it (below).
 
   The check, in a criterion of the approve transition, with the compute
   node's own client and without `pointInTime`:
@@ -245,7 +265,8 @@ Waiver: the error cells are unchanged by this change and are not re-tested.
   3. Read the version that entry's transaction committed
      (`GET /entity/{entityId}?transactionId=<its transactionId>`) and require
      its data to equal the data in the criterion's payload (as JSON values).
-  4. Refuse in every other case, also when a read fails. On a backend that
+  4. Refuse in every other case: also when a read fails, and when the payload
+     carries no data. On a backend that
      does not record `transition` yet, the field is absent and the check
      refuses.
 
@@ -254,12 +275,20 @@ Waiver: the error cells are unchanged by this change and are not re-tested.
   exactly the entry it checked; that entry is named `submit` only when the
   last request of its transaction named it; its `user` is that transaction's
   attributed principal, stamped by cyoda; and step 3 rules out the approval
-  rewriting the data. A scheduled transition named like the submit is recorded
-  as a submit by the principal that armed it; the help says so.
+  rewriting the data. The help also says: a scheduled transition named like
+  the submit is recorded as a submit by the principal that armed it (the last
+  writer that re-armed it); a compute node's write-back in alice's
+  transaction that names the submit is recorded as alice's submit.
 
-  *WHAT CYODA RECORDS* lists `transition`; "the same three fields" becomes
-  four here, in `crud` and in `docs/access-to-the-cyoda-api.html`.
+  The integration help's intro to the recipe ("In the approval processor or
+  criterion") narrows to the approve transition's criterion.
+
+  *WHAT CYODA RECORDS* lists `transition` ("the same three fields" becomes
+  four). `crud`'s `/changes` field bullets and example gain it.
 - `docs/access-to-the-cyoda-api.html`: the same recipe.
+- `docs/ARCHITECTURE.md`: the entity-history bullet lists `transition`; the
+  anchor-save and boundary-flush description states which name each save
+  writes and what the run evaluates (decision 6).
 
 ## Coverage
 
@@ -272,14 +301,16 @@ Waiver: the error cells are unchanged by this change and are not re-tested.
 | scheduled firing → scheduled name, on history and entity read | — | yes | extend `attribution` scheduled scenario | — | — |
 | `COMMIT_BEFORE_DISPATCH` boundary version carries the request's name | — | yes | extend `history_reads` boundary scenario | — | — |
 | multi-node: a forwarded request's versions carry its name | — | — | extend `multinode/attribution` | — | — |
-| criterion on `transitionForLatestSave` sees the previous save's value: named update, loopback update, create (none), scheduled firing | engine | yes | yes | — | — |
+| criterion on `transitionForLatestSave` sees the start version's value: named update, loopback update, create (none), scheduled firing | engine | yes | yes | — | — |
+| same, HTTP collection create and update items (named and loopback) | — | yes | — | — | — |
+| same, gRPC update, patch, `EntityTransitionRequest`, collection create and update | — | — | — | yes | — |
+| a joined read of the entity during the run sees the request's name after the first save in the transaction | — | yes | — | — | — |
 | workflow selection on `transitionForLatestSave` sees the previous save's value | engine | yes | — | — | — |
 | criterion after a `COMMIT_BEFORE_DISPATCH` boundary still sees the start version's value | engine | yes | — | — | — |
 | gRPC collection update, named and loopback items | — | — | — | yes | — |
-| sqlite unparseable meta fails `Get` and search | sqlite | — | — | — | — |
+| sqlite unparseable / NULL meta fails `Get`, search, grouped stats | sqlite | — | — | — | — |
 | two saves of one entity in one transaction → last wins | — | — | — | — | yes |
-| approval recipe: approve passes; same user refused; write between refused; approval with a data change refused | — | yes (compute-node test double) | — | — | — |
-| sqlite unparseable meta fails the read | sqlite | — | — | — | — |
+| approval recipe: approve passes (PATCH `{}` with If-Match; gRPC transition); same user refused; write between refused; approval with a data change refused; payload without data refused | — | yes (compute-node test double) | — | — | — |
 
 ## Changelog
 
