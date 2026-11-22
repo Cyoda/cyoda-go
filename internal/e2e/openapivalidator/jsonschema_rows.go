@@ -41,21 +41,21 @@ import (
 //
 // Below a oneOf or anyOf, only the members the value can be are followed.
 // Whether a member refuses the value is judged from the member's own errors,
-// not those of a union inside it, and a member that is a union is judged by
-// its own branches:
+// not those of a union or a propertyNames inside it, and a member that is a
+// union is judged by its own branches:
 //   - a member that refuses the kind of the value (an object for null, say)
 //     is left out, unless every member does;
 //   - under a discriminator, a member that refuses the value's key is left
-//     out; when every member does, the discriminator has a mapping, and the
-//     key is absent or not one of the mapping's keys, the key is the defect,
-//     and one row says so.
+//     out, unless every member does. Then, when the discriminator has a
+//     mapping and the key is absent or not one of its keys, the key is the
+//     defect and one row says so; otherwise every member is followed.
 //
 // The rows are sorted by JSON pointer, a pointer before those below it, then
-// by message, property-name rows last. Pointers compare token by token: an
-// integer token before any other, integers by value and then spelling, other
-// tokens by text. A
-// row whose text equals another's is left out, except a property-name row of
-// another failing property name.
+// by message, property-name rows last. Pointers compare token by token: a
+// token strconv.Atoi accepts before any other, two such by value and then by
+// spelling, other tokens by text. A row whose text equals another's is left
+// out, except a property-name row of another failing property name. The
+// extra properties an additionalProperties row names are sorted.
 func jsonSchemaRows(err error) ([]error, bool) {
 	se, ok := err.(*openapi3.SchemaError)
 	if !ok {
@@ -146,7 +146,11 @@ func isUnion(se *openapi3.SchemaError) bool {
 func (b *rowBuilder) leaf(se *openapi3.SchemaError) {
 	var ve *jsonschema.ValidationError
 	errors.As(se, &ve)
-	msg := ve.ErrorKind.LocalizedString(rowPrinter)
+	k := ve.ErrorKind
+	if extra, ok := k.(*kind.AdditionalProperties); ok { // the library lists them in map order
+		k = &kind.AdditionalProperties{Properties: slices.Sorted(slices.Values(extra.Properties))}
+	}
+	msg := k.LocalizedString(rowPrinter)
 	if b.propertyName != nil {
 		b.add(jsonSchemaRow{message: msg, propertyName: true})
 		return
@@ -246,8 +250,11 @@ func children(se *openapi3.SchemaError) []*openapi3.SchemaError {
 }
 
 // ownLeaf reports whether f holds for a leaf of the member error se, not
-// counting the leaves below a union inside the member.
+// counting the leaves below a union or a propertyNames inside the member.
 func ownLeaf(se *openapi3.SchemaError, f func(*openapi3.SchemaError) bool) bool {
+	if se.SchemaField == "propertyNames" { // a property name, checked as a value of its own
+		return false
+	}
 	kids := children(se)
 	if len(kids) == 0 {
 		return f(se)

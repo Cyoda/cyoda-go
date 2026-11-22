@@ -14,6 +14,18 @@ import (
 const rowsFixtureYAML = `openapi: 3.1.0
 info: { title: rows fixture, version: "1" }
 paths:
+  /root:
+    get:
+      operationId: getRoot
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { type: object, required: [y] }
+                  - { type: object, propertyNames: { type: integer } }
   /holder:
     get:
       operationId: getHolder
@@ -71,6 +83,16 @@ components:
               b: '#/components/schemas/UB'
         mk:
           $ref: '#/components/schemas/Uni2'
+        pp:
+          type: object
+          patternProperties:
+            "^p":
+              oneOf:
+                - { type: string }
+                - { type: object, required: [x] }
+        closed:
+          type: object
+          additionalProperties: false
         nomap:
           oneOf:
             - $ref: '#/components/schemas/IA'
@@ -342,5 +364,44 @@ func TestJSONSchemaRows_DiscriminatorWithoutMapping(t *testing.T) {
 	}
 	if got := holderRows(t, `{"nomap":{"kind":"IA"}}`, nil); !slices.Equal(got, want) {
 		t.Errorf("\n got  %q\n want %q", got, want)
+	}
+}
+
+// A member's property-name failure does not count as the member refusing the
+// value's kind, even for a union at the value's root, where its pointer ("")
+// equals the union's.
+func TestJSONSchemaRows_PropertyNameFailureKeepsItsMember(t *testing.T) {
+	v := newSpecValidator(t, rowsFixtureYAML)
+	req, _ := http.NewRequest("GET", "http://x/root", nil)
+	var got []string
+	for _, m := range v.Validate(context.Background(), req, mkResp(200, "application/json", `{"k":1}`)) {
+		got = append(got, m.Reason)
+	}
+	want := []string{
+		`Error at "": missing property 'y'`,
+		`Error at a property name: got string, want integer`,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("\n got  %q\n want %q", got, want)
+	}
+}
+
+// kin gives a union under patternProperties no schema; its members are all
+// followed.
+func TestJSONSchemaRows_UnionWithoutSchema(t *testing.T) {
+	want := []string{`Error at "/pp/pa": missing property 'x'`}
+	if got := holderRows(t, `{"pp":{"pa":{}}}`, nil); !slices.Equal(got, want) {
+		t.Errorf("\n got  %q\n want %q", got, want)
+	}
+}
+
+// The library lists extra properties in map order; the row lists them sorted,
+// so it reads the same on every run.
+func TestJSONSchemaRows_ExtraPropertiesSorted(t *testing.T) {
+	want := []string{`Error at "/closed": additional properties 'a', 'b', 'c', 'd', 'e' not allowed`}
+	for range 50 {
+		if got := holderRows(t, `{"closed":{"e":1,"c":1,"a":1,"d":1,"b":1}}`, nil); !slices.Equal(got, want) {
+			t.Fatalf("\n got  %q\n want %q", got, want)
+		}
 	}
 }
