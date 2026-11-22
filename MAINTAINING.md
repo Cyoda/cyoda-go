@@ -197,7 +197,9 @@ Do this as a single consolidated **release-prep** commit on the release branch,
    branch (`release/vX.Y+1.0`), every entry together. The branch itself is
    opened in step 10, immediately after the merge-to-`main`, so the config and
    the branch land within minutes of each other.
-5. Verify: `make check-spi-pin-sync`, `make test-full`, `make race`.
+5. Verify: `make check-spi-pin-sync` and `make test` locally, then push.
+   CI runs on every push to `release/**` and is the full-suite gate (CLAUDE.md
+   Gate 5): do not also run `make test-full` or `make race` locally.
 
 After this commit the branch is at latest on everything, so Dependabot's next
 run finds nothing to raise — a clean release with no immediate follow-on churn.
@@ -210,9 +212,10 @@ tag namespaces (`plugins/<name>/vX.Y.Z`). They must be tagged
 **before** the root module's `go.mod` can pin them — otherwise
 `go mod tidy` at step 3 has nothing to resolve against.
 
-Tag each plugin submodule at the same commit as the forthcoming root
-release. Pick the same version number as the root tag to keep the
-mental model simple:
+Tag each plugin submodule at the release's merge commit on `main`. The
+root tag goes on the next commit, the one step 3 makes to pin these tags.
+Pick the same version number as the root tag to keep the mental model
+simple:
 
 ```bash
 # In cyoda-go (main branch, at the commit to be released):
@@ -274,17 +277,17 @@ release cut anyway. Forgetting this step is the classic failure mode: the SPI
 gets pseudo-pinned but the plugins are left at the old tags, and only the
 `GOWORK=off` jobs go red.
 
-### 4. Homebrew tap setup (from the section above)
+### 4. Homebrew tap setup (one-time)
 
-Create `cyoda/homebrew-cyoda-go` repo, create the GitHub App,
-install on the tap repo, store the App ID and private key as Actions
-secrets. See "One-time setup: Homebrew tap release automation" above.
+Nothing to do per release once the tap exists. For a new tap, see
+"One-time setup: Homebrew tap release automation" above.
 
 ### 5. Verify CI is green
 
-Push a commit to `main` (or open a small PR) and confirm both the
-`test` and `per-module-hygiene` CI jobs pass. Don't push the release
-tag if CI is red.
+Push the step 3 pin commit to `main` and confirm that CI is green on that
+exact commit — every job, including `per-module-hygiene`, which resolves the
+new plugin pins as a consumer would. Don't push the release tag if CI is
+red.
 
 ### 6. Image signing
 
@@ -386,7 +389,7 @@ Release in topological order:
    `cyoda-go-spi` require line to the new `$V`; similarly for each
    plugin submodule's `go.mod`. Remove the `go.work` entry pointing
    at the local SPI checkout. Verify tests still pass. Merge to
-   `main`. Then run steps 1, 2, 3, 7 of this checklist (plugin
+   `main`. Then run steps 1, 3 and 7 of this checklist (plugin
    submodule tags, re-pin plugins from dev-window pseudo-versions to
    the release tags, cut root release) using the same `$V`.
 
@@ -410,8 +413,9 @@ When you bump cyoda-go-spi:
 1. Bump in `go.mod` (root).
 2. Bump identically in `plugins/memory/go.mod`, `plugins/postgres/go.mod`, `plugins/sqlite/go.mod`.
 3. Run `go mod tidy` in each module.
-4. Run `make test-full` to verify cross-plugin interactions.
-5. Run `make check-spi-pin-sync` locally to confirm green.
+4. Run `make check-spi-pin-sync` and `make test` locally to confirm green.
+5. Push; CI's `test`, `plugins`, `race` and `per-module-hygiene` jobs verify
+   the cross-plugin interactions.
 
 This rule is in addition to the existing **plugin-version lockstep**
 rule (plugin submodule tags use the same version as the umbrella).

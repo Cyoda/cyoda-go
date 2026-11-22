@@ -18,7 +18,7 @@ updates:
   # Root Go module
   - package-ecosystem: gomod
     directory: "/"
-    target-branch: release/v0.9.0
+    target-branch: release/v0.10.0
     schedule:
       interval: weekly
       day: monday
@@ -39,7 +39,7 @@ updates:
   # consumable, so each must be tracked separately.
   - package-ecosystem: gomod
     directory: "/plugins/memory"
-    target-branch: release/v0.9.0
+    target-branch: release/v0.10.0
     schedule:
       interval: weekly
       day: monday
@@ -54,7 +54,7 @@ updates:
 
   - package-ecosystem: gomod
     directory: "/plugins/sqlite"
-    target-branch: release/v0.9.0
+    target-branch: release/v0.10.0
     schedule:
       interval: weekly
       day: monday
@@ -69,7 +69,7 @@ updates:
 
   - package-ecosystem: gomod
     directory: "/plugins/postgres"
-    target-branch: release/v0.9.0
+    target-branch: release/v0.10.0
     schedule:
       interval: weekly
       day: monday
@@ -86,7 +86,7 @@ updates:
   # so distroless/static base updates surface as PRs.
   - package-ecosystem: docker
     directory: "/deploy/docker"
-    target-branch: release/v0.9.0
+    target-branch: release/v0.10.0
     schedule:
       interval: weekly
       day: monday
@@ -100,7 +100,7 @@ updates:
   # GitHub Actions used by workflows in .github/workflows.
   - package-ecosystem: github-actions
     directory: "/"
-    target-branch: release/v0.9.0
+    target-branch: release/v0.10.0
     schedule:
       interval: weekly
       day: monday
