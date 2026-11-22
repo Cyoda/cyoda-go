@@ -492,3 +492,136 @@ func TestScheduledRun_ReArmedBeforeTXPostBegin_StartNewTx_Superseded(t *testing.
 		t.Errorf("task = %+v (found=%v), want the new WAITING life", got, found)
 	}
 }
+
+// expireWF: OPEN --expire (scheduled, procs)--> CLOSED.
+func expireWF(procs ...spi.ProcessorDefinition) spi.WorkflowDefinition {
+	return spi.WorkflowDefinition{
+		Version: "1.1", Name: "ExpireWF", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{{
+				Name: "expire", Next: "CLOSED", Processors: procs,
+				Schedule: &spi.TransitionSchedule{DelayMs: 60_000},
+			}}},
+			"CLOSED": {},
+		},
+	}
+}
+
+// claimedSavedBy saves wf for a model named after entityID, commits the
+// entity in OPEN as the version a request naming "submit" made, arms OPEN's
+// "expire" due now (timing out after timeoutMs when it is not nil) and claims
+// it for testOwner once the clock has advanced by advanceMs.
+func (env *runEnv) claimedSavedBy(t *testing.T, entityID string, wf spi.WorkflowDefinition, timeoutMs *int64, advanceMs int64) spi.ScheduledTask {
+	t.Helper()
+	model := spi.ModelRef{EntityName: "run-" + entityID, ModelVersion: "1.0"}
+	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{wf})
+	lockTestModel(t, env.factory, env.ctx, model)
+	seed := makeEntity(entityID, model, map[string]any{})
+	seed.Meta.State = "OPEN"
+	seed.Meta.TransitionForLatestSave = "submit"
+	saveCommittedEntity(t, env.factory, env.ctx, seed)
+	now := env.nowMs()
+	armTask(t, env.factory, env.ctx, spi.ScheduledTask{
+		ID: taskID(testTenant, entityID, "OPEN", "expire"), TenantID: testTenant,
+		Type: spi.ScheduledTaskFireTransition, ScheduledTime: now, EntityID: entityID,
+		ModelName: model.EntityName, ModelVersion: 1, Transition: "expire", SourceState: "OPEN",
+		ArmedAt: now, TimeoutMs: timeoutMs,
+	})
+	env.advance(advanceMs)
+	return env.claimOne(t, testOwner, false)
+}
+
+// versionsOf returns the transition name each committed version of entityID
+// was saved with, newest first ("" on a tombstone).
+func (env *runEnv) versionsOf(t *testing.T, entityID string) []string {
+	t.Helper()
+	es, err := env.factory.EntityStore(env.ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	metas, err := es.GetVersionMetadata(env.ctx, entityID, spi.VersionMetadataOptions{})
+	if err != nil {
+		t.Fatalf("GetVersionMetadata: %v", err)
+	}
+	names := make([]string, len(metas))
+	for i, m := range metas {
+		if m.Deleted {
+			continue
+		}
+		v, err := es.GetVersionByTransaction(env.ctx, entityID, m.TransactionID)
+		if err != nil {
+			t.Fatalf("GetVersionByTransaction(%s): %v", m.TransactionID, err)
+		}
+		names[i] = v.Entity.Meta.TransitionForLatestSave
+	}
+	return names
+}
+
+// Every version a scheduled firing commits carries the scheduled transition's
+// name, the version a COMMIT_BEFORE_DISPATCH boundary commits included.
+func TestFireScheduled_StampsScheduledTransition(t *testing.T) {
+	cbd := safeProc("cbd", ExecutionModeCommitBeforeDispatch)
+	for _, tc := range []struct {
+		name  string
+		procs []spi.ProcessorDefinition
+		want  []string // newest first
+	}{
+		{"no_boundary", nil, []string{"expire", "submit"}},
+		{"commit_before_dispatch", []spi.ProcessorDefinition{cbd}, []string{"expire", "expire", "submit"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newRunEnv(t, &scriptedExtProc{})
+			const entityID = "stamp-name-e1"
+			claimed := env.claimedSavedBy(t, entityID, expireWF(tc.procs...), nil, 0)
+
+			r, _ := env.run(claimed)
+			if r.Outcome != OutcomeFired || r.Err != nil {
+				t.Fatalf("report = %+v, want fired", r)
+			}
+			if got := env.versionsOf(t, entityID); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("version transition names (newest first) = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A scheduled firing that is cancelled, declined or expires writes no
+// version of the entity.
+func TestFireScheduled_NoFireWritesNoVersion(t *testing.T) {
+	timeout := int64(1_000)
+	manualExpire := expireWF()
+	st := manualExpire.States["OPEN"]
+	st.Transitions[0].Schedule = nil
+	st.Transitions[0].Manual = true
+	manualExpire.States["OPEN"] = st
+	declining := expireWF()
+	st = declining.States["OPEN"]
+	st.Transitions[0].Criterion = lifecycleCriterion("state", "EQUALS", "NOT_OPEN")
+	declining.States["OPEN"] = st
+	for _, tc := range []struct {
+		name      string
+		wf        spi.WorkflowDefinition
+		timeoutMs *int64
+		advanceMs int64
+		want      ScheduledOutcome
+	}{
+		{"cancelled", manualExpire, nil, 0, OutcomeCancelled},
+		{"declined", declining, nil, 0, OutcomeDeclined},
+		{"expired", expireWF(), &timeout, timeout + 1, OutcomeExpired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newRunEnv(t, nil)
+			const entityID = "nofire-e1"
+			claimed := env.claimedSavedBy(t, entityID, tc.wf, tc.timeoutMs, tc.advanceMs)
+			before := env.versionsOf(t, entityID)
+
+			r, _ := env.run(claimed)
+			if r.Outcome != tc.want || r.Err != nil {
+				t.Fatalf("report = %+v, want %s", r, tc.want)
+			}
+			if got := env.versionsOf(t, entityID); !reflect.DeepEqual(got, before) {
+				t.Errorf("versions after the run = %q, want unchanged %q", got, before)
+			}
+		})
+	}
+}

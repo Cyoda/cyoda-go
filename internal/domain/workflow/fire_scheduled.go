@@ -142,6 +142,8 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	// every write of the cascade inherits it. If the life changed since the
 	// claim, the re-read below ends the run before anything is written.
 	ctx = spi.WithAmbientOrigin(ctx, task.ArmedBy)
+	// Every version the fire saves records the scheduled transition's name.
+	ctx = withSaveTransition(ctx, task.Transition)
 
 	txID, txCtx, err := e.txMgr.Begin(ctx)
 	if err != nil {
@@ -365,7 +367,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	if writtenHere {
 		persistAgainst = finalTxID
 	}
-	if _, err := finalEntityStore.CompareAndSave(finalCtx, entity, persistAgainst); err != nil {
+	if _, err := finalEntityStore.CompareAndSave(finalCtx, stampedForSave(finalCtx, entity), persistAgainst); err != nil {
 		return "", err
 	}
 
