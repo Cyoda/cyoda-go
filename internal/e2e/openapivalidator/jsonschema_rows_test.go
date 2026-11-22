@@ -93,6 +93,15 @@ components:
         closed:
           type: object
           additionalProperties: false
+        esc:
+          oneOf:
+            - $ref: '#/components/schemas/EA'
+            - $ref: '#/components/schemas/EB'
+          discriminator:
+            propertyName: k/x
+            mapping:
+              a: '#/components/schemas/EA'
+              b: '#/components/schemas/EB'
         nomap:
           oneOf:
             - $ref: '#/components/schemas/IA'
@@ -132,6 +141,16 @@ components:
       required: [y]
       properties:
         y: { type: integer }
+    EA:
+      type: object
+      required: [k/x]
+      properties:
+        k/x: { type: string, const: a }
+    EB:
+      type: object
+      required: [k/x]
+      properties:
+        k/x: { type: string, const: b }
     IA:
       type: object
       properties:
@@ -386,8 +405,8 @@ func TestJSONSchemaRows_PropertyNameFailureKeepsItsMember(t *testing.T) {
 	}
 }
 
-// kin gives a union under patternProperties no schema; its members are all
-// followed.
+// kin gives a union under patternProperties no schema, so no discriminator
+// is known; the members that take the value's kind are followed.
 func TestJSONSchemaRows_UnionWithoutSchema(t *testing.T) {
 	want := []string{`Error at "/pp/pa": missing property 'x'`}
 	if got := holderRows(t, `{"pp":{"pa":{}}}`, nil); !slices.Equal(got, want) {
@@ -402,6 +421,19 @@ func TestJSONSchemaRows_ExtraPropertiesSorted(t *testing.T) {
 	for range 50 {
 		if got := holderRows(t, `{"closed":{"e":1,"c":1,"a":1,"d":1,"b":1}}`, nil); !slices.Equal(got, want) {
 			t.Fatalf("\n got  %q\n want %q", got, want)
+		}
+	}
+}
+
+// A discriminator property's name is escaped in a pointer (RFC 6901): in the
+// key row, and where a member's refusal of the key is found.
+func TestJSONSchemaRows_DiscriminatorPropertyEscaped(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"esc":{"k/x":"z"}}`: `Error at "/esc/k~1x": "z" is not one of the mapped keys "a", "b"`,
+		`{"esc":{}}`:          `Error at "/esc": missing discriminator property "k/x"`,
+	} {
+		if got := holderRows(t, body, nil); !slices.Equal(got, []string{want}) {
+			t.Errorf("%s:\n got  %q\n want %q", body, got, []string{want})
 		}
 	}
 }

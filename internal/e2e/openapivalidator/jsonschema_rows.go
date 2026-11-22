@@ -48,7 +48,8 @@ import (
 //   - under a discriminator, a member that refuses the value's key is left
 //     out, unless every member does. Then, when the discriminator has a
 //     mapping and the key is absent or not one of its keys, the key is the
-//     defect and one row says so; otherwise every member is followed.
+//     defect and one row says so; otherwise every member that takes the
+//     value's kind is followed.
 //
 // The rows are sorted by JSON pointer, a pointer before those below it, then
 // by message, property-name rows last. Pointers compare token by token: a
@@ -226,10 +227,11 @@ func refusesKey(k *openapi3.SchemaError, at, property string) bool {
 		if p == keyAt {
 			return true
 		}
-		var ve *jsonschema.ValidationError
-		if p != at || !errors.As(l, &ve) {
+		if p != at {
 			return false
 		}
+		var ve *jsonschema.ValidationError
+		errors.As(l, &ve) // every leaf carries the library's error (see leaf)
 		r, ok := ve.ErrorKind.(*kind.Required)
 		return ok && slices.Contains(r.Missing, property)
 	})

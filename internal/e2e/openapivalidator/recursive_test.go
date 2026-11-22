@@ -601,3 +601,20 @@ func TestValidator_JSONSchema2020Rows(t *testing.T) {
 		}
 	}
 }
+
+// kin's own visitor returns the defects of a response as one MultiError; each
+// is its own row.
+func TestValidator_VisitorDefectsAreRowsEach(t *testing.T) {
+	m := validateRecursiveFixture(t, "/group", `{"type":"x","conditions":"x"}`)
+	if len(m) != 2 {
+		t.Fatalf("want one row per defect, got %d: %+v", len(m), m)
+	}
+	for i, want := range []string{
+		`Error at "/conditions": value must be an array`,
+		`Error at "/type": value is not one of the allowed values ["group"]`,
+	} {
+		if !strings.HasPrefix(m[i].Reason, want) {
+			t.Errorf("row %d = %.200s\nwant prefix %s", i, m[i].Reason, want)
+		}
+	}
+}
