@@ -22,8 +22,8 @@ copy is a field the backend must then protect against its own request paths.
 - Every change-history entry carries the transition its request named.
 - The value is right on every door that writes a version — create, update
   with a named transition (HTTP PUT/PATCH, gRPC update, gRPC
-  `EntityTransitionRequest`), loopback update, collection create, collection
-  update, scheduled firing, delete — and on every version a cascade commits,
+  `EntityTransitionRequest`), loopback update, collection create and collection update (HTTP and
+  gRPC), scheduled firing, delete — and on every version a cascade commits,
   including the version a `COMMIT_BEFORE_DISPATCH` segment boundary commits.
 - One rule for what a criterion and workflow selection see in
   `transitionForLatestSave` during a cascade, on every door.
@@ -76,17 +76,19 @@ Builder's calls:
 6. **What a cascade sees — a behaviour change.**
    - Today: what workflow selection, transition criteria and processor
      criteria see in `transitionForLatestSave` (alias `previousTransition`)
-     depends on the door: on a named update, the request's own transition
-     name; on a create, a loopback update and a collection update, an empty
-     string; on a scheduled firing, the name the previous request saved.
-   - After: on every door, the name of the version the request started from,
-     as its transaction sees it (its own earlier writes included); on a
-     create, none. After a `COMMIT_BEFORE_DISPATCH` boundary, the boundary's
-     version, which carries the request's name. The request's own name is
-     written only on the versions cyoda commits for the request: at a segment
-     boundary and at the final save. The save before a callout keeps the value
-     the run sees, so a joined callback that reads the entity sees the same
-     value as the run's criteria.
+     depends on the door: on a named update (HTTP, gRPC update, gRPC
+     transition, gRPC collection item) the request's own transition name; on
+     a create, a loopback update, and every HTTP collection create or update
+     item, an empty string; on a scheduled firing, the name the previous
+     request saved.
+   - After: for the whole run, on every door, the name of the version the
+     request started from, as its transaction sees it (its own earlier writes
+     included); on a create, none. A `COMMIT_BEFORE_DISPATCH` boundary does
+     not change it: where a processor's dispatch mode sits never changes what
+     a criterion sees. The request's own name is written only on the versions
+     cyoda commits for the request: the version a segment boundary flushes,
+     and the final save. A read of the entity during the run returns the
+     stored version, whatever it carries.
    - Reason: the help tells applications to select workflows on fields the
      caller cannot rewrite, and the request's own transition name is chosen by
      the caller. The rule also matches what `GET /entity/{entityId}/transitions`
@@ -100,25 +102,27 @@ Defects fixed in this change (each: today → after):
    name in `meta.transitionForLatestSave`. After: the version records the
    scheduled transition's name.
 8. **`COMMIT_BEFORE_DISPATCH` boundary version.** Today: on a create, a
-   loopback update, and every item of a collection create or collection
-   update (also an item that names a transition), the version committed at
-   the boundary has an empty name, and the final version has the request's
-   name (`loopback` or the item's transition). After: both carry the
-   request's name.
+   loopback update, and every item of an HTTP collection create or update
+   (also an item that names a transition), the version the boundary flushes
+   (`flushAndCommitSegment`, `es.Save` in TX_pre) has an empty name, and the
+   final version has the request's name (`loopback` or the item's
+   transition). After: both carry the request's name.
 9. **Postgres delete tombstone.** Today: postgres copies the previous
    version's `_meta` into the tombstone, so the tombstone keeps the previous
    version's transition name; memory and sqlite record none. Nothing exposes
    it yet; the new history field would. After: no backend records a
    transition on a tombstone. Tombstones are excluded from every postgres
    read by `_meta.deleted` / `NOT deleted`, so no other read changes.
-10. **sqlite history reads on unparseable meta.** Today: when a version's
-   meta JSON does not parse, sqlite `GetVersionMetadata` and
-   `GetVersionByTransaction` return the version without its attribution
-   (empty kind and executor); postgres fails the read. After: sqlite fails
-   the read too.
+10. **sqlite reads on unparseable meta.** Today: when an entity's or a
+   version's meta JSON does not parse, sqlite drops the parse error and
+   returns the row without the meta fields: `GetVersionMetadata` and
+   `GetVersionByTransaction` (empty attribution), and `scanEntityFromRow` /
+   `scanVersionEntity` (empty tenant, state, transition, attribution), which
+   serve `Get`, search, grouped stats and the transaction overlay. Postgres
+   fails the read. After: every sqlite read fails on unparseable meta.
 11. **Help on `transitionForLatestSave`.** Today: `crud` says a create stores
    the literal `"workflow"` (it stores `loopback`); the `crud` example shows
-   `"UPDATE"`, which is not a valid value; `search` lists the field among
+   `"UPDATE"`, which reads as a change type rather than a transition name; `search` lists the field among
    the meta dates (it is a string). After: the help describes the actual
    behaviour.
 
@@ -139,11 +143,12 @@ the version was saved with; empty for a `DELETED` tombstone.
 
 Conformance (`spitest`): per-version value over several saves; tombstone empty
 (delete outside a transaction, delete in a transaction, save-then-delete in one
-transaction, create-then-delete in one transaction); two saves of one entity
+transaction, create-then-delete in one transaction, `DeleteAll`); two saves of one entity
 in one transaction → the last save's value.
 
 Mechanics (mid-milestone): SPI PR into `main`, no tag; cyoda-go pseudo-pins
-that commit; `make repin-plugins` for the in-tree plugins.
+that commit; `make repin-plugins` for the in-tree plugins; `COMPATIBILITY.md`
+records the pin (Gate 4).
 
 ### In-tree plugins
 
@@ -159,9 +164,10 @@ No migration; each already keeps the name per version.
 
 The request's name is known on every door: the named transition, `loopback`,
 or the scheduled task's transition. The versions cyoda commits for the request
-— segment-boundary `CompareAndSave` and final save — carry that name; the save
-before a callout and everything evaluated during the run carry the value of
-decision 6.
+carry that name: the boundary flush in `flushAndCommitSegment` (TX_pre), the
+`CompareAndSave` that opens TX_post, the service's final saves, and the
+scheduled firing's final `CompareAndSave`. The save before a callout and
+everything evaluated during the run carry the value of decision 6.
 
 ### Wire
 
@@ -201,39 +207,58 @@ Waiver: the error cells are unchanged by this change and are not re-tested.
   1000-entry cap (newest first). Fix `meta.transitionForLatestSave`: drop the
   stale "Known bug" about `"workflow"`, fix the example value `"UPDATE"`, add
   the scheduled-firing value, and the `loopback` ambiguity.
-- `grpc`: `changeMeta` field list gains `transition`.
+- `grpc`: `changeMeta` field list and its wording gain `transition`.
+- Schema descriptions of `transitionForLatestSave` match decision 5:
+  `api/openapi.yaml` (entity meta schemas), `docs/cyoda/schema/common/EntityMetadata.json`.
 - `search`: `transitionForLatestSave` is listed among the meta **dates**; it
   is a string.
 - `workflows`: what a lifecycle criterion and workflow selection see in
-  `transitionForLatestSave` during a cascade (decision 6).
+  `transitionForLatestSave` during a cascade (decision 6); the selection
+  advice no longer counts `transitionForLatestSave` among the fields a caller
+  cannot rewrite (the previous request's caller chose it).
 - `auth integration`, segregation of duties, step 3 (replaces the copy
-  advice). Conditions the application follows:
+  advice).
+
+  What the check proves: the approver is not the principal of the latest
+  submit, and the approval changes nothing the submitter submitted. (It does
+  not prove the approver never wrote or submitted the content in an earlier
+  cycle; an application that needs that walks the history further itself.)
+
+  Conditions the application follows:
   - The approval is a single-entity request from the backend naming the
     approve transition: never an item of a collection update (step 2's OBO
     client allow-list already excludes compute-node write-backs). So the
-    approval's transaction has not written the entity before its criterion
-    runs, and the version it starts from is the newest committed version.
+    version the approval starts from is the newest committed version.
   - Nothing writes the entity between the submit and the approval. A write in
-    between makes the check refuse; the entity is submitted again. The
-    approver approves exactly what was submitted.
+    between makes the check refuse; the entity is submitted again.
+  - The approval request carries no data change: `PATCH` with `{}` on the
+    named-transition route, or gRPC `EntityTransitionRequest`. The check
+    enforces it (below).
 
-  The check, in a criterion of the approve transition: read the entity's
-  change history (`GET /entity/{entityId}/changes`, or gRPC
-  `EntityChangesMetadataGetRequest`) with the compute node's own client and
-  take the **newest** entry. Approve only when its `transition` is the submit
-  transition, its `attributedKind` is `user`, and its `user` differs from
-  `authid` (byte for byte); refuse otherwise. No executor allow-list on the
-  submit entry: its `user` is the principal the submit was made for, so the
-  check needs none, and it survives client rotation.
+  The check, in a criterion of the approve transition, with the compute
+  node's own client and without `pointInTime`:
+  1. Read the entity's change history (`GET /entity/{entityId}/changes`, or
+     gRPC `EntityChangesMetadataGetRequest`) and take the **newest** entry.
+  2. Approve only when its `transition` is the submit transition, its
+     `attributedKind` is `user`, and its `user` differs from `authid` (byte
+     for byte).
+  3. Read the version that entry's transaction committed
+     (`GET /entity/{entityId}?transactionId=<its transactionId>`) and require
+     its data to equal the data in the criterion's payload (as JSON values).
+  4. Refuse in every other case, also when a read fails. On a backend that
+     does not record `transition` yet, the field is absent and the check
+     refuses.
 
-  Why it holds (for the help's own understanding, stated briefly there): if
-  another transaction commits the entity after the approval read it, the
-  approval fails at commit, so an approval that commits replaces exactly the
-  entry it checked; that entry is named `submit` only when the last request
-  of its transaction named it; and its `user` is that transaction's
-  attributed principal, stamped by cyoda.
+  Why it holds: if another transaction commits the entity after the approval
+  read it, the approval fails at commit, so an approval that commits replaces
+  exactly the entry it checked; that entry is named `submit` only when the
+  last request of its transaction named it; its `user` is that transaction's
+  attributed principal, stamped by cyoda; and step 3 rules out the approval
+  rewriting the data. A scheduled transition named like the submit is recorded
+  as a submit by the principal that armed it; the help says so.
 
-  *WHAT CYODA RECORDS* lists `transition`.
+  *WHAT CYODA RECORDS* lists `transition`; "the same three fields" becomes
+  four here, in `crud` and in `docs/access-to-the-cyoda-api.html`.
 - `docs/access-to-the-cyoda-api.html`: the same recipe.
 
 ## Coverage
@@ -249,8 +274,17 @@ Waiver: the error cells are unchanged by this change and are not re-tested.
 | multi-node: a forwarded request's versions carry its name | — | — | extend `multinode/attribution` | — | — |
 | criterion on `transitionForLatestSave` sees the previous save's value: named update, loopback update, create (none), scheduled firing | engine | yes | yes | — | — |
 | workflow selection on `transitionForLatestSave` sees the previous save's value | engine | yes | — | — | — |
+| criterion after a `COMMIT_BEFORE_DISPATCH` boundary still sees the start version's value | engine | yes | — | — | — |
+| gRPC collection update, named and loopback items | — | — | — | yes | — |
+| sqlite unparseable meta fails `Get` and search | sqlite | — | — | — | — |
 | two saves of one entity in one transaction → last wins | — | — | — | — | yes |
+| approval recipe: approve passes; same user refused; write between refused; approval with a data change refused | — | yes (compute-node test double) | — | — | — |
 | sqlite unparseable meta fails the read | sqlite | — | — | — | — |
+
+## Changelog
+
+`CHANGELOG.md` gains an `[Unreleased]` section: `### Breaking` — decision 6;
+`### Added` — `transition` on the history surfaces; `### Fixed` — items 7–11.
 
 ## Gate 7
 
