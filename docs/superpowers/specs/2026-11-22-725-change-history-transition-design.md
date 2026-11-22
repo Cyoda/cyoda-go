@@ -73,36 +73,58 @@ Builder's calls:
    none: the field is absent on a `DELETE` entry. A transition a workflow
    itself names `loopback` cannot be told apart from a save that named none;
    the help says so.
-6. **What a cascade sees.** While the engine runs — workflow selection,
-   transition criteria, processor criteria, on every door — the entity's
-   `transitionForLatestSave` (alias `previousTransition`) is the value of the
-   version the request started from, as its transaction sees it (the
-   transaction's own earlier writes included): the transition the *previous*
-   save named; on a create, none. After a `COMMIT_BEFORE_DISPATCH` boundary
-   it is the boundary's version, which carries the request's name. The
-   request's own name is written only on the versions cyoda commits for the
-   request: at a segment boundary and at the final save. The save before a
-   callout keeps the value the run sees, so a joined callback that reads the
-   entity sees the same value as the run's criteria. Reason: the
-   help tells applications to select workflows on fields the caller cannot
-   rewrite, and the request's own transition name is chosen by the caller.
-   This changes today's behaviour on a named update (a criterion sees the
-   request's own name today) and on a loopback update, create and collection
-   update (a criterion sees an empty string today); it matches what
-   `GET /entity/{entityId}/transitions` evaluates (the stored version) and the
-   alias `previousTransition`.
-7. A scheduled firing names its scheduled transition (today it restamps actor
-   and executor only, so its version keeps the previous request's name — on
-   entity reads too).
-8. A delete tombstone carries no transition on every backend. Postgres copies
-   the previous version's `_meta` into the tombstone, transition included; it
-   is fixed to clear it. Tombstones are excluded from every postgres read by
-   `_meta.deleted` / `NOT deleted`, so no other read changes.
-9. sqlite `GetVersionMetadata` and `GetVersionByTransaction` drop a version's
-   attribution silently when its meta JSON does not parse; postgres fails the
-   read. sqlite is fixed to fail the read (a history read that serves an authorization check must not
-   answer with missing fields).
-10. Cassandra stores the transition for the latest version only and is on SPI
+6. **What a cascade sees — a behaviour change.**
+   - Today: what workflow selection, transition criteria and processor
+     criteria see in `transitionForLatestSave` (alias `previousTransition`)
+     depends on the door: on a named update, the request's own transition
+     name; on a create, a loopback update and a collection update, an empty
+     string; on a scheduled firing, the name the previous request saved.
+   - After: on every door, the name of the version the request started from,
+     as its transaction sees it (its own earlier writes included); on a
+     create, none. After a `COMMIT_BEFORE_DISPATCH` boundary, the boundary's
+     version, which carries the request's name. The request's own name is
+     written only on the versions cyoda commits for the request: at a segment
+     boundary and at the final save. The save before a callout keeps the value
+     the run sees, so a joined callback that reads the entity sees the same
+     value as the run's criteria.
+   - Reason: the help tells applications to select workflows on fields the
+     caller cannot rewrite, and the request's own transition name is chosen by
+     the caller. The rule also matches what `GET /entity/{entityId}/transitions`
+     evaluates (the stored version) and the alias `previousTransition`.
+
+Defects fixed in this change (each: today → after):
+
+7. **Scheduled firing.** Today: the version a scheduled firing makes keeps
+   the transition name of the request before it (the firing restamps actor and
+   executor only, `fire_scheduled.go`), so an entity read shows that stale
+   name in `meta.transitionForLatestSave`. After: the version records the
+   scheduled transition's name.
+8. **`COMMIT_BEFORE_DISPATCH` boundary version.** Today: on a create, a
+   loopback update, and every item of a collection create or collection
+   update (also an item that names a transition), the version committed at
+   the boundary has an empty name, and the final version has the request's
+   name (`loopback` or the item's transition). After: both carry the
+   request's name.
+9. **Postgres delete tombstone.** Today: postgres copies the previous
+   version's `_meta` into the tombstone, so the tombstone keeps the previous
+   version's transition name; memory and sqlite record none. Nothing exposes
+   it yet; the new history field would. After: no backend records a
+   transition on a tombstone. Tombstones are excluded from every postgres
+   read by `_meta.deleted` / `NOT deleted`, so no other read changes.
+10. **sqlite history reads on unparseable meta.** Today: when a version's
+   meta JSON does not parse, sqlite `GetVersionMetadata` and
+   `GetVersionByTransaction` return the version without its attribution
+   (empty kind and executor); postgres fails the read. After: sqlite fails
+   the read too.
+11. **Help on `transitionForLatestSave`.** Today: `crud` says a create stores
+   the literal `"workflow"` (it stores `loopback`); the `crud` example shows
+   `"UPDATE"`, which is not a valid value; `search` lists the field among
+   the meta dates (it is a string). After: the help describes the actual
+   behaviour.
+
+Out of scope:
+
+12. Cassandra stores the transition for the latest version only and is on SPI
    v0.8.3. Its work is a cassandra-plugin issue (migration adding the column
    to `entity_changes`, written on Save, empty on Delete, returned by
    `GetVersionMetadata`), not part of this change.
@@ -129,9 +151,9 @@ No migration; each already keeps the name per version.
 
 - memory: read the version's entity copy (nil on a tombstone → empty).
 - sqlite: copy `transition_for_latest_save` out of the `json(meta)` it already
-  reads; fail the read on unparseable meta (decision 9).
+  reads; fail the read on unparseable meta (decision 10).
 - postgres: copy `transition` out of the `doc->'_meta'` it already decodes;
-  `deleteOn` clears the transition (decision 8).
+  `deleteOn` clears the transition (decision 9).
 
 ### Engine and service
 
