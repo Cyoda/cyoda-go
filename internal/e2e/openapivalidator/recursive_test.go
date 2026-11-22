@@ -5,16 +5,20 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // recursiveFixtureYAML has a recursive condition schema shaped like the
 // spec's GroupConditionDto as the validator's view presents it: a group's
 // conditions are a discriminated oneOf (the view's replacement of a use of
-// the base QueryConditionDto) that includes the group itself. /flat has no
+// the base QueryConditionDto) that includes the group itself, and each member
+// limits its type to its own key (the view's limit on a mapping target).
+// recursiveBaseFixtureYAML has the same through the view itself. /flat has no
 // recursion.
 const recursiveFixtureYAML = `openapi: 3.1.0
 info: { title: recursive fixture, version: "1" }
@@ -121,8 +125,9 @@ func validateRecursiveFixture(t *testing.T, path, body string) []Mismatch {
 }
 
 // A group inside a group inside a group, whose innermost simple condition
-// has a value of the wrong type. kin skips the nested groups, because the
-// group schema is already being visited.
+// has a value of the wrong type. kin applies the group schema again to each
+// nested value and reports the defect once, as a chain of pointers, each
+// relative to the one before.
 func TestValidator_RecursiveSchema_DeepMismatchReported(t *testing.T) {
 	body := `{"type":"group","conditions":[
 		{"type":"group","conditions":[
@@ -139,7 +144,7 @@ func TestValidator_RecursiveSchema_DeepMismatchReported(t *testing.T) {
 	if m.Operation != "getGroup" || m.Status != 200 {
 		t.Errorf("mismatch identity = (%q, %d), want (getGroup, 200)", m.Operation, m.Status)
 	}
-	if !strings.Contains(m.Reason, "/conditions/0/conditions/0") || !strings.Contains(m.Reason, `"/value": value must be an integer`) {
+	if want := strings.Repeat(`Error at "/conditions/0": doesn't match schema due to: `, 3) + `Error at "/value": value must be an integer`; !strings.Contains(m.Reason, want) {
 		t.Errorf("mismatch reason does not locate the innermost value: %s", m.Reason)
 	}
 }
@@ -159,10 +164,8 @@ func TestValidator_RecursiveSchema_ValidDeepBodyPasses(t *testing.T) {
 	}
 }
 
-// One defect gives one row. A union whose discriminator does not resolve (here
-// the member has no "type") fails in kin's own visit, and the walk then checks
-// the same union at the same pointer with the same result. The walk's row
-// repeats kin's and is dropped.
+// One defect gives one row: a union whose discriminator does not resolve (here
+// the member has no "type").
 func TestValidator_RecursiveSchema_UnresolvedDiscriminatorReportedOnce(t *testing.T) {
 	body := `{"type":"group","conditions":[{"value":1}]}`
 	mismatches := validateRecursiveFixture(t, "/group", body)
@@ -173,8 +176,7 @@ func TestValidator_RecursiveSchema_UnresolvedDiscriminatorReportedOnce(t *testin
 		t.Errorf("mismatch reason = %s, want it to contain %s", mismatches[0].Reason, want)
 	}
 
-	// The same at the root: the response schema is the union itself, so kin
-	// and the walk both report at the empty pointer.
+	// The same at the root: the response schema is the union itself.
 	rootPath := "paths:\n  /condition:\n    get:\n      operationId: getCondition\n      responses:\n        \"200\":\n          description: ok\n          content:\n            application/json:\n              schema:\n                $ref: '#/components/schemas/Condition'\n"
 	yaml := strings.Replace(recursiveFixtureYAML, "paths:\n", rootPath, 1)
 	if yaml == recursiveFixtureYAML {
@@ -186,12 +188,7 @@ func TestValidator_RecursiveSchema_UnresolvedDiscriminatorReportedOnce(t *testin
 	}
 }
 
-// One defect gives one row: a mismatch kin already reports (no recursive
-// re-entry on its path) is not reported again by the walk. The walk adds a row
-// only where its pointer and reason differ from every row kin gave; see
-// TestValidator_RecursiveSchema_UnresolvedDiscriminatorReportedOnce for a case
-// where both check the same union. The same-pointer re-entry case is
-// TestValidator_RecursiveSchema_SamePointerReentryReportedOnce.
+// One defect gives one row: a defect one level down.
 func TestValidator_RecursiveSchema_DepthOneMismatchReportedOnce(t *testing.T) {
 	body := `{"type":"group","conditions":[{"type":"simple","value":"not-an-integer"}]}`
 	mismatches := validateRecursiveFixture(t, "/group", body)
@@ -200,14 +197,13 @@ func TestValidator_RecursiveSchema_DepthOneMismatchReportedOnce(t *testing.T) {
 	}
 }
 
-// One defect gives one row: kin refuses a null no union member accepts once
-// per member, with the same pointer and reason, and the walk keeps one.
+// One defect gives one row: a null no union member accepts.
 func TestValidator_RecursiveSchema_NullMemberReportedOnce(t *testing.T) {
 	mismatches := validateRecursiveFixture(t, "/group", `{"type":"group","conditions":[null]}`)
 	if len(mismatches) != 1 {
 		t.Fatalf("expected exactly 1 mismatch, got %d: %+v", len(mismatches), mismatches)
 	}
-	if want := `recursive schema at "/conditions/0": Value is not nullable`; !strings.Contains(mismatches[0].Reason, want) {
+	if want := `Error at "/conditions/0": doesn't match schema due to: Value is not nullable`; !strings.Contains(mismatches[0].Reason, want) {
 		t.Errorf("mismatch reason = %s, want it to contain %s", mismatches[0].Reason, want)
 	}
 }
@@ -223,9 +219,9 @@ func TestValidator_NonRecursiveSchema_Unaffected(t *testing.T) {
 }
 
 // The usual polymorphism shape: the base has the discriminator and a oneOf of
-// subtypes, and each subtype is allOf the base. The base re-enters at the
-// same pointer, where its outer visit already checks the value, so the walk
-// does not check it again.
+// subtypes, and each subtype is allOf the base. The base recurs at the same
+// pointer, where its outer visit already checks the value, so kin does not
+// check it again.
 func TestValidator_RecursiveSchema_SamePointerReentryReportedOnce(t *testing.T) {
 	const yaml = `openapi: 3.1.0
 info: { title: polymorphism fixture, version: "1" }
@@ -274,44 +270,46 @@ components:
 	}
 }
 
-// Without a discriminator, kin accepts the group member of the union without
-// looking at the value (the group schema is already being visited), and so
-// accepts the union, while a fresh check rejects every member. The walk then
-// checks the union itself.
+// Without a discriminator, the union below a group is decided by trying each
+// member, the group itself among them: a value no member accepts is refused
+// with each member's reason, and a valid simple or nested group condition
+// matches exactly one member.
 func TestValidator_RecursiveSchema_UnionWithoutDiscriminatorFailsClosed(t *testing.T) {
 	yaml := strings.Replace(recursiveFixtureYAML, recursiveFixtureDiscriminator, "", 1)
 	if yaml == recursiveFixtureYAML {
 		t.Fatal("fixture discriminator block not found")
 	}
-	// No valid-body case here: for a valid simple condition kin itself reports
-	// "matches more than one oneOf schemas", because it accepts the group
-	// member unseen.
+	v := newSpecValidator(t, yaml)
 	body := `{"type":"group","conditions":[{"type":"simple","value":"not-an-integer"}]}`
-	mismatches := validateBody(t, newSpecValidator(t, yaml), "/group", body)
-	// The union at the re-entered pointer is checked afresh, and it fails
-	// because every member rejects the value: one row per member, in the
-	// union's member order — the simple member on its value, the group
-	// member on its type.
-	want := []string{
-		`recursive schema at "/conditions/0": Error at "/value": value must be an integer`,
-		`recursive schema at "/conditions/0": Error at "/type": value is not one of the allowed values ["group"]`,
+	mismatches := validateBody(t, v, "/group", body)
+	if len(mismatches) != 1 {
+		t.Fatalf("expected exactly 1 mismatch, got %d: %+v", len(mismatches), mismatches)
 	}
-	if len(mismatches) != len(want) {
-		t.Fatalf("expected %d mismatches, one per union member, got %d: %+v", len(want), len(mismatches), mismatches)
+	m := mismatches[0]
+	if m.Operation != "getGroup" || m.Status != 200 {
+		t.Errorf("mismatch identity = (%q, %d), want (getGroup, 200)", m.Operation, m.Status)
 	}
-	for i, m := range mismatches {
-		if m.Operation != "getGroup" || m.Status != 200 {
-			t.Errorf("mismatch %d identity = (%q, %d), want (getGroup, 200)", i, m.Operation, m.Status)
+	for _, want := range []string{
+		`Error at "/conditions/0": doesn't match schema due to: Error at "/value": value must be an integer`,
+		`Error at "/type": value is not one of the allowed values ["group"]`,
+	} {
+		if !strings.Contains(m.Reason, want) {
+			t.Errorf("mismatch reason = %s\nwant it to contain %s", m.Reason, want)
 		}
-		if !strings.HasPrefix(m.Reason, want[i]) {
-			t.Errorf("mismatch %d reason = %s\nwant prefix %s", i, m.Reason, want[i])
+	}
+
+	for _, valid := range []string{
+		`{"type":"group","conditions":[{"type":"simple","value":1}]}`,
+		`{"type":"group","conditions":[{"type":"group","conditions":[{"type":"simple","value":1}]}]}`,
+	} {
+		if mismatches := validateBody(t, v, "/group", valid); len(mismatches) != 0 {
+			t.Errorf("valid body %s refused: %+v", valid, mismatches)
 		}
 	}
 }
 
-// anyOf is satisfied by its first member that accepts the value, as kin
-// checks it. A later member that also passes the fresh check, but has an
-// error under a re-entry, does not make a valid value invalid.
+// anyOf is satisfied by a member that accepts the value: a later member that
+// refuses it below a recursion does not make a valid value invalid.
 func TestValidator_RecursiveSchema_AnyOfFollowsFirstAcceptingMember(t *testing.T) {
 	const yaml = `openapi: 3.1.0
 info: { title: anyOf fixture, version: "1" }
@@ -365,8 +363,8 @@ func TestValidator_BodyReadErrorReported(t *testing.T) {
 	}
 }
 
-// With ExcludeResponseBody kin does not validate the body; the walk does not
-// either.
+// With ExcludeResponseBody kin does not validate the body, nested values
+// included.
 func TestValidator_RecursiveSchema_ExcludeResponseBodyRespected(t *testing.T) {
 	v := newSpecValidator(t, recursiveFixtureYAML)
 	v.opts.ExcludeResponseBody = true
@@ -376,21 +374,230 @@ func TestValidator_RecursiveSchema_ExcludeResponseBodyRespected(t *testing.T) {
 	}
 }
 
-// Only schemas from which a schema cycle is reachable are walked.
-func TestRecursiveSchemas(t *testing.T) {
-	doc := loadSpec(t, recursiveFixtureYAML)
-	schemas := doc.Components.Schemas
-	flat := doc.Paths.Value("/flat").Get.Responses.Status(200).Value.Content.Get("application/json").Schema.Value
-	got := recursiveSchemas(doc)
-	for name, want := range map[string]bool{"Condition": true, "Group": true, "Simple": false} {
-		if got[schemas[name].Value] != want {
-			t.Errorf("recursiveSchemas[%s] = %v, want %v", name, got[schemas[name].Value], want)
+// recursiveFixture2020YAML is the fixture with a JSON Schema 2020-12 keyword
+// (propertyNames) on the group. kin then checks a schema that reaches the
+// group with its JSON Schema 2020-12 validator instead of its own visitor, as
+// it does for the spec's workflow export.
+var recursiveFixture2020YAML = strings.Replace(recursiveFixtureYAML,
+	"    Group:\n      type: object\n",
+	"    Group:\n      type: object\n      propertyNames: {pattern: '^[a-z]+$'}\n", 1)
+
+// On kin's JSON Schema 2020-12 path too, a defect below a recursion gives one
+// row and a valid nested body passes.
+func TestValidator_RecursiveSchema_JSONSchema2020Path(t *testing.T) {
+	if recursiveFixture2020YAML == recursiveFixtureYAML {
+		t.Fatal("fixture Group block not found")
+	}
+	v := newSpecValidator(t, recursiveFixture2020YAML)
+	for name, body := range map[string]string{
+		"a defect three levels down": `{"type":"group","conditions":[{"type":"group","conditions":[
+			{"type":"group","conditions":[{"type":"simple","value":"not-an-integer"}]}]}]}`,
+		"null in a group in a group":        `{"type":"group","conditions":[{"type":"group","conditions":[null]}]}`,
+		"a property name the group refuses": `{"type":"group","conditions":[{"type":"group","conditions":[],"Bad":1}]}`,
+	} {
+		if mismatches := validateBody(t, v, "/group", body); len(mismatches) != 1 {
+			t.Errorf("%s: expected exactly 1 mismatch, got %d: %+v", name, len(mismatches), mismatches)
 		}
 	}
-	if !got[schemas["Group"].Value.Properties["conditions"].Value] {
-		t.Error("recursiveSchemas[Group.conditions] = false, want true")
+	requireJSONSchema2020Path(t, v)
+	valid := `{"type":"group","conditions":[{"type":"simple","value":1},
+		{"type":"group","conditions":[{"type":"group","conditions":[{"type":"simple","value":2}]}]}]}`
+	if mismatches := validateBody(t, v, "/group", valid); len(mismatches) != 0 {
+		t.Errorf("valid nested body refused: %+v", mismatches)
 	}
-	if got[flat] {
-		t.Error("recursiveSchemas[/flat response] = true, want false")
+}
+
+// A response with no body is validated as an empty body, not a panic.
+func TestValidator_NilBodyIsAnEmptyBody(t *testing.T) {
+	v := newSpecValidator(t, recursiveFixtureYAML)
+	req, _ := http.NewRequest("GET", "http://x/group", nil)
+	resp := mkResp(200, "application/json", "")
+	resp.Body = nil
+	for _, m := range v.Validate(context.Background(), req, resp) {
+		if strings.Contains(m.Reason, "panic") {
+			t.Fatalf("Validate panicked on a nil body: %s", m.Reason)
+		}
+	}
+}
+
+// One defect gives one row: kin refuses a null no member of a root union
+// accepts once per member, with the same pointer and reason.
+func TestValidator_RootUnionNullReportedOnce(t *testing.T) {
+	rootPath := "paths:\n  /condition:\n    get:\n      operationId: getCondition\n      responses:\n        \"200\":\n          description: ok\n          content:\n            application/json:\n              schema:\n                $ref: '#/components/schemas/Condition'\n"
+	yaml := strings.Replace(recursiveFixtureYAML, "paths:\n", rootPath, 1)
+	if yaml == recursiveFixtureYAML {
+		t.Fatal("fixture paths block not found")
+	}
+	if mismatches := validateBody(t, newSpecValidator(t, yaml), "/condition", `null`); len(mismatches) != 1 {
+		t.Fatalf("expected exactly 1 mismatch, got %d: %+v", len(mismatches), mismatches)
+	}
+}
+
+// recursiveBaseFixtureYAML is the recursive fixture with Condition as a base,
+// as the spec's QueryConditionDto is: a discriminator and a mapping, and each
+// member allOf the base. The view replaces each use of it.
+const recursiveBaseFixtureYAML = `openapi: 3.1.0
+info: { title: recursive base fixture, version: "1" }
+paths:
+  /group:
+    get:
+      operationId: getGroup
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+components:
+  schemas:
+    Condition:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string }
+      discriminator:
+        propertyName: type
+        mapping:
+          simple: '#/components/schemas/Simple'
+          group: '#/components/schemas/Group'
+    Simple:
+      allOf:
+        - $ref: '#/components/schemas/Condition'
+        - type: object
+          required: [value]
+          properties:
+            value: { type: integer }
+    Group:
+      allOf:
+        - $ref: '#/components/schemas/Condition'
+        - type: object
+          required: [conditions]
+          properties:
+            conditions:
+              type: array
+              items:
+                $ref: '#/components/schemas/Condition'
+`
+
+// Through a use of a base, kin's own visitor checks the member the key
+// selects: one row per defect, naming the defect in that member.
+func TestValidator_BaseUse_RowNamesTheSelectedMember(t *testing.T) {
+	v := newSpecValidator(t, recursiveBaseFixtureYAML)
+	for name, c := range map[string]struct{ body, want string }{
+		"an unmapped key":          {`{"type":"group","conditions":[{"type":"zzz"}]}`, `discriminator property "type" has invalid value`},
+		"a defect in the member":   {`{"type":"group","conditions":[{"type":"simple","value":"x"}]}`, `Error at "/value": value must be an integer`},
+		"a member missing a field": {`{"type":"group","conditions":[{"type":"simple"}]}`, `property "value" is missing`},
+		"a defect two levels down": {`{"type":"group","conditions":[{"type":"group","conditions":[{"type":"simple","value":"x"}]}]}`, `Error at "/value": value must be an integer`},
+	} {
+		mismatches := validateBody(t, v, "/group", c.body)
+		if len(mismatches) != 1 {
+			t.Errorf("%s: expected exactly 1 mismatch, got %d: %+v", name, len(mismatches), mismatches)
+			continue
+		}
+		// "conditions" is missing only where the group member is checked
+		// against a value whose key selects another member.
+		if r := mismatches[0].Reason; !strings.Contains(r, c.want) || strings.Contains(r, `property "conditions" is missing`) {
+			t.Errorf("%s: reason does not name the selected member's defect %s:\n%.600s", name, c.want, r)
+		}
+	}
+	if m := validateBody(t, v, "/group", `{"type":"group","conditions":[{"type":"simple","value":1},{"type":"group","conditions":[]}]}`); len(m) != 0 {
+		t.Errorf("valid body refused: %+v", m)
+	}
+}
+
+// With a JSON Schema 2020-12 keyword on the group, kin checks the group with
+// its JSON Schema 2020-12 validator, which knows no discriminator; a use of
+// the base still takes only a mapped key, on the member it names.
+func TestValidator_BaseUse_JSONSchema2020Path(t *testing.T) {
+	yaml := strings.Replace(recursiveBaseFixtureYAML,
+		"    Group:\n      allOf:\n",
+		"    Group:\n      propertyNames: {pattern: '^[a-z]+$'}\n      allOf:\n", 1)
+	if yaml == recursiveBaseFixtureYAML {
+		t.Fatal("fixture Group block not found")
+	}
+	v := newSpecValidator(t, yaml)
+	requireJSONSchema2020Path(t, v)
+	for name, body := range map[string]string{
+		"an unmapped key":               `{"type":"group","conditions":[{"type":"zzz","value":1}]}`,
+		"a key on another member shape": `{"type":"group","conditions":[{"type":"group","value":1}]}`,
+		"a defect two levels down":      `{"type":"group","conditions":[{"type":"group","conditions":[{"type":"simple","value":"x"}]}]}`,
+	} {
+		if m := validateBody(t, v, "/group", body); len(m) == 0 {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	if m := validateBody(t, v, "/group", `{"type":"group","conditions":[{"type":"simple","value":1},{"type":"group","conditions":[]}]}`); len(m) != 0 {
+		t.Errorf("valid body refused: %+v", m)
+	}
+}
+
+// A base need not require its discriminator property, as ProcessorDefinitionDto
+// does not. kin's visitor still refuses a use without it; on kin's JSON Schema
+// 2020-12 path the members' key limits refuse it.
+func TestValidator_BaseUse_OptionalKeyStillRequired(t *testing.T) {
+	yaml := strings.Replace(recursiveBaseFixtureYAML,
+		"    Group:\n      allOf:\n",
+		"    Group:\n      propertyNames: {pattern: '^[a-z]+$'}\n      allOf:\n", 1)
+	yaml = strings.Replace(yaml, "    Condition:\n      type: object\n      required: [type]\n", "    Condition:\n      type: object\n", 1)
+	if !strings.Contains(yaml, "propertyNames") || strings.Contains(yaml, "required: [type]") {
+		t.Fatal("fixture blocks not found")
+	}
+	v := newSpecValidator(t, yaml)
+	requireJSONSchema2020Path(t, v)
+	if m := validateBody(t, v, "/group", `{"type":"group","conditions":[{"value":1}]}`); len(m) == 0 {
+		t.Error("a use of the base without its key accepted")
+	}
+}
+
+// requireJSONSchema2020Path fails the test unless kin checks v's Group schema
+// with its JSON Schema 2020-12 validator, whose error holds the
+// jsonschema.ValidationError of the library.
+func requireJSONSchema2020Path(t *testing.T, v *Validator) {
+	t.Helper()
+	group := v.doc.Components.Schemas["Group"].Value
+	err := group.VisitJSON(map[string]any{"type": "group", "conditions": []any{nil}}, openapi3.EnableJSONSchema2020())
+	var ve *jsonschema.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("Group is not checked by kin's JSON Schema 2020-12 validator: %v", err)
+	}
+}
+
+// On kin's JSON Schema 2020-12 path the Validator writes its rows from kin's
+// error tree: one row per defect, at the defect's JSON pointer, naming the
+// defect in the member the key selects.
+func TestValidator_JSONSchema2020Rows(t *testing.T) {
+	yaml := strings.Replace(recursiveBaseFixtureYAML,
+		"    Group:\n      allOf:\n",
+		"    Group:\n      propertyNames: {pattern: '^[a-z]+$'}\n      allOf:\n", 1)
+	if yaml == recursiveBaseFixtureYAML {
+		t.Fatal("fixture Group block not found")
+	}
+	v := newSpecValidator(t, yaml)
+	requireJSONSchema2020Path(t, v)
+	for name, c := range map[string]struct {
+		body string
+		want []string
+	}{
+		"an unmapped key": {`{"type":"group","conditions":[{"type":"zzz"}]}`,
+			[]string{`Error at "/conditions/0/type": "zzz" is not one of the mapped keys "group", "simple"`}},
+		"a missing key": {`{"type":"group","conditions":[{"value":1}]}`,
+			[]string{`Error at "/conditions/0": missing discriminator property "type"`}},
+		"a defect two levels down": {`{"type":"group","conditions":[{"type":"group","conditions":[{"type":"simple","value":"x"}]}]}`,
+			[]string{`Error at "/conditions/0/conditions/0/value": got string, want integer`}},
+		"two defects": {`{"type":"group","conditions":[{"type":"simple","value":"x"},{"type":"simple"}]}`,
+			[]string{`Error at "/conditions/0/value": got string, want integer`, `Error at "/conditions/1": missing property 'value'`}},
+		"a null member": {`{"type":"group","conditions":[null]}`,
+			[]string{`Error at "/conditions/0": got null, want object`}},
+		"a property name the group refuses": {`{"type":"group","conditions":[],"Bad":1}`,
+			[]string{`Error at a property name: 'Bad' does not match pattern '^[a-z]+$'`}},
+	} {
+		var got []string
+		for _, m := range validateBody(t, v, "/group", c.body) {
+			got = append(got, m.Reason)
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s:\n got  %q\n want %q", name, got, c.want)
+		}
 	}
 }

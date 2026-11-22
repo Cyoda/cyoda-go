@@ -3,7 +3,6 @@ package openapivalidator
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,8 +20,8 @@ import (
 // the matched operation's declared schema.
 //
 // IncludeResponseStatus=true is load-bearing: openapi3filter's default
-// behavior is to silently pass undeclared status codes (verified against
-// kin-openapi v0.137.0 openapi3filter/validate_response.go:48-58). Without
+// behavior is to silently pass undeclared status codes (kin-openapi v0.153.0
+// openapi3filter/validate_response.go:52-58). Without
 // this flag the validator misses an entire class of drift.
 //
 // MultiError=true accumulates all schema errors per response rather than
@@ -39,10 +38,9 @@ import (
 // declared; full schema validation requires a proper routers.Route which the
 // fallback path cannot construct without re-entering the broken router).
 type Validator struct {
-	doc       *openapi3.T
-	router    routers.Router
-	opts      *openapi3filter.Options
-	recursive map[*openapi3.Schema]bool // see checkRecursive
+	doc    *openapi3.T
+	router routers.Router
+	opts   *openapi3filter.Options
 }
 
 // NewValidator builds a Validator from a parsed OpenAPI 3.1 document.
@@ -58,10 +56,9 @@ func NewValidator(doc *openapi3.T) (*Validator, error) {
 		return nil, fmt.Errorf("build router: %w", err)
 	}
 	return &Validator{
-		doc:       doc,
-		router:    router,
-		opts:      validatorOptions(),
-		recursive: recursiveSchemas(doc),
+		doc:    doc,
+		router: router,
+		opts:   validatorOptions(),
 	}, nil
 }
 
@@ -185,18 +182,9 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		return nil
 	}
 
-	// Read response body for validation. The middleware passed the captured
-	// bytes via resp.Body; they are buffered here because both kin and
-	// checkRecursive read them.
-	var body []byte
-	if resp.Body != nil {
-		var err error
-		body, err = io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		if err != nil {
-			return v.toMismatches(fmt.Errorf("failed to read response body: %w", err), opId, req, resp.StatusCode)
-		}
+	body := resp.Body
+	if body == nil {
+		body = http.NoBody // kin closes the body it reads
 	}
 	// Options must be set on ResponseValidationInput — ValidateResponse reads
 	// input.Options (not input.RequestValidationInput.Options).
@@ -207,15 +195,12 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		},
 		Status:  resp.StatusCode,
 		Header:  resp.Header,
-		Body:    io.NopCloser(bytes.NewReader(body)),
+		Body:    body,
 		Options: v.opts,
 	}
 	kinErr := openapi3filter.ValidateResponse(ctx, input)
 	if kinErr != nil {
 		mismatches = v.toMismatches(kinErr, opId, req, resp.StatusCode)
-	}
-	if err := v.checkRecursive(route, req, resp.StatusCode, resp.Header, body, kinErr); err != nil {
-		mismatches = append(mismatches, v.toMismatches(err, opId, req, resp.StatusCode)...)
 	}
 	return mismatches
 }
@@ -471,12 +456,39 @@ func (v *Validator) toMismatches(err error, opId string, req *http.Request, stat
 	return out
 }
 
-// schemaErrors unwraps a kin-openapi MultiError into its errors, so each
-// schema problem becomes its own row; any other error is returned alone.
+// schemaErrors returns the rows of a kin-openapi error. It splits kin's
+// top-level MultiError — err itself, or the cause of a response error — into
+// its errors, so each schema problem kin's own visitor finds becomes its own
+// row; a MultiError nested inside one problem, such as the errors of a
+// union's members, stays in its row. An error of kin's JSON Schema 2020-12
+// validator, which covers the whole value, becomes the rows jsonSchemaRows
+// writes from it. Any other error is returned alone.
 func schemaErrors(err error) []error {
-	var multi openapi3.MultiError
-	if errors.As(err, &multi) {
-		return multi
+	errs := []error{err}
+	if re, ok := err.(*openapi3filter.ResponseError); ok {
+		if rows, ok := jsonSchemaRows(re.Err); ok {
+			if strings.HasPrefix(re.Reason, "response body ") {
+				return rows
+			}
+			for i, r := range rows { // a header's rows name the header
+				rows[i] = fmt.Errorf("%s: %w", re.Reason, r)
+			}
+			return rows
+		}
+		if multi, ok := re.Err.(openapi3.MultiError); ok {
+			errs = multi
+		}
 	}
-	return []error{err}
+	if multi, ok := err.(openapi3.MultiError); ok {
+		errs = multi
+	}
+	var out []error
+	for _, e := range errs {
+		if rows, ok := jsonSchemaRows(e); ok {
+			out = append(out, rows...)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

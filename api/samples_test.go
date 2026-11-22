@@ -420,8 +420,8 @@ func TestSampleCoverage(t *testing.T) {
 	if !c.auditPage {
 		t.Error("no valid audit page holding every audit member and a STATE_MACHINE_FINISH with a stop reason")
 	}
-	// kin accepts any value where a schema recurs; these samples show that
-	// ValidateValue's walk refuses one in a group and in a group in a group.
+	// A value below a recursion of the group schema is checked too: these
+	// samples are refused in a group and in a group in a group.
 	for name, depth := range map[string]int{
 		"condition-group-holding-null":          1,
 		"condition-group-holding-number":        1,

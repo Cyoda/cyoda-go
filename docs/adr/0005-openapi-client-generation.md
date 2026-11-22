@@ -52,8 +52,9 @@ ADR 0003 decision 4 requires a discriminated union to carry "an explicit
 unknown/default variant". Neither generator can declare such a variant: there is
 no schema form that both generators read as "any other value".
 
-The e2e response validator, kin-openapi v0.149.0, differs from JSON Schema in two
-ways that matter for the base form: it checks a value against a base's own
+The e2e response validator, kin-openapi, differs from JSON Schema in two ways
+that matter for the base form (the validator view under Enforcement makes up
+for both): it checks a value against a base's own
 properties only and follows a mapping only on a `oneOf`, so `{"type":"nosuch"}`
 passes `QueryConditionDto`; and it refuses `null` for an untyped schema, which
 JSON Schema accepts.
@@ -122,15 +123,30 @@ decision 4 to the forms of Rule 1; it does not change that decision.
 - *The validator view* (`internal/e2e/openapivalidator`, `ApplyView`). The e2e
   validator checks responses against a view of the spec built once at load; the
   published spec does not change. Each use of a base becomes a `oneOf` of the
-  mapping's targets carrying the base's discriminator, so kin checks the member
-  the discriminator selects and refuses an unmapped value. Each untyped schema
-  whose `not` does not exclude `null` is marked nullable, and so is each
-  `[{type: "null"}, {$ref}]` union. No other schema is marked: a member, a
-  replaced use and a typed schema keep refusing `null`. kin accepts any value at
-  a position where a schema recurs (a group's `conditions`, a function's
-  pre-check), so the validator's recursive walk checks those values with a fresh
-  visit. `ValidateValue` runs kin and the same walk; the `api/` tests validate
-  the spec's examples and the wire samples with it, so samples, examples and
+  mapping's targets carrying the base's discriminator, so kin's own visitor
+  checks the member the discriminator selects and refuses an unmapped value.
+  kin checks a schema with its JSON Schema 2020-12 validator unless the schema
+  holds a component reference and reaches no JSON Schema 2020-12 keyword, or
+  that validator cannot compile it for another reason than an unresolved
+  reference. That validator knows no discriminator, so each mapping target also
+  requires the discriminator property and limits it to the keys that map to it,
+  and the `oneOf` matches only the member the key names; a member used directly
+  takes only its own keys. A target in two mappings, or one that is itself a
+  base, is refused when the view is built. That validator returns one error for
+  the whole value; the e2e validator writes it as one row per defect, at the
+  failing value's JSON pointer, leaving out the union members that refuse the
+  value's kind, or under a discriminator its key, unless every member does,
+  and as one row for an absent key or one the discriminator's mapping lacks. The
+  library gives a property name's error no reliable location, so its row names
+  no pointer. Each untyped schema whose `not` does not exclude `null` is given
+  every JSON type, `null` included: for a 3.1 document kin ignores `nullable`
+  and accepts `null` only where the type lists it. An untyped schema whose
+  answer for `null` depends on an `enum`, a `const` or a `not` beyond a type is
+  refused when the view is built. No other schema is given `null`: a member, a
+  replaced use and a typed schema keep refusing it. kin applies a recursive
+  schema to each nested value (a group's `conditions`, a function's pre-check)
+  itself. `ValidateValue` runs kin on one value; the `api/` tests validate the
+  spec's examples and the wire samples with it, so samples, examples and
   responses are checked the same way.
 - *The client-generation check* (`api/clientprobe/`, CI job
   `openapi-client-generation.yml`, `make client-probe` locally). A Maven project

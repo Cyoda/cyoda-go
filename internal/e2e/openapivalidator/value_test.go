@@ -24,21 +24,19 @@ func validateFixtureValue(t *testing.T, schema, value string, opts ...openapi3.S
 	return ValidateValue(doc, doc.Components.Schemas[schema].Value, v, opts...)
 }
 
-// kin accepts any value where Group recurs, so these pass a plain VisitJSON;
-// ValidateValue reports each of them.
+// A defect in a value below a recursion of Group is reported, with a chain of
+// pointers, each relative to the one before.
 func TestValidateValue_ReportsValuesWhereASchemaRecurs(t *testing.T) {
 	for name, c := range map[string]struct {
 		value string
 		want  string
 	}{
-		"null in a group":            {`{"type":"group","conditions":[null]}`, `recursive schema at "/conditions/0": Value is not nullable`},
-		"a number in a group":        {`{"type":"group","conditions":[42]}`, `recursive schema at "/conditions/0": `},
-		"a string in a group":        {`{"type":"group","conditions":["x"]}`, `recursive schema at "/conditions/0": `},
-		"null in a group in a group": {`{"type":"group","conditions":[{"type":"group","conditions":[null]}]}`, `recursive schema at "/conditions/0/conditions/0": Value is not nullable`},
-		// The fresh check of the group at /conditions/0 reports its own
-		// /conditions/0, the simple condition, with a path relative to it.
+		"null in a group":            {`{"type":"group","conditions":[null]}`, `Error at "/conditions/0": doesn't match schema due to: Value is not nullable`},
+		"a number in a group":        {`{"type":"group","conditions":[42]}`, `Error at "/conditions/0": doesn't match schema due to: value must be an object`},
+		"a string in a group":        {`{"type":"group","conditions":["x"]}`, `Error at "/conditions/0": doesn't match schema due to: value must be an object`},
+		"null in a group in a group": {`{"type":"group","conditions":[{"type":"group","conditions":[null]}]}`, `Error at "/conditions/0": doesn't match schema due to: Error at "/conditions/0": doesn't match schema due to: Value is not nullable`},
 		"a defect two levels down": {`{"type":"group","conditions":[{"type":"group","conditions":[
-			{"type":"simple","value":"not-an-integer"}]}]}`, `recursive schema at "/conditions/0": Error at "/conditions/0": doesn't match schema due to: Error at "/value": value must be an integer`},
+			{"type":"simple","value":"not-an-integer"}]}]}`, `Error at "/conditions/0": doesn't match schema due to: Error at "/conditions/0": doesn't match schema due to: Error at "/value": value must be an integer`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := validateFixtureValue(t, "Group", c.value)
@@ -52,8 +50,9 @@ func TestValidateValue_ReportsValuesWhereASchemaRecurs(t *testing.T) {
 	}
 }
 
-// Every defect is listed, kin's own and the walk's, each once.
-func TestValidateValue_ListsEveryDefectOnce(t *testing.T) {
+// Every defect is listed: one row per top-level condition, and the two
+// defects of the nested group inside its row.
+func TestValidateValue_ListsEveryDefect(t *testing.T) {
 	err := validateFixtureValue(t, "Group", `{"type":"group","conditions":[
 		{"type":"simple","value":"a"},
 		{"type":"group","conditions":[null, {"type":"simple","value":"b"}]}]}`)
@@ -61,13 +60,24 @@ func TestValidateValue_ListsEveryDefectOnce(t *testing.T) {
 	if !errors.As(err, &multi) {
 		t.Fatalf("want a MultiError, got %T: %v", err, err)
 	}
-	if len(multi) != 3 {
-		t.Fatalf("want 3 defects (kin's /conditions/0 and the walk's two), got %d: %v", len(multi), multi)
+	if len(multi) != 2 {
+		t.Fatalf("want 2 rows (/conditions/0 and /conditions/1), got %d: %v", len(multi), multi)
+	}
+	for i, want := range []string{
+		`Error at "/conditions/0": doesn't match schema due to: Error at "/value": value must be an integer`,
+		`Error at "/conditions/1": doesn't match schema due to: Error at "/conditions/0": doesn't match schema due to: Value is not nullable`,
+	} {
+		if !strings.Contains(multi[i].Error(), want) {
+			t.Errorf("row %d = %v\nwant it to contain %s", i, multi[i], want)
+		}
+	}
+	if want := `Error at "/conditions/1": doesn't match schema due to: Error at "/value": value must be an integer`; !strings.Contains(multi[1].Error(), want) {
+		t.Errorf("row 1 = %v\nwant it to contain %s", multi[1], want)
 	}
 }
 
-// kin refuses a null no union member accepts once per member, with the same
-// pointer and reason; ValidateValue lists it once.
+// kin refuses a null no union member accepts with one error that holds each
+// member's; ValidateValue splits only the top level, so it lists one row.
 func TestValidateValue_KinRowsListedOnce(t *testing.T) {
 	err := validateFixtureValue(t, "Condition", `null`)
 	var multi openapi3.MultiError

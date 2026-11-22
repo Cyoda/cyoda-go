@@ -2,9 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/cyoda/cyoda-go/internal/e2e/openapivalidator"
 )
@@ -133,8 +136,7 @@ func TestCriterionShapesValidate(t *testing.T) {
 		{"function member in a group (refused in search)", group, `{"type":"group","operator":"AND","conditions":[{"type":"function","function":{"name":"f"}}]}`, true},
 		{"unknown member in a group", group, `{"type":"group","operator":"AND","conditions":[{"type":"bogus"}]}`, false},
 		{"group with an unknown operator", group, `{"type":"group","operator":"XOR","conditions":[]}`, false},
-		// kin accepts any value where a schema recurs; ValidateValue's walk
-		// checks it.
+		// A value below a recursion of the group schema is checked too.
 		{"null in a group", group, `{"type":"group","operator":"AND","conditions":[null]}`, false},
 		{"a number in a group", group, `{"type":"group","operator":"AND","conditions":[42]}`, false},
 		{"a string in a group", group, `{"type":"group","operator":"AND","conditions":["x"]}`, false},
@@ -157,4 +159,100 @@ func TestCriterionShapesValidate(t *testing.T) {
 		{"lifecycle without value", lifecycle, `{"type":"lifecycle","field":"state","operatorType":"NOT_NULL"}`, true},
 		{"lifecycle value object", lifecycle, `{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":{"k":1}}`, false},
 	})
+}
+
+// The workflow export reaches a JSON Schema 2020-12 keyword (propertyNames on
+// states), so kin checks it with its JSON Schema 2020-12 validator, which
+// knows no discriminator. A criterion still takes only a mapped type, checked
+// against the member the mapping names.
+func TestExportedCriterionDiscriminatesByType(t *testing.T) {
+	doc := viewedSpec(t)
+	export := doc.Paths.Value("/model/{entityName}/{modelVersion}/workflow/export").Get.
+		Responses.Status(200).Value.Content.Get("application/json").Schema.Value
+	decode := func(s string) any {
+		var v any
+		if err := json.Unmarshal([]byte(s), &v); err != nil {
+			t.Fatalf("bad test JSON %s: %v", s, err)
+		}
+		return v
+	}
+	withTransition := func(field, value string) any {
+		return map[string]any{"entityName": "e", "modelVersion": 1, "workflows": []any{map[string]any{
+			"version": "1.0", "name": "w", "initialState": "a", "active": true,
+			"states": map[string]any{"a": map[string]any{"transitions": []any{map[string]any{
+				"name": "t", "next": "a", "manual": true, field: decode(value)}}}}}}}
+	}
+	body := func(criterion string) any { return withTransition("criterion", criterion) }
+	var ve *jsonschema.ValidationError
+	if err := export.VisitJSON(body(`{"type":"nosuch"}`), openapi3.EnableJSONSchema2020()); !errors.As(err, &ve) {
+		t.Fatalf("the export is not checked by kin's JSON Schema 2020-12 validator: %v", err)
+	}
+	// Its rows are written from kin's error tree: one per defect, at the
+	// defect's JSON pointer, in the member the key selects.
+	twoDefects := withTransition("criterion", `{"type":"lifecycle","field":"state","operatorType":"NOPE","value":"x"}`)
+	twoDefects.(map[string]any)["workflows"].([]any)[0].(map[string]any)["states"].(map[string]any)["a"].(map[string]any)["transitions"].([]any)[0].(map[string]any)["processors"] = decode(`[{"type":"externalized","name":""}]`)
+	// One defect gives one row, in the member the key selects, also through
+	// a group and through a function's nullable pre-check.
+	const at = `Error at "/workflows/0/states/a/transitions/0/criterion`
+	for name, c := range map[string]struct{ criterion, row string }{
+		"a bad operator":           {`{"type":"lifecycle","field":"state","operatorType":"NOPE","value":"x"}`, at + `/operatorType": value must be one of`},
+		"a missing jsonPath":       {`{"type":"simple","operatorType":"EQUALS","value":1}`, at + `": missing property 'jsonPath'`},
+		"a bad condition in group": {`{"type":"group","operator":"AND","conditions":[{"type":"lifecycle","field":"state","operatorType":"NOPE","value":"x"}]}`, at + `/conditions/0/operatorType": value must be one of`},
+		"a bad pre-check":          {`{"type":"function","function":{"name":"f","criterion":{"type":"lifecycle","field":"state","operatorType":"NOPE","value":"x"}}}`, at + `/function/criterion/operatorType": value must be one of`},
+	} {
+		var rows openapi3.MultiError
+		if err := openapivalidator.ValidateValue(doc, export, body(c.criterion)); !errors.As(err, &rows) || len(rows) != 1 || !strings.HasPrefix(rows[0].Error(), c.row) {
+			t.Errorf("%s: want the one row %s…, got %v", name, c.row, err)
+		}
+	}
+	// A state name is a property name, whose row gives no pointer.
+	emptyState := withTransition("criterion", `{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"x"}`)
+	states := emptyState.(map[string]any)["workflows"].([]any)[0].(map[string]any)["states"].(map[string]any)
+	states[""] = map[string]any{"transitions": []any{}}
+	var named openapi3.MultiError
+	if err := openapivalidator.ValidateValue(doc, export, emptyState); !errors.As(err, &named) || len(named) != 1 ||
+		named[0].Error() != `Error at a property name: minLength: got 0, want 1` {
+		t.Errorf("an empty state name: want one property-name row, got %v", err)
+	}
+	var multi openapi3.MultiError
+	if err := openapivalidator.ValidateValue(doc, export, twoDefects); !errors.As(err, &multi) || len(multi) != 2 ||
+		!strings.HasPrefix(multi[0].Error(), `Error at "/workflows/0/states/a/transitions/0/criterion/operatorType": value must be one of`) ||
+		multi[1].Error() != `Error at "/workflows/0/states/a/transitions/0/processors/0/name": minLength: got 0, want 1` {
+		t.Errorf("two defects: want one row each, got %v", err)
+	}
+	// ProcessorDefinitionDto does not require its discriminator property; a
+	// use of it still takes only a processor with a mapped type.
+	for name, c := range map[string]struct {
+		processors string
+		valid      bool
+	}{
+		"an externalized processor":  {`[{"type":"externalized","name":"p"}]`, true},
+		"a processor without a type": {`[{"name":"p"}]`, false},
+		"a processor of no type":     {`[{"type":"nosuch","name":"p"}]`, false},
+	} {
+		err := openapivalidator.ValidateValue(doc, export, withTransition("processors", c.processors))
+		if c.valid && err != nil {
+			t.Errorf("%s refused: %v", name, err)
+		}
+		if !c.valid && err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	for name, c := range map[string]struct {
+		criterion string
+		valid     bool
+	}{
+		"a lifecycle condition":              {`{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"NEW"}`, true},
+		"an unmapped type":                   {`{"type":"nosuch","field":"state","operatorType":"EQUALS","value":"NEW"}`, false},
+		"a simple type on a lifecycle shape": {`{"type":"simple","field":"state","operatorType":"EQUALS","value":"NEW"}`, false},
+		"a lifecycle shape without a type":   {`{"field":"state","operatorType":"EQUALS","value":"NEW"}`, false},
+	} {
+		err := openapivalidator.ValidateValue(doc, export, body(c.criterion))
+		if c.valid && err != nil {
+			t.Errorf("%s refused: %v", name, err)
+		}
+		if !c.valid && err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
 }
