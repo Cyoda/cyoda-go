@@ -127,7 +127,8 @@ decision 4 to the forms of Rule 1; it does not change that decision.
   checks the member the discriminator selects and refuses an unmapped value.
   kin checks a schema with its JSON Schema 2020-12 validator unless the schema
   holds a component reference and reaches no JSON Schema 2020-12 keyword, or
-  the validator cannot compile it; that
+  the validator cannot compile it for another reason than an unresolved
+  reference; that
   validator knows no discriminator, so each mapping target also requires the
   discriminator property and limits it to the keys that map to it, and the
   `oneOf` matches only the member the key names; a member used directly takes

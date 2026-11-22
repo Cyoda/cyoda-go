@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -17,24 +18,29 @@ import (
 
 // kin-openapi checks a schema of a 3.1 document with its JSON Schema 2020-12
 // validator (santhosh-tekuri/jsonschema) unless the schema holds a component
-// reference and reaches no JSON Schema 2020-12 keyword. That validator returns
+// reference and reaches no JSON Schema 2020-12 keyword, or the library cannot
+// compile it for another reason than an unresolved reference (kin
+// openapi3/schema_jsonschema_validator.go:400-421). The library returns
 // one error for the whole value. kin converts its tree of errors into a tree
 // of SchemaErrors: each node carries the JSON pointer of the failing value and
-// the failing keyword, each leaf the library's error. kin's text of that tree
+// the failing keyword, each leaf the library's error. A node that wraps one
+// cause, such as a failing $ref, carries the keyword of its innermost cause. kin's text of that tree
 // repeats the errors of every member of every union, and segments of each
 // pointer. jsonSchemaRows writes the tree as rows instead.
 
 // jsonSchemaRows returns the rows of err when err is a SchemaError of kin's
 // JSON Schema 2020-12 validator, and false otherwise. A row is a leaf of the
 // tree: the JSON pointer of the failing value and the library's message.
-// Below a oneOf, only the members the value can be are followed:
+// Below a oneOf, only the members the value can be are followed. Whether a member refuses the value is judged from the member's
+// own errors, not those of a union inside it:
 //   - a member that refuses the kind of the value (an object for null, say)
 //     is left out, unless every member does;
 //   - under a discriminator, a member that refuses the value's key is left
-//     out; when every member does, the key is the defect, and one row says so.
+//     out; when every member does and the key is absent or not mapped, the
+//     key is the defect, and one row says so.
 //
-// The rows are sorted by JSON pointer, then message; a row whose text equals
-// another's is left out.
+// The rows are sorted by JSON pointer, array indexes in numeric order, then by
+// message; a row whose text equals another's is left out.
 func jsonSchemaRows(err error) ([]error, bool) {
 	se, ok := err.(*openapi3.SchemaError)
 	if !ok {
@@ -47,7 +53,7 @@ func jsonSchemaRows(err error) ([]error, bool) {
 	b := &rowBuilder{seen: map[string]bool{}}
 	b.node(se)
 	slices.SortFunc(b.rows, func(x, y jsonSchemaRow) int {
-		return cmp.Or(strings.Compare(x.pointer, y.pointer), strings.Compare(x.message, y.message))
+		return cmp.Or(comparePointers(x.pointer, y.pointer), strings.Compare(x.message, y.message))
 	})
 	rows := make([]error, len(b.rows))
 	for i, r := range b.rows {
@@ -108,7 +114,7 @@ func (b *rowBuilder) leaf(se *openapi3.SchemaError) {
 func (b *rowBuilder) members(se *openapi3.SchemaError, kids []*openapi3.SchemaError) []*openapi3.SchemaError {
 	at := pointerOf(se.JSONPointer())
 	fits := slices.DeleteFunc(slices.Clone(kids), func(k *openapi3.SchemaError) bool {
-		return anyLeaf(k, func(l *openapi3.SchemaError) bool {
+		return ownLeaf(k, func(l *openapi3.SchemaError) bool {
 			return l.SchemaField == "type" && pointerOf(l.JSONPointer()) == at
 		})
 	})
@@ -127,6 +133,13 @@ func (b *rowBuilder) members(se *openapi3.SchemaError, kids []*openapi3.SchemaEr
 	}
 	obj, _ := se.Value.(map[string]any)
 	key, present := obj[d.PropertyName]
+	if s, ok := key.(string); ok {
+		if _, mapped := d.Mapping[s]; mapped {
+			// A mapped key is not the defect. A node that wraps the union
+			// (a failing $ref) gets here too, with the union as its member.
+			return fits
+		}
+	}
 	if !present {
 		b.add(jsonSchemaRow{pointer: at, message: fmt.Sprintf("missing discriminator property %q", d.PropertyName)})
 		return nil
@@ -155,7 +168,7 @@ func (b *rowBuilder) members(se *openapi3.SchemaError, kids []*openapi3.SchemaEr
 // missing from a required list.
 func refusesKey(k *openapi3.SchemaError, at, property string) bool {
 	keyAt := at + "/" + pointerEscaper.Replace(property)
-	return anyLeaf(k, func(l *openapi3.SchemaError) bool {
+	return ownLeaf(k, func(l *openapi3.SchemaError) bool {
 		p := pointerOf(l.JSONPointer())
 		if p == keyAt {
 			return true
@@ -185,12 +198,35 @@ func children(se *openapi3.SchemaError) []*openapi3.SchemaError {
 	return out
 }
 
-func anyLeaf(se *openapi3.SchemaError, f func(*openapi3.SchemaError) bool) bool {
+// ownLeaf reports whether f holds for a leaf of the member error se, not
+// counting the leaves below a union inside the member.
+func ownLeaf(se *openapi3.SchemaError, f func(*openapi3.SchemaError) bool) bool {
 	kids := children(se)
 	if len(kids) == 0 {
 		return f(se)
 	}
-	return slices.ContainsFunc(kids, func(k *openapi3.SchemaError) bool { return anyLeaf(k, f) })
+	return slices.ContainsFunc(kids, func(k *openapi3.SchemaError) bool {
+		return k.SchemaField != "oneOf" && k.SchemaField != "anyOf" && ownLeaf(k, f)
+	})
+}
+
+// comparePointers orders JSON pointers token by token, comparing two array
+// indexes as numbers.
+func comparePointers(x, y string) int {
+	xs, ys := strings.Split(x, "/"), strings.Split(y, "/")
+	for i := 0; i < len(xs) && i < len(ys); i++ {
+		xn, xerr := strconv.Atoi(xs[i])
+		yn, yerr := strconv.Atoi(ys[i])
+		if c := cmp.Compare(xs[i], ys[i]); xerr == nil && yerr == nil {
+			c = cmp.Compare(xn, yn)
+			if c != 0 {
+				return c
+			}
+		} else if c != 0 {
+			return c
+		}
+	}
+	return cmp.Compare(len(xs), len(ys))
 }
 
 func pointerOf(tokens []string) string {

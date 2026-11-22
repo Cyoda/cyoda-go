@@ -191,6 +191,20 @@ func TestExportedCriterionDiscriminatesByType(t *testing.T) {
 	// defect's JSON pointer, in the member the key selects.
 	twoDefects := withTransition("criterion", `{"type":"lifecycle","field":"state","operatorType":"NOPE","value":"x"}`)
 	twoDefects.(map[string]any)["workflows"].([]any)[0].(map[string]any)["states"].(map[string]any)["a"].(map[string]any)["transitions"].([]any)[0].(map[string]any)["processors"] = decode(`[{"type":"externalized","name":""}]`)
+	// One defect gives one row, in the member the key selects, also through
+	// a group and through a function's nullable pre-check.
+	const at = `Error at "/workflows/0/states/a/transitions/0/criterion`
+	for name, c := range map[string]struct{ criterion, row string }{
+		"a bad operator":           {`{"type":"lifecycle","field":"state","operatorType":"NOPE","value":"x"}`, at + `/operatorType": value must be one of`},
+		"a missing jsonPath":       {`{"type":"simple","operatorType":"EQUALS","value":1}`, at + `": missing property 'jsonPath'`},
+		"a bad condition in group": {`{"type":"group","operator":"AND","conditions":[{"type":"lifecycle","field":"state","operatorType":"NOPE","value":"x"}]}`, at + `/conditions/0/operatorType": value must be one of`},
+		"a bad pre-check":          {`{"type":"function","function":{"name":"f","criterion":{"type":"lifecycle","field":"state","operatorType":"NOPE","value":"x"}}}`, at + `/function/criterion/operatorType": value must be one of`},
+	} {
+		var rows openapi3.MultiError
+		if err := openapivalidator.ValidateValue(doc, export, body(c.criterion)); !errors.As(err, &rows) || len(rows) != 1 || !strings.HasPrefix(rows[0].Error(), c.row) {
+			t.Errorf("%s: want the one row %s…, got %v", name, c.row, err)
+		}
+	}
 	var multi openapi3.MultiError
 	if err := openapivalidator.ValidateValue(doc, export, twoDefects); !errors.As(err, &multi) || len(multi) != 2 ||
 		!strings.HasPrefix(multi[0].Error(), `Error at "/workflows/0/states/a/transitions/0/criterion/operatorType": value must be one of`) ||

@@ -466,8 +466,14 @@ func (v *Validator) toMismatches(err error, opId string, req *http.Request, stat
 func schemaErrors(err error) []error {
 	errs := []error{err}
 	if re, ok := err.(*openapi3filter.ResponseError); ok {
-		if _, ok := re.Err.(*openapi3.SchemaError); ok {
-			errs = []error{re.Err}
+		if rows, ok := jsonSchemaRows(re.Err); ok {
+			if strings.HasPrefix(re.Reason, "response body ") {
+				return rows
+			}
+			for i, r := range rows { // a header's rows name the header
+				rows[i] = fmt.Errorf("%s: %w", re.Reason, r)
+			}
+			return rows
 		}
 		if multi, ok := re.Err.(openapi3.MultiError); ok {
 			errs = multi
