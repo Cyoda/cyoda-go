@@ -311,8 +311,10 @@ The update lands either on the release-prep PR (if the matrix data is known pre-
 
 ### 7. Cut the release
 
-**Push the signed tag first, then create the Release against it.** The
-order matters: `gh release create` on a tag that does not yet exist creates
+**Push the signed tag; `release.yml` creates the Release.** GoReleaser
+publishes the GitHub Release from the tag (`release:` in `.goreleaser.yaml`),
+so there is no `gh release create` step for the binary. Never create the
+Release before the tag exists: `gh release create` on a missing tag creates
 one server-side, and that tag is **lightweight and unsigned**. That is how
 `v0.8.1` and `v0.8.2` shipped unsigned after the project had already
 committed to signing every tag.
@@ -321,16 +323,9 @@ committed to signing every tag.
 # or whatever this release is
 V=v0.6.0
 
-# 1. The tag. Signed and annotated, at the exact verified commit.
+# The tag. Signed and annotated, at the exact verified commit.
 git tag -s -a "$V" -m "Release $V" <sha>
 git push origin "$V"
-
-# 2. The Release page, against the tag that now exists.
-#    --verify-tag aborts rather than silently creating a lightweight one.
-gh release create "$V" \
-  --title "$V" \
-  --verify-tag \
-  --generate-notes
 ```
 
 Confirm the tag really is signed before moving on — a published version
@@ -339,10 +334,6 @@ cannot be re-cut:
 ```bash
 git cat-file -p "$V" | grep -q "BEGIN SSH SIGNATURE" && echo signed
 ```
-
-`--generate-notes` drafts release notes from merged PR titles since
-the previous tag. Edit in the browser before publishing if you want
-a hand-written summary on top of the PR list.
 
 The changelog is **not** the GitHub Release. `CHANGELOG.md` is maintained
 per release, and the narrative notes published to the docs site live in
@@ -360,11 +351,15 @@ verify:
 - Release appears on the Releases page with all expected archives,
   `.deb`/`.rpm` packages, `SHA256SUMS`, cosign signatures, SBOMs.
 - `ghcr.io/cyoda/cyoda:${V#v}` and `:latest` manifests exist. **Note the stripped `v`**: `.goreleaser.yaml` tags images from `{{ .Version }}`, which is the bare version, so `:v0.8.4` does not exist and `:0.8.4` does. Checking the prefixed form reports a good release as a failed one. The chart agrees with the registry here — it builds its image reference from `.Chart.AppVersion`, which is also unprefixed.
-- `cyoda/homebrew-cyoda-go` shows a new commit updating
-  `Formula/cyoda.rb` to `$V`.
+- `cyoda/homebrew-cyoda-go` shows a new commit updating `cyoda.rb` (at the
+  tap's root) to `$V`.
 - A PR titled `chore(helm): bump chart appVersion to $V` (labels:
   `helm`, `chart-release`) is opened automatically by
   `bump-chart-appversion.yml`. Proceed to step 8 to publish the chart.
+
+The SPI has no build workflow, so its Release is still made by hand, after its
+tag exists, with `gh release create $V --verify-tag` (see "Coordinated release
+across sibling repos").
 
 ### Coordinated release across sibling repos
 
@@ -483,9 +478,13 @@ Per-release procedure:
 
 1. **Amend the auto-PR**: also bump chart `version:` in
    `deploy/helm/cyoda/Chart.yaml` to match `$V` without the `v`
-   prefix. Both fields end up the same value — same convention as
-   plugin submodule tags.
-2. **Merge** the PR.
+   prefix, unless a chart change in the milestone already set it. Both
+   fields end up the same value — same convention as plugin submodule
+   tags. Record the released pair in `COMPATIBILITY.md`'s "Helm chart ×
+   binary" table in the same PR. The PR is opened by `github-actions`, so
+   its checks wait for approval (`action_required`); the commit you push
+   to it starts them.
+2. **Merge** the PR once its checks pass.
 3. **Tag the chart** at the merge commit on `main`:
    ```bash
    # the binary tag you just released
