@@ -28,6 +28,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   of any request that follows a version saved by X. There is no field for the
   current request's name; route on the state instead.
 
+- **SPI.** `EntityVersionMeta.Transition`: `EntityStore.GetVersionMetadata`
+  returns the transition each version was saved with, and none on a DELETED
+  tombstone. New conformance cases: `Entity/GetVersionMetadata/TransitionPerVersion`,
+  `Entity/GetVersionMetadata/TombstoneTransitionEmpty` and
+  `Entity/OneVersionPerTx/TransitionIsLastWrite`. A storage plugin that does
+  not meet them fails its conformance run.
+
 ### Added
 
 - **The change history records the transition each version's request named.**
