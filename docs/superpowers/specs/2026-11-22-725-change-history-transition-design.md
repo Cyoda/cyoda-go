@@ -74,8 +74,8 @@ Builder's calls:
    itself names `loopback` cannot be told apart from a save that named none;
    the help says so.
 6. **What a cascade sees — a behaviour change.**
-   - Today: what workflow selection, transition criteria and processor
-     criteria see in `transitionForLatestSave` (alias `previousTransition`)
+   - Today: what workflow selection and transition criteria (workflow
+     processors carry no criterion) see in `transitionForLatestSave` (alias `previousTransition`)
      depends on the door: on a named update (HTTP, gRPC update, gRPC
      transition, gRPC collection item) the request's own transition name; on
      a create, a loopback update, every collection create item (HTTP and

@@ -14,7 +14,7 @@
 
 - Wire name `transition` on every history surface; present when non-empty, absent otherwise (spec decision 4).
 - Values: the named transition; `loopback` for a save that named none; the scheduled task's transition for a scheduled firing; empty/absent on a `DELETED` tombstone (decision 5).
-- What the run evaluates (workflow selection, transition and processor criteria) sees the start version's `TransitionForLatestSave` for the whole run, boundary or not; every save cyoda makes for the request writes the request's name (decision 6).
+- What the run evaluates (workflow selection and transition criteria) sees the start version's `TransitionForLatestSave` for the whole run, boundary or not; every save cyoda makes for the request writes the request's name (decision 6).
 - No new status or error code; no migration.
 - TDD per `.claude/rules/tdd.md`: each behaviour change has a test watched failing first. Do not add `-count=1`; do not hand-roll `go test ./...` as verification (use `make test` and the touched packages).
 - Business time from `spi.Clock` only; `log/slog` only; no issue numbers in shipped artefacts (code, help, OpenAPI, errors, logs).
