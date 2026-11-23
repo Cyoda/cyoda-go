@@ -305,6 +305,8 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity) (*EngineResult
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
 	))
 	defer span.End()
+	// A create names no transition.
+	ctx = withSaveTransition(ctx, LoopbackTransition)
 
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
@@ -401,6 +403,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 	if err := refuseNULCallerText(transitionName, ifMatch); err != nil {
 		return nil, err
 	}
+	ctx = withSaveTransition(ctx, transitionName)
 
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
@@ -484,6 +487,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMat
 	if err := refuseNULCallerText("", ifMatch); err != nil {
 		return nil, err
 	}
+	ctx = withSaveTransition(ctx, LoopbackTransition)
 
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
@@ -998,7 +1002,7 @@ type criterionContext struct {
 	txID           string
 	workflowName   string
 	transitionName string
-	target         string // "WORKFLOW", "TRANSITION", "PROCESSOR"
+	target         string // "WORKFLOW" or "TRANSITION"
 }
 
 // evaluateCriterion evaluates a criterion against the entity in two phases.

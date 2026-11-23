@@ -50,8 +50,10 @@ var ErrAnchorSaveInfra = errors.New("saving the entity before a callout failed")
 //
 // It reads the anchor in the transaction and saves the in-memory anchor only
 // when its Data bytes or Meta.State differ from the read; meta-only changes do
-// not count. An anchor the transaction does not hold is a create's that is not
-// stored yet, and is saved: a callout never deletes the entity it runs for.
+// not count. The save records the request's transition name (stampedForSave);
+// the in-memory anchor keeps the start version's. An anchor the transaction
+// does not hold is a create's that is not stored yet, and is saved: a callout
+// never deletes the entity it runs for.
 //
 // It never acquires the txcoord gate. The caller runs it in the chain's scope,
 // before beforeDispatch and before txcoord.Pause: a failure has dispatched
@@ -70,7 +72,7 @@ func (e *Engine) saveAnchorBeforeCallout(ctx context.Context, entity *spi.Entity
 		return fmt.Errorf("failed to read entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
 	}
 	if !cur.found || !bytes.Equal(cur.data, entity.Data) || cur.state != entity.Meta.State {
-		if _, err := es.Save(ctx, entity); err != nil {
+		if _, err := es.Save(ctx, stampedForSave(ctx, entity)); err != nil {
 			return fmt.Errorf("failed to save entity before a callout: %w", errors.Join(ErrAnchorSaveInfra, err))
 		}
 	}
