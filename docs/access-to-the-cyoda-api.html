@@ -302,7 +302,7 @@ EOF</code></pre>
     <ul>
       <li>The approve transition is <code>manual: true</code>, and the check is a function criterion of that transition — not a processor, and not elsewhere — with <code>attachEntity</code> not set to <code>false</code>.</li>
       <li>The approval is a single-entity request from the backend that names the approve transition, never an item of a collection update (step 2 above already refuses a compute node's write-back). So the version the approval starts from is the newest committed version.</li>
-      <li>Nothing writes the entity between the submit and the approval. A write in between makes the check refuse; the entity is then submitted again.</li>
+      <li>Nothing writes the entity between the submit and the approval. A write in between that is not a submit makes the check refuse, and the entity is then submitted again; a submit in between becomes the newest submit, and the check compares the approver with its user.</li>
       <li>The approval request carries no data change: HTTP <code>PATCH</code> with the body <code>{}</code> on the route that names the transition, with <code>If-Match</code> set to the submit entry's <code>transactionId</code> or to <code>*</code>; gRPC <code>EntityPatchRequest</code> that names the approve transition in <code>transition</code>, with the patch <code>{}</code> and the required <code>ifMatch</code> (the submit entry's <code>transactionId</code> or <code>*</code>); or gRPC <code>EntityTransitionRequest</code> that names the approve transition. Step 3 of the check enforces this.</li>
     </ul>
     <p>The check, made with the compute node's own client token and without <code>pointInTime</code>:</p>

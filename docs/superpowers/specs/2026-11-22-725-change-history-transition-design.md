@@ -302,7 +302,7 @@ Waiver: the error cells are unchanged by this change and are not re-tested.
 | scheduled firing → scheduled name, on history and entity read | — | yes | extend `attribution` scheduled scenario | — | — |
 | `COMMIT_BEFORE_DISPATCH` boundary version carries the request's name | — | yes | extend `history_reads` boundary scenario | — | — |
 | multi-node: a forwarded request's versions carry its name | — | — | extend `multinode/attribution` | — | — |
-| criterion on `transitionForLatestSave` sees the start version's value: named update, loopback update, create (none), scheduled firing | engine | yes | yes | — | — |
+| criterion on `transitionForLatestSave` sees the start version's value: named update, loopback update, create (none), scheduled firing | engine (loopback, create; waived for named update and scheduled firing: the e2e, parity and gRPC rows cover them at the layer the behaviour lives in) | yes | yes | — | — |
 | same, HTTP collection create and update items (named and loopback) | — | yes | — | — | — |
 | same, gRPC update, patch, `EntityTransitionRequest`, collection create and update | — | — | — | yes | — |
 | a joined read of the entity during the run sees the request's name after the first save in the transaction | — | yes | — | — | — |
