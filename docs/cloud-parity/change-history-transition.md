@@ -69,7 +69,7 @@ name; route on the state instead.
 
 ## Cloud today
 
-Cloud's change history (`/changes`, gRPC `changeMeta`) and its `EntityChange`
+Tracked in CP-3998. Cloud's change history (`/changes`, gRPC `changeMeta`) and its `EntityChange`
 audit event carry no transition. To align, Cloud records the transition name on
 every version it writes, as above, returns it on the three surfaces when
 non-empty, and gives a delete none. Cloud also aligns what a cascade's criteria

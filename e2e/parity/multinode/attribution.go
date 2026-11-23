@@ -177,6 +177,18 @@ func RunAttribution_ProxiedJoinCascade(t *testing.T, fixture MultiNodeFixture) {
 		}
 	}
 
+	// An update that NAMES a transition, sent through the node that hosts no
+	// member (the owner of the cross-node primary's earlier transaction), is
+	// recorded with that name, read on every node.
+	if err := client.NewClient(urls[1], user.Token).UpdateEntity(t, crossNodePrimID, "Touch",
+		`{"name":"parent","amount":100,"status":"new"}`); err != nil {
+		t.Fatalf("named update through node 1: %v", err)
+	}
+	for i, u := range urls {
+		attrAssertTransitions(t, fmt.Sprintf("named update of %s read on node %d", crossNodePrimID, i),
+			client.NewClient(u, admin.Token), crossNodePrimID, "Touch", "loopback")
+	}
+
 	// The secondary's callout is a write-back cascade: for the transaction's
 	// origin, executed by the member's client — forwarded or not.
 	attrAssertCallout(t, "same-node secondary callout", attrObserved(t, cRead, sameNodeSecID), userID, "user", serviceID, "service")
@@ -375,7 +387,9 @@ func attrProcWorkflow(wfName, procName, execMode, tag, contextValue string) stri
 						"type": "externalized", "name": procName, "executionMode": execMode, "config": cfg,
 					}},
 				}}},
-				"ACTIVE": map[string]any{},
+				"ACTIVE": map[string]any{"transitions": []any{map[string]any{
+					"name": "Touch", "next": "ACTIVE", "manual": true,
+				}}},
 			},
 		}},
 	})
