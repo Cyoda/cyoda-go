@@ -144,13 +144,13 @@ func RunAttribution_ProxiedJoinCascade(t *testing.T, fixture MultiNodeFixture) {
 
 	// Same-node baseline: node 0 owns T AND hosts the member. Dispatch is local,
 	// the callback lands on the owner and joins locally — no cross-node hop.
-	sameNodeSecID := attrDriveCascade(t, client.NewClient(urls[0], user.Token), primary)
+	sameNodePrimID, sameNodeSecID := attrDriveCascade(t, client.NewClient(urls[0], user.Token), primary)
 
 	// Cross-node: node 1 owns T but hosts NO member. Dispatch forwards node1->
 	// node0 (A->B); the member's HTTP callback lands on node0 (a NON-owner for
 	// this T) and reverse-proxies back to node1, joining T there. This is the
 	// Join-origin-repopulation path — origin must survive both hops.
-	crossNodeSecID := attrDriveCascade(t, client.NewClient(urls[1], user.Token), primary)
+	crossNodePrimID, crossNodeSecID := attrDriveCascade(t, client.NewClient(urls[1], user.Token), primary)
 
 	// Both secondaries must attribute IDENTICALLY: origin = the user, executor
 	// = the member's service identity. Read the change from an arbitrary node
@@ -165,6 +165,17 @@ func RunAttribution_ProxiedJoinCascade(t *testing.T, fixture MultiNodeFixture) {
 	}
 	attrAssert(t, "same-node secondary", sameChange, userID, "user", "service", serviceID)
 	attrAssert(t, "cross-node secondary", crossChange, userID, "user", "service", serviceID)
+
+	// Each entity has one version, which records the name its save named,
+	// read on any node: the primary's create (the request) and the
+	// callback's create of the secondary, joined into the request's
+	// transaction, named no transition.
+	for i, u := range urls {
+		cNode := client.NewClient(u, admin.Token)
+		for _, id := range []uuid.UUID{sameNodePrimID, sameNodeSecID, crossNodePrimID, crossNodeSecID} {
+			attrAssertTransitions(t, fmt.Sprintf("entity %s read on node %d", id, i), cNode, id, "loopback")
+		}
+	}
 
 	// The secondary's callout is a write-back cascade: for the transaction's
 	// origin, executed by the member's client — forwarded or not.
@@ -184,9 +195,9 @@ func RunAttribution_ProxiedJoinCascade(t *testing.T, fixture MultiNodeFixture) {
 }
 
 // attrDriveCascade creates a primary through c (whose node becomes the tx
-// owner), waits for the SYNC cascade to complete, and returns the joined
-// secondary's id read from the primary's data.
-func attrDriveCascade(t *testing.T, c *client.Client, primary string) uuid.UUID {
+// owner), waits for the SYNC cascade to complete, and returns the primary's
+// id and the joined secondary's id read from the primary's data.
+func attrDriveCascade(t *testing.T, c *client.Client, primary string) (uuid.UUID, uuid.UUID) {
 	t.Helper()
 	primID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if err != nil {
@@ -207,7 +218,7 @@ func attrDriveCascade(t *testing.T, c *client.Client, primary string) uuid.UUID 
 	if err != nil {
 		t.Fatalf("parse secondaryId %q: %v", secID, err)
 	}
-	return id
+	return primID, id
 }
 
 // --- Scenario 2: cross-node scheduled fire attribution -----------------------
@@ -253,6 +264,12 @@ func RunAttribution_ScheduledFire(t *testing.T, fixture MultiNodeFixture) {
 		// contrast, is executed by the user. Select by executor kind.
 		fireChange := attrFindChangeByExecutorKind(t, cRead, id, "system")
 		attrAssert(t, fmt.Sprintf("scheduled fire #%d", i), fireChange, userID, "user", "system", "")
+		// The firing's version records the scheduled AutoClose, the create's
+		// "loopback", read on every node, whichever node fired it.
+		for n, u := range urls {
+			attrAssertTransitions(t, fmt.Sprintf("scheduled fire #%d read on node %d", i, n),
+				client.NewClient(u, admin.Token), id, "AutoClose", "loopback")
+		}
 		// The fire's callout, made by whichever node claimed the task and
 		// forwarded to the member-hosting node from any other: for the arming
 		// user, executed by the system.
@@ -399,6 +416,23 @@ func attrFindChangeByExecutorKind(t *testing.T, c *client.Client, entityID uuid.
 	}
 	t.Fatalf("no change with executor kind %q for %s (changes=%+v)", execKind, entityID, changes)
 	return client.EntityChangeMeta{}
+}
+
+// attrAssertTransitions requires the change history of entityID, read
+// through c, newest first, to record the transition names want.
+func attrAssertTransitions(t *testing.T, label string, c *client.Client, entityID uuid.UUID, want ...string) {
+	t.Helper()
+	changes, err := c.GetEntityChanges(t, entityID)
+	if err != nil {
+		t.Fatalf("%s: GetEntityChanges: %v", label, err)
+	}
+	got := make([]string, len(changes))
+	for i, ch := range changes {
+		got[i] = ch.Transition
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("%s: transitions, newest first = %q; want %q (changes=%+v)", label, got, want, changes)
+	}
 }
 
 // attrWaitForState polls until the entity reaches wantState, failing the test

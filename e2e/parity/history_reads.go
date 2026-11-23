@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"sort"
 	"testing"
 
 	"github.com/google/uuid"
@@ -280,11 +282,14 @@ func RunHistoryOneVersionPerTransaction(t *testing.T, fixture BackendFixture) {
 			t.Fatalf("by-transaction read of T by %s is %s with status %v; want the transaction's last write, OPEN with status second",
 				txID, e.Meta.State, e.Data["status"])
 		}
+		// T's version records the joined write that named no transition.
+		requireTransitions(t, "T", changes(t, tID), "loopback", "loopback")
 		requireOneUpdateBy(t, "E", eID, txID)
 		if e := byTx(t, eID, txID); e.Meta.State != "DONE" || e.Data["status"] != "go" {
 			t.Fatalf("by-transaction read of E by %s is %s with status %v; want the transaction's final entity, DONE with status go",
 				txID, e.Meta.State, e.Data["status"])
 		}
+		requireTransitions(t, "E", changes(t, eID), "go", "loopback")
 	})
 
 	t.Run("SYNC_ThenCommitBeforeDispatch", func(t *testing.T) {
@@ -310,6 +315,32 @@ func RunHistoryOneVersionPerTransaction(t *testing.T, fixture BackendFixture) {
 			t.Fatalf("by-transaction read of E by the last segment %s is %s with status %v; want DONE with status go",
 				ch[0].TransactionID, e.Meta.State, e.Data["status"])
 		}
+		// Both segments record the request's "go": the version the boundary
+		// committed and the final one.
+		requireTransitions(t, "E", ch, "go", "go", "loopback")
+	})
+
+	// A create whose cascade runs a COMMIT_BEFORE_DISPATCH processor commits
+	// two versions: the one the boundary commits and the final one. Both
+	// record the create's name, "loopback".
+	t.Run("CreateThroughCommitBeforeDispatch", func(t *testing.T) {
+		model := "ovpt-cbd-create-" + uuid.NewString()[:8]
+		setupModelWithWorkflow(t, c, model, 1, ovptSample, cbWorkflowDoc(model+"-wf", map[string]any{
+			"NONE": map[string]any{"transitions": []any{map[string]any{
+				"name": "store", "next": "OPEN", "manual": false,
+				"processors": []any{cbProc("noop", "COMMIT_BEFORE_DISPATCH", "", nil)},
+			}}},
+			"OPEN": map[string]any{},
+		}))
+		id, txID, err := c.CreateEntityWithTxID(t, model, 1, ovptSample)
+		if err != nil {
+			t.Fatalf("CreateEntityWithTxID: %v", err)
+		}
+		ch := changes(t, id)
+		if len(ch) != 2 || ch[1].TransactionID != txID {
+			t.Fatalf("changes = %+v; want 2 entries, the older one by the request's transaction %s", ch, txID)
+		}
+		requireTransitions(t, "the created entity", ch, "loopback", "loopback")
 	})
 
 	t.Run("InsideWritingTx", func(t *testing.T) {
@@ -337,4 +368,95 @@ func RunHistoryOneVersionPerTransaction(t *testing.T, fixture BackendFixture) {
 			t.Fatalf("by-transaction read of T by %s after its commit is %s with status %v; want OPEN with status %s", txID, e.Meta.State, e.Data["status"], marker)
 		}
 	})
+}
+
+// requireTransitions requires the /changes entries ch, newest first, to carry
+// the transition names want; "" is an entry that records none.
+func requireTransitions(t *testing.T, what string, ch []client.EntityChangeMeta, want ...string) {
+	t.Helper()
+	got := make([]string, len(ch))
+	for i, e := range ch {
+		got[i] = e.Transition
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("transitions of %s, newest first = %q; want %q: %+v", what, got, want, ch)
+	}
+}
+
+// historyTransitionWorkflow rests a created entity in OPEN; the manual
+// "submit" returns it to OPEN.
+const historyTransitionWorkflow = `{
+	"importMode": "REPLACE",
+	"workflows": [{
+		"version": "1.1", "name": "history-transition-wf", "initialState": "OPEN", "active": true,
+		"states": {
+			"OPEN": {"transitions": [{"name": "submit", "next": "OPEN", "manual": true}]}
+		}
+	}]
+}`
+
+// RunHistoryTransitionPerVersion proves, on every backend, that each version
+// in an entity's change history records the transition its request named: a
+// create, a PUT naming "submit", a PUT that names none and a DELETE give,
+// newest first, none (the DELETE), "loopback", "submit", "loopback" — on
+// GET /entity/{id}/changes and on the entity's EntityChange audit events.
+func RunHistoryTransitionPerVersion(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const model = "history-transition"
+	const data = `{"name":"h","amount":1,"status":"new"}`
+	setupModelWithWorkflow(t, c, model, 1, data, historyTransitionWorkflow)
+
+	id, err := c.CreateEntity(t, model, 1, data)
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	if err := c.UpdateEntity(t, id, "submit", data); err != nil {
+		t.Fatalf("PUT submit: %v", err)
+	}
+	if err := c.UpdateEntityData(t, id, data); err != nil {
+		t.Fatalf("PUT without a transition: %v", err)
+	}
+	if err := c.DeleteEntity(t, id); err != nil {
+		t.Fatalf("DeleteEntity: %v", err)
+	}
+
+	wantTypes := []string{"DELETE", "UPDATE", "UPDATE", "CREATE"}
+	wantNames := []string{"", "loopback", "submit", "loopback"}
+
+	ch, err := c.GetEntityChanges(t, id)
+	if err != nil {
+		t.Fatalf("GetEntityChanges: %v", err)
+	}
+	for i, e := range ch {
+		if i < len(wantTypes) && e.ChangeType != wantTypes[i] {
+			t.Fatalf("changes[%d].changeType = %q; want %v newest first: %+v", i, e.ChangeType, wantTypes, ch)
+		}
+	}
+	requireTransitions(t, "the entity", ch, wantNames...)
+
+	page, err := c.GetAuditEventsPage(t, id, url.Values{"eventType": {"EntityChange"}})
+	if err != nil {
+		t.Fatalf("GetAuditEventsPage: %v", err)
+	}
+	events := make([]*client.EntityChangeAuditEvent, 0, len(page.Items))
+	for _, ev := range page.Items {
+		ec, err := ev.AsEntityChange()
+		if err != nil {
+			t.Fatalf("AsEntityChange: %v", err)
+		}
+		events = append(events, ec)
+	}
+	if len(events) != len(wantNames) {
+		t.Fatalf("%d EntityChange audit events; want %d", len(events), len(wantNames))
+	}
+	// Newest first, by the version each event records.
+	sort.Slice(events, func(i, j int) bool { return events[i].Version > events[j].Version })
+	for i, ec := range events {
+		if ec.ChangeType != wantTypes[i] || ec.Transition != wantNames[i] {
+			t.Errorf("audit event of version %d: changeType %q, transition %q; want %q, %q",
+				ec.Version, ec.ChangeType, ec.Transition, wantTypes[i], wantNames[i])
+		}
+	}
 }
