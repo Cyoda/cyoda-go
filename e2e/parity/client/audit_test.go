@@ -71,6 +71,9 @@ func TestAuditEvent_EntityChange_Decode(t *testing.T) {
 	if ec.Version != 2 {
 		t.Errorf("Version = %d, want 2", ec.Version)
 	}
+	if ec.Transition != "loopback" {
+		t.Errorf("Transition = %q, want \"loopback\"", ec.Transition)
+	}
 	if len(ec.Changes) == 0 {
 		t.Error("Changes is empty (fixture has after-block)")
 	}

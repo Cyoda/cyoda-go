@@ -218,6 +218,11 @@ type EntityChangeAuditEvent struct {
 	// independent of the attributed actor (AuditEvent.Actor). Present only
 	// when the engine recorded one.
 	ExecutedBy *AuditPrincipal `json:"executedBy,omitempty"`
+
+	// Transition is the transition the version's request named: the named
+	// transition, "loopback" for a save that named none, the scheduled
+	// transition for a scheduled firing. Absent on a DELETE.
+	Transition string `json:"transition,omitempty"`
 }
 
 // entityChangeAuditEventFlat is the flat alias used for strict decoding.
@@ -237,6 +242,7 @@ type entityChangeAuditEventFlat struct {
 	Version         int64           `json:"version"`
 	Changes         json.RawMessage `json:"changes,omitempty"`
 	ExecutedBy      *AuditPrincipal `json:"executedBy,omitempty"`
+	Transition      string          `json:"transition,omitempty"`
 }
 
 // UnmarshalJSON decodes EntityChangeAuditEvent with
@@ -265,6 +271,7 @@ func (e *EntityChangeAuditEvent) UnmarshalJSON(b []byte) error {
 	e.Version = flat.Version
 	e.Changes = flat.Changes
 	e.ExecutedBy = flat.ExecutedBy
+	e.Transition = flat.Transition
 	return nil
 }
 
