@@ -124,6 +124,13 @@ func arCheck(h *callbackHarness, computeBearer, backendClient string, verdicts *
 		if rc.entityData == nil {
 			return refuse("no data in the payload")
 		}
+		// Exact comparison: numbers stay decimal text, never float64.
+		var payloadData map[string]any
+		pdec := json.NewDecoder(bytes.NewReader(rc.entityDataRaw))
+		pdec.UseNumber()
+		if err := pdec.Decode(&payloadData); err != nil || payloadData == nil {
+			return refuse("no data in the payload")
+		}
 		raw, err := arGet(h, computeBearer, "/api/entity/"+rc.entityID+"/changes")
 		if err != nil {
 			return refuse("history read failed")
@@ -156,7 +163,7 @@ func arCheck(h *callbackHarness, computeBearer, backendClient string, verdicts *
 		if err := dec.Decode(&env); err != nil || env.Data == nil {
 			return refuse("submitted version unreadable")
 		}
-		if !reflect.DeepEqual(env.Data, rc.entityData) {
+		if !reflect.DeepEqual(env.Data, payloadData) {
 			return refuse("data differs from the submitted version")
 		}
 		verdicts.put(rc.entityID, arApproved)

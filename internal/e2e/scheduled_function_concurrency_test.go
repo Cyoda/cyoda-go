@@ -1,7 +1,6 @@
 package e2e_test
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -60,8 +59,7 @@ func TestScheduledFunction_ConcurrentReArm_OneConsistentArmedTask(t *testing.T) 
 	const baseFireAfterMs = int64(600_000) // far future — never fires mid-test, whichever seq wins
 
 	h.RegisterFunction("calcConcurrentRearm", func(rc *reqCtx) (string, map[string]any, error) {
-		seqNum, _ := rc.entityData["seq"].(json.Number)
-		seq, _ := seqNum.Float64()
+		seq, _ := rc.entityData["seq"].(float64)
 		fireAfterMs := baseFireAfterMs + int64(seq)*1000
 		return "Schedule", map[string]any{"fireAfterMs": fireAfterMs}, nil
 	})
