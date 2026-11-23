@@ -2,6 +2,75 @@
 
 All notable changes to Cyoda-Go are documented here. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions and [Semantic Versioning](https://semver.org/) — pre-1.0, where the minor component signals a breaking change and new features ship in patches (see [README — Versioning](./README.md#versioning)).
 
+## [Unreleased]
+
+### Breaking
+
+- **A cascade sees one value in `transitionForLatestSave`, on every door.**
+  The workflow selection and the transition criteria of a request (including
+  the lifecycle criteria of automated transitions) read
+  `transitionForLatestSave`, alias `previousTransition`. Before, what they saw
+  depended on the door: on a named update (HTTP, gRPC update, gRPC transition,
+  gRPC collection item) the request's own transition name; on a create, a
+  loopback update, every collection create item (HTTP and gRPC) and every HTTP
+  collection update item, an empty string; on a scheduled firing, the name the
+  previous request saved. Now, for the whole run, on every door, they see the
+  name of the version the request started from, as its transaction sees it
+  (its own earlier writes included); on a create, none. A
+  `COMMIT_BEFORE_DISPATCH` boundary does not change it. So a request no
+  longer chooses, through the transition it names, which workflow definition
+  or which guards apply to itself. A read of the entity during the run, joined
+  or not, sees the request's own name once cyoda has saved the entity in the
+  transaction, and the stored version's name before. Migration: a lifecycle
+  criterion `transitionForLatestSave == "X"` on an automated transition fired
+  only in the cascade of a request that names X; it now fires in the cascade
+  of any request that follows a version saved by X. There is no field for the
+  current request's name; route on the state instead.
+
+### Added
+
+- **The change history records the transition each version's request named.**
+  `GET /entity/{entityId}/changes` (`EntityChangeMeta.transition`), gRPC
+  `EntityChangesMetadataGetRequest` (`changeMeta.transition`) and the
+  `EntityChange` events of `GET /audit/entity/{entityId}` carry `transition`
+  when it is non-empty. Its values are those of
+  `meta.transitionForLatestSave` on an entity read: the named transition's
+  name; `loopback` for a save that named none (a create, an update without a
+  transition, a collection item without one); the scheduled transition's name
+  for a scheduled firing. A `DELETE` entry has none: the field is absent. A
+  transition a workflow itself names `loopback` cannot be told apart from a
+  save that named none. Only the transition the request named is recorded, not
+  the automatic transitions its cascade made after it (the state-machine audit
+  records those). With it, the help's segregation-of-duties recipe reads the
+  newest history entry instead of a copy of the submitter in the entity's data.
+
+### Fixed
+
+- **A scheduled firing records its own transition name.** The version a
+  scheduled firing made kept the transition name of the request before it, so
+  an entity read showed that stale name in `meta.transitionForLatestSave`; so
+  did a version the firing's `COMMIT_BEFORE_DISPATCH` boundary flushed. Every
+  version the firing saves now records the scheduled transition's name.
+- **The `COMMIT_BEFORE_DISPATCH` boundary version records the request's
+  name.** On a create, a loopback update, every item of a collection create
+  (HTTP and gRPC) and every item of an HTTP collection update (also an item
+  that names a transition), the version the boundary flushed had an empty
+  name, while the final version had the request's name (`loopback` or the
+  item's transition). Both now carry the request's name.
+- **A PostgreSQL delete tombstone records no transition.** It kept the
+  previous version's transition name, while the memory and sqlite backends
+  recorded none. No backend records a transition on a tombstone now.
+- **sqlite fails a read of an entity or version whose meta is NULL.** It read
+  the row back without error and without its meta fields (tenant, state,
+  transition, attribution) on `Get`, search, grouped stats, the transaction
+  overlay and version metadata, where PostgreSQL fails the read. Every sqlite
+  read now fails on NULL meta, as it already did on unparseable or empty meta.
+- **`cyoda help` describes `transitionForLatestSave` as it behaves.** `crud`
+  said a create stores the literal `"workflow"` (it stores `loopback`), and
+  its example showed `"UPDATE"`, which reads as a change type rather than a
+  transition name; `search` listed the field among the meta dates (it is a
+  string).
+
 ## [0.9.0] — 2026-11-22
 
 ### Breaking
