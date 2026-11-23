@@ -10,7 +10,7 @@ import (
 	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
-// startValueData is the data of RunDecision6CriterionSeesStartValue's
+// startValueData is the data of RunCriterionSeesStartVersionTransition's
 // entities.
 const startValueData = `{"name":"s","amount":1,"status":"new"}`
 
@@ -70,7 +70,7 @@ const startValueScheduledWorkflow = `{
 	}]
 }`
 
-// RunDecision6CriterionSeesStartValue proves, on every backend, that a
+// RunCriterionSeesStartVersionTransition proves, on every backend, that a
 // criterion on transitionForLatestSave sees the name of the version the
 // request started from — never the name the request itself sends, and none
 // on a create — while the version the request saves records the request's
@@ -84,16 +84,16 @@ const startValueScheduledWorkflow = `{
 //     "submit"; the version records "loopback".
 //   - scheduled firing: the firing of "expire" after "submit" sees
 //     "submit"; its version records "expire".
-func RunDecision6CriterionSeesStartValue(t *testing.T, fixture BackendFixture) {
+func RunCriterionSeesStartVersionTransition(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
 
 	const guardModel = "start-value-guard"
 	setupModelWithWorkflow(t, c, guardModel, 1, startValueData, startValueGuardWorkflow)
 
-	// require reads the entity and requires its state and the name its
+	// requireOutcome reads the entity and requires its state and the name its
 	// current version records.
-	require := func(t *testing.T, id uuid.UUID, wantState, wantSaved, why string) {
+	requireOutcome := func(t *testing.T, id uuid.UUID, wantState, wantSaved, why string) {
 		t.Helper()
 		e, err := c.GetEntity(t, id)
 		if err != nil {
@@ -130,22 +130,22 @@ func RunDecision6CriterionSeesStartValue(t *testing.T, fixture BackendFixture) {
 		id := create(t)
 		put(t, id, "touch")
 		put(t, id, "submit")
-		require(t, id, "OPEN", "submit", "seed: the PUT naming \"submit\" sees the start version's \"touch\"")
+		requireOutcome(t, id, "OPEN", "submit", "seed: the PUT naming \"submit\" sees the start version's \"touch\"")
 		return id
 	}
 
 	t.Run("create", func(t *testing.T) {
-		require(t, create(t), "OPEN", "loopback", "a create starts from no version, so the criteria see none")
+		requireOutcome(t, create(t), "OPEN", "loopback", "a create starts from no version, so the criteria see none")
 	})
 
 	t.Run("named_update", func(t *testing.T) {
 		id := create(t)
 		put(t, id, "touch")
-		require(t, id, "SAW_LOOPBACK", "touch", "the criteria see the start version's \"loopback\", not the request's own \"touch\"")
+		requireOutcome(t, id, "SAW_LOOPBACK", "touch", "the criteria see the start version's \"loopback\", not the request's own \"touch\"")
 		put(t, id, "submit")
-		require(t, id, "OPEN", "submit", "the criteria see the start version's \"touch\", not the request's own \"submit\"")
+		requireOutcome(t, id, "OPEN", "submit", "the criteria see the start version's \"touch\", not the request's own \"submit\"")
 		put(t, id, "touch")
-		require(t, id, "SAW_SUBMIT", "touch", "the criteria see the start version's \"submit\"")
+		requireOutcome(t, id, "SAW_SUBMIT", "touch", "the criteria see the start version's \"submit\"")
 	})
 
 	t.Run("loopback_update", func(t *testing.T) {
@@ -153,7 +153,7 @@ func RunDecision6CriterionSeesStartValue(t *testing.T, fixture BackendFixture) {
 		if err := c.UpdateEntityData(t, id, startValueData); err != nil {
 			t.Fatalf("PUT without a transition: %v", err)
 		}
-		require(t, id, "SAW_SUBMIT", "loopback", "the criteria see the start version's \"submit\"")
+		requireOutcome(t, id, "SAW_SUBMIT", "loopback", "the criteria see the start version's \"submit\"")
 	})
 
 	t.Run("scheduled_firing", func(t *testing.T) {
@@ -174,6 +174,6 @@ func RunDecision6CriterionSeesStartValue(t *testing.T, fixture BackendFixture) {
 			}
 			return e.Meta.State != "SUBMITTED", fmt.Sprintf("state %q", e.Meta.State)
 		})
-		require(t, id, "SAW_SUBMIT", "expire", "the criteria after the firing see the start version's \"submit\", not the scheduled \"expire\"")
+		requireOutcome(t, id, "SAW_SUBMIT", "expire", "the criteria after the firing see the start version's \"submit\", not the scheduled \"expire\"")
 	})
 }

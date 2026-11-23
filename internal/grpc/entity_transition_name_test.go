@@ -191,7 +191,7 @@ func (g guardEnv) requireGuard(t *testing.T, id, wantState, wantSaved, why strin
 // What a criterion sees in transitionForLatestSave is the name of the version
 // the request started from, on every gRPC door: never the name the request
 // sends, and none on a create.
-func TestDecision6_CriterionSeesStartValue_EachGRPCDoor(t *testing.T) {
+func TestCriterionSeesStartVersionTransition_EachGRPCDoor(t *testing.T) {
 	const (
 		notOwnName = "the guard sees the start version's \"loopback\", not the request's own \"submit\""
 		startName  = "the guard sees the start version's \"submit\""

@@ -115,7 +115,7 @@ var allTests = []NamedTest{
 	{"HistoryTransitionPerVersion", RunHistoryTransitionPerVersion},
 	// A criterion on transitionForLatestSave sees the start version's name:
 	// create, named update, loopback update, scheduled firing.
-	{"Decision6CriterionSeesStartValue", RunDecision6CriterionSeesStartValue},
+	{"CriterionSeesStartVersionTransition", RunCriterionSeesStartVersionTransition},
 
 	// Phase 4a — tenant isolation (Task 4a.5)
 	{"TenantIsolationEntities", RunTenantIsolationEntities},

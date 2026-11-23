@@ -10,7 +10,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   The workflow selection and the transition criteria of a request (including
   the lifecycle criteria of automated transitions) read
   `transitionForLatestSave`, alias `previousTransition`. Before, what they saw
-  depended on the door: on a named update (HTTP, gRPC update, gRPC transition,
+  depended on the door: on a named update (HTTP, gRPC update, gRPC patch, gRPC transition,
   gRPC collection item) the request's own transition name; on a create, a
   loopback update, every collection create item (HTTP and gRPC) and every HTTP
   collection update item, an empty string; on a scheduled firing, the name the
@@ -19,9 +19,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (its own earlier writes included); on a create, none. A
   `COMMIT_BEFORE_DISPATCH` boundary does not change it. So a request no
   longer chooses, through the transition it names, which workflow definition
-  or which guards apply to itself. A read of the entity during the run, joined
-  or not, sees the request's own name once cyoda has saved the entity in the
-  transaction, and the stored version's name before. Migration: a lifecycle
+  or which guards apply to itself. A read of the entity during the run
+  that does not join its transaction sees the committed version's name; a
+  callback that joins the transaction can get either the start version's name
+  or the request's own name, so do not rely on either. Migration: a lifecycle
   criterion `transitionForLatestSave == "X"` on an automated transition fired
   only in the cascade of a request that names X; it now fires in the cascade
   of any request that follows a version saved by X. There is no field for the

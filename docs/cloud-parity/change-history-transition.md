@@ -36,17 +36,17 @@ Cloud follows.
   on every door, they see the name of the version the request started from, as
   its transaction sees it (its own earlier writes included); on a create,
   none. A `COMMIT_BEFORE_DISPATCH` boundary does not change it. A read of the
-  entity during the run, joined or not, sees the request's own name once cyoda
-  has saved the entity in the transaction, and the stored version's name
-  before. Workflow processors carry no criterion: this concerns workflow
+  entity during the run that does not join its transaction sees the committed
+  version's name; a callback that joins the transaction can get either the
+  start version's name or the request's own name, so do not rely on either. Workflow processors carry no criterion: this concerns workflow
   selection and transition criteria only.
 - **No new endpoint, status or error code.** The field is additive.
 
 ## What changed
 
 Before, the value a run's criteria saw depended on the door: the request's own
-name on a named update (HTTP, gRPC update, gRPC transition, gRPC collection
-item); an empty string on a create, a loopback update, every collection create
+name on a named update (HTTP, gRPC update, gRPC patch, gRPC transition,
+gRPC collection item); an empty string on a create, a loopback update, every collection create
 item and every HTTP collection update item; the name the previous request saved
 on a scheduled firing. A request could therefore choose, through the
 transition it named, which workflow definition and which guards applied to
@@ -57,7 +57,8 @@ what `GET /entity/{entityId}/transitions` evaluates and what the alias
 Three versions also recorded the wrong name, now fixed: a version a scheduled
 firing saved kept the previous request's name; the version a
 `COMMIT_BEFORE_DISPATCH` boundary flushed had an empty name on a create, a
-loopback update and every collection item; a PostgreSQL delete tombstone kept
+loopback update, every item of a collection create (HTTP and gRPC) and every
+item of an HTTP collection update; a PostgreSQL delete tombstone kept
 the previous version's name.
 
 Migration for a client: a lifecycle criterion
@@ -92,22 +93,22 @@ transition for the latest version only and does not yet record it per version.
   - `change_history_transition_test.go`: `TestChangesEndpoint_TransitionPerVersion`
     and `TestAuditEntityChange_Transition` (the field on `/changes` and the
     audit event, absent on delete);
-    `TestDecision6_CriterionSeesStartValue_EachHTTPDoor`,
-    `TestDecision6_CriterionSeesStartValue_ScheduledFiring`,
-    `TestDecision6_SelectionSeesStartValue`,
-    `TestDecision6_CriterionAfterBoundarySeesStartValue` and
-    `TestDecision6_JoinedReadSeesRequestName` (what a run evaluates and reads);
-    `TestDecision7_ScheduledFiringStampsItsTransition`;
-    `TestDecision8_BoundaryVersionCarriesRequestName`;
+    `TestCriterionSeesStartVersionTransition_EachHTTPDoor`,
+    `TestCriterionSeesStartVersionTransition_ScheduledFiring`,
+    `TestSelectionSeesStartVersionTransition`,
+    `TestCriterionAfterBoundarySeesStartVersionTransition` and
+    `TestJoinedReadSeesRequestTransition` (what a run evaluates and reads);
+    `TestScheduledFiringStampsItsTransition`;
+    `TestBoundaryVersionCarriesRequestTransition`;
     `TestChangeHistory_CollectionSameEntityTwice_LastItemWins` and
     `TestChangeHistory_FailureAfterBoundary_KeepsBoundaryVersionName`.
   - `approval_recipe_test.go`: `TestApprovalRecipe`.
 - gRPC (`internal/grpc`): `TestEntityChangesMetadata_Transition`
   (`entity_change_transition_test.go`) and
-  `TestDecision6_CriterionSeesStartValue_EachGRPCDoor`
+  `TestCriterionSeesStartVersionTransition_EachGRPCDoor`
   (`entity_transition_name_test.go`).
 - Parity (`e2e/parity/registry.go`, memory/sqlite/postgres):
-  `HistoryTransitionPerVersion` and `Decision6CriterionSeesStartValue`.
+  `HistoryTransitionPerVersion` and `CriterionSeesStartVersionTransition`.
 - SPI conformance (`spitest`): `Entity/GetVersionMetadata/TransitionPerVersion`,
   `Entity/GetVersionMetadata/TombstoneTransitionEmpty` and
   `Entity/OneVersionPerTx/TransitionIsLastWrite`.

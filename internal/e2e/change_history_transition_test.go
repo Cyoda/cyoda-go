@@ -160,7 +160,7 @@ func chtPatch(t *testing.T, id, transition string) {
 // What a criterion sees in transitionForLatestSave is the name of the version
 // the request started from, on every HTTP door: never the name the request
 // sends, and none on a create.
-func TestDecision6_CriterionSeesStartValue_EachHTTPDoor(t *testing.T) {
+func TestCriterionSeesStartVersionTransition_EachHTTPDoor(t *testing.T) {
 	model := uniq("e2e-cht-guard")
 	setupModelWithWorkflow(t, model, fmt.Sprintf(chtGuardWF, model+"-wf"))
 
@@ -179,7 +179,7 @@ func TestDecision6_CriterionSeesStartValue_EachHTTPDoor(t *testing.T) {
 		}
 		return id
 	}
-	require := func(t *testing.T, id, wantState, wantSaved, why string) {
+	requireOutcome := func(t *testing.T, id, wantState, wantSaved, why string) {
 		t.Helper()
 		state, name := chtStateAndName(t, id)
 		if state != wantState {
@@ -210,12 +210,12 @@ func TestDecision6_CriterionSeesStartValue_EachHTTPDoor(t *testing.T) {
 		t.Run(d.name+"/names_submit", func(t *testing.T) {
 			id := create(t)
 			d.send(t, id, "submit")
-			require(t, id, "OPEN", "submit", notOwnName)
+			requireOutcome(t, id, "OPEN", "submit", notOwnName)
 		})
 		t.Run(d.name+"/follows_submit", func(t *testing.T) {
 			id := savedBySubmit(t)
 			d.send(t, id, "touch")
-			require(t, id, "HIT", "touch", startName)
+			requireOutcome(t, id, "HIT", "touch", startName)
 		})
 	}
 
@@ -234,23 +234,23 @@ func TestDecision6_CriterionSeesStartValue_EachHTTPDoor(t *testing.T) {
 		t.Run(d.name+"/follows_submit", func(t *testing.T) {
 			id := savedBySubmit(t)
 			d.send(t, id)
-			require(t, id, "HIT", "loopback", startName)
+			requireOutcome(t, id, "HIT", "loopback", startName)
 		})
 	}
 
 	const noneOnCreate = "a create starts from no version, so the guard sees none"
 	t.Run("create", func(t *testing.T) {
-		require(t, create(t), "OPEN", "loopback", noneOnCreate)
+		requireOutcome(t, create(t), "OPEN", "loopback", noneOnCreate)
 	})
 	t.Run("collection_create", func(t *testing.T) {
 		body := chtDo(t, http.MethodPost, "/api/entity/JSON", chtJSON(t, []any{chtCreateItem(model, chtData)}))
-		require(t, chtFirstID(t, body), "OPEN", "loopback", noneOnCreate)
+		requireOutcome(t, chtFirstID(t, body), "OPEN", "loopback", noneOnCreate)
 	})
 }
 
 // Workflow selection sees the name of the version the request started from:
 // a request does not choose its workflow by the transition it names.
-func TestDecision6_SelectionSeesStartValue(t *testing.T) {
+func TestSelectionSeesStartVersionTransition(t *testing.T) {
 	model := uniq("e2e-cht-select")
 	wf := func(name, criterion, next string) map[string]any {
 		w := map[string]any{
@@ -310,7 +310,7 @@ func registerCountingProc(t *testing.T, name string) *atomic.Int32 {
 
 // A criterion after a COMMIT_BEFORE_DISPATCH boundary sees what it saw before
 // the boundary: the start version's name.
-func TestDecision6_CriterionAfterBoundarySeesStartValue(t *testing.T) {
+func TestCriterionAfterBoundarySeesStartVersionTransition(t *testing.T) {
 	model := uniq("e2e-cht-after-boundary")
 	proc := model + "-cbd"
 	dispatched := registerCountingProc(t, proc)
@@ -347,7 +347,7 @@ func TestDecision6_CriterionAfterBoundarySeesStartValue(t *testing.T) {
 // The version a COMMIT_BEFORE_DISPATCH boundary commits carries the request's
 // name, as the final version does, on the doors whose boundary version had no
 // name.
-func TestDecision8_BoundaryVersionCarriesRequestName(t *testing.T) {
+func TestBoundaryVersionCarriesRequestTransition(t *testing.T) {
 	model := uniq("e2e-cht-boundary")
 	proc := model + "-cbd"
 	dispatched := registerCountingProc(t, proc)
@@ -424,7 +424,7 @@ func TestDecision8_BoundaryVersionCarriesRequestName(t *testing.T) {
 
 // A scheduled firing's version records the scheduled transition, not the name
 // of the request before it.
-func TestDecision7_ScheduledFiringStampsItsTransition(t *testing.T) {
+func TestScheduledFiringStampsItsTransition(t *testing.T) {
 	h, _ := newSchedulerHarness(t, nil)
 	model := uniq("e2e-cht-sched")
 	h.SetupModelWithWorkflow(t, model, schedDoc(model+"-wf", map[string]any{
@@ -462,7 +462,7 @@ func TestDecision7_ScheduledFiringStampsItsTransition(t *testing.T) {
 // A criterion in a scheduled firing's cascade sees the name of the version
 // the firing started from, not the scheduled transition's name. The firing's
 // version still records the scheduled transition.
-func TestDecision6_CriterionSeesStartValue_ScheduledFiring(t *testing.T) {
+func TestCriterionSeesStartVersionTransition_ScheduledFiring(t *testing.T) {
 	h, _ := newSchedulerHarness(t, nil)
 	model := uniq("e2e-cht-sched-guard")
 	h.SetupModelWithWorkflow(t, model, schedDoc(model+"-wf", map[string]any{
@@ -570,7 +570,7 @@ func TestChangeHistory_FailureAfterBoundary_KeepsBoundaryVersionName(t *testing.
 // A callout that reads the entity under the request's transaction token sees
 // the request's own name once the engine has saved the entity in the
 // transaction (the save before the callout), not the start version's.
-func TestDecision6_JoinedReadSeesRequestName(t *testing.T) {
+func TestJoinedReadSeesRequestTransition(t *testing.T) {
 	h := newCallbackHarness(t)
 	model := uniq("e2e-cht-joined")
 	proc := model + "-read"
