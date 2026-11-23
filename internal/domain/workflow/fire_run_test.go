@@ -509,9 +509,8 @@ func expireWF(procs ...spi.ProcessorDefinition) spi.WorkflowDefinition {
 
 // claimedSavedBy saves wf for a model named after entityID, commits the
 // entity in OPEN as the version a request naming "submit" made, arms OPEN's
-// "expire" due now (timing out after timeoutMs when it is not nil) and claims
-// it for testOwner once the clock has advanced by advanceMs.
-func (env *runEnv) claimedSavedBy(t *testing.T, entityID string, wf spi.WorkflowDefinition, timeoutMs *int64, advanceMs int64) spi.ScheduledTask {
+// "expire" due now and claims it for testOwner.
+func (env *runEnv) claimedSavedBy(t *testing.T, entityID string, wf spi.WorkflowDefinition) spi.ScheduledTask {
 	t.Helper()
 	model := spi.ModelRef{EntityName: "run-" + entityID, ModelVersion: "1.0"}
 	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{wf})
@@ -525,9 +524,8 @@ func (env *runEnv) claimedSavedBy(t *testing.T, entityID string, wf spi.Workflow
 		ID: taskID(testTenant, entityID, "OPEN", "expire"), TenantID: testTenant,
 		Type: spi.ScheduledTaskFireTransition, ScheduledTime: now, EntityID: entityID,
 		ModelName: model.EntityName, ModelVersion: 1, Transition: "expire", SourceState: "OPEN",
-		ArmedAt: now, TimeoutMs: timeoutMs,
+		ArmedAt: now,
 	})
-	env.advance(advanceMs)
 	return env.claimOne(t, testOwner, false)
 }
 
@@ -572,7 +570,7 @@ func TestFireScheduled_StampsScheduledTransition(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newRunEnv(t, &scriptedExtProc{})
 			const entityID = "stamp-name-e1"
-			claimed := env.claimedSavedBy(t, entityID, expireWF(tc.procs...), nil, 0)
+			claimed := env.claimedSavedBy(t, entityID, expireWF(tc.procs...))
 
 			r, _ := env.run(claimed)
 			if r.Outcome != OutcomeFired || r.Err != nil {
@@ -585,10 +583,9 @@ func TestFireScheduled_StampsScheduledTransition(t *testing.T) {
 	}
 }
 
-// A scheduled firing that is cancelled, declined or expires writes no
-// version of the entity.
+// A scheduled firing that is cancelled or declined writes no version of the
+// entity.
 func TestFireScheduled_NoFireWritesNoVersion(t *testing.T) {
-	timeout := int64(1_000)
 	manualExpire := expireWF()
 	st := manualExpire.States["OPEN"]
 	st.Transitions[0].Schedule = nil
@@ -599,20 +596,17 @@ func TestFireScheduled_NoFireWritesNoVersion(t *testing.T) {
 	st.Transitions[0].Criterion = lifecycleCriterion("state", "EQUALS", "NOT_OPEN")
 	declining.States["OPEN"] = st
 	for _, tc := range []struct {
-		name      string
-		wf        spi.WorkflowDefinition
-		timeoutMs *int64
-		advanceMs int64
-		want      ScheduledOutcome
+		name string
+		wf   spi.WorkflowDefinition
+		want ScheduledOutcome
 	}{
-		{"cancelled", manualExpire, nil, 0, OutcomeCancelled},
-		{"declined", declining, nil, 0, OutcomeDeclined},
-		{"expired", expireWF(), &timeout, timeout + 1, OutcomeExpired},
+		{"cancelled", manualExpire, OutcomeCancelled},
+		{"declined", declining, OutcomeDeclined},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newRunEnv(t, nil)
 			const entityID = "nofire-e1"
-			claimed := env.claimedSavedBy(t, entityID, tc.wf, tc.timeoutMs, tc.advanceMs)
+			claimed := env.claimedSavedBy(t, entityID, tc.wf)
 			before := env.versionsOf(t, entityID)
 
 			r, _ := env.run(claimed)

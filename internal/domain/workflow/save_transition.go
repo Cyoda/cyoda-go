@@ -6,9 +6,9 @@ import (
 	spi "github.com/cyoda/cyoda-go-spi"
 )
 
-// loopbackTransition is the transition name a request that names none
+// LoopbackTransition is the transition name a request that names none
 // records: a create, an update without a transition.
-const loopbackTransition = "loopback"
+const LoopbackTransition = "loopback"
 
 // saveTransitionKey carries the transition the request named through a run.
 type saveTransitionKey struct{}
@@ -29,16 +29,11 @@ func saveTransitionFrom(ctx context.Context) string {
 
 // stampedForSave returns the entity a save writes for the request: a shallow
 // copy of e whose Meta.TransitionForLatestSave is the request's transition
-// name. It returns e itself when ctx carries no name. It never changes e: what
-// the run evaluates (workflow selection, criteria) keeps the name of the
-// version the request started from. The copy shares e's Data; a store copies
-// what it saves.
+// name. It never changes e: what the run evaluates (workflow selection,
+// criteria) keeps the name of the version the request started from. The copy
+// shares e's Data; a store copies what it saves.
 func stampedForSave(ctx context.Context, e *spi.Entity) *spi.Entity {
-	name := saveTransitionFrom(ctx)
-	if name == "" {
-		return e
-	}
 	stamped := *e
-	stamped.Meta.TransitionForLatestSave = name
+	stamped.Meta.TransitionForLatestSave = saveTransitionFrom(ctx)
 	return &stamped
 }

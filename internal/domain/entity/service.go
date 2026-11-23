@@ -353,7 +353,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// client-supplied transition name (Execute(..., "")). From the caller's
 	// viewpoint this is a save without a named transition — the canonical
 	// marker for that is "loopback", not the literal "workflow".
-	entity.Meta.TransitionForLatestSave = "loopback"
+	entity.Meta.TransitionForLatestSave = wfengine.LoopbackTransition
 
 	finalCtx := scope.Ctx()
 
@@ -2124,7 +2124,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 
 		// CREATE path runs without an explicit transition; canonical
 		// marker is "loopback", matching single CreateEntity.
-		entity.Meta.TransitionForLatestSave = "loopback"
+		entity.Meta.TransitionForLatestSave = wfengine.LoopbackTransition
 
 		// This item's Save. The callouts of its engine run have ended, and
 		// with them every callback they admitted, so nothing joined runs
@@ -2331,7 +2331,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		// FIRST statement after the error check: the engine returns a nil
 		// EngineResult on every error path.
 		scope.Advance(res.FinalCtx, res.FinalTxID)
-		updated.Meta.TransitionForLatestSave = "loopback"
+		updated.Meta.TransitionForLatestSave = wfengine.LoopbackTransition
 	} else {
 		res, mtErr := h.engine.ManualTransition(txCtx, updated, input.Transition, ifMatch)
 		if mtErr != nil {
@@ -2652,7 +2652,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		currentCtx, currentTxID = scope.Ctx(), scope.TxID()
 
 		if item.transition == "" {
-			updated.Meta.TransitionForLatestSave = "loopback"
+			updated.Meta.TransitionForLatestSave = wfengine.LoopbackTransition
 		} else {
 			updated.Meta.TransitionForLatestSave = item.transition
 		}
