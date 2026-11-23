@@ -58,6 +58,9 @@ func entityChangeItem(v spi.EntityVersionMeta, entityID, callerTenant string) au
 		}
 		body["actor"] = actor
 	}
+	if v.Transition != "" {
+		body["transition"] = v.Transition
+	}
 	if v.Executor.ID != "" {
 		body["executedBy"] = map[string]any{"id": v.Executor.ID, "kind": string(v.Executor.Kind)}
 	}

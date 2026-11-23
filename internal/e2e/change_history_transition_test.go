@@ -634,3 +634,61 @@ func TestDecision6_JoinedReadSeesRequestName(t *testing.T) {
 		}
 	})
 }
+
+// chtHistorySequence runs create, named update "submit", loopback update and
+// delete on one entity and returns its id.
+func chtHistorySequence(t *testing.T, prefix string) string {
+	t.Helper()
+	model := uniq(prefix)
+	setupModelWithWorkflow(t, model, fmt.Sprintf(chtGuardWF, model+"-wf"))
+	id := chtFirstID(t, chtDo(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), chtData))
+	chtDo(t, http.MethodPut, "/api/entity/JSON/"+id+"/submit", chtData)
+	chtDo(t, http.MethodPut, "/api/entity/JSON/"+id, chtData)
+	chtDo(t, http.MethodDelete, "/api/entity/"+id, "")
+	return id
+}
+
+// chtWantTransitions are the transition names of that history, newest first;
+// "" is a version that records none (the DELETE tombstone), which the wire
+// omits.
+var chtWantTransitions = []string{"", "loopback", "submit", "loopback"}
+
+func chtCheckTransitions(t *testing.T, what string, items []map[string]any) {
+	t.Helper()
+	if len(items) != len(chtWantTransitions) {
+		t.Fatalf("%s: %d entries, want %d: %v", what, len(items), len(chtWantTransitions), items)
+	}
+	for i, want := range chtWantTransitions {
+		v, present := items[i]["transition"]
+		if want == "" {
+			if present {
+				t.Errorf("%s[%d]: transition = %v, want absent", what, i, v)
+			}
+			continue
+		}
+		if v != want {
+			t.Errorf("%s[%d]: transition = %v, want %q", what, i, v, want)
+		}
+	}
+}
+
+func TestChangesEndpoint_TransitionPerVersion(t *testing.T) {
+	id := chtHistorySequence(t, "e2e-cht-changes")
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(chtDo(t, http.MethodGet, "/api/entity/"+id+"/changes", "")), &items); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	chtCheckTransitions(t, "changes", items)
+}
+
+func TestAuditEntityChange_Transition(t *testing.T) {
+	id := chtHistorySequence(t, "e2e-cht-audit")
+	var env struct {
+		Items []map[string]any `json:"items"`
+	}
+	body := chtDo(t, http.MethodGet, "/api/audit/entity/"+id+"?eventType=EntityChange", "")
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("decode: %v: %s", err, body)
+	}
+	chtCheckTransitions(t, "audit", env.Items)
+}

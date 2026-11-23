@@ -684,6 +684,10 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 			kind := entry.AttributedKind
 			changeMeta.AttributedKind = &kind
 		}
+		if entry.Transition != "" {
+			tr := entry.Transition
+			changeMeta.Transition = &tr
+		}
 		if entry.Executor.ID != "" {
 			changeMeta.ExecutedBy = &events.EntityChangeMetaJsonExecutedBy{
 				ID:   entry.Executor.ID,

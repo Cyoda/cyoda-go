@@ -41,6 +41,10 @@
         "kind"
       ]
     },
+    "transition": {
+      "type": "string",
+      "description": "Name of the transition the change was saved by: the named transition, or loopback for a save that named none. Absent on a DELETE change."
+    },
     "changeType": {
       "type": "string",
       "enum": [

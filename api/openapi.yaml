@@ -11590,6 +11590,9 @@ components:
               type: string
             kind:
               type: string
+        transition:
+          type: string
+          description: The name of the transition the change was saved by - the named transition, or "loopback" for a save that named none. Absent on a DELETE entry.
         changeType:
           type: string
           enum:
@@ -12351,6 +12354,9 @@ components:
               description: The principal that executed the request,
                 independent of the attributed principal. Present only when
                 one was recorded.
+            transition:
+              type: string
+              description: The name of the transition the change was saved by - the named transition, or "loopback" for a save that named none. Absent on a DELETE entry.
       required:
         - changeType
         - microsTime

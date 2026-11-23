@@ -84,6 +84,7 @@ type EntityChangeMeta struct {
 	FieldsChangedCount int              `json:"fieldsChangedCount,omitempty"`
 	AttributedKind     string           `json:"attributedKind,omitempty"`
 	ExecutedBy         *ChangePrincipal `json:"executedBy,omitempty"`
+	Transition         string           `json:"transition,omitempty"`
 }
 
 // ChangePrincipal is the {id, kind} executor object on a change-history

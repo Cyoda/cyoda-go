@@ -1069,7 +1069,10 @@ type EntityChangeMeta struct {
 	FieldsChangedCount *int32              `json:"fieldsChangedCount,omitempty"`
 	TimeOfChange       time.Time           `json:"timeOfChange"`
 	TransactionId      *openapi_types.UUID `json:"transactionId,omitempty"`
-	User               string              `json:"user"`
+
+	// Transition The name of the transition the change was saved by - the named transition, or "loopback" for a save that named none. Absent on a DELETE entry.
+	Transition *string `json:"transition,omitempty"`
+	User       string  `json:"user"`
 }
 
 // EntityChangeMetaChangeType defines model for EntityChangeMeta.ChangeType.

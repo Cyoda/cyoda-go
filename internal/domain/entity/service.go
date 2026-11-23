@@ -121,6 +121,9 @@ type EntityChangeEntry struct {
 	HasEntity      bool
 	AttributedKind string
 	Executor       spi.Principal
+	// Transition is the transition name the version recorded; empty on a
+	// DELETE tombstone.
+	Transition string
 }
 
 // PaginationParams holds pagination parameters.
@@ -889,6 +892,7 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 			AttributedKind: string(v.AttributedKind),
 			Executor:       v.Executor,
 			TransactionID:  v.TransactionID,
+			Transition:     v.Transition,
 		})
 	}
 
