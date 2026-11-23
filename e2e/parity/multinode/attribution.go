@@ -177,9 +177,8 @@ func RunAttribution_ProxiedJoinCascade(t *testing.T, fixture MultiNodeFixture) {
 		}
 	}
 
-	// An update that NAMES a transition, sent through the node that hosts no
-	// member (the owner of the cross-node primary's earlier transaction), is
-	// recorded with that name, read on every node.
+	// An update that NAMES a transition, sent through node 1 in a transaction
+	// of its own, is recorded with that name, read back on every node.
 	if err := client.NewClient(urls[1], user.Token).UpdateEntity(t, crossNodePrimID, "Touch",
 		`{"name":"parent","amount":100,"status":"new"}`); err != nil {
 		t.Fatalf("named update through node 1: %v", err)

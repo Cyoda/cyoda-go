@@ -277,7 +277,9 @@ Waiver: the error cells are unchanged by this change and are not re-tested.
   last request of its transaction named it; its `user` is that transaction's
   attributed principal, stamped by cyoda; and step 3 rules out the approval
   rewriting the data. One more condition: only a request from the backend
-  that names the submit transition makes a submit — no scheduled transition
+  that names the submit transition makes a submit — the submit transition is
+  not named `loopback` (a create and every save that names no transition
+  record `loopback`), no scheduled transition
   has its name, and no compute node writes the entity naming it — because the
   history records a scheduled firing as a submit by the principal that armed
   it, and a write-back in alice's transaction as alice's submit, although
