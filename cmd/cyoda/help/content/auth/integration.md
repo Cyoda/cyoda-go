@@ -268,7 +268,7 @@ The values, per situation (attributed / executor):
 
 The check is correct only when the application follows these conditions:
 
-- The approve transition is `manual: true`, and the check is a function criterion of that transition — not a processor, and not elsewhere — with `attachEntity` not set to `false`.
+- The approve transition is `manual: true`, and the check is a function criterion of that transition in every workflow definition of the model — not a processor, and not elsewhere — with `attachEntity` not set to `false`.
 - The approval is a single-entity request from the backend that names the approve transition, never an item of a collection update. (Step 2 above already refuses a compute node's write-back.) So the version the approval starts from is the newest committed version.
 - Nothing writes the entity between the submit and the approval. A write in between that is not a submit makes the check refuse, and the entity is then submitted again; a submit in between becomes the newest submit, and the check compares the approver with its user.
 - The approval request carries no data change: HTTP `PATCH` with the body `{}` on the route that names the transition (`PATCH /entity/JSON/{entityId}/{transition}`), with `If-Match` set to the submit entry's `transactionId` or to `*`; gRPC `EntityPatchRequest` that names the approve transition in `transition`, with the patch `{}` and the required `ifMatch` (the submit entry's `transactionId` or `*`); or gRPC `EntityTransitionRequest` that names the approve transition. Step 3 of the check enforces this.
