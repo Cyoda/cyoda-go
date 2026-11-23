@@ -264,6 +264,28 @@ func (f *arFixture) requireRefused(t *testing.T, id string, code int, body, reas
 	}
 }
 
+// approveGRPC sends one EntityManage request of eventType as bob and requires
+// it to succeed, the entity to reach APPROVED and the check to approve.
+func (f *arFixture) approveGRPC(t *testing.T, id, eventType string, body map[string]any) {
+	t.Helper()
+	reqCE, err := internalgrpc.NewCloudEvent(eventType, body)
+	if err != nil {
+		t.Fatalf("build %s: %v", eventType, err)
+	}
+	respCE, err := cyodapb.NewCloudEventsServiceClient(f.h.apiConn).EntityManage(f.h.grpcCtxAs(f.bob, ""), reqCE)
+	if err != nil {
+		t.Fatalf("EntityManage: %v", err)
+	}
+	env, err := parseTxEnvelope(respCE)
+	if err != nil || !env.Success {
+		t.Fatalf("bob approves with %s: err=%v envelope=%+v (check verdict %q)", eventType, err, env, f.verdicts.get(id))
+	}
+	f.requireState(t, id, "APPROVED")
+	if got := f.verdicts.get(id); got != arApproved {
+		t.Fatalf("check verdict = %q, want %q", got, arApproved)
+	}
+}
+
 func TestApprovalRecipe(t *testing.T) {
 	f := newARFixture(t)
 
@@ -281,24 +303,18 @@ func TestApprovalRecipe(t *testing.T) {
 		})
 		t.Run("GRPCTransition", func(t *testing.T) {
 			id := f.submitted(t, f.model)
-			reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityTransitionRequest, map[string]any{
+			f.approveGRPC(t, id, internalgrpc.EntityTransitionRequest, map[string]any{
 				"id": "ar-approve", "entityId": id, "transition": "approve",
 			})
-			if err != nil {
-				t.Fatalf("build transition request: %v", err)
-			}
-			respCE, err := cyodapb.NewCloudEventsServiceClient(f.h.apiConn).EntityManage(f.h.grpcCtxAs(f.bob, ""), reqCE)
-			if err != nil {
-				t.Fatalf("EntityManage: %v", err)
-			}
-			env, err := parseTxEnvelope(respCE)
-			if err != nil || !env.Success {
-				t.Fatalf("bob approves over gRPC: err=%v envelope=%+v (check verdict %q)", err, env, f.verdicts.get(id))
-			}
-			f.requireState(t, id, "APPROVED")
-			if got := f.verdicts.get(id); got != arApproved {
-				t.Fatalf("check verdict = %q, want %q", got, arApproved)
-			}
+		})
+		t.Run("GRPCPatch", func(t *testing.T) {
+			id := f.submitted(t, f.model)
+			f.approveGRPC(t, id, internalgrpc.EntityPatchRequest, map[string]any{
+				"id": "ar-approve-patch", "patchFormat": "MERGE_PATCH",
+				"payload": map[string]any{
+					"entityId": id, "transition": "approve", "ifMatch": f.txID(t, id), "patch": map[string]any{},
+				},
+			})
 		})
 	})
 
