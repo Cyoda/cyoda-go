@@ -77,7 +77,7 @@ At the release cut the window closes: all four manifests are re-pinned to the
 real tag, checked by `make check-spi-pin-sync`. **Currently pinned:
 `v0.9.1-0.20261123010453-8c5902bf761f`**, a pseudo-version of `cyoda-go-spi`
 `main` for the `v0.10.0` milestone (it adds `EntityVersionMeta.Transition`).
-The conformance suite gains cases an implementor that does not return the
+The conformance suite gains cases that an implementor which does not return the
 transition fails, so the next SPI tag is a minor. This module ships breaking changes without a major
 version (see [Independent version axes](#independent-version-axes)), and its
 `### Breaking` changelog section rather than the version component is what

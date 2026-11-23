@@ -433,7 +433,7 @@ func TestTransactionControl_ChunkedCreate_PostFirstChunk408(t *testing.T) {
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
 	h.RegisterProc("txctl-chunk-block", func(rc *reqCtx) (map[string]any, error) {
-		if seq, _ := rc.entityData["seq"].(float64); seq == 2 {
+		if seqNum, _ := rc.entityData["seq"].(json.Number); seqNum.String() == "2" {
 			<-block
 		}
 		return nil, nil

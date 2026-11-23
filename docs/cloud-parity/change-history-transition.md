@@ -35,7 +35,7 @@ Cloud follows.
   `transitionForLatestSave` (alias `previousTransition`). For the whole run,
   on every door, they see the name of the version the request started from, as
   its transaction sees it (its own earlier writes included); on a create,
-  none. A `COMMIT_BEFORE_DISPATCH` boundary does not change it. A read of the
+  the empty string. A `COMMIT_BEFORE_DISPATCH` boundary does not change it. A read of the
   entity during the run that does not join its transaction sees the committed
   version's name; a callback that joins the transaction can get either the
   start version's name or the request's own name, so do not rely on either. Workflow processors carry no criterion: this concerns workflow

@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -716,7 +717,10 @@ func (h *callbackHarness) parseCalcRequest(evtType string, ce *cepb.CloudEvent, 
 	if body.Payload != nil {
 		req.rc.entityMeta = body.Payload.Meta
 		var d map[string]any
-		if json.Unmarshal(body.Payload.Data, &d) == nil {
+		// UseNumber keeps numbers as their decimal text, as the entity holds them.
+		dec := json.NewDecoder(bytes.NewReader(body.Payload.Data))
+		dec.UseNumber()
+		if dec.Decode(&d) == nil {
 			req.rc.entityData = d
 		}
 	}

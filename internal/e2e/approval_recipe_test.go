@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -148,7 +149,11 @@ func arCheck(h *callbackHarness, computeBearer, backendClient string, verdicts *
 		var env struct {
 			Data map[string]any `json:"data"`
 		}
-		if err := json.Unmarshal(raw, &env); err != nil || env.Data == nil {
+		// UseNumber keeps every number as its decimal text: a float64 would
+		// make a changed number above 2^53 compare equal.
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		if err := dec.Decode(&env); err != nil || env.Data == nil {
 			return refuse("submitted version unreadable")
 		}
 		if !reflect.DeepEqual(env.Data, rc.entityData) {
@@ -337,6 +342,33 @@ func TestApprovalRecipe(t *testing.T) {
 		id := f.submitted(t, f.model)
 		code, body := f.patch(t, f.bob, id, "approve", f.txID(t, id), `{"amount":2}`)
 		f.requireRefused(t, id, code, body, "data differs from the submitted version")
+	})
+
+	t.Run("DataChangeAbove2pow53Refused", func(t *testing.T) {
+		model, fn := uniq("ar-big"), uniq("ar-check-big")
+		f.h.RegisterCriteria(fn, arCheck(f.h, f.h.computeBearer(t), oboClientOf(t, f.alice), f.verdicts))
+		resp := f.h.DoAuth(t, http.MethodPost, "/api/model/import/JSON/SAMPLE_DATA/"+model+"/1", `{"payeeAccount":9007199254740992}`, "")
+		if b := f.h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+			t.Fatalf("import model: %d %s", resp.StatusCode, b)
+		}
+		resp = f.h.DoAuth(t, http.MethodPut, "/api/model/"+model+"/1/lock", "", "")
+		if b := f.h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+			t.Fatalf("lock model: %d %s", resp.StatusCode, b)
+		}
+		resp = f.h.DoAuth(t, http.MethodPost, "/api/model/"+model+"/1/workflow/import", arWorkflow(model+"-wf", fn, ""), "")
+		if b := f.h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+			t.Fatalf("import workflow: %d %s", resp.StatusCode, b)
+		}
+		id, status, body := f.h.CreateEntity(t, model, 1, `{"payeeAccount":9007199254740992}`)
+		if status != http.StatusOK {
+			t.Fatalf("create: %d %s", status, body)
+		}
+		if code, out := f.patch(t, f.alice, id, "submit", f.txID(t, id), `{}`); code != http.StatusOK {
+			t.Fatalf("alice submits: %d %s", code, out)
+		}
+		f.requireState(t, id, "SUBMITTED")
+		code, body2 := f.patch(t, f.bob, id, "approve", f.txID(t, id), `{"payeeAccount":9007199254740993}`)
+		f.requireRefused(t, id, code, body2, "data differs from the submitted version")
 	})
 
 	t.Run("NoDataRefused", func(t *testing.T) {

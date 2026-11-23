@@ -16,7 +16,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   collection update item, an empty string; on a scheduled firing, the name the
   previous request saved. Now, for the whole run, on every door, they see the
   name of the version the request started from, as its transaction sees it
-  (its own earlier writes included); on a create, none. A
+  (its own earlier writes included); on a create, the empty string. A
   `COMMIT_BEFORE_DISPATCH` boundary does not change it. So a request no
   longer chooses, through the transition it names, which workflow definition
   or which guards apply to itself. A read of the entity during the run
@@ -65,7 +65,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the row back without error and without its meta fields (tenant, state,
   transition, attribution) on `Get`, search, grouped stats, the transaction
   overlay and version metadata, where PostgreSQL fails the read. Every sqlite
-  read now fails on NULL meta, as it already did on unparseable or empty meta.
+  read that returns an entity, a version or its metadata now fails on NULL meta, as it already did on unparseable or empty meta.
 - **`cyoda help` describes `transitionForLatestSave` as it behaves.** `crud`
   said a create stores the literal `"workflow"` (it stores `loopback`), and
   its example showed `"UPDATE"`, which reads as a change type rather than a

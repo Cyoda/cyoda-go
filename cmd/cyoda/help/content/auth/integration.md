@@ -277,7 +277,7 @@ The check, made with the compute node's own client token and without `pointInTim
 
 1. Read the entity's change history (`GET /entity/{entityId}/changes`, or gRPC `EntityChangesMetadataGetRequest`) and take the **newest** entry, the first one. The history holds at most the 1000 newest entries, so the newest entry is always in it.
 2. Approve only when the entry's `transition` is the submit transition's name, its `attributedKind` is `user`, and its `user` differs from `authid`. Compare byte for byte; nothing is normalised.
-3. Read the version that the entry's transaction committed (`GET /entity/{entityId}?transactionId=<the entry's transactionId>`) and require its data to equal the data in the criterion's payload, compared as JSON values.
+3. Read the version that the entry's transaction committed (`GET /entity/{entityId}?transactionId=<the entry's transactionId>`) and require its data to equal the data in the criterion's payload, compared exactly: numbers by their decimal text, never converted to floating point (in Go, `json.Decoder.UseNumber`). A floating-point comparison treats a changed number above 2^53 as equal. A difference in formatting refuses the approval.
 4. Refuse in every other case: also when a read fails, and when the payload carries no data. An entry without `transition` is refused too; a storage backend that does not record the transition name gives no `transition`.
 
 Why the check holds: if another transaction commits the entity after the approval's transaction read it, the approval fails at commit, so an approval that commits is made on exactly the version whose entry the check read. That entry is named `submit` only when the last request that wrote the entity in its transaction named `submit`. Its `user` is that transaction's attributed principal, which cyoda sets; a request cannot set it. Step 3 of the check makes sure that the approval does not change the data.
@@ -304,7 +304,7 @@ A part holding an OBO client and a trusted key can act as any user of the tenant
 ## WHAT CYODA RECORDS
 
 - Entity change history, `GET /entity/{entityId}/changes`: `user` (the attributed id), `attributedKind`, `executedBy {id, kind}`, and `transition` (the transition the version was saved by; absent on a delete). Over gRPC, `EntityChangesMetadataGetRequest` returns the same four fields in each change's `changeMeta`.
-- Audit events, `GET /audit/entity/{entityId}`: `actor {id, name, kind, legalId}` and `executedBy {id, kind}`, for entity changes and state-machine events. `actor.name` repeats `actor.id`: cyoda has no display names, and an assertion cannot set one. `externalId` is never set. There is an entity-change event for every committed version. State-machine events are recorded best effort: a failure to record one is logged and does not fail the operation.
+- Audit events, `GET /audit/entity/{entityId}`: `actor {id, name, kind, legalId}` and `executedBy {id, kind}`, for entity changes and state-machine events; an entity-change event also carries `transition`, as the change history does. `actor.name` repeats `actor.id`: cyoda has no display names, and an assertion cannot set one. `externalId` is never set. There is an entity-change event for every committed version. State-machine events are recorded best effort: a failure to record one is logged and does not fail the operation.
 - Messages, `GET /message/{messageId}`: `userId`, `attributedKind` and `executedBy`.
 - Async search jobs belong to the tenant, not to the user: any principal of the tenant that knows a job id can read its results.
 
