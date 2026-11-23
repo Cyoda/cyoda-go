@@ -88,10 +88,11 @@ Builder's calls:
      a criterion sees. Every save cyoda makes for the request — the save
      before a callout, the boundary flush, the `CompareAndSave` that opens
      TX_post, the final save — writes the request's own name; only what the
-     run evaluates sees the start version's value. So a read of the entity
-     during the run, joined or not, sees one value: the request's name once
-     cyoda has saved the entity in the transaction, the stored version's
-     before.
+     run evaluates sees the start version's value. A read that does not join
+     the transaction sees the committed version. A callback that joins it can
+     get either the start version's name or the request's own name (the save
+     before a callout happens only when the data or the state changed), so a
+     client relies on neither.
    - Reason: no request chooses, through the transition it names, which
      workflow definition and which guards apply to itself (the help's advice
      on workflow selection); the value is the same on every door; and it is

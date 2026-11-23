@@ -96,8 +96,10 @@ transition for the latest version only and does not yet record it per version.
     `TestCriterionSeesStartVersionTransition_EachHTTPDoor`,
     `TestCriterionSeesStartVersionTransition_ScheduledFiring`,
     `TestSelectionSeesStartVersionTransition`,
-    `TestCriterionAfterBoundarySeesStartVersionTransition` and
-    `TestJoinedReadSeesRequestTransition` (what a run evaluates and reads);
+    `TestCriterionAfterBoundarySeesStartVersionTransition` (what a run
+    evaluates); `TestJoinedReadSeesRequestTransition` (an engine test, not a
+    contract: it covers a request that changed the data, so cyoda saved the
+    entity before the callout);
     `TestScheduledFiringStampsItsTransition`;
     `TestBoundaryVersionCarriesRequestTransition`;
     `TestChangeHistory_CollectionSameEntityTwice_LastItemWins` and
