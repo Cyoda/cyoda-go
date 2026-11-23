@@ -349,10 +349,8 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// returns a nil EngineResult on every error path.
 	scope.Advance(result.FinalCtx, result.FinalTxID)
 
-	// The CREATE path runs the workflow engine without an explicit
-	// client-supplied transition name (Execute(..., "")). From the caller's
-	// viewpoint this is a save without a named transition — the canonical
-	// marker for that is "loopback", not the literal "workflow".
+	// A create names no transition, so it records "loopback". The run saw
+	// none: a create starts from no version.
 	entity.Meta.TransitionForLatestSave = wfengine.LoopbackTransition
 
 	finalCtx := scope.Ctx()
@@ -2292,6 +2290,10 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// the pre-Begin outer ctx — see the CreateEntity site above for why.
 	attributed, executor := spi.AttributionFor(txCtx)
 
+	// TransitionForLatestSave is the start version's, as this transaction
+	// reads it: what the run's workflow selection and criteria see. Every
+	// save the engine makes for the request records the request's own name,
+	// and so does the final save below.
 	updated := &spi.Entity{
 		Meta: spi.EntityMeta{
 			ID:                      existing.Meta.ID,
@@ -2306,7 +2308,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 			ChangeUser:              attributed.ID,
 			ChangeUserKind:          attributed.Kind,
 			ChangeExecutor:          executor,
-			TransitionForLatestSave: input.Transition,
+			TransitionForLatestSave: existing.Meta.TransitionForLatestSave,
 		},
 		Data: bodyBytes,
 	}
@@ -2560,20 +2562,24 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		// context) — see CreateEntityCollection's identical reasoning above.
 		attributed, executor := spi.AttributionFor(currentCtx)
 
+		// TransitionForLatestSave is the start version's, as this
+		// transaction reads it (an earlier item's save of the same entity
+		// included) — see updateEntityCore.
 		updated := &spi.Entity{
 			Meta: spi.EntityMeta{
-				ID:               existing.Meta.ID,
-				TenantID:         existing.Meta.TenantID,
-				ModelRef:         existing.Meta.ModelRef,
-				State:            existing.Meta.State,
-				Version:          existing.Meta.Version,
-				CreationDate:     existing.Meta.CreationDate,
-				LastModifiedDate: now,
-				TransactionID:    currentTxID,
-				ChangeType:       "UPDATED",
-				ChangeUser:       attributed.ID,
-				ChangeUserKind:   attributed.Kind,
-				ChangeExecutor:   executor,
+				ID:                      existing.Meta.ID,
+				TenantID:                existing.Meta.TenantID,
+				ModelRef:                existing.Meta.ModelRef,
+				State:                   existing.Meta.State,
+				Version:                 existing.Meta.Version,
+				CreationDate:            existing.Meta.CreationDate,
+				LastModifiedDate:        now,
+				TransactionID:           currentTxID,
+				ChangeType:              "UPDATED",
+				ChangeUser:              attributed.ID,
+				ChangeUserKind:          attributed.Kind,
+				ChangeExecutor:          executor,
+				TransitionForLatestSave: existing.Meta.TransitionForLatestSave,
 			},
 			Data: item.bodyBytes,
 		}
