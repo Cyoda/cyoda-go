@@ -276,10 +276,12 @@ Waiver: the error cells are unchanged by this change and are not re-tested.
   exactly the entry it checked; that entry is named `submit` only when the
   last request of its transaction named it; its `user` is that transaction's
   attributed principal, stamped by cyoda; and step 3 rules out the approval
-  rewriting the data. The help also says: a scheduled transition named like
-  the submit is recorded as a submit by the principal that armed it (the last
-  writer that re-armed it); a compute node's write-back in alice's
-  transaction that names the submit is recorded as alice's submit.
+  rewriting the data. One more condition: only a request from the backend
+  that names the submit transition makes a submit — no scheduled transition
+  has its name, and no compute node writes the entity naming it — because the
+  history records a scheduled firing as a submit by the principal that armed
+  it, and a write-back in alice's transaction as alice's submit, although
+  that person did not choose to submit.
 
   The integration help's intro to the recipe ("In the approval processor or
   criterion") narrows to the approve transition's criterion.
