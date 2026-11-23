@@ -140,6 +140,19 @@ func unstageDelete(tx *spi.TransactionState, id string) {
 	delete(tx.DeleteAttribution, id)
 }
 
+// parseStoredMeta parses a stored meta blob. Every writer stores one, so a
+// NULL, empty or unparseable blob is a corrupt row and fails the read.
+func parseStoredMeta(m sql.NullString) (spi.EntityMeta, error) {
+	if !m.Valid || m.String == "" {
+		return spi.EntityMeta{}, fmt.Errorf("failed to parse entity meta: stored meta is NULL or empty")
+	}
+	parsed, err := unmarshalEntityMeta([]byte(m.String))
+	if err != nil {
+		return spi.EntityMeta{}, fmt.Errorf("failed to parse entity meta: %w", err)
+	}
+	return parsed, nil
+}
+
 // scanEntityFromRow scans a single entity from a query result row.
 // Expected columns: entity_id, model_name, model_version, version, json(data), json(meta), created_at, updated_at
 func scanEntityFromRow(row interface{ Scan(...any) error }) (*spi.Entity, error) {
@@ -167,19 +180,18 @@ func scanEntityFromRow(row interface{ Scan(...any) error }) (*spi.Entity, error)
 	}
 
 	// Populate additional meta from the stored meta BLOB.
-	if metaJSON.Valid && metaJSON.String != "" {
-		parsed, err := unmarshalEntityMeta([]byte(metaJSON.String))
-		if err == nil {
-			meta.TenantID = parsed.TenantID
-			meta.State = parsed.State
-			meta.TransactionID = parsed.TransactionID
-			meta.ChangeType = parsed.ChangeType
-			meta.ChangeUser = parsed.ChangeUser
-			meta.ChangeUserKind = parsed.ChangeUserKind
-			meta.ChangeExecutor = parsed.ChangeExecutor
-			meta.TransitionForLatestSave = parsed.TransitionForLatestSave
-		}
+	parsed, err := parseStoredMeta(metaJSON)
+	if err != nil {
+		return nil, err
 	}
+	meta.TenantID = parsed.TenantID
+	meta.State = parsed.State
+	meta.TransactionID = parsed.TransactionID
+	meta.ChangeType = parsed.ChangeType
+	meta.ChangeUser = parsed.ChangeUser
+	meta.ChangeUserKind = parsed.ChangeUserKind
+	meta.ChangeExecutor = parsed.ChangeExecutor
+	meta.TransitionForLatestSave = parsed.TransitionForLatestSave
 
 	return &spi.Entity{Meta: meta, Data: dataJSON}, nil
 }
@@ -211,21 +223,20 @@ func scanVersionEntity(row interface{ Scan(...any) error }) (*spi.Entity, error)
 	}
 
 	// Populate additional meta from the stored meta BLOB.
-	if metaJSON.Valid && metaJSON.String != "" {
-		parsed, err := unmarshalEntityMeta([]byte(metaJSON.String))
-		if err == nil {
-			meta.TenantID = parsed.TenantID
-			meta.State = parsed.State
-			meta.TransactionID = parsed.TransactionID
-			meta.ChangeType = parsed.ChangeType
-			meta.ChangeUser = parsed.ChangeUser
-			meta.ChangeUserKind = parsed.ChangeUserKind
-			meta.ChangeExecutor = parsed.ChangeExecutor
-			meta.TransitionForLatestSave = parsed.TransitionForLatestSave
-			meta.CreationDate = parsed.CreationDate
-			meta.LastModifiedDate = parsed.LastModifiedDate
-		}
+	parsed, err := parseStoredMeta(metaJSON)
+	if err != nil {
+		return nil, err
 	}
+	meta.TenantID = parsed.TenantID
+	meta.State = parsed.State
+	meta.TransactionID = parsed.TransactionID
+	meta.ChangeType = parsed.ChangeType
+	meta.ChangeUser = parsed.ChangeUser
+	meta.ChangeUserKind = parsed.ChangeUserKind
+	meta.ChangeExecutor = parsed.ChangeExecutor
+	meta.TransitionForLatestSave = parsed.TransitionForLatestSave
+	meta.CreationDate = parsed.CreationDate
+	meta.LastModifiedDate = parsed.LastModifiedDate
 
 	var data []byte
 	if dataJSON.Valid {
@@ -1473,18 +1484,12 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 		Version:    version,
 	}
 
-	var parsedMeta spi.EntityMeta
-	var haveMeta bool
-	if metaJSON.Valid && metaJSON.String != "" {
-		if parsed, parseErr := unmarshalEntityMeta([]byte(metaJSON.String)); parseErr == nil {
-			parsedMeta = parsed
-			haveMeta = true
-		}
+	parsedMeta, err := parseStoredMeta(metaJSON)
+	if err != nil {
+		return nil, fmt.Errorf("GetVersionByTransaction: %w", err)
 	}
-	if haveMeta {
-		ev.AttributedKind = parsedMeta.ChangeUserKind
-		ev.Executor = parsedMeta.ChangeExecutor
-	}
+	ev.AttributedKind = parsedMeta.ChangeUserKind
+	ev.Executor = parsedMeta.ChangeExecutor
 
 	meta := spi.EntityMeta{
 		ID:               eid,
@@ -1496,15 +1501,13 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 		ChangeType:       changeType,
 		ChangeUser:       userID,
 	}
-	if haveMeta {
-		meta.TenantID = parsedMeta.TenantID
-		meta.State = parsedMeta.State
-		meta.CreationDate = parsedMeta.CreationDate
-		meta.LastModifiedDate = parsedMeta.LastModifiedDate
-		meta.TransitionForLatestSave = parsedMeta.TransitionForLatestSave
-		meta.ChangeUserKind = parsedMeta.ChangeUserKind
-		meta.ChangeExecutor = parsedMeta.ChangeExecutor
-	}
+	meta.TenantID = parsedMeta.TenantID
+	meta.State = parsedMeta.State
+	meta.CreationDate = parsedMeta.CreationDate
+	meta.LastModifiedDate = parsedMeta.LastModifiedDate
+	meta.TransitionForLatestSave = parsedMeta.TransitionForLatestSave
+	meta.ChangeUserKind = parsedMeta.ChangeUserKind
+	meta.ChangeExecutor = parsedMeta.ChangeExecutor
 	var data []byte
 	if dataJSON.Valid {
 		data = []byte(dataJSON.String)
@@ -1581,12 +1584,13 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 			TransactionID: transactionID,
 			Deleted:       changeType == "DELETED",
 		}
-		if metaJSON.Valid && metaJSON.String != "" {
-			if parsed, parseErr := unmarshalEntityMeta([]byte(metaJSON.String)); parseErr == nil {
-				m.AttributedKind = parsed.ChangeUserKind
-				m.Executor = parsed.ChangeExecutor
-			}
+		parsed, err := parseStoredMeta(metaJSON)
+		if err != nil {
+			return nil, fmt.Errorf("GetVersionMetadata: %w", err)
 		}
+		m.AttributedKind = parsed.ChangeUserKind
+		m.Executor = parsed.ChangeExecutor
+		m.Transition = parsed.TransitionForLatestSave
 		result = append(result, m)
 	}
 	if err := rows.Err(); err != nil {

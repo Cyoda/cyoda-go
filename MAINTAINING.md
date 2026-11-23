@@ -424,7 +424,7 @@ umbrella *tag*. Neither ties the `cyoda-go` version number to the
 `cyoda-go-spi` version number — those move independently (see the
 "Versioning" section above). `cyoda-go-spi` versions on its **own** axis
 under the same convention as everything else: a **patch** for additive
-interface surface (which is what every SPI release `v0.5.0…v0.8.1`
+interface surface (which is what every SPI release `v0.5.0…v0.8.2`
 actually was), a **minor** only for a breaking interface change. So the
 SPI minor stays put across many binary releases; pick the next SPI
 version by whether the SPI *interface* broke, never to match the

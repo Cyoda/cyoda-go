@@ -669,8 +669,8 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 			TimeOfChange: t,
 			User:         entry.User,
 		}
-		// transactionId is present only when hasEntity is true — the
-		// documented contract (cmd/cyoda/help/content/crud.md) and the way
+		// transactionId is absent on a DELETE entry — the documented
+		// contract (cmd/cyoda/help/content/crud.md) and the way
 		// HasEntity=false is observed on the wire. The HTTP handler already
 		// gates on it (internal/domain/entity/handler.go); this door must
 		// not surface a tombstone's transaction id when that one does not.
@@ -683,6 +683,10 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 		if entry.AttributedKind != "" {
 			kind := entry.AttributedKind
 			changeMeta.AttributedKind = &kind
+		}
+		if entry.Transition != "" {
+			tr := entry.Transition
+			changeMeta.Transition = &tr
 		}
 		if entry.Executor.ID != "" {
 			changeMeta.ExecutedBy = &events.EntityChangeMetaJsonExecutedBy{

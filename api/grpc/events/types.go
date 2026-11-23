@@ -439,6 +439,11 @@ type EntityChangeMetaJson struct {
 	// UUID of the transaction that made this change.
 	TransactionID *string `json:"transactionId,omitempty" yaml:"transactionId,omitempty" mapstructure:"transactionId,omitempty"`
 
+	// Name of the transition the change was saved by: the name of the transition its
+	// request named, loopback for a save that named none, or the name of the
+	// scheduled transition for a scheduled firing. Absent on a DELETE change.
+	Transition *string `json:"transition,omitempty" yaml:"transition,omitempty" mapstructure:"transition,omitempty"`
+
 	// User who made the change: the attributed principal.
 	User string `json:"user" yaml:"user" mapstructure:"user"`
 }

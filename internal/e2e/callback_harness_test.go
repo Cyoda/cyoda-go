@@ -60,12 +60,13 @@ import (
 // It carries the per-request tx-token (echoed on callbacks) and the attached
 // (uncommitted) primary-entity snapshot the engine shipped with the calc request.
 type reqCtx struct {
-	token      string         // cyodatxtoken from the calc request; echoed as X-Tx-Token
-	txID       string         // the calc request's transactionId
-	requestID  string         // calc request id (echoed on the response)
-	entityID   string         // primary (cascade-anchor) entity id
-	entityData map[string]any // attached primary data (uncommitted, from the dispatch payload)
-	entityMeta map[string]any // attached primary meta (state, transactionId, ...)
+	token         string          // cyodatxtoken from the calc request; echoed as X-Tx-Token
+	txID          string          // the calc request's transactionId
+	requestID     string          // calc request id (echoed on the response)
+	entityID      string          // primary (cascade-anchor) entity id
+	entityDataRaw json.RawMessage // the payload data bytes, undecoded (exact numbers)
+	entityData    map[string]any  // attached primary data (uncommitted, from the dispatch payload)
+	entityMeta    map[string]any  // attached primary meta (state, transactionId, ...)
 	// attrs are the calc request's CloudEvent attributes other than the pass
 	// (authid, authtype, authexecid, authexectype, authclaims, ...).
 	attrs map[string]string
@@ -715,6 +716,7 @@ func (h *callbackHarness) parseCalcRequest(evtType string, ce *cepb.CloudEvent, 
 	}
 	if body.Payload != nil {
 		req.rc.entityMeta = body.Payload.Meta
+		req.rc.entityDataRaw = body.Payload.Data
 		var d map[string]any
 		if json.Unmarshal(body.Payload.Data, &d) == nil {
 			req.rc.entityData = d

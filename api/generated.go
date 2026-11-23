@@ -1069,7 +1069,10 @@ type EntityChangeMeta struct {
 	FieldsChangedCount *int32              `json:"fieldsChangedCount,omitempty"`
 	TimeOfChange       time.Time           `json:"timeOfChange"`
 	TransactionId      *openapi_types.UUID `json:"transactionId,omitempty"`
-	User               string              `json:"user"`
+
+	// Transition The name of the transition the change was saved by - the name of the transition its request named, "loopback" for a save that named none, or the name of the scheduled transition for a scheduled firing. Absent on a DELETE entry.
+	Transition *string `json:"transition,omitempty"`
+	User       string  `json:"user"`
 }
 
 // EntityChangeMetaChangeType defines model for EntityChangeMeta.ChangeType.
@@ -1101,7 +1104,7 @@ type EntityMetadata struct {
 	State         string              `json:"state"`
 	TransactionId *openapi_types.UUID `json:"transactionId,omitempty"`
 
-	// TransitionForLatestSave Transition applied when the entity was last saved as-at the point-in-time.
+	// TransitionForLatestSave The transition the latest save as-at the point-in-time was saved by - the name of the transition its request named, "loopback" for a save that named none (a create, an update without a transition), or the name of the scheduled transition for a scheduled firing. A transition that a workflow names "loopback" cannot be told apart from a save that named none.
 	TransitionForLatestSave *string `json:"transitionForLatestSave,omitempty"`
 }
 
@@ -1123,7 +1126,7 @@ type EntityMetadataDto struct {
 	// TransactionId The transaction ID associated with the latest save (omitted if none)
 	TransactionId *string `json:"transactionId,omitempty"`
 
-	// TransitionForLatestSave The transition that triggered the latest save (omitted if none)
+	// TransitionForLatestSave The transition the latest save was saved by - the name of the transition its request named, "loopback" for a save that named none (a create, an update without a transition), or the name of the scheduled transition for a scheduled firing. A transition that a workflow names "loopback" cannot be told apart from a save that named none. Omitted if none.
 	TransitionForLatestSave *string `json:"transitionForLatestSave,omitempty"`
 }
 

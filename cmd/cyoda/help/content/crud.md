@@ -364,7 +364,7 @@ Response: `200 OK`, `application/json`, array of entity envelopes (same shape as
 - `entityId` (path): UUID
 - `pointInTime` (query, optional): RFC 3339 — view history as it existed at this time; must be at or before the consistency time. The history lists committed changes only, also when the request joins a transaction
 
-Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first). A transaction records one version of each entity it writes, however often it wrote the entity, so each transaction that changed the entity has one entry:
+Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first). The array holds at most 1000 entries, the newest ones, so the newest entry is always the first. A transaction records one version of each entity it writes, however often it wrote the entity, so each transaction that changed the entity has one entry:
 
 ```json
 [
@@ -374,6 +374,7 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
     "user": "alice",
     "attributedKind": "user",
     "executedBy": {"id": "GC2693985CC61NUU", "kind": "service"},
+    "transition": "submit",
     "transactionId": "733e7180-c055-11ef-a357-ae468cd3ed16"
   },
   {
@@ -382,6 +383,7 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
     "user": "K3V0Q8B1D2E4F6G7",
     "attributedKind": "service",
     "executedBy": {"id": "K3V0Q8B1D2E4F6G7", "kind": "service"},
+    "transition": "loopback",
     "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16"
   }
 ]
@@ -389,8 +391,11 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
 
 - `changeType`: `CREATE`, `UPDATE`, or `DELETE`
 - `user`: the attributed principal's id — who the change is for; `attributedKind`: its kind (`user`, `service` or `system`)
-- `executedBy`: `{id, kind}` — who made the change. The first entry above is an on-behalf-of write for the user `alice`, executed by the on-behalf-of client; the second is a client's own write. `attributedKind` and `executedBy` are absent on a change recorded without attribution. See `cyoda help auth integration` for every case. Over gRPC, `EntityChangesMetadataGetRequest` returns the same three fields in each change's `changeMeta`.
-- `transactionId`: present only when `hasEntity` is true (i.e., entity payload exists at that version)
+- `executedBy`: `{id, kind}` — who made the change. The first entry above is an on-behalf-of write for the user `alice`, executed by the on-behalf-of client; the second is a client's own write. `attributedKind` and `executedBy` are absent on a change recorded without attribution. See `cyoda help auth integration` for every case.
+- `transition`: the transition the version was saved by — the name of the transition the request named; `loopback` for a save that named none (a create, an update without a transition, a collection item without one); the name of the scheduled transition for a scheduled firing. Absent on a `DELETE` entry. It is the version's `meta.transitionForLatestSave` (see ENTITY ENVELOPE). When a transaction writes the entity more than once, it is the name its last write carries. It records only the transition the request named, not the automated transitions the run made after it (see `cyoda help audit`, *Recording*). The first entry above is an update that named `submit`; the second is a create.
+- `transactionId`: the transaction that committed the version. Absent on a `DELETE` entry
+
+Over gRPC, `EntityChangesMetadataGetRequest` returns the same fields — `user`, `attributedKind`, `executedBy` and `transition` — in each change's `changeMeta`, with the same 1000-entry limit.
 
 **GET /api/entity/{entityId}/transitions** — List available transitions for an entity
 
@@ -712,7 +717,7 @@ All entity read operations return entities in the standard envelope:
     "lastUpdateTime": "2025-08-01T10:00:00.000000000Z",
     "pointInTime": "2025-08-01T10:00:00Z",
     "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16",
-    "transitionForLatestSave": "UPDATE"
+    "transitionForLatestSave": "loopback"
   }
 }
 ```
@@ -726,7 +731,7 @@ All entity read operations return entities in the standard envelope:
 - `meta.lastUpdateTime` — RFC 3339 with nanoseconds; the instant the transaction that wrote this revision committed. Equals `creationDate` if never updated. Both dates are assigned by the server at commit — a value sent on a write is ignored — so entities written by one transaction report the same instant. The instant is taken immediately before the commit, so a value read back is at or **before** the moment the write response was returned — and never as early as the moment the transaction opened
 - `meta.pointInTime` — the as-at point-in-time for which the entity was retrieved, when supplied
 - `meta.transactionId` — present when a transaction ID exists
-- `meta.transitionForLatestSave` — transition name that produced the latest save. Valid values: `"loopback"` (loopback update with no transition supplied by the client) or the named transition string. **Known bug:** the server currently stores the literal `"workflow"` for engine-driven initial-state writes; there is no valid `"workflow"` value and this is tracked for fix.
+- `meta.transitionForLatestSave` — the transition this revision was saved by: the name of the transition the request named; `"loopback"` for a save that named none (a create, an update without a transition, a collection item without one); the name of the scheduled transition for a scheduled firing. A transition that a workflow itself names `loopback` cannot be told apart from a save that named none. The value names the transition the request named, not the automated transitions its run made after it. `GET /entity/{entityId}/changes` gives the same value for each version, as `transition`. What a running workflow sees in this field is in `cyoda help workflows`, CRITERIA
 
 ## OPTIMISTIC CONCURRENCY
 

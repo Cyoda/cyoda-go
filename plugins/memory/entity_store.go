@@ -1259,8 +1259,13 @@ func (s *EntityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 		if opts.Until != nil && v.submitTime.After(*opts.Until) {
 			continue
 		}
+		var transition string
+		if v.entity != nil { // a DELETED tombstone carries no entity
+			transition = v.entity.Meta.TransitionForLatestSave
+		}
 		result = append(result, spi.EntityVersionMeta{
 			Version:        v.version,
+			Transition:     transition,
 			ChangeType:     v.changeType,
 			Timestamp:      v.submitTime,
 			User:           v.user,

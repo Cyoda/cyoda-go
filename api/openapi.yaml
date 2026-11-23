@@ -10101,7 +10101,7 @@ components:
           description: The transaction ID associated with the latest save (omitted if none)
         transitionForLatestSave:
           type: string
-          description: The transition that triggered the latest save (omitted if none)
+          description: The transition the latest save was saved by - the name of the transition its request named, "loopback" for a save that named none (a create, an update without a transition), or the name of the scheduled transition for a scheduled firing. A transition that a workflow names "loopback" cannot be told apart from a save that named none. Omitted if none.
     EntityResultDto:
       type: object
       description: |
@@ -11590,6 +11590,9 @@ components:
               type: string
             kind:
               type: string
+        transition:
+          type: string
+          description: The name of the transition the change was saved by - the name of the transition its request named, "loopback" for a save that named none, or the name of the scheduled transition for a scheduled firing. Absent on a DELETE entry.
         changeType:
           type: string
           enum:
@@ -11645,7 +11648,7 @@ components:
           description: The as-at point-in-time for which the entity was retrieved, when supplied.
         transitionForLatestSave:
           type: string
-          description: Transition applied when the entity was last saved as-at the point-in-time.
+          description: The transition the latest save as-at the point-in-time was saved by - the name of the transition its request named, "loopback" for a save that named none (a create, an update without a transition), or the name of the scheduled transition for a scheduled firing. A transition that a workflow names "loopback" cannot be told apart from a save that named none.
         transactionId:
           type: string
           format: uuid
@@ -12351,6 +12354,9 @@ components:
               description: The principal that executed the request,
                 independent of the attributed principal. Present only when
                 one was recorded.
+            transition:
+              type: string
+              description: The name of the transition the change was saved by - the name of the transition its request named, "loopback" for a save that named none, or the name of the scheduled transition for a scheduled firing. Absent on a DELETE entry.
       required:
         - changeType
         - microsTime

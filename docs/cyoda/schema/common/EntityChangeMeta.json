@@ -41,6 +41,10 @@
         "kind"
       ]
     },
+    "transition": {
+      "type": "string",
+      "description": "Name of the transition the change was saved by: the name of the transition its request named, loopback for a save that named none, or the name of the scheduled transition for a scheduled firing. Absent on a DELETE change."
+    },
     "changeType": {
       "type": "string",
       "enum": [

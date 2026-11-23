@@ -10,11 +10,27 @@ import (
 	"github.com/cyoda/cyoda-go/e2e/parity/client"
 )
 
+// updCollectionHappyWorkflow is the simple workflow with a manual "amend"
+// that keeps a CREATED entity in CREATED.
+const updCollectionHappyWorkflow = `{
+	"importMode": "REPLACE",
+	"workflows": [{
+		"version": "1.1", "name": "upd-batch-happy-wf", "initialState": "NONE", "active": true,
+		"states": {
+			"NONE":    {"transitions": [{"name": "create", "next": "CREATED", "manual": false}]},
+			"CREATED": {"transitions": [{"name": "amend", "next": "CREATED", "manual": true}]}
+		}
+	}]
+}`
+
 // RunEntityUpdateCollectionHappyPath verifies PUT /api/entity/{format}
 // against every backend: a two-entity batch lands cleanly and both
 // entities reflect the new payload on subsequent GET. This is the basic
 // "the endpoint works" scenario — it must pass on memory, sqlite,
-// postgres, and cassandra alike.
+// postgres, and cassandra alike. Each version records its item's
+// transition: "loopback" for the items of the collection create that made
+// the entities, "amend" for the update item that names it, "loopback" for
+// the one that names none.
 func RunEntityUpdateCollectionHappyPath(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -22,19 +38,22 @@ func RunEntityUpdateCollectionHappyPath(t *testing.T, fixture BackendFixture) {
 	const modelName = "upd-batch-happy"
 	const modelVersion = 1
 
-	setupSimpleWorkflow(t, c, modelName, modelVersion)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, `{"name":"Test","amount":1,"status":"new"}`, updCollectionHappyWorkflow)
 
-	id1, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","amount":1,"status":"new"}`)
+	ids, err := c.CreateEntitiesCollection(t, []client.CollectionItem{
+		{ModelName: modelName, ModelVersion: modelVersion, Payload: `{"name":"Alice","amount":1,"status":"new"}`},
+		{ModelName: modelName, ModelVersion: modelVersion, Payload: `{"name":"Bob","amount":2,"status":"new"}`},
+	})
 	if err != nil {
-		t.Fatalf("CreateEntity 1: %v", err)
+		t.Fatalf("CreateEntitiesCollection: %v", err)
 	}
-	id2, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Bob","amount":2,"status":"new"}`)
-	if err != nil {
-		t.Fatalf("CreateEntity 2: %v", err)
+	if len(ids) != 2 {
+		t.Fatalf("CreateEntitiesCollection returned %d ids, want 2", len(ids))
 	}
+	id1, id2 := ids[0], ids[1]
 
 	raw, err := c.UpdateCollection(t, []client.UpdateCollectionItem{
-		{ID: id1, Payload: `{"name":"Alice2","amount":11,"status":"new"}`},
+		{ID: id1, Payload: `{"name":"Alice2","amount":11,"status":"new"}`, Transition: "amend"},
 		{ID: id2, Payload: `{"name":"Bob2","amount":22,"status":"new"}`},
 	})
 	if err != nil {
@@ -65,6 +84,22 @@ func RunEntityUpdateCollectionHappyPath(t *testing.T, fixture BackendFixture) {
 		if got.Data["name"] != want.name {
 			t.Errorf("entity %s: data.name = %v, want %q", want.id, got.Data["name"], want.name)
 		}
+	}
+
+	// Each entity's history, newest first: the update item's version, then
+	// the collection create's.
+	for _, want := range []struct {
+		id     uuid.UUID
+		update string
+	}{{id1, "amend"}, {id2, "loopback"}} {
+		ch, err := c.GetEntityChanges(t, want.id)
+		if err != nil {
+			t.Fatalf("GetEntityChanges %s: %v", want.id, err)
+		}
+		if len(ch) != 2 || ch[0].ChangeType != "UPDATE" || ch[1].ChangeType != "CREATE" {
+			t.Fatalf("changes of %s = %+v; want [UPDATE, CREATE]", want.id, ch)
+		}
+		requireTransitions(t, want.id.String(), ch, want.update, "loopback")
 	}
 }
 

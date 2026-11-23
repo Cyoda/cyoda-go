@@ -35,7 +35,7 @@
     },
     "transitionForLatestSave": {
       "type": "string",
-      "description": "The transition applied of the entity when last saved as-at the given point-in-time."
+      "description": "The transition the latest save as-at the given point-in-time was saved by: the name of the transition its request named, loopback for a save that named none (a create, an update without a transition), or the name of the scheduled transition for a scheduled firing. A transition that a workflow names loopback cannot be told apart from a save that named none."
     },
     "transactionId": {
       "type": "string",

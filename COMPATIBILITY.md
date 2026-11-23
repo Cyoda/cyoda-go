@@ -48,7 +48,7 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 
 ### Independent version axes
 
-`cyoda-go` and `cyoda-go-spi` version **independently**. The binary pins the SPI version it needs and never skips or burns a version number to mirror the SPI's — this matrix is the source of truth for which binary pins which SPI, not a shared digit. `cyoda-go-spi` is the one axis that does **not** use the minor as its breaking-change signal ([README — Versioning](./README.md#versioning)). It is effectively an internal library — its only consumers are the in-tree plugins and the commercial Cassandra backend, all released in lock-step — so it ships breaking interface changes in patches rather than burning a minor for an audience of two. Read its `### Breaking` changelog section on every bump. The SPI was strictly additive throughout `v0.5.0…v0.8.2`; `v0.8.3` is its first breaking release, `v0.8.4` its second and larger one, and the pin the `v0.9.0` row carries is a third.
+`cyoda-go` and `cyoda-go-spi` version **independently**. The binary pins the SPI version it needs and never skips or burns a version number to mirror the SPI's — this matrix is the source of truth for which binary pins which SPI, not a shared digit. A breaking `cyoda-go-spi` release is a minor: one that breaks an interface, or that adds a conformance case an existing implementor fails ([`MAINTAINING.md`](./MAINTAINING.md), *Bumping cyoda-go-spi*). Read its `### Breaking` changelog section on every bump. The SPI was strictly additive throughout `v0.5.0…v0.8.2`. `v0.8.3` and `v0.8.4` are breaking releases that shipped as patches, before the rule covered the SPI; `v0.9.0`, a minor, is the first breaking release under it.
 
 Two repo-internal rules still hold and must not be confused with a binary↔SPI coupling: **pin-sync** (root + every `plugins/*/go.mod` agree on one SPI version, CI-gated by `make check-spi-pin-sync`) and **plugin-tag-equals-umbrella** (plugin submodule tags match the `cyoda-go` tag). Both are release hygiene *within* this repo; neither ties the binary's version number to the SPI's.
 
@@ -74,12 +74,12 @@ would, so plugins left at old tags fail there while `go.work` keeps every local
 run green (`make repin-plugins`).
 
 At the release cut the window closes: all four manifests are re-pinned to the
-real tag, checked by `make check-spi-pin-sync`. **Currently pinned: the
-`v0.9.0` tag**; the next milestone's pseudo-version replaces it when a change
-first needs newer SPI surface. This module ships breaking changes without a major
-version (see [Independent version axes](#independent-version-axes)), and its
-`### Breaking` changelog section rather than the version component is what
-flags it.
+real tag, checked by `make check-spi-pin-sync`. **Currently pinned:
+`v0.9.1-0.20261123010453-8c5902bf761f`**, a pseudo-version of `cyoda-go-spi`
+`main` for the `v0.10.0` milestone (it adds `EntityVersionMeta.Transition`).
+This module ships breaking changes without a major
+version: a breaking release is a minor, and its `### Breaking` changelog
+section says what broke (see [Independent version axes](#independent-version-axes)).
 
 Per-milestone detail of which surface landed when belongs in the matrix row for
 that release, not here; this section describes the mechanism, which does not

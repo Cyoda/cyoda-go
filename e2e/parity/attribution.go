@@ -120,6 +120,14 @@ func RunAttributionTombstoneUniformity(t *testing.T, fixture BackendFixture) {
 		t.Errorf("tombstone executor = %+v; want {id:%q, kind:service} (executor == stager)",
 			deleted.ExecutedBy, created.User)
 	}
+	// A tombstone records no transition on any backend; the create records
+	// "loopback", the name of a save that named none.
+	if created.Transition != "loopback" {
+		t.Errorf("CREATE transition = %q; want loopback", created.Transition)
+	}
+	if deleted.Transition != "" {
+		t.Errorf("tombstone transition = %q; want none (absent)", deleted.Transition)
+	}
 }
 
 // RunAttributionExecutorRoundTrip pins the executor round-trip on change
@@ -244,9 +252,13 @@ func firedSystemAnchor(t *testing.T, changes []client.EntityChangeMeta) *client.
 // the SYSTEM principal, changeType UPDATE (a re-save of an already-existing
 // entity, derived from row-existence on every backend — never trusted
 // verbatim from a stale caller-supplied value; see .claude/rules/backend
-// divergence-is-a-bug).
+// divergence-is-a-bug), transition the scheduled AutoClose (never the name
+// the version before it recorded).
 func assertScheduledFireAttribution(t *testing.T, fired *client.EntityChangeMeta, wantUser, wantKind string) {
 	t.Helper()
+	if fired.Transition != "AutoClose" {
+		t.Errorf("fired anchor transition = %q; want AutoClose (the scheduled transition the firing made)", fired.Transition)
+	}
 	if fired.User != wantUser {
 		t.Errorf("fired anchor attributed user = %q; want %q (the arming principal / durable ArmedBy)",
 			fired.User, wantUser)

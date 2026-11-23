@@ -477,7 +477,8 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 	// branches. TX_post has not written the anchor before this write: the
 	// engine writes it here first, and a callout never writes the entity it
 	// runs for. A write or delete by another transaction since tPre committed
-	// makes the CompareAndSave conflict.
+	// makes the CompareAndSave conflict. TX_post was begun from the run's
+	// context, so newCtx carries the request's transition name.
 	es, casErr := e.factory.EntityStore(newCtx)
 	if casErr != nil {
 		return nil, "", true, fmt.Errorf("commit-before-dispatch: get entity store for CAS: %w", errors.Join(ErrCommitBeforeDispatchInfra, casErr))
@@ -487,7 +488,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 			return nil, "", true, applyErr
 		}
 	}
-	if _, saveErr := es.CompareAndSave(newCtx, entity, tPre); saveErr != nil {
+	if _, saveErr := es.CompareAndSave(newCtx, stampedForSave(newCtx, entity), tPre); saveErr != nil {
 		// A save inside a transaction does no unique-key work (the commit
 		// does), so a conflict is the only outcome here the caller can act on.
 		// Anything else is the store failing: an unmarked error would reach the
@@ -518,8 +519,9 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 
 // flushAndCommitSegment is the shared primitive for the COMMIT_BEFORE_DISPATCH
 // segment boundary's "flush + commit TX_pre" half. It saves the in-memory
-// entity in txID, commits txID and stamps the entity with txID, the id the
-// stored anchor carries. It returns nil exactly when txID committed.
+// entity in txID with the request's transition name (stampedForSave), commits
+// txID and stamps the entity with txID, the id the stored anchor carries. It
+// returns nil exactly when txID committed.
 // The caller begins TX_post afterward: before the dispatch with
 // startNewTxOnDispatch (beginNextSegment), after it without.
 //
@@ -556,7 +558,7 @@ func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, 
 	if err != nil {
 		return fmt.Errorf("commit-before-dispatch: get entity store: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 	}
-	if _, err := es.Save(ctx, entity); err != nil {
+	if _, err := es.Save(ctx, stampedForSave(ctx, entity)); err != nil {
 		return fmt.Errorf("commit-before-dispatch: flush pre-callout state: %w", errors.Join(ErrCommitBeforeDispatchInfra, err))
 	}
 	// A scheduled run stamps its task as the last write of every segment

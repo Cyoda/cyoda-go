@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 276 scenarios in this package: the entries of its literal
+// allTests holds 278 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go,
 // schema_extension_contract.go).
@@ -110,6 +110,12 @@ var allTests = []NamedTest{
 	// by-transaction read: X's final entity once X commits, 404 before,
 	// inside X too.
 	{"HistoryOneVersionPerTransaction", RunHistoryOneVersionPerTransaction},
+	// Each version records the transition its request named, on /changes
+	// and on the EntityChange audit events; none on a DELETE.
+	{"HistoryTransitionPerVersion", RunHistoryTransitionPerVersion},
+	// A criterion on transitionForLatestSave sees the start version's name:
+	// create, named update, loopback update, scheduled firing.
+	{"CriterionSeesStartVersionTransition", RunCriterionSeesStartVersionTransition},
 
 	// Phase 4a — tenant isolation (Task 4a.5)
 	{"TenantIsolationEntities", RunTenantIsolationEntities},
