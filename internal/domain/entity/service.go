@@ -2120,8 +2120,8 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		scope.Advance(result.FinalCtx, result.FinalTxID)
 		currentCtx, currentTxID = scope.Ctx(), scope.TxID()
 
-		// CREATE path runs without an explicit transition; canonical
-		// marker is "loopback", matching single CreateEntity.
+		// A create names no transition, so it records "loopback". The run saw
+		// none: a create starts from no version.
 		entity.Meta.TransitionForLatestSave = wfengine.LoopbackTransition
 
 		// This item's Save. The callouts of its engine run have ended, and

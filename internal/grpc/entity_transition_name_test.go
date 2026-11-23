@@ -42,12 +42,14 @@ func newGuardEnv(t *testing.T) guardEnv {
 	t.Helper()
 	svc, wfHandler, ctx := newTestEnvWithWorkflow(t)
 	const model = "start-value-guard"
+	// setupScheduledWorkflowRPCEnv imports and locks the model and imports
+	// any workflow; startValueGuardWF has no scheduled transition.
 	setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, model, startValueGuardWF)
 	return guardEnv{svc: svc, ctx: ctx, model: model}
 }
 
-// requireEnvelopeSuccess fails the test unless resp is a successful transaction
-// envelope.
+// requireEnvelopeSuccess fails the test unless success, the envelope's
+// Success, is true; errInfo is the envelope's Error, shown on failure.
 func requireEnvelopeSuccess(t *testing.T, what string, success bool, errInfo any) {
 	t.Helper()
 	if !success {

@@ -459,6 +459,53 @@ func TestDecision7_ScheduledFiringStampsItsTransition(t *testing.T) {
 	}
 }
 
+// A criterion in a scheduled firing's cascade sees the name of the version
+// the firing started from, not the scheduled transition's name. The firing's
+// version still records the scheduled transition.
+func TestDecision6_CriterionSeesStartValue_ScheduledFiring(t *testing.T) {
+	h, _ := newSchedulerHarness(t, nil)
+	model := uniq("e2e-cht-sched-guard")
+	h.SetupModelWithWorkflow(t, model, schedDoc(model+"-wf", map[string]any{
+		"Open": map[string]any{"transitions": []any{map[string]any{
+			"name": "submit", "next": "Submitted", "manual": true,
+		}}},
+		"Submitted": map[string]any{"transitions": []any{map[string]any{
+			"name": "expire", "next": "Expired", "manual": false, "schedule": map[string]any{"delayMs": 100},
+		}}},
+		"Expired": map[string]any{"transitions": []any{map[string]any{
+			"name": "afterSubmit", "next": "HIT", "manual": false,
+			"criterion": map[string]any{"type": "lifecycle", "field": "transitionForLatestSave", "operatorType": "EQUALS", "value": "submit"},
+		}}},
+		"HIT": map[string]any{},
+	}))
+	id := createOpen(t, h, model, chtData)
+	resp := h.DoAuth(t, http.MethodPut, "/api/entity/JSON/"+id+"/submit", chtData, "")
+	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("submit: %d %s", resp.StatusCode, body)
+	}
+
+	// The firing's cascade ends in HIT or in Expired; wait for either.
+	var state string
+	awaitScheduler(t, scheduledFireTimeout, fmt.Sprintf("entity %s past Submitted", id), func() (bool, string) {
+		state, _ = h.GetEntityState(t, id)
+		return state == "HIT" || state == "Expired", fmt.Sprintf("state %q", state)
+	})
+	if state != "HIT" {
+		t.Errorf("state = %q, want HIT: the guard after the firing sees the start version's \"submit\", not the scheduled \"expire\"", state)
+	}
+	resp = h.DoAuth(t, http.MethodGet, "/api/entity/"+id, "", "")
+	body := h.readBody(t, resp)
+	var env struct {
+		Meta map[string]any `json:"meta"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &env) != nil {
+		t.Fatalf("read: %d %s", resp.StatusCode, body)
+	}
+	if got := env.Meta["transitionForLatestSave"]; got != "expire" {
+		t.Errorf("meta.transitionForLatestSave = %v, want the firing's \"expire\"", got)
+	}
+}
+
 // The same entity twice in one collection update — a named item, then a
 // loopback item — commits one version carrying the last item's name. The
 // second item starts from the first item's save, which its transaction sees.
