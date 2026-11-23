@@ -1002,7 +1002,7 @@ type criterionContext struct {
 	txID           string
 	workflowName   string
 	transitionName string
-	target         string // "WORKFLOW", "TRANSITION", "PROCESSOR"
+	target         string // "WORKFLOW" or "TRANSITION"
 }
 
 // evaluateCriterion evaluates a criterion against the entity in two phases.
