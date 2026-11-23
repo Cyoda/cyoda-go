@@ -88,12 +88,26 @@ transition for the latest version only and does not yet record it per version.
 
 ## Tests
 
-- Parity (`e2e/parity`, memory/sqlite/postgres): the value after create, named
-  update, loopback update and delete (absent), a scheduled firing, and the
-  `COMMIT_BEFORE_DISPATCH` boundary version.
-- E2E (`internal/e2e`, PostgreSQL): `/changes` and the audit event on the
-  doors listed above; what a criterion and workflow selection see during a run.
-- gRPC (`internal/grpc`): `changeMeta.transition` and the same on each gRPC
-  write door.
-- SPI conformance (`spitest`): the per-version value, a tombstone's empty value
-  on every delete path, two saves in one transaction.
+- E2E (`internal/e2e`, PostgreSQL):
+  - `change_history_transition_test.go`: `TestChangesEndpoint_TransitionPerVersion`
+    and `TestAuditEntityChange_Transition` (the field on `/changes` and the
+    audit event, absent on delete);
+    `TestDecision6_CriterionSeesStartValue_EachHTTPDoor`,
+    `TestDecision6_CriterionSeesStartValue_ScheduledFiring`,
+    `TestDecision6_SelectionSeesStartValue`,
+    `TestDecision6_CriterionAfterBoundarySeesStartValue` and
+    `TestDecision6_JoinedReadSeesRequestName` (what a run evaluates and reads);
+    `TestDecision7_ScheduledFiringStampsItsTransition`;
+    `TestDecision8_BoundaryVersionCarriesRequestName`;
+    `TestChangeHistory_CollectionSameEntityTwice_LastItemWins` and
+    `TestChangeHistory_FailureAfterBoundary_KeepsBoundaryVersionName`.
+  - `approval_recipe_test.go`: `TestApprovalRecipe`.
+- gRPC (`internal/grpc`): `TestEntityChangesMetadata_Transition`
+  (`entity_change_transition_test.go`) and
+  `TestDecision6_CriterionSeesStartValue_EachGRPCDoor`
+  (`entity_transition_name_test.go`).
+- Parity (`e2e/parity/registry.go`, memory/sqlite/postgres):
+  `HistoryTransitionPerVersion` and `Decision6CriterionSeesStartValue`.
+- SPI conformance (`spitest`): `Entity/GetVersionMetadata/TransitionPerVersion`,
+  `Entity/GetVersionMetadata/TombstoneTransitionEmpty` and
+  `Entity/OneVersionPerTx/TransitionIsLastWrite`.
