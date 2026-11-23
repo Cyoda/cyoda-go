@@ -585,10 +585,14 @@ executor is a `service` and `role` is in `authclaims`. The attributed principal
 plays no part in it, so a scheduled fire (executor `system`) never passes.
 
 `EntityChangesMetadataGetRequest` returns, in each change's `changeMeta`, the
-same attribution as `GET /api/entity/{entityId}/changes` (see
-`cyoda help crud`): `user` (the attributed id), `attributedKind` (its kind) and
-`executedBy` `{id, kind}` (the executor). `attributedKind` and `executedBy` are
-absent on a change recorded without attribution. The schema is
+same fields as `GET /api/entity/{entityId}/changes` (see `cyoda help crud`):
+`user` (the attributed id), `attributedKind` (its kind), `executedBy`
+`{id, kind}` (the executor) and `transition` (the transition the version was
+saved by: the name of the transition the request named, `loopback` for a save
+that named none, the name of the scheduled transition for a scheduled firing).
+`attributedKind` and `executedBy` are absent on a change recorded without
+attribution; `transition` is absent on a `DELETE` change. It returns at most
+the 1000 newest changes, newest first. The schema is
 `common/EntityChangeMeta.json` (`cyoda help cloudevents json`).
 
 ## KEEPALIVE

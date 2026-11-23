@@ -372,7 +372,8 @@ Both sync and async search accept one or more `sort` query parameters. Repeat th
 **Order semantics:**
 - Strings: byte (lexicographic) order.
 - Numbers: numeric order.
-- Meta dates (`creationDate`, `lastUpdateTime`, `transitionForLatestSave`): chronological; millisecond resolution is the minimum precision enforced cross-engine.
+- Meta dates (`creationDate`, `lastUpdateTime`): chronological; millisecond resolution is the minimum precision enforced cross-engine.
+- The other meta fields (`state`, `transitionForLatestSave`, `transactionId`, `id`) are strings and sort as strings.
 - Absent or null values sort last regardless of direction.
 
 **Tiebreaker:** `entity_id` ascending is always appended as the final key.
