@@ -395,6 +395,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -430,6 +432,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -565,6 +569,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -660,6 +666,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -734,6 +742,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -844,6 +854,10 @@ paths:
           description: >-
             M2M_CLIENT_EXISTS: the caller's tenant already holds a client with this
             clientId, or another create of it wrote first.
+            A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not
+            retryable, when the transaction it joined lost a write race; the operation
+            that owns the transaction fails with a retryable 409 CONFLICT, and its
+            client retries it.
           content:
             application/problem+json:
               schema:
@@ -973,6 +987,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1048,6 +1064,10 @@ paths:
         "409":
           description: >-
             CONFLICT (retryable): another change to the client won the race; retry.
+            A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not
+            retryable, when the transaction it joined lost a write race; the operation
+            that owns the transaction fails with a retryable 409 CONFLICT, and its
+            client retries it.
           content:
             application/problem+json:
               schema:
@@ -1121,6 +1141,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1152,6 +1174,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1234,6 +1258,10 @@ paths:
             the requested `time`; the detail names the latest one, and the problem's
             `properties.latestRecordedTime` carries it as an RFC 3339 timestamp. The
             clock is unchanged.
+            A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not
+            retryable, when the transaction it joined lost a write race; the operation
+            that owns the transaction fails with a retryable 409 CONFLICT, and its
+            client retries it.
           content:
             application/problem+json:
               schema:
@@ -1363,6 +1391,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1419,6 +1449,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1516,6 +1548,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1628,6 +1662,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1716,6 +1752,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1857,6 +1895,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1999,6 +2039,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2080,6 +2122,10 @@ paths:
             retries the delete up to 3 times before it answers 409; retry the
             request. A request that joins an open transaction (`X-Tx-Token`) is
             not retried on the server.
+            A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not
+            retryable, when the transaction it joined lost a write race; the operation
+            that owns the transaction fails with a retryable 409 CONFLICT, and its
+            client retries it.
           content:
             application/problem+json:
               schema:
@@ -2239,6 +2285,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2345,6 +2393,8 @@ paths:
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2561,6 +2611,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2793,6 +2845,10 @@ paths:
             least as fast as they were removed, so it was stopped at its
             batch cap. Batches committed before the failure stay deleted.
             Stop the concurrent writers, narrow the condition, or retry.
+            A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not
+            retryable, when the transaction it joined lost a write race; the operation
+            that owns the transaction fails with a retryable 409 CONFLICT, and its
+            client retries it.
           content:
             application/problem+json:
               schema:
@@ -3019,7 +3075,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
           content:
             application/problem+json:
               schema:
@@ -3242,7 +3298,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
           content:
             application/problem+json:
               schema:
@@ -3429,7 +3485,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
           content:
             application/problem+json:
               schema:
@@ -3561,7 +3617,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
           content:
             application/problem+json:
               schema:
@@ -3772,7 +3828,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
           content:
             application/problem+json:
               schema:
@@ -3915,7 +3971,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
           content:
             application/problem+json:
               schema:
@@ -4168,7 +4224,7 @@ paths:
                 detail: cannot find model entityName=nobel-prize, version=1
                 instance: /api/entity/JSON/nobel-prize/1
         "409":
-          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
+          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
           content:
             application/problem+json:
               schema:
@@ -4294,6 +4350,8 @@ paths:
                       errorCode: BAD_REQUEST
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4495,6 +4553,8 @@ paths:
                       errorCode: BAD_REQUEST
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4633,6 +4693,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4711,6 +4773,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4773,6 +4837,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4951,6 +5017,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -5183,6 +5251,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -5866,6 +5936,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6010,6 +6082,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6064,6 +6138,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6131,6 +6207,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6215,6 +6293,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6291,6 +6371,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6347,6 +6429,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6439,6 +6523,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6500,6 +6586,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6566,6 +6654,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6638,6 +6728,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7378,6 +7470,8 @@ paths:
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/platform-api/entity/fetch/transitions
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7502,6 +7596,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7691,6 +7787,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7805,6 +7903,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7863,6 +7963,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7949,6 +8051,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -8137,6 +8241,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -13184,6 +13290,18 @@ components:
         also when that happened while the request was in progress, whose writes
         are then discarded, except a schema extension it made, which stays.
         Neither is retryable with the same token.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    JoinedTransactionConflict:
+      description: >-
+        CONFLICT: the transaction this request joined (its `X-Tx-Token`) lost
+        a write race and cannot commit. A joined request that fails, or that
+        cannot start its work in the transaction, is answered this code. Not
+        retryable for this request: a retry in the same transaction fails the
+        same way. The operation that owns the transaction fails with a
+        retryable 409 CONFLICT, and its client retries it.
       content:
         application/problem+json:
           schema:

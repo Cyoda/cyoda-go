@@ -2185,6 +2185,9 @@ type InternalServerError = ProblemDetail
 // JoinedPayloadTooLarge defines model for JoinedPayloadTooLarge.
 type JoinedPayloadTooLarge = ProblemDetail
 
+// JoinedTransactionConflict defines model for JoinedTransactionConflict.
+type JoinedTransactionConflict = ProblemDetail
+
 // NotImplemented defines model for NotImplemented.
 type NotImplemented = ProblemDetail
 
