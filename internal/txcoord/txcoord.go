@@ -62,8 +62,9 @@ const (
 // transaction is sealed is refused completion instead.
 type Coordination interface {
 	// BeginCallout registers callout calloutID on txID under the scope on ctx
-	// (the root of txID when ctx carries none, or one of another transaction)
-	// and the pairs that scope was admitted under. The returned ctx is
+	// (the root of txID when ctx carries none) and the pairs that scope was
+	// admitted under. A scope on ctx is one of txID: a chain runs in one
+	// transaction. The returned ctx is
 	// cancelled with cause ErrSuperseded when an outer pair stops being
 	// current; Check on it then reports the refusal of the scope it was begun
 	// from. end unregisters the callout, cancels the callouts begun under it,
@@ -99,8 +100,8 @@ type Coordination interface {
 	// the scope. The caller ends the scope with End.
 	Enter(ctx context.Context, txID string, pairs []fence.Pair, class RequestClass, maxWaiters int) (Scope, context.Context, error)
 	// OpenChild opens an ASYNC_NEW_TX processor scope in ctx's transaction,
-	// under the scope on ctx (the root when ctx carries none, or one of
-	// another transaction), with a savepoint. It refuses as the parent
+	// under the scope on ctx (the root when ctx carries none), with a
+	// savepoint. It refuses as the parent
 	// scope's check would. A broken transaction, and a savepoint that cannot
 	// be taken, are ErrScopeInfra (with the broken cause or the savepoint's
 	// error); a session that has ended leaves the transaction broken. The

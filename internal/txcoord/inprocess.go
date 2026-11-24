@@ -154,13 +154,8 @@ func openUnder(tx *txState, calloutID string, below uint32) bool {
 
 // BeginCallout implements Coordination.
 func (c *inProcess) BeginCallout(ctx context.Context, txID, calloutID string) (context.Context, func()) {
-	// The scope on ctx is the parent only when it belongs to txID; otherwise
-	// the callout is the root's, and no pair of another transaction encloses
-	// it.
+	// The scope on ctx is the parent; without one the callout is the root's.
 	from := scopeFrom(ctx)
-	if from != nil && from.tx.id != txID {
-		from = nil
-	}
 	var outer []fence.Pair
 	if from != nil {
 		outer = Pairs(ctx)
@@ -181,7 +176,7 @@ func (c *inProcess) BeginCallout(ctx context.Context, txID, calloutID string) (c
 		defer c.mu.Unlock()
 		tx := c.txLocked(txID)
 		parent := from
-		if parent == nil || parent.tx != tx {
+		if parent == nil {
 			parent = tx.root
 		}
 		reg := &calloutReg{id: calloutID, tx: tx, parent: parent, cancel: cancel}
@@ -509,12 +504,9 @@ func (c *inProcess) OpenChild(ctx context.Context) (Scope, context.Context, erro
 		return nil, ctx, errors.New("failed to open a processor scope: the context carries no transaction")
 	}
 	txID := spiTx.ID
-	// The scope on ctx is the parent only when it belongs to ctx's
-	// transaction; otherwise the processor scope is the root's.
+	// The scope on ctx is the parent; without one the processor scope is the
+	// root's.
 	parent := scopeFrom(ctx)
-	if parent != nil && parent.tx.id != txID {
-		parent = nil
-	}
 	if parent != nil {
 		if err := parent.check(); err != nil {
 			return nil, ctx, err
@@ -526,7 +518,7 @@ func (c *inProcess) OpenChild(ctx context.Context) (Scope, context.Context, erro
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		tx := c.txLocked(txID)
-		if parent == nil || parent.tx != tx {
+		if parent == nil {
 			parent = tx.root
 		}
 		if tx.broken != nil {

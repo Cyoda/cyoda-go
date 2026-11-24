@@ -140,18 +140,17 @@ func (r *durableCallout) stopIfRefused() {
 	}
 }
 
-// nodeFrom returns the durable scope ctx carries when it belongs to txID, nil
-// otherwise.
-func nodeFrom(ctx context.Context, txID string) *durableScope {
+// nodeFrom returns the durable scope ctx carries, nil when it carries none.
+func nodeFrom(ctx context.Context) *durableScope {
 	n, _ := ctx.Value(scopeKey{}).(durableNode)
-	if n == nil || n.scope().txID != txID {
+	if n == nil {
 		return nil
 	}
 	return n.scope()
 }
 
 // BeginCallout implements Coordination. The callout is registered with the
-// backend under the scope on ctx (the root when ctx carries none of txID).
+// backend under the scope on ctx (the root when ctx carries none).
 // Its context is cancelled when Advance finds that scope refused, and when
 // end runs; end does not wait for anything.
 func (c *durable) BeginCallout(ctx context.Context, txID, calloutID string) (context.Context, func()) {
@@ -159,7 +158,7 @@ func (c *durable) BeginCallout(ctx context.Context, txID, calloutID string) (con
 	if txID == "" {
 		return cctx, func() { cancel(context.Canceled) }
 	}
-	from := nodeFrom(ctx, txID)
+	from := nodeFrom(ctx)
 	var outer []spi.CalloutPair
 	if from != nil {
 		outer = toSPIPairs(from.pairs())
@@ -276,8 +275,8 @@ func (c *durable) OpenChild(ctx context.Context) (Scope, context.Context, error)
 	if spiTx == nil {
 		return nil, ctx, errors.New("failed to open a processor scope: the context carries no transaction")
 	}
-	parent := nodeFrom(ctx, spiTx.ID)
-	if parent != nil && parent.kind != rootKind {
+	parent := nodeFrom(ctx)
+	if parent != nil {
 		if err := parent.check(); err != nil {
 			return nil, ctx, err
 		}
@@ -285,9 +284,6 @@ func (c *durable) OpenChild(ctx context.Context) (Scope, context.Context, error)
 	pctx, err := c.co.OpenChildScope(ctx)
 	if err != nil {
 		return nil, ctx, fmt.Errorf("failed to open a processor scope: %w", errors.Join(ErrScopeInfra, err))
-	}
-	if parent != nil && parent.kind == rootKind {
-		parent = nil
 	}
 	s := &durableScope{c: c, kind: processorKind, txID: spiTx.ID, parent: parent}
 	s.ctx = context.WithValue(pctx, scopeKey{}, s)

@@ -521,45 +521,6 @@ func TestOpenChild_SavepointOnDeadSessionBreaks(t *testing.T) {
 	}
 }
 
-// A ctx that carries a scope of another transaction registers nothing with
-// that scope: the callout and the processor scope go under txID's own root.
-func TestBeginCalloutAndOpenChild_ScopeOfAnotherTransaction(t *testing.T) {
-	e := newEnv(t)
-	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, actx := e.mustEnter(Write, pair("c1", 1))
-
-	tx2, tx2Ctx, err := e.tm.Begin(e.userCtx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	t.Cleanup(func() { _ = e.tm.Rollback(e.userCtx, tx2) })
-	_, endY := e.c.BeginCallout(actx, tx2, "y1")
-	reg := func() *calloutReg {
-		e.c.mu.Lock()
-		defer e.c.mu.Unlock()
-		return e.c.callouts["y1"]
-	}()
-	if reg.tx.id != tx2 || reg.parent != reg.tx.root {
-		t.Fatalf("callout registered on %s under %v; want %s's root", reg.tx.id, reg.parent.kind, tx2)
-	}
-	endY()
-
-	mixed := spi.WithTransaction(actx, spi.GetTransaction(tx2Ctx))
-	p, _, err := e.c.OpenChild(mixed)
-	if err != nil {
-		t.Fatalf("OpenChild = %v", err)
-	}
-	ps := p.(*scope)
-	if ps.tx.id != tx2 || ps.parent != ps.tx.root {
-		t.Fatalf("processor scope opened on %s; want under %s's root", ps.tx.id, tx2)
-	}
-	if err := p.Close(nil); err != nil {
-		t.Fatalf("Close = %v", err)
-	}
-	_ = a.End(&common.Outcome{})
-	endC1()
-}
-
 // A second Pause before the first one's resume is a no-op: it releases
 // nothing, and its resume only checks.
 func TestPause_TwiceIsNoOp(t *testing.T) {
