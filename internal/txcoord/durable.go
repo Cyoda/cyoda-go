@@ -325,7 +325,9 @@ func (s *durableScope) standing() (error, error) {
 func (s *durableScope) lostRace() bool { return lostRace(s.ctx, s.c.txMgr, s.txID) }
 
 // complete implements ending: CompleteScope, whose refusal maps by its error.
-// A refused completion has discarded the scope already.
+// A refused completion has discarded the scope already. Any other error is a
+// failed completion, and the scope is discarded; when the completion applied
+// all the same, the coordinator refuses that discard, and Seal fails.
 func (s *durableScope) complete(class RequestClass) (*common.AppError, error) {
 	err := s.c.co.CompleteScope(s.ctx)
 	switch {

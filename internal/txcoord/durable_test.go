@@ -426,6 +426,46 @@ func TestDurableEnd_MapsCompleteRefusals(t *testing.T) {
 	}
 }
 
+// lostAnswer is a coordinator whose CompleteScope applies the completion and
+// then returns an error it does not name, as when the backend's reply is lost
+// after the completion took effect.
+type lostAnswer struct{ spi.TransactionCoordinator }
+
+func (l lostAnswer) CompleteScope(ctx context.Context) error {
+	if err := l.TransactionCoordinator.CompleteScope(ctx); err != nil {
+		return err
+	}
+	return errors.New("the coordinator's reply was lost")
+}
+
+// TestDurableEnd_CompletionAppliedButUnconfirmedFailsSeal: a CompleteScope
+// that applied but returned an error the backend does not name is a failed
+// completion. The request is answered 500, the scope is discarded, the
+// coordinator refuses to discard a completed scope, and the owner's Seal
+// fails, so the scope's writes never commit after the request was told it
+// failed.
+func TestDurableEnd_CompletionAppliedButUnconfirmedFailsSeal(t *testing.T) {
+	cl := newCluster(t)
+	co, err := cl.f.(spi.TransactionCoordinationCapable).TransactionCoordinator(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := NewDurable(lostAnswer{co}, cl.tm)
+	_, end := cl.owner.BeginCallout(cl.txCtx, cl.txID, "c1")
+	cl.owner.Advance("c1", 1)
+
+	s, sctx := cl.mustEnter(other, Write, pair("c1", 1))
+	cl.save(sctx)
+	mustAnswer(t, s.End(nil), http.StatusInternalServerError, common.ErrCodeServerError, false)
+	end()
+
+	finish, err := cl.owner.Seal(cl.txCtx, cl.txID)
+	finish()
+	if err == nil {
+		t.Fatal("Seal after an unconfirmed completion = nil; want a refusal")
+	}
+}
+
 // TestDurableEnd_DiscardFailureIsAFailure: a scope the coordinator could not
 // discard is not answered as if it were: the request gets a 500.
 func TestDurableEnd_DiscardFailureIsAFailure(t *testing.T) {
