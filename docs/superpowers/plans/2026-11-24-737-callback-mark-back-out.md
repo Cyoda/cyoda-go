@@ -108,6 +108,6 @@
 
 ### After the tasks (not subagent work)
 
-- Comment on CP-3995 (Cloud: do not build the mark; the code is removed), cyoda/cyoda-go-cassandra#121 (no mark in the durable coordinator; the failed-discard obligation instead), and close #737 by hand on merge.
+- Comment on CP-3995 (Cloud: do not build the mark; the code is removed) and close #737 by hand on merge. (cyoda/cyoda-go-cassandra#121: body and comment updated 2026-11-24.)
 - Forward-port to `release/v0.10.0` and SPI `main` after 0.9.1 merges.
 - Gates: whole-branch code review (fresh reviewer) and `cyoda-go-security-audit` on the exact PR head.
