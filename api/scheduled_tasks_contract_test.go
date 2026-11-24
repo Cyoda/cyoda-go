@@ -39,7 +39,7 @@ func sortedCopy(in []string) []string {
 // and their rules, and the statuses it can answer. No X-Tx-Token parameter:
 // the operation is not a callback target. The join layer still serves it, so a
 // request that carries the header gets the join layer's answers, and the
-// operation declares them (404, 409, 410, 413, 503). Its own 404 is only
+// operation declares them (404, 410, 413, 503). Its own 404 is only
 // TRANSACTION_NOT_FOUND: an unknown or foreign model or entity is an empty
 // list. 403 is a caller without ROLE_M2M.
 func TestListScheduledTasks_Contract(t *testing.T) {
@@ -105,7 +105,7 @@ func TestListScheduledTasks_Contract(t *testing.T) {
 		codes = append(codes, code)
 	}
 	sort.Strings(codes)
-	const want = "200,400,401,403,404,409,410,413,500,503"
+	const want = "200,400,401,403,404,410,413,500,503"
 	if got := strings.Join(codes, ","); got != want {
 		t.Errorf("responses = %s, want %s", got, want)
 	}

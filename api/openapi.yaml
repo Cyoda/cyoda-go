@@ -395,8 +395,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -432,8 +430,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -569,8 +565,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -666,8 +660,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -742,8 +734,6 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -853,11 +843,7 @@ paths:
         "409":
           description: >-
             M2M_CLIENT_EXISTS: the caller's tenant already holds a client with this
-            clientId, or another create of it wrote first. A request whose
-            transaction has become rollback-only, because a request that joined it
-            failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not
-            retryable) — a request carrying its `X-Tx-Token` before it runs, the
-            operation that owns it when it would commit.
+            clientId, or another create of it wrote first.
           content:
             application/problem+json:
               schema:
@@ -987,8 +973,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1064,10 +1048,6 @@ paths:
         "409":
           description: >-
             CONFLICT (retryable): another change to the client won the race; retry.
-            A request whose transaction has become rollback-only, because a request
-            that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY
-            (not retryable) — a request carrying its `X-Tx-Token` before it runs,
-            the operation that owns it when it would commit.
           content:
             application/problem+json:
               schema:
@@ -1141,8 +1121,6 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1174,8 +1152,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1257,11 +1233,7 @@ paths:
             CLOCK_BEFORE_RECORDED_TIME — the store has recorded a time later than
             the requested `time`; the detail names the latest one, and the problem's
             `properties.latestRecordedTime` carries it as an RFC 3339 timestamp. The
-            clock is unchanged. A request whose transaction has become
-            rollback-only, because a request that joined it failed a write, is
-            answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request
-            carrying its `X-Tx-Token` before it runs, the operation that owns it
-            when it would commit.
+            clock is unchanged.
           content:
             application/problem+json:
               schema:
@@ -1391,8 +1363,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1449,8 +1419,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1548,8 +1516,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1662,8 +1628,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1752,8 +1716,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -1895,8 +1857,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2039,8 +1999,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2122,7 +2080,6 @@ paths:
             retries the delete up to 3 times before it answers 409; retry the
             request. A request that joins an open transaction (`X-Tx-Token`) is
             not retried on the server.
-            A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit.
           content:
             application/problem+json:
               schema:
@@ -2282,8 +2239,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2390,8 +2345,6 @@ paths:
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2608,8 +2561,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -2643,9 +2594,7 @@ paths:
         batches still run. In a request that joins another request's transaction, the
         delete commits and rolls back nothing itself: the owner's transaction
         commits or rolls back as a whole. A joined delete that fails keeps
-        nothing, and when its error is not retryable it makes the owner's
-        transaction rollback-only: the owner fails with 409
-        TRANSACTION_ROLLBACK_ONLY. An entity reported in `idToError` does not
+        nothing. An entity reported in `idToError` does not
         fail the request.
         A malformed condition body returns `400 INVALID_CONDITION`.
       operationId: deleteEntities
@@ -2844,7 +2793,6 @@ paths:
             least as fast as they were removed, so it was stopped at its
             batch cap. Batches committed before the failure stay deleted.
             Stop the concurrent writers, narrow the condition, or retry.
-            A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit.
           content:
             application/problem+json:
               schema:
@@ -3071,7 +3019,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
           content:
             application/problem+json:
               schema:
@@ -3294,7 +3242,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
           content:
             application/problem+json:
               schema:
@@ -3481,7 +3429,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
           content:
             application/problem+json:
               schema:
@@ -3613,7 +3561,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
           content:
             application/problem+json:
               schema:
@@ -3824,7 +3772,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
           content:
             application/problem+json:
               schema:
@@ -3967,7 +3915,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
           content:
             application/problem+json:
               schema:
@@ -4220,7 +4168,7 @@ paths:
                 detail: cannot find model entityName=nobel-prize, version=1
                 instance: /api/entity/JSON/nobel-prize/1
         "409":
-          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request whose transaction has become rollback-only, because a request that joined it failed a write, is answered 409 TRANSACTION_ROLLBACK_ONLY (not retryable) — a request carrying its `X-Tx-Token` before it runs, the operation that owns it when it would commit."
+          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined."
           content:
             application/problem+json:
               schema:
@@ -4346,8 +4294,6 @@ paths:
                       errorCode: BAD_REQUEST
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4549,8 +4495,6 @@ paths:
                       errorCode: BAD_REQUEST
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4689,8 +4633,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4769,8 +4711,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -4833,8 +4773,6 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -5013,8 +4951,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -5247,8 +5183,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -5932,8 +5866,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6078,8 +6010,6 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6134,8 +6064,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6203,8 +6131,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6289,8 +6215,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6367,8 +6291,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6425,8 +6347,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6519,8 +6439,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6582,8 +6500,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6650,8 +6566,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -6724,8 +6638,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7466,8 +7378,6 @@ paths:
                 status: 404
                 detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
                 instance: /api/platform-api/entity/fetch/transitions
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7592,8 +7502,6 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         "404":
           $ref: '#/components/responses/TransactionNotFound'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7783,8 +7691,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7899,8 +7805,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -7959,8 +7863,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -8047,8 +7949,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -8237,8 +8137,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
-        "409":
-          $ref: '#/components/responses/TransactionRollbackOnly'
         "410":
           $ref: '#/components/responses/TransactionGone'
         "413":
@@ -13290,21 +13188,6 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetail'
-    TransactionRollbackOnly:
-      description: >-
-        TRANSACTION_ROLLBACK_ONLY: the transaction, or the part of it the
-        request would run in, can only be rolled back — a request that joined
-        it (carrying its `X-Tx-Token`) failed a write. A request carrying the
-        token is refused before it runs; one already running whose part of the
-        transaction was marked meanwhile, by a failed write of a request nested
-        under it, is answered this code when it ends, and keeps nothing except
-        a schema extension it made, which stays. The operation that owns the
-        transaction is refused when it would commit, or write, and the message
-        names the code the failed request got. Not retryable.
-      content:
-        application/problem+json:
-          schema:
-            $ref: '#/components/schemas/ProblemDetail'
     JoinedPayloadTooLarge:
       description: >-
         A request carrying an `X-Tx-Token` passed one of the join layer's size
@@ -13313,8 +13196,7 @@ components:
         JOINED_RESPONSE_TOO_LARGE: the answer exceeds what a joined request may
         hold while it holds the transaction, so page the read. On an entity
         write that answer is a failure of the request: its writes are
-        discarded, except a schema extension it made, which stays, and the
-        transaction becomes rollback-only.
+        discarded, except a schema extension it made, which stays.
       content:
         application/problem+json:
           schema:
