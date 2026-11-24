@@ -9,12 +9,12 @@
 // scope that began the callout its pass names. A processor scope is one
 // ASYNC_NEW_TX processor, a child of the scope on the chain that runs it.
 //
-// A scope that cannot complete is marked (rollback-only). A failed write marks
-// the parent of its scope; a processor scope stops the mark from climbing
-// further. The transaction is rollback-only when its root is marked. Seal is
-// the owner's cut-off before commit or rollback: it waits for the callback
-// scopes in progress, refuses every later one, and reports a lost write race, a
-// broken transaction or a marked root.
+// A joined request that fails keeps nothing in the transaction: its scope is
+// discarded, and the transaction goes on. The compute node gets the request's
+// answer and decides what its own work does with it. Seal is the owner's
+// cut-off before commit or rollback: it waits for the callback scopes in
+// progress, refuses every later one, and reports a broken transaction (the lost
+// write race first).
 //
 // The in-process implementation serves the backends whose transaction lives in
 // one pnode's memory or connection (memory, SQLite, PostgreSQL). It gives each
@@ -25,7 +25,7 @@
 //
 // The durable implementation (NewDurable) serves a backend that coordinates
 // transactions itself (spi.TransactionCoordinationCapable): the backend keeps
-// the scopes, marks and fencing numbers, so any pnode serves any
+// the scopes and fencing numbers, so any pnode serves any
 // transaction's callbacks, and they may run concurrently. It has no gate and
 // no stack rule, and nothing waits: a scope still in progress when its callout
 // moves on is refused completion by the backend. Select picks one of the two
@@ -51,7 +51,7 @@ const (
 	Write
 	// Outside writes outside the transaction (messages, async search jobs, the
 	// key-value-backed administration routes). Its scope takes no savepoint,
-	// its answer is never rewritten, and it never marks.
+	// and its answer is never rewritten.
 	Outside
 )
 
@@ -63,11 +63,10 @@ const (
 type Coordination interface {
 	// BeginCallout registers callout calloutID on txID under the scope on ctx
 	// (the root of txID when ctx carries none, or one of another transaction)
-	// and the pairs that scope was admitted under. The returned ctx is
-	// cancelled with cause ErrSuperseded when an outer pair stops being
-	// current, and with cause common.ErrRollbackOnly when the scope it was
-	// begun from is marked (at once when it already is); Check on it then
-	// reports the refusal of the scope it was begun from. end unregisters the
+	// and the pairs that scope was admitted under. The returned ctx carries
+	// that scope, and is cancelled with cause ErrSuperseded when an outer pair
+	// stops being current; Check on it then reports the refusal of the scope
+	// it was begun from. end unregisters the
 	// callout, cancels the callouts begun under it, and waits until no open
 	// scope admitted under it remains; it is idempotent. An empty txID is a
 	// callout with no transaction: it is registered with the fence only.
@@ -79,10 +78,10 @@ type Coordination interface {
 	// already waited for.
 	Advance(calloutID string, major uint32)
 	// Seal waits until no callback scope of txID is open, then cuts the
-	// transaction off: Enter refuses it from then on. err is, in order:
-	// spi.ErrTxAborted (wrapped) when the root is marked or the transaction is
-	// broken and LostRace says the transaction lost; the broken cause; or
-	// common.TransactionRollbackOnly(code) when the root is marked. finish
+	// transaction off: Enter refuses it from then on. When the transaction
+	// is broken, err is spi.ErrTxAborted (wrapped) when LostRace says the
+	// transaction lost, otherwise the broken cause; on a backend that
+	// coordinates transactions itself, it is the backend's refusal. finish
 	// forgets the transaction; the caller defers it after its commit or
 	// rollback, also when err != nil. Seal of a transaction never seen returns
 	// (finish, nil). The wait does not end with ctx: a callback scope still in
@@ -91,8 +90,8 @@ type Coordination interface {
 	Seal(ctx context.Context, txID string) (finish func(), err error)
 	// Enter opens a callback scope for a joined request: it admits pairs (own
 	// pair first, then every enclosing one), takes the transaction's gate,
-	// refuses the request when the transaction is broken (404), sealed (410),
-	// or under a marked scope (409), and takes a savepoint (Outside: none).
+	// refuses the request when the transaction is broken (404) or sealed
+	// (410), and takes a savepoint (Outside: none).
 	// Refusals are *common.AppError and leave nothing held. ctx is the joined
 	// context; the returned one is detached from its cancellation and carries
 	// the scope. The caller ends the scope with End.
@@ -119,17 +118,17 @@ type Scope interface {
 	// except in row 3, which answers 404. The in-process coordination then
 	// records the transaction as broken. The durable one records nothing:
 	// the scope is never completed, so the commit does not keep it, and the
-	// backend must fail Seal when the discard carried a mark it could not
-	// record. o is what the request was answered with; nil, or a status
+	// backend must fail Seal after a discard that failed. o is what the
+	// request was answered with; nil, or a status
 	// below 400 without a panic, is a success. Call it exactly once, after
 	// the handler returned.
 	End(o *common.Outcome) *common.AppError
-	// Close ends a processor scope. procErr nil and the scope current and
-	// unmarked: kept, returns nil. Otherwise discarded; returns procErr, or
-	// the scope's own refusal (410, or after LostRace the lost race or 409
-	// TRANSACTION_ROLLBACK_ONLY), or an error carrying ErrScopeInfra when the
-	// savepoint could not be released or undone. A mark on the scope goes
-	// with it: Close never marks the parent.
+	// Close ends a processor scope. procErr nil and the scope current: kept,
+	// returns nil. Otherwise discarded; returns procErr, or the scope's own
+	// refusal (410), or an error carrying ErrScopeInfra when the savepoint
+	// could not be released or undone. On a backend that coordinates
+	// transactions itself, a refused completion is its refusal (410, or a
+	// retryable 409 CONFLICT for a scope conflict).
 	Close(procErr error) error
 }
 
@@ -172,26 +171,24 @@ func scopeFrom(ctx context.Context) *scope {
 func Pause(ctx context.Context) (resume func() error) {
 	switch s := ctx.Value(scopeKey{}).(type) {
 	case *scope:
-		return s.c.pause(ctx, s)
+		return s.c.pause(s)
 	case durableNode:
 		return func() error { return s.check() }
 	}
 	return func() error { return nil }
 }
 
-// Check reports, for the scope on ctx and its ancestors: 410 CALLOUT_SUPERSEDED
-// when a pair is not current; else, when a scope on the chain is marked, the
-// lost race (spi.ErrTxAborted) if LostRace says so, otherwise
-// common.TransactionRollbackOnly(code). On the context BeginCallout returned,
-// it reports on the scope the callout was begun from, the root included. nil
-// for a ctx with no scope.
+// Check reports, for the scope on ctx and its ancestors, 410
+// CALLOUT_SUPERSEDED when a pair is not current. On the context BeginCallout
+// returned, it reports on the scope the callout was begun from; the root has
+// no pair and is never refused. nil for a ctx with no scope.
 //
 // On a backend that coordinates transactions itself, it asks the backend
 // (CheckScope); a refusal the backend does not name carries ErrScopeInfra.
 func Check(ctx context.Context) error {
 	switch n := ctx.Value(scopeKey{}).(type) {
 	case *scope:
-		return n.check(ctx)
+		return n.check()
 	case durableNode:
 		return n.check()
 	}

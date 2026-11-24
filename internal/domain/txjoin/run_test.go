@@ -348,84 +348,58 @@ func TestRun_ARequestInProgressWhenItsCalloutEndsIsDiscarded(t *testing.T) {
 	}
 }
 
-// Review Focus 3: a handler that panics in a joined write ends its scope
-// discarded, marks the parent, and gives the gate back; the panic passes on
-// to the recovery layer outside the join layer. The next request of the
-// transaction takes the gate at once and is refused 409
-// TRANSACTION_ROLLBACK_ONLY. A read that panics marks nothing: the next
-// request runs.
+// Review Focus 3: a handler that panics in a joined request ends its scope
+// discarded and gives the gate back; the panic passes on to the recovery
+// layer outside the join layer. The next request of the transaction takes the
+// gate at once and runs, and the commit keeps its write and none of the
+// panicked one's.
 func TestRunVerified_PanicDiscardsAndReleasesGate(t *testing.T) {
-	t.Run("write", func(t *testing.T) {
-		env, pass := newRunEnv(t)
-		verified, _ := env.joiner.Verify(pass)
-		func() {
-			defer func() {
-				if recover() == nil {
-					t.Error("the panic must pass through RunVerified to the recovery layer")
-				}
+	for name, class := range map[string]txcoord.RequestClass{"write": txcoord.Write, "read": txcoord.Read} {
+		t.Run(name, func(t *testing.T) {
+			env, pass := newRunEnv(t)
+			verified, _ := env.joiner.Verify(pass)
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Error("the panic must pass through RunVerified to the recovery layer")
+					}
+				}()
+				_, _ = env.joiner.RunVerified(env.ctx, verified, class, func(ctx context.Context) *common.Outcome {
+					if class == txcoord.Write {
+						env.writeIn(t, ctx, "p-1")
+					}
+					panic("handler blew up")
+				})
 			}()
-			_, _ = env.joiner.RunVerified(env.ctx, verified, txcoord.Write, func(ctx context.Context) *common.Outcome {
-				env.writeIn(t, ctx, "p-1")
-				panic("handler blew up")
-			})
-		}()
-		next := make(chan error, 1)
-		go func() {
-			_, err := env.joiner.RunVerified(env.ctx, verified, txcoord.Read, func(context.Context) *common.Outcome {
-				t.Error("a request under a marked scope ran")
-				return nil
-			})
-			next <- err
-		}()
-		select {
-		case err := <-next:
-			var appErr *common.AppError
-			if !errors.As(err, &appErr) || appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeTransactionRollbackOnly || appErr.Retryable {
-				t.Fatalf("next request = %v; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable", err)
+			ran := false
+			done := make(chan error, 1)
+			go func() {
+				_, err := env.joiner.RunVerified(env.ctx, verified, txcoord.Write, func(ctx context.Context) *common.Outcome {
+					ran = true
+					env.writeIn(t, ctx, "n-1")
+					return nil
+				})
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil || !ran {
+					t.Fatalf("the next request: err=%v ran=%v; want it to run", err, ran)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("a panicking joined handler kept the transaction's gate")
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("a panicking joined handler kept the transaction's gate")
-		}
-		if env.commitAndRead(t, "p-1")["p-1"] {
-			t.Error("the write of a request that panicked was kept")
-		}
-	})
-	t.Run("read", func(t *testing.T) {
-		env, pass := newRunEnv(t)
-		verified, _ := env.joiner.Verify(pass)
-		func() {
-			defer func() { _ = recover() }()
-			_, _ = env.joiner.RunVerified(env.ctx, verified, txcoord.Read, func(context.Context) *common.Outcome {
-				panic("read blew up")
-			})
-		}()
-		ran := false
-		done := make(chan error, 1)
-		go func() {
-			_, err := env.joiner.RunVerified(env.ctx, verified, txcoord.Write, func(ctx context.Context) *common.Outcome {
-				ran = true
-				env.writeIn(t, ctx, "n-1")
-				return nil
-			})
-			done <- err
-		}()
-		select {
-		case err := <-done:
-			if err != nil || !ran {
-				t.Fatalf("the next request: err=%v ran=%v; want it to run", err, ran)
+			found := env.commitAndRead(t, "p-1", "n-1")
+			if found["p-1"] || !found["n-1"] {
+				t.Errorf("committed: panicked write %v, next write %v; want false, true", found["p-1"], found["n-1"])
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("a panicking joined handler kept the transaction's gate")
-		}
-		if !env.commitAndRead(t, "n-1")["n-1"] {
-			t.Error("the next request's write was not kept")
-		}
-	})
+		})
+	}
 }
 
 // The outcome a funnel records wins over the door's backstop, and decides how
-// the scope ends: a write answered with a non-retryable failure is discarded,
-// and its parent marked.
+// the scope ends: a write answered with a non-retryable failure is discarded.
+// The transaction goes on: the next request runs and its write is kept.
 func TestRunVerified_RecordedOutcomeDecides(t *testing.T) {
 	env, pass := newRunEnv(t)
 	verified, _ := env.joiner.Verify(pass)
@@ -437,13 +411,16 @@ func TestRunVerified_RecordedOutcomeDecides(t *testing.T) {
 	if err != nil || rewrite != nil {
 		t.Fatalf("RunVerified = %v, %v; want the handler's own answer", rewrite, err)
 	}
-	_, err = env.joiner.RunVerified(env.ctx, verified, txcoord.Read, func(context.Context) *common.Outcome { return nil })
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeTransactionRollbackOnly {
-		t.Fatalf("a request after a failed write = %v; want 409 TRANSACTION_ROLLBACK_ONLY", err)
+	rewrite, err = env.joiner.RunVerified(env.ctx, verified, txcoord.Write, func(ctx context.Context) *common.Outcome {
+		env.writeIn(t, ctx, "f-2")
+		return nil
+	})
+	if err != nil || rewrite != nil {
+		t.Fatalf("a request after a failed write = %v, %v; want it served", rewrite, err)
 	}
-	if env.commitAndRead(t, "f-1")["f-1"] {
-		t.Error("the failed write was kept")
+	found := env.commitAndRead(t, "f-1", "f-2")
+	if found["f-1"] || !found["f-2"] {
+		t.Errorf("committed: failed write %v, next write %v; want false, true", found["f-1"], found["f-2"])
 	}
 }
 

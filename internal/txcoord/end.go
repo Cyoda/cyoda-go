@@ -37,24 +37,6 @@ func failureOf(o *common.Outcome) *failure {
 	}
 }
 
-// markCode is the code the parent's mark names: the failure's own, or, for an
-// answer that carries none (a backstop: a buffered HTTP status, a raw gRPC
-// error), SERVER_ERROR for a 5xx and the status otherwise.
-func (f *failure) markCode() string {
-	switch {
-	case f.code != "":
-		return f.code
-	case f.status >= http.StatusInternalServerError:
-		return common.ErrCodeServerError
-	default:
-		return fmt.Sprintf("HTTP %d", f.status)
-	}
-}
-
-// parentMark is a mark to set on the parent of an ended scope, with the code
-// the owner's refusal names. A nil *parentMark is no mark.
-type parentMark struct{ code string }
-
 // answer is what the request is told for a failure: the handler's own answer
 // (nil), except for a failed completion, which the handler did not answer.
 func (f *failure) answer() *common.AppError {
@@ -68,90 +50,81 @@ func (f *failure) answer() *common.AppError {
 // ending is one implementation's part in ending a callback scope by the table
 // of how a scope ends; decide holds the table itself.
 type ending interface {
-	// standing reads rows 1 and 4: superseded is the cause of the 410 when a
-	// pass of the scope is no longer current (nil otherwise); marked reports a
-	// mark on the scope or an ancestor, with its code. failed is set when the
+	// standing reads row 1: superseded is the cause of the 410 when a pass of
+	// the scope is no longer current (nil otherwise). failed is set when the
 	// standing could not be read: the request then ends as a failed
 	// completion.
-	standing() (superseded error, code string, marked bool, failed error)
+	standing() (superseded error, failed error)
 	// lostRace asks the transaction manager whether the transaction lost a
 	// write race.
 	lostRace() bool
-	// complete is row 5's completion step. A completion that fails is judged
+	// complete is row 4's completion step. A completion that fails is judged
 	// again from row 1, where the implementation's refusal does not decide
 	// the answer itself.
-	complete(class RequestClass) (*common.AppError, *parentMark, error)
-	// discard ends the scope discarded, passing mark to the parent when it is
-	// not nil (an implementation may leave that to its caller). It returns a
-	// *discardFailure when the discard fails, which endAnswer answers as a
-	// 500; the in-process coordination also records it as the cause that
-	// leaves the transaction broken.
-	discard(mark *parentMark) error
+	complete(class RequestClass) (*common.AppError, error)
+	// discard ends the scope discarded. It returns a *discardFailure when the
+	// discard fails, which endAnswer answers as a 500; the in-process
+	// coordination also records it as the cause that leaves the transaction
+	// broken.
+	discard() error
 }
 
 // decide decides a callback scope's end by the first matching row, and
 // completes or discards the scope. It returns the rewritten answer (nil: the
-// handler's own), the mark to set on the parent (nil for none), and the
-// infrastructure failure the scope ended with (nil for none): a failed
-// discard, or row 3's ended session. endAnswer reads it for the request's
-// answer; only the in-process coordination records it, as the cause that
-// leaves the transaction broken.
-func decide(e ending, class RequestClass, f *failure) (*common.AppError, *parentMark, error) {
-	superseded, code, marked, failed := e.standing()
+// handler's own) and the infrastructure failure the scope ended with (nil for
+// none): a failed discard, or row 3's ended session. endAnswer reads it for
+// the request's answer; only the in-process coordination records it, as the
+// cause that leaves the transaction broken.
+//
+// No row touches the scope's parent: a scope is all-or-nothing, so a failed
+// request keeps nothing in the transaction, and the transaction goes on. The
+// compute node gets the answer and decides what its own work does with it.
+func decide(e ending, class RequestClass, f *failure) (*common.AppError, error) {
+	superseded, failed := e.standing()
 	if failed != nil {
 		f = completionFailure(failed)
 	}
-	// Row 1: its pass is no longer current. No mark is passed up: the owner
-	// has moved on.
+	// Row 1: its pass is no longer current.
 	if superseded != nil {
-		return fence.NewSupersededError().WithCause(superseded), nil, e.discard(nil)
+		return fence.NewSupersededError().WithCause(superseded), e.discard()
 	}
 	// Row 2: the transaction lost a write race and the request failed.
 	if f != nil && e.lostRace() {
-		return lostRaceAnswer(), nil, e.discard(nil)
+		return lostRaceAnswer(), e.discard()
 	}
 	// Row 3: the transaction's session has ended. The scope is discarded if
 	// that is still possible, and the request answers 404 whatever the
 	// discard did.
 	if f != nil && errors.Is(f.err, spi.ErrTxNotFound) {
-		_ = e.discard(nil)
-		return transactionNotFound(f.err), nil, sessionEnded(f.err)
-	}
-	// Row 4: the scope is marked; a write passes the mark up.
-	if marked {
-		var mark *parentMark
-		if class == Write {
-			mark = &parentMark{code: code}
-		}
-		return common.TransactionRollbackOnlyJoined(), mark, e.discard(mark)
+		_ = e.discard()
+		return transactionNotFound(f.err), sessionEnded(f.err)
 	}
 	switch {
 	case f == nil:
-		// Row 5: success, if the completion succeeds; otherwise judged again
+		// Row 4: success, if the completion succeeds; otherwise judged again
 		// as a failed request.
 		return e.complete(class)
 	case f.retryable:
-		// Row 6.
-		return f.answer(), nil, e.discard(nil)
+		// Row 5.
+		return f.answer(), e.discard()
 	case class == Write:
-		// Row 7.
-		mark := &parentMark{code: f.markCode()}
-		return f.answer(), mark, e.discard(mark)
+		// Row 6: a non-retryable failure of a write.
+		return f.answer(), e.discard()
 	case f.status < http.StatusInternalServerError:
-		// Row 8: a read that answered keeps its read set, so the commit still
+		// Row 7: a read that answered keeps its read set, so the commit still
 		// validates what the compute node was told.
 		return e.complete(class)
 	default:
-		// Row 9.
-		return f.answer(), nil, e.discard(nil)
+		// Row 8.
+		return f.answer(), e.discard()
 	}
 }
 
 // endAnswer is the answer of a scope that decide ended with answer and failed.
 // A discard that failed overrides the row's answer with a 500 SERVER_ERROR,
-// never retryable: the scope's writes may still be in the transaction, or its
-// mark not passed up, so the request did not end as its row answers, and a
-// retry in the same transaction cannot succeed.
+// never retryable: the scope's writes may still be in the transaction, so the
+// request did not end as its row answers, and a retry in the same transaction
+// cannot succeed.
 //
 // Only the scope's own discard counts: every row that discards returns the
 // discard's result as failed, unwrapped. Row 3's failed wraps the request's
@@ -190,24 +163,18 @@ func completionFailure(err error) *failure {
 // savepoint is released or rolled back while the gate is still held.
 func (s *scope) End(o *common.Outcome) *common.AppError {
 	var answer *common.AppError
-	var mark *parentMark
 	var broken error
 	if s.class != Outside {
-		answer, mark, broken = decide(s, s.class, failureOf(o))
+		answer, broken = decide(s, s.class, failureOf(o))
 	}
-	s.c.leave(s, mark, broken)
+	s.c.leave(s, broken)
 	s.releaseGate()
 	return endAnswer(answer, broken)
 }
 
-// standing implements ending. The gate serialises the scope's descendants, so
-// nothing marks the scope while it ends.
-func (s *scope) standing() (error, string, bool, error) {
-	if err := fence.Check(s.ctx); err != nil {
-		return err, "", false, nil
-	}
-	code, marked := s.markedCode()
-	return nil, code, marked, nil
+// standing implements ending.
+func (s *scope) standing() (error, error) {
+	return fence.Check(s.ctx), nil
 }
 
 // lostRace implements ending.
@@ -215,17 +182,16 @@ func (s *scope) lostRace() bool { return s.c.lostRace(s.ctx, s.tx.id) }
 
 // complete implements ending: it releases the savepoint. A release that fails
 // is a failed request, judged again from row 1.
-func (s *scope) complete(class RequestClass) (*common.AppError, *parentMark, error) {
+func (s *scope) complete(class RequestClass) (*common.AppError, error) {
 	err := s.c.txMgr.ReleaseSavepoint(s.ctx, s.tx.id, s.savepoint)
 	if err == nil {
-		return nil, nil, nil
+		return nil, nil
 	}
 	return decide(s, class, completionFailure(err))
 }
 
-// discard implements ending: it rolls back to the scope's savepoint. The mark
-// is set by leave, under the coordination's lock.
-func (s *scope) discard(*parentMark) error {
+// discard implements ending: it rolls back to the scope's savepoint.
+func (s *scope) discard() error {
 	if err := s.c.txMgr.RollbackToSavepoint(s.ctx, s.tx.id, s.savepoint); err != nil {
 		return &discardFailure{err: err}
 	}
@@ -235,26 +201,23 @@ func (s *scope) discard(*parentMark) error {
 // Close implements Scope for a processor scope.
 func (s *scope) Close(procErr error) error {
 	superseded := fence.Check(s.ctx)
-	code, marked := s.markedCode()
 	var result, broken error
-	if procErr == nil && superseded == nil && !marked {
+	if procErr == nil && superseded == nil {
 		if err := s.c.txMgr.ReleaseSavepoint(s.ctx, s.tx.id, s.savepoint); err != nil {
 			result = fmt.Errorf("failed to release a processor scope: %w", errors.Join(ErrScopeInfra, err))
-			broken = s.discard(nil)
+			broken = s.discard()
 		}
 	} else {
-		broken = s.discard(nil)
+		broken = s.discard()
 		switch {
 		case broken != nil:
 			result = errors.Join(ErrScopeInfra, broken)
 		case procErr != nil:
 			result = procErr
-		case superseded != nil:
-			result = superseded
 		default:
-			result = s.c.rollbackOnly(s.ctx, s.tx.id, code)
+			result = superseded
 		}
 	}
-	s.c.leave(s, nil, broken)
+	s.c.leave(s, broken)
 	return result
 }

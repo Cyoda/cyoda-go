@@ -86,10 +86,7 @@ type scope struct {
 	savepoint string
 
 	// Guarded by inProcess.mu.
-	release    func() // the gate slot a callback scope holds; nil while paused
-	marked     bool
-	failedCode string // the code the failure that marked the scope got
-	callouts   map[string]*calloutReg
+	release func() // the gate slot a callback scope holds; nil while paused
 }
 
 func (c *inProcess) len() int {
@@ -115,10 +112,10 @@ func (c *inProcess) txLocked(txID string) *txState {
 }
 
 // forgetIfIdleLocked drops a transaction's state when it holds nothing a fresh
-// state would not: no scope, no callout, no mark, not broken, not sealed. A
-// sealed state is dropped by Seal's finish.
+// state would not: no scope, no callout, not broken, not sealed. A sealed
+// state is dropped by Seal's finish.
 func (c *inProcess) forgetIfIdleLocked(tx *txState) {
-	if len(tx.open) == 0 && len(tx.callouts) == 0 && !tx.sealed && !tx.root.marked && tx.broken == nil && c.txs[tx.id] == tx {
+	if len(tx.open) == 0 && len(tx.callouts) == 0 && !tx.sealed && tx.broken == nil && c.txs[tx.id] == tx {
 		delete(c.txs, tx.id)
 	}
 }
@@ -179,7 +176,7 @@ func (c *inProcess) BeginCallout(ctx context.Context, txID, calloutID string) (c
 			})
 		}
 	}
-	reg, marked := func() (*calloutReg, bool) {
+	reg := func() *calloutReg {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		tx := c.txLocked(txID)
@@ -190,19 +187,12 @@ func (c *inProcess) BeginCallout(ctx context.Context, txID, calloutID string) (c
 		reg := &calloutReg{id: calloutID, tx: tx, parent: parent, cancel: cancel}
 		tx.callouts[calloutID] = reg
 		c.callouts[calloutID] = reg
-		if parent.callouts == nil {
-			parent.callouts = make(map[string]*calloutReg)
-		}
-		parent.callouts[calloutID] = reg
-		_, marked := parent.markedLocked()
-		return reg, marked
+		return reg
 	}()
-	if marked {
-		cancel(common.ErrRollbackOnly)
-	}
 	if reg.parent.kind == rootKind {
-		// So that Check on the callout's context reports the root's mark: the
-		// owner's chain carries no scope of its own.
+		// So that the callout's context carries the scope it was begun from,
+		// as a callout begun from a callback or processor scope does: the
+		// owner's chain carries no scope of txID of its own.
 		cctx = context.WithValue(cctx, scopeKey{}, reg.parent)
 	}
 	return cctx, func() {
@@ -224,9 +214,6 @@ func (c *inProcess) endCallout(reg *calloutReg, fenceEnd func()) {
 		}
 		if c.callouts[reg.id] == reg {
 			delete(c.callouts, reg.id)
-		}
-		if reg.parent.callouts[reg.id] == reg {
-			delete(reg.parent.callouts, reg.id)
 		}
 		c.forgetIfIdleLocked(reg.tx)
 	}()
@@ -255,8 +242,6 @@ func (c *inProcess) Seal(ctx context.Context, txID string) (func(), error) {
 		return c.txLocked(txID)
 	}()
 	var broken error
-	var marked bool
-	var code string
 	c.await(tx, func() bool {
 		for s := range tx.open {
 			if s.kind == callbackKind {
@@ -264,7 +249,7 @@ func (c *inProcess) Seal(ctx context.Context, txID string) (func(), error) {
 			}
 		}
 		tx.sealed = true
-		broken, marked, code = tx.broken, tx.root.marked, tx.root.failedCode
+		broken = tx.broken
 		return true
 	})
 	finish := func() {
@@ -274,27 +259,20 @@ func (c *inProcess) Seal(ctx context.Context, txID string) (func(), error) {
 			delete(c.txs, txID)
 		}
 	}
-	return finish, sealRefusal(ctx, c.txMgr, txID, broken, marked, code)
+	return finish, sealRefusal(ctx, c.txMgr, txID, broken)
 }
 
 // sealRefusal is Seal's answer for a transaction that is broken (broken, the
-// cause) or whose root is marked (code, the failed request's code when it is
-// known): the lost race first, then the broken cause, then the mark. nil when
-// it is neither.
-func sealRefusal(ctx context.Context, txMgr spi.TransactionManager, txID string, broken error, marked bool, code string) error {
-	if broken == nil && !marked {
+// cause): the lost race first, then the broken cause. nil when it is not
+// broken.
+func sealRefusal(ctx context.Context, txMgr spi.TransactionManager, txID string, broken error) error {
+	if broken == nil {
 		return nil
 	}
 	if lostRace(ctx, txMgr, txID) {
-		if broken != nil {
-			return fmt.Errorf("the transaction lost a write race and is unusable (%v): %w", broken, spi.ErrTxAborted)
-		}
-		return lostRaceError(code)
+		return fmt.Errorf("the transaction lost a write race and is unusable (%v): %w", broken, spi.ErrTxAborted)
 	}
-	if broken != nil {
-		return fmt.Errorf("the transaction is unusable: %w", broken)
-	}
-	return common.TransactionRollbackOnly(code)
+	return fmt.Errorf("the transaction is unusable: %w", broken)
 }
 
 // lostRace asks the transaction manager; an error reads as not lost, so that
@@ -306,28 +284,6 @@ func lostRace(ctx context.Context, txMgr spi.TransactionManager, txID string) bo
 
 func (c *inProcess) lostRace(ctx context.Context, txID string) bool {
 	return lostRace(ctx, c.txMgr, txID)
-}
-
-// lostRaceError is the owner's report of a marked scope in a transaction that
-// lost a write race: the conflict, with the mark as context. failedCode is
-// empty when the storage backend coordinates the transaction itself.
-func lostRaceError(failedCode string) error {
-	if failedCode == "" {
-		return fmt.Errorf("the transaction lost a write race; a request that joined it failed: %w", spi.ErrTxAborted)
-	}
-	return fmt.Errorf("the transaction lost a write race; a request that joined it failed with %s: %w", failedCode, spi.ErrTxAborted)
-}
-
-// rollbackOnly is the refusal for a marked chain, the lost race first.
-func rollbackOnly(ctx context.Context, txMgr spi.TransactionManager, txID, failedCode string) error {
-	if lostRace(ctx, txMgr, txID) {
-		return lostRaceError(failedCode)
-	}
-	return common.TransactionRollbackOnly(failedCode)
-}
-
-func (c *inProcess) rollbackOnly(ctx context.Context, txID, failedCode string) error {
-	return rollbackOnly(ctx, c.txMgr, txID, failedCode)
 }
 
 // lostRaceAnswer is a joined request's answer in a transaction that lost a
@@ -384,7 +340,7 @@ func (c *inProcess) Enter(ctx context.Context, txID string, pairs []fence.Pair, 
 	sp, err := c.txMgr.Savepoint(s.ctx, txID)
 	if err != nil {
 		refusal, broken := c.savepointRefusal(s.ctx, txID, err)
-		c.leave(s, nil, broken)
+		c.leave(s, broken)
 		s.releaseGate()
 		return nil, ctx, refusal
 	}
@@ -441,16 +397,13 @@ func (c *inProcess) open(s *scope, txID, calloutID string) error {
 		return fence.NewSupersededError().
 			WithCause(fmt.Errorf("callback refused: the transaction is being committed or rolled back: %w", fence.ErrSuperseded))
 	}
-	if _, marked := reg.parent.markedLocked(); marked {
-		return common.TransactionRollbackOnlyJoined()
-	}
 	s.tx, s.parent = tx, reg.parent
 	tx.open[s] = struct{}{}
 	return nil
 }
 
 // savepointRefusal answers a request whose savepoint could not be taken: the
-// handler did not run, so nothing is marked. A lost race answers as the lost
+// handler did not run. A lost race answers as the lost
 // race. A session that has ended answers 404 and leaves the transaction broken
 // (the returned cause). Anything else is a 500, not retryable: the request
 // cannot succeed in this transaction, so no answer may invite a retry.
@@ -470,78 +423,28 @@ func sessionEnded(err error) error {
 	return fmt.Errorf("the transaction's session has ended: %w", err)
 }
 
-// leave takes an ended scope out of its transaction's tree: it records broken,
-// sets mark on the parent when it is not nil, and wakes the waits.
-func (c *inProcess) leave(s *scope, mark *parentMark, broken error) {
-	cancels := func() []context.CancelCauseFunc {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		tx := s.tx
-		if broken != nil && tx.broken == nil {
-			tx.broken = broken
-		}
-		var cancels []context.CancelCauseFunc
-		if mark != nil {
-			cancels = s.parent.markLocked(mark.code)
-		}
-		delete(tx.open, s)
-		close(tx.changed)
-		tx.changed = make(chan struct{})
-		c.forgetIfIdleLocked(tx)
-		return cancels
-	}()
-	for _, cancel := range cancels {
-		cancel(common.ErrRollbackOnly)
+// leave takes an ended scope out of its transaction's tree: it records broken
+// and wakes the waits.
+func (c *inProcess) leave(s *scope, broken error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	tx := s.tx
+	if broken != nil && tx.broken == nil {
+		tx.broken = broken
 	}
+	delete(tx.open, s)
+	close(tx.changed)
+	tx.changed = make(chan struct{})
+	c.forgetIfIdleLocked(tx)
 }
 
-// markLocked marks s rollback-only, keeping the first failure's code, and
-// returns the cancel funcs of the callouts begun from it. mu must be held.
-func (s *scope) markLocked(code string) []context.CancelCauseFunc {
-	if !s.marked {
-		s.marked, s.failedCode = true, code
-	}
-	cancels := make([]context.CancelCauseFunc, 0, len(s.callouts))
-	for _, reg := range s.callouts {
-		cancels = append(cancels, reg.cancel)
-	}
-	return cancels
-}
-
-// markedLocked reports whether s or an ancestor is marked, with the code of the
-// nearest mark. mu must be held.
-func (s *scope) markedLocked() (string, bool) {
-	for n := s; n != nil; n = n.parent {
-		if n.marked {
-			return n.failedCode, true
-		}
-	}
-	return "", false
-}
-
-func (s *scope) markedCode() (string, bool) {
-	s.c.mu.Lock()
-	defer s.c.mu.Unlock()
-	return s.markedLocked()
-}
-
-// check implements Check for s, on the chain whose context is ctx. The root
-// has no pass and no context of its own: only a mark refuses it, and LostRace
-// is asked with ctx, the owner's chain.
-func (s *scope) check(ctx context.Context) error {
+// check implements Check for s. The root has no pass of its own: nothing
+// refuses it.
+func (s *scope) check() error {
 	if s.kind == rootKind {
-		if code, marked := s.markedCode(); marked {
-			return s.c.rollbackOnly(ctx, s.tx.id, code)
-		}
 		return nil
 	}
-	if err := fence.Check(s.ctx); err != nil {
-		return err
-	}
-	if code, marked := s.markedCode(); marked {
-		return s.c.rollbackOnly(s.ctx, s.tx.id, code)
-	}
-	return nil
+	return fence.Check(s.ctx)
 }
 
 // releaseGate gives up the gate slot a callback scope holds.
@@ -558,11 +461,10 @@ func (s *scope) releaseGate() {
 	}
 }
 
-// pause implements Pause for s, on the chain whose context is ctx. The gate is
-// held by the nearest callback scope on s's chain; s itself goes on the paused
-// stack, because the callout it makes is registered with s and its callbacks
-// open under s.
-func (c *inProcess) pause(ctx context.Context, s *scope) func() error {
+// pause implements Pause for s. The gate is held by the nearest callback scope
+// on s's chain; s itself goes on the paused stack, because the callout it
+// makes is registered with s and its callbacks open under s.
+func (c *inProcess) pause(s *scope) func() error {
 	holder, release := func() (*scope, func()) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -582,7 +484,7 @@ func (c *inProcess) pause(ctx context.Context, s *scope) func() error {
 	var err error
 	if holder == nil {
 		return func() error {
-			once.Do(func() { err = s.check(ctx) })
+			once.Do(func() { err = s.check() })
 			return err
 		}
 	}
@@ -600,7 +502,7 @@ func (c *inProcess) pause(ctx context.Context, s *scope) func() error {
 				i := slices.Index(s.tx.paused, s)
 				s.tx.paused = slices.Delete(s.tx.paused, i, i+1)
 			}()
-			err = s.check(ctx)
+			err = s.check()
 		})
 		return err
 	}
@@ -620,7 +522,7 @@ func (c *inProcess) OpenChild(ctx context.Context) (Scope, context.Context, erro
 		parent = nil
 	}
 	if parent != nil {
-		if err := parent.check(ctx); err != nil {
+		if err := parent.check(); err != nil {
 			return nil, ctx, err
 		}
 	}
@@ -649,7 +551,7 @@ func (c *inProcess) OpenChild(ctx context.Context) (Scope, context.Context, erro
 		if errors.Is(err, spi.ErrTxNotFound) {
 			broken = sessionEnded(err)
 		}
-		c.leave(s, nil, broken)
+		c.leave(s, broken)
 		return nil, ctx, fmt.Errorf("failed to open a processor scope: %w", errors.Join(ErrScopeInfra, err))
 	}
 	s.savepoint = sp

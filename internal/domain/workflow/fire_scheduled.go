@@ -170,8 +170,8 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		}
 	}()
 	// seal cuts the segment id off before the ending's final writes. A refusal
-	// — a callback of the run failed a write, or the transaction lost a write
-	// race or broke — is the fire's failure, and the run rolls back.
+	// — the transaction broke, or lost a write race while broken — is the
+	// fire's failure, and the run rolls back.
 	seal := func(id string) error {
 		finish, err := e.coord.Seal(ctx, id)
 		sealFinish = finish

@@ -32,8 +32,8 @@ import (
 //
 // An owned scope seals before it commits or rolls back (txcoord's Seal): the
 // seal waits for the callback scopes of the transaction still in progress,
-// refuses every later one, and reports a transaction a failed joined write made
-// rollback-only. A flow seals before its final writes, so nothing joined runs
+// refuses every later one, and reports a transaction that is unusable. A flow
+// seals before its final writes, so nothing joined runs
 // beside them; Commit and Release seal too, and a second seal is the first
 // one's answer. The coordination forgets the transaction once the commit or
 // rollback is done.
@@ -93,9 +93,9 @@ func (s *txScope) Advance(ctx context.Context, txID string) {
 
 // Seal cuts the owned transaction off before the flow's final writes: it
 // waits for the callback scopes in progress and refuses every later joined
-// request. It reports the lost write race (spi.ErrTxAborted), the cause that
-// broke the transaction, or common.TransactionRollbackOnly when a joined write
-// failed; the flow then fails, and Release rolls back. A second call returns
+// request. It reports a broken transaction: the lost write race
+// (spi.ErrTxAborted) or the cause that broke it; the flow then fails, and
+// Release rolls back. A second call returns
 // the first one's answer. A joined scope does not seal: nil.
 func (s *txScope) Seal() error {
 	if !s.owned || s.txID == "" {

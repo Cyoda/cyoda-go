@@ -120,15 +120,17 @@ func (l *liveScope) openCallback(t *testing.T) (end func(o *common.Outcome)) {
 	}
 }
 
-// markRoot makes the transaction rollback-only as a failed joined write does.
-func (l *liveScope) markRoot(t *testing.T) {
+// breakTx leaves the transaction broken as a joined request that met the
+// transaction's ended session does.
+func (l *liveScope) breakTx(t *testing.T) {
 	t.Helper()
-	l.openCallback(t)(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+	l.openCallback(t)(&common.Outcome{Status: http.StatusServiceUnavailable, Code: common.ErrCodeStorageUnavailable, Retryable: true,
+		Err: fmt.Errorf("failed to save: %w", spi.ErrTxNotFound)})
 }
 
 // assertForgotten asserts the coordination holds nothing of the transaction:
 // a seal of it now is the seal of a transaction never seen, which a kept
-// marked transaction would refuse.
+// broken transaction would refuse.
 func (l *liveScope) assertForgotten(t *testing.T) {
 	t.Helper()
 	finish, err := l.s.h.coord.Seal(l.userCtx, l.s.txID)
@@ -414,10 +416,10 @@ func TestTxScope_Release_WaitsForTheCallbackInProgress(t *testing.T) {
 	l.assertForgotten(t)
 }
 
-// TestTxScope_RefusedSeal_RollsBackAndForgets: a joined write failed, so the
-// seal refuses with 409 TRANSACTION_ROLLBACK_ONLY. Commit gives that refusal
-// without committing, the deferred Release rolls back, and the coordination
-// holds nothing of the transaction afterwards.
+// TestTxScope_RefusedSeal_RollsBackAndForgets: a joined request met the
+// transaction's ended session, so the seal refuses with the broken cause.
+// Commit gives that refusal without committing, the deferred Release rolls
+// back, and the coordination holds nothing of the transaction afterwards.
 func TestTxScope_RefusedSeal_RollsBackAndForgets(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -428,15 +430,14 @@ func TestTxScope_RefusedSeal_RollsBackAndForgets(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := newLiveScope(t)
-			l.markRoot(t)
+			l.breakTx(t)
 
 			err := tc.sealedBy(l.s)
-			var appErr *common.AppError
-			if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeTransactionRollbackOnly {
-				t.Fatalf("err = %v; want TRANSACTION_ROLLBACK_ONLY", err)
+			if !errors.Is(err, spi.ErrTxNotFound) {
+				t.Fatalf("err = %v; want the broken cause", err)
 			}
-			if err := l.s.Commit(); !errors.As(err, &appErr) || appErr.Code != common.ErrCodeTransactionRollbackOnly {
-				t.Fatalf("Commit after the refused seal = %v; want the seal's TRANSACTION_ROLLBACK_ONLY", err)
+			if err := l.s.Commit(); !errors.Is(err, spi.ErrTxNotFound) {
+				t.Fatalf("Commit after the refused seal = %v; want the seal's refusal", err)
 			}
 			if got := l.m.committedTxs(); len(got) != 0 {
 				t.Fatalf("committed %v although the seal refused", got)
@@ -452,10 +453,10 @@ func TestTxScope_RefusedSeal_RollsBackAndForgets(t *testing.T) {
 
 // TestTxScope_JoinedSeal_IsNoOp: a joined scope does not seal the owner's
 // transaction — it would wait for its own scope — and so is not refused by a
-// mark either: the join layer's scope answers for the request.
+// broken transaction either: the join layer's scope answers for the request.
 func TestTxScope_JoinedSeal_IsNoOp(t *testing.T) {
 	l := newLiveScope(t)
-	l.markRoot(t)
+	l.breakTx(t)
 	joined := &txScope{h: l.s.h, ctx: l.s.ctx, txID: l.s.txID, owned: false}
 	if err := joined.Seal(); err != nil {
 		t.Fatalf("joined Seal = %v; want nil", err)
@@ -550,10 +551,10 @@ type suMarked struct{}
 func (suMarked) Error() string            { return "the session ended" }
 func (suMarked) StorageUnavailable() bool { return true }
 
-// TestClassifyCommitErr: what a refused seal or a failed commit answers. The
-// seal's own refusal passes through; a lost race and a first-committer-wins
-// refusal are the retryable 409; a transaction broken by a dead session keeps
-// the storage plugin's retryable 503; anything else is a 500.
+// TestClassifyCommitErr: what a refused seal or a failed commit answers. A
+// lost race and a first-committer-wins refusal are the retryable 409; a
+// transaction broken by a dead session keeps the storage plugin's retryable
+// 503; anything else is a 500.
 func TestClassifyCommitErr(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -562,7 +563,6 @@ func TestClassifyCommitErr(t *testing.T) {
 		code      string
 		retryable bool
 	}{
-		{"rollback-only", common.TransactionRollbackOnly(common.ErrCodeWorkflowFailed), http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false},
 		{"lost race", fmt.Errorf("the transaction lost a write race: %w", spi.ErrTxAborted), http.StatusConflict, common.ErrCodeConflict, true},
 		{"commit conflict", fmt.Errorf("commit: %w", spi.ErrConflict), http.StatusConflict, common.ErrCodeConflict, true},
 		{"broken by a dead session", fmt.Errorf("the transaction is unusable: %w", suMarked{}), http.StatusServiceUnavailable, common.ErrCodeStorageUnavailable, true},

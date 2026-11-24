@@ -367,7 +367,8 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	}
 
 	// Seal before the final Save: from here no joined request runs in the
-	// transaction, and one that failed a write refuses the operation.
+	// transaction, and a transaction a joined request left unusable refuses
+	// the operation.
 	if err := scope.Seal(); err != nil {
 		return nil, classifyCommitErr(err)
 	}
@@ -788,18 +789,13 @@ func deleteWriteError(msg string, err error) *common.AppError {
 }
 
 // classifyCommitErr classifies a refused seal or a failed commit of the flow's
-// transaction. The seal's own refusal — the transaction a failed joined write
-// made rollback-only, a top-level *AppError — is answered as it is. Anything
-// else is classified by its cause, never answered with an *AppError found
-// deeper in it: a broken transaction's cause carries the answer the joined
-// request that met it was given, and that answer is not the owner's. A storage
-// outage (a dead PostgreSQL session) is the retryable 503; a lost write race
+// transaction by its cause, never answering with an *AppError found deeper in
+// it: a broken transaction's cause carries the answer the joined request that
+// met it was given, and that answer is not the owner's. A storage outage (a
+// dead PostgreSQL session) is the retryable 503; a lost write race
 // (spi.ErrTxAborted) or a first-committer-wins refusal the retryable 409;
 // anything else common.Internal.
 func classifyCommitErr(err error) *common.AppError {
-	if appErr, ok := err.(*common.AppError); ok {
-		return appErr
-	}
 	if appErr := common.StorageUnavailable(err); appErr != nil {
 		return appErr
 	}
@@ -2351,7 +2347,8 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	}
 
 	// Seal before the final Save: from here no joined request runs in the
-	// transaction, and one that failed a write refuses the operation.
+	// transaction, and a transaction a joined request left unusable refuses
+	// the operation.
 	if err := scope.Seal(); err != nil {
 		return nil, classifyCommitErr(err)
 	}

@@ -280,9 +280,9 @@ func awaitAttempt[T any](t *testing.T, what string, ch <-chan T) T {
 
 // TestCallbackScope_FailedRead404_TransactionGoesOn: a joined read of an
 // unknown entity is answered 404; it marks nothing, and the owner commits.
-// Whether the read's scope is kept (row 8) or discarded (row 9) does not change
-// that outcome, so this test does not tell them apart; TestEnd_Row8_Read4xxKeeps
-// in internal/txcoord pins row 8.
+// Whether the read's scope is kept (row 7) or discarded (row 8) does not change
+// that outcome, so this test does not tell them apart; TestEnd_Row7_Read4xxKeeps
+// in internal/txcoord pins row 7.
 func TestCallbackScope_FailedRead404_TransactionGoesOn(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
 	m := newScopeModels(t, h, "cs-rd", "SYNC")

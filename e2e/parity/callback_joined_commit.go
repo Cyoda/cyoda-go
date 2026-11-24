@@ -3,7 +3,6 @@ package parity
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,19 +18,18 @@ import (
 // commits the transaction it runs in — the write is refused with 409
 // COMMIT_IN_JOINED_TRANSACTION before T is flushed or committed. The refusal
 // is a non-retryable failure of a joined write: the callback's scope is
-// discarded and T made rollback-only, so the owner is refused 409
-// TRANSACTION_ROLLBACK_ONLY, naming the callback's code.
+// discarded, and T goes on. The owner's outcome follows the compute node's
+// answer.
 //
 // The scenario proves it on every backend: the primary's SYNC processor makes
-// the joined create, records the answer outside T, and succeeds, and the owner
-// is still refused.
+// the joined create, records the answer outside T, and succeeds.
 //   - The callback was answered 409 COMMIT_IN_JOINED_TRANSACTION, not
 //     retryable, and it carried the token: it joined T.
-//   - The owner's refusal names COMMIT_IN_JOINED_TRANSACTION: that is what the
-//     callback was answered.
-//   - Nothing is stored: had the refused secondary's COMMIT_BEFORE_DISPATCH
-//     run, the secondary would have been flushed and committed with T; and the
-//     owner committed nothing.
+//   - The owner commits, with the processor's record of the answer in its
+//     data.
+//   - Nothing of the secondary is stored: had the refused secondary's
+//     COMMIT_BEFORE_DISPATCH run, the secondary would have been flushed and
+//     committed with T.
 //
 // The COMMIT_BEFORE_DISPATCH processor carries a tag no compute member serves.
 // The refusal comes before any dispatch, so the tag never matters when the
@@ -85,8 +83,9 @@ type HopRecord struct {
 // ReadHopRecord returns the record written under marker in recordModel,
 // decoding the problem document of an answer of 400 or more,
 // failing the test unless there is exactly one. The record may land after the
-// owner has answered: a mark ends the owner's callout at once, while the
-// compute node goes on to record and answer. It is waited for, bounded.
+// owner has answered: an owner whose callout ended without the compute node's
+// answer answers at once, while the compute node goes on to record and answer.
+// It is waited for, bounded.
 func ReadHopRecord(t *testing.T, c *client.Client, recordModel, marker string) HopRecord {
 	t.Helper()
 	var found []client.EntityResult
@@ -172,31 +171,16 @@ func RunCallbackJoinedCommitBeforeDispatchRefused(t *testing.T, fixture BackendF
 			cbSetupModel(t, c, primary, cbJoinedCommitSample,
 				cbPrimaryProcWorkflow("cbjc-primary-wf-"+suffix, "cb-create-secondary-record", "SYNC", HopRecordContext(secondary, marker, record)))
 
-			status, raw, err := c.CreateEntityRaw(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+			primaryID, err := c.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 			if err != nil {
-				t.Fatalf("primary create: %v", err)
+				t.Fatalf("primary create: %v; want 200 — the processor succeeded after its callback was refused", err)
 			}
-			var pd struct {
-				Detail     string `json:"detail"`
-				Properties struct {
-					ErrorCode string `json:"errorCode"`
-					Retryable bool   `json:"retryable"`
-				} `json:"properties"`
+			owner, err := c.GetEntity(t, primaryID)
+			if err != nil {
+				t.Fatalf("GetEntity primary: %v", err)
 			}
-			if err := json.Unmarshal(raw, &pd); err != nil {
-				t.Fatalf("primary create answered %d, not a problem document: %v (body: %s)", status, err, raw)
-			}
-			if status != http.StatusConflict || pd.Properties.ErrorCode != "TRANSACTION_ROLLBACK_ONLY" || pd.Properties.Retryable {
-				t.Fatalf("primary create = %d %s retryable=%t; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable (body: %s)",
-					status, pd.Properties.ErrorCode, pd.Properties.Retryable, raw)
-			}
-			if !strings.Contains(pd.Detail, "COMMIT_IN_JOINED_TRANSACTION") {
-				t.Fatalf("detail = %q; want it to name the callback's COMMIT_IN_JOINED_TRANSACTION", pd.Detail)
-			}
-			if all, err := c.ListEntitiesByModel(t, primary, 1); err != nil {
-				t.Fatalf("list primary: %v", err)
-			} else if len(all) != 0 {
-				t.Fatalf("%d primary entities committed; the owner's refused operation commits nothing", len(all))
+			if got, _ := owner.Data["hopStatus"].(float64); int(got) != http.StatusConflict {
+				t.Errorf("primary hopStatus = %v; want the processor's record of the callback's 409", owner.Data["hopStatus"])
 			}
 
 			hop := ReadHopRecord(t, c, record, marker)

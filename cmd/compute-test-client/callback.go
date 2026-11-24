@@ -237,6 +237,13 @@ func (c *callbackClient) createSecondaryWithQuery(ctx context.Context, cfg cbCon
 // outside the joined transaction whatever that transaction's fate. A scenario
 // reads it back by cfg.Marker. A config with no RecordModel records nothing.
 func (c *callbackClient) recordHop(ctx context.Context, cfg cbConfig, res cbResult, txToken string) error {
+	return c.writeHopRecord(ctx, cfg, res, txToken, "")
+}
+
+// writeHopRecord is recordHop with the create of the record itself sent under
+// joinToken: "" sends it outside any transaction, a tx token makes it a joined
+// write that commits only with that transaction.
+func (c *callbackClient) writeHopRecord(ctx context.Context, cfg cbConfig, res cbResult, txToken, joinToken string) error {
 	if cfg.RecordModel == "" {
 		return nil
 	}
@@ -249,7 +256,7 @@ func (c *callbackClient) recordHop(ctx context.Context, cfg cbConfig, res cbResu
 	if err != nil {
 		return fmt.Errorf("record the callback's answer: %w", err)
 	}
-	rec, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", cfg.RecordModel), string(body), "", "")
+	rec, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", cfg.RecordModel), string(body), joinToken, "")
 	if err != nil {
 		return fmt.Errorf("record the callback's answer: %w", err)
 	}
@@ -656,27 +663,30 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			return withData(entity, data)
 		},
 
-		// cb-create-secondary-then-silent — issues the joined create callback,
-		// then never answers the callout (it waits for its own context to end),
-		// whatever the callback answered. The owner's loop would give the work
-		// to another member once the answer limit passes — unless something
-		// ends the callout first.
-		//
-		// Its context is the client's stream context: a callout's end does
-		// not end it. The client serves callouts one at a time on its receive
-		// loop, so this client takes no further work, and reads no further
-		// message, until it is stopped. A scenario uses it for the one callout
-		// that client is meant to receive, and that is what keeps a second
-		// try from reaching it.
-		"cb-create-secondary-then-silent": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
+		// cb-create-secondary-then-write — issues the joined create callback and
+		// records its answer, as cb-create-secondary-record does, then makes a
+		// second joined write: the same record again, under the marker with
+		// "-joined" appended, sent with the tx token. It succeeds unless that
+		// second write fails, so a scenario sees whether the transaction stays
+		// usable after the first callback's answer, and whether the owner's
+		// commit keeps the second write.
+		"cb-create-secondary-then-write": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
 			if err := requireCB(cb); err != nil {
 				return nil, err
 			}
-			if _, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker); err != nil {
+			res, _, _, err := cb.createSecondary(ctx, cfg, token, cfg.Marker)
+			if err != nil {
 				return nil, fmt.Errorf("callback create: %w", err)
 			}
-			<-ctx.Done()
-			return nil, ctx.Err()
+			if err := cb.recordHop(ctx, cfg, res, token); err != nil {
+				return nil, err
+			}
+			joined := cfg
+			joined.Marker = cfg.Marker + "-joined"
+			if err := cb.writeHopRecord(ctx, joined, res, token, token); err != nil {
+				return nil, fmt.Errorf("the joined write after the callback: %w", err)
+			}
+			return entity, nil
 		},
 
 		// cb-create-secondary-retry-record — issues the joined create callback,

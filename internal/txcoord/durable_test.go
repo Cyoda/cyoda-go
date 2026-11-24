@@ -142,35 +142,56 @@ func TestDurable_CallbackServedOnAnotherPnodeCommitsWithOwner(t *testing.T) {
 	}
 }
 
-// TestDurable_FailedWriteOnAnotherPnodeDoomsTheOwner: a failed joined write
-// served on another pnode marks the root, so the owner's Seal refuses with
-// TRANSACTION_ROLLBACK_ONLY and the callout's context reports it.
-func TestDurable_FailedWriteOnAnotherPnodeDoomsTheOwner(t *testing.T) {
+// TestDurable_FailedWriteOnAnotherPnodeOwnerCommits: a failed joined write
+// served on another pnode is discarded and leaves the transaction usable: a
+// later write under the same pass is served, the callout's context reports
+// nothing, and the owner commits the later write and none of the failed one.
+func TestDurable_FailedWriteOnAnotherPnodeOwnerCommits(t *testing.T) {
 	cl := newCluster(t)
 	cctx, end := cl.owner.BeginCallout(cl.txCtx, cl.txID, "c1")
 	cl.owner.Advance("c1", 1)
 
 	s, sctx := cl.mustEnter(cl.other, Write, pair("c1", 1))
-	w := cl.save(sctx)
+	lost := cl.save(sctx)
 	mustOwnAnswer(t, s.End(failed(http.StatusBadRequest, common.ErrCodeBadRequest)))
+	s2, s2ctx := cl.mustEnter(cl.other, Write, pair("c1", 1))
+	kept := cl.save(s2ctx)
+	mustOwnAnswer(t, s2.End(nil))
 	end()
-	checked := Check(cctx)
-	mustCode(t, checked, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-	if !strings.Contains(checked.Error(), common.ErrCodeBadRequest) {
-		t.Errorf("the callout's refusal %q does not name the failed code %s", checked, common.ErrCodeBadRequest)
+	if err := Check(cctx); err != nil {
+		t.Fatalf("Check on the callout's context = %v; want nil", err)
 	}
+
+	cl.commit()
+	if !cl.committed(kept) || cl.committed(lost) {
+		t.Fatalf("committed: later write %v, failed write %v; want true, false", cl.committed(kept), cl.committed(lost))
+	}
+}
+
+// TestDurable_DiscardFailureFailsSeal: a scope the backend could not discard
+// is answered 500, and the owner's Seal fails, so the transaction does not
+// commit with the scope's writes possibly still in it.
+func TestDurable_DiscardFailureFailsSeal(t *testing.T) {
+	cl := newCluster(t)
+	_, end := cl.owner.BeginCallout(cl.txCtx, cl.txID, "c1")
+	cl.owner.Advance("c1", 1)
+
+	s, sctx := cl.mustEnter(cl.other, Write, pair("c1", 1))
+	w := cl.save(sctx)
+	discards := cl.f.(interface{ FailDiscards(error) })
+	discards.FailDiscards(errors.New("the coordinator's store is unreachable"))
+	mustAnswer(t, s.End(failed(http.StatusBadRequest, common.ErrCodeBadRequest)),
+		http.StatusInternalServerError, common.ErrCodeServerError, false)
+	discards.FailDiscards(nil)
+	end()
 
 	finish, err := cl.owner.Seal(cl.txCtx, cl.txID)
 	finish()
-	mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-	if !errors.Is(err, common.ErrRollbackOnly) {
-		t.Errorf("Seal error does not carry ErrRollbackOnly: %v", err)
-	}
-	if !strings.Contains(err.Error(), common.ErrCodeBadRequest) {
-		t.Errorf("the owner's refusal %q does not name the failed code %s", err, common.ErrCodeBadRequest)
+	if err == nil {
+		t.Fatal("Seal after a failed discard = nil; want a refusal")
 	}
 	if cl.committed(w) {
-		t.Fatal("the failed write must not be visible outside the transaction")
+		t.Fatal("the write of a scope that could not be discarded is visible outside the transaction")
 	}
 }
 
@@ -199,8 +220,8 @@ func TestDurable_AdvanceSupersedesInProgressCallback(t *testing.T) {
 	}
 }
 
-// TestDurable_EnterRefusals: a pass that is not current is refused 410, a
-// scope under a marked one 409, and a sealed transaction 410.
+// TestDurable_EnterRefusals: a pass that is not current is refused 410, and a
+// sealed transaction 410.
 func TestDurable_EnterRefusals(t *testing.T) {
 	cl := newCluster(t)
 	_, end := cl.owner.BeginCallout(cl.txCtx, cl.txID, "c1")
@@ -213,40 +234,10 @@ func TestDurable_EnterRefusals(t *testing.T) {
 		t.Errorf("the 410 does not carry ErrSuperseded: %v", err)
 	}
 
-	s, _ := cl.mustEnter(cl.other, Write, pair("c1", 2))
-	s.End(failed(http.StatusBadRequest, common.ErrCodeBadRequest)) // marks the root
-	_, _, err = cl.enter(cl.other, Read, pair("c1", 2))
-	mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-
 	finish, _ := cl.owner.Seal(cl.txCtx, cl.txID)
 	finish()
 	_, _, err = cl.enter(cl.other, Read, pair("c1", 2))
 	mustCode(t, err, http.StatusGone, common.ErrCodeCalloutSuperseded, false)
-}
-
-// TestDurable_AdvanceStopsACalloutOfAMarkedScope: nothing cancels a callout
-// when the scope it was begun from is marked on another pnode, so the owner's
-// loop checks that scope at every Advance (before each try and hand-over) and
-// the callout's context ends with the mark's cause.
-func TestDurable_AdvanceStopsACalloutOfAMarkedScope(t *testing.T) {
-	cl := newCluster(t)
-	_, endC1 := cl.owner.BeginCallout(cl.txCtx, cl.txID, "c1")
-	defer endC1()
-	cl.owner.Advance("c1", 1)
-	c2ctx, endC2 := cl.owner.BeginCallout(cl.txCtx, cl.txID, "c2")
-	defer endC2()
-	cl.owner.Advance("c2", 1)
-
-	s, _ := cl.mustEnter(cl.other, Write, pair("c1", 1))
-	s.End(failed(http.StatusBadRequest, common.ErrCodeBadRequest)) // marks the root
-	if c2ctx.Err() != nil {
-		t.Fatal("the callout's context ended before the owner's loop checked")
-	}
-	cl.owner.Advance("c2", 2)
-	if !errors.Is(context.Cause(c2ctx), common.ErrRollbackOnly) {
-		t.Fatalf("cause = %v; want ErrRollbackOnly", context.Cause(c2ctx))
-	}
-	mustCode(t, Check(c2ctx), http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
 }
 
 // TestDurable_NestedCalloutSupersededAtAdvance: a callout begun from a
@@ -300,8 +291,7 @@ func TestDurable_PauseIsCheck(t *testing.T) {
 }
 
 // TestDurable_ProcessorScope: an ASYNC_NEW_TX processor's scope keeps its
-// writes when the processor succeeds, and loses them, without marking its
-// parent, when it fails.
+// writes when the processor succeeds, and loses them when it fails.
 func TestDurable_ProcessorScope(t *testing.T) {
 	cl := newCluster(t)
 	p1, p1ctx, err := cl.owner.OpenChild(cl.txCtx)
@@ -329,35 +319,17 @@ func TestDurable_ProcessorScope(t *testing.T) {
 	}
 }
 
-// TestDurable_SealLostRaceBeforeMark: the owner of a marked transaction that
-// lost a write race is told the retryable conflict.
-func TestDurable_SealLostRaceBeforeMark(t *testing.T) {
-	cl := newCluster(t)
-	_, end := cl.owner.BeginCallout(cl.txCtx, cl.txID, "c1")
-	cl.owner.Advance("c1", 1)
-	s, _ := cl.mustEnter(cl.other, Write, pair("c1", 1))
-	s.End(failed(http.StatusBadRequest, common.ErrCodeBadRequest))
-	end()
-
-	cl.tm.lost.Store(true)
-	finish, err := cl.owner.Seal(cl.txCtx, cl.txID)
-	finish()
-	if !errors.Is(err, spi.ErrTxAborted) {
-		t.Fatalf("Seal = %v; want spi.ErrTxAborted", err)
-	}
-}
-
 // --- the mapping of the coordinator's refusals, on a scripted coordinator ---
 
 // scripted is a coordinator whose CheckScope and CompleteScope answer as the
-// test sets, and that records the DiscardScope calls.
+// test sets, and that counts the DiscardScope calls.
 type scripted struct {
 	spi.TransactionCoordinator // unused methods panic
 
 	open, check, complete, discard error
 
 	mu       sync.Mutex
-	discards []string // the failed code of each DiscardScope
+	discards int
 }
 
 // OpenScope answers (nil, open) when the test set open, as a coordinator may.
@@ -372,30 +344,23 @@ func (s *scripted) OpenScope(ctx context.Context, _ string, _ []spi.CalloutPair)
 func (s *scripted) Seal(ctx context.Context, _ string) error { return ctx.Err() }
 func (s *scripted) CheckScope(context.Context) error         { return s.check }
 func (s *scripted) CompleteScope(context.Context) error      { return s.complete }
-func (s *scripted) DiscardScope(_ context.Context, failedCode string) error {
+func (s *scripted) DiscardScope(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.discards = append(s.discards, failedCode)
+	s.discards++
 	return s.discard
 }
 
-// markCode is the code of the first DiscardScope that marked, "" when none
-// did.
-func (s *scripted) markCode() string {
+func (s *scripted) discarded() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, c := range s.discards {
-		if c != "" {
-			return c
-		}
-	}
-	return ""
+	return s.discards
 }
 
-func (s *scripted) marked() bool { return s.markCode() != "" }
-
 // TestDurableEnd_MapsCompleteRefusals: a refused CompleteScope maps by its
-// error, as the capability list of the table's row 5 says.
+// error, as the capability list of the table's row 4 says. A refusal the
+// backend names has discarded the scope already; any other error is a failed
+// completion, which discards it.
 func TestDurableEnd_MapsCompleteRefusals(t *testing.T) {
 	storage := errors.New("the coordinator's store is unreachable")
 	for _, tc := range []struct {
@@ -406,15 +371,13 @@ func TestDurableEnd_MapsCompleteRefusals(t *testing.T) {
 		status    int
 		code      string
 		retryable bool
-		markCode  string // the code the parent is marked with; "" for no mark
+		discards  int // the DiscardScope calls
 	}{
-		{"superseded is row 1", spi.ErrCalloutSuperseded, Write, false, http.StatusGone, common.ErrCodeCalloutSuperseded, false, ""},
-		{"rollback-only is row 4, a write marks with the refusal's code", refusedFor("INNER_FAILED"), Write, false, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false, "INNER_FAILED"},
-		{"rollback-only is row 4, a read does not mark", refusedFor("INNER_FAILED"), Read, false, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false, ""},
-		{"scope conflict is a retryable conflict, no mark", spi.ErrScopeConflict, Write, false, http.StatusConflict, common.ErrCodeConflict, true, ""},
-		{"any other error is a 500 and a write marks", storage, Write, false, http.StatusInternalServerError, common.ErrCodeServerError, false, common.ErrCodeServerError},
-		{"any other error on a read is row 9", storage, Read, false, http.StatusInternalServerError, common.ErrCodeServerError, false, ""},
-		{"any other error after a lost race is row 2", storage, Write, true, http.StatusConflict, common.ErrCodeConflict, false, ""},
+		{"superseded is row 1", spi.ErrCalloutSuperseded, Write, false, http.StatusGone, common.ErrCodeCalloutSuperseded, false, 0},
+		{"scope conflict is a retryable conflict", spi.ErrScopeConflict, Write, false, http.StatusConflict, common.ErrCodeConflict, true, 0},
+		{"any other error on a write is row 6", storage, Write, false, http.StatusInternalServerError, common.ErrCodeServerError, false, 1},
+		{"any other error on a read is row 8", storage, Read, false, http.StatusInternalServerError, common.ErrCodeServerError, false, 1},
+		{"any other error after a lost race is row 2", storage, Write, true, http.StatusConflict, common.ErrCodeConflict, false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := memory.NewStoreFactory()
@@ -433,8 +396,8 @@ func TestDurableEnd_MapsCompleteRefusals(t *testing.T) {
 
 			ans := s.End(nil)
 			mustAnswer(t, ans, tc.status, tc.code, tc.retryable)
-			if got := co.markCode(); got != tc.markCode {
-				t.Errorf("parent marked with %q; want %q", got, tc.markCode)
+			if got := co.discarded(); got != tc.discards {
+				t.Errorf("DiscardScope called %d times; want %d", got, tc.discards)
 			}
 			if tc.complete == spi.ErrCalloutSuperseded && !errors.Is(ans, ErrSuperseded) {
 				t.Errorf("the 410 does not carry ErrSuperseded: %v", ans)
@@ -459,10 +422,6 @@ func TestDurableEnd_DiscardFailureIsAFailure(t *testing.T) {
 	}
 	mustAnswer(t, s.End(failed(http.StatusBadRequest, common.ErrCodeBadRequest)), http.StatusInternalServerError, common.ErrCodeServerError, false)
 }
-
-// refusedFor is a coordinator's refusal for a mark whose recorded code is
-// code.
-func refusedFor(code string) error { return &spi.RollbackOnlyError{FailedCode: code} }
 
 // newScripted returns the durable coordination over co, with a memory
 // transaction manager whose LostRace answers lost.
@@ -489,7 +448,6 @@ func TestDurableEnter_OpenRefusals(t *testing.T) {
 		code   string
 	}{
 		{"superseded", spi.ErrCalloutSuperseded, http.StatusGone, common.ErrCodeCalloutSuperseded},
-		{"under a marked scope", refusedFor("INNER_FAILED"), http.StatusConflict, common.ErrCodeTransactionRollbackOnly},
 		{"transaction not found", spi.ErrTxNotFound, http.StatusNotFound, common.ErrCodeTransactionNotFound},
 		{"anything else", errors.New("the coordinator's store is unreachable"), http.StatusInternalServerError, common.ErrCodeServerError},
 	} {
@@ -505,27 +463,18 @@ func TestDurableEnter_OpenRefusals(t *testing.T) {
 }
 
 // TestDurableEnd_UnnamedCheckFailureIsAFailure: a CheckScope error the
-// coordinator does not name is a failed completion: 500, the scope
-// discarded, and a write marks its parent.
+// coordinator does not name is a failed completion: 500, and the scope
+// discarded.
 func TestDurableEnd_UnnamedCheckFailureIsAFailure(t *testing.T) {
-	for _, tc := range []struct {
-		class    RequestClass
-		markCode string
-	}{
-		{Write, common.ErrCodeServerError},
-		{Read, ""},
-	} {
+	for _, class := range []RequestClass{Write, Read} {
 		co := &scripted{check: errors.New("the coordinator's store is unreachable")}
-		s, _, err := newScripted(t, co, false).Enter(context.Background(), "tx-1", []fence.Pair{pair("c1", 1)}, tc.class, 0)
+		s, _, err := newScripted(t, co, false).Enter(context.Background(), "tx-1", []fence.Pair{pair("c1", 1)}, class, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		mustAnswer(t, s.End(nil), http.StatusInternalServerError, common.ErrCodeServerError, false)
-		if got := co.markCode(); got != tc.markCode {
-			t.Errorf("class %d: parent marked with %q; want %q", tc.class, got, tc.markCode)
-		}
-		if len(co.discards) == 0 {
-			t.Errorf("class %d: the scope was not discarded", tc.class)
+		if co.discarded() != 1 {
+			t.Errorf("class %d: DiscardScope called %d times; want 1", class, co.discarded())
 		}
 	}
 }
