@@ -18,9 +18,11 @@ transaction of the operation that called the compute node out.
 - **Kept is relative to the scope above.** A kept callback is still undone with
   the part of the transaction above it: the transaction's rollback, or a failed
   `ASYNC_NEW_TX` processor the callback ran under.
-- **A failed callback does not by itself fail the operation.** It keeps
+- **A failed callback leaves the decision to the compute node.** It keeps
   nothing (a read that answered a `4xx` excepted, below), and the transaction
-  goes on: later callbacks under the same token are served.
+  goes on unless the transaction itself can no longer commit: a lost write
+  race, an ended session (table below), or a failed discard (last point
+  here).
   - After a retryable answer the compute node may send the callback again
     under the same token.
   - An answer that is not retryable is the compute node's to handle: its
@@ -28,10 +30,11 @@ transaction of the operation that called the compute node out.
     on without that callback or to fail. The operation then does what it does
     with any answer of that processor: a failed `SYNC` processor fails it, a
     failed `ASYNC_NEW_TX` processor does not.
-  - When the outcome of a write is unknown — `503
-    TRANSACTION_NODE_UNAVAILABLE` after the request may have reached the owner,
-    or no answer at all — the compute node cannot tell whether the write was
-    kept, and its processor must fail.
+  - When the outcome of a write is unknown — a `503
+    TRANSACTION_NODE_UNAVAILABLE` that is not retryable (the request may have
+    reached the node that holds the transaction), or no answer at all — the
+    compute node cannot tell whether the write was kept, so it must fail the
+    callout.
   - A failed callback whose scope cannot be discarded is answered `500
     SERVER_ERROR`, not retryable, and the transaction can then no longer
     commit: its writes may still be part of it.
@@ -110,8 +113,9 @@ retryable `409 CONFLICT` between two callbacks for the second.
 In 0.9.0 a callback write that failed with an answer that was not retryable
 made the transaction rollback-only: the owner failed with `409
 TRANSACTION_ROLLBACK_ONLY` whatever the compute node answered, later callbacks
-under the same part were refused with that code, and an `ASYNC_NEW_TX`
-processor stopped the mark from going higher. 0.9.1 removes the rule and the
+in the transaction were refused with that code, and under an `ASYNC_NEW_TX`
+processor the processor failed instead and the operation went on. 0.9.1
+removes the rule and the
 error code. A failed callback keeps nothing in both versions; in 0.9.1 the
 transaction goes on and the compute node's processor decides. Cloud builds
 neither the rule nor the code.

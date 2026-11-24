@@ -616,11 +616,11 @@ the first matching row:
 | 1 | the pass is no longer current (the callout advanced or ended) | discarded | `410 CALLOUT_SUPERSEDED` |
 | 2 | the request failed and `TransactionManager.LostRace` says the transaction lost | discarded | `409 CONFLICT`, not retryable |
 | 3 | the request failed with the session ended (`spi.ErrTxNotFound`) | discarded if possible; the transaction is broken | `404 TRANSACTION_NOT_FOUND` |
-| 5 | success, and the savepoint is released | completed | the handler's |
-| 6 | retryable failure | discarded | the handler's |
-| 7 | non-retryable failure of a write | discarded | the handler's |
-| 8 | non-retryable `4xx` of a read | completed | the handler's |
-| 9 | non-retryable `5xx` of a read | discarded | the handler's |
+| 4 | success, and the savepoint is released | completed | the handler's |
+| 5 | retryable failure | discarded | the handler's |
+| 6 | non-retryable failure of a write | discarded | the handler's |
+| 7 | non-retryable `4xx` of a read | completed | the handler's |
+| 8 | non-retryable `5xx` of a read | discarded | the handler's |
 
 A scope whose discard fails did not end as its row answers: except in row 3,
 which answers `404` whatever its own discard did, `End` replaces the answer
@@ -636,7 +636,7 @@ otherwise answers `500 SERVER_ERROR` — on PostgreSQL, a handler that swallowed
 a statement error and answered `2xx` meets `25P02` there. Row 2 is not
 retryable for the callback because a retry in a transaction that lost a race
 cannot succeed; the owner reports the retryable conflict and is what is
-retried. Row 8 keeps a read that answered, so its read-set entries are still
+retried. Row 7 keeps a read that answered, so its read-set entries are still
 validated at commit. When End rewrites the answer, the door sends only the
 rewritten error: the buffered HTTP body and the held gRPC frames are dropped.
 The scope ends, savepoint included, while the gate is still held, and the
@@ -648,10 +648,10 @@ ended, a rollback to a savepoint that failed, or a discard that failed
 transaction **broken**: later joined requests are refused with
 `404 TRANSACTION_NOT_FOUND`, and the owner fails with the broken cause,
 classified as usual (a dead PostgreSQL session is the retryable
-`503 STORAGE_UNAVAILABLE`). A joined request that fails in any other way
-changes nothing else: its scope ends as the table says, later joined requests
-under the same pass are served, and the callout ends with what the compute
-member answers. The failure is the member's to handle: its processor, function
+`503 STORAGE_UNAVAILABLE`). Any other failed joined request ends its scope as
+the table says and leaves the transaction as it was: later joined requests are
+admitted as before, and the callout ends with what the compute member
+answers. The failure is the member's to handle: its processor, function
 criterion or schedule function decides whether to go on without that request
 or to fail.
 
@@ -764,7 +764,7 @@ bounded by `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB) — the
 owner's next move waits behind those bytes — and an answer past it fails the
 request with `413 JOINED_RESPONSE_TOO_LARGE`, not retryable, rather than being
 sent in part; it is decided inside the handler, so on a write it discards the
-scope (row 7). A compute member that sends its headers and stalls,
+scope (row 6). A compute member that sends its headers and stalls,
 or never reads its response, holds nothing.
 
 **A joined request is not interrupted by its compute member going away.** From
@@ -792,7 +792,7 @@ outcome is unknown, so the member must fail the callout.
 A `COMMIT_BEFORE_DISPATCH` processor reached inside a callback never
 dispatches: it would commit the transaction the callback joined, so it is
 refused before the transaction is flushed or committed, and its scope is
-discarded as any failed write's is (row 7).
+discarded as any failed write's is (row 6).
 
 **Location-independent transactions.** A storage plugin may supply the
 coordination itself through the SPI's optional
@@ -833,8 +833,8 @@ the transaction.
 its own, which takes a savepoint of the parent transaction. Its own failure
 is non-fatal: the scope is discarded and the pipeline continues. Discarding it
 undoes its callbacks' entity writes, not the schema extensions they made. A
-failed callback under it keeps nothing and does not by itself fail the
-processor. A scope that cannot be **opened,
+failed callback under it keeps nothing and leaves the processor to decide
+whether to fail. A scope that cannot be **opened,
 undone or released**, or whose transaction is broken, is not a processor
 failure — it says the transaction is unusable — so its error carries
 `txcoord.ErrScopeInfra` and **fails the operation** with a ticketed 5xx. Two

@@ -32,9 +32,9 @@ write is refused:
   PUT or PATCH), update collection. On gRPC: `EntityManage` (create, update,
   patch, transition) and `EntityManageCollection` (create, update).
 - **Joined transaction afterwards:** open, uncommitted, and usable. The
-  refused write kept nothing, and the transaction goes on, as after any failed
-  callback (`callback-scopes.md`): the compute node's processor decides whether
-  to go on or to fail.
+  refused write kept nothing, and the transaction goes on
+  (`callback-scopes.md`): the compute node's processor decides whether to go on
+  or to fail.
 - **Batch update isolation:** the refusal is never isolated as a per-item
   precondition failure, even when the item carries an `ifMatch`; the whole
   request fails.

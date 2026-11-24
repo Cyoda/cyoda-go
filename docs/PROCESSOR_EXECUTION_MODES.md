@@ -132,13 +132,17 @@ section: it commits on its own and stays ([CONSISTENCY.md §3a](CONSISTENCY.md#3
 Each callback is **all-or-nothing**: it runs in a scope of its own, and either
 all its writes become part of `T` or none do. A `2xx` is sent only for a
 callback whose writes were kept. A callback that fails keeps nothing (a read
-answered with a `4xx` keeps what it read), and the failure does not by itself
-fail the operation. After a retryable answer the callback can be sent again.
+answered with a `4xx` keeps what it read). A failed callback leaves the
+operation's outcome to the member, unless `T` itself can no longer commit: it
+lost a write race (`409 CONFLICT`, not retryable) or its session ended
+(`404 TRANSACTION_NOT_FOUND`). After a retryable answer the callback can be
+sent again.
 An answer that is not retryable is the processor's to handle: it goes on
 without that callback, or it fails, and the operation then does what its mode
 does with the processor's answer. When the outcome of a write is unknown — a
-`503 TRANSACTION_NODE_UNAVAILABLE` that is not retryable, or no answer at all —
-the processor cannot tell whether the write was kept, and must fail. A failed
+`503 TRANSACTION_NODE_UNAVAILABLE` that is not retryable (the request may have
+reached the node that holds the transaction), or no answer at all — the member
+cannot tell whether the write was kept, so it must fail the callout. A failed
 callback whose scope cannot be discarded is answered `500 SERVER_ERROR`, and
 `T` can then no longer commit. A callback still in progress when its
 callout moves on is discarded and answered `410 CALLOUT_SUPERSEDED`. See
