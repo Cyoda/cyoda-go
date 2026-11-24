@@ -35,7 +35,7 @@ func mustSealOK(t *testing.T, e *env) {
 	}
 }
 
-func TestEnd_Row1_SupersededDiscardsNoMark(t *testing.T) {
+func TestEnd_Row1_SupersededDiscards_TransactionGoesOn(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, actx := e.mustEnter(Write, pair("c1", 1))
@@ -157,7 +157,7 @@ func TestEnd_Row4_SuccessReleases(t *testing.T) {
 
 // A write whose completion fails is a failed write (row 6): discarded and
 // answered 500, and the transaction goes on.
-func TestEnd_Row4_ReleaseFails500NoMark(t *testing.T) {
+func TestEnd_Row4_ReleaseFails500_TransactionGoesOn(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Write, pair("c1", 1))
@@ -173,7 +173,7 @@ func TestEnd_Row4_ReleaseFails500NoMark(t *testing.T) {
 	mustSealOK(t, e)
 }
 
-func TestEnd_Row5_RetryableDiscardsNoMark(t *testing.T) {
+func TestEnd_Row5_RetryableDiscards_TransactionGoesOn(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Write, pair("c1", 1))
@@ -191,7 +191,7 @@ func TestEnd_Row5_RetryableDiscardsNoMark(t *testing.T) {
 // request under the same pass completes, and Seal succeeds. A backstop answer
 // (a buffered HTTP status, a raw gRPC error) that carries no code ends the
 // same way.
-func TestEnd_Row6_NonRetryableWriteDiscardsNoMark(t *testing.T) {
+func TestEnd_Row6_NonRetryableWriteDiscards_TransactionGoesOn(t *testing.T) {
 	for name, o := range map[string]*common.Outcome{
 		"with a code":    failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed),
 		"without a code": {Status: http.StatusRequestEntityTooLarge},
@@ -251,7 +251,7 @@ func TestEnd_Outside_NeverRewritten(t *testing.T) {
 
 // A write whose handler panicked is a failed write (row 6): discarded, and the
 // transaction goes on.
-func TestEnd_PanicOutcome_DiscardsNoMark(t *testing.T) {
+func TestEnd_PanicOutcome_Discards_TransactionGoesOn(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Write, pair("c1", 1))
