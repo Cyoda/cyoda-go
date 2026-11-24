@@ -285,6 +285,51 @@ func TestCallbackScope_FailedJoinedWrite_ProcessorFails_HTTP(t *testing.T) {
 	assertNoEntityTrace(t, h, firstEntity(t, pnode))
 }
 
+// TestCallbackScope_FailedJoinedWrite_ProcessorFails_GRPC is the same
+// through gRPC on both sides: the owner's create and the callbacks. The owner
+// gets the envelope of any failed SYNC processor: CLIENT_ERROR, the message
+// prefixed WORKFLOW_FAILED and carrying the member's message, not retryable.
+// Nothing of the transaction is committed.
+func TestCallbackScope_FailedJoinedWrite_ProcessorFails_GRPC(t *testing.T) {
+	const pMessage = "p gives up after its failed callback"
+	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
+	m := newScopeModels(t, h, "cs-fwfg", "SYNC")
+	y := newScopeLaterModel(t, h, "cs-fwfg")
+	xnode := h.AttachCnode(t, cnodeSpec{name: "x", tags: []string{m.tagX}, script: scriptAlways(answerFailVerdict("x refused", false))})
+	type envResult struct {
+		env txEnvelope
+		err error
+	}
+	type observed struct{ failed, later envResult }
+	cb := make(chan observed, 1)
+	pnode := h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{m.tagP}, script: func(_ context.Context, call receivedCallout, _ *reqCtx) cnodeReply {
+		var o observed
+		o.failed.env, o.failed.err = h.ReplayCreateGRPC(call.Pass(), m.x, 1, scopeXPayload)
+		o.later.env, o.later.err = h.ReplayCreateGRPC(call.Pass(), y, 1, scopeXPayload)
+		cb <- o
+		return answerFailVerdict(pMessage, false)
+	}})
+
+	owner, ownerErr := h.createEntityGRPC(m.p, 1, workflowSampleModel)
+
+	o := awaitAttempt(t, "the callbacks", cb)
+	assertEnvelope(t, "callback", o.failed.env, o.failed.err, "WORKFLOW_FAILED", false)
+	if o.later.err != nil || !o.later.env.Success {
+		t.Errorf("the later joined write: success=%t error=%v err=%v; want success — a failed write leaves the transaction usable", o.later.env.Success, o.later.env.Error, o.later.err)
+	}
+	assertEnvelope(t, "owner", owner, ownerErr, "WORKFLOW_FAILED", false)
+	if !strings.Contains(owner.Error.Message, pMessage) {
+		t.Errorf("owner message does not carry the member's message %q: %s", pMessage, owner.Error.Message)
+	}
+	for _, model := range []string{m.p, m.x, y} {
+		if n := h.countEntities(t, model); n != 0 {
+			t.Errorf("%d %s entities committed; want none", n, model)
+		}
+	}
+	assertNoEntityTrace(t, h, firstEntity(t, xnode))
+	assertNoEntityTrace(t, h, firstEntity(t, pnode))
+}
+
 // TestCallbackScope_RetryableFailure_RetriedInTransaction: xproc first fails
 // retryably — the callback is refused retryable (HTTP 400 WORKFLOW_FAILED with
 // retryable, gRPC the CLIENT_ERROR envelope with Retryable=true) and its write
