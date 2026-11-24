@@ -173,8 +173,10 @@ func receivedEntityIDs(t *testing.T, cc ComputeClient, want int) []string {
 // assertFailedThenJoinedWrite asserts what the compute node of a
 // cb-create-secondary-then-write processor saw and left behind: its joined
 // create of x was answered 400 WORKFLOW_FAILED, not retryable, and nothing of
-// x is committed; its later joined write is committed with the owner.
-func assertFailedThenJoinedWrite(t *testing.T, s cbScopeCase) {
+// x is committed; its later joined write is committed by the owner's
+// transaction, ownerTxID, which the record of the answer, written outside it,
+// is not.
+func assertFailedThenJoinedWrite(t *testing.T, s cbScopeCase, ownerTxID string) {
 	t.Helper()
 	hop := ReadHopRecord(t, s.c, s.rec, s.marker)
 	if hop.TokenWasEmpty {
@@ -183,10 +185,43 @@ func assertFailedThenJoinedWrite(t *testing.T, s cbScopeCase) {
 	if hop.Status != http.StatusBadRequest || hop.ErrorCode != "WORKFLOW_FAILED" || hop.Retryable {
 		t.Errorf("joined create = %d %s retryable=%t; want 400 WORKFLOW_FAILED, not retryable (body: %s)", hop.Status, hop.ErrorCode, hop.Retryable, hop.Body)
 	}
-	if later := ReadHopRecord(t, s.c, s.rec, s.marker+"-joined"); later.TokenWasEmpty {
-		t.Error("the later joined write recorded tokenWasEmpty=true; it must have joined the transaction")
+	if ownerTxID == "" {
+		t.Fatal("the owner's entity carries no transactionId")
+	}
+	ReadHopRecord(t, s.c, s.rec, s.marker+"-joined") // waits for it, and fails unless there is one
+	if got := recordTxID(t, s.c, s.rec, s.marker+"-joined"); got != ownerTxID {
+		t.Errorf("the later joined write was committed by transaction %q; want the owner's %q", got, ownerTxID)
+	}
+	if got := recordTxID(t, s.c, s.rec, s.marker); got == ownerTxID {
+		t.Errorf("the record written outside the transaction carries the owner's transaction %q", got)
 	}
 	assertNothingCommitted(t, s.c, s.x, receivedEntityIDs(t, s.xClient, 1)...)
+}
+
+// recordTxID returns the transactionId of the one record under marker in
+// recordModel.
+func recordTxID(t *testing.T, c *client.Client, recordModel, marker string) string {
+	t.Helper()
+	all, err := c.ListEntitiesByModel(t, recordModel, 1)
+	if err != nil {
+		t.Fatalf("list %s: %v", recordModel, err)
+	}
+	for _, e := range all {
+		if e.Data["marker"] != marker {
+			continue
+		}
+		id, err := uuid.Parse(e.Meta.ID)
+		if err != nil {
+			t.Fatalf("record id %q: %v", e.Meta.ID, err)
+		}
+		got, err := c.GetEntity(t, id)
+		if err != nil {
+			t.Fatalf("GetEntity record %s: %v", id, err)
+		}
+		return got.Meta.TransactionID
+	}
+	t.Fatalf("no record under %q in %s", marker, recordModel)
+	return ""
 }
 
 // RunCallbackScope_FailedJoinedWriteHandledByProcessor: the callback's create
@@ -208,7 +243,7 @@ func RunCallbackScope_FailedJoinedWriteHandledByProcessor(t *testing.T, fixture 
 	if owner.Meta.State != "ACTIVE" {
 		t.Errorf("owner state = %q; want ACTIVE", owner.Meta.State)
 	}
-	assertFailedThenJoinedWrite(t, s)
+	assertFailedThenJoinedWrite(t, s, owner.Meta.TransactionID)
 }
 
 // RunCallbackScope_RetryableFailureRetriedInTx: x's processor fails retryably
@@ -323,7 +358,7 @@ func RunCallbackScope_AsyncNewTxFailedCallbackWriteHandled(t *testing.T, fixture
 	if success, ok := result["success"].(bool); !ok || !success {
 		t.Errorf("STATE_PROCESS_RESULT = %v; want the processor succeeded", result)
 	}
-	assertFailedThenJoinedWrite(t, s)
+	assertFailedThenJoinedWrite(t, s, owner.Meta.TransactionID)
 }
 
 // RunCallbackScope_MessageOutsideTx: a message posted under the token never

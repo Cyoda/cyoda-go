@@ -189,12 +189,6 @@ func (c *inProcess) BeginCallout(ctx context.Context, txID, calloutID string) (c
 		c.callouts[calloutID] = reg
 		return reg
 	}()
-	if reg.parent.kind == rootKind {
-		// So that the callout's context carries the scope it was begun from,
-		// as a callout begun from a callback or processor scope does: the
-		// owner's chain carries no scope of txID of its own.
-		cctx = context.WithValue(cctx, scopeKey{}, reg.parent)
-	}
 	return cctx, func() {
 		once.Do(func() { c.endCallout(reg, fenceEnd) })
 	}

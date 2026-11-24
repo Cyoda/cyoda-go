@@ -13,9 +13,10 @@
 // DiscardScope drops the buffer. Scopes of one transaction may therefore be
 // open at the same time, and two of them may write the same entity; the one
 // that completes second, having written it from the same version, is refused
-// with spi.ErrScopeConflict. A DiscardScope that returns an error makes Seal
-// of its transaction fail; FailDiscards makes every DiscardScope fail, for a
-// test of what a coordinator that cannot discard does to the transaction.
+// with spi.ErrScopeConflict. A DiscardScope that returns an error on a context
+// that carries a transaction makes Seal of that transaction fail;
+// FailDiscards makes every DiscardScope fail, for a test of what a
+// coordinator that cannot discard does to the transaction.
 //
 // Inside a scope the double serves the entity store's point operations (Save,
 // CompareAndSave, SaveAll, Get, Exists, Delete). The other entity-store
@@ -422,8 +423,9 @@ func (s *scope) discardLocked() {
 
 // DiscardScope implements spi.TransactionCoordinator. On a scope whose
 // completion was refused (which discarded it) it removes nothing more. It
-// refuses a scope that completed. Every error it returns makes Seal of the
-// transaction fail.
+// refuses a scope that completed. Every error it returns on a context that
+// carries a transaction makes Seal of that transaction fail; a context that
+// carries none names no transaction to fail.
 func (c *coordinator) DiscardScope(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

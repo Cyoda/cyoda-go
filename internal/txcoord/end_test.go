@@ -372,8 +372,9 @@ func TestEnd_DiscardFails500AndBreaks(t *testing.T) {
 			endC1()
 			err = e.seal()
 			if tc.lost {
-				// A lost race is reported before the broken cause (see Check),
-				// as the retryable conflict the owner is retried on.
+				// A lost race is reported before the broken cause (see
+				// sealRefusal), as the retryable conflict the owner is
+				// retried on.
 				if !errors.Is(err, spi.ErrTxAborted) {
 					t.Fatalf("Seal = %v; want the lost race (spi.ErrTxAborted)", err)
 				}

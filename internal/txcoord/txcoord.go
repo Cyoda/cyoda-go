@@ -63,13 +63,13 @@ const (
 type Coordination interface {
 	// BeginCallout registers callout calloutID on txID under the scope on ctx
 	// (the root of txID when ctx carries none, or one of another transaction)
-	// and the pairs that scope was admitted under. The returned ctx carries
-	// that scope, and is cancelled with cause ErrSuperseded when an outer pair
-	// stops being current; Check on it then reports the refusal of the scope
-	// it was begun from. end unregisters the
-	// callout, cancels the callouts begun under it, and waits until no open
-	// scope admitted under it remains; it is idempotent. An empty txID is a
-	// callout with no transaction: it is registered with the fence only.
+	// and the pairs that scope was admitted under. The returned ctx is
+	// cancelled with cause ErrSuperseded when an outer pair stops being
+	// current; Check on it then reports the refusal of the scope it was begun
+	// from. end unregisters the callout, cancels the callouts begun under it,
+	// and waits until no open scope admitted under it remains; it is
+	// idempotent. An empty txID is a callout with no transaction: it is
+	// registered with the fence only.
 	BeginCallout(ctx context.Context, txID, calloutID string) (context.Context, func())
 	// Advance raises the callout's major, cancels the callouts begun under its
 	// earlier passes, then waits until no open scope admitted under it at a
@@ -78,15 +78,17 @@ type Coordination interface {
 	// already waited for.
 	Advance(calloutID string, major uint32)
 	// Seal waits until no callback scope of txID is open, then cuts the
-	// transaction off: Enter refuses it from then on. When the transaction
-	// is broken, err is spi.ErrTxAborted (wrapped) when LostRace says the
-	// transaction lost, otherwise the broken cause; on a backend that
-	// coordinates transactions itself, it is the backend's refusal. finish
-	// forgets the transaction; the caller defers it after its commit or
-	// rollback, also when err != nil. Seal of a transaction never seen returns
-	// (finish, nil). The wait does not end with ctx: a callback scope still in
-	// progress uses the transaction, so the owner may not commit or roll back
-	// under it. ctx is the owner's, for LostRace.
+	// transaction off: Enter refuses it from then on. err is set when the
+	// transaction is broken (in-process: a scope could not be discarded, or
+	// its session ended) or, on a backend that coordinates transactions
+	// itself, when the backend refused the seal. It is then, on both,
+	// spi.ErrTxAborted (wrapped) when LostRace says the transaction lost,
+	// otherwise that cause. finish forgets the transaction; the caller defers
+	// it after its commit or rollback, also when err != nil. Seal of a
+	// transaction never seen returns (finish, nil). The wait does not end with
+	// ctx: a callback scope still in progress uses the transaction, so the
+	// owner may not commit or roll back under it. ctx is the owner's, for
+	// LostRace.
 	Seal(ctx context.Context, txID string) (finish func(), err error)
 	// Enter opens a callback scope for a joined request: it admits pairs (own
 	// pair first, then every enclosing one), takes the transaction's gate,
@@ -180,8 +182,8 @@ func Pause(ctx context.Context) (resume func() error) {
 
 // Check reports, for the scope on ctx and its ancestors, 410
 // CALLOUT_SUPERSEDED when a pair is not current. On the context BeginCallout
-// returned, it reports on the scope the callout was begun from; the root has
-// no pair and is never refused. nil for a ctx with no scope.
+// returned, it reports on the scope the callout was begun from. nil for a ctx
+// with no scope, and for the root, which has no pair.
 //
 // On a backend that coordinates transactions itself, it asks the backend
 // (CheckScope); a refusal the backend does not name carries ErrScopeInfra.

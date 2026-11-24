@@ -1079,8 +1079,9 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 	// A chain whose scope is refused (superseded) performs no store operation
 	// of any kind, an audit row included: on PostgreSQL it would be a
 	// statement on the operation's connection, after the owner has stopped
-	// waiting for this chain, and the scope is discarded anyway. The guard is here, and not at the error paths
-	// that record, so that no further site can appear later.
+	// waiting for this chain, and the scope is discarded anyway. The guard is
+	// here, and not at the error paths that record, so that no further site
+	// can appear later.
 	if txcoord.Check(ctx) != nil {
 		return false
 	}

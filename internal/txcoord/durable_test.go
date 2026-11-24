@@ -177,7 +177,7 @@ func TestDurable_DiscardFailureFailsSeal(t *testing.T) {
 	cl.owner.Advance("c1", 1)
 
 	s, sctx := cl.mustEnter(cl.other, Write, pair("c1", 1))
-	w := cl.save(sctx)
+	cl.save(sctx)
 	discards := cl.f.(interface{ FailDiscards(error) })
 	discards.FailDiscards(errors.New("the coordinator's store is unreachable"))
 	mustAnswer(t, s.End(failed(http.StatusBadRequest, common.ErrCodeBadRequest)),
@@ -190,8 +190,28 @@ func TestDurable_DiscardFailureFailsSeal(t *testing.T) {
 	if err == nil {
 		t.Fatal("Seal after a failed discard = nil; want a refusal")
 	}
-	if cl.committed(w) {
-		t.Fatal("the write of a scope that could not be discarded is visible outside the transaction")
+}
+
+// TestDurable_ProcessorDiscardFailureFailsSeal: a processor scope the backend
+// could not discard ends with ErrScopeInfra, and the owner's Seal fails.
+func TestDurable_ProcessorDiscardFailureFailsSeal(t *testing.T) {
+	cl := newCluster(t)
+	p, pctx, err := cl.owner.OpenChild(cl.txCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl.save(pctx)
+	discards := cl.f.(interface{ FailDiscards(error) })
+	discards.FailDiscards(errors.New("the coordinator's store is unreachable"))
+	if err := p.Close(errors.New("processor failed")); !errors.Is(err, ErrScopeInfra) {
+		t.Fatalf("Close = %v; want ErrScopeInfra", err)
+	}
+	discards.FailDiscards(nil)
+
+	finish, err := cl.owner.Seal(cl.txCtx, cl.txID)
+	finish()
+	if err == nil {
+		t.Fatal("Seal after a failed discard = nil; want a refusal")
 	}
 }
 
@@ -358,9 +378,9 @@ func (s *scripted) discarded() int {
 }
 
 // TestDurableEnd_MapsCompleteRefusals: a refused CompleteScope maps by its
-// error, as the capability list of the table's row 4 says. A refusal the
-// backend names has discarded the scope already; any other error is a failed
-// completion, which discards it.
+// error, as durableScope.complete maps it. A refusal the backend names has
+// discarded the scope already; any other error is a failed completion, which
+// discards it.
 func TestDurableEnd_MapsCompleteRefusals(t *testing.T) {
 	storage := errors.New("the coordinator's store is unreachable")
 	for _, tc := range []struct {

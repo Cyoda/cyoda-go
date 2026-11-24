@@ -354,6 +354,25 @@ func TestOpenChild_CloseAfterFailedCallbackWriteKeeps(t *testing.T) {
 	}
 }
 
+// A processor scope whose rollback fails ends with ErrScopeInfra and leaves the
+// transaction broken: Seal fails with the rollback's cause.
+func TestOpenChild_CloseDiscardFailureBreaks(t *testing.T) {
+	e := newEnv(t)
+	p, _, err := e.c.OpenChild(e.ownerCtx)
+	if err != nil {
+		t.Fatalf("OpenChild = %v", err)
+	}
+	rbErr := errors.New("the connection is gone")
+	e.tm.failRollback.Store(&rbErr)
+	if err := p.Close(errors.New("processor failed")); !errors.Is(err, ErrScopeInfra) || !errors.Is(err, rbErr) {
+		t.Fatalf("Close = %v; want ErrScopeInfra with the rollback's cause", err)
+	}
+	e.tm.failRollback.Store(nil)
+	if err := e.seal(); !errors.Is(err, rbErr) {
+		t.Fatalf("Seal = %v; want the rollback's cause", err)
+	}
+}
+
 func TestOpenChild_UnderCallbackPausesItsHolder(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
@@ -649,9 +668,9 @@ func TestAdvance_UnderConcurrentWriters_NoEarlierMajorOutlivesIt(t *testing.T) {
 	}
 }
 
-// The context a callout of the owner's runs under carries the root. Pause's
-// resume and Check on it report nothing, also after a callback of the callout
-// failed a write, and a processor scope opened on it is the root's.
+// The context a callout of the owner's runs under carries no scope of its own:
+// Pause's resume and Check on it report nothing, also after a callback of the
+// callout failed a write, and a processor scope opened on it is the root's.
 func TestRootOnCalloutContext_PauseAndOpenChildUnderTheRoot(t *testing.T) {
 	e := newEnv(t)
 	cctx, endC1 := e.callout(e.ownerCtx, "c1")
