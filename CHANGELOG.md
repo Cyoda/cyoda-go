@@ -12,6 +12,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   write that failed with an answer that was not retryable made the operation
   fail with `409 TRANSACTION_ROLLBACK_ONLY` whatever the member answered; that
   code is gone.
+- **The OpenAPI document declares a joined request's `409 CONFLICT`.** A
+  request carrying an `X-Tx-Token` is answered `409 CONFLICT`, not retryable,
+  when the transaction it joined lost a write race. Every operation that
+  serves such a request declares it: through the new `JoinedTransactionConflict`
+  response, or in its existing `409` description.
 
 ## [0.9.0] — 2026-11-22
 
