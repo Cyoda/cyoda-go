@@ -2,6 +2,17 @@
 
 All notable changes to Cyoda-Go are documented here. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions and [Semantic Versioning](https://semver.org/) — pre-1.0, where the minor component signals a breaking change and new features ship in patches (see [README — Versioning](./README.md#versioning)).
 
+## [Unreleased]
+
+### Fixed
+
+- **A failed callback write no longer dooms the transaction.** A callback that
+  fails keeps nothing and the transaction goes on: the compute member gets the
+  answer and its processor decides whether the operation fails. Before, a
+  write that failed with an answer that was not retryable made the operation
+  fail with `409 TRANSACTION_ROLLBACK_ONLY` whatever the member answered; that
+  code is gone.
+
 ## [0.9.0] — 2026-11-22
 
 ### Breaking

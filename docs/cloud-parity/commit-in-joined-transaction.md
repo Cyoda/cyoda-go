@@ -31,10 +31,10 @@ write is refused:
   engine. On HTTP: create, create collection, update (loopback or transition,
   PUT or PATCH), update collection. On gRPC: `EntityManage` (create, update,
   patch, transition) and `EntityManageCollection` (create, update).
-- **Joined transaction afterwards:** open, uncommitted, and rollback-only:
-  the refusal is a failed write that is not retryable. The owner fails with
-  `409 TRANSACTION_ROLLBACK_ONLY`; under an `ASYNC_NEW_TX` processor that
-  processor fails instead and the owner goes on.
+- **Joined transaction afterwards:** open, uncommitted, and usable. The
+  refused write kept nothing, and the transaction goes on, as after any failed
+  callback (`callback-scopes.md`): the compute node's processor decides whether
+  to go on or to fail.
 - **Batch update isolation:** the refusal is never isolated as a per-item
   precondition failure, even when the item carries an `ifMatch`; the whole
   request fails.
@@ -52,3 +52,10 @@ refusal has nothing to guard there yet. When Cloud adopts the mode it adopts
 this refusal with it, with the same status, code and timing. The general rule
 — a joined request never commits its owner's transaction — applies to every
 other commit path Cloud has.
+
+## Changed in 0.9.1
+
+In 0.9.0 the refusal also made the joined transaction rollback-only, so the
+owner failed whatever the compute node answered. 0.9.1 removes that rule
+(`callback-scopes.md`, Changed in 0.9.1): the refusal itself is unchanged, and
+the transaction goes on.

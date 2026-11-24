@@ -18,33 +18,31 @@ transaction of the operation that called the compute node out.
 - **Kept is relative to the scope above.** A kept callback is still undone with
   the part of the transaction above it: the transaction's rollback, or a failed
   `ASYNC_NEW_TX` processor the callback ran under.
-- **A retryable failure** keeps nothing and leaves the transaction usable. The
-  compute node may send the callback again under the same token.
-- **A failed write that is not retryable** keeps nothing and makes the part of
-  the transaction it ran in rollback-only:
-  - The callout the write was made under is stopped.
-  - The operation that owns the transaction fails with `409
-    TRANSACTION_ROLLBACK_ONLY`, not retryable, whatever the compute node
-    answers. The message names the code the failed callback was answered with.
-    Over gRPC the code is the message prefix of the `CLIENT_ERROR` envelope.
-  - When the transaction has also lost a write race, the owner gets the
-    retryable `409 CONFLICT` instead: on a new transaction the failed write may
-    succeed.
-  - Under an `ASYNC_NEW_TX` processor the mark stops at the processor. The
-    processor fails (non-fatal, recorded in its `STATE_PROCESS_RESULT`), its
-    scope is discarded with everything its callbacks wrote to entities, and the operation
-    continues.
-  - A later callback under the marked part is refused before it runs, reads
-    included, with `409 TRANSACTION_ROLLBACK_ONLY` — or `410
-    CALLOUT_SUPERSEDED` once the owner has ended the stopped callout.
+- **A failed callback does not by itself fail the operation.** It keeps
+  nothing (a read that answered a `4xx` excepted, below), and the transaction
+  goes on: later callbacks under the same token are served.
+  - After a retryable answer the compute node may send the callback again
+    under the same token.
+  - An answer that is not retryable is the compute node's to handle: its
+    processor, function criterion or schedule function decides whether to go
+    on without that callback or to fail. The operation then does what it does
+    with any answer of that processor: a failed `SYNC` processor fails it, a
+    failed `ASYNC_NEW_TX` processor does not.
+  - When the outcome of a write is unknown — `503
+    TRANSACTION_NODE_UNAVAILABLE` after the request may have reached the owner,
+    or no answer at all — the compute node cannot tell whether the write was
+    kept, and its processor must fail.
+  - A failed callback whose scope cannot be discarded is answered `500
+    SERVER_ERROR`, not retryable, and the transaction can then no longer
+    commit: its writes may still be part of it.
 - **A failed read** that answered a `4xx` keeps its scope (its reads stay in the
-  transaction's commit-time validation) and marks nothing. A read that failed
-  with a `5xx` keeps nothing and marks nothing.
+  transaction's commit-time validation). A read that failed with a `5xx` keeps
+  nothing.
 - **Requests outside the transaction** — messages, async search jobs and their
   cancellation, and the administration routes (clients, signing and trusted
   keys, the platform clock) — are admitted and refused under a token as any
   callback is, but their effect is not in the transaction: they keep their own
-  answer and never mark. On PostgreSQL a message saved under a token is now
+  answer. On PostgreSQL a message saved under a token is now
   written outside the transaction, as on memory and SQLite.
 - **The owner's commit and rollback** refuse every later callback: with `410
   CALLOUT_SUPERSEDED` while the transaction is still open, and with `404
@@ -60,19 +58,16 @@ A schema extension a callback made stays in every row.
 | Answer | Before | After |
 |---|---|---|
 | A callback still in progress when its callout advanced (the work went to another compute node) or ended | its own answer; writes kept | `410 CALLOUT_SUPERSEDED`; writes discarded |
-| A failed callback write, not retryable | its own answer; the owner could commit what it had staged | its own answer; nothing kept; owner `409 TRANSACTION_ROLLBACK_ONLY` |
-| A failed callback, retryable | its own answer; the owner could commit what it had staged | its own answer; nothing kept; the transaction goes on |
+| A failed callback, retryable or not | its own answer; the owner could commit what it had staged | its own answer; nothing kept; the transaction goes on |
 | A callback in a transaction that lost a write race | `409 CONFLICT`, retryable | `409 CONFLICT`, **not** retryable (the owner keeps the retryable `409`) |
 | A callback whose PostgreSQL session ended under it (connection lost, idle-in-transaction ceiling) | `503 STORAGE_UNAVAILABLE`, retryable | `404 TRANSACTION_NOT_FOUND`, not retryable (the owner keeps the retryable `503`) |
 | `503 TRANSACTION_NODE_UNAVAILABLE`, the request was not sent to the owner (not live, address refused, connection not opened) | not retryable | **retryable** |
 | `503 TRANSACTION_NODE_UNAVAILABLE`, the request may have reached the owner (failure after the connection opened, `CYODA_PROXY_TIMEOUT`) | not retryable | not retryable: the outcome of a write is unknown |
-| A callback write that reaches a `COMMIT_BEFORE_DISPATCH` processor | `409 COMMIT_IN_JOINED_TRANSACTION`; what the workflow did before stayed in the transaction | the same answer; nothing kept; owner `409 TRANSACTION_ROLLBACK_ONLY` |
+| A callback write that reaches a `COMMIT_BEFORE_DISPATCH` processor | `409 COMMIT_IN_JOINED_TRANSACTION`; what the workflow did before stayed in the transaction | the same answer; nothing kept; the transaction goes on |
 | A joined server-streaming gRPC call that fails | the frames produced before the error, then the error | the error alone |
 
-## New error codes
+## New error code
 
-- `TRANSACTION_ROLLBACK_ONLY` — `409`, not retryable. To the owner: it may not
-  commit. To a callback: it may not run.
 - `TRANSACTION_BUSY` — `503`, retryable. A callback refused while another
   callback of the same transaction is paused in a callout of its own (below).
 
@@ -103,9 +98,20 @@ backend; the outcome of a given sequence of callbacks does not.
 
 Cloud's callbacks are separate transactions today, so the scope rules have no
 direct counterpart there. When Cloud joins callbacks to the calling operation's
-transaction, it adopts this contract whole: all-or-nothing callbacks, the
-rollback-only rule with its `409 TRANSACTION_ROLLBACK_ONLY`, the `ASYNC_NEW_TX`
+transaction, it adopts this contract whole: all-or-nothing callbacks, a
+failed callback that leaves the transaction to go on, the `ASYNC_NEW_TX`
 boundary, and the answers in the table above. Whether it then serialises the
 callbacks of one transaction or runs them at the same time decides which of the
 two concurrency rules above it follows: `TRANSACTION_BUSY` for the first, the
 retryable `409 CONFLICT` between two callbacks for the second.
+
+## Changed in 0.9.1
+
+In 0.9.0 a callback write that failed with an answer that was not retryable
+made the transaction rollback-only: the owner failed with `409
+TRANSACTION_ROLLBACK_ONLY` whatever the compute node answered, later callbacks
+under the same part were refused with that code, and an `ASYNC_NEW_TX`
+processor stopped the mark from going higher. 0.9.1 removes the rule and the
+error code. A failed callback keeps nothing in both versions; in 0.9.1 the
+transaction goes on and the compute node's processor decides. Cloud builds
+neither the rule nor the code.
