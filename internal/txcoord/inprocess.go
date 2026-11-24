@@ -154,8 +154,14 @@ func openUnder(tx *txState, calloutID string, below uint32) bool {
 
 // BeginCallout implements Coordination.
 func (c *inProcess) BeginCallout(ctx context.Context, txID, calloutID string) (context.Context, func()) {
-	// The scope on ctx is the parent; without one the callout is the root's.
-	from := scopeFrom(ctx)
+	// A callout outside any transaction (an empty txID) belongs to no scope,
+	// so it is begun under no pass, as on the durable coordination. Otherwise
+	// the scope on ctx, the chain's, is the parent; without one the callout
+	// is the root's.
+	var from *scope
+	if txID != "" {
+		from = scopeFrom(ctx)
+	}
 	var outer []fence.Pair
 	if from != nil {
 		outer = Pairs(ctx)

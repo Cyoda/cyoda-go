@@ -521,6 +521,30 @@ func TestOpenChild_SavepointOnDeadSessionBreaks(t *testing.T) {
 	}
 }
 
+// A callout outside any transaction (an empty txID) belongs to no scope, even
+// when the chain that makes it runs in one: a joined read evaluates a
+// workflow's function criterion with no transaction. It is begun under no
+// pass, so the scope's pass being superseded does not cancel it.
+func TestBeginCallout_NoTransactionBelongsToNoScope(t *testing.T) {
+	e := newEnv(t)
+	_, endC1 := e.callout(e.ownerCtx, "c1")
+	a, actx := e.mustEnter(Read, pair("c1", 1))
+	fctx, endF := e.c.BeginCallout(actx, "", "f1")
+	defer endF()
+
+	advanced := async(func() { e.c.Advance("c1", 2) })
+	mustSuperseded(t, actx)
+	select {
+	case <-fctx.Done():
+		t.Fatalf("the callout with no transaction was cancelled with the scope's pass: %v", context.Cause(fctx))
+	case <-time.After(settle):
+	}
+	mustAnswer(t, a.End(&common.Outcome{}), http.StatusGone, common.ErrCodeCalloutSuperseded, false)
+	mustFinish(t, "Advance", advanced)
+	endC1()
+	mustSealOK(t, e)
+}
+
 // A second Pause before the first one's resume is a no-op: it releases
 // nothing, and its resume only checks.
 func TestPause_TwiceIsNoOp(t *testing.T) {
