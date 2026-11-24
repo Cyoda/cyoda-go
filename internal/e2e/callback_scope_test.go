@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,12 +17,14 @@ import (
 )
 
 // callback_scope_test.go — every joined request runs in a scope of its own,
-// and the scope is all-or-nothing. A non-retryable failure of a joined write
-// discards what it wrote and makes the transaction rollback-only: the owner's
-// operation is refused 409 TRANSACTION_ROLLBACK_ONLY, and every later joined
-// request of the transaction is refused the same way. A retryable failure
-// discards the scope and leaves the transaction usable; a read that answered
-// keeps its scope.
+// and the scope is all-or-nothing. A failure of a joined write, retryable or
+// not, discards what it wrote and leaves the transaction usable: later joined
+// requests on the pass are served, and the processor that made the callback
+// decides the outcome — the owner commits when it answers success, and fails
+// as for any failed processor when it answers failure. A read that answered
+// keeps its scope. A callback that lost a write race, or whose PostgreSQL
+// session has ended, cannot succeed in that transaction, and neither can its
+// owner.
 //
 // The scenarios share one shape. Model p has a SYNC processor whose compute
 // node (cnode p) makes the callbacks under test. Model x has a SYNC processor
@@ -99,14 +102,50 @@ func assertRefusal(t *testing.T, status int, body string, wantStatus int, wantCo
 	return pd
 }
 
-// assertRollbackOnlyEnvelope checks a gRPC refusal with
-// TRANSACTION_ROLLBACK_ONLY: CLIENT_ERROR, the code as the message prefix, and
-// no retryable flag at all.
-func assertRollbackOnlyEnvelope(t *testing.T, door string, env txEnvelope, err error) {
+// callbackOutcome folds a transport error into the callbackResult, so a cnode
+// goroutine can hand back one value.
+func callbackOutcome(res callbackResult, err error) callbackResult {
+	if err != nil {
+		return callbackResult{StatusCode: -1, Body: err.Error()}
+	}
+	return res
+}
+
+// onlyEntityTxID asserts model holds exactly one committed entity and returns
+// the transaction that committed it (its meta.transactionId).
+func onlyEntityTxID(t *testing.T, h *callbackHarness, model string) string {
 	t.Helper()
-	assertEnvelope(t, door, env, err, "TRANSACTION_ROLLBACK_ONLY", false)
-	if env.Error != nil && env.Error.Retryable != nil {
-		t.Errorf("%s: retryable = %v; want it absent", door, *env.Error.Retryable)
+	resp := h.DoAuth(t, http.MethodGet, fmt.Sprintf("/api/entity/%s/1", model), "", "")
+	body := h.readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list %s: %d %s", model, resp.StatusCode, body)
+	}
+	var list []struct {
+		Meta struct {
+			ID            string `json:"id"`
+			TransactionID string `json:"transactionId"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode list of %s: %v (body: %s)", model, err, body)
+	}
+	if len(list) != 1 {
+		t.Fatalf("%d %s entities committed; want exactly 1 (body: %s)", len(list), model, body)
+	}
+	if list[0].Meta.TransactionID == "" {
+		t.Fatalf("the %s entity %s carries no transactionId (body: %s)", model, list[0].Meta.ID, body)
+	}
+	return list[0].Meta.TransactionID
+}
+
+// assertCommittedWithOwner asserts the owner's model and the later write's
+// model each hold one committed entity, and that the later joined write was
+// committed by the owner's transaction.
+func assertCommittedWithOwner(t *testing.T, h *callbackHarness, ownerModel, laterModel string) {
+	t.Helper()
+	ownerTx := onlyEntityTxID(t, h, ownerModel)
+	if got := onlyEntityTxID(t, h, laterModel); got != ownerTx {
+		t.Errorf("the later joined write was committed by transaction %q; want the owner's %q", got, ownerTx)
 	}
 }
 
@@ -121,76 +160,129 @@ func awaitCallback(t *testing.T, what string, ch <-chan callbackResult) callback
 	}
 }
 
-// TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_HTTP: the callback's
+// newScopeLaterModel imports a plain model for the later joined write a
+// scenario's processor makes after its failed one.
+func newScopeLaterModel(t *testing.T, h *callbackHarness, prefix string) string {
+	t.Helper()
+	y := prefix + "-y-" + randSuffix(t)
+	h.SetupModelWithWorkflow(t, y, secondaryWorkflow)
+	return y
+}
+
+// TestCallbackScope_FailedJoinedWrite_ProcessorHandlesIt_HTTP: the callback's
 // create of x runs xproc, which fails, not retryably: the callback is answered
-// its own 400 WORKFLOW_FAILED, nothing of x is kept, and the owner — whose
-// cnode then answers success — is refused 409 TRANSACTION_ROLLBACK_ONLY naming
-// the callback's code. Nothing of p is committed.
-func TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_HTTP(t *testing.T) {
+// its own 400 WORKFLOW_FAILED and nothing of x is kept. The transaction goes
+// on: cnode p then creates y in it and answers success. The owner commits its
+// own p and y, in one transaction; x is absent.
+func TestCallbackScope_FailedJoinedWrite_ProcessorHandlesIt_HTTP(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
 	m := newScopeModels(t, h, "cs-fw", "SYNC")
+	y := newScopeLaterModel(t, h, "cs-fw")
 	xnode := h.AttachCnode(t, cnodeSpec{name: "x", tags: []string{m.tagX}, script: scriptAlways(answerFailVerdict("x refused", false))})
-	cb := make(chan callbackResult, 1)
+	type observed struct{ failed, later callbackResult }
+	cb := make(chan observed, 1)
 	h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{m.tagP}, script: func(_ context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
-		res, err := rc.CreateEntity(m.x, 1, scopeXPayload)
-		if err != nil {
-			res = callbackResult{StatusCode: -1, Body: err.Error()}
-		}
-		cb <- res
+		var o observed
+		o.failed = callbackOutcome(rc.CreateEntity(m.x, 1, scopeXPayload))
+		o.later = callbackOutcome(rc.CreateEntity(y, 1, scopeXPayload))
+		cb <- o
 		return answerOK()
 	}})
 
 	owner := h.CreateEntityRaw(m.p, 1, workflowSampleModel)
 
-	res := awaitCallback(t, "the callback", cb)
-	assertRefusal(t, res.StatusCode, res.Body, http.StatusBadRequest, "WORKFLOW_FAILED")
-	pd := assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
-	if !strings.Contains(pd.Detail, "WORKFLOW_FAILED") {
-		t.Errorf("owner detail = %q; want it to name the callback's WORKFLOW_FAILED", pd.Detail)
+	o := awaitAttempt(t, "the callbacks", cb)
+	assertRefusal(t, o.failed.StatusCode, o.failed.Body, http.StatusBadRequest, "WORKFLOW_FAILED")
+	if o.later.StatusCode != http.StatusOK {
+		t.Errorf("the later joined write: %d %s; want 200 — a failed write leaves the transaction usable", o.later.StatusCode, o.later.Body)
+	}
+	if owner.err != nil || owner.status != http.StatusOK {
+		t.Fatalf("owner: %d %s %v; want 200 — the processor answered success", owner.status, owner.body, owner.err)
 	}
 	if n := h.countEntities(t, m.x); n != 0 {
 		t.Errorf("%d x entities committed; want none", n)
 	}
 	assertNoEntityTrace(t, h, firstEntity(t, xnode))
-	if n := h.countEntities(t, m.p); n != 0 {
-		t.Errorf("%d p entities committed; want none", n)
-	}
+	assertCommittedWithOwner(t, h, m.p, y)
 }
 
-// TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_GRPC is the same
-// through gRPC on both sides: the owner's create and the callback.
-func TestCallbackScope_FailedJoinedWrite_OwnerRollbackOnly_GRPC(t *testing.T) {
+// TestCallbackScope_FailedJoinedWrite_ProcessorHandlesIt_GRPC is the same
+// through gRPC on both sides: the owner's create and the callbacks.
+func TestCallbackScope_FailedJoinedWrite_ProcessorHandlesIt_GRPC(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
 	m := newScopeModels(t, h, "cs-fwg", "SYNC")
+	y := newScopeLaterModel(t, h, "cs-fwg")
 	xnode := h.AttachCnode(t, cnodeSpec{name: "x", tags: []string{m.tagX}, script: scriptAlways(answerFailVerdict("x refused", false))})
 	type envResult struct {
 		env txEnvelope
 		err error
 	}
-	cb := make(chan envResult, 1)
+	type observed struct{ failed, later envResult }
+	cb := make(chan observed, 1)
 	h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{m.tagP}, script: func(_ context.Context, call receivedCallout, _ *reqCtx) cnodeReply {
-		env, err := h.ReplayCreateGRPC(call.Pass(), m.x, 1, scopeXPayload)
-		cb <- envResult{env, err}
+		var o observed
+		o.failed.env, o.failed.err = h.ReplayCreateGRPC(call.Pass(), m.x, 1, scopeXPayload)
+		o.later.env, o.later.err = h.ReplayCreateGRPC(call.Pass(), y, 1, scopeXPayload)
+		cb <- o
 		return answerOK()
 	}})
 
 	owner, ownerErr := h.createEntityGRPC(m.p, 1, workflowSampleModel)
 
-	var res envResult
-	select {
-	case res = <-cb:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the callback never returned")
+	o := awaitAttempt(t, "the callbacks", cb)
+	assertEnvelope(t, "callback", o.failed.env, o.failed.err, "WORKFLOW_FAILED", false)
+	if o.later.err != nil || !o.later.env.Success {
+		t.Errorf("the later joined write: success=%t error=%v err=%v; want success — a failed write leaves the transaction usable", o.later.env.Success, o.later.env.Error, o.later.err)
 	}
-	assertEnvelope(t, "callback", res.env, res.err, "WORKFLOW_FAILED", false)
-	assertRollbackOnlyEnvelope(t, "owner", owner, ownerErr)
+	if ownerErr != nil || !owner.Success {
+		t.Fatalf("owner: success=%t error=%v err=%v; want success — the processor answered success", owner.Success, owner.Error, ownerErr)
+	}
 	if n := h.countEntities(t, m.x); n != 0 {
 		t.Errorf("%d x entities committed; want none", n)
 	}
 	assertNoEntityTrace(t, h, firstEntity(t, xnode))
-	if n := h.countEntities(t, m.p); n != 0 {
-		t.Errorf("%d p entities committed; want none", n)
+	assertCommittedWithOwner(t, h, m.p, y)
+}
+
+// TestCallbackScope_FailedJoinedWrite_ProcessorFails_HTTP: as above, but
+// after its later write cnode p answers failure, not retryably. The owner
+// fails as for any failed SYNC processor: 400 WORKFLOW_FAILED, not retryable,
+// carrying the member's message. Nothing of the transaction is committed: no
+// p, no y, no x.
+func TestCallbackScope_FailedJoinedWrite_ProcessorFails_HTTP(t *testing.T) {
+	const pMessage = "p gives up after its failed callback"
+	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
+	m := newScopeModels(t, h, "cs-fwf", "SYNC")
+	y := newScopeLaterModel(t, h, "cs-fwf")
+	xnode := h.AttachCnode(t, cnodeSpec{name: "x", tags: []string{m.tagX}, script: scriptAlways(answerFailVerdict("x refused", false))})
+	type observed struct{ failed, later callbackResult }
+	cb := make(chan observed, 1)
+	pnode := h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{m.tagP}, script: func(_ context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
+		var o observed
+		o.failed = callbackOutcome(rc.CreateEntity(m.x, 1, scopeXPayload))
+		o.later = callbackOutcome(rc.CreateEntity(y, 1, scopeXPayload))
+		cb <- o
+		return answerFailVerdict(pMessage, false)
+	}})
+
+	owner := h.CreateEntityRaw(m.p, 1, workflowSampleModel)
+
+	o := awaitAttempt(t, "the callbacks", cb)
+	assertRefusal(t, o.failed.StatusCode, o.failed.Body, http.StatusBadRequest, "WORKFLOW_FAILED")
+	if o.later.StatusCode != http.StatusOK {
+		t.Errorf("the later joined write: %d %s; want 200 — a failed write leaves the transaction usable", o.later.StatusCode, o.later.Body)
 	}
+	assertProblem(t, owner.status, owner.body, http.StatusBadRequest, "WORKFLOW_FAILED", false)
+	if !strings.Contains(owner.body, pMessage) {
+		t.Errorf("owner body does not carry the member's message %q: %s", pMessage, owner.body)
+	}
+	for _, model := range []string{m.p, m.x, y} {
+		if n := h.countEntities(t, model); n != 0 {
+			t.Errorf("%d %s entities committed; want none", n, model)
+		}
+	}
+	assertNoEntityTrace(t, h, firstEntity(t, xnode))
+	assertNoEntityTrace(t, h, firstEntity(t, pnode))
 }
 
 // TestCallbackScope_RetryableFailure_RetriedInTransaction: xproc first fails
@@ -279,7 +371,7 @@ func awaitAttempt[T any](t *testing.T, what string, ch <-chan T) T {
 }
 
 // TestCallbackScope_FailedRead404_TransactionGoesOn: a joined read of an
-// unknown entity is answered 404; it marks nothing, and the owner commits.
+// unknown entity is answered 404, and the owner commits.
 // Whether the read's scope is kept (row 7) or discarded (row 8) does not change
 // that outcome, so this test does not tell them apart; TestEnd_Row7_Read4xxKeeps
 // in internal/txcoord pins row 7.
@@ -407,12 +499,12 @@ func TestCallbackScope_LostRace_CallbackNotRetryable_OwnerRetryable(t *testing.T
 	}
 }
 
-// TestCallbackScope_WriteOverResponseCeiling_413AndMarked: a joined collection
+// TestCallbackScope_WriteOverResponseCeiling_413Discarded: a joined collection
 // create whose answer passes the response ceiling is answered 413
 // JOINED_RESPONSE_TOO_LARGE. The compute node cannot know what its write did,
-// so the write is discarded and the transaction made rollback-only: the owner
-// is refused 409 TRANSACTION_ROLLBACK_ONLY. On both doors.
-func TestCallbackScope_WriteOverResponseCeiling_413AndMarked(t *testing.T) {
+// so the write is discarded. The transaction goes on: the member answers
+// success, and the owner commits without the write. On both doors.
+func TestCallbackScope_WriteOverResponseCeiling_413Discarded(t *testing.T) {
 	const ceiling = 64 // bytes; smaller than any collection-create answer
 	for _, door := range []string{"http", "grpc"} {
 		t.Run(door, func(t *testing.T) {
@@ -457,12 +549,14 @@ func TestCallbackScope_WriteOverResponseCeiling_413AndMarked(t *testing.T) {
 			} else {
 				assertEnvelope(t, "callback", c.env, c.err, "JOINED_RESPONSE_TOO_LARGE", false)
 			}
-			pd := assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
-			if !strings.Contains(pd.Detail, "JOINED_RESPONSE_TOO_LARGE") {
-				t.Errorf("owner detail = %q; want it to name JOINED_RESPONSE_TOO_LARGE", pd.Detail)
+			if owner.err != nil || owner.status != http.StatusOK {
+				t.Fatalf("owner: %d %s %v; want 200 — the member answered success", owner.status, owner.body, owner.err)
 			}
 			if n := h.countEntities(t, secondary); n != 0 {
 				t.Errorf("%d secondary entities committed; the refused write must be discarded", n)
+			}
+			if n := h.countEntities(t, model); n != 1 {
+				t.Errorf("%d owner entities committed; want 1", n)
 			}
 		})
 	}
@@ -557,69 +651,45 @@ func awaitSessionReclaimed(ctx context.Context, bound time.Duration) error {
 // laterRequest is what a joined request made after the failed write answered,
 // in a door-neutral form.
 type laterRequest struct {
-	door      string
-	status    int    // HTTP status; 0 for a gRPC door
-	envelope  string // gRPC envelope class; "" for an HTTP door
-	code      string
-	retryable bool
-	raw       string
-	err       error
+	door string
+	ok   bool   // HTTP 2xx, or a gRPC envelope with success
+	code string // the error code of a refusal
+	raw  string
+	err  error
 }
 
 func laterHTTP(res callbackResult, err error) laterRequest {
 	o := httpJoinedOutcome(res, err)
-	return laterRequest{status: o.status, code: o.errorCode, retryable: o.retryable, raw: o.detail, err: o.err}
+	return laterRequest{ok: err == nil && res.StatusCode/100 == 2, code: o.errorCode, raw: fmt.Sprintf("%d %s", res.StatusCode, res.Body), err: err}
 }
 
 func laterGRPC(env txEnvelope, err error) laterRequest {
 	o := grpcJoinedOutcome(env, err)
-	return laterRequest{envelope: o.envelopeCode, code: o.errorCode, retryable: o.retryable, raw: o.detail, err: o.err}
+	return laterRequest{ok: err == nil && env.Success, code: o.errorCode, raw: o.detail, err: err}
 }
 
-// assertLaterRefused asserts a later request on the pass was refused, not
-// retryably: 409 TRANSACTION_ROLLBACK_ONLY while the callout is still current,
-// 410 CALLOUT_SUPERSEDED once the owner has ended it, 404 TRANSACTION_NOT_FOUND
-// once the owner has rolled back. Which one depends on timing; that it is
-// refused does not.
-func assertLaterRefused(t *testing.T, r laterRequest) {
+// assertLaterServed asserts a later request on the pass was served.
+func assertLaterServed(t *testing.T, r laterRequest) {
 	t.Helper()
 	if r.err != nil {
 		t.Fatalf("%s: transport error: %v", r.door, r.err)
 	}
-	want := map[string]int{
-		"TRANSACTION_ROLLBACK_ONLY": http.StatusConflict,
-		"CALLOUT_SUPERSEDED":        http.StatusGone,
-		"TRANSACTION_NOT_FOUND":     http.StatusNotFound,
-	}
-	status, ok := want[r.code]
-	if !ok {
-		t.Errorf("%s: code %q; want TRANSACTION_ROLLBACK_ONLY, CALLOUT_SUPERSEDED or TRANSACTION_NOT_FOUND (%s)", r.door, r.code, r.raw)
-	}
-	if r.envelope == "" && ok && r.status != status {
-		t.Errorf("%s: status %d with %s; want %d (%s)", r.door, r.status, r.code, status, r.raw)
-	}
-	if r.envelope != "" && r.envelope != "CLIENT_ERROR" {
-		t.Errorf("%s: envelope %q; want CLIENT_ERROR (%s)", r.door, r.envelope, r.raw)
-	}
-	if r.retryable {
-		t.Errorf("%s: refusal marked retryable (%s)", r.door, r.raw)
+	if !r.ok {
+		t.Errorf("%s: refused (%s); want it served — a failed write leaves the transaction usable", r.door, r.raw)
 	}
 }
 
-// TestCallbackScope_FailedWrite_LaterRequestsOnThePassRefused: after a
+// TestCallbackScope_FailedWrite_LaterRequestsOnThePassServed: after a
 // callback's write failed, not retryably, a later joined read and a later
-// joined write on the same pass are refused — 409, 410 or 404, never
-// retryable — and nothing of the later write is committed. The precise 409 for
-// a request under a marked scope is pinned at both doors by unit tests; end to
-// end the mark cancels the callout first, so the refusal is usually 410 or
-// 404. Both doors.
-func TestCallbackScope_FailedWrite_LaterRequestsOnThePassRefused(t *testing.T) {
+// joined write on the same pass are served. The member answers success, and
+// the owner commits p and the later write, in one transaction, without the
+// failed write. Both doors.
+func TestCallbackScope_FailedWrite_LaterRequestsOnThePassServed(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
 	for _, door := range []string{"http", "grpc"} {
 		t.Run(door, func(t *testing.T) {
 			m := newScopeModels(t, h, "cs-later-"+door, "SYNC")
-			y := "cs-later-y-" + door + "-" + randSuffix(t)
-			h.SetupModelWithWorkflow(t, y, secondaryWorkflow)
+			y := newScopeLaterModel(t, h, "cs-later-"+door)
 			h.AttachCnode(t, cnodeSpec{name: "x", tags: []string{m.tagX}, script: scriptAlways(answerFailVerdict("x refused", false))})
 			type observed struct {
 				failed       laterRequest
@@ -656,14 +726,15 @@ func TestCallbackScope_FailedWrite_LaterRequestsOnThePassRefused(t *testing.T) {
 			if o.failed.code != "WORKFLOW_FAILED" {
 				t.Fatalf("the first write: code %q; want WORKFLOW_FAILED (%s)", o.failed.code, o.failed.raw)
 			}
-			assertLaterRefused(t, o.read)
-			assertLaterRefused(t, o.create)
-			assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
-			for _, model := range []string{m.p, m.x, y} {
-				if n := h.countEntities(t, model); n != 0 {
-					t.Errorf("%d %s entities committed; want none", n, model)
-				}
+			assertLaterServed(t, o.read)
+			assertLaterServed(t, o.create)
+			if owner.err != nil || owner.status != http.StatusOK {
+				t.Fatalf("owner: %d %s %v; want 200 — the member answered success", owner.status, owner.body, owner.err)
 			}
+			if n := h.countEntities(t, m.x); n != 0 {
+				t.Errorf("%d x entities committed; want none", n)
+			}
+			assertCommittedWithOwner(t, h, m.p, y)
 		})
 	}
 }

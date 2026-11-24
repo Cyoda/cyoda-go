@@ -10,12 +10,12 @@ import (
 )
 
 // callback_scope_engine_test.go — callouts and ASYNC_NEW_TX processors run in
-// coordination scopes. A callback's failed write marks the scope its callout
-// was made from: an ASYNC_NEW_TX processor's scope absorbs the mark (the
-// processor fails, the operation goes on), every other callout site fails its
-// operation with TRANSACTION_ROLLBACK_ONLY. While a callback waits in a callout
-// of its own, a sibling is refused 503 TRANSACTION_BUSY. A callback still in
-// its handler when its callout ends is discarded and answered 410.
+// coordination scopes. A callback's failed write is discarded and the
+// transaction goes on, at every callout site: the member's answer decides the
+// callout, and an ASYNC_NEW_TX processor whose member answers success is
+// kept, with its other writes. While a callback waits in a callout of its own,
+// a sibling is refused 503 TRANSACTION_BUSY. A callback still in its handler
+// when its callout ends is discarded and answered 410.
 
 // scopeFailingX imports model x, whose SYNC processor's cnode fails, not
 // retryably, and attaches that cnode. A joined create of x is a failed write.
@@ -55,32 +55,47 @@ func processResult(events []map[string]any, proc string) map[string]any {
 	return nil
 }
 
-// TestCallbackScope_AsyncNewTxAbsorbsFailedCallbackWrite: the owner's
-// ASYNC_NEW_TX processor's callback fails a write. The processor's scope is
-// marked and discarded with it: the processor counts as failed, the operation
-// commits, and nothing of the callback exists.
-func TestCallbackScope_AsyncNewTxAbsorbsFailedCallbackWrite(t *testing.T) {
+// TestCallbackScope_AsyncNewTx_FailedCallbackWriteHandled: the owner's
+// ASYNC_NEW_TX processor's callback fails a write, which is discarded. The
+// processor's member then creates y under the same pass and answers success:
+// the processor succeeds, its scope is kept with y, the operation commits, and
+// nothing of the failed callback exists.
+func TestCallbackScope_AsyncNewTx_FailedCallbackWriteHandled(t *testing.T) {
 	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
 	x, xnode := scopeFailingX(t, h, "cs-ant")
 	sfx := randSuffix(t)
-	p, tag := "cs-ant-p-"+sfx, "cs-ant-tp-"+sfx
+	p, y, tag := "cs-ant-p-"+sfx, "cs-ant-y-"+sfx, "cs-ant-tp-"+sfx
+	h.SetupModelWithWorkflow(t, y, secondaryWorkflow)
 	h.SetupModelWithWorkflow(t, p, chainWorkflowJSON(p+"-wf", procSpec{"cs-ant-proc", "ASYNC_NEW_TX", map[string]any{"calculationNodesTags": tag}}))
-	cb := make(chan callbackResult, 1)
-	h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: failWriteThen(x, cb, answerOK())})
+	type observed struct{ failed, later callbackResult }
+	cb := make(chan observed, 1)
+	h.AttachCnode(t, cnodeSpec{name: "p", tags: []string{tag}, script: func(_ context.Context, _ receivedCallout, rc *reqCtx) cnodeReply {
+		var o observed
+		o.failed = callbackOutcome(rc.CreateEntity(x, 1, scopeXPayload))
+		o.later = callbackOutcome(rc.CreateEntity(y, 1, scopeXPayload))
+		cb <- o
+		return answerOK()
+	}})
 
 	id, status, body := h.CreateEntity(t, p, 1, workflowSampleModel)
 
-	res := awaitCallback(t, "the callback", cb)
-	assertRefusal(t, res.StatusCode, res.Body, http.StatusBadRequest, "WORKFLOW_FAILED")
+	o := awaitAttempt(t, "the callbacks", cb)
+	assertRefusal(t, o.failed.StatusCode, o.failed.Body, http.StatusBadRequest, "WORKFLOW_FAILED")
+	if o.later.StatusCode != http.StatusOK {
+		t.Errorf("the later joined write: %d %s; want 200 — a failed write leaves the processor's transaction usable", o.later.StatusCode, o.later.Body)
+	}
 	if status != http.StatusOK {
-		t.Fatalf("owner: %d %s; want 200 — an ASYNC_NEW_TX processor absorbs its callbacks' failures", status, body)
+		t.Fatalf("owner: %d %s; want 200", status, body)
 	}
 	result := processResult(h.GetSMAuditEvents(t, id), "cs-ant-proc")
 	if result == nil {
 		t.Fatal("no STATE_PROCESS_RESULT for the ASYNC_NEW_TX processor")
 	}
-	if success, ok := result["success"].(bool); !ok || success {
-		t.Errorf("STATE_PROCESS_RESULT = %v; want the processor failed", result)
+	if success, ok := result["success"].(bool); !ok || !success {
+		t.Errorf("STATE_PROCESS_RESULT = %v; want the processor succeeded — its member answered success", result)
+	}
+	if n := h.countEntities(t, y); n != 1 {
+		t.Errorf("%d y entities committed; want the later write's one", n)
 	}
 	if n := h.countEntities(t, x); n != 0 {
 		t.Errorf("%d x entities committed; want none", n)
@@ -161,7 +176,7 @@ func TestCallbackScope_SiblingOfPausedCallbackBusy(t *testing.T) {
 		t.Errorf("the sibling sent again after A's answer: %d %s; want 200", o.bAfter.StatusCode, o.bAfter.Body)
 	}
 	if owner.err != nil || owner.status != http.StatusOK {
-		t.Fatalf("owner: %d %s %v; want 200 — a refused sibling marks nothing", owner.status, owner.body, owner.err)
+		t.Fatalf("owner: %d %s %v; want 200 — a refused sibling leaves the transaction usable", owner.status, owner.body, owner.err)
 	}
 	if n := h.countEntities(t, yModel); n != 1 {
 		t.Errorf("%d y entities committed; want the one the retried sibling created", n)
@@ -219,7 +234,7 @@ func TestCallbackScope_AnsweredBeforeCallbackReturned_410(t *testing.T) {
 	res := awaitResult(t, "the callback in progress", writeRes)
 	assertRefusal(t, res.StatusCode, res.Body, http.StatusGone, "CALLOUT_SUPERSEDED")
 	if cr := awaitCreate(t, done, 15*time.Second); cr.status != http.StatusOK {
-		t.Fatalf("owner: %d %s; want 200 — a discarded callback marks nothing", cr.status, cr.body)
+		t.Fatalf("owner: %d %s; want 200 — a discarded callback leaves the transaction usable", cr.status, cr.body)
 	}
 	if got := h.GetEntityData(t, victim)["status"]; got == "held" {
 		t.Errorf("victim.status = %v; the discarded callback's write was committed", got)
@@ -244,8 +259,8 @@ func awaitCalloutEnded(t *testing.T, h *callbackHarness, pass, entityID string) 
 	t.Fatal("the callout never ended")
 }
 
-// ownerModeWorkflows are the callout sites other than ASYNC_NEW_TX: a callback
-// of each that fails a write fails the owner's operation.
+// ownerModeWorkflows are the callout sites other than ASYNC_NEW_TX. At each,
+// a callback that fails a write leaves the outcome to the site's member.
 func ownerModeWorkflows(name, tag string) map[string]string {
 	cbd, _ := json.Marshal(map[string]any{
 		"type": "externalized", "name": "cs-om-cbd", "executionMode": "COMMIT_BEFORE_DISPATCH", "startNewTxOnDispatch": true,
@@ -265,11 +280,10 @@ func ownerModeWorkflows(name, tag string) map[string]string {
 }
 
 // ownerModeReply is what the callout site's cnode answers after its callback
-// failed: a success of the site's own kind.
+// failed: a success of the site's own kind, or for SyncProcessorFailed the
+// processor's own failure.
 var ownerModeReply = map[string]cnodeReply{
-	"SyncProcessor": answerOK(),
-	// The processor's own failure, answered after its callback's failed
-	// write: the scope's refusal decides the callout, whichever came first.
+	"SyncProcessor":       answerOK(),
 	"SyncProcessorFailed": answerFailVerdict("p failed after its callback", false),
 	"AsyncSameTx":         answerOK(),
 	"FunctionCriterion":   answerMatches(true),
@@ -277,16 +291,14 @@ var ownerModeReply = map[string]cnodeReply{
 	"CBDTxPost":           answerOK(),
 }
 
-// runOwnerMode runs one callout site whose callback fails a write, and asserts
-// the owner is refused 409 TRANSACTION_ROLLBACK_ONLY naming the callback's
-// code, with nothing of the callback committed.
-//
-// For CBDTxPost the operation's first segment (TX_pre) has committed before
-// the dispatch, so p itself exists in the state TX_pre left it in; only the
-// callback's x is asserted absent.
+// runOwnerMode runs one callout site whose callback fails a write. The write
+// is discarded and the member's answer decides: on a success the owner
+// commits p; on SyncProcessorFailed the owner fails as for any failed SYNC
+// processor (400 WORKFLOW_FAILED, not retryable) and commits nothing. Nothing
+// of the callback is committed either way.
 func runOwnerMode(t *testing.T, mode string) {
 	h := newCalloutHarness(t, calloutTuning(0, 100*time.Millisecond))
-	x, _ := scopeFailingX(t, h, "cs-om")
+	x, xnode := scopeFailingX(t, h, "cs-om")
 	sfx := randSuffix(t)
 	p, tag := "cs-om-p-"+sfx, "cs-om-tp-"+sfx
 	h.SetupModelWithWorkflow(t, p, ownerModeWorkflows(p, tag)[mode])
@@ -297,13 +309,23 @@ func runOwnerMode(t *testing.T, mode string) {
 
 	res := awaitCallback(t, "the callback", cb)
 	assertRefusal(t, res.StatusCode, res.Body, http.StatusBadRequest, "WORKFLOW_FAILED")
-	pd := assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
-	if !strings.Contains(pd.Detail, "WORKFLOW_FAILED") {
-		t.Errorf("owner detail = %q; want it to name the callback's WORKFLOW_FAILED", pd.Detail)
+	wantP := 1
+	if mode == "SyncProcessorFailed" {
+		assertProblem(t, owner.status, owner.body, http.StatusBadRequest, "WORKFLOW_FAILED", false)
+		if !strings.Contains(owner.body, "p failed after its callback") {
+			t.Errorf("owner body does not carry the member's message: %s", owner.body)
+		}
+		wantP = 0
+	} else if owner.err != nil || owner.status != http.StatusOK {
+		t.Fatalf("owner: %d %s %v; want 200 — the member answered success", owner.status, owner.body, owner.err)
+	}
+	if n := h.countEntities(t, p); n != wantP {
+		t.Errorf("%d p entities committed; want %d", n, wantP)
 	}
 	if n := h.countEntities(t, x); n != 0 {
 		t.Errorf("%d x entities committed; want none", n)
 	}
+	assertNoEntityTrace(t, h, firstEntity(t, xnode))
 }
 
 func TestCallbackScope_OwnerModes_SyncProcessor(t *testing.T) { runOwnerMode(t, "SyncProcessor") }
@@ -316,33 +338,3 @@ func TestCallbackScope_OwnerModes_FunctionCriterion(t *testing.T) {
 }
 func TestCallbackScope_OwnerModes_ScheduleFunction(t *testing.T) { runOwnerMode(t, "ScheduleFunction") }
 func TestCallbackScope_OwnerModes_CBDTxPost(t *testing.T)        { runOwnerMode(t, "CBDTxPost") }
-
-// TestCallbackScope_MarkStopsFurtherTries: a processor with FIXED retries
-// whose compute members' callbacks fail a write, and which then never answer —
-// so once the answer limit passed, the owner's loop would give the work to the
-// other member. The failed write marks the transaction and the mark cancels
-// the callout: no further try is made, and the owner is refused 409
-// TRANSACTION_ROLLBACK_ONLY.
-func TestCallbackScope_MarkStopsFurtherTries(t *testing.T) {
-	const answerLimit = 1500 * time.Millisecond
-	h := newCalloutHarness(t, calloutTuning(1, 100*time.Millisecond))
-	x, _ := scopeFailingX(t, h, "cs-stop")
-	sfx := randSuffix(t)
-	p, tag := "cs-stop-p-"+sfx, "cs-stop-tp-"+sfx
-	h.SetupModelWithWorkflow(t, p, chainWorkflowJSON(p+"-wf", procSpec{"cs-stop-proc", "SYNC",
-		map[string]any{"calculationNodesTags": tag, "retryPolicy": "FIXED", "idempotent": true, "responseTimeoutMs": answerLimit.Milliseconds()}}))
-	cb := make(chan callbackResult, 2)
-	script := failWriteThen(x, cb, neverAnswer())
-	first := h.AttachCnode(t, cnodeSpec{name: "first", tags: []string{tag}, script: script})
-	second := h.AttachCnode(t, cnodeSpec{name: "second", tags: []string{tag}, script: script})
-
-	owner := h.CreateEntityRaw(p, 1, workflowSampleModel)
-
-	assertRefusal(t, owner.status, owner.body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY")
-	// Without the mark the other member would be tried once the answer limit
-	// passed. On one node the owner's loop runs inside the owner's request, so
-	// once the owner has answered no further try can be made: count at once.
-	if n := len(first.Received()) + len(second.Received()); n != 1 {
-		t.Errorf("the members received %d callouts in all; want 1 — the mark stops every further try", n)
-	}
-}
