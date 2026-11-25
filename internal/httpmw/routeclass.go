@@ -14,14 +14,15 @@ import (
 // is added without one.
 //
 //   - Write: the entity writes. A non-retryable failure discards the request's
-//     scope and makes its parent rollback-only.
+//     scope.
 //   - Outside: routes whose writes do not go into the transaction — messages,
 //     async search jobs, the key-value-backed administration routes (M2M
 //     clients, signing and trusted keys, the token endpoint), the platform
 //     clock — and model administration, which the door refuses before the
-//     pass is read. Their scope takes no savepoint, their answer is never
-//     rewritten, and they never mark.
-//   - Read: everything else.
+//     pass is read. Their scope takes no savepoint, and their answer is never
+//     rewritten.
+//   - Read: everything else. A non-retryable 4xx keeps the request's scope,
+//     and with it its read set; a 5xx discards it.
 var routeClasses = func() map[string]txcoord.RequestClass {
 	classes := make(map[string]txcoord.RequestClass)
 	add := func(class txcoord.RequestClass, routes ...string) {

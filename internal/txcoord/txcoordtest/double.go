@@ -13,7 +13,10 @@
 // DiscardScope drops the buffer. Scopes of one transaction may therefore be
 // open at the same time, and two of them may write the same entity; the one
 // that completes second, having written it from the same version, is refused
-// with spi.ErrScopeConflict.
+// with spi.ErrScopeConflict. A DiscardScope that returns an error on a context
+// that carries a transaction makes Seal of that transaction fail;
+// FailDiscards makes every DiscardScope fail, for a test of what a
+// coordinator that cannot discard does to the transaction.
 //
 // Inside a scope the double serves the entity store's point operations (Save,
 // CompareAndSave, SaveAll, Get, Exists, Delete). The other entity-store
@@ -56,6 +59,18 @@ type factory struct {
 	co *coordinator
 }
 
+// FailDiscards makes every later DiscardScope fail with err, removing
+// nothing; nil makes them succeed again.
+func (f *factory) FailDiscards(err error) {
+	f.co.mu.Lock()
+	defer f.co.mu.Unlock()
+	f.co.failDiscard = err
+}
+
+// errDiscardFailed is Seal's refusal of a transaction a DiscardScope of which
+// returned an error.
+var errDiscardFailed = errors.New("a scope of the transaction could not be discarded")
+
 // SetApplyFunc forwards the schema-replay function to the inner factory, which
 // ExtendSchema needs. It panics when the inner factory does not offer it, as
 // a factory that dropped the function would let a model with an extension
@@ -95,9 +110,10 @@ var errUnsupported = errors.New("the transaction-coordination test double does n
 type coordinator struct {
 	inner spi.StoreFactory
 
-	mu   sync.Mutex
-	txs  map[string]*txState
-	next uint64 // the last write token issued
+	mu          sync.Mutex
+	txs         map[string]*txState
+	next        uint64 // the last write token issued
+	failDiscard error  // what every DiscardScope returns while it is set
 }
 
 type txState struct {
@@ -105,6 +121,9 @@ type txState struct {
 	root     *scope
 	callouts map[string]*callout
 	sealed   bool
+	// discardFailed is set when a DiscardScope of the transaction returned an
+	// error: Seal fails from then on.
+	discardFailed bool
 	// completed records, for every completed scope still in the tree, the
 	// entities it wrote and the versions it wrote them from.
 	completed []record
@@ -122,8 +141,6 @@ type scope struct {
 	tx        *txState
 	parent    *scope // nil for the root
 	pairs     []spi.CalloutPair
-	marked    bool
-	code      string // the code of the scope's first mark
 	ended     bool
 	completed bool
 	writes    map[string]*write // by entity id: the scope's own and its completed children's
@@ -212,17 +229,6 @@ func (s *scope) supersededLocked() bool {
 	return false
 }
 
-// markedLocked returns the refusal for the nearest marked scope on the chain
-// from s (s itself first), nil when none is marked. mu must be held.
-func (s *scope) markedLocked() error {
-	for n := s; n != nil; n = n.parent {
-		if n.marked {
-			return &spi.RollbackOnlyError{FailedCode: n.code}
-		}
-	}
-	return nil
-}
-
 // under reports whether s is a or a descendant of a.
 func (s *scope) under(a *scope) bool {
 	for n := s; n != nil; n = n.parent {
@@ -276,9 +282,6 @@ func (c *coordinator) OpenScope(ctx context.Context, txID string, pairs []spi.Ca
 		return ctx, spi.ErrCalloutSuperseded
 	}
 	parent := tx.callouts[pairs[0].Callout].scope
-	if err := parent.markedLocked(); err != nil {
-		return ctx, err
-	}
 	for _, p := range pairs {
 		if co := tx.callouts[p.Callout]; p.Minor > co.minor {
 			co.minor = p.Minor
@@ -317,7 +320,7 @@ func (s *scope) refusalLocked() error {
 	if s.supersededLocked() {
 		return spi.ErrCalloutSuperseded
 	}
-	return s.markedLocked()
+	return nil
 }
 
 // CompleteScope implements spi.TransactionCoordinator.
@@ -419,33 +422,43 @@ func (s *scope) discardLocked() {
 }
 
 // DiscardScope implements spi.TransactionCoordinator. On a scope whose
-// completion was refused (which discarded it) it removes nothing more, and
-// with a failed code it still marks the parent. It refuses a scope that
-// completed.
-func (c *coordinator) DiscardScope(ctx context.Context, failedCode string) error {
+// completion was refused (which discarded it) it removes nothing more. It
+// refuses a scope that completed. Every error it returns on a context that
+// carries a transaction makes Seal of that transaction fail; a context that
+// carries none names no transaction to fail.
+func (c *coordinator) DiscardScope(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s := c.scopeOn(ctx)
-	if s == nil {
-		return errors.New("failed to discard a scope: the context carries none")
+	var err error
+	switch {
+	case s == nil:
+		err = errors.New("failed to discard a scope: the context carries none")
+	case c.failDiscard != nil:
+		err = fmt.Errorf("failed to discard a scope: %w", c.failDiscard)
+	case s.completed:
+		err = errors.New("failed to discard a scope: it has completed")
+	default:
+		s.discardLocked()
+		return nil
 	}
-	if s.completed {
-		return errors.New("failed to discard a scope: it has completed")
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		c.txLocked(tx.ID).discardFailed = true
 	}
-	s.discardLocked()
-	if failedCode != "" && !s.parent.marked {
-		s.parent.marked, s.parent.code = true, failedCode
-	}
-	return nil
+	return err
 }
 
-// Seal implements spi.TransactionCoordinator.
+// Seal implements spi.TransactionCoordinator. It fails after a DiscardScope of
+// the transaction that returned an error.
 func (c *coordinator) Seal(_ context.Context, txID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	tx := c.txLocked(txID)
 	tx.sealed = true
-	return tx.root.markedLocked()
+	if tx.discardFailed {
+		return fmt.Errorf("failed to seal the transaction: %w", errDiscardFailed)
+	}
+	return nil
 }
 
 // --- the entity store inside a scope ---

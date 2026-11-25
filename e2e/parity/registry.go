@@ -257,10 +257,10 @@ var allTests = []NamedTest{
 
 	// Callback scopes — a joined request is all-or-nothing, the same on every
 	// backend. Sequential shapes only; races are isolated e2e.
-	{"CallbackScope_FailedJoinedWriteDoomsOwner", RunCallbackScope_FailedJoinedWriteDoomsOwner},
+	{"CallbackScope_FailedJoinedWriteHandledByProcessor", RunCallbackScope_FailedJoinedWriteHandledByProcessor},
 	{"CallbackScope_RetryableFailureRetriedInTx", RunCallbackScope_RetryableFailureRetriedInTx},
 	{"CallbackScope_FailedReadKeepsTx", RunCallbackScope_FailedReadKeepsTx},
-	{"CallbackScope_AsyncNewTxAbsorbs", RunCallbackScope_AsyncNewTxAbsorbs},
+	{"CallbackScope_AsyncNewTxFailedCallbackWriteHandled", RunCallbackScope_AsyncNewTxFailedCallbackWriteHandled},
 	{"CallbackScope_MessageOutsideTx", RunCallbackScope_MessageOutsideTx},
 
 	// Compute-client capability self-tests: a fixture that can start further

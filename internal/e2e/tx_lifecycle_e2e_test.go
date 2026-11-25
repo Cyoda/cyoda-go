@@ -437,33 +437,26 @@ type joinedCallbackOutcome struct {
 	deleteStatus int
 }
 
-// TestE2E_JoinedCallbackFailure_OwnerRollbackOnly is coverage row 3's E2E
-// half. It runs over the REAL gRPC dispatch path so the callback genuinely joins
-// the owner's transaction via the signed tx-token.
+// TestE2E_JoinedCallbackFailure_OwnerCommits is coverage row 3's E2E half.
+// It runs over the REAL gRPC dispatch path so the callback genuinely joins the
+// owner's transaction via the signed tx-token.
 //
 // The joined write is a DELETE of an absent id: DeleteEntity's very first act is
 // beginScope, so the 404 surfaces with the joined write's own deferred scope
 // live and armed. The 404 is a non-retryable failure of a joined write, so the
-// request's callback scope is discarded and the owner's transaction made
-// rollback-only — by the coordination, never by the joined write's own scope,
-// which must decline to touch a transaction it does not own. The owner, whose
-// processor answers success regardless, is refused 409
-// TRANSACTION_ROLLBACK_ONLY naming the callback's ENTITY_NOT_FOUND, and nothing
-// of its operation is committed.
+// request's callback scope is discarded — by the coordination, never by the
+// joined write's own scope, which must decline to touch a transaction it does
+// not own — and the owner's transaction goes on. The owner's processor answers
+// success, so the owner commits.
 //
-// No later joined request is asserted here. The mark cancels the callout the
-// failed write ran under, and the owner ends it at once, so a later request
-// on its pass is refused 410 CALLOUT_SUPERSEDED — or 404 once the owner has
-// rolled back. Which one depends on timing; that a later request is refused,
-// not retryably, is pinned at both doors by
-// TestCallbackScope_FailedWrite_LaterRequestsOnThePassRefused. The 409 refusal
-// of a request under a marked scope is pinned at both doors by
-// TestTxJoin_FailedWriteMakesTheTransactionRollbackOnly and
-// TestTxRoute_RawHandlerErrorMarks.
-func TestE2E_JoinedCallbackFailure_OwnerRollbackOnly(t *testing.T) {
+// That a later joined request on the pass is served after a failed write is
+// pinned at both doors by TestCallbackScope_FailedWrite_LaterRequestsOnThePassServed,
+// and in-process by TestTxJoin_FailedWriteLeavesTheTransactionUsable and
+// TestTxRoute_RawHandlerErrorDiscards.
+func TestE2E_JoinedCallbackFailure_OwnerCommits(t *testing.T) {
 	h := newCallbackHarness(t)
 
-	const primary = "txlife-owner"
+	primary := uniq("txlife-owner") // repeated runs share this package's Postgres testcontainer
 	outcome := make(chan joinedCallbackOutcome, 1)
 
 	h.RegisterProc("txlife-owner-proc", func(rc *reqCtx) (map[string]any, error) {
@@ -476,7 +469,7 @@ func TestE2E_JoinedCallbackFailure_OwnerRollbackOnly(t *testing.T) {
 		out.deleteStatus = del.StatusCode
 
 		outcome <- out
-		return nil, nil // the owner's cascade carries on regardless
+		return nil, nil // the processor handles the failure: it answers success
 	})
 
 	primaryWF := `{
@@ -494,10 +487,9 @@ func TestE2E_JoinedCallbackFailure_OwnerRollbackOnly(t *testing.T) {
 	}`
 	h.setupModelSampleWithWorkflow(t, primary, txLifeSample, primaryWF)
 
-	_, status, body := h.CreateEntity(t, primary, 1, txLifeSample)
-	pd := assertProblem(t, status, body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
-	if !strings.Contains(pd.Detail, "ENTITY_NOT_FOUND") {
-		t.Errorf("owner detail = %q; want it to name the callback's ENTITY_NOT_FOUND", pd.Detail)
+	id, status, body := h.CreateEntity(t, primary, 1, txLifeSample)
+	if status != http.StatusOK {
+		t.Fatalf("owner create: %d %s; want 200 — its processor answered success", status, body)
 	}
 
 	var out joinedCallbackOutcome
@@ -510,7 +502,7 @@ func TestE2E_JoinedCallbackFailure_OwnerRollbackOnly(t *testing.T) {
 	if out.deleteStatus != http.StatusNotFound {
 		t.Fatalf("joined delete status = %d, want 404 from inside the flow; the test must fail AFTER beginScope", out.deleteStatus)
 	}
-	if n := h.countEntities(t, primary); n != 0 {
-		t.Errorf("%d owner entities committed; want none", n)
+	if st, code := h.GetEntityState(t, id); code != http.StatusOK || st != "ACTIVE" {
+		t.Errorf("owner entity state = %q (http %d); want ACTIVE, committed", st, code)
 	}
 }

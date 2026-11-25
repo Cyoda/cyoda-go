@@ -379,7 +379,7 @@ the gate is taken, and from each callback being all-or-nothing:
   (`EntityManageCollection`, `EntitySearchCollection`) — and is never sent in
   part: a truncated answer would be a wrong one. On an entity write that
   answer is a failed write: nothing of it is kept but a schema extension
-  (`callback-scopes.md`), and the transaction becomes rollback-only.
+  (`callback-scopes.md`), and the transaction goes on.
 
 ## 8. What Cloud has to decide
 

@@ -95,7 +95,7 @@ internal/
   httpmw/                 Transaction-join middleware and the class (write, read,
                           outside) of every route a joined request can reach
   txcoord/                Transaction coordination: callback and processor scopes,
-                          marks, the stack rule, the waits and Seal (§3.8)
+                          the stack rule, the waits and Seal (§3.8)
   txgate/                 Per-transaction gate with selective admission; used by
                           txcoord only
   fence/                  Which compute member holds a callout's work; refuses
@@ -405,7 +405,7 @@ type TransactionManager interface {
 - `ConsistencyTime`: Returns the tenant's consistency time `C` (§4.7). It never returns a guessed instant: a store that cannot certify `C` returns an error wrapping `spi.ErrConsistencyTimeUnavailable`.
 - `LatestRecordedTime`: Returns the store's floor, a time at or above the latest submit time, snapshot time or consistency time it has issued, or the zero time if it has issued none. It does not move the floor and does not wait. A node starting with clock control on reads it (§3.9).
 - `Savepoint` / `RollbackToSavepoint` / `ReleaseSavepoint`: nested-savepoint support used by the scopes of §3.8 — one per joined request and one per `ASYNC_NEW_TX` processor. The plugin returns a savepoint ID that the caller passes back for rollback or release. Rolling back to a savepoint drops every savepoint taken after it and keeps the one rolled back to; releasing one releases every savepoint taken after it.
-- `LostRace`: reports whether the transaction has already lost a write race — another transaction committed, after this one's snapshot, an entity or task row this one writes — so that Commit will refuse it. The answer is the same on every backend: PostgreSQL reads the 40001/40P01 it recorded when it refused the losing write; memory and sqlite run the write half of their commit-time check, plus a lost write a savepoint rollback discarded. Read-only and tenant-checked. The workflow engine asks it after a processor that could call back into the transaction fails, and the coordination asks it before it reports a marked scope or answers a failed joined request (§3.8).
+- `LostRace`: reports whether the transaction has already lost a write race — another transaction committed, after this one's snapshot, an entity or task row this one writes — so that Commit will refuse it. The answer is the same on every backend: PostgreSQL reads the 40001/40P01 it recorded when it refused the losing write; memory and sqlite run the write half of their commit-time check, plus a lost write a savepoint rollback discarded. Read-only and tenant-checked. The workflow engine asks it after a processor that could call back into the transaction fails, and the coordination asks it before it answers a failed joined request or reports a broken transaction (§3.8).
 
 **TX boundary ownership.** For most cascades the request handler in `internal/domain/entity/service.go` opens the transaction, calls the engine, and commits when the engine returns — a single `Begin`/`Commit` pair, producing a single `EntityVersion` row per entity. Before each callout that carries the transaction token (other than a `COMMIT_BEFORE_DISPATCH` processor's, whose first segment has just committed the entity) the engine reads the entity in the transaction and writes it into the transaction (not committed) when a read of it in the transaction finds nothing (a create), or when the stored data bytes or state differ from the engine's copy so that a callback read under the token returns the entity as the workflow has it. On PostgreSQL the stored data is the JSONB rendering of what was written, so data the engine took from a request or a processor usually differs in its bytes and is written again. A later write of an entity the transaction already wrote replaces that transaction's pending version, so these writes add no version. When a transition carries a `COMMIT_BEFORE_DISPATCH` processor (see §5.4), the workflow engine segments the transaction: it flushes the pre-callout entity state via `EntityStore.Save` and commits `TX_pre`. By default it then dispatches the processor outside any transaction and opens `TX_post` on the same node afterwards. With `startNewTxOnDispatch` it opens `TX_post` first, requires the entity to be the version `TX_pre` committed, and dispatches with `TX_post`'s pass, so the processor's callbacks join `TX_post`. In both shapes it applies the result in `TX_post` via `CompareAndSave` against `TX_pre` and hands `TX_post` back; the handler makes the final `Save` and commits it. The engine is built with the `TransactionManager`; the handler passes it the `If-Match` precondition, which the engine checks when the transition starts.
 
@@ -584,16 +584,13 @@ on-behalf-of request must name a transaction its own user began
    nothing with it.
 3. Under the gate the request is detached from its client's cancellation and
    placed in the scope tree, which refuses it when its callout has ended or its
-   pass is no longer current (`410 CALLOUT_SUPERSEDED`), when the transaction
-   is broken (`404 TRANSACTION_NOT_FOUND`) or sealed (`410
-   CALLOUT_SUPERSEDED`), or when its parent or an ancestor scope is marked
-   (`409 TRANSACTION_ROLLBACK_ONLY`). A read is refused under a marked scope as
-   much as a write.
+   pass is no longer current (`410 CALLOUT_SUPERSEDED`), or when the
+   transaction is broken (`404 TRANSACTION_NOT_FOUND`) or sealed (`410
+   CALLOUT_SUPERSEDED`).
 4. The scope takes its savepoint. A savepoint refused because the transaction
    lost a write race answers as the lost race (row 2 below); one refused
    because the session has ended answers `404 TRANSACTION_NOT_FOUND` and leaves
-   the transaction broken; any other refusal is a `500`, not retryable. The
-   handler has not run, so nothing is marked.
+   the transaction broken; any other refusal is a `500`, not retryable.
 
 A refused callback performs no store operation of any kind. The door decides
 before the handler runs what the request does to the transaction: a **write**
@@ -604,7 +601,7 @@ patch with or without a transition, and both deletes; gRPC `EntityManage` and
 the key-value-backed administration routes, the platform clock). The HTTP table
 is `internal/httpmw/routeclass.go`, and a route added without a class fails
 `TestJoinedRequestClass_EveryRouteClassified`. An outside request takes no
-savepoint, its answer is never rewritten, and it never marks.
+savepoint, and its answer is never rewritten.
 
 **How a scope ends.** The doors record what the request was answered with:
 the shared error funnels (`common.WriteError`, the gRPC envelope builder) put
@@ -614,56 +611,52 @@ the backstop, and a panic ends the scope as a failed request before it goes on
 to the recovery layer. `Scope.End` (`internal/txcoord/end.go`) then applies
 the first matching row:
 
-| # | Condition | Scope | Mark on the parent | Answer |
-|---|---|---|---|---|
-| 1 | the pass is no longer current (the callout advanced or ended) | discarded | none | `410 CALLOUT_SUPERSEDED` |
-| 2 | the request failed and `TransactionManager.LostRace` says the transaction lost | discarded | none | `409 CONFLICT`, not retryable |
-| 3 | the request failed with the session ended (`spi.ErrTxNotFound`) | discarded if possible; the transaction is broken | none | `404 TRANSACTION_NOT_FOUND` |
-| 4 | the scope is marked | discarded | when the request is a write | `409 TRANSACTION_ROLLBACK_ONLY` |
-| 5 | success, and the savepoint is released | completed | none | the handler's |
-| 6 | retryable failure | discarded | none | the handler's |
-| 7 | non-retryable failure of a write | discarded | yes, naming the failure's code | the handler's |
-| 8 | non-retryable `4xx` of a read | completed | none | the handler's |
-| 9 | non-retryable `5xx` of a read | discarded | none | the handler's |
+| # | Condition | Scope | Answer |
+|---|---|---|---|
+| 1 | the pass is no longer current (the callout advanced or ended) | discarded | `410 CALLOUT_SUPERSEDED` |
+| 2 | the request failed and `TransactionManager.LostRace` says the transaction lost | discarded | `409 CONFLICT`, not retryable |
+| 3 | the request failed with the session ended (`spi.ErrTxNotFound`) | discarded if possible; the transaction is broken | `404 TRANSACTION_NOT_FOUND` |
+| 4 | success, and the savepoint is released | completed | the handler's |
+| 5 | retryable failure | discarded | the handler's |
+| 6 | non-retryable failure of a write | discarded | the handler's |
+| 7 | non-retryable `4xx` of a read | completed | the handler's |
+| 8 | non-retryable `5xx` of a read | discarded | the handler's |
+
+A discarded scope's reads go with it: the scope's read set is rolled back with its writes, so the commit validates only what kept scopes and the owner read.
 
 A scope whose discard fails did not end as its row answers: except in row 3,
 which answers `404` whatever its own discard did, `End` replaces the answer
 with `500 SERVER_ERROR`, not retryable (`endAnswer`,
 `internal/txcoord/end.go`). Only the scope's own discard counts, not a failed
 discard of another scope that the request's error carries. The in-process
-coordination then records the transaction as broken (see **Marks**); the
-durable coordination does not (see **Location-independent transactions**).
+coordination then records the transaction as broken (see **A broken
+transaction**); the durable coordination does not (see **Location-independent
+transactions**).
 
 A release that fails after a success is judged again as a failed request, and
 otherwise answers `500 SERVER_ERROR` — on PostgreSQL, a handler that swallowed
 a statement error and answered `2xx` meets `25P02` there. Row 2 is not
 retryable for the callback because a retry in a transaction that lost a race
 cannot succeed; the owner reports the retryable conflict and is what is
-retried. Row 8 keeps a read that answered, so its read-set entries are still
+retried. Row 7 keeps a read that answered, so its read-set entries are still
 validated at commit. When End rewrites the answer, the door sends only the
 rewritten error: the buffered HTTP body and the held gRPC frames are dropped.
 The scope ends, savepoint included, while the gate is still held, and the
 response is sent once the gate is released.
 
-**Marks.** A mark is set on a scope, and the transaction is rollback-only when
-the root is marked. Marking a scope cancels the callouts begun from it, with
-the cause `common.ErrRollbackOnly`: the owner's loop makes no further try or
-hand-over, and the callout ends with the scope's refusal, which
-`txcoord.Check` reports — the lost race first (`spi.ErrTxAborted`, the
-retryable `409 CONFLICT`), otherwise `409 TRANSACTION_ROLLBACK_ONLY` naming
-the failed request's code. The callout coordinator asks `txcoord.Check` on
-every callout's context once the callout has ended, whatever the compute
-member answered, so a processor, a function criterion and a schedule function
-fail alike on a marked scope. A processor scope stops the climb: an
-`ASYNC_NEW_TX` processor whose scope is marked is discarded with everything
-under it, counts as failed (non-fatal, logged and recorded as any failure of
-the mode) and passes no mark up. In the in-process coordination, a session
-that ended, a rollback to a savepoint that failed, or a discard that failed
+**A broken transaction.** In the in-process coordination, a session that
+ended, a rollback to a savepoint that failed, or a discard that failed
 (answered `500 SERVER_ERROR`, not retryable, except in row 3) leaves the
-transaction **broken**, which is separate from marked: later joined requests
-are refused with `404 TRANSACTION_NOT_FOUND`, and the owner fails with the
-broken cause, classified as usual (a dead PostgreSQL session is the retryable
-`503 STORAGE_UNAVAILABLE`).
+transaction **broken**: later joined requests are refused with
+`404 TRANSACTION_NOT_FOUND`, and the owner fails with the broken cause,
+classified as usual (a dead PostgreSQL session is the retryable
+`503 STORAGE_UNAVAILABLE`). The broken cause is the store's error, never the
+answer a joined request was given. Any other failed joined request ends its scope as
+the table says and leaves the transaction as it was: later joined requests are
+admitted as before, and the callout ends with what the compute member
+answers. The failure is the member's to handle: its processor, function
+criterion or schedule function decides whether to go on without that request
+or to fail.
 
 **The stack rule.** A scope's writes, with those of its descendants, must stay
 contiguous, so that rolling back to its savepoint undoes exactly its own work.
@@ -750,12 +743,11 @@ rollbacks (`rollbackSealed`), and the transactions that make no callout (the
 workflow import's task removal, `recordEventInOwnTx`, and the scheduler's
 `failWithAudit`), one rule with no exceptions. In-process, Seal waits until no
 callback scope is open — the wait does not end with the owner's context,
-because a callback in progress still uses the transaction — then marks the
-transaction sealed, so that a later joined request
-is refused with `410 CALLOUT_SUPERSEDED`. It reports, in order: the lost race
-when the root is marked or the transaction broken and `LostRace` says so; the
-broken cause; or `409 TRANSACTION_ROLLBACK_ONLY` when the root is marked. The
-order is Seal → the final save → commit; a rollback seals and ignores the
+because a callback in progress still uses the transaction — then records the
+transaction as sealed, so that a later joined request
+is refused with `410 CALLOUT_SUPERSEDED`. A broken transaction fails the seal:
+with the lost race when `LostRace` says so, otherwise with the broken cause.
+The order is Seal → the final save → commit; a rollback seals and ignores the
 answer. On a location-independent backend Seal does not wait: the backend's
 `Seal` refuses every later scope, and a scope still in progress can no longer
 complete.
@@ -775,7 +767,7 @@ bounded by `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB) — the
 owner's next move waits behind those bytes — and an answer past it fails the
 request with `413 JOINED_RESPONSE_TOO_LARGE`, not retryable, rather than being
 sent in part; it is decided inside the handler, so on a write it discards the
-scope and marks its parent. A compute member that sends its headers and stalls,
+scope (row 6). A compute member that sends its headers and stalls,
 or never reads its response, holds nothing.
 
 **A joined request is not interrupted by its compute member going away.** From
@@ -798,12 +790,12 @@ not retryable, by the node it arrived at while it runs to completion on the
 owner; one still *queued* for the gate when that timeout ends the proxied call
 is dropped on the owner, having touched nothing. For a compute member either
 way, a non-retryable 503 or a dropped connection on a joined write means the
-outcome is unknown.
+outcome is unknown, so the member must fail the callout.
 
 A `COMMIT_BEFORE_DISPATCH` processor reached inside a callback never
 dispatches: it would commit the transaction the callback joined, so it is
-refused before the transaction is flushed or committed, and as a failed write
-it marks the parent.
+refused before the transaction is flushed or committed, and its scope is
+discarded as any failed write's is (row 6).
 
 **Location-independent transactions.** A storage plugin may supply the
 coordination itself through the SPI's optional
@@ -821,34 +813,34 @@ whose `mintPass` leaves out the owner the hand-over names; both proxies serve
 a pass with no owner locally (`proxy.HTTPRouting`, `proxy.ResolveNodeInfo`),
 so a callback is served by the node it reaches, and `Join` allows concurrent
 operations from any number of goroutines and nodes. The backend holds the
-scopes, the marks and the fencing numbers. The rules of the scope tree, the
-table of how a scope ends and the marks are the same, except that nothing
-records a transaction as broken: a scope whose `DiscardScope` failed is
-answered `500 SERVER_ERROR` (row 3 excepted) and is never completed, so
-`Commit` does not keep its writes, and a failed `DiscardScope` with a mark's
-code is covered by the obligation below that `Seal` must fail. There is no
+scopes and the fencing numbers. The rules of the scope tree and the table of
+how a scope ends are the same, except that nothing records a transaction as
+broken: a scope whose `DiscardScope` failed is answered `500 SERVER_ERROR`
+(row 3 excepted), cyoda-go never confirms its completion, and the
+transaction cannot commit, because the backend's `Seal` must then fail
+(below). There is no
 gate and no stack rule, a pause only checks the scope again on resume, and
 nothing waits: a scope in progress when its callout advances or ends, or when
 the transaction is sealed, cannot complete, so it is discarded and answered
 `410 CALLOUT_SUPERSEDED`. Nothing cancels a callout running on another node
-when the scope it was begun from is superseded or marked, so the owner's loop
+when the scope it was begun from is superseded, so the owner's loop
 checks that scope (`CheckScope`) after it begins the callout and at every
 `Advance` — before each try and each hand-over — and stops the callout when
 the scope can no longer complete. Of two callback scopes that wrote the same
 entity from the same version, the second to complete is discarded and answered
 the retryable `409 CONFLICT`. No in-tree backend implements the capability. A
-coordinator must never let `Seal` succeed after a mark it failed to record:
-when `DiscardScope` with a code cannot record the mark, the transaction's
-`Seal` must still fail, and a `DiscardScope` error does not release it from
-this.
+coordinator must never let `Seal` succeed after a `DiscardScope` of the
+transaction that returned an error: the scope's writes may still be part of
+the transaction.
 
 **Savepoints under `ASYNC_NEW_TX`.** The processor runs in a processor scope of
-its own, which takes a savepoint of the parent transaction. Its own failure,
-and a mark its callbacks set on its scope, are non-fatal: the scope is
-discarded and the pipeline continues. Discarding it undoes its callbacks'
-entity writes, not the schema extensions they made. A scope that cannot be **opened,
+its own, which takes a savepoint of the parent transaction. Its own failure
+is non-fatal: the scope is discarded and the pipeline continues. Discarding it
+undoes its callbacks' entity writes, not the schema extensions they made. A
+failed callback under it keeps nothing and leaves the processor to decide
+whether to fail. A scope that cannot be **opened,
 undone or released**, or whose transaction is broken, is not a processor
-failure — it says the transaction is unusable — so it is marked with
+failure — it says the transaction is unusable — so its error carries
 `txcoord.ErrScopeInfra` and **fails the operation** with a ticketed 5xx. Two
 answers are classified first: an unavailable store keeps its
 `503 STORAGE_UNAVAILABLE`, and a transaction that has already lost a race
@@ -1116,7 +1108,7 @@ The middleware sits in front of authentication: a forwarded request is authentic
 
 `TRANSACTION_NODE_UNAVAILABLE` is retryable only with proof that nothing was sent. A dial error alone is not that proof: the transport sends a replayable request again on a new connection when a reused one breaks after the write, and that second dial can fail after the owner received the first, so the proxy also records whether it ever held a connection for the request (`httptrace` `GotConn`). Past that point the outcome is unknown and the answer is not retryable. A response the owner returns, error or not, is relayed as it came.
 
-A pass that names no callout or no fencing number, or an enclosing pair without either, is invalid format, so `401 UNAUTHORIZED` covers it. Routing is only the first half of what a callback passes: once the request is on the owner, joining the transaction can still answer `404 TRANSACTION_NOT_FOUND`, `403 FORBIDDEN` for another tenant's transaction or, for an OBO request, a transaction not begun for the request's own user (§7.4), `410 CALLOUT_SUPERSEDED` for a pass the fence does not hold current or a request still in progress when its callout moved on (§3.8), `409 TRANSACTION_ROLLBACK_ONLY` under a marked scope, `503 TOO_MANY_JOINED_REQUESTS` (retryable) when the transaction already has as many callbacks waiting as it may, `503 TRANSACTION_BUSY` (retryable) while another callback of the transaction is paused in a callout of its own, or `413 JOINED_RESPONSE_TOO_LARGE` for an answer past the joined-response ceiling.
+A pass that names no callout or no fencing number, or an enclosing pair without either, is invalid format, so `401 UNAUTHORIZED` covers it. Routing is only the first half of what a callback passes: once the request is on the owner, joining the transaction can still answer `404 TRANSACTION_NOT_FOUND`, `403 FORBIDDEN` for another tenant's transaction or, for an OBO request, a transaction not begun for the request's own user (§7.4), `410 CALLOUT_SUPERSEDED` for a pass the fence does not hold current or a request still in progress when its callout moved on (§3.8), `503 TOO_MANY_JOINED_REQUESTS` (retryable) when the transaction already has as many callbacks waiting as it may, `503 TRANSACTION_BUSY` (retryable) while another callback of the transaction is paused in a callout of its own, or `413 JOINED_RESPONSE_TOO_LARGE` for an answer past the joined-response ceiling.
 
 gRPC applies the same mapping (`classifyRouteErr` in `internal/grpc/txroute_interceptor.go`): an expired pass answers `TRANSACTION_EXPIRED`, an invalid one `UNAUTHORIZED`, and an owner that is dead, unknown, unreachable or does not answer within `CYODA_PROXY_TIMEOUT` `TRANSACTION_NODE_UNAVAILABLE` (503) — retryable when the owner is not live, or when the pool refused or could not set up the connection, or the call failed before any of its headers reached a transport to the owner (a stats handler on every pooled connection records `OutHeader`), and not retryable otherwise. They are rendered into the RPC's error envelope: `Success` false, `Error.Code` `CLIENT_ERROR`, the code leading `Error.Message`. On a unary call the bound is the owner's response; on a server-streaming call, its first message. The refusals the owner's server chain answers with for the caller's own request (`InvalidArgument`, `Unauthenticated`, `PermissionDenied`, and `NotFound`, which the owner does not answer on these four RPCs) reach the caller unchanged. Any other status answers `SERVER_ERROR` with a ticket of the forwarding node's: the owner's own `Internal` cannot be told apart from one the forwarding node's gRPC client built (a stream reset), so both are treated alike — where HTTP, which can tell them apart, relays the owner's `500` and answers a reset with `503`. A stream that breaks after its first message, when no envelope can follow, ends with a generic `Unavailable` or `Internal` status; the transport's own text, which names cluster-internal addresses, is logged on the forwarding node and not sent. The forwarding client sets no receive limit of its own, so an answer up to the owner's joined-answer ceiling arrives whole.
 
@@ -1215,8 +1207,7 @@ caller's own context ending — the client went away, or its
 `transactionTimeoutMillis` fired — is returned as the caller's departure
 (`common.ClientGone`, which keeps the context error matchable). A callout made
 from inside a callback whose compute member was replaced is released by the
-fence and ends with `CALLOUT_SUPERSEDED`; one whose scope was marked ends with
-that scope's refusal, `TRANSACTION_ROLLBACK_ONLY` (§3.8). At the defaults the
+fence and ends with `CALLOUT_SUPERSEDED` (§3.8). At the defaults the
 limit is 4 × 30 s + 5 s + 30 s = 155 s; with the answer limit at its configured
 upper bound, 275 s. Both sit inside PostgreSQL's idle-in-transaction ceiling
 (§3.4).
@@ -2107,7 +2098,7 @@ Processors are dispatched via the `ExternalProcessingService` internal contract 
 |------|----------|
 | `SYNC` | Processor executes within the current transaction. Entity data is updated in-place before the next transition. |
 | `ASYNC_SAME_TX` | Executes inline in the caller's transaction, exactly as `SYNC` does. CRUD callbacks are routed back to the transaction owner. The mode name is Cyoda Cloud's; in cyoda-go the processor runs inline. |
-| `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: the processor's own failure rolls back the SAVEPOINT only, the parent pipeline continues, and the failure and the member's `retryable` verdict do not reach the client; the member's warnings reach the client (gRPC `warnings`, HTTP `Cyoda-Warning` headers, §8.4). A callback write under the processor that fails with an answer that is not retryable makes the processor fail the same way: everything its callbacks wrote to entities is discarded, and the pipeline continues (§3.8). The exception is a callback write inside the SAVEPOINT that had already lost a race: the rollback does not undo that, and the operation fails with a retryable `409 CONFLICT` (§3.8). A savepoint that cannot be created, undone or released is **not** a processor failure: the transaction is unusable, so the operation fails with a ticketed 5xx (§3.8). Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work but schema extensions. The mode name is Cyoda Cloud's; in cyoda-go the processor runs sequentially. |
+| `ASYNC_NEW_TX` | Processor executes sequentially within a SAVEPOINT of the parent transaction. Fire-and-forget error semantics: the processor's own failure rolls back the SAVEPOINT only, the parent pipeline continues, and the failure and the member's `retryable` verdict do not reach the client; the member's warnings reach the client (gRPC `warnings`, HTTP `Cyoda-Warning` headers, §8.4). A failed callback under the processor keeps nothing, and the processor decides whether it fails (§3.8). The exception is a callback write inside the SAVEPOINT that had already lost a race: the rollback does not undo that, and the operation fails with a retryable `409 CONFLICT` (§3.8). A savepoint that cannot be created, undone or released is **not** a processor failure: the transaction is unusable, so the operation fails with a ticketed 5xx (§3.8). Entity mutations returned by the processor are discarded. Parent rollback discards all ASYNC_NEW_TX work but schema extensions. The mode name is Cyoda Cloud's; in cyoda-go the processor runs sequentially. |
 | `COMMIT_BEFORE_DISPATCH` | Engine splits the cascade into two transactions around this processor. `TX_pre` flushes the pre-callout entity state and commits **before** the processor is dispatched, releasing the storage connection during the external compute window. The companion field `startNewTxOnDispatch: bool` (a sibling on the same processor object) chooses between two shapes. Without it (default `false`) the processor is dispatched with no transaction, and the engine begins `TX_post` on the same node when it returns. With `startNewTxOnDispatch: true` the engine begins `TX_post` before the dispatch and re-reads the entity there; if another transaction changed it since `TX_pre` committed, the processor is not dispatched. The processor's callbacks then join `TX_post` and may write other entities, except one whose cascade is running in the same transaction; they never write the entity the processor runs for, which a processor changes only through the data it returns. The engine applies the result in `TX_post` by `CompareAndSave` against the transaction id `TX_pre` committed. The engine then runs the remaining processors and the cascade inline and commits. A conflict after the boundary — another transaction changed the entity — answers `412 ENTITY_MODIFIED` naming the entity on every write route; a collection create or update fails whole. The entity stays durable in the pre-callout state; there is no engine-side retry and no compensation. The validator refuses `startNewTxOnDispatch: true` on any other mode. **Audit-trail placement**: `SMEventProcessingPaused` is recorded in `TX_pre` and durably committed at the segment boundary; the `SMEventStateProcessResult` of a processor that succeeds is recorded in `TX_post`, and that of a processor that fails after its boundary committed is recorded in a transaction of its own (§5.5). The mode has no event types of its own. See [docs/CONSISTENCY.md](CONSISTENCY.md) §10 for visibility caveats and idempotency requirements. |
 
 ### 5.5 Audit Trail
@@ -2464,7 +2455,7 @@ Codes are grouped by surface area:
 - **IAM** — key pairs, trusted keys, M2M clients, secret-check capacity (`SERVER_BUSY`), unsupported algorithms and key types.
 - **Cluster / transaction** — transaction routing and joining (`TRANSACTION_NODE_UNAVAILABLE`, `TRANSACTION_NOT_FOUND`, `TRANSACTION_EXPIRED`, `TRANSACTION_TIMEOUT`), and a store that reports `spi.ErrEpochMismatch` during a transaction (`409 EPOCH_MISMATCH`, retryable).
 - **Compute dispatch** — externalized processor / criteria / function invocation across cluster members.
-- **Joined requests** — a request that carries a transaction token: a compute node's callback into its callout's transaction (`CALLOUT_SUPERSEDED`, `JOINED_RESPONSE_TOO_LARGE`, `TOO_MANY_JOINED_REQUESTS`, `TRANSACTION_BUSY`, `TRANSACTION_ROLLBACK_ONLY`, `COMMIT_IN_JOINED_TRANSACTION`), and model or workflow administration, which never runs inside a transaction (`MODEL_ADMIN_IN_JOINED_TRANSACTION`).
+- **Joined requests** — a request that carries a transaction token: a compute node's callback into its callout's transaction (`CALLOUT_SUPERSEDED`, `JOINED_RESPONSE_TOO_LARGE`, `TOO_MANY_JOINED_REQUESTS`, `TRANSACTION_BUSY`, `COMMIT_IN_JOINED_TRANSACTION`), and model or workflow administration, which never runs inside a transaction (`MODEL_ADMIN_IN_JOINED_TRANSACTION`).
 - **Search** — async search-job lifecycle and capacity, condition validation, and result-size and time limits.
 - **Grouped statistics** — request validation and the group-cardinality ceiling of `POST /entity/stats/{entityName}/{modelVersion}/query` (`MALFORMED_REQUEST` … `GROUP_CARDINALITY_EXCEEDED`).
 - **Batched delete** — a conditional delete whose matching set never runs dry (`DELETE_NOT_CONVERGED`).

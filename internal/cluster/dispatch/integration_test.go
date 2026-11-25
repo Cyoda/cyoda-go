@@ -88,10 +88,10 @@ func (r *ctxRunner) RunLocal(ctx context.Context, _ internalgrpc.Callout, _ int)
 	return internalgrpc.LocalResult{CtxErr: ctx.Err()}
 }
 
-// The owner calling its callout off — the caller went away, or a callback's
-// failed write marked the scope the callout was made from — ends a hand-over in
-// progress on the peer: the peer's local procedure sees its context end and
-// makes no further try.
+// The owner calling its callout off — the caller went away, or the scope the
+// callout was made from was superseded — ends a hand-over in progress on the
+// peer: the peer's local procedure sees its context end and makes no further
+// try.
 func TestIntegration_HandOver_OwnersCancellationEndsThePeersRun(t *testing.T) {
 	peerAuth := newAEAD(t)
 	runner := &ctxRunner{started: make(chan struct{}), ended: make(chan error, 1)}

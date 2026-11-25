@@ -18,8 +18,8 @@ import (
 // backend's transaction manager; it is asked only whether a transaction lost a
 // write race.
 //
-// The backend holds the scopes, the marks and the fencing numbers, for every
-// pnode at once. So this coordination keeps no gate and no stack rule, and it
+// The backend holds the scopes and the fencing numbers, for every pnode at
+// once. So this coordination keeps no gate and no stack rule, and it
 // never waits: a callout that advances or ends does not wait for the scopes in
 // progress under it, because the backend refuses their completion. Pause
 // releases nothing, and its resume is Check. The only state kept here is the
@@ -81,20 +81,8 @@ func (s *durableScope) check() error {
 		return nil
 	case errors.Is(err, spi.ErrCalloutSuperseded):
 		return supersededBy(err)
-	case errors.Is(err, spi.ErrTxRollbackOnly):
-		return rollbackOnly(s.ctx, s.c.txMgr, s.txID, failedCodeOf(err))
 	}
 	return fmt.Errorf("failed to check a scope of the transaction: %w", errors.Join(ErrScopeInfra, err))
-}
-
-// failedCodeOf is the code a coordinator's refusal for a mark names: the
-// FailedCode of its *spi.RollbackOnlyError, "" when it carries none.
-func failedCodeOf(err error) string {
-	var refused *spi.RollbackOnlyError
-	if errors.As(err, &refused) {
-		return refused.FailedCode
-	}
-	return ""
 }
 
 // supersededBy is the 410 for a refusal the backend made with
@@ -140,32 +128,29 @@ func (r *durableCallout) check() error {
 
 // stopIfRefused cancels the callout when the scope it was begun from can no
 // longer complete, with the cause the owner's loop maps (ended in the callout
-// package): ErrSuperseded, common.ErrRollbackOnly, or ErrScopeInfra.
+// package): ErrSuperseded, or ErrScopeInfra.
 func (r *durableCallout) stopIfRefused() {
 	err := r.from.c.co.CheckScope(r.from.ctx)
 	switch {
 	case err == nil:
 	case errors.Is(err, spi.ErrCalloutSuperseded):
 		r.cancel(fmt.Errorf("%w: %w", ErrSuperseded, err))
-	case errors.Is(err, spi.ErrTxRollbackOnly):
-		r.cancel(fmt.Errorf("%w: %w", common.ErrRollbackOnly, err))
 	default:
 		r.cancel(fmt.Errorf("failed to check a scope of the transaction: %w", errors.Join(ErrScopeInfra, err)))
 	}
 }
 
-// nodeFrom returns the durable scope ctx carries when it belongs to txID, nil
-// otherwise.
-func nodeFrom(ctx context.Context, txID string) *durableScope {
+// nodeFrom returns the durable scope ctx carries, nil when it carries none.
+func nodeFrom(ctx context.Context) *durableScope {
 	n, _ := ctx.Value(scopeKey{}).(durableNode)
-	if n == nil || n.scope().txID != txID {
+	if n == nil {
 		return nil
 	}
 	return n.scope()
 }
 
 // BeginCallout implements Coordination. The callout is registered with the
-// backend under the scope on ctx (the root when ctx carries none of txID).
+// backend under the scope on ctx (the root when ctx carries none).
 // Its context is cancelled when Advance finds that scope refused, and when
 // end runs; end does not wait for anything.
 func (c *durable) BeginCallout(ctx context.Context, txID, calloutID string) (context.Context, func()) {
@@ -173,7 +158,7 @@ func (c *durable) BeginCallout(ctx context.Context, txID, calloutID string) (con
 	if txID == "" {
 		return cctx, func() { cancel(context.Canceled) }
 	}
-	from := nodeFrom(ctx, txID)
+	from := nodeFrom(ctx)
 	var outer []spi.CalloutPair
 	if from != nil {
 		outer = toSPIPairs(from.pairs())
@@ -247,14 +232,10 @@ func (c *durable) Advance(calloutID string, major uint32) {
 // seals on its rollback path, where its context may already be cancelled.
 func (c *durable) Seal(ctx context.Context, txID string) (func(), error) {
 	finish := func() {}
-	err := c.co.Seal(context.WithoutCancel(ctx), txID)
-	switch {
-	case err == nil:
-		return finish, nil
-	case errors.Is(err, spi.ErrTxRollbackOnly):
-		return finish, sealRefusal(ctx, c.txMgr, txID, nil, true, failedCodeOf(err))
+	if err := c.co.Seal(context.WithoutCancel(ctx), txID); err != nil {
+		return finish, sealRefusal(ctx, c.txMgr, txID, fmt.Errorf("failed to seal the transaction: %w", err))
 	}
-	return finish, sealRefusal(ctx, c.txMgr, txID, fmt.Errorf("failed to seal the transaction: %w", err), false, "")
+	return finish, nil
 }
 
 // Enter implements Coordination. maxWaiters does not apply: nothing queues.
@@ -274,13 +255,11 @@ func (c *durable) Enter(ctx context.Context, txID string, pairs []fence.Pair, cl
 }
 
 // openRefusal answers a request whose scope the backend did not open: the
-// handler did not run, so nothing is marked.
+// handler did not run.
 func (c *durable) openRefusal(ctx context.Context, txID string, err error) *common.AppError {
 	switch {
 	case errors.Is(err, spi.ErrCalloutSuperseded):
 		return supersededBy(err)
-	case errors.Is(err, spi.ErrTxRollbackOnly):
-		return common.TransactionRollbackOnlyJoined()
 	case lostRace(ctx, c.txMgr, txID):
 		return lostRaceAnswer()
 	case errors.Is(err, spi.ErrTxNotFound):
@@ -296,8 +275,8 @@ func (c *durable) OpenChild(ctx context.Context) (Scope, context.Context, error)
 	if spiTx == nil {
 		return nil, ctx, errors.New("failed to open a processor scope: the context carries no transaction")
 	}
-	parent := nodeFrom(ctx, spiTx.ID)
-	if parent != nil && parent.kind != rootKind {
+	parent := nodeFrom(ctx)
+	if parent != nil {
 		if err := parent.check(); err != nil {
 			return nil, ctx, err
 		}
@@ -305,9 +284,6 @@ func (c *durable) OpenChild(ctx context.Context) (Scope, context.Context, error)
 	pctx, err := c.co.OpenChildScope(ctx)
 	if err != nil {
 		return nil, ctx, fmt.Errorf("failed to open a processor scope: %w", errors.Join(ErrScopeInfra, err))
-	}
-	if parent != nil && parent.kind == rootKind {
-		parent = nil
 	}
 	s := &durableScope{c: c, kind: processorKind, txID: spiTx.ID, parent: parent}
 	s.ctx = context.WithValue(pctx, scopeKey{}, s)
@@ -328,77 +304,60 @@ func (s *durableScope) End(o *common.Outcome) *common.AppError {
 		}
 		return nil
 	}
-	answer, _, failed := decide(s, s.class, failureOf(o))
+	answer, failed := decide(s, s.class, failureOf(o))
 	return endAnswer(answer, failed)
 }
 
-// standing implements ending. Row 1 comes before row 4 in the backend's own
-// order (CheckScope). An error the backend does not name is a failed
+// standing implements ending. An error the backend does not name is a failed
 // completion: the request cannot be judged to have succeeded.
-func (s *durableScope) standing() (error, string, bool, error) {
+func (s *durableScope) standing() (error, error) {
 	err := s.c.co.CheckScope(s.ctx)
 	switch {
 	case err == nil:
-		return nil, "", false, nil
+		return nil, nil
 	case errors.Is(err, spi.ErrCalloutSuperseded):
-		return fmt.Errorf("%w: %w", fence.ErrSuperseded, err), "", false, nil
-	case errors.Is(err, spi.ErrTxRollbackOnly):
-		return nil, failedCodeOf(err), true, nil
+		return fmt.Errorf("%w: %w", fence.ErrSuperseded, err), nil
 	}
-	return nil, "", false, fmt.Errorf("failed to check a scope of the transaction: %w", err)
+	return nil, fmt.Errorf("failed to check a scope of the transaction: %w", err)
 }
 
 // lostRace implements ending.
 func (s *durableScope) lostRace() bool { return lostRace(s.ctx, s.c.txMgr, s.txID) }
 
 // complete implements ending: CompleteScope, whose refusal maps by its error.
-// A refused completion has discarded the scope already.
-func (s *durableScope) complete(class RequestClass) (*common.AppError, *parentMark, error) {
+// A refused completion has discarded the scope already. Any other error is a
+// failed completion, and the scope is discarded; when the completion applied
+// all the same, the coordinator refuses that discard, and Seal fails.
+func (s *durableScope) complete(class RequestClass) (*common.AppError, error) {
 	err := s.c.co.CompleteScope(s.ctx)
 	switch {
 	case err == nil:
-		return nil, nil, nil
+		return nil, nil
 	case errors.Is(err, spi.ErrCalloutSuperseded):
 		// Row 1.
-		return supersededBy(err), nil, nil
-	case errors.Is(err, spi.ErrTxRollbackOnly):
-		// Row 4: a write passes the mark up, which only DiscardScope does,
-		// with the code the refusal names.
-		var mark *parentMark
-		var failed error
-		if class == Write {
-			mark = &parentMark{code: failedCodeOf(err)}
-			failed = s.discard(mark)
-		}
-		return common.TransactionRollbackOnlyJoined(), mark, failed
+		return supersededBy(err), nil
 	case errors.Is(err, spi.ErrScopeConflict):
-		return scopeConflict(err), nil, nil
+		return scopeConflict(err), nil
 	}
 	return decide(s, class, completionFailure(err))
 }
 
-// discard implements ending: DiscardScope, which marks the parent itself with
-// the mark's code. A mark always passes a code: the backend marks nothing on
-// an empty one.
-func (s *durableScope) discard(mark *parentMark) error {
-	code := ""
-	if mark != nil {
-		code = mark.code
-		if code == "" {
-			code = common.ErrCodeTransactionRollbackOnly
-		}
-	}
-	if err := s.c.co.DiscardScope(s.ctx, code); err != nil {
+// discard implements ending: DiscardScope.
+func (s *durableScope) discard() error {
+	if err := s.c.co.DiscardScope(s.ctx); err != nil {
 		return &discardFailure{err: err}
 	}
 	return nil
 }
 
-// Close implements Scope for a processor scope. A mark on the scope goes with
-// it: the scope is discarded without passing one up.
+// Close implements Scope for a processor scope: discarded when the processor
+// failed, completed otherwise. A refusal the backend names has discarded the
+// scope already. Any other error is a failed completion, and the scope is
+// discarded; when the completion applied all the same, the coordinator
+// refuses that discard, and Seal fails.
 func (s *durableScope) Close(procErr error) error {
 	if procErr != nil {
-		if err := s.c.co.DiscardScope(s.ctx, ""); err != nil {
+		if err := s.c.co.DiscardScope(s.ctx); err != nil {
 			return fmt.Errorf("failed to discard a processor scope: %w", errors.Join(ErrScopeInfra, err))
 		}
 		return procErr
@@ -409,10 +368,11 @@ func (s *durableScope) Close(procErr error) error {
 		return nil
 	case errors.Is(err, spi.ErrCalloutSuperseded):
 		return supersededBy(err)
-	case errors.Is(err, spi.ErrTxRollbackOnly):
-		return rollbackOnly(s.ctx, s.c.txMgr, s.txID, failedCodeOf(err))
 	case errors.Is(err, spi.ErrScopeConflict):
 		return scopeConflict(err)
+	}
+	if dErr := s.c.co.DiscardScope(s.ctx); dErr != nil {
+		err = errors.Join(err, dErr)
 	}
 	return fmt.Errorf("failed to complete a processor scope: %w", errors.Join(ErrScopeInfra, err))
 }

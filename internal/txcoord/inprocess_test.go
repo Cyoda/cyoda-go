@@ -48,21 +48,6 @@ func TestEnter_NotCurrentPass410(t *testing.T) {
 	mustCalls(t, e.tm)
 }
 
-func TestEnter_RefusedUnderMarkedAncestor(t *testing.T) {
-	e := newEnv(t)
-	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, _ := e.mustEnter(Write, pair("c1", 1))
-	mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
-
-	for _, class := range []RequestClass{Read, Write, Outside} {
-		_, _, err := e.enter(class, pair("c1", 1))
-		mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-	}
-	mustCalls(t, e.tm, "savepoint", "rollback")
-	endC1()
-	mustSealRollbackOnly(t, e, common.ErrCodeValidationFailed)
-}
-
 func TestEnter_SiblingOfPausedScopeIsBusy(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
@@ -231,56 +216,27 @@ func TestCalloutEnd_AnsweredBeforeCallbackReturned(t *testing.T) {
 	mustSealOK(t, e)
 }
 
-func TestMark_CancelsCalloutsBegunFromScope(t *testing.T) {
+// A joined write that failed keeps nothing and leaves the transaction usable:
+// a later write under the same pass is served, Seal succeeds, and the commit
+// holds the owner's write and the later one, and none of the failed one's.
+func TestSeal_AfterFailedJoinedWriteSucceeds(t *testing.T) {
 	e := newEnv(t)
+	own := e.save(e.ownerCtx)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, actx := e.mustEnter(Write, pair("c1", 1))
-	x1ctx, endX1 := e.callout(actx, "x1")
-	resume := Pause(actx)
+	lost := e.save(actx)
+	mustOwnAnswer(t, a.End(failed(http.StatusConflict, common.ErrCodeUniqueViolation)))
 
-	d, _ := e.mustEnter(Write, pair("x1", 1), pair("c1", 1))
-	mustOwnAnswer(t, d.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
-	mustCancelledWith(t, x1ctx, common.ErrRollbackOnly)
-	endX1()
-	err := resume()
-	mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-
-	// A callout begun from a scope already marked is cancelled at once.
-	x2ctx, endX2 := e.c.BeginCallout(actx, e.txID, "x2")
-	mustCancelledWith(t, x2ctx, common.ErrRollbackOnly)
-	endX2()
-
-	mustAnswer(t, a.End(outcomeOf(err)), http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
+	b, bctx := e.mustEnter(Write, pair("c1", 1))
+	kept := e.save(bctx)
+	mustOwnAnswer(t, b.End(&common.Outcome{}))
 	endC1()
-	mustSealRollbackOnly(t, e, common.ErrCodeValidationFailed)
-}
 
-func TestMark_RootCancelsOwnerCallouts(t *testing.T) {
-	e := newEnv(t)
-	c1ctx, endC1 := e.callout(e.ownerCtx, "c1")
-	a, _ := e.mustEnter(Write, pair("c1", 1))
-	mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
-	mustCancelledWith(t, c1ctx, common.ErrRollbackOnly)
-	if err := Check(e.ownerCtx); err != nil {
-		t.Fatalf("Check on the owner's chain (no scope) = %v; want nil", err)
+	e.commit()
+	if !e.committed(own) || !e.committed(kept) || e.committed(lost) {
+		t.Fatalf("committed: owner's %v, later write %v, failed write %v; want true, true, false",
+			e.committed(own), e.committed(kept), e.committed(lost))
 	}
-	endC1()
-	mustSealRollbackOnly(t, e, common.ErrCodeValidationFailed)
-}
-
-func TestSeal_LostRaceBeforeMark(t *testing.T) {
-	e := newEnv(t)
-	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, _ := e.mustEnter(Write, pair("c1", 1))
-	mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
-	endC1()
-	e.tm.lost.Store(true)
-
-	err := e.seal()
-	if !errors.Is(err, spi.ErrTxAborted) {
-		t.Fatalf("Seal = %v; want the lost race (spi.ErrTxAborted)", err)
-	}
-	mustCode(t, common.TxAbortedConflict(err), http.StatusConflict, common.ErrCodeConflict, true)
 }
 
 func TestSeal_WaitsForOpenCallbackScopes(t *testing.T) {
@@ -315,10 +271,13 @@ func TestSeal_FinishForgetsTransaction(t *testing.T) {
 		e := newEnv(t)
 		_, endC1 := e.callout(e.ownerCtx, "c1")
 		a, _ := e.mustEnter(Write, pair("c1", 1))
-		mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+		rbErr := errors.New("the connection is gone")
+		e.tm.failRollback.Store(&rbErr)
+		mustAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)),
+			http.StatusInternalServerError, common.ErrCodeServerError, false)
 		endC1()
 		if err := e.seal(); err == nil {
-			t.Fatal("Seal of a marked transaction = nil")
+			t.Fatal("Seal of a broken transaction = nil")
 		}
 		mustForgotten(t, e)
 	})
@@ -367,24 +326,51 @@ func TestOpenChild_CloseFailedProcessorDiscards(t *testing.T) {
 	mustSealOK(t, e)
 }
 
-func TestOpenChild_CloseMarkedAbsorbs(t *testing.T) {
+// A callback of an ASYNC_NEW_TX processor's callout that fails a write keeps
+// nothing, and does not stop the processor's scope: Close(nil) keeps it, with
+// the writes of the callbacks that succeeded.
+func TestOpenChild_CloseAfterFailedCallbackWriteKeeps(t *testing.T) {
 	e := newEnv(t)
 	p, pctx, err := e.c.OpenChild(e.ownerCtx)
 	if err != nil {
 		t.Fatalf("OpenChild = %v", err)
 	}
 	_, endP1 := e.callout(pctx, "p1")
-	d, _ := e.mustEnter(Write, pair("p1", 1))
+	d, dctx := e.mustEnter(Write, pair("p1", 1))
+	lost := e.save(dctx)
 	mustOwnAnswer(t, d.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
+	d2, d2ctx := e.mustEnter(Write, pair("p1", 1))
+	kept := e.save(d2ctx)
+	mustOwnAnswer(t, d2.End(&common.Outcome{}))
 	endP1()
 
-	err = p.Close(nil)
-	mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-	mustCalls(t, e.tm, "savepoint", "savepoint", "rollback", "rollback")
-	if e.rootMarked() {
-		t.Fatal("the processor scope let its mark climb to the root")
+	if err := p.Close(nil); err != nil {
+		t.Fatalf("Close = %v; want nil", err)
 	}
-	mustSealOK(t, e)
+	mustCalls(t, e.tm, "savepoint", "savepoint", "rollback", "savepoint", "release", "release")
+	e.commit()
+	if !e.committed(kept) || e.committed(lost) {
+		t.Fatalf("committed: later write %v, failed write %v; want true, false", e.committed(kept), e.committed(lost))
+	}
+}
+
+// A processor scope whose rollback fails ends with ErrScopeInfra and leaves the
+// transaction broken: Seal fails with the rollback's cause.
+func TestOpenChild_CloseDiscardFailureBreaks(t *testing.T) {
+	e := newEnv(t)
+	p, _, err := e.c.OpenChild(e.ownerCtx)
+	if err != nil {
+		t.Fatalf("OpenChild = %v", err)
+	}
+	rbErr := errors.New("the connection is gone")
+	e.tm.failRollback.Store(&rbErr)
+	if err := p.Close(errors.New("processor failed")); !errors.Is(err, ErrScopeInfra) || !errors.Is(err, rbErr) {
+		t.Fatalf("Close = %v; want ErrScopeInfra with the rollback's cause", err)
+	}
+	e.tm.failRollback.Store(nil)
+	if err := e.seal(); !errors.Is(err, rbErr) {
+		t.Fatalf("Seal = %v; want the rollback's cause", err)
+	}
 }
 
 func TestOpenChild_UnderCallbackPausesItsHolder(t *testing.T) {
@@ -474,9 +460,6 @@ func TestEnter_SavepointRefused(t *testing.T) {
 			t.Errorf("a non-retryable refusal says retry: %q", err.Error())
 		}
 		mustNothingHeld(t, e)
-		if e.rootMarked() {
-			t.Fatal("a refused savepoint marked the root")
-		}
 		endC1()
 		mustSealOK(t, e)
 	})
@@ -538,88 +521,28 @@ func TestOpenChild_SavepointOnDeadSessionBreaks(t *testing.T) {
 	}
 }
 
-func TestCheck_LostRaceBeforeMark(t *testing.T) {
+// A callout outside any transaction (an empty txID) belongs to no scope, even
+// when the chain that makes it runs in one: a joined read evaluates a
+// workflow's function criterion with no transaction. It is begun under no
+// pass, so the scope's pass being superseded does not cancel it.
+func TestBeginCallout_NoTransactionBelongsToNoScope(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, actx := e.mustEnter(Write, pair("c1", 1))
-	_, endX1 := e.callout(actx, "x1")
-	resume := Pause(actx)
-	d, _ := e.mustEnter(Write, pair("x1", 1), pair("c1", 1))
-	mustOwnAnswer(t, d.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
-	endX1()
-	e.tm.lost.Store(true)
+	a, actx := e.mustEnter(Read, pair("c1", 1))
+	fctx, endF := e.c.BeginCallout(actx, "", "f1")
+	defer endF()
 
-	err := resume()
-	if !errors.Is(err, spi.ErrTxAborted) {
-		t.Fatalf("resume of a marked scope in a lost transaction = %v; want spi.ErrTxAborted", err)
+	advanced := async(func() { e.c.Advance("c1", 2) })
+	mustSuperseded(t, actx)
+	select {
+	case <-fctx.Done():
+		t.Fatalf("the callout with no transaction was cancelled with the scope's pass: %v", context.Cause(fctx))
+	case <-time.After(settle):
 	}
-	_ = a.End(outcomeOf(err))
+	mustAnswer(t, a.End(&common.Outcome{}), http.StatusGone, common.ErrCodeCalloutSuperseded, false)
+	mustFinish(t, "Advance", advanced)
 	endC1()
-}
-
-func TestOpenChild_CloseMarkedLostRace(t *testing.T) {
-	e := newEnv(t)
-	p, pctx, err := e.c.OpenChild(e.ownerCtx)
-	if err != nil {
-		t.Fatalf("OpenChild = %v", err)
-	}
-	_, endP1 := e.callout(pctx, "p1")
-	d, _ := e.mustEnter(Write, pair("p1", 1))
-	mustOwnAnswer(t, d.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
-	endP1()
-	e.tm.lost.Store(true)
-
-	if err := p.Close(nil); !errors.Is(err, spi.ErrTxAborted) {
-		t.Fatalf("Close = %v; want spi.ErrTxAborted", err)
-	}
-}
-
-// A ctx that carries a scope of another transaction registers nothing with
-// that scope: the callout and the processor scope go under txID's own root.
-func TestBeginCalloutAndOpenChild_ScopeOfAnotherTransaction(t *testing.T) {
-	e := newEnv(t)
-	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, actx := e.mustEnter(Write, pair("c1", 1))
-
-	tx2, tx2Ctx, err := e.tm.Begin(e.userCtx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	t.Cleanup(func() { _ = e.tm.Rollback(e.userCtx, tx2) })
-	cctx, endY := e.c.BeginCallout(actx, tx2, "y1")
-	reg := func() *calloutReg {
-		e.c.mu.Lock()
-		defer e.c.mu.Unlock()
-		return e.c.callouts["y1"]
-	}()
-	if reg.tx.id != tx2 || reg.parent != reg.tx.root {
-		t.Fatalf("callout registered on %s under %v; want %s's root", reg.tx.id, reg.parent.kind, tx2)
-	}
-	// A mark on the first transaction's scope does not reach it.
-	func() {
-		e.c.mu.Lock()
-		defer e.c.mu.Unlock()
-		a.(*scope).markLocked(common.ErrCodeValidationFailed)
-	}()
-	if cctx.Err() != nil {
-		t.Fatal("a mark in one transaction cancelled a callout of another")
-	}
-	endY()
-
-	mixed := spi.WithTransaction(actx, spi.GetTransaction(tx2Ctx))
-	p, _, err := e.c.OpenChild(mixed)
-	if err != nil {
-		t.Fatalf("OpenChild = %v", err)
-	}
-	ps := p.(*scope)
-	if ps.tx.id != tx2 || ps.parent != ps.tx.root {
-		t.Fatalf("processor scope opened on %s; want under %s's root", ps.tx.id, tx2)
-	}
-	if err := p.Close(nil); err != nil {
-		t.Fatalf("Close = %v", err)
-	}
-	_ = a.End(&common.Outcome{})
-	endC1()
+	mustSealOK(t, e)
 }
 
 // A second Pause before the first one's resume is a no-op: it releases
@@ -654,58 +577,13 @@ func TestCalloutEnd_ForgetsOnlyItsOwnRegistration(t *testing.T) {
 		e.c.mu.Lock()
 		defer e.c.mu.Unlock()
 		tx := e.c.txs[e.txID]
-		return e.c.callouts["dup"] != nil && tx != nil && tx.callouts["dup"] != nil && tx.root.callouts["dup"] != nil
+		return e.c.callouts["dup"] != nil && tx != nil && tx.callouts["dup"] != nil
 	}()
 	if !registered {
 		t.Fatal("the first callout's end forgot the second's registration")
 	}
 	endSecond()
 	mustForgotten(t, e)
-}
-
-// The context a callout runs under reports, through Check, the refusal of the
-// scope it was begun from once that scope is marked: the owner's loop answers
-// a callout cancelled by a mark with it. On the owner's chain that scope is
-// the root, which the owner's own context does not carry.
-func TestCheck_CalloutContextReportsItsParentsMark(t *testing.T) {
-	t.Run("root", func(t *testing.T) {
-		e := newEnv(t)
-		cctx, endC1 := e.callout(e.ownerCtx, "c1")
-		if err := Check(cctx); err != nil {
-			t.Fatalf("Check before any mark = %v", err)
-		}
-		a, _ := e.mustEnter(Write, pair("c1", 1))
-		_ = a.End(failed(400, common.ErrCodeWorkflowFailed))
-		if !errors.Is(context.Cause(cctx), common.ErrRollbackOnly) {
-			t.Fatalf("cause = %v; want ErrRollbackOnly", context.Cause(cctx))
-		}
-		err := Check(cctx)
-		mustCode(t, err, 409, common.ErrCodeTransactionRollbackOnly, false)
-		if !strings.Contains(err.Error(), common.ErrCodeWorkflowFailed) {
-			t.Fatalf("refusal %q does not name the failed code", err)
-		}
-		e.tm.lost.Store(true)
-		if err := Check(cctx); !errors.Is(err, spi.ErrTxAborted) {
-			t.Fatalf("Check after a lost race = %v; want spi.ErrTxAborted", err)
-		}
-		endC1()
-		_ = e.seal()
-	})
-	t.Run("callback", func(t *testing.T) {
-		e := newEnv(t)
-		_, endC1 := e.callout(e.ownerCtx, "c1")
-		a, actx := e.mustEnter(Write, pair("c1", 1))
-		resume := Pause(actx)
-		cctx, endC2 := e.callout(actx, "c2")
-		b, _ := e.mustEnter(Write, pair("c2", 1), pair("c1", 1))
-		_ = b.End(failed(400, common.ErrCodeValidationFailed))
-		mustCode(t, Check(cctx), 409, common.ErrCodeTransactionRollbackOnly, false)
-		endC2()
-		_ = resume()
-		_ = a.End(&common.Outcome{})
-		endC1()
-		_ = e.seal()
-	})
 }
 
 // Writers enter and end scopes of one callout in a loop while the owner keeps
@@ -775,30 +653,32 @@ func TestAdvance_UnderConcurrentWriters_NoEarlierMajorOutlivesIt(t *testing.T) {
 	}
 }
 
-// The context a callout of the owner's runs under carries the root. Pause's
-// resume and OpenChild on it check the root as Check does: nil while it is
-// unmarked, its refusal once it is marked.
-func TestRootOnCalloutContext_PauseAndOpenChildCheckTheRoot(t *testing.T) {
+// The context a callout of the owner's runs under carries no scope of its own:
+// Pause's resume and Check on it report nothing, also after a callback of the
+// callout failed a write, and a processor scope opened on it is the root's.
+func TestRootOnCalloutContext_PauseAndOpenChildUnderTheRoot(t *testing.T) {
 	e := newEnv(t)
 	cctx, endC1 := e.callout(e.ownerCtx, "c1")
+	a, _ := e.mustEnter(Write, pair("c1", 1))
+	mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
 
 	if err := Pause(cctx)(); err != nil {
-		t.Fatalf("resume on an unmarked root = %v; want nil", err)
+		t.Fatalf("resume on the root = %v; want nil", err)
+	}
+	if err := Check(cctx); err != nil {
+		t.Fatalf("Check on the callout's context = %v; want nil", err)
 	}
 	p, _, err := e.c.OpenChild(cctx)
 	if err != nil {
-		t.Fatalf("OpenChild under an unmarked root = %v; want nil", err)
+		t.Fatalf("OpenChild under the root = %v; want nil", err)
+	}
+	if ps := p.(*scope); ps.parent != ps.tx.root {
+		t.Fatal("the processor scope opened on the callout's context is not the root's")
 	}
 	if err := p.Close(nil); err != nil {
 		t.Fatalf("Close = %v", err)
 	}
 
-	a, _ := e.mustEnter(Write, pair("c1", 1))
-	mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
-	mustCode(t, Pause(cctx)(), http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-	_, _, err = e.c.OpenChild(cctx)
-	mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-
 	endC1()
-	mustSealRollbackOnly(t, e, common.ErrCodeValidationFailed)
+	mustSealOK(t, e)
 }

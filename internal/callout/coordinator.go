@@ -162,8 +162,7 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 	// The callout is registered with the scope this chain runs in, and ended
 	// on every exit path, a panic included: from then on all its passes are
 	// refused, and end waits for a joined request of its last cnode that is
-	// still in progress (it ends discarded). A mark on that scope cancels the
-	// callout: no further try or hand-over is made.
+	// still in progress (it ends discarded).
 	cctx, end := c.coord.BeginCallout(ctx, call.TxID, call.RequestID)
 	defer end()
 
@@ -180,17 +179,12 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 
 	p := &progress{triesLeft: tries}
 	result, err := c.loop(cctx, call, number, p)
-	// No outcome of the loop outranks the scope the callout was made from. A
-	// callback of the callout may have failed a write before the cnode
-	// answered — success or failure — or before its tries ran out, and the
-	// scope is then marked whichever the loop saw first: a callout made from a
-	// scope that cannot complete fails with that scope's refusal (the lost
-	// race first), however it ended.
-	//
-	// The callout is ended first. end returns once no callback admitted under
-	// it is still open, and a callback that ends after the callout has ended
-	// is superseded and marks nothing. So every mark a callback of this
-	// callout can set is set before the check, and none after it.
+	// No outcome of the loop outranks the scope the callout was made from: a
+	// callout made from a scope that can no longer complete (its pass was
+	// superseded, or the backend that coordinates the transaction could not
+	// be asked) fails with that scope's refusal, however it ended. The
+	// callout is ended first: end returns once no callback admitted under it
+	// is still open.
 	end()
 	if cerr := txcoord.Check(cctx); cerr != nil {
 		result, err = internalgrpc.CalloutResult{}, cerr
@@ -334,7 +328,8 @@ func (c *Coordinator) askPeers(cctx context.Context, call internalgrpc.Callout, 
 		// The hand-over does not report the owner's own context ending, so the
 		// owner reads it here: the callout's own deadline is not the end of the
 		// callout's story — what it recorded is — but the caller going away,
-		// the fence's release and a mark on the scope it was begun from are.
+		// the fence's release and a backend that could not be asked about the
+		// scope the callout was begun from are.
 		if err := cctx.Err(); err != nil && !calloutDeadlinePassed(cctx) {
 			p.stats.HandOvers = append(p.stats.HandOvers, contract.CalloutOutcomeAbandoned)
 			return none, true, ended(cctx, err)
@@ -476,11 +471,6 @@ func calloutDeadlinePassed(ctx context.Context) bool {
 //
 //   - released by the fence — the callback this callout was made from belongs
 //     to a cnode that was replaced — is CALLOUT_SUPERSEDED;
-//   - cancelled by a mark on the scope it was begun from (a callback of it, or
-//     of another callout of that scope, failed a write) is that scope's
-//     refusal, as txcoord.Check reports it on the callout's context: the lost
-//     race (spi.ErrTxAborted, the retryable conflict) when the transaction has
-//     lost one, otherwise 409 TRANSACTION_ROLLBACK_ONLY;
 //   - stopped because the backend that coordinates the transaction could not
 //     be asked (txcoord.ErrScopeInfra) is that failure;
 //   - the caller going away, or its transactionTimeoutMillis, is ctxErr,
@@ -497,9 +487,6 @@ func ended(cctx context.Context, ctxErr error) error {
 	switch {
 	case errors.Is(cause, txcoord.ErrSuperseded):
 		return txcoord.NewSupersededError()
-	case errors.Is(cause, common.ErrRollbackOnly):
-		// A mark never clears, so the check reports it.
-		return txcoord.Check(cctx)
 	case errors.Is(cause, txcoord.ErrScopeInfra):
 		// The backend that coordinates the transaction could not be asked
 		// whether the scope may go on: the callout fails closed.

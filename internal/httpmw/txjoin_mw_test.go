@@ -150,8 +150,8 @@ func routed(mw func(http.Handler) http.Handler, next http.Handler) http.Handler 
 
 // gateFree reports whether the transaction's gate is free: a request of the
 // live callout of txID (major 1) takes it within 50ms. A request refused after
-// it took the gate (a marked transaction) also reads as free; only a request
-// still queued when its wait ends reads as held.
+// it took the gate (a broken or sealed transaction) also reads as free; only a
+// request still queued when its wait ends reads as held.
 func gateFree(c txcoord.Coordination, txID string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -862,10 +862,9 @@ func TestTxJoin_RewriteDropsTheHandlersAnswer(t *testing.T) {
 }
 
 // A joined write the handler answers with a non-retryable failure, through the
-// shared error funnel, is discarded and makes the transaction rollback-only: a
-// later joined request is refused 409 TRANSACTION_ROLLBACK_ONLY, and the
-// failed request itself gets its own answer.
-func TestTxJoin_FailedWriteMakesTheTransactionRollbackOnly(t *testing.T) {
+// shared error funnel, is discarded and gets its own answer. The transaction
+// goes on: a later joined read or write is served.
+func TestTxJoin_FailedWriteLeavesTheTransactionUsable(t *testing.T) {
 	j, _, pass := liveJoiner(t, "tx-1")
 	failing := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, "the processor failed"))
@@ -882,10 +881,13 @@ func TestTxJoin_FailedWriteMakesTheTransactionRollbackOnly(t *testing.T) {
 		}
 		req.Header.Set(proxy.TxTokenHeader, pass)
 		rec := httptest.NewRecorder()
-		routed(TxJoin(j), http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("a request under a marked scope ran") })).ServeHTTP(rec, req)
-		props := problemProps(t, rec)
-		if rec.Code != http.StatusConflict || props.ErrorCode != "TRANSACTION_ROLLBACK_ONLY" || props.Retryable {
-			t.Fatalf("%s after a failed write = %d %+v; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable", method, rec.Code, props)
+		ran := false
+		routed(TxJoin(j), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			ran = true
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(rec, req)
+		if !ran || rec.Code != http.StatusOK {
+			t.Fatalf("%s after a failed write: ran=%v, answer %d %s; want it served 200", method, ran, rec.Code, rec.Body.String())
 		}
 	}
 }
