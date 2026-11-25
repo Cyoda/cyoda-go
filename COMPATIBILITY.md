@@ -65,23 +65,23 @@ cyoda-go's root `go.mod` may pin a **newer** SPI version than out-of-tree plugin
 ### The SPI pin during a milestone
 
 Through a development milestone the root `go.mod` and every in-tree plugin
-submodule pin a **pseudo-version** of `cyoda-go-spi` against its `main`, because
-the surface the milestone needs is merged there but not yet tagged. The
-pseudo-version advances as milestone work lands — not per PR, only when a
-dependent change needs the newer surface to build. Both halves must move
-together: the `GOWORK=off` CI jobs resolve the root manifest as a consumer
-would, so plugins left at old tags fail there while `go.work` keeps every local
-run green (`make repin-plugins`).
+submodule pin a **pseudo-version** of `cyoda-go-spi` against its `main`, or
+against its release branch for a patch milestone, because the surface the
+milestone needs is merged there but not yet tagged. The pseudo-version advances
+as milestone work lands — not per PR, only when a dependent change needs the
+newer surface to build. Both halves must move together: the `GOWORK=off` CI
+jobs resolve the root manifest as a consumer would, so plugins left at old tags
+fail there while `go.work` keeps every local run green (`make repin-plugins`).
 
 At the release cut the window closes: all four manifests are re-pinned to the
 real tag, checked by `make check-spi-pin-sync`. **Currently pinned: the
 pseudo-version `v0.9.1-0.20261125011131-ed06454fa527`**, a commit on
 `cyoda-go-spi` branch `release/v0.9.1` (the merge of cyoda/cyoda-go-spi#88),
 work for the v0.9.1 milestone (it removes the rollback-only mark from
-`TransactionCoordinator`); the `v0.9.1` tag replaces it at the release cut. This module ships breaking changes without a major
-version (see [Independent version axes](#independent-version-axes)), and its
-`### Breaking` changelog section rather than the version component is what
-flags it.
+`TransactionCoordinator`); the `v0.9.1` tag replaces it at the release cut.
+This module ships breaking changes without a major version (see [Independent
+version axes](#independent-version-axes)), and its `### Breaking` changelog
+section rather than the version component is what flags it.
 
 Per-milestone detail of which surface landed when belongs in the matrix row for
 that release, not here; this section describes the mechanism, which does not
