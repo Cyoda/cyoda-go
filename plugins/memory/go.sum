@@ -1,5 +1,5 @@
-github.com/cyoda/cyoda-go-spi v0.9.1-0.20261124144507-88d6218aa429 h1:ywd5QN4qGt1enpQAlfC5w7nAUuUq2UURraZkku6DIv4=
-github.com/cyoda/cyoda-go-spi v0.9.1-0.20261124144507-88d6218aa429/go.mod h1:wCLZEhTG9o23lCvFkjNbdt53A/sIGcPItY4VC6iea4c=
+github.com/cyoda/cyoda-go-spi v0.9.1-0.20261125011131-ed06454fa527 h1:kqysONP4Hdy7ok8VM7k4XpHSZa3HHW9rsfIg7wNqOQs=
+github.com/cyoda/cyoda-go-spi v0.9.1-0.20261125011131-ed06454fa527/go.mod h1:wCLZEhTG9o23lCvFkjNbdt53A/sIGcPItY4VC6iea4c=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=

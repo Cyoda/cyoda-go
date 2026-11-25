@@ -75,8 +75,8 @@ run green (`make repin-plugins`).
 
 At the release cut the window closes: all four manifests are re-pinned to the
 real tag, checked by `make check-spi-pin-sync`. **Currently pinned: the
-pseudo-version `v0.9.1-0.20261124144507-88d6218aa429`**, a commit of
-`cyoda-go-spi` branch `release/v0.9.1` work for the v0.9.1 milestone (it removes
+pseudo-version `v0.9.1-0.20261125011131-ed06454fa527`**, a commit on
+`cyoda-go-spi` branch `release/v0.9.1` (the merge of cyoda/cyoda-go-spi#88), work for the v0.9.1 milestone (it removes
 the rollback-only mark from `TransactionCoordinator`); the `v0.9.1` tag replaces
 it at the release cut. This module ships breaking changes without a major
 version (see [Independent version axes](#independent-version-axes)), and its
