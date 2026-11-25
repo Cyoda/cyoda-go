@@ -46,6 +46,7 @@ GOWORK=off go mod tidy
 
 echo "Verifying GOWORK=off root build and SPI pin-sync..."
 GOWORK=off go build ./... >/dev/null
-./scripts/check-spi-pin-sync.sh >/dev/null && echo "  pin-sync: OK"
+./scripts/check-spi-pin-sync.sh >/dev/null
+echo "  pin-sync: OK"
 
 echo "OK: plugins pseudo-pinned to HEAD. Review, then: git add go.mod go.sum && commit."
