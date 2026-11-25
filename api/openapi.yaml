@@ -6867,11 +6867,21 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Forbidden - access_denied (the assertion's caas_org_id is
-            not the client's tenant)
+            not the client's tenant). In mock IAM mode, where the join layer
+            serves this operation, a caller without ROLE_M2M, or a request
+            carrying an `X-Tx-Token` that names a transaction of another
+            tenant, or, on behalf of a user, a transaction that user did not
+            begin, is refused with a problem body whose
+            `properties.errorCode` is FORBIDDEN.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          $ref: '#/components/responses/TransactionNotFound'
         "405":
           description: Method Not Allowed - method_not_allowed (only POST is
             accepted). Carries Allow POST.
@@ -6887,14 +6897,9 @@ paths:
         "409":
           $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
-          description: >-
-            TRANSACTION_EXPIRED: in a cluster, a request carrying an
-            `X-Tx-Token` past its expiry is refused by the transaction routing
-            layer before the endpoint runs. Not retryable.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/TransactionGone'
+        "413":
+          $ref: '#/components/responses/JoinedPayloadTooLarge'
         "429":
           description: Too Many Requests - slow_down (the client has used its
             per-node limit of token requests per minute, counted across both
@@ -6934,11 +6939,14 @@ paths:
           description: Service Unavailable - temporarily_unavailable (the client
             store or the trusted-key store is unavailable, or no client-secret
             check slot freed up within 1 second). Retry after the
-            Retry-After delay. In a cluster, a request carrying an
-            `X-Tx-Token` that names another node is forwarded to it, and is
-            answered TRANSACTION_NODE_UNAVAILABLE, with a problem body, when
-            that node cannot be reached — retryable only when the request was
-            not sent to it.
+            Retry-After delay. A request carrying an `X-Tx-Token` is also
+            answered 503 with a problem body — in a cluster,
+            TRANSACTION_NODE_UNAVAILABLE when the node that owns the
+            transaction cannot be reached (retryable only when the request
+            was not sent to that node); in mock IAM mode, by the join layer,
+            TOO_MANY_JOINED_REQUESTS (retryable), or TRANSACTION_BUSY
+            (retryable) while another callback of its transaction waits for a
+            callout of its own.
           headers:
             Retry-After:
               description: Seconds to wait before retrying.
