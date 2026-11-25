@@ -714,6 +714,9 @@ A short checklist:
     partial-success batches and design idempotent re-submission, or
     (b) avoid `COMMIT_BEFORE_DISPATCH` on workflows reachable from
     batch endpoints.
+11. **A failed callback's reads are not in the read set** (a read
+    answered with a `4xx` excepted), so the commit does not check them
+    for an outdated premise.
 
 ## 11. References
 
