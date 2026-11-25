@@ -111,9 +111,10 @@ when the check of the row before it passes.
 | 8 | Binary tag | Key holder | the pin commit | — | `release.yml` green, first `Verify release` run green, Latest mark on the new release | [7](#7-cut-the-release), [9](#9-verify-the-published-release-gate) |
 | 9 | Chart PR: push chart `version:` and the `COMPATIBILITY.md` chart row to the bot's PR | Preparer | PR | squash | checks green on the pushed head | [8](#8-publish-the-helm-chart) |
 | 10 | Chart tag `cyoda-X.Y.Z` | Key holder | the chart squash-merge commit on `main` | — | `release-chart.yml` green, second `Verify release` run green | [8](#8-publish-the-helm-chart), [9](#9-verify-the-published-release-gate) |
-| 11 | Open the next release branch, close the milestone | Preparer | `main` | — | the `target-branch` check prints the branch | [10](#10-open-the-next-release-branch) |
+| 11 | Announcement: post the release notes as a discussion in Announcements | Preparer | GitHub Discussions | — | the discussion shows the notes | [9.5](#95-announce-the-release) |
+| 12 | Open the next release branch, close the milestone | Preparer | `main` | — | the `target-branch` check prints the branch | [10](#10-open-the-next-release-branch) |
 
-A patch release while the next minor is open changes rows 4 and 11 and adds a
+A patch release while the next minor is open changes rows 4 and 12 and adds a
 wrap-up with two forward merges (merge commits, never squash): see
 [Patch release while the next minor is open](#patch-release-while-the-next-minor-is-open).
 `cyoda-go-cassandra` follows in its own repo
@@ -267,7 +268,10 @@ Do this as a single consolidated **release-prep** commit on the release branch,
    [patch release while the next minor is open](#patch-release-while-the-next-minor-is-open).
 5. Stamp `CHANGELOG.md` `[Unreleased]` as `[X.Y.Z] — YYYY-MM-DD`, add
    `docs/release-notes/vX-Y-Z.md`, and add the `COMPATIBILITY.md` row
-   ([6.5](#65-update-compatibilitymd)).
+   ([6.5](#65-update-compatibilitymd)). The date, in both files, is the day
+   the binary tag will be cut. If the tag lands on another day, correct both
+   on the open release branch before the announcement
+   ([9.5](#95-announce-the-release)).
 6. Verify: `make check-spi-pin-sync` and `make test` locally, then push.
    CI runs on every push to `release/**` and is the full-suite gate (CLAUDE.md
    Gate 5): do not also run `make test-full` or `make race` locally.
@@ -409,9 +413,10 @@ git cat-file -p "$V" | grep -q "BEGIN SSH SIGNATURE" && echo signed
 ```
 
 The changelog is **not** the GitHub Release. `CHANGELOG.md` is maintained
-per release, and the narrative notes published to the docs site live in
-`docs/release-notes/v<X-Y-Z>.md`. Both are written before the tag, as part
-of the release-prep commit.
+per release, and the narrative notes live in
+`docs/release-notes/v<X-Y-Z>.md`; they are published to the docs site and as
+the release announcement ([9.5](#95-announce-the-release)). Both are written
+before the tag, as part of the release-prep commit.
 
 Pushing the tag fires `release.yml`:
 pre-flight module verification, build binaries, multi-arch image to
@@ -812,6 +817,31 @@ scripts/verify-release.sh vX.Y.Z --latest --chart C.D.E
 The workflow also runs weekly against the newest stable release (and any
 chart for it), so drift (the Latest mark moving, an asset replaced) shows up
 without a release.
+
+### 9.5. Announce the release
+
+Post the release notes as a discussion in the repository's **Announcements**
+category, titled `Cyoda-go vX.Y.Z released`, after every `Verify release` run
+of step 9 is green. `scripts/release-announcement.sh` builds the body from
+`docs/release-notes/vX-Y-Z.md` and posts it:
+
+```bash
+V=v0.9.1
+# dry run: print the body and read it
+scripts/release-announcement.sh "$V"
+# post it
+scripts/release-announcement.sh "$V" --post
+```
+
+The body is the notes with each wrapped paragraph and list item joined onto
+one line, because a discussion renders a single line break as a hard break.
+The script refuses to post a title that already exists. Discussions have no
+REST API, so it posts with `gh api graphql`.
+
+Check the `_Released <date>_` line first: it is the day the binary tag was
+cut. If the release-prep date is wrong, correct the notes and `CHANGELOG.md`
+on the open release branch and post from that corrected file
+(`--notes <file>` takes a path).
 
 ### 10. Open the next release branch
 
