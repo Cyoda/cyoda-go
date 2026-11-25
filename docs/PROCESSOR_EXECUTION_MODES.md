@@ -37,10 +37,10 @@ the focus of this document.
 
 | Mode | Synchrony | Open TX during dispatch | Result mutations applied | Failure | Suitable for |
 |---|---|---|---|---|---|
-| `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — the callout's error (see `cyoda help workflows`), `409 TRANSACTION_ROLLBACK_ONLY` when a callback write failed with an answer that is not retryable, or a retryable `409 CONFLICT` when a callback write had already lost a race; entity stays in source state | fast, in-TX work; standard processor |
+| `SYNC` | blocks inline | yes (caller's TX) | yes | fatal — the callout's error (see `cyoda help workflows`), or a retryable `409 CONFLICT` when a callback write had already lost a race; entity stays in source state | fast, in-TX work; standard processor |
 | `ASYNC_SAME_TX` | blocks inline | yes (caller's TX) | yes | fatal — same as `SYNC` | indistinguishable from `SYNC` today; reserved label |
-| `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal for the processor's own failure, and for a failed callback write under it — warning logged, pipeline continues; a savepoint that cannot be created, undone or released fails the operation instead (ticketed `5xx`), a callback write inside the savepoint that had already lost a race when the savepoint was undone fails it with a retryable `409 CONFLICT` and nothing commits, and a superseded enclosing callout is not swallowed either | fire-and-forget side effects (notifications, audit pings) |
-| `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — the callout's error (see `cyoda help workflows`), or, with `startNewTxOnDispatch`, `409 TRANSACTION_ROLLBACK_ONLY` when a callback write in `TX_post` failed with an answer that is not retryable, or a retryable `409 CONFLICT` when one had already lost a race; entity durable in pre-callout state | slow external work; connection-pool relief |
+| `ASYNC_NEW_TX` | blocks inline | yes (savepoint inside caller's TX) | **no — discarded** | non-fatal for the processor's own failure — warning logged, pipeline continues; a savepoint that cannot be created, undone or released fails the operation instead (ticketed `5xx`), a callback write inside the savepoint that had already lost a race when the savepoint was undone fails it with a retryable `409 CONFLICT` and nothing commits, and a superseded enclosing callout is not swallowed either | fire-and-forget side effects (notifications, audit pings) |
+| `COMMIT_BEFORE_DISPATCH` | blocks inline | **no** — `TX_pre` committed first | yes, via `CompareAndSave` against `T_pre` | fatal — the callout's error (see `cyoda help workflows`), or, with `startNewTxOnDispatch`, a retryable `409 CONFLICT` when a callback write in `TX_post` had already lost a race; entity durable in pre-callout state | slow external work; connection-pool relief |
 
 The engine implementation is in
 [`internal/domain/workflow/engine_processors.go`](../internal/domain/workflow/engine_processors.go).
@@ -131,12 +131,21 @@ section: it commits on its own and stays ([CONSISTENCY.md §3a](CONSISTENCY.md#3
 
 Each callback is **all-or-nothing**: it runs in a scope of its own, and either
 all its writes become part of `T` or none do. A `2xx` is sent only for a
-callback whose writes were kept. A callback that fails keeps nothing; when it
-failed with a retryable answer, `T` goes on and the callback can be sent again.
-A callback **write** that fails with an answer that is not retryable makes `T`
-rollback-only: the callout it was made under is stopped and the operation
-fails with `409 TRANSACTION_ROLLBACK_ONLY`, whatever the processor answers
-(`ASYNC_NEW_TX` is the exception, below). A callback still in progress when its
+callback whose writes were kept. A callback that fails keeps nothing (a read
+answered with a `4xx` that is not retryable keeps what it read). A failed
+callback leaves the operation's outcome to the member, unless `T` itself can
+no longer commit: it lost a write race (`409 CONFLICT`, not retryable) or its
+session ended (`404 TRANSACTION_NOT_FOUND`). After a retryable answer the
+callback can be sent again.
+An answer that is not retryable is the processor's to handle: it goes on
+without that callback, or it fails, and the operation then does what its mode
+does with the processor's answer. When the outcome of a write is unknown — a
+`503 TRANSACTION_NODE_UNAVAILABLE` that is not retryable (the request may have
+reached the node that holds the transaction), or no answer at all — the member
+cannot tell whether the write was kept, so it must fail the callout. A failed
+callback whose scope cannot be discarded is answered `500 SERVER_ERROR` (except
+when the transaction's session has ended: `404 TRANSACTION_NOT_FOUND`), and
+`T` can then no longer commit. A callback still in progress when its
 callout moves on is discarded and answered `410 CALLOUT_SUPERSEDED`. See
 `cyoda help cluster` and `docs/cloud-parity/callback-scopes.md`.
 
@@ -198,11 +207,8 @@ non-fatal. The engine code is `executeAsyncNewTx` at
    a ticketed `5xx` and nothing commits. A callback write that had already
    lost a race against another transaction stays lost after the rollback: the
    operation fails with a retryable `409 CONFLICT` and nothing commits. A
-   callback write under the processor that fails with an answer that is not
-   retryable makes the processor fail the same way: its savepoint is undone
-   with everything its callbacks wrote to entities, and the pipeline continues. A replaced
-   compute member is shut out before the savepoint is undone, so none of its
-   writes lands after it.
+   replaced compute member is shut out before the savepoint is undone, so none
+   of its writes lands after it.
 4. On success: `ReleaseSavepoint(T, S)` discards the savepoint marker.
 
 ### Why mutations are discarded

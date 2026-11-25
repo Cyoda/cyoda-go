@@ -340,7 +340,7 @@ func TestCalloutFence_CallbackPastItsLastCheckDiscardedWhole(t *testing.T) {
 	coll := awaitResult(t, "the collection in progress", collRes)
 	assertProblem(t, coll.StatusCode, coll.Body, http.StatusGone, "CALLOUT_SUPERSEDED", false)
 	if res := awaitCreate(t, done, 15*time.Second); res.status != http.StatusOK {
-		t.Fatalf("create: %d %s; want 200 — a discarded callback marks nothing", res.status, res.body)
+		t.Fatalf("create: %d %s; want 200 — a discarded callback leaves the transaction usable", res.status, res.body)
 	}
 	for _, id := range []string{v1, v2} {
 		if st, _ := h.GetEntityState(t, id); st == "APPROVED" {

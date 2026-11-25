@@ -337,38 +337,29 @@ func TestTransactionControl_WriteOps_TransactionTimeout408(t *testing.T) {
 //
 // A transaction-control parameter on a request that joins a transaction is
 // refused 400, naming the parameter, on a create, a conditional delete and a
-// direct search. Each is the only callback of its own owner operation, because
-// the answer decides what happens to the owner:
-//
-//   - the create and the delete are writes: a non-retryable failure of a
-//     joined write makes the owner's transaction rollback-only, so the owner is
-//     refused 409 TRANSACTION_ROLLBACK_ONLY naming BAD_REQUEST, and nothing of
-//     it is committed;
-//   - the search is a read: its 4xx keeps its scope, and the owner commits.
-//
-// One callback per owner also keeps each 400 observable: after a failed write
-// the mark ends the callout, and a later request on its pass is refused as
-// superseded instead.
+// direct search. Each is the only callback of its own owner operation. The
+// refusal leaves the owner's transaction usable — a write's scope is
+// discarded, a read's is kept — and the owner's processor answers success, so
+// the owner commits. The refused create stores nothing.
 func TestTransactionControl_JoinedRequests400(t *testing.T) {
 	h := newCallbackHarness(t)
 
-	const secondary = "e2e-txctl-joined-secondary"
+	secondary := uniq("e2e-txctl-joined-secondary") // repeated runs share this package's Postgres testcontainer
 	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
 
 	for _, tc := range []struct {
 		name, method, path, body, param string
-		write                           bool
 	}{
 		{"create", http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1?transactionTimeoutMillis=5000", secondary),
-			`{"name":"x","amount":1,"status":"draft"}`, "transactionTimeoutMillis", true},
+			`{"name":"x","amount":1,"status":"draft"}`, "transactionTimeoutMillis"},
 		{"deleteEntities", http.MethodDelete, fmt.Sprintf("/api/entity/%s/1?transactionSize=2", secondary),
-			txctlSimpleCond, "transactionSize", true},
+			txctlSimpleCond, "transactionSize"},
 		{"search", http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1?timeoutMillis=5000", secondary),
-			txctlSimpleCond, "timeoutMillis", false},
+			txctlSimpleCond, "timeoutMillis"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			proc := "txctl-joined400-" + tc.name
-			primary := "e2e-txctl-joined-primary-" + tc.name
+			primary := uniq("e2e-txctl-joined-primary-" + tc.name)
 			resultCh := make(chan callbackResult, 1)
 			h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
 				res, err := rc.h.callback(tc.method, tc.path, tc.body, rc.token)
@@ -407,18 +398,14 @@ func TestTransactionControl_JoinedRequests400(t *testing.T) {
 				t.Errorf("joined %s 400 body does not mention %s: %s", tc.name, tc.param, res.Body)
 			}
 
-			if !tc.write {
-				if status != http.StatusOK {
-					t.Fatalf("primary create = %d, want 200: a joined read's 400 keeps its scope; body: %s", status, body)
-				}
-				return
+			if status != http.StatusOK {
+				t.Fatalf("primary create = %d, want 200: the joined %s's 400 leaves the transaction usable and the processor answered success; body: %s", status, tc.name, body)
 			}
-			pd := assertProblem(t, status, body, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
-			if !strings.Contains(pd.Detail, "BAD_REQUEST") {
-				t.Errorf("owner detail = %q; want it to name the callback's BAD_REQUEST", pd.Detail)
+			if n := h.countEntities(t, primary); n != 1 {
+				t.Errorf("%d primary entities committed; want 1", n)
 			}
-			if n := h.countEntities(t, primary); n != 0 {
-				t.Errorf("%d primary entities committed; want none", n)
+			if n := h.countEntities(t, secondary); n != 0 {
+				t.Errorf("%d secondary entities committed; the refused requests store nothing", n)
 			}
 		})
 	}

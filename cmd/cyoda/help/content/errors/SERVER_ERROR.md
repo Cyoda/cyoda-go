@@ -22,6 +22,8 @@ The server encountered an unclassified internal error. The response body contain
 
 Retryable with caution. Simple reads may be retried safely. Writes must be treated as potentially applied — the write outcome must be verified before retrying to avoid duplicates. The `ticket` value identifies the server-side error log entry.
 
+A request made under a transaction token — a compute member's callback — that is answered `500` may have failed in a way the server could not undo. The transaction it joined then cannot commit: the operation that owns it fails whatever the member answers, so a retry cannot succeed and the answer is not retryable.
+
 ## SEE ALSO
 
 - errors
