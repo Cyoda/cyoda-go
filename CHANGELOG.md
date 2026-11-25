@@ -79,7 +79,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   transition name; `search` listed the field among the meta dates (it is a
   string).
 
-## [0.9.1] — 2026-11-24
+## [0.9.1] — 2026-11-25
 
 ### Fixed
 

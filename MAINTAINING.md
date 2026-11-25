@@ -86,9 +86,73 @@ across rotations.
 
 ## Cutting a release
 
-Releases are **intentional**, not per-merge. Merge PRs to `main`
-freely; when you decide to cut a release, push a `v*` tag. That
-fires `release.yml`, which builds artifacts, signs, and publishes.
+Releases are **intentional**, not per-merge. Milestone PRs merge into the
+release branch `release/vX.Y.Z`. When you decide to cut a release, the
+release PR merges that branch into `main`, and a pushed `v*` tag fires
+`release.yml`, which builds artifacts, signs, and publishes.
+
+### Release at a glance
+
+The numbered steps below hold the commands. This table gives the order.
+**Preparer** is anyone preparing the release. **Key holder** is a maintainer
+with the signing key ([Who can cut a tag](#who-can-cut-a-tag)); the preparer
+gives the key holder each tag command with the exact SHA. Start a row only
+when the check of the row before it passes.
+
+| # | Step | Who | Where | Merge | Check | Details |
+|---|---|---|---|---|---|---|
+| 1 | SPI: apply pending Dependabot bumps, rename `CHANGELOG.md` `[Unreleased]` to `[X.Y.Z] - <date>`, push | Preparer | SPI `main`, or SPI `release/vX.Y.Z` for a patch while the next minor is open | — | SPI CI green on that commit | [Coordinated release](#coordinated-release-across-sibling-repos) 1 |
+| 2 | SPI tag | Key holder | the commit of row 1 | — | tag signed: `git cat-file -p <tag>` shows `BEGIN SSH SIGNATURE` | same |
+| 3 | SPI GitHub Release | Preparer | the SPI tag | — | the Go proxy and `sum.golang.org` serve the tag | same |
+| 4 | Release-prep commit: SPI pin, Dependabot bumps, tidy, `dependabot.yml` `target-branch` (minor only), `CHANGELOG.md`, release notes, `COMPATIBILITY.md` | Preparer | `release/vX.Y.Z` | — | `make check-spi-pin-sync`, `make test`, CI green | [Gate 0](#0-reconcile-dependencies-on-the-release-branch-gate), [6.5](#65-update-compatibilitymd) |
+| 5 | Release PR `release/vX.Y.Z` → `main` | Preparer | PR | merge commit | CI green on the PR head | [Merging a release PR](#merging-a-release-pr) |
+| 6 | Three plugin tags | Key holder | the release merge commit on `main` | — | each tag signed | [1](#1-plugin-submodule-tags-first) |
+| 7 | Pin commit: root `go.mod` requires the plugin tags | Preparer | pushed to `main` | — | CI green on that commit | [3](#3-pin-plugin-module-versions-to-the-release-tags), [5](#5-verify-ci-is-green) |
+| 8 | Binary tag | Key holder | the pin commit | — | `release.yml` green, first `Verify release` run green, Latest mark on the new release | [7](#7-cut-the-release), [9](#9-verify-the-published-release-gate) |
+| 9 | Chart PR: push chart `version:` and the `COMPATIBILITY.md` chart row to the bot's PR | Preparer | PR | squash | checks green on the pushed head | [8](#8-publish-the-helm-chart) |
+| 10 | Chart tag `cyoda-X.Y.Z` | Key holder | the chart squash-merge commit on `main` | — | `release-chart.yml` green, second `Verify release` run green | [8](#8-publish-the-helm-chart), [9](#9-verify-the-published-release-gate) |
+| 11 | Announcement: post the release notes as a discussion in Announcements | Preparer | GitHub Discussions | — | the discussion shows the notes | [9.5](#95-announce-the-release) |
+| 12 | Open the next release branch, close the milestone | Preparer | `main` | — | the `target-branch` check prints the branch | [10](#10-open-the-next-release-branch) |
+
+A patch release while the next minor is open changes rows 4 and 12 and adds a
+wrap-up with two forward merges (merge commits, never squash): see
+[Patch release while the next minor is open](#patch-release-while-the-next-minor-is-open).
+`cyoda-go-cassandra` follows in its own repo
+([Coordinated release](#coordinated-release-across-sibling-repos) 3).
+
+### Merging a release PR
+
+Merge release PRs through the REST endpoint, not `gh pr merge`. `gh pr merge`
+uses the GraphQL API, and with `--delete-branch` it switches the local checkout
+to the base branch, which fails when a worktree holds that branch.
+
+```bash
+# release PR and forward merges: merge commit
+gh api -X PUT repos/cyoda/cyoda-go/pulls/<n>/merge -f merge_method=merge
+# chart PR: squash
+gh api -X PUT repos/cyoda/cyoda-go/pulls/<n>/merge -f merge_method=squash
+```
+
+| PR | Method | Why |
+|---|---|---|
+| Release PR `release/vX.Y.Z` → `main` | merge commit | The plugin tags go on the merge commit, and the release branch's commits, which the milestone's pseudo-version pins name, stay reachable from `main`. |
+| Chart PR | squash | One commit to tag. |
+| Forward merge after a patch release | merge commit, never squash | The patch tag must become an ancestor of the open branch ([why](#patch-release-while-the-next-minor-is-open)). |
+
+**After a 5xx or `405 Merge already in progress`, stop sending merge calls.**
+A 5xx does not mean that the merge failed. A stuck merge job on GitHub's side
+can hold the PR's merge lock for an hour, and while it does, every merge call
+fails. Instead:
+
+1. Check whether the merge happened:
+   ```bash
+   gh api repos/cyoda/cyoda-go/pulls/<n> -q '.merged, .merged_at'
+   git ls-remote origin refs/heads/<base>
+   ```
+2. If the PR is still unmerged, wait a few minutes and check again.
+3. Retry once. A `405 Merge already in progress` means that the lock is
+   still held: go back to 1. Never retry in a loop.
+4. If the lock does not clear, merge in the web UI.
 
 ### Versioning
 
@@ -101,6 +165,8 @@ fields, and bug fixes all ship as patches. The discipline this rests
 on: **a breaking change never ships in a patch.** (This is the
 "leftmost non-zero component is the de-facto major" convention; see
 [`README.md`](README.md#versioning) for the consumer-facing statement.)
+`cyoda-go-spi` `v0.8.3`, `v0.8.4` and `v0.9.1` are the recorded exceptions;
+see [Bumping cyoda-go-spi](#bumping-cyoda-go-spi).
 
 New version must be **strictly greater** than the previous tag — Go
 module tags are write-once-per-value on the proxy (`proxy.golang.org`
@@ -192,12 +258,21 @@ Do this as a single consolidated **release-prep** commit on the release branch,
 2. Apply every pending Dependabot minor/patch bump (root + each plugin
    submodule). If a grouped PR was closed because it was entangled with the
    then-unresolvable SPI pin, apply its third-party updates by hand here.
+   Re-read each PR's current versions (`gh pr diff <n>`) before you apply it
+   or close it as superseded: Dependabot moves its open PRs to newer
+   releases, so the versions can differ from the ones it first proposed.
 3. `go mod tidy` in every module.
 4. Point `.github/dependabot.yml`'s `target-branch` at the **next** release
    branch (`release/vX.Y+1.0`), every entry together. The branch itself is
-   opened in step 10, immediately after the merge-to-`main`, so the config and
-   the branch land within minutes of each other.
-5. Verify: `make check-spi-pin-sync` and `make test` locally, then push.
+   opened in step 10, from `main` after the chart merge. Skip this for a
+   [patch release while the next minor is open](#patch-release-while-the-next-minor-is-open).
+5. Stamp `CHANGELOG.md` `[Unreleased]` as `[X.Y.Z] — YYYY-MM-DD`, add
+   `docs/release-notes/vX-Y-Z.md`, and add the `COMPATIBILITY.md` row
+   ([6.5](#65-update-compatibilitymd)). The date, in both files, is the day
+   the binary tag will be cut. If the tag lands on another day, correct both
+   on the open release branch before the announcement
+   ([9.5](#95-announce-the-release)).
+6. Verify: `make check-spi-pin-sync` and `make test` locally, then push.
    CI runs on every push to `release/**` and is the full-suite gate (CLAUDE.md
    Gate 5): do not also run `make test-full` or `make race` locally.
 
@@ -218,11 +293,12 @@ Pick the same version number as the root tag to keep the mental model
 simple:
 
 ```bash
-# In cyoda-go (main branch, at the commit to be released):
 # pick per release
 V=v0.6.0
+# the release merge commit on main
+SHA=<release merge commit>
 for p in memory postgres sqlite; do
-  git tag -s -a "plugins/$p/$V" -m "Release plugins/$p/$V"
+  git tag -s -a "plugins/$p/$V" -m "Release plugins/$p/$V" "$SHA"
 done
 git push origin "plugins/memory/$V" "plugins/postgres/$V" "plugins/sqlite/$V"
 ```
@@ -245,6 +321,7 @@ for p in memory postgres sqlite; do
 done
 # refresh go.sum against the tagged modules
 GOWORK=off go mod download
+GOWORK=off go mod tidy
 ```
 
 Review the diff — the `require` block should pin each plugin at the release
@@ -268,7 +345,7 @@ the old plugin tags don't implement — the `test` job stays green via `go.work`
 `smoke`/goreleaser) resolve the **root `go.mod` pins as a consumer would**, so
 those pins must point at the in-dev plugin code. On the feature branch, after
 pushing your plugin changes, run **`make repin-plugins`** to pseudo-version-pin
-all three plugins to HEAD and refresh `go.sum`, then commit. The SPI is pinned
+all three plugins to HEAD and tidy the root module, then commit. The SPI is pinned
 the same way (see "Bumping cyoda-go-spi"). Pseudo-pins are used deliberately
 rather than `replace` directives: they keep the `GOWORK=off` jobs a genuine
 consumer-resolution test, whereas `replace` (local dirs) would make those jobs
@@ -301,13 +378,13 @@ verifies the published image.
 
 ### 6.5. Update COMPATIBILITY.md
 
-Add a row to the `cyoda-go × cyoda-go-spi` matrix in [`COMPATIBILITY.md`](./COMPATIBILITY.md) for the new `cyoda-go` tag. Capture: root `go.mod` SPI pin, plugin submodule SPI pins (these may differ from root if the submodules don't need new SPI fields), and a one-line summary of the SPI surface added in this release (or `—` if binary-only).
+Add a row to the `cyoda-go × cyoda-go-spi` matrix in [`COMPATIBILITY.md`](./COMPATIBILITY.md) for the new `cyoda-go` tag. Capture the SPI pin (pin-sync keeps the root and plugin pins equal) and a one-line summary of the SPI surface added in this release (or `—` if binary-only).
 
 If the chart `version:` or `appVersion:` changed in this cycle, update the "Helm chart × binary" table.
 
 If out-of-tree-plugin guidance changed (e.g. cassandra adopted a new SPI pin), update the "Out-of-tree plugins" table.
 
-The update lands either on the release-prep PR (if the matrix data is known pre-tag) or on a follow-up `docs(compatibility): record v<X.Y.Z>` commit immediately after step 7. The latter is acceptable because the matrix records the pin observed AT a published tag.
+The update lands in the release-prep commit (gate 0).
 
 ### 7. Cut the release
 
@@ -336,9 +413,10 @@ git cat-file -p "$V" | grep -q "BEGIN SSH SIGNATURE" && echo signed
 ```
 
 The changelog is **not** the GitHub Release. `CHANGELOG.md` is maintained
-per release, and the narrative notes published to the docs site live in
-`docs/release-notes/v<X-Y-Z>.md`. Both are written before the tag, as part
-of the release-prep commit.
+per release, and the narrative notes live in
+`docs/release-notes/v<X-Y-Z>.md`; they are published to the docs site and as
+the release announcement ([9.5](#95-announce-the-release)). Both are written
+before the tag, as part of the release-prep commit.
 
 Pushing the tag fires `release.yml`:
 pre-flight module verification, build binaries, multi-arch image to
@@ -358,8 +436,8 @@ verify:
   `bump-chart-appversion.yml`. Proceed to step 8 to publish the chart.
 
 The SPI has no build workflow, so its Release is still made by hand, after its
-tag exists, with `gh release create $V --verify-tag` (see "Coordinated release
-across sibling repos").
+tag exists, with `gh release create $V --verify-tag` (the full command is in
+"Coordinated release across sibling repos").
 
 ### Coordinated release across sibling repos
 
@@ -373,20 +451,39 @@ cyoda-go-spi   ← cyoda-go   ← cyoda-go-cassandra
 
 Release in topological order:
 
-1. **`cyoda-go-spi`**: merge the feature branch, rename its `[Unreleased]`
-   changelog section to the version being cut, then push the signed tag
-   (`git tag -s -a $V -m "Release $V" <sha>`) and only afterwards
-   `gh release create $V --verify-tag --generate-notes`. No build workflow
-   to fire; the release is the tag itself. Wait 30s or so for
-   `proxy.golang.org` to be able to serve the new version.
+1. **`cyoda-go-spi`**: on the branch the release is cut from (`main`, or
+   `release/vX.Y.Z` for a patch while the next minor is open), apply the
+   pending Dependabot bumps, rename the `[Unreleased]` changelog section to
+   `[X.Y.Z] - YYYY-MM-DD`, push, and
+   wait for CI to pass on that commit. The key holder tags that commit. Only
+   then create the GitHub Release. No build workflow fires; the release is
+   the tag itself.
+   ```bash
+   # this SPI release and the previous one
+   V=v0.9.1
+   PREV=v0.9.0
+   # key holder
+   git tag -s -a "$V" -m "Release $V" <sha>
+   git push origin "$V"
+   # preparer, after the tag exists
+   gh release create "$V" --repo cyoda/cyoda-go-spi --verify-tag \
+     --generate-notes --notes-start-tag "$PREV" --latest
+   ```
+   `--notes-start-tag` makes the notes cover exactly the changes since
+   `$PREV`. `--latest` puts the Latest mark on this release. Then check that
+   the Go proxy and the checksum database serve the tag; the first command
+   prints the version, the second its hashes:
+   ```bash
+   GOWORK=off go list -m "github.com/cyoda/cyoda-go-spi@$V"
+   curl -fsS "https://sum.golang.org/lookup/github.com/cyoda/cyoda-go-spi@$V"
+   ```
 
-2. **`cyoda-go`**: on its feature branch, bump `go.mod`'s
-   `cyoda-go-spi` require line to the new `$V`; similarly for each
-   plugin submodule's `go.mod`. Remove the `go.work` entry pointing
-   at the local SPI checkout. Verify tests still pass. Merge to
-   `main`. Then run steps 1, 3 and 7 of this checklist (plugin
-   submodule tags, re-pin plugins from dev-window pseudo-versions to
-   the release tags, cut root release) using the same `$V`.
+2. **`cyoda-go`**: the release-prep commit on `release/vX.Y.Z` pins the new
+   SPI tag in all four `go.mod` files ([gate 0](#0-reconcile-dependencies-on-the-release-branch-gate)).
+   Remove any local `go.work` `use` entry for the SPI checkout first; never
+   commit it. Then follow [Release at a glance](#release-at-a-glance) from
+   row 5: release PR, plugin tags (step 1), pin commit (step 3), binary tag
+   (step 7), chart (step 8).
 
 3. **`cyoda-go-cassandra`**: on its feature branch, bump `go.mod`'s
    `cyoda-go-spi`, `cyoda-go`, and `cyoda-go/plugins/*` require
@@ -395,6 +492,111 @@ Release in topological order:
 
 Each step waits for the prior tag to land before its `go mod tidy`
 can resolve. In practice: merge, tag, wait for CI, then move on.
+
+### Patch release while the next minor is open
+
+A patch `vX.Y.Z` of the released line can ship while the next minor's branch
+`release/vX.Y+1.0` is open. `main` still holds the last release, so the patch
+starts from there. The examples use `V=v0.9.1`, `PREV=v0.9.0` (the previous
+SPI tag) and `V_NEXT=v0.10.0` (the open minor).
+
+**Branches.**
+
+| Repo | Patch branch | Created from | Fix PRs target |
+|---|---|---|---|
+| `cyoda-go` | `release/$V` | `main` | `release/$V` |
+| `cyoda-go-spi` | `release/$V` | the previous SPI tag `$PREV` | `release/$V` |
+
+```bash
+# cyoda-go
+git fetch origin
+git branch "release/$V" origin/main
+git push origin "release/$V"
+# cyoda-go-spi
+git fetch origin --tags
+git branch "release/$V" "$PREV"
+git push origin "release/$V"
+```
+
+CI runs on `release/**` in both repos, so PRs into the patch branches get
+checks.
+
+**During the window.**
+
+1. Each fix merges into the patch branch first.
+2. Forward-port each fix as soon as it merges: cherry-pick it onto a branch
+   from `release/$V_NEXT` (cyoda-go) or SPI `main`, and open a PR there.
+   ```bash
+   git switch -c "port/<topic>" "origin/release/$V_NEXT"
+   git cherry-pick -x <sha>
+   ```
+   Conflicts are usually only in `CHANGELOG.md`, `COMPATIBILITY.md` and the
+   `go.mod`/`go.sum` files. Keep the open branch's pins, then re-pin and tidy.
+3. cyoda-go on `release/$V` pins a commit on SPI `release/$V`
+   ([Bumping cyoda-go-spi](#bumping-cyoda-go-spi)).
+
+**Changes to the numbered steps.** All other steps run unchanged, including
+the release PR `release/$V` → `main` with a merge commit.
+
+- **Gate 0 step 2:** Dependabot PRs target the open minor branch (its
+  `target-branch`), not the patch branch. Apply each pending bump to the
+  patch branch by hand; re-read each PR's current versions first. Leave the
+  PRs open; they merge into the open branch, or close as superseded at the
+  wrap-up. The SPI's Dependabot targets SPI `main`; apply its pending bumps
+  on SPI `release/$V` the same way.
+- **Gate 0 step 4:** skip. `target-branch` stays on the open minor branch.
+- **Step 10:** skip. The next release branch exists already.
+
+**Wrap-up**, after the chart tag (or after the binary tag when no chart
+release follows):
+
+1. **SPI:** merge `release/$V` into SPI `main` with a merge commit.
+   ```bash
+   git fetch origin
+   git switch -c "merge/$V" origin/main
+   git merge --no-ff "origin/release/$V"
+   ```
+   Resolve the conflicts, push, open a PR into `main`, and merge it with
+   `merge_method=merge`.
+2. **cyoda-go:** merge `main` into `release/$V_NEXT` with a merge commit.
+   ```bash
+   git fetch origin
+   git switch -c "merge/$V" "origin/release/$V_NEXT"
+   git merge --no-ff origin/main
+   ```
+   The conflicts follow one pattern:
+   - `CHANGELOG.md`: the forward-ported entries move from `[Unreleased]` into
+     the `[X.Y.Z]` section that the merge brings.
+   - `COMPATIBILITY.md`: keep the open branch's "Currently pinned" paragraph;
+     update it after the re-pin.
+   - `go.mod`/`go.sum`: keep the open branch's pins, re-apply the patch's
+     dependency bumps, then re-pin.
+
+   Commit the merge.
+3. **Re-pin cyoda-go** to SPI `main` after step 1: re-pin as in
+   [Bumping cyoda-go-spi](#bumping-cyoda-go-spi), then commit and push. Then
+   re-pin the plugins:
+   ```bash
+   make repin-plugins
+   git add go.mod go.sum
+   git commit -m "chore: repin plugin modules to the branch head"
+   git push origin "merge/$V"
+   ```
+   Run `make test`, open a PR into `release/$V_NEXT`, and merge it with
+   `merge_method=merge` ([Merging a release PR](#merging-a-release-pr)).
+4. Close the Dependabot PRs that the merge superseded. Re-read each PR's
+   current versions first.
+5. Delete `release/$V` in both repos (`git push origin --delete "release/$V"`)
+   and close the milestone.
+
+**Why merge commits, never squash.** Go derives a pseudo-version from the
+highest tag that is an ancestor of the commit. Before the wrap-up, the tag
+`$V` is on a side branch, so commits on SPI `main` and on `release/$V_NEXT`
+get pseudo-versions `vX.Y.Z-0.<time>-<sha>`, and Go sorts those **below**
+`vX.Y.Z`. A module graph that also requires `vX.Y.Z` (the plugin tags require
+the SPI tag) then selects the tag and loses the newer surface. A merge commit
+makes the tag an ancestor, and the pseudo-versions become
+`vX.Y.(Z+1)-0.<time>-<sha>`. A squash or rebase merge does not.
 
 ### Bumping cyoda-go-spi
 
@@ -433,18 +635,41 @@ binary's number.
 "Broke" covers the conformance suite, not just signatures. `spitest` gaining a
 case that existing implementors fail is a breaking change to the contract this
 module defines — a backend that compiled and passed now goes red on nothing but
-a pin bump. Cut a **minor** for that, as for any interface break.
+a pin bump. Cut a **minor** for that, as for any interface break. `v0.8.3`
+and `v0.8.4` shipped breaking changes as patches, before this rule covered the
+SPI. `v0.9.1` is a breaking patch, as an exception: it backs out the
+rollback-only mark that `v0.9.0` added to `TransactionCoordinator` (a bug fix)
+and adds the conformance cases its `### Breaking` section lists.
 
 **The SPI pin is maintainer-owned, not Dependabot-owned.** During a milestone
-the root and plugin `go.mod` files pin a pseudo-version of `cyoda-go-spi`
-against `main` HEAD, and the final bump to the tagged `vX.Y.Z` happens by hand
-at release time (gate 0 above). `.github/dependabot.yml` therefore carries an
-`ignore` rule for `github.com/cyoda/cyoda-go-spi` in every `gomod`
-block. This is deliberate: the SPI pin moves in lock-step with a coordinated
+the root and plugin `go.mod` files pin a pseudo-version of a `cyoda-go-spi`
+commit on the branch the milestone targets (`main` for a minor,
+`release/vX.Y.Z` for a patch while the next minor is open), and the final
+bump to the tagged `vX.Y.Z` happens by hand at release time (gate 0 above).
+`.github/dependabot.yml`
+therefore carries an `ignore` rule for `github.com/cyoda/cyoda-go-spi` in
+every `gomod` block. This is deliberate: the SPI pin moves in lock-step with a coordinated
 cross-repo release (gate 0), and a Dependabot group that bundles the SPI pin
 with routine third-party bumps gets **mass-closed** if the pin can't resolve at
 that moment — taking good third-party updates down with it. Keeping the SPI pin
 out of Dependabot's hands keeps the grouped third-party PRs always-resolvable.
+
+**Pin a commit on the target branch.** The SPI squash-merges its PRs and
+deletes their branches, so a commit on an SPI PR branch ends up on no branch.
+A cyoda-go PR can pin the SPI PR's head while both PRs are open; re-pin to the
+merged commit as soon as the SPI PR merges:
+
+```bash
+# the commit on the SPI target branch
+SPI_SHA=<sha>
+for d in . plugins/memory plugins/postgres plugins/sqlite; do
+  (cd "$d" && GOWORK=off go get "github.com/cyoda/cyoda-go-spi@$SPI_SHA" && GOWORK=off go mod tidy)
+done
+make check-spi-pin-sync
+```
+
+If the plugins need the new surface, push and run `make repin-plugins`
+(step 3). The script tidies the root module itself; no further tidy is needed.
 
 **Dependabot targets the active release branch, never `main`.** Work is staged
 on `release/vX.Y.Z`, so a bump raised against `main` lands where nothing is
@@ -481,16 +706,27 @@ Per-release procedure:
    prefix, unless a chart change in the milestone already set it. Both
    fields end up the same value — same convention as plugin submodule
    tags. Record the released pair in `COMPATIBILITY.md`'s "Helm chart ×
-   binary" table in the same PR. The PR is opened by `github-actions`, so
-   its checks wait for approval (`action_required`); the commit you push
-   to it starts them.
-2. **Merge** the PR once its checks pass.
-3. **Tag the chart** at the merge commit on `main`:
+   binary" table in the same PR. Push to the bot's branch:
+   ```bash
+   # the binary tag you just released
+   V=v0.6.3
+   git fetch origin
+   git switch -c "chore/bump-chart-appversion-$V" "origin/chore/bump-chart-appversion-$V"
+   # edit Chart.yaml version: and COMPATIBILITY.md, commit
+   git push origin "chore/bump-chart-appversion-$V"
+   ```
+   The PR is opened by `github-actions[bot]`, so its runs on the bot's commit
+   stay at `action_required`. Do not approve them: they test a head the PR
+   no longer has. Your push starts fresh runs on the new head, and those runs
+   gate the merge.
+2. **Squash-merge** the PR once the checks on the new head pass
+   ([Merging a release PR](#merging-a-release-pr)).
+3. **Tag the chart** at the squash-merge commit on `main`:
    ```bash
    # the binary tag you just released
    V=v0.6.3
    CHART_V=${V#v}
-   git tag -s -a "cyoda-$CHART_V" -m "Release chart cyoda-$CHART_V"
+   git tag -s -a "cyoda-$CHART_V" -m "Release chart cyoda-$CHART_V" <sha>
    git push origin "cyoda-$CHART_V"
    ```
 4. **Verify**:
@@ -512,7 +748,9 @@ Per-release procedure:
 Skip the chart `version` bump (merge the auto-PR as-is, no `cyoda-*`
 tag) only if the binary release should not be advertised to chart
 consumers — e.g. an out-of-band binary patch you don't want in the
-chart index yet. The next chart release will carry the change.
+chart index yet. The next chart release will carry the change. With no
+push to the PR, its only runs are the bot's: approve them in the PR
+("Approve and run") and merge once they pass.
 
 #### Chart-only releases
 
@@ -580,17 +818,53 @@ The workflow also runs weekly against the newest stable release (and any
 chart for it), so drift (the Latest mark moving, an asset replaced) shows up
 without a release.
 
+### 9.5. Announce the release
+
+Post the release notes as a discussion in the repository's **Announcements**
+category, titled `Cyoda-go vX.Y.Z released`, after every `Verify release` run
+of step 9 is green. `scripts/release-announcement.sh` builds the body from
+`docs/release-notes/vX-Y-Z.md` and posts it:
+
+```bash
+V=v0.9.1
+# dry run: print the body and read it
+scripts/release-announcement.sh "$V"
+# post it
+scripts/release-announcement.sh "$V" --post
+```
+
+The body is the notes with each wrapped paragraph and list item joined onto
+one line, because a discussion renders a single line break as a hard break.
+The script refuses to post a title that already exists. Discussions have no
+REST API, so it posts with `gh api graphql`.
+
+Check the `_Released <date>_` line first: it is the day the binary tag was
+cut. If the release-prep date is wrong, correct the notes and `CHANGELOG.md`
+on the open release branch and post from that corrected file
+(`--notes <file>` takes a path).
+
 ### 10. Open the next release branch
 
+Skip this step for a
+[patch release while the next minor is open](#patch-release-while-the-next-minor-is-open);
+run its wrap-up instead.
+
 The `target-branch` edit from gate 0 is now on `main`, naming a branch that
-does not exist yet. Create it from the merge commit, immediately:
+does not exist yet. Create it from `main` now, at the chart squash-merge commit:
 
 ```bash
 # the next milestone
-V_NEXT=v0.9.0
+V_NEXT=v0.11.0
 git fetch origin
 git branch "release/${V_NEXT}" origin/main
 git push origin "release/${V_NEXT}"
+```
+
+Delete the shipped release branch; its commits are on `main` through the
+release merge commit:
+
+```bash
+git push origin --delete "release/vX.Y.Z"
 ```
 
 Then confirm the two agree — this is the check that catches a silent
