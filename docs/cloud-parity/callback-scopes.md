@@ -19,10 +19,10 @@ transaction of the operation that called the compute node out.
   the part of the transaction above it: the transaction's rollback, or a failed
   `ASYNC_NEW_TX` processor the callback ran under.
 - **A failed callback leaves the decision to the compute node.** It keeps
-  nothing (a read that answered a `4xx` excepted, below), and the transaction
-  goes on unless the transaction itself can no longer commit: a lost write
-  race, an ended session (table below), or a failed discard (last point
-  here).
+  nothing (except a read that answered a `4xx` that is not retryable,
+  below), and the transaction goes on unless the transaction itself can no
+  longer commit: a lost write race, an ended session (table below), or a
+  failed discard (last point here).
   - After a retryable answer the compute node may send the callback again
     under the same token.
   - An answer that is not retryable is the compute node's to handle: its
@@ -38,9 +38,9 @@ transaction of the operation that called the compute node out.
   - A failed callback whose scope cannot be discarded is answered `500
     SERVER_ERROR`, not retryable, and the transaction can then no longer
     commit: its writes may still be part of it.
-- **A failed read** that answered a `4xx` keeps its scope (its reads stay in the
-  transaction's commit-time validation). A read that failed with a `5xx` keeps
-  nothing.
+- **A failed read** that answered a `4xx` that is not retryable keeps its scope
+  (its reads stay in the transaction's commit-time validation). A read that
+  failed with a retryable answer or a `5xx` keeps nothing.
 - **Requests outside the transaction** — messages, async search jobs and their
   cancellation, and the administration routes (clients, signing and trusted
   keys, the platform clock) — are admitted and refused under a token as any

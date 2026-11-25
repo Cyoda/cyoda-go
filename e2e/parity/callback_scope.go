@@ -19,7 +19,8 @@ import (
 //     nothing of the failed one.
 //   - A retryable failure discards the scope and leaves the transaction usable:
 //     the same callback sent again succeeds, and the owner commits one write.
-//   - A read that answered a 4xx keeps its scope: the owner commits.
+//   - A read that answered a non-retryable 4xx keeps its scope: the owner
+//     commits.
 //   - An ASYNC_NEW_TX processor whose callback's write failed handles it the
 //     same way: the processor succeeds, its later joined write is kept, and
 //     nothing of the failed one exists.
