@@ -102,7 +102,7 @@ when the check of the row before it passes.
 | # | Step | Who | Where | Merge | Check | Details |
 |---|---|---|---|---|---|---|
 | 1 | SPI: apply pending Dependabot bumps, rename `CHANGELOG.md` `[Unreleased]` to `[X.Y.Z] - <date>`, push | Preparer | SPI `main`, or SPI `release/vX.Y.Z` for a patch | — | SPI CI green on that commit | [Coordinated release](#coordinated-release-across-sibling-repos) 1 |
-| 2 | SPI tag | Key holder | the commit of row 1 | — | `git verify-tag` | same |
+| 2 | SPI tag | Key holder | the commit of row 1 | — | tag signed: `git cat-file -p <tag>` shows `BEGIN SSH SIGNATURE` | same |
 | 3 | SPI GitHub Release | Preparer | the SPI tag | — | the Go proxy and `sum.golang.org` serve the tag | same |
 | 4 | Release-prep commit: SPI pin, Dependabot bumps, tidy, `CHANGELOG.md`, release notes, `COMPATIBILITY.md` | Preparer | `release/vX.Y.Z` | — | `make check-spi-pin-sync`, `make test`, CI green | [Gate 0](#0-reconcile-dependencies-on-the-release-branch-gate), [6.5](#65-update-compatibilitymd) |
 | 5 | Release PR `release/vX.Y.Z` → `main` | Preparer | PR | merge commit | CI green on the PR head | [Merging a release PR](#merging-a-release-pr) |
@@ -121,8 +121,9 @@ wrap-up with two forward merges (merge commits, never squash): see
 
 ### Merging a release PR
 
-Merge release PRs through the REST endpoint, not `gh pr merge`, which checks
-out the base branch locally and fails when a worktree holds it:
+Merge release PRs through the REST endpoint, not `gh pr merge`: that command
+goes through the GraphQL API and checks out the base branch locally, which
+fails when a worktree holds it:
 
 ```bash
 # release PR and forward merges: merge commit
@@ -144,7 +145,7 @@ fails. Instead:
 
 1. Check whether the merge happened:
    ```bash
-   gh pr view <n> --json state,mergedAt,mergeCommit
+   gh api repos/cyoda/cyoda-go/pulls/<n> -q '.merged, .merged_at'
    git ls-remote origin refs/heads/<base>
    ```
 2. If the PR is still unmerged, wait a few minutes and check again.
@@ -744,7 +745,9 @@ Per-release procedure:
 Skip the chart `version` bump (merge the auto-PR as-is, no `cyoda-*`
 tag) only if the binary release should not be advertised to chart
 consumers — e.g. an out-of-band binary patch you don't want in the
-chart index yet. The next chart release will carry the change.
+chart index yet. The next chart release will carry the change. With no
+push to the PR, its only runs are the bot's: approve them in the PR
+("Approve and run") and merge once they pass.
 
 #### Chart-only releases
 
