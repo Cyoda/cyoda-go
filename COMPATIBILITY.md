@@ -75,7 +75,7 @@ fail there while `go.work` keeps every local run green (`make repin-plugins`).
 
 At the release cut the window closes: all four manifests are re-pinned to the
 real tag, checked by `make check-spi-pin-sync`. **Currently pinned:
-`@@PIN@@`**, a pseudo-version of `cyoda-go-spi`
+`v0.9.1-0.20261125040216-29bc685cebec`**, a pseudo-version of `cyoda-go-spi`
 `main` for the `v0.10.0` milestone (it adds `EntityVersionMeta.Transition`,
 and carries the `v0.9.1` changes to `TransactionCoordinator`).
 This module ships breaking changes without a major
