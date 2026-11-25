@@ -3,7 +3,7 @@ module github.com/cyoda/cyoda-go/plugins/postgres
 go 1.27.4
 
 require (
-	github.com/cyoda/cyoda-go-spi v0.9.1-0.20261125040216-29bc685cebec
+	github.com/cyoda/cyoda-go-spi v0.9.2-0.20261125162956-3630052d025d
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
@@ -55,7 +55,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.6 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
-	github.com/tidwall/gjson v1.20.4 // indirect
+	github.com/tidwall/gjson v1.20.5 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.3.0 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
