@@ -1,11 +1,9 @@
 package txcoord
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"testing"
 
 	spi "github.com/cyoda/cyoda-go-spi"
@@ -37,33 +35,7 @@ func mustSealOK(t *testing.T, e *env) {
 	}
 }
 
-// mustSealRollbackOnly asserts that Seal refuses with TRANSACTION_ROLLBACK_ONLY
-// naming the code the failed callback got.
-func mustSealRollbackOnly(t *testing.T, e *env, failedCode string) {
-	t.Helper()
-	err := e.seal()
-	mustCode(t, err, http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-	if !errors.Is(err, common.ErrRollbackOnly) {
-		t.Errorf("Seal error does not carry ErrRollbackOnly: %v", err)
-	}
-	if !strings.Contains(err.Error(), failedCode) {
-		t.Errorf("Seal error %q does not name the failed code %s", err.Error(), failedCode)
-	}
-}
-
-// markedByChild leaves scope a (on actx) marked: a child callback of a nested
-// callout fails a write. It returns a's resume error.
-func markedByChild(t *testing.T, e *env, actx context.Context) error {
-	t.Helper()
-	_, endX1 := e.callout(actx, "x1")
-	resume := Pause(actx)
-	d, _ := e.mustEnter(Write, pair("x1", 1), pair("c1", 1))
-	mustOwnAnswer(t, d.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
-	endX1()
-	return resume()
-}
-
-func TestEnd_Row1_SupersededDiscardsNoMark(t *testing.T) {
+func TestEnd_Row1_SupersededDiscards_TransactionGoesOn(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, actx := e.mustEnter(Write, pair("c1", 1))
@@ -75,28 +47,6 @@ func TestEnd_Row1_SupersededDiscardsNoMark(t *testing.T) {
 	mustFinish(t, "Advance", advanced)
 
 	mustCalls(t, e.tm, "savepoint", "rollback")
-	endC1()
-	mustSealOK(t, e)
-}
-
-func TestEnd_Row1_SupersededWithMarkedDescendantNoClimb(t *testing.T) {
-	e := newEnv(t)
-	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, actx := e.mustEnter(Write, pair("c1", 1))
-	if err := markedByChild(t, e, actx); !errors.Is(err, common.ErrRollbackOnly) {
-		t.Fatalf("resume of the marked scope = %v; want rollback-only", err)
-	}
-
-	advanced := async(func() { e.c.Advance("c1", 2) })
-	mustSuperseded(t, actx)
-	mustStillBlock(t, "Advance", advanced)
-	mustAnswer(t, a.End(failed(http.StatusConflict, common.ErrCodeTransactionRollbackOnly)),
-		http.StatusGone, common.ErrCodeCalloutSuperseded, false)
-	mustFinish(t, "Advance", advanced)
-
-	if e.rootMarked() {
-		t.Fatal("a superseded scope passed its mark up to the root")
-	}
 	endC1()
 	mustSealOK(t, e)
 }
@@ -113,9 +63,6 @@ func TestEnd_Row2_LostRaceNotRetryable(t *testing.T) {
 		t.Errorf("lost-race answer does not carry spi.ErrTxAborted: %v", ans)
 	}
 	mustCalls(t, e.tm, "savepoint", "rollback")
-	if e.rootMarked() {
-		t.Fatal("a lost race marked the root")
-	}
 	endC1()
 	mustSealOK(t, e)
 }
@@ -197,38 +144,45 @@ func TestEnd_Row3_NestedDiscardFailureStill404(t *testing.T) {
 	}
 }
 
-func TestEnd_Row4_MarkedScope409AndClimbsForWrite(t *testing.T) {
-	e := newEnv(t)
-	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, actx := e.mustEnter(Write, pair("c1", 1))
-	_ = markedByChild(t, e, actx)
+// Row 3 records the dead session as the cause that breaks the transaction,
+// never the joined request's own answer: the owner's Seal refusal carries
+// that cause to the owner's classification, which must answer by the cause
+// and never with an answer that was given to another request.
+func TestEnd_Row3_BrokenCauseIsNotTheRequestsAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer *common.AppError
+	}{
+		{"storage unavailable", common.StorageUnavailable(fmt.Errorf("failed to save: %w", deadSession{}))},
+		{"internal", common.Internal("failed to run the processor", fmt.Errorf("failed to read: %w", deadSession{}))},
+		{"wrapped twice", common.Internal("failed to search",
+			common.StorageUnavailable(fmt.Errorf("failed to read: %w", deadSession{})))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			_, endC1 := e.callout(e.ownerCtx, "c1")
+			a, _ := e.mustEnter(Write, pair("c1", 1))
 
-	// The handler's own success does not outrank the mark.
-	mustAnswer(t, a.End(&common.Outcome{}), http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-	mustCalls(t, e.tm, "savepoint", "savepoint", "rollback", "rollback")
-	if !e.rootMarked() {
-		t.Fatal("a marked write scope did not mark its parent")
+			ans := a.End(&common.Outcome{Status: tc.answer.Status, Code: tc.answer.Code, Retryable: tc.answer.Retryable, Err: tc.answer})
+			mustAnswer(t, ans, http.StatusNotFound, common.ErrCodeTransactionNotFound, false)
+
+			endC1()
+			err := e.seal()
+			var appErr *common.AppError
+			if errors.As(err, &appErr) {
+				t.Fatalf("Seal = %v; carries the joined request's answer %d %s", err, appErr.Status, appErr.Code)
+			}
+			if !errors.Is(err, spi.ErrTxNotFound) {
+				t.Fatalf("Seal = %v; want the dead session as the cause", err)
+			}
+			if su := common.StorageUnavailable(err); su == nil {
+				t.Fatalf("Seal = %v; want the storage-unavailable marker kept", err)
+			}
+		})
 	}
-	endC1()
-	mustSealRollbackOnly(t, e, common.ErrCodeValidationFailed)
 }
 
-func TestEnd_Row4_ReadDoesNotClimb(t *testing.T) {
-	e := newEnv(t)
-	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, actx := e.mustEnter(Read, pair("c1", 1))
-	_ = markedByChild(t, e, actx)
-
-	mustAnswer(t, a.End(&common.Outcome{}), http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false)
-	mustCalls(t, e.tm, "savepoint", "savepoint", "rollback", "rollback")
-	if e.rootMarked() {
-		t.Fatal("a marked read scope marked its parent")
-	}
-	endC1()
-	mustSealOK(t, e)
-}
-
-func TestEnd_Row5_SuccessReleases(t *testing.T) {
+func TestEnd_Row4_SuccessReleases(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Write, pair("c1", 1))
@@ -239,7 +193,9 @@ func TestEnd_Row5_SuccessReleases(t *testing.T) {
 	mustSealOK(t, e)
 }
 
-func TestEnd_Row5_ReleaseFails500AndMarks(t *testing.T) {
+// A write whose completion fails is a failed write (row 6): discarded and
+// answered 500, and the transaction goes on.
+func TestEnd_Row4_ReleaseFails500_TransactionGoesOn(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Write, pair("c1", 1))
@@ -248,15 +204,14 @@ func TestEnd_Row5_ReleaseFails500AndMarks(t *testing.T) {
 
 	mustAnswer(t, a.End(&common.Outcome{}), http.StatusInternalServerError, common.ErrCodeServerError, false)
 	mustCalls(t, e.tm, "savepoint", "release", "rollback")
-	if !e.rootMarked() {
-		t.Fatal("a write whose completion failed did not mark its parent")
-	}
 	e.tm.failRelease.Store(nil)
+	b, _ := e.mustEnter(Write, pair("c1", 1))
+	mustOwnAnswer(t, b.End(&common.Outcome{}))
 	endC1()
-	mustSealRollbackOnly(t, e, common.ErrCodeServerError)
+	mustSealOK(t, e)
 }
 
-func TestEnd_Row6_RetryableDiscardsNoMark(t *testing.T) {
+func TestEnd_Row5_RetryableDiscards_TransactionGoesOn(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Write, pair("c1", 1))
@@ -265,25 +220,36 @@ func TestEnd_Row6_RetryableDiscardsNoMark(t *testing.T) {
 	o.Retryable = true
 	mustOwnAnswer(t, a.End(o))
 	mustCalls(t, e.tm, "savepoint", "rollback")
-	if e.rootMarked() {
-		t.Fatal("a retryable failure marked the root")
-	}
 	endC1()
 	mustSealOK(t, e)
 }
 
-func TestEnd_Row7_NonRetryableWriteMarksParent(t *testing.T) {
-	e := newEnv(t)
-	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, _ := e.mustEnter(Write, pair("c1", 1))
+// Row 6: a write answered with a failure that is not retryable is discarded
+// and answered as the handler answered it. The transaction goes on: a later
+// request under the same pass completes, and Seal succeeds. A backstop answer
+// (a buffered HTTP status, a raw gRPC error) that carries no code ends the
+// same way.
+func TestEnd_Row6_NonRetryableWriteDiscards_TransactionGoesOn(t *testing.T) {
+	for name, o := range map[string]*common.Outcome{
+		"with a code":    failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed),
+		"without a code": {Status: http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			_, endC1 := e.callout(e.ownerCtx, "c1")
+			a, _ := e.mustEnter(Write, pair("c1", 1))
 
-	mustOwnAnswer(t, a.End(failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed)))
-	mustCalls(t, e.tm, "savepoint", "rollback")
-	endC1()
-	mustSealRollbackOnly(t, e, common.ErrCodeValidationFailed)
+			mustOwnAnswer(t, a.End(o))
+			b, _ := e.mustEnter(Write, pair("c1", 1))
+			mustOwnAnswer(t, b.End(&common.Outcome{}))
+			mustCalls(t, e.tm, "savepoint", "rollback", "savepoint", "release")
+			endC1()
+			mustSealOK(t, e)
+		})
+	}
 }
 
-func TestEnd_Row8_Read4xxKeeps(t *testing.T) {
+func TestEnd_Row7_Read4xxKeeps(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Read, pair("c1", 1))
@@ -294,21 +260,18 @@ func TestEnd_Row8_Read4xxKeeps(t *testing.T) {
 	mustSealOK(t, e)
 }
 
-func TestEnd_Row9_Read5xxDiscards(t *testing.T) {
+func TestEnd_Row8_Read5xxDiscards(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Read, pair("c1", 1))
 
 	mustOwnAnswer(t, a.End(failed(http.StatusInternalServerError, common.ErrCodeServerError)))
 	mustCalls(t, e.tm, "savepoint", "rollback")
-	if e.rootMarked() {
-		t.Fatal("a failed read marked the root")
-	}
 	endC1()
 	mustSealOK(t, e)
 }
 
-func TestEnd_Outside_NeverRewrittenNeverMarks(t *testing.T) {
+func TestEnd_Outside_NeverRewritten(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, actx := e.mustEnter(Outside, pair("c1", 1))
@@ -320,44 +283,28 @@ func TestEnd_Outside_NeverRewrittenNeverMarks(t *testing.T) {
 	mustFinish(t, "Advance", advanced)
 
 	mustCalls(t, e.tm)
-	if e.rootMarked() {
-		t.Fatal("a request outside the transaction marked the root")
-	}
 	endC1()
 	mustSealOK(t, e)
 }
 
-func TestEnd_PanicOutcome_DiscardsAndMarks(t *testing.T) {
+// A write whose handler panicked is a failed write (row 6): discarded, and the
+// transaction goes on.
+func TestEnd_PanicOutcome_Discards_TransactionGoesOn(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Write, pair("c1", 1))
 
 	mustOwnAnswer(t, a.End(&common.Outcome{Panicked: true}))
-	mustCalls(t, e.tm, "savepoint", "rollback")
+	b, _ := e.mustEnter(Write, pair("c1", 1))
+	mustOwnAnswer(t, b.End(&common.Outcome{}))
+	mustCalls(t, e.tm, "savepoint", "rollback", "savepoint", "release")
 	endC1()
-	mustSealRollbackOnly(t, e, common.ErrCodeServerError)
-}
-
-// A backstop answer (a buffered HTTP status, a raw gRPC error) may carry no
-// code. A non-retryable write failure marks the parent all the same, and the
-// owner's refusal names the status.
-func TestEnd_Row7_EmptyCodeStillMarks(t *testing.T) {
-	e := newEnv(t)
-	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, _ := e.mustEnter(Write, pair("c1", 1))
-
-	mustOwnAnswer(t, a.End(&common.Outcome{Status: http.StatusRequestEntityTooLarge}))
-	mustCalls(t, e.tm, "savepoint", "rollback")
-	if !e.rootMarked() {
-		t.Fatal("a non-retryable write failure without a code did not mark the parent")
-	}
-	endC1()
-	mustSealRollbackOnly(t, e, "413")
+	mustSealOK(t, e)
 }
 
 // A completion that fails is judged again from row 1: a lost race answers by
 // row 2, not with the 500.
-func TestEnd_Row5_ReleaseFailsLostRaceAnswersRow2(t *testing.T) {
+func TestEnd_Row4_ReleaseFailsLostRaceAnswersRow2(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Write, pair("c1", 1))
@@ -367,15 +314,12 @@ func TestEnd_Row5_ReleaseFailsLostRaceAnswersRow2(t *testing.T) {
 
 	mustAnswer(t, a.End(&common.Outcome{}), http.StatusConflict, common.ErrCodeConflict, false)
 	mustCalls(t, e.tm, "savepoint", "release", "rollback")
-	if e.rootMarked() {
-		t.Fatal("a lost race marked the root")
-	}
 	e.tm.failRelease.Store(nil)
 	endC1()
 }
 
-// A read whose completion fails is a 5xx read: discarded, no mark (row 9).
-func TestEnd_Row5_ReadReleaseFailsAnswersRow9(t *testing.T) {
+// A read whose completion fails is a 5xx read: discarded (row 8).
+func TestEnd_Row4_ReadReleaseFailsAnswersRow8(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
 	a, _ := e.mustEnter(Read, pair("c1", 1))
@@ -384,29 +328,34 @@ func TestEnd_Row5_ReadReleaseFailsAnswersRow9(t *testing.T) {
 
 	mustAnswer(t, a.End(&common.Outcome{}), http.StatusInternalServerError, common.ErrCodeServerError, false)
 	mustCalls(t, e.tm, "savepoint", "release", "rollback")
-	if e.rootMarked() {
-		t.Fatal("a read whose completion failed marked the root")
-	}
 	e.tm.failRelease.Store(nil)
 	endC1()
 	mustSealOK(t, e)
 }
 
-// A lost race outranks a mark: the failed request of a marked scope in a
-// transaction that lost answers by row 2, and passes no mark up.
-func TestEnd_Row2_OutranksRow4(t *testing.T) {
-	e := newEnv(t)
-	_, endC1 := e.callout(e.ownerCtx, "c1")
-	a, actx := e.mustEnter(Write, pair("c1", 1))
-	_ = markedByChild(t, e, actx)
-	e.tm.lost.Store(true)
+// A lost race comes before row 6: a write that failed in a transaction that
+// lost a write race answers the conflict, not retryable, and is discarded.
+func TestEnd_Row2_LostRaceBeatsNonRetryableWrite(t *testing.T) {
+	for name, o := range map[string]*common.Outcome{
+		"with a code":    failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed),
+		"without a code": {Status: http.StatusRequestEntityTooLarge},
+		"panicked":       {Panicked: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			_, endC1 := e.callout(e.ownerCtx, "c1")
+			a, _ := e.mustEnter(Write, pair("c1", 1))
+			e.tm.lost.Store(true)
 
-	mustAnswer(t, a.End(failed(http.StatusConflict, common.ErrCodeTransactionRollbackOnly)),
-		http.StatusConflict, common.ErrCodeConflict, false)
-	if e.rootMarked() {
-		t.Fatal("a scope answered by row 2 passed its mark up")
+			ans := a.End(o)
+			mustAnswer(t, ans, http.StatusConflict, common.ErrCodeConflict, false)
+			if !errors.Is(ans, spi.ErrTxAborted) {
+				t.Errorf("lost-race answer does not carry spi.ErrTxAborted: %v", ans)
+			}
+			mustCalls(t, e.tm, "savepoint", "rollback")
+			endC1()
+		})
 	}
-	endC1()
 }
 
 // A scope whose discard fails did not end as its row answers: the request
@@ -421,22 +370,17 @@ func TestEnd_DiscardFails500AndBreaks(t *testing.T) {
 		outcome   *common.Outcome
 		supersede bool
 		lost      bool
-		marked    bool
 	}{
-		{"row 1, superseded", Write, &common.Outcome{}, true, false, false},
-		{"row 2, lost race", Write, failed(http.StatusBadRequest, common.ErrCodeBadRequest), false, true, false},
-		{"row 4, marked scope", Write, &common.Outcome{}, false, false, true},
-		{"row 6, retryable", Write, retryable, false, false, false},
-		{"row 7, non-retryable write", Write, failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed), false, false, false},
-		{"row 9, read 5xx", Read, failed(http.StatusInternalServerError, common.ErrCodeServerError), false, false, false},
+		{"row 1, superseded", Write, &common.Outcome{}, true, false},
+		{"row 2, lost race", Write, failed(http.StatusBadRequest, common.ErrCodeBadRequest), false, true},
+		{"row 5, retryable", Write, retryable, false, false},
+		{"row 6, non-retryable write", Write, failed(http.StatusUnprocessableEntity, common.ErrCodeValidationFailed), false, false},
+		{"row 8, read 5xx", Read, failed(http.StatusInternalServerError, common.ErrCodeServerError), false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
 			_, endC1 := e.callout(e.ownerCtx, "c1")
 			a, actx := e.mustEnter(tc.class, pair("c1", 1))
-			if tc.marked {
-				_ = markedByChild(t, e, actx)
-			}
 			if tc.lost {
 				e.tm.lost.Store(true)
 			}
@@ -466,8 +410,9 @@ func TestEnd_DiscardFails500AndBreaks(t *testing.T) {
 			endC1()
 			err = e.seal()
 			if tc.lost {
-				// A lost race is reported before the broken cause (see Check),
-				// as the retryable conflict the owner is retried on.
+				// A lost race is reported before the broken cause (see
+				// sealRefusal), as the retryable conflict the owner is
+				// retried on.
 				if !errors.Is(err, spi.ErrTxAborted) {
 					t.Fatalf("Seal = %v; want the lost race (spi.ErrTxAborted)", err)
 				}

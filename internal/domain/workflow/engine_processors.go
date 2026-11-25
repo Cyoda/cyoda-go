@@ -135,8 +135,8 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		}
 
 		// An ASYNC_NEW_TX processor's own failure is non-fatal: log warning,
-		// continue pipeline. So is a mark its callbacks set on its scope: the
-		// scope is discarded with it. A scope that could not be opened or
+		// continue pipeline; its scope is discarded with everything its
+		// callbacks wrote. A scope that could not be opened or
 		// ended is not that — the transaction is unusable, so it kills the
 		// pipeline like any other mode's failure. Nor is an unsafe processor
 		// a scheduled run refused to dispatch: the run must end there. Nor is
@@ -281,9 +281,8 @@ func (e *Engine) conflictOverDispatchFailure(ctx context.Context, proc spi.Proce
 // returned entity modifications are intentionally discarded — ASYNC_NEW_TX
 // processors perform side-effects only. The scope is kept when the dispatch
 // succeeded and nothing refuses the scope; otherwise it is discarded, with
-// everything its callbacks wrote, and the error is returned. A mark the
-// processor's callbacks set on its scope goes with it: the processor counts as
-// failed and the operation goes on.
+// everything its callbacks wrote, and the error is returned. A callback of the
+// processor that failed kept nothing; the processor's answer decides.
 //
 // A failed dispatch needs no LostRace question (see
 // conflictOverDispatchFailure): the processor's failure does not fail the
@@ -324,8 +323,7 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 		closed = true
 		return scope.Close(procErr)
 	}
-	// After the scope: a scope that cannot be opened dispatches nothing, so it
-	// needs no mark.
+	// After the scope: a scope that cannot be opened dispatches nothing.
 	dispatched, err := beforeDispatch(pctx, proc)
 	if err != nil {
 		return end(err)
@@ -542,13 +540,12 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 // txScope.Commit (internal/domain/entity/txscope.go).
 func (e *Engine) flushAndCommitSegment(ctx context.Context, entity *spi.Entity, txID string) error {
 	// Seal TX_pre before its final writes: from here no joined request runs
-	// in it, and one that failed a write refuses the segment — the lost race
-	// first, as the retryable conflict. The coordination forgets TX_pre once
+	// in it, and a broken TX_pre refuses the segment — the lost race first,
+	// as the retryable conflict. The coordination forgets TX_pre once
 	// this function returns; whoever rolls TX_pre back after a failure seals
 	// it afresh. Joined with ErrCommitBeforeDispatchInfra so that a broken
 	// transaction's cause is a ticketed 5xx (or the storage outage it is); a
-	// rollback-only refusal and a lost race keep their own answers, which
-	// classifyWorkflowError finds first.
+	// lost race keeps its own answer, which classifyWorkflowError finds first.
 	finish, err := e.coord.Seal(ctx, txID)
 	defer finish()
 	if err != nil {

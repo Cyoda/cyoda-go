@@ -1,7 +1,6 @@
 package multinode
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -42,9 +41,8 @@ import (
 //     transaction (a standalone create, no token), and the Go test driver
 //     reads it from that record.
 //   - The rejection is a non-retryable failure of a joined write: the
-//     callback's scope is discarded and T made rollback-only, so the owner is
-//     refused 409 TRANSACTION_ROLLBACK_ONLY, naming BAD_REQUEST, and nothing
-//     of T is committed.
+//     callback's scope is discarded, and T goes on. The processor succeeded,
+//     so the owner commits, with the processor's record of the 400.
 //
 // If the 400 does not cross the hop cleanly (e.g. gets replaced by a
 // generic 502/500, or the param is silently honored), that is a product bug
@@ -88,34 +86,18 @@ func RunTxControlParam_RejectedAcrossForwardedHop(t *testing.T, fixture MultiNod
 	const ownerIdx = 1
 	cOwner := client.NewClient(urls[ownerIdx], tenant.Token)
 
-	status, raw, err := cOwner.CreateEntityRaw(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	// The processor answered success after its callback was refused, so the
+	// owner commits, with the processor's record of the 400.
+	primaryID, err := cOwner.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if err != nil {
-		t.Fatalf("primary create via owner node %d: %v", ownerIdx, err)
+		t.Fatalf("primary create via owner node %d: %v; want 200 — the processor succeeded after its callback was refused", ownerIdx, err)
 	}
-	var pd struct {
-		Detail     string `json:"detail"`
-		Properties struct {
-			ErrorCode string `json:"errorCode"`
-			Retryable bool   `json:"retryable"`
-		} `json:"properties"`
+	owner, err := cOwner.GetEntity(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetEntity primary: %v", err)
 	}
-	if err := json.Unmarshal(raw, &pd); err != nil {
-		t.Fatalf("primary create answered %d, not a problem document: %v (body: %s)", status, err, raw)
-	}
-	// The owner's refusal names the code its callback got: the joined create
-	// carrying transactionTimeoutMillis was refused 400 BAD_REQUEST on the
-	// owner, across the forwarded hop.
-	if status != 409 || pd.Properties.ErrorCode != "TRANSACTION_ROLLBACK_ONLY" || pd.Properties.Retryable {
-		t.Fatalf("primary create = %d %s retryable=%t; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable (body: %s)",
-			status, pd.Properties.ErrorCode, pd.Properties.Retryable, raw)
-	}
-	if !strings.Contains(pd.Detail, "BAD_REQUEST") {
-		t.Fatalf("detail = %q; want it to name the callback's BAD_REQUEST", pd.Detail)
-	}
-	if all, err := cOwner.ListEntitiesByModel(t, primary, 1); err != nil {
-		t.Fatalf("list primary: %v", err)
-	} else if len(all) != 0 {
-		t.Fatalf("%d primary entities committed; the owner's refused operation commits nothing", len(all))
+	if got, _ := owner.Data["hopStatus"].(float64); int(got) != 400 {
+		t.Errorf("primary hopStatus = %v; want the processor's record of the callback's 400", owner.Data["hopStatus"])
 	}
 
 	// The core assertion: the OWNER's rejection crossed the forwarded hop

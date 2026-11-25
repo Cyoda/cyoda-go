@@ -3,7 +3,6 @@ package multinode
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/cyoda/cyoda-go/e2e/parity"
@@ -23,10 +22,10 @@ import (
 //     before T is flushed or committed, and the answer crosses back.
 //   - The processor records the crossed-back answer outside T (a standalone
 //     create, no token) and succeeds.
-//   - The refusal is a non-retryable failure of a joined write: T is made
-//     rollback-only, and node 1 refuses its owner 409 TRANSACTION_ROLLBACK_ONLY,
-//     naming the callback's code; nothing of T is stored, the refused
-//     secondary nowhere.
+//   - The refusal is a non-retryable failure of a joined write: the callback's
+//     scope is discarded, and T goes on. The processor succeeded, so node 1
+//     commits its owner, with the processor's record of the answer; the
+//     refused secondary is stored nowhere.
 //
 // The COMMIT_BEFORE_DISPATCH processor carries a tag no compute member serves:
 // the refusal comes before any dispatch, so when it holds the tag never
@@ -83,31 +82,16 @@ func RunCallback_CommitBeforeDispatchRefusedAcrossForwardedHop(t *testing.T, fix
 
 	const ownerIdx = 1
 	cOwner := client.NewClient(urls[ownerIdx], tenant.Token)
-	status, raw, err := cOwner.CreateEntityRaw(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	primaryID, err := cOwner.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if err != nil {
-		t.Fatalf("primary create via owner node %d: %v", ownerIdx, err)
+		t.Fatalf("primary create via owner node %d: %v; want 200 — the processor succeeded after its callback was refused", ownerIdx, err)
 	}
-	var pd struct {
-		Detail     string `json:"detail"`
-		Properties struct {
-			ErrorCode string `json:"errorCode"`
-			Retryable bool   `json:"retryable"`
-		} `json:"properties"`
+	owner, err := cOwner.GetEntity(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetEntity primary: %v", err)
 	}
-	if err := json.Unmarshal(raw, &pd); err != nil {
-		t.Fatalf("primary create answered %d, not a problem document: %v (body: %s)", status, err, raw)
-	}
-	if status != http.StatusConflict || pd.Properties.ErrorCode != "TRANSACTION_ROLLBACK_ONLY" || pd.Properties.Retryable {
-		t.Fatalf("primary create = %d %s retryable=%t; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable (body: %s)",
-			status, pd.Properties.ErrorCode, pd.Properties.Retryable, raw)
-	}
-	if !strings.Contains(pd.Detail, "COMMIT_IN_JOINED_TRANSACTION") {
-		t.Fatalf("detail = %q; want it to name the crossed-back COMMIT_IN_JOINED_TRANSACTION", pd.Detail)
-	}
-	if all, err := cOwner.ListEntitiesByModel(t, primary, 1); err != nil {
-		t.Fatalf("list primary: %v", err)
-	} else if len(all) != 0 {
-		t.Fatalf("%d primary entities committed; the owner's refused operation commits nothing", len(all))
+	if got, _ := owner.Data["hopStatus"].(float64); int(got) != http.StatusConflict {
+		t.Errorf("primary hopStatus = %v; want the processor's record of the callback's 409", owner.Data["hopStatus"])
 	}
 
 	// The joined create's answer, as it crossed back through node 0's proxy.

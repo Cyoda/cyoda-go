@@ -2,7 +2,7 @@ package txcoord
 
 // exitcheck_test.go — the gate and the fence are txcoord's own. Every other
 // package reaches a transaction's coordination through txcoord, so that one
-// implementation decides admission, marks and the cut-off before commit. The
+// implementation decides admission and the cut-off before commit. The
 // one exception is the pass token (internal/cluster/token), which encodes the
 // pairs a pass carries (fence.Pair).
 //

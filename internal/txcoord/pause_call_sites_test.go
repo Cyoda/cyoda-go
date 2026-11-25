@@ -7,8 +7,8 @@ package txcoord
 // panics: without it the chain's scope would end holding no slot, and its
 // gate's queue would never move. The explicit resume retakes the gate before
 // the chain touches the transaction again, and its error is the chain's
-// check: a pass that is no longer current, or a marked scope, must stop the
-// chain there, before it writes to a transaction the owner has moved on from.
+// check: a pass that is no longer current must stop the chain there, before it
+// writes to a transaction the owner has moved on from.
 //
 // The scan is AST-based: comments and blank lines between the statements are
 // invisible to it, and a doc comment that mentions txcoord.Pause( is not a

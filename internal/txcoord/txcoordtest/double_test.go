@@ -121,3 +121,48 @@ func TestDouble_SetApplyFunc_RefusedWhenInnerLacksIt(t *testing.T) {
 	}()
 	setter.SetApplyFunc(func(base []byte, _ []spi.SchemaDelta) ([]byte, error) { return base, nil })
 }
+
+// TestDouble_SealFailsAfterAFailedDiscard: the SPI obliges a coordinator to
+// fail Seal after any DiscardScope of the transaction that returned an error.
+// The double refuses a DiscardScope of a scope that completed.
+func TestDouble_SealFailsAfterAFailedDiscard(t *testing.T) {
+	f := txcoordtest.NewFactory(memory.NewStoreFactory())
+	t.Cleanup(func() { _ = f.Close() })
+	co, err := f.(spi.TransactionCoordinationCapable).TransactionCoordinator(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{UserID: "u", Tenant: spi.Tenant{ID: "tenant-double"}})
+	tm, err := f.TransactionManager(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	if err := co.BeginCallout(txCtx, txID, "c", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := co.AdvanceCallout(txCtx, txID, "c", 1); err != nil {
+		t.Fatal(err)
+	}
+	jctx, err := tm.Join(ctx, txID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx, err := co.OpenScope(jctx, txID, []spi.CalloutPair{{Callout: "c", Major: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := co.CompleteScope(sctx); err != nil {
+		t.Fatalf("CompleteScope = %v", err)
+	}
+	if err := co.DiscardScope(sctx); err == nil {
+		t.Fatal("DiscardScope of a completed scope = nil; want an error")
+	}
+	if err := co.Seal(txCtx, txID); err == nil {
+		t.Fatal("Seal after a failed DiscardScope = nil; want an error")
+	}
+}

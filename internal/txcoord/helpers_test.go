@@ -2,6 +2,7 @@ package txcoord
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,7 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	spi "github.com/cyoda/cyoda-go-spi"
+	spitest "github.com/cyoda/cyoda-go-spi/spitest"
 	"github.com/cyoda/cyoda-go/internal/common"
 	"github.com/cyoda/cyoda-go/internal/fence"
 	"github.com/cyoda/cyoda-go/plugins/memory"
@@ -87,6 +91,7 @@ func (m *recTM) LostRace(ctx context.Context, txID string) (bool, error) {
 // env is one owner transaction on the memory plugin with its coordination.
 type env struct {
 	t        *testing.T
+	f        *memory.StoreFactory
 	tm       *recTM
 	c        *inProcess
 	userCtx  context.Context
@@ -103,11 +108,50 @@ func newEnv(t *testing.T) *env {
 	userCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "u1", Kind: spi.PrincipalUser, Tenant: spi.Tenant{ID: "tenant-a"},
 	})
+	spitest.EnsureLockedModel(t, f, userCtx, spi.ModelRef{EntityName: "m", ModelVersion: "1"})
 	txID, ownerCtx, err := tm.Begin(userCtx)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	return &env{t: t, tm: tm, c: New(tm).(*inProcess), userCtx: userCtx, ownerCtx: ownerCtx, txID: txID}
+	return &env{t: t, f: f, tm: tm, c: New(tm).(*inProcess), userCtx: userCtx, ownerCtx: ownerCtx, txID: txID}
+}
+
+// save writes a new entity on ctx and returns its id.
+func (e *env) save(ctx context.Context) string {
+	e.t.Helper()
+	es, err := e.f.EntityStore(ctx)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	id := uuid.NewString()
+	data, _ := json.Marshal(map[string]string{"by": "inprocess-test"})
+	if _, err := es.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: id, ModelRef: spi.ModelRef{EntityName: "m", ModelVersion: "1"}}, Data: data}); err != nil {
+		e.t.Fatal(err)
+	}
+	return id
+}
+
+// commit seals the transaction and commits it.
+func (e *env) commit() {
+	e.t.Helper()
+	mustSealOK(e.t, e)
+	if err := e.tm.Commit(e.ownerCtx, e.txID); err != nil {
+		e.t.Fatalf("Commit = %v", err)
+	}
+}
+
+// committed reports whether entity id is visible outside the transaction.
+func (e *env) committed(id string) bool {
+	e.t.Helper()
+	es, err := e.f.EntityStore(e.userCtx)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	_, err = es.Get(e.userCtx, id)
+	if err != nil && !errors.Is(err, spi.ErrNotFound) {
+		e.t.Fatal(err)
+	}
+	return err == nil
 }
 
 // callout begins calloutID from the scope on ctx and makes major 1 current.
@@ -144,14 +188,6 @@ func (e *env) seal() error {
 	finish, err := e.c.Seal(e.userCtx, e.txID)
 	finish()
 	return err
-}
-
-// rootMarked reads the root's mark.
-func (e *env) rootMarked() bool {
-	e.c.mu.Lock()
-	defer e.c.mu.Unlock()
-	tx := e.c.txs[e.txID]
-	return tx != nil && tx.root.marked
 }
 
 func pair(calloutID string, major uint32) fence.Pair {

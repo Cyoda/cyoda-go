@@ -14,6 +14,8 @@ import (
 
 	spi "github.com/cyoda/cyoda-go-spi"
 	"github.com/cyoda/cyoda-go/internal/common"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/fence"
 	"github.com/cyoda/cyoda-go/internal/txcoord"
 	"github.com/cyoda/cyoda-go/plugins/memory"
 )
@@ -120,15 +122,17 @@ func (l *liveScope) openCallback(t *testing.T) (end func(o *common.Outcome)) {
 	}
 }
 
-// markRoot makes the transaction rollback-only as a failed joined write does.
-func (l *liveScope) markRoot(t *testing.T) {
+// breakTx leaves the transaction broken as a joined request that met the
+// transaction's ended session does.
+func (l *liveScope) breakTx(t *testing.T) {
 	t.Helper()
-	l.openCallback(t)(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+	l.openCallback(t)(&common.Outcome{Status: http.StatusServiceUnavailable, Code: common.ErrCodeStorageUnavailable, Retryable: true,
+		Err: fmt.Errorf("failed to save: %w", spi.ErrTxNotFound)})
 }
 
 // assertForgotten asserts the coordination holds nothing of the transaction:
 // a seal of it now is the seal of a transaction never seen, which a kept
-// marked transaction would refuse.
+// broken transaction would refuse.
 func (l *liveScope) assertForgotten(t *testing.T) {
 	t.Helper()
 	finish, err := l.s.h.coord.Seal(l.userCtx, l.s.txID)
@@ -414,10 +418,10 @@ func TestTxScope_Release_WaitsForTheCallbackInProgress(t *testing.T) {
 	l.assertForgotten(t)
 }
 
-// TestTxScope_RefusedSeal_RollsBackAndForgets: a joined write failed, so the
-// seal refuses with 409 TRANSACTION_ROLLBACK_ONLY. Commit gives that refusal
-// without committing, the deferred Release rolls back, and the coordination
-// holds nothing of the transaction afterwards.
+// TestTxScope_RefusedSeal_RollsBackAndForgets: a joined request met the
+// transaction's ended session, so the seal refuses with the broken cause.
+// Commit gives that refusal without committing, the deferred Release rolls
+// back, and the coordination holds nothing of the transaction afterwards.
 func TestTxScope_RefusedSeal_RollsBackAndForgets(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -428,15 +432,14 @@ func TestTxScope_RefusedSeal_RollsBackAndForgets(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := newLiveScope(t)
-			l.markRoot(t)
+			l.breakTx(t)
 
 			err := tc.sealedBy(l.s)
-			var appErr *common.AppError
-			if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeTransactionRollbackOnly {
-				t.Fatalf("err = %v; want TRANSACTION_ROLLBACK_ONLY", err)
+			if !errors.Is(err, spi.ErrTxNotFound) {
+				t.Fatalf("err = %v; want the broken cause", err)
 			}
-			if err := l.s.Commit(); !errors.As(err, &appErr) || appErr.Code != common.ErrCodeTransactionRollbackOnly {
-				t.Fatalf("Commit after the refused seal = %v; want the seal's TRANSACTION_ROLLBACK_ONLY", err)
+			if err := l.s.Commit(); !errors.Is(err, spi.ErrTxNotFound) {
+				t.Fatalf("Commit after the refused seal = %v; want the seal's refusal", err)
 			}
 			if got := l.m.committedTxs(); len(got) != 0 {
 				t.Fatalf("committed %v although the seal refused", got)
@@ -452,10 +455,10 @@ func TestTxScope_RefusedSeal_RollsBackAndForgets(t *testing.T) {
 
 // TestTxScope_JoinedSeal_IsNoOp: a joined scope does not seal the owner's
 // transaction — it would wait for its own scope — and so is not refused by a
-// mark either: the join layer's scope answers for the request.
+// broken transaction either: the join layer's scope answers for the request.
 func TestTxScope_JoinedSeal_IsNoOp(t *testing.T) {
 	l := newLiveScope(t)
-	l.markRoot(t)
+	l.breakTx(t)
 	joined := &txScope{h: l.s.h, ctx: l.s.ctx, txID: l.s.txID, owned: false}
 	if err := joined.Seal(); err != nil {
 		t.Fatalf("joined Seal = %v; want nil", err)
@@ -550,10 +553,10 @@ type suMarked struct{}
 func (suMarked) Error() string            { return "the session ended" }
 func (suMarked) StorageUnavailable() bool { return true }
 
-// TestClassifyCommitErr: what a refused seal or a failed commit answers. The
-// seal's own refusal passes through; a lost race and a first-committer-wins
-// refusal are the retryable 409; a transaction broken by a dead session keeps
-// the storage plugin's retryable 503; anything else is a 500.
+// TestClassifyCommitErr: what a refused seal or a failed commit answers. A
+// lost race and a first-committer-wins refusal are the retryable 409; a
+// transaction broken by a dead session keeps the storage plugin's retryable
+// 503; anything else is a 500.
 func TestClassifyCommitErr(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -562,7 +565,6 @@ func TestClassifyCommitErr(t *testing.T) {
 		code      string
 		retryable bool
 	}{
-		{"rollback-only", common.TransactionRollbackOnly(common.ErrCodeWorkflowFailed), http.StatusConflict, common.ErrCodeTransactionRollbackOnly, false},
 		{"lost race", fmt.Errorf("the transaction lost a write race: %w", spi.ErrTxAborted), http.StatusConflict, common.ErrCodeConflict, true},
 		{"commit conflict", fmt.Errorf("commit: %w", spi.ErrConflict), http.StatusConflict, common.ErrCodeConflict, true},
 		{"broken by a dead session", fmt.Errorf("the transaction is unusable: %w", suMarked{}), http.StatusServiceUnavailable, common.ErrCodeStorageUnavailable, true},
@@ -577,12 +579,10 @@ func TestClassifyCommitErr(t *testing.T) {
 	}
 }
 
-// TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn: a transaction broken by a
-// dead session carries, deep in its cause, the answer the joined request that
-// met it was given. The owner classifies the cause — its own retryable 503 —
-// and never returns that request's answer as its own. The shape is the one
-// Seal returns (txcoord: "unusable: %w" around sessionEnded's "session has
-// ended: %w" around the joined request's answered error).
+// TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn: a refused seal or a
+// failed commit whose cause carries, deep in it, an answer another request was
+// given. The owner classifies the cause — its own retryable 503 — and never
+// returns that answer as its own.
 func TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -600,6 +600,71 @@ func TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn(t *testing.T) {
 			}
 			if got.Status != http.StatusServiceUnavailable || got.Code != common.ErrCodeStorageUnavailable || !got.Retryable {
 				t.Fatalf("classifyCommitErr = %d %s retryable=%t (%s); want the retryable 503 STORAGE_UNAVAILABLE", got.Status, got.Code, got.Retryable, got.Message)
+			}
+		})
+	}
+}
+
+// deadSessionErr is a dead PostgreSQL session's error: it matches
+// spi.ErrTxNotFound and carries the storage-unavailable marker.
+type deadSessionErr struct{}
+
+func (deadSessionErr) Error() string            { return "the session ended" }
+func (deadSessionErr) StorageUnavailable() bool { return true }
+func (deadSessionErr) Is(target error) bool     { return target == spi.ErrTxNotFound }
+
+// TestClassifyEngineError_CommitBeforeDispatchSealOfBrokenTx: a
+// COMMIT_BEFORE_DISPATCH segment whose seal is refused because a joined
+// request met a dead session answers the owner's own retryable 503, whatever
+// that joined request was answered. The refusal is the one the in-process
+// coordination's Seal returns after the joined request ended.
+func TestClassifyEngineError_CommitBeforeDispatchSealOfBrokenTx(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		joined *common.AppError
+	}{
+		{"the joined request's own 503", common.StorageUnavailable(fmt.Errorf("failed to read: %w", deadSessionErr{}))},
+		{"a joined answer of another code", common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity id=e1 not found").
+			WithCause(fmt.Errorf("failed to read: %w", deadSessionErr{}))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := memory.NewStoreFactory()
+			t.Cleanup(func() { _ = f.Close() })
+			f.NewTransactionManager(common.NewDefaultUUIDGenerator())
+			tm := f.GetTransactionManager()
+			userCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
+				UserID: "u1", Kind: spi.PrincipalUser, Tenant: spi.Tenant{ID: "tenant-a"},
+			})
+			txID, ownerCtx, err := tm.Begin(userCtx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			c := txcoord.New(tm)
+			_, endCallout := c.BeginCallout(ownerCtx, txID, "c1")
+			c.Advance("c1", 1)
+			joined, err := tm.Join(userCtx, txID)
+			if err != nil {
+				t.Fatalf("Join: %v", err)
+			}
+			s, _, err := c.Enter(joined, txID, []fence.Pair{{Callout: "c1", Major: 1}}, txcoord.Write, 0)
+			if err != nil {
+				t.Fatalf("Enter: %v", err)
+			}
+			ans := s.End(&common.Outcome{Status: tc.joined.Status, Code: tc.joined.Code, Retryable: tc.joined.Retryable, Err: tc.joined})
+			if ans == nil || ans.Code != common.ErrCodeTransactionNotFound {
+				t.Fatalf("joined answer = %v; want 404 TRANSACTION_NOT_FOUND", ans)
+			}
+			endCallout()
+			finish, sealErr := c.Seal(userCtx, txID)
+			finish()
+			if sealErr == nil {
+				t.Fatal("Seal = nil; want the broken transaction refused")
+			}
+
+			got := classifyEngineError(
+				fmt.Errorf("commit-before-dispatch: seal TX_pre: %w", errors.Join(wfengine.ErrCommitBeforeDispatchInfra, sealErr)), "e1")
+			if got.Status != http.StatusServiceUnavailable || got.Code != common.ErrCodeStorageUnavailable || !got.Retryable {
+				t.Fatalf("classifyEngineError = %d %s retryable=%t (%s); want the retryable 503 STORAGE_UNAVAILABLE", got.Status, got.Code, got.Retryable, got.Message)
 			}
 		})
 	}
