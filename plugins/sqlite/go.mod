@@ -3,7 +3,7 @@ module github.com/cyoda/cyoda-go/plugins/sqlite
 go 1.27.4
 
 require (
-	github.com/cyoda/cyoda-go-spi v0.9.1-0.20261125011131-ed06454fa527
+	github.com/cyoda/cyoda-go-spi v0.9.1
 	github.com/gofrs/flock v0.13.2
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0
@@ -18,7 +18,7 @@ require (
 	github.com/ncruces/go-sqlite3-wasm/v6 v6.5.35401 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0 // indirect
-	github.com/tidwall/gjson v1.20.4 // indirect
+	github.com/tidwall/gjson v1.20.5 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.3.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
