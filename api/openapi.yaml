@@ -2126,6 +2126,11 @@ paths:
             retryable, when the transaction it joined lost a write race; the operation
             that owns the transaction fails with a retryable 409 CONFLICT, and its
             client retries it.
+            On a backend that coordinates transactions itself, a request
+            carrying an `X-Tx-Token` is also answered 409 CONFLICT when another
+            request of the transaction deleted or changed an entity this request
+            deleted, from the same version: the request keeps nothing, and is
+            retryable in the same transaction.
           content:
             application/problem+json:
               schema:
@@ -2849,6 +2854,11 @@ paths:
             retryable, when the transaction it joined lost a write race; the operation
             that owns the transaction fails with a retryable 409 CONFLICT, and its
             client retries it.
+            On a backend that coordinates transactions itself, a request
+            carrying an `X-Tx-Token` is also answered 409 CONFLICT when another
+            request of the transaction deleted or changed an entity this request
+            deleted, from the same version: the request keeps nothing, and is
+            retryable in the same transaction.
           content:
             application/problem+json:
               schema:
@@ -3075,7 +3085,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it. On a backend that coordinates transactions itself, a request carrying an `X-Tx-Token` is also answered 409 CONFLICT when another request of the transaction changed an entity this request changed, from the same version: the request keeps nothing but a schema extension it made, and is retryable in the same transaction."
           content:
             application/problem+json:
               schema:
@@ -3298,7 +3308,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
+          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it. On a backend that coordinates transactions itself, a request carrying an `X-Tx-Token` is also answered 409 CONFLICT when another request of the transaction changed an entity this request changed, from the same version: the request keeps nothing but a schema extension it made, and is retryable in the same transaction."
           content:
             application/problem+json:
               schema:
@@ -3485,7 +3495,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it. On a backend that coordinates transactions itself, a request carrying an `X-Tx-Token` is also answered 409 CONFLICT when another request of the transaction changed an entity this request changed, from the same version: the request keeps nothing but a schema extension it made, and is retryable in the same transaction."
           content:
             application/problem+json:
               schema:
@@ -3617,7 +3627,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it. On a backend that coordinates transactions itself, a request carrying an `X-Tx-Token` is also answered 409 CONFLICT when another request of the transaction changed an entity this request changed, from the same version: the request keeps nothing but a schema extension it made, and is retryable in the same transaction."
           content:
             application/problem+json:
               schema:
@@ -3828,7 +3838,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
+          description: "Conflict — serialization failure (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination; keys are checked on the transaction's final entities when it commits). A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it. On a backend that coordinates transactions itself, a request carrying an `X-Tx-Token` is also answered 409 CONFLICT when another request of the transaction changed an entity this request changed, from the same version: the request keeps nothing but a schema extension it made, and is retryable in the same transaction."
           content:
             application/problem+json:
               schema:
@@ -3971,7 +3981,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "409":
-          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
+          description: "Conflict — concurrent writer committed during the patch (retryable) or UNIQUE_VIOLATION (a declared composite unique key already holds this field-value combination). A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it. On a backend that coordinates transactions itself, a request carrying an `X-Tx-Token` is also answered 409 CONFLICT when another request of the transaction changed an entity this request changed, from the same version: the request keeps nothing but a schema extension it made, and is retryable in the same transaction."
           content:
             application/problem+json:
               schema:
@@ -4224,7 +4234,7 @@ paths:
                 detail: cannot find model entityName=nobel-prize, version=1
                 instance: /api/entity/JSON/nobel-prize/1
         "409":
-          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it."
+          description: "Conflict — serialization failure (retryable), or UNIQUE_VIOLATION: a declared composite unique key already holds this field-value combination (keys are checked on the transaction's final entities when it commits). MODEL_NOT_LOCKED (not retryable): the model is not LOCKED. A schema extension never causes a 409 CONFLICT: writes that extend the same model all succeed. A request carrying an `X-Tx-Token` is also answered 409 COMMIT_IN_JOINED_TRANSACTION (not retryable) when the workflow it runs reaches a COMMIT_BEFORE_DISPATCH processor: that processor would commit the transaction the request joined. A request carrying an `X-Tx-Token` is also answered 409 CONFLICT, not retryable, when the transaction it joined lost a write race; the operation that owns the transaction fails with a retryable 409 CONFLICT, and its client retries it. On a backend that coordinates transactions itself, a request carrying an `X-Tx-Token` is also answered 409 CONFLICT when another request of the transaction changed an entity this request changed, from the same version: the request keeps nothing but a schema extension it made, and is retryable in the same transaction."
           content:
             application/problem+json:
               schema:
