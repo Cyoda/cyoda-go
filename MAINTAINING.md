@@ -101,10 +101,10 @@ when the check of the row before it passes.
 
 | # | Step | Who | Where | Merge | Check | Details |
 |---|---|---|---|---|---|---|
-| 1 | SPI: apply pending Dependabot bumps, rename `CHANGELOG.md` `[Unreleased]` to `[X.Y.Z] - <date>`, push | Preparer | SPI `main`, or SPI `release/vX.Y.Z` for a patch | — | SPI CI green on that commit | [Coordinated release](#coordinated-release-across-sibling-repos) 1 |
+| 1 | SPI: apply pending Dependabot bumps, rename `CHANGELOG.md` `[Unreleased]` to `[X.Y.Z] - <date>`, push | Preparer | SPI `main`, or SPI `release/vX.Y.Z` for a patch while the next minor is open | — | SPI CI green on that commit | [Coordinated release](#coordinated-release-across-sibling-repos) 1 |
 | 2 | SPI tag | Key holder | the commit of row 1 | — | tag signed: `git cat-file -p <tag>` shows `BEGIN SSH SIGNATURE` | same |
 | 3 | SPI GitHub Release | Preparer | the SPI tag | — | the Go proxy and `sum.golang.org` serve the tag | same |
-| 4 | Release-prep commit: SPI pin, Dependabot bumps, tidy, `CHANGELOG.md`, release notes, `COMPATIBILITY.md` | Preparer | `release/vX.Y.Z` | — | `make check-spi-pin-sync`, `make test`, CI green | [Gate 0](#0-reconcile-dependencies-on-the-release-branch-gate), [6.5](#65-update-compatibilitymd) |
+| 4 | Release-prep commit: SPI pin, Dependabot bumps, tidy, `dependabot.yml` `target-branch` (minor only), `CHANGELOG.md`, release notes, `COMPATIBILITY.md` | Preparer | `release/vX.Y.Z` | — | `make check-spi-pin-sync`, `make test`, CI green | [Gate 0](#0-reconcile-dependencies-on-the-release-branch-gate), [6.5](#65-update-compatibilitymd) |
 | 5 | Release PR `release/vX.Y.Z` → `main` | Preparer | PR | merge commit | CI green on the PR head | [Merging a release PR](#merging-a-release-pr) |
 | 6 | Three plugin tags | Key holder | the release merge commit on `main` | — | each tag signed | [1](#1-plugin-submodule-tags-first) |
 | 7 | Pin commit: root `go.mod` requires the plugin tags | Preparer | pushed to `main` | — | CI green on that commit | [3](#3-pin-plugin-module-versions-to-the-release-tags), [5](#5-verify-ci-is-green) |
@@ -121,9 +121,9 @@ wrap-up with two forward merges (merge commits, never squash): see
 
 ### Merging a release PR
 
-Merge release PRs through the REST endpoint, not `gh pr merge`: that command
-goes through the GraphQL API and checks out the base branch locally, which
-fails when a worktree holds it:
+Merge release PRs through the REST endpoint, not `gh pr merge`. `gh pr merge`
+uses the GraphQL API, and with `--delete-branch` it switches the local checkout
+to the base branch, which fails when a worktree holds that branch.
 
 ```bash
 # release PR and forward merges: merge commit
@@ -263,10 +263,12 @@ Do this as a single consolidated **release-prep** commit on the release branch,
 3. `go mod tidy` in every module.
 4. Point `.github/dependabot.yml`'s `target-branch` at the **next** release
    branch (`release/vX.Y+1.0`), every entry together. The branch itself is
-   opened in step 10, immediately after the merge-to-`main`, so the config and
-   the branch land within minutes of each other. Skip this for a
+   opened in step 10, from `main` after the chart merge. Skip this for a
    [patch release while the next minor is open](#patch-release-while-the-next-minor-is-open).
-5. Verify: `make check-spi-pin-sync` and `make test` locally, then push.
+5. Stamp `CHANGELOG.md` `[Unreleased]` as `[X.Y.Z] — YYYY-MM-DD`, add
+   `docs/release-notes/vX-Y-Z.md`, and add the `COMPATIBILITY.md` row
+   ([6.5](#65-update-compatibilitymd)).
+6. Verify: `make check-spi-pin-sync` and `make test` locally, then push.
    CI runs on every push to `release/**` and is the full-suite gate (CLAUDE.md
    Gate 5): do not also run `make test-full` or `make race` locally.
 
@@ -287,11 +289,12 @@ Pick the same version number as the root tag to keep the mental model
 simple:
 
 ```bash
-# In cyoda-go (main branch, at the commit to be released):
 # pick per release
 V=v0.6.0
+# the release merge commit on main
+SHA=<release merge commit>
 for p in memory postgres sqlite; do
-  git tag -s -a "plugins/$p/$V" -m "Release plugins/$p/$V"
+  git tag -s -a "plugins/$p/$V" -m "Release plugins/$p/$V" "$SHA"
 done
 git push origin "plugins/memory/$V" "plugins/postgres/$V" "plugins/sqlite/$V"
 ```
@@ -371,13 +374,13 @@ verifies the published image.
 
 ### 6.5. Update COMPATIBILITY.md
 
-Add a row to the `cyoda-go × cyoda-go-spi` matrix in [`COMPATIBILITY.md`](./COMPATIBILITY.md) for the new `cyoda-go` tag. Capture: root `go.mod` SPI pin, plugin submodule SPI pins (these may differ from root if the submodules don't need new SPI fields), and a one-line summary of the SPI surface added in this release (or `—` if binary-only).
+Add a row to the `cyoda-go × cyoda-go-spi` matrix in [`COMPATIBILITY.md`](./COMPATIBILITY.md) for the new `cyoda-go` tag. Capture the SPI pin (pin-sync keeps the root and plugin pins equal) and a one-line summary of the SPI surface added in this release (or `—` if binary-only).
 
 If the chart `version:` or `appVersion:` changed in this cycle, update the "Helm chart × binary" table.
 
 If out-of-tree-plugin guidance changed (e.g. cassandra adopted a new SPI pin), update the "Out-of-tree plugins" table.
 
-The update lands either on the release-prep PR (if the matrix data is known pre-tag) or on a follow-up `docs(compatibility): record v<X.Y.Z>` commit immediately after step 7. The latter is acceptable because the matrix records the pin observed AT a published tag.
+The update lands in the release-prep commit (gate 0).
 
 ### 7. Cut the release
 
@@ -444,7 +447,7 @@ cyoda-go-spi   ← cyoda-go   ← cyoda-go-cassandra
 Release in topological order:
 
 1. **`cyoda-go-spi`**: on the branch the release is cut from (`main`, or
-   `release/vX.Y.Z` for a patch), apply the pending Dependabot bumps, rename
+   `release/vX.Y.Z` for a patch while the next minor is open), apply the pending Dependabot bumps, rename
    the `[Unreleased]` changelog section to `[X.Y.Z] - YYYY-MM-DD`, push, and
    wait for CI to pass on that commit. The key holder tags that commit. Only
    then create the GitHub Release. No build workflow fires; the release is
@@ -564,17 +567,10 @@ release follows):
      dependency bumps, then re-pin.
 
    Commit the merge.
-3. **Re-pin cyoda-go** to SPI `main` after step 1, then the plugins:
+3. **Re-pin cyoda-go** to SPI `main` after step 1: re-pin as in
+   [Bumping cyoda-go-spi](#bumping-cyoda-go-spi), then commit and push. Then
+   re-pin the plugins:
    ```bash
-   # SPI main after the merge of step 1
-   SPI_SHA=<sha>
-   for d in . plugins/memory plugins/postgres plugins/sqlite; do
-     (cd "$d" && GOWORK=off go get "github.com/cyoda/cyoda-go-spi@$SPI_SHA" && GOWORK=off go mod tidy)
-   done
-   make check-spi-pin-sync
-   git add go.mod go.sum plugins/*/go.mod plugins/*/go.sum
-   git commit -m "chore: pin cyoda-go-spi to main after the $V merge"
-   git push origin "merge/$V"
    make repin-plugins
    git add go.mod go.sum
    git commit -m "chore: repin plugin modules to the branch head"
@@ -642,7 +638,7 @@ and adds the conformance cases its `### Breaking` section lists.
 **The SPI pin is maintainer-owned, not Dependabot-owned.** During a milestone
 the root and plugin `go.mod` files pin a pseudo-version of a `cyoda-go-spi`
 commit on the branch the milestone targets (`main` for a minor,
-`release/vX.Y.Z` for a patch), and the final bump to the tagged `vX.Y.Z`
+`release/vX.Y.Z` for a patch while the next minor is open), and the final bump to the tagged `vX.Y.Z`
 happens by hand at release time (gate 0 above). `.github/dependabot.yml`
 therefore carries an `ignore` rule for `github.com/cyoda/cyoda-go-spi` in
 every `gomod` block. This is deliberate: the SPI pin moves in lock-step with a coordinated
@@ -822,14 +818,21 @@ Skip this step for a
 run its wrap-up instead.
 
 The `target-branch` edit from gate 0 is now on `main`, naming a branch that
-does not exist yet. Create it from the merge commit, immediately:
+does not exist yet. Create it from `main` now, at the chart squash-merge commit:
 
 ```bash
 # the next milestone
-V_NEXT=v0.9.0
+V_NEXT=v0.11.0
 git fetch origin
 git branch "release/${V_NEXT}" origin/main
 git push origin "release/${V_NEXT}"
+```
+
+Delete the shipped release branch; its commits are on `main` through the
+release merge commit:
+
+```bash
+git push origin --delete "release/vX.Y.Z"
 ```
 
 Then confirm the two agree — this is the check that catches a silent

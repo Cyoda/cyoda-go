@@ -55,7 +55,7 @@ Two repo-internal rules still hold and must not be confused with a binary↔SPI 
 
 ### Out-of-tree plugin authors
 
-A plugin pinned to **`cyoda-go-spi v<X.Y.Z>`** is compatible with any **`cyoda-go v<A.B.C>`** whose root `go.mod` pins the same `v<X.Y>.*` series or any *later* `v<X+1.0.0>` series that hasn't broken the interfaces the plugin uses. The breaking patches listed under [Independent version axes](#independent-version-axes) are the exceptions to the same-series rule.
+A plugin pinned to **`cyoda-go-spi v<X.Y.Z>`** is compatible with any **`cyoda-go v<A.B.C>`** whose root `go.mod` pins the same `v0.Y.*` series, or a later series that hasn't broken the interfaces the plugin uses. The breaking patches listed under [Independent version axes](#independent-version-axes) are the exceptions to the same-series rule.
 
 In practice, today: **all SPI versions `v0.5.0` … `v0.8.1` are mutually source-compatible** (additive changes only). Plugins on any of these versions build and run correctly against `cyoda-go v0.7.x` and `v0.8.1`. `cyoda-go-spi v0.8.3` breaks this: its bounded-or-fail `Searcher` contract removes `SearchOptions.Offset` and renames `MergePage` to `MergeBounded`, so a plugin pinned to any version below `v0.8.3` — including the additive `v0.8.2` — must be migrated (see the matrix row above) before it builds against `v0.8.3` or later. `v0.8.4` breaks it again and more widely: `EntityStore` requires `Search` and `Iterate` and loses `GetAll`/`GetAllAsAt` (the optional `Searcher` and `Iterable` interfaces are folded in), `CompareAndSave` must reject an empty `expectedTxID`, `Filter.Prepare`/`PreparedFilter.Match` replace `MatchFilter` and `EvalLeafString` with no shim, `AsyncSearchStore` gains `Release`, `SearchJob` gains `StaleClaims`, and `ModelNode` carries a set of branches. There is no deprecation window on any of them. `v0.9.0` breaks it a third time: `ScheduledTaskStore` is replaced whole, `TransactionManager.LostRace` and `TransactionManager.ConsistencyTime` are required methods, `AsyncSearchStore.ClearResults` takes the claim epoch, `EntityStore.Count` and `CountByState` take `asAt`, `KeyValueStore` gains conditional writes with no key-value operation joining a transaction, `ScheduledTaskStore.SchedulerActivity` and `TransactionManager.LatestRecordedTime` are required, and `CreateJob` stamps the search-job heartbeat — see the `v0.9.0` matrix row.
 
@@ -67,10 +67,10 @@ cyoda-go's root `go.mod` may pin a **newer** SPI version than out-of-tree plugin
 
 Through a development milestone the root `go.mod` and every in-tree plugin
 submodule pin a **pseudo-version** of `cyoda-go-spi` against its `main`, or
-against its release branch for a patch milestone, because the surface the
-milestone needs is merged there but not yet tagged. The pseudo-version advances
-as milestone work lands — not per PR, only when a dependent change needs the
-newer surface to build. Both halves must move together: the `GOWORK=off` CI
+against its release branch for a patch milestone while the next minor is open,
+because the surface the milestone needs is merged there but not yet tagged.
+The pseudo-version advances as milestone work lands — not per PR, only when a
+dependent change needs the newer surface to build. Both halves must move together: the `GOWORK=off` CI
 jobs resolve the root manifest as a consumer would, so plugins left at old tags
 fail there while `go.work` keeps every local run green (`make repin-plugins`).
 
@@ -292,4 +292,4 @@ End users always get a coherent install — the formula's `version` IS the binar
 
 Update on every cyoda-go binary release **and** on every cyoda-go-spi tag. The release-manager workflow in [`MAINTAINING.md`](./MAINTAINING.md) includes this file in the release checklist.
 
-When the SPI introduces a breaking interface change (not planned in v0.x), add a "Breaking" row to the matrix and document the migration path in [`CHANGELOG.md`](./CHANGELOG.md).
+When the SPI introduces a breaking interface change, add a "Breaking" row to the matrix and document the migration path in [`CHANGELOG.md`](./CHANGELOG.md).
