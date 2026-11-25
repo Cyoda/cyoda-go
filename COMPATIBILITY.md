@@ -76,9 +76,9 @@ run green (`make repin-plugins`).
 At the release cut the window closes: all four manifests are re-pinned to the
 real tag, checked by `make check-spi-pin-sync`. **Currently pinned: the
 pseudo-version `v0.9.1-0.20261125011131-ed06454fa527`**, a commit on
-`cyoda-go-spi` branch `release/v0.9.1` (the merge of cyoda/cyoda-go-spi#88), work for the v0.9.1 milestone (it removes
-the rollback-only mark from `TransactionCoordinator`); the `v0.9.1` tag replaces
-it at the release cut. This module ships breaking changes without a major
+`cyoda-go-spi` branch `release/v0.9.1` (the merge of cyoda/cyoda-go-spi#88),
+work for the v0.9.1 milestone (it removes the rollback-only mark from
+`TransactionCoordinator`); the `v0.9.1` tag replaces it at the release cut. This module ships breaking changes without a major
 version (see [Independent version axes](#independent-version-axes)), and its
 `### Breaking` changelog section rather than the version component is what
 flags it.
@@ -225,6 +225,14 @@ recorded with it, as it is. It passes the
 and `Transaction/DeleteSaveDelete`.
 [cyoda-go-cassandra#119](https://github.com/Cyoda/cyoda-go-cassandra/issues/119) tracks it; the first
 cyoda-go-cassandra release that contains it is the minimum for this version.
+For `v0.9.1`: a plugin that offers transaction coordination
+(`TransactionCoordinationCapable`) implements the `TransactionCoordinator`
+without the rollback-only mark. `DiscardScope(ctx)` takes no `failedCode`, and
+`RollbackOnlyError` and `ErrTxRollbackOnly` are gone. `DiscardScope` of a
+completed scope refuses, and `Seal` fails after any `DiscardScope` that
+returned an error. A discarded scope's reads leave the transaction's read set
+with its writes. [cyoda-go-cassandra#121](https://github.com/Cyoda/cyoda-go-cassandra/issues/121)
+tracks the capability.
 
 ## Helm chart × binary
 
