@@ -28,8 +28,18 @@ _Released 1 January 2030 · 2 issues delivered_
 - **First.** A list item that
   wraps onto a second line.
 - **Second.** One line.
+  - A nested item
+    that wraps.
+- **Third.** An item
+whose lazy continuation has no indent.
 1. A numbered item
    that wraps.
+
+A paragraph that names
+#737 at the start of a line.
+
+#738 starts this paragraph,
+which wraps.
 
 | A | B |
 |---|---|
@@ -58,7 +68,13 @@ _Released 1 January 2030 · 2 issues delivered_
 
 - **First.** A list item that wraps onto a second line.
 - **Second.** One line.
+  - A nested item that wraps.
+- **Third.** An item whose lazy continuation has no indent.
 1. A numbered item that wraps.
+
+A paragraph that names #737 at the start of a line.
+
+#738 starts this paragraph, which wraps.
 
 | A | B |
 |---|---|
@@ -86,6 +102,18 @@ fi
 title="$("$SCRIPT" --notes "$scratch/notes.md" --print-title)"
 if [[ "$title" != "Cyoda-go v9.9.9 released" ]]; then
 	echo "FAIL: title = '$title', want 'Cyoda-go v9.9.9 released'"
+	exit 1
+fi
+
+# A version that does not match the notes' heading is refused.
+if "$SCRIPT" v1.0.0 --notes "$scratch/notes.md" >/dev/null 2>&1; then
+	echo "FAIL: a version that does not match the notes' heading was accepted"
+	exit 1
+fi
+
+# Missing notes are refused.
+if "$SCRIPT" --notes "$scratch/absent.md" >/dev/null 2>&1; then
+	echo "FAIL: a missing notes file was accepted"
 	exit 1
 fi
 

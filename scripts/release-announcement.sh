@@ -5,7 +5,9 @@
 #
 # GitHub Discussions render a single line break as a hard break, so the body
 # joins each wrapped paragraph and list item onto one line. Headings, tables,
-# blockquotes and fenced code are kept line for line.
+# blockquotes and fenced code are kept line for line. As in Markdown, a line
+# that starts a block (`- `, `1. `, `> `, `|`, a heading `# `) is not joined to
+# the line before it: do not begin a wrapped prose line with one.
 #
 # Usage:
 #   scripts/release-announcement.sh vX.Y.Z            # print the body (dry run)
@@ -75,6 +77,7 @@ fi
 body="$(python3 -I -c '
 import re, sys
 item = re.compile(r"^\s*([-*+]|\d+\.)\s")
+heading = re.compile(r"^#{1,6}(\s|$)")
 out, fence = [], False
 for line in open(sys.argv[1], encoding="utf-8").read().split("\n"):
     s = line.strip()
@@ -82,9 +85,9 @@ for line in open(sys.argv[1], encoding="utf-8").read().split("\n"):
         fence = not fence
         out.append(line)
         continue
-    keep = fence or s == "" or s.startswith(("#", "|", ">")) or item.match(line)
+    keep = fence or s == "" or heading.match(s) or s.startswith(("|", ">")) or item.match(line)
     prev = out[-1].strip() if out else ""
-    if keep or not out or prev == "" or prev.startswith(("#", "|", ">", "```")):
+    if keep or not out or prev == "" or heading.match(prev) or prev.startswith(("|", ">", "```")):
         out.append(line)
     else:
         out[-1] = out[-1].rstrip() + " " + s
@@ -108,7 +111,7 @@ ids="$(gh api graphql -f query='query($o:String!,$n:String!){ repository(owner:$
 	-f o="$REPO_OWNER" -f n="$REPO_NAME" \
 	-q "[.data.repository.id, (.data.repository.discussionCategories.nodes[] | select(.slug == \"$CATEGORY_SLUG\") | .id)] | @tsv")"
 repo_id="$(printf '%s' "$ids" | cut -f1)"
-category_id="$(printf '%s' "$ids" | cut -f2)"
+category_id="$(printf '%s' "$ids" | cut -s -f2)"
 [ -n "$category_id" ] || {
 	echo "ERROR: no '$CATEGORY_SLUG' discussion category in $REPO_OWNER/$REPO_NAME" >&2
 	exit 1
