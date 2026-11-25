@@ -65,10 +65,16 @@ github.com/cyoda/cyoda-go-spi v0.9.1-0.20261125040216-29bc685cebec h1:mijVWBBfMm
 github.com/cyoda/cyoda-go-spi v0.9.1-0.20261125040216-29bc685cebec/go.mod h1:wCLZEhTG9o23lCvFkjNbdt53A/sIGcPItY4VC6iea4c=
 github.com/cyoda/cyoda-go/plugins/memory v0.9.1-0.20261123010557-5b04051fa178 h1:/2fIKeef8ODV4pJWYwHnsPo6lOZLt7IdvcnA0Hvbsco=
 github.com/cyoda/cyoda-go/plugins/memory v0.9.1-0.20261123010557-5b04051fa178/go.mod h1:LlqcqD7aYdy22ICp5mRb37DceQdw3xcizbCeZXxFFrw=
+github.com/cyoda/cyoda-go/plugins/memory v0.9.1-0.20261125040917-00c4fafe29f2 h1:fTTQaz5IQwRzIX+42APs1bDu4XH9zsSp/xv3sGgy1eA=
+github.com/cyoda/cyoda-go/plugins/memory v0.9.1-0.20261125040917-00c4fafe29f2/go.mod h1:H9hjpXf6hLmk4jM4qU5D2qc6nUfSnPxSQwG2irPc4Zk=
 github.com/cyoda/cyoda-go/plugins/postgres v0.9.1-0.20261123010557-5b04051fa178 h1:Gal0v7gr5Tb6oU8CLy0OuCls+lsPqGKe7lmcaOw86ik=
 github.com/cyoda/cyoda-go/plugins/postgres v0.9.1-0.20261123010557-5b04051fa178/go.mod h1:PUf28epUh1HoGIiOTTldTDtE/7r1MlFLWgdoH+H+6is=
+github.com/cyoda/cyoda-go/plugins/postgres v0.9.1-0.20261125040917-00c4fafe29f2 h1:/Xx5Qga+KHfYvE/nPdS7WrT0tJcOD2VfroBayp8RFvI=
+github.com/cyoda/cyoda-go/plugins/postgres v0.9.1-0.20261125040917-00c4fafe29f2/go.mod h1:Mjs955lZUrCFPxYwMVehUXP/VoE5IEPtpWxPaMjA/kg=
 github.com/cyoda/cyoda-go/plugins/sqlite v0.9.1-0.20261123010557-5b04051fa178 h1:Z/z5Bd38zvqOODsm6lJnJ+ySqmvkfc+Y0LxpMvJcxC0=
 github.com/cyoda/cyoda-go/plugins/sqlite v0.9.1-0.20261123010557-5b04051fa178/go.mod h1:2cwy77+hJXcaXXPO0BiSWcGoSnEGMuATzufVzZsyQXQ=
+github.com/cyoda/cyoda-go/plugins/sqlite v0.9.1-0.20261125040917-00c4fafe29f2 h1:L4K3mZLz9CaR7/mvXMPD8mlBmodGQIA7eVl/wGbyvDU=
+github.com/cyoda/cyoda-go/plugins/sqlite v0.9.1-0.20261125040917-00c4fafe29f2/go.mod h1:UCsQreaJZZcxRe/YDmkgu8jeXle4A1HSso53nF0PqJk=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dhui/dktest v0.4.6 h1:+DPKyScKSEp3VLtbMDHcUq6V5Lm5zfZZVb0Sk7Ahom4=
