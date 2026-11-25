@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
 # Build, and on request post, the release announcement for a cyoda-go release:
 # a GitHub Discussion in the Announcements category, titled
 # "Cyoda-go vX.Y.Z released", whose body is docs/release-notes/vX-Y-Z.md.
@@ -18,6 +19,10 @@
 # no REST API, so posting uses `gh api graphql`.
 #
 # Compatible with bash 3.2+ (macOS system bash).
+#
+# The GraphQL queries name their variables ($o, $n, $r, ...) inside single
+# quotes on purpose: gh passes them to GraphQL, and the shell must not expand
+# them (hence the file-wide SC2016 directive on line 2).
 set -euo pipefail
 
 REPO_OWNER="cyoda"
