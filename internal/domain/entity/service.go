@@ -790,11 +790,10 @@ func deleteWriteError(msg string, err error) *common.AppError {
 
 // classifyCommitErr classifies a refused seal or a failed commit of the flow's
 // transaction by its cause, never answering with an *AppError found deeper in
-// it: a broken transaction's cause carries the answer the joined request that
-// met it was given, and that answer is not the owner's. A storage outage (a
-// dead PostgreSQL session) is the retryable 503; a lost write race
-// (spi.ErrTxAborted) or a first-committer-wins refusal the retryable 409;
-// anything else common.Internal.
+// it: an answer found there was given to another request, not the owner. A
+// storage outage (a dead PostgreSQL session) is the retryable 503; a lost
+// write race (spi.ErrTxAborted) or a first-committer-wins refusal the
+// retryable 409; anything else common.Internal.
 func classifyCommitErr(err error) *common.AppError {
 	if appErr := common.StorageUnavailable(err); appErr != nil {
 		return appErr

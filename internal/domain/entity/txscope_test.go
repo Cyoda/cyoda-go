@@ -14,6 +14,8 @@ import (
 
 	spi "github.com/cyoda/cyoda-go-spi"
 	"github.com/cyoda/cyoda-go/internal/common"
+	wfengine "github.com/cyoda/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda/cyoda-go/internal/fence"
 	"github.com/cyoda/cyoda-go/internal/txcoord"
 	"github.com/cyoda/cyoda-go/plugins/memory"
 )
@@ -577,12 +579,10 @@ func TestClassifyCommitErr(t *testing.T) {
 	}
 }
 
-// TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn: a transaction broken by a
-// dead session carries, deep in its cause, the answer the joined request that
-// met it was given. The owner classifies the cause — its own retryable 503 —
-// and never returns that request's answer as its own. The shape is the one
-// Seal returns (txcoord: "unusable: %w" around sessionEnded's "session has
-// ended: %w" around the joined request's answered error).
+// TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn: a refused seal or a
+// failed commit whose cause carries, deep in it, an answer another request was
+// given. The owner classifies the cause — its own retryable 503 — and never
+// returns that answer as its own.
 func TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -600,6 +600,71 @@ func TestClassifyCommitErr_BrokenCauseIsTheOwnersOwn(t *testing.T) {
 			}
 			if got.Status != http.StatusServiceUnavailable || got.Code != common.ErrCodeStorageUnavailable || !got.Retryable {
 				t.Fatalf("classifyCommitErr = %d %s retryable=%t (%s); want the retryable 503 STORAGE_UNAVAILABLE", got.Status, got.Code, got.Retryable, got.Message)
+			}
+		})
+	}
+}
+
+// deadSessionErr is a dead PostgreSQL session's error: it matches
+// spi.ErrTxNotFound and carries the storage-unavailable marker.
+type deadSessionErr struct{}
+
+func (deadSessionErr) Error() string            { return "the session ended" }
+func (deadSessionErr) StorageUnavailable() bool { return true }
+func (deadSessionErr) Is(target error) bool     { return target == spi.ErrTxNotFound }
+
+// TestClassifyEngineError_CommitBeforeDispatchSealOfBrokenTx: a
+// COMMIT_BEFORE_DISPATCH segment whose seal is refused because a joined
+// request met a dead session answers the owner's own retryable 503, whatever
+// that joined request was answered. The refusal is the one the in-process
+// coordination's Seal returns after the joined request ended.
+func TestClassifyEngineError_CommitBeforeDispatchSealOfBrokenTx(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		joined *common.AppError
+	}{
+		{"the joined request's own 503", common.StorageUnavailable(fmt.Errorf("failed to read: %w", deadSessionErr{}))},
+		{"a joined answer of another code", common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity id=e1 not found").
+			WithCause(fmt.Errorf("failed to read: %w", deadSessionErr{}))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := memory.NewStoreFactory()
+			t.Cleanup(func() { _ = f.Close() })
+			f.NewTransactionManager(common.NewDefaultUUIDGenerator())
+			tm := f.GetTransactionManager()
+			userCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
+				UserID: "u1", Kind: spi.PrincipalUser, Tenant: spi.Tenant{ID: "tenant-a"},
+			})
+			txID, ownerCtx, err := tm.Begin(userCtx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			c := txcoord.New(tm)
+			_, endCallout := c.BeginCallout(ownerCtx, txID, "c1")
+			c.Advance("c1", 1)
+			joined, err := tm.Join(userCtx, txID)
+			if err != nil {
+				t.Fatalf("Join: %v", err)
+			}
+			s, _, err := c.Enter(joined, txID, []fence.Pair{{Callout: "c1", Major: 1}}, txcoord.Write, 0)
+			if err != nil {
+				t.Fatalf("Enter: %v", err)
+			}
+			ans := s.End(&common.Outcome{Status: tc.joined.Status, Code: tc.joined.Code, Retryable: tc.joined.Retryable, Err: tc.joined})
+			if ans == nil || ans.Code != common.ErrCodeTransactionNotFound {
+				t.Fatalf("joined answer = %v; want 404 TRANSACTION_NOT_FOUND", ans)
+			}
+			endCallout()
+			finish, sealErr := c.Seal(userCtx, txID)
+			finish()
+			if sealErr == nil {
+				t.Fatal("Seal = nil; want the broken transaction refused")
+			}
+
+			got := classifyEngineError(
+				fmt.Errorf("commit-before-dispatch: seal TX_pre: %w", errors.Join(wfengine.ErrCommitBeforeDispatchInfra, sealErr)), "e1")
+			if got.Status != http.StatusServiceUnavailable || got.Code != common.ErrCodeStorageUnavailable || !got.Retryable {
+				t.Fatalf("classifyEngineError = %d %s retryable=%t (%s); want the retryable 503 STORAGE_UNAVAILABLE", got.Status, got.Code, got.Retryable, got.Message)
 			}
 		})
 	}

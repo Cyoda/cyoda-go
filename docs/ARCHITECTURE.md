@@ -650,7 +650,8 @@ ended, a rollback to a savepoint that failed, or a discard that failed
 transaction **broken**: later joined requests are refused with
 `404 TRANSACTION_NOT_FOUND`, and the owner fails with the broken cause,
 classified as usual (a dead PostgreSQL session is the retryable
-`503 STORAGE_UNAVAILABLE`). Any other failed joined request ends its scope as
+`503 STORAGE_UNAVAILABLE`). The broken cause is the store's error, never the
+answer a joined request was given. Any other failed joined request ends its scope as
 the table says and leaves the transaction as it was: later joined requests are
 admitted as before, and the callout ends with what the compute member
 answers. The failure is the member's to handle: its processor, function

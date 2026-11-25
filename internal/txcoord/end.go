@@ -94,10 +94,12 @@ func decide(e ending, class RequestClass, f *failure) (*common.AppError, error) 
 	}
 	// Row 3: the transaction's session has ended. The scope is discarded if
 	// that is still possible, and the request answers 404 whatever the
-	// discard did.
+	// discard did. The cause that breaks the transaction is the dead session,
+	// never the request's own answer: the owner's commit is answered by that
+	// cause, not by what another request was told.
 	if f != nil && errors.Is(f.err, spi.ErrTxNotFound) {
 		_ = e.discard()
-		return transactionNotFound(f.err), sessionEnded(f.err)
+		return transactionNotFound(f.err), sessionEnded(underAnswers(f.err))
 	}
 	switch {
 	case f == nil:
@@ -127,9 +129,10 @@ func decide(e ending, class RequestClass, f *failure) (*common.AppError, error) 
 // cannot succeed.
 //
 // Only the scope's own discard counts: every row that discards returns the
-// discard's result as failed, unwrapped. Row 3's failed wraps the request's
-// error, which may carry the failed discard of another scope (a processor
-// scope the handler ran), and row 3 answers 404 whatever its own discard did.
+// discard's result as failed, unwrapped. Row 3's failed wraps the cause of
+// the request's error, which may carry the failed discard of another scope (a
+// processor scope the handler ran), and row 3 answers 404 whatever its own
+// discard did.
 func endAnswer(answer *common.AppError, failed error) *common.AppError {
 	if _, ok := failed.(*discardFailure); ok {
 		return common.InternalWithCode(common.ErrCodeServerError,
@@ -149,6 +152,18 @@ func (d *discardFailure) Unwrap() error { return d.err }
 
 // completionFailure is a request whose handler succeeded and whose completion
 // step failed with err: it is answered 500 SERVER_ERROR.
+// underAnswers is the cause of a dead-session error under the answers a
+// request's handlers gave it: every *common.AppError on the way to
+// spi.ErrTxNotFound is taken off, so what remains matches spi.ErrTxNotFound
+// and carries no answer.
+func underAnswers(err error) error {
+	var appErr *common.AppError
+	for errors.As(err, &appErr) && errors.Is(appErr.Err, spi.ErrTxNotFound) {
+		err = appErr.Err
+	}
+	return err
+}
+
 func completionFailure(err error) *failure {
 	return &failure{
 		status:     http.StatusInternalServerError,

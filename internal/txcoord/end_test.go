@@ -144,6 +144,44 @@ func TestEnd_Row3_NestedDiscardFailureStill404(t *testing.T) {
 	}
 }
 
+// Row 3 records the dead session as the cause that breaks the transaction,
+// never the joined request's own answer: the owner's Seal refusal carries
+// that cause to the owner's classification, which must answer by the cause
+// and never with an answer that was given to another request.
+func TestEnd_Row3_BrokenCauseIsNotTheRequestsAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer *common.AppError
+	}{
+		{"storage unavailable", common.StorageUnavailable(fmt.Errorf("failed to save: %w", deadSession{}))},
+		{"internal", common.Internal("failed to run the processor", fmt.Errorf("failed to read: %w", deadSession{}))},
+		{"wrapped twice", common.Internal("failed to search",
+			common.StorageUnavailable(fmt.Errorf("failed to read: %w", deadSession{})))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			_, endC1 := e.callout(e.ownerCtx, "c1")
+			a, _ := e.mustEnter(Write, pair("c1", 1))
+
+			ans := a.End(&common.Outcome{Status: tc.answer.Status, Code: tc.answer.Code, Retryable: tc.answer.Retryable, Err: tc.answer})
+			mustAnswer(t, ans, http.StatusNotFound, common.ErrCodeTransactionNotFound, false)
+
+			endC1()
+			err := e.seal()
+			var appErr *common.AppError
+			if errors.As(err, &appErr) {
+				t.Fatalf("Seal = %v; carries the joined request's answer %d %s", err, appErr.Status, appErr.Code)
+			}
+			if !errors.Is(err, spi.ErrTxNotFound) {
+				t.Fatalf("Seal = %v; want the dead session as the cause", err)
+			}
+			if su := common.StorageUnavailable(err); su == nil {
+				t.Fatalf("Seal = %v; want the storage-unavailable marker kept", err)
+			}
+		})
+	}
+}
+
 func TestEnd_Row4_SuccessReleases(t *testing.T) {
 	e := newEnv(t)
 	_, endC1 := e.callout(e.ownerCtx, "c1")
