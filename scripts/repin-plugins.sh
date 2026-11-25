@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Pseudo-version-pin the in-repo plugin submodules (memory, sqlite, postgres) in
-# the ROOT go.mod to the current (pushed) HEAD, then refresh go.sum.
+# the ROOT go.mod to the current (pushed) HEAD, then tidy the root module so
+# go.sum carries no stale plugin lines.
 #
 # Why: during a coordinated-release window the root module depends on plugin
 # code that isn't tagged yet — e.g. an SPI change adds a required method to a
@@ -12,8 +13,8 @@
 # pushed (go list resolves the commit from origin).
 #
 # Usage: push your plugin changes, run `make repin-plugins`, then commit the
-# resulting go.mod / go.sum. At release cut these pseudo-pins are replaced by
-# the real plugin tags (see MAINTAINING.md §3).
+# resulting go.mod / go.sum; no further tidy is needed. At release cut these
+# pseudo-pins are replaced by the real plugin tags (see MAINTAINING.md §3).
 #
 # Compatible with bash 3.2+ (macOS system bash).
 set -euo pipefail
@@ -38,8 +39,10 @@ for p in "${PLUGINS[@]}"; do
 	mods+=("${mod}")
 done
 
-echo "Refreshing go.sum (GOWORK=off)..."
+echo "Refreshing go.sum and tidying the root module (GOWORK=off)..."
 GOWORK=off go mod download "${mods[@]}"
+# download only adds lines; tidy drops the previous pins' lines from go.sum.
+GOWORK=off go mod tidy
 
 echo "Verifying GOWORK=off root build and SPI pin-sync..."
 GOWORK=off go build ./... >/dev/null
