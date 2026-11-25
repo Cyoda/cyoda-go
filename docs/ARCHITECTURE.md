@@ -622,6 +622,8 @@ the first matching row:
 | 7 | non-retryable `4xx` of a read | completed | the handler's |
 | 8 | non-retryable `5xx` of a read | discarded | the handler's |
 
+A discarded scope's reads go with it: the scope's read set is rolled back with its writes, so the commit validates only what kept scopes and the owner read.
+
 A scope whose discard fails did not end as its row answers: except in row 3,
 which answers `404` whatever its own discard did, `End` replaces the answer
 with `500 SERVER_ERROR`, not retryable (`endAnswer`,
