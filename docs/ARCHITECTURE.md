@@ -815,8 +815,9 @@ operations from any number of goroutines and nodes. The backend holds the
 scopes and the fencing numbers. The rules of the scope tree and the table of
 how a scope ends are the same, except that nothing records a transaction as
 broken: a scope whose `DiscardScope` failed is answered `500 SERVER_ERROR`
-(row 3 excepted) and is never completed, and the backend's `Seal` must then
-fail (below). There is no
+(row 3 excepted), cyoda-go never confirms its completion, and the
+transaction cannot commit, because the backend's `Seal` must then fail
+(below). There is no
 gate and no stack rule, a pause only checks the scope again on resume, and
 nothing waits: a scope in progress when its callout advances or ends, or when
 the transaction is sealed, cannot complete, so it is discarded and answered

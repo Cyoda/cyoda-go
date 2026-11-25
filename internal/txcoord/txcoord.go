@@ -119,9 +119,9 @@ type Scope interface {
 	// cannot be discarded is answered 500 SERVER_ERROR, not retryable,
 	// except in row 3, which answers 404. The in-process coordination then
 	// records the transaction as broken. The durable one records nothing:
-	// the scope is never completed, so the commit does not keep it, and the
-	// backend must fail Seal after a discard that failed. o is what the
-	// request was answered with; nil, or a status
+	// cyoda-go never confirms the scope's completion, and the backend must
+	// fail Seal after a discard that failed, so the transaction cannot
+	// commit. o is what the request was answered with; nil, or a status
 	// below 400 without a panic, is a success. Call it exactly once, after
 	// the handler returned.
 	End(o *common.Outcome) *common.AppError
