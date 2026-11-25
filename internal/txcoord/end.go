@@ -150,8 +150,6 @@ func (d *discardFailure) Error() string {
 }
 func (d *discardFailure) Unwrap() error { return d.err }
 
-// completionFailure is a request whose handler succeeded and whose completion
-// step failed with err: it is answered 500 SERVER_ERROR.
 // underAnswers is the cause of a dead-session error under the answers a
 // request's handlers gave it: every *common.AppError on the way to
 // spi.ErrTxNotFound is taken off, so what remains matches spi.ErrTxNotFound
@@ -164,6 +162,8 @@ func underAnswers(err error) error {
 	return err
 }
 
+// completionFailure is a request whose handler succeeded and whose completion
+// step failed with err: it is answered 500 SERVER_ERROR.
 func completionFailure(err error) *failure {
 	return &failure{
 		status:     http.StatusInternalServerError,
