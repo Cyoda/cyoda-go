@@ -16,7 +16,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   carrying an `X-Tx-Token` is answered `409 CONFLICT`, not retryable, when the
   transaction it joined lost a write race. On a backend that coordinates
   transactions itself, it is also answered `409 CONFLICT`, retryable, for a
-  scope conflict. Every operation that serves such a request declares both:
+  scope conflict. Every operation that serves such a request declares the answers it can give:
   through the new `JoinedTransactionConflict` response, or in its existing
   `409` description. The token operation declares the join layer's answers:
   `404`, `410` and `413`, and problem bodies for its `403` and `503`.

@@ -143,7 +143,8 @@ does with the processor's answer. When the outcome of a write is unknown — a
 `503 TRANSACTION_NODE_UNAVAILABLE` that is not retryable (the request may have
 reached the node that holds the transaction), or no answer at all — the member
 cannot tell whether the write was kept, so it must fail the callout. A failed
-callback whose scope cannot be discarded is answered `500 SERVER_ERROR`, and
+callback whose scope cannot be discarded is answered `500 SERVER_ERROR` (except
+when the transaction's session has ended: `404 TRANSACTION_NOT_FOUND`), and
 `T` can then no longer commit. A callback still in progress when its
 callout moves on is discarded and answered `410 CALLOUT_SUPERSEDED`. See
 `cyoda help cluster` and `docs/cloud-parity/callback-scopes.md`.

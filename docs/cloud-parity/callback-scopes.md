@@ -61,7 +61,7 @@ A schema extension a callback made stays in every row.
 | Answer | Before | After |
 |---|---|---|
 | A callback still in progress when its callout advanced (the work went to another compute node) or ended | its own answer; writes kept | `410 CALLOUT_SUPERSEDED`; writes discarded |
-| A failed callback, retryable or not | its own answer; the owner could commit what it had staged | its own answer; nothing kept; the transaction goes on |
+| A failed callback, retryable or not | its own answer; the owner could commit what it had staged | its own answer; nothing kept, except that a read answered with a non-retryable `4xx` keeps what it read; the transaction goes on |
 | A callback in a transaction that lost a write race | `409 CONFLICT`, retryable | `409 CONFLICT`, **not** retryable (the owner keeps the retryable `409`) |
 | A callback whose PostgreSQL session ended under it (connection lost, idle-in-transaction ceiling) | `503 STORAGE_UNAVAILABLE`, retryable | `404 TRANSACTION_NOT_FOUND`, not retryable (the owner keeps the retryable `503`) |
 | `503 TRANSACTION_NODE_UNAVAILABLE`, the request was not sent to the owner (not live, address refused, connection not opened) | not retryable | **retryable** |
