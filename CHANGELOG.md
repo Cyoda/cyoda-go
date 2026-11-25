@@ -54,20 +54,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
-- **A failed callback write no longer dooms the transaction.** A callback that
-  fails keeps nothing and the transaction goes on: the compute member gets the
-  answer and its processor decides whether the operation fails. Before, a
-  write that failed with an answer that was not retryable made the operation
-  fail with `409 TRANSACTION_ROLLBACK_ONLY` whatever the member answered; that
-  code is gone.
-- **The OpenAPI document declares a joined request's answers.** A request
-  carrying an `X-Tx-Token` is answered `409 CONFLICT`, not retryable, when the
-  transaction it joined lost a write race. On a backend that coordinates
-  transactions itself, it is also answered `409 CONFLICT`, retryable, for a
-  scope conflict. Every operation that serves such a request declares the answers it can give:
-  through the new `JoinedTransactionConflict` response, or in its existing
-  `409` description. The token operation declares the join layer's answers:
-  `404`, `410` and `413`, and problem bodies for its `403` and `503`.
 - **A scheduled firing records its own transition name.** The version a
   scheduled firing made kept the transition name of the request before it, so
   an entity read showed that stale name in `meta.transitionForLatestSave`; so
@@ -92,6 +78,25 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   its example showed `"UPDATE"`, which reads as a change type rather than a
   transition name; `search` listed the field among the meta dates (it is a
   string).
+
+## [0.9.1] — 2026-11-24
+
+### Fixed
+
+- **A failed callback write no longer dooms the transaction.** A callback that
+  fails keeps nothing and the transaction goes on: the compute member gets the
+  answer and its processor decides whether the operation fails. Before, a
+  write that failed with an answer that was not retryable made the operation
+  fail with `409 TRANSACTION_ROLLBACK_ONLY` whatever the member answered; that
+  code is gone.
+- **The OpenAPI document declares a joined request's answers.** A request
+  carrying an `X-Tx-Token` is answered `409 CONFLICT`, not retryable, when the
+  transaction it joined lost a write race. On a backend that coordinates
+  transactions itself, it is also answered `409 CONFLICT`, retryable, for a
+  scope conflict. Every operation that serves such a request declares the answers it can give:
+  through the new `JoinedTransactionConflict` response, or in its existing
+  `409` description. The token operation declares the join layer's answers:
+  `404`, `410` and `413`, and problem bodies for its `403` and `503`.
 
 ## [0.9.0] — 2026-11-22
 
