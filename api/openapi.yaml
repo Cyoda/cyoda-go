@@ -6884,6 +6884,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "409":
+          $ref: '#/components/responses/JoinedTransactionConflict'
         "410":
           description: >-
             TRANSACTION_EXPIRED: in a cluster, a request carrying an
@@ -13301,7 +13303,12 @@ components:
         cannot start its work in the transaction, is answered this code. Not
         retryable for this request: a retry in the same transaction fails the
         same way. The operation that owns the transaction fails with a
-        retryable 409 CONFLICT, and its client retries it.
+        retryable 409 CONFLICT, and its client retries it. On a backend that
+        coordinates transactions itself, a joined request is also answered
+        CONFLICT when another request of the transaction changed an entity
+        this request changed, from the same version: the request keeps
+        nothing but a schema extension it made, and is retryable in the same
+        transaction.
       content:
         application/problem+json:
           schema:
