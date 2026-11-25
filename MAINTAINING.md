@@ -447,8 +447,9 @@ cyoda-go-spi   ← cyoda-go   ← cyoda-go-cassandra
 Release in topological order:
 
 1. **`cyoda-go-spi`**: on the branch the release is cut from (`main`, or
-   `release/vX.Y.Z` for a patch while the next minor is open), apply the pending Dependabot bumps, rename
-   the `[Unreleased]` changelog section to `[X.Y.Z] - YYYY-MM-DD`, push, and
+   `release/vX.Y.Z` for a patch while the next minor is open), apply the
+   pending Dependabot bumps, rename the `[Unreleased]` changelog section to
+   `[X.Y.Z] - YYYY-MM-DD`, push, and
    wait for CI to pass on that commit. The key holder tags that commit. Only
    then create the GitHub Release. No build workflow fires; the release is
    the tag itself.
@@ -638,8 +639,9 @@ and adds the conformance cases its `### Breaking` section lists.
 **The SPI pin is maintainer-owned, not Dependabot-owned.** During a milestone
 the root and plugin `go.mod` files pin a pseudo-version of a `cyoda-go-spi`
 commit on the branch the milestone targets (`main` for a minor,
-`release/vX.Y.Z` for a patch while the next minor is open), and the final bump to the tagged `vX.Y.Z`
-happens by hand at release time (gate 0 above). `.github/dependabot.yml`
+`release/vX.Y.Z` for a patch while the next minor is open), and the final
+bump to the tagged `vX.Y.Z` happens by hand at release time (gate 0 above).
+`.github/dependabot.yml`
 therefore carries an `ignore` rule for `github.com/cyoda/cyoda-go-spi` in
 every `gomod` block. This is deliberate: the SPI pin moves in lock-step with a coordinated
 cross-repo release (gate 0), and a Dependabot group that bundles the SPI pin
