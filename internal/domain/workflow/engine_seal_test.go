@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -14,8 +15,8 @@ import (
 )
 
 // engine_seal_test.go — every transaction the engine commits or rolls back is
-// sealed first: a transaction a failed joined write made rollback-only is never
-// committed, and the coordination forgets the transaction afterwards.
+// sealed first: a transaction a joined request left broken is never committed,
+// and the coordination forgets the transaction afterwards.
 
 // sealEnv is an engine on the memory plugin and one open transaction of it.
 type sealEnv struct {
@@ -41,10 +42,17 @@ func newSealEnv(t *testing.T) *sealEnv {
 	return &sealEnv{e: NewEngine(cachedFactory(f), uuids, tm, platformclock.Real()), tm: tm, f: f, ctx: ctx, txID: txID, txCtx: txCtx}
 }
 
-// markRoot makes the transaction rollback-only as a failed joined write does:
-// a callback scope under a callout of the owner ends with a non-retryable
+// sessionEnded is a joined request's failure that met the transaction's ended
+// session: its scope ends by the row that leaves the transaction broken.
+func sessionEnded() *common.Outcome {
+	return &common.Outcome{Status: http.StatusServiceUnavailable, Code: common.ErrCodeStorageUnavailable, Retryable: true,
+		Err: fmt.Errorf("failed to save: %w", spi.ErrTxNotFound)}
+}
+
+// breakTx leaves the transaction broken as a joined request whose session
+// ended does: a callback scope under a callout of the owner ends with that
 // failure.
-func (s *sealEnv) markRoot(t *testing.T) {
+func (s *sealEnv) breakTx(t *testing.T) {
 	t.Helper()
 	_, end := s.e.coord.BeginCallout(s.txCtx, s.txID, "seal-callout")
 	defer end()
@@ -57,11 +65,11 @@ func (s *sealEnv) markRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enter: %v", err)
 	}
-	sc.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+	sc.End(sessionEnded())
 }
 
 // assertForgotten asserts the coordination holds nothing of the transaction:
-// a new seal is that of a transaction never seen, which a kept marked one
+// a new seal is that of a transaction never seen, which a kept broken one
 // would refuse.
 func (s *sealEnv) assertForgotten(t *testing.T) {
 	t.Helper()
@@ -72,20 +80,21 @@ func (s *sealEnv) assertForgotten(t *testing.T) {
 	}
 }
 
-func requireRollbackOnly(t *testing.T, err error) {
+// requireBroken asserts err is the seal's refusal of a transaction whose
+// session ended.
+func requireBroken(t *testing.T, err error) {
 	t.Helper()
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeTransactionRollbackOnly {
-		t.Fatalf("err = %v; want TRANSACTION_ROLLBACK_ONLY", err)
+	if !errors.Is(err, spi.ErrTxNotFound) {
+		t.Fatalf("err = %v; want the broken transaction's cause (spi.ErrTxNotFound)", err)
 	}
 }
 
 // TestEngine_FlushAndCommitSegment_SealsTxPre: TX_pre of a
-// COMMIT_BEFORE_DISPATCH processor is sealed before its flush: a rollback-only
-// TX_pre is neither flushed nor committed, and the coordination forgets it.
+// COMMIT_BEFORE_DISPATCH processor is sealed before its flush: a broken TX_pre
+// is neither flushed nor committed, and the coordination forgets it.
 func TestEngine_FlushAndCommitSegment_SealsTxPre(t *testing.T) {
 	s := newSealEnv(t)
-	s.markRoot(t)
+	s.breakTx(t)
 	entity := &spi.Entity{
 		Meta: spi.EntityMeta{ID: "seal-e1", TenantID: testTenant, ModelRef: spi.ModelRef{EntityName: "SealModel", ModelVersion: "1"}, State: "S"},
 		Data: []byte(`{"x":1}`),
@@ -93,7 +102,7 @@ func TestEngine_FlushAndCommitSegment_SealsTxPre(t *testing.T) {
 
 	err := s.e.flushAndCommitSegment(s.txCtx, entity, s.txID)
 
-	requireRollbackOnly(t, err)
+	requireBroken(t, err)
 	s.assertForgotten(t)
 	if err := s.tm.Rollback(s.ctx, s.txID); err != nil {
 		t.Fatalf("TX_pre is not open for its rollback (was it committed?): %v", err)
@@ -107,11 +116,11 @@ func TestEngine_FlushAndCommitSegment_SealsTxPre(t *testing.T) {
 	}
 }
 
-// TestEngine_FireScheduled_RootMarked_Fails: a callback of the fire's SYNC
-// processor failed a write. The run seals before its final writes; the
-// refusal is the fire's failure, nothing of the fire is committed, and the
-// coordination forgets the transaction.
-func TestEngine_FireScheduled_RootMarked_Fails(t *testing.T) {
+// fireWithCallback runs a scheduled fire whose SYNC processor makes a callout
+// with one callback that ends with o; the processor then answers success. It
+// returns the fire's report and its transaction id.
+func fireWithCallback(t *testing.T, entityID string, o *common.Outcome) (*runEnv, RunReport, string) {
+	t.Helper()
 	var env *runEnv
 	var fireTxID string
 	ext := &scriptedExtProc{processor: func(ctx context.Context, _ spi.ProcessorDefinition, txID string) (*spi.Entity, error) {
@@ -128,15 +137,24 @@ func TestEngine_FireScheduled_RootMarked_Fails(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		sc.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+		sc.End(o)
 		return nil, nil
 	}}
 	env = newRunEnv(t, ext)
-	task := env.claimed(t, "seal-fire-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
-
+	task := env.claimed(t, entityID, oneHopWF("CLOSED", []spi.ProcessorDefinition{safeProc("p1", ExecutionModeSync)}, nil))
 	report, _ := env.run(task)
+	return env, report, fireTxID
+}
 
-	requireRollbackOnly(t, report.Err)
+// TestEngine_FireScheduled_BrokenTx_Fails: a callback of the fire's SYNC
+// processor met the transaction's ended session, which leaves the
+// transaction broken. The run seals before its final writes; the refusal is
+// the fire's failure, nothing of the fire is committed, and the coordination
+// forgets the transaction.
+func TestEngine_FireScheduled_BrokenTx_Fails(t *testing.T) {
+	env, report, fireTxID := fireWithCallback(t, "seal-fire-e1", sessionEnded())
+
+	requireBroken(t, report.Err)
 	if got := env.state(t, "seal-fire-e1"); got != "OPEN" {
 		t.Fatalf("state = %q; want OPEN — the refused fire commits nothing", got)
 	}
@@ -147,11 +165,26 @@ func TestEngine_FireScheduled_RootMarked_Fails(t *testing.T) {
 	}
 }
 
+// TestEngine_FireScheduled_FailedCallbackWrite_Commits: a callback of the
+// fire's SYNC processor failed a write, and the processor answered success.
+// The failed write kept nothing, and the fire commits.
+func TestEngine_FireScheduled_FailedCallbackWrite_Commits(t *testing.T) {
+	env, report, _ := fireWithCallback(t, "seal-fire-e2",
+		&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
+
+	if report.Err != nil {
+		t.Fatalf("fire = %v; want it committed", report.Err)
+	}
+	if got := env.state(t, "seal-fire-e2"); got != "CLOSED" {
+		t.Fatalf("state = %q; want CLOSED", got)
+	}
+}
+
 // TestEngine_RollbackSegment_SealsAndForgets: a segment the engine rolls back
 // is sealed first and forgotten after.
 func TestEngine_RollbackSegment_SealsAndForgets(t *testing.T) {
 	s := newSealEnv(t)
-	s.markRoot(t)
+	s.breakTx(t)
 
 	s.e.rollbackSegment(s.ctx, s.txID, "")
 

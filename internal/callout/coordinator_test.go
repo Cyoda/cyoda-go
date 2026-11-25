@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -713,149 +712,41 @@ func TestOwner_AScheduledFiresIdentityIsGivenToTheLocalTryAndTheHandOver(t *test
 	}
 }
 
-// raceTM is noopTM in a transaction that has lost a write race from the
-// loseFrom-th LostRace ask on; loseFrom 0 never loses.
-//
-// A failed callback's End asks first (row 2): answered "not lost", it marks the
-// scope. Every later ask — the owner's, after the mark — then reads the race
-// as lost. That is a race lost after the mark, made visible before the owner
-// can look, without changing the row End takes.
-type raceTM struct {
-	noopTM
-	asks     *atomic.Int32
-	loseFrom int32
-}
-
-func (m raceTM) LostRace(context.Context, string) (bool, error) {
-	n := m.asks.Add(1)
-	return m.loseFrom > 0 && n >= m.loseFrom, nil
-}
-
-// losesAfterTheMark is a raceTM whose race reads as lost from the ask after the
-// failed callback's End; neverLoses never loses.
-func losesAfterTheMark() raceTM { return raceTM{asks: &atomic.Int32{}, loseFrom: 2} }
-func neverLoses() raceTM        { return raceTM{asks: &atomic.Int32{}} }
-
-// raceFor is losesAfterTheMark when lose is set, neverLoses otherwise.
-func raceFor(lose bool) raceTM {
-	if lose {
-		return losesAfterTheMark()
-	}
-	return neverLoses()
-}
-
-// A callback of the callout fails a write: the scope the callout was begun from
-// is marked, which cancels the callout. The owner's loop makes no further try,
-// and the callout fails with that scope's refusal — 409
-// TRANSACTION_ROLLBACK_ONLY naming the callback's code, or, when the
-// transaction has lost a write race, the retryable conflict.
-func TestCoordinator_RollbackOnlyCauseMapsTo409(t *testing.T) {
-	run := func(t *testing.T, loseAfterTheMark bool, fromCallback bool) error {
-		e := newEnvOver(t, Config{FixedNumRetries: 1}, raceFor(loseAfterTheMark))
-		var first *cnode
-		first = e.attach(t, "m-1", tenantA, "x", func(*internalgrpc.MemberRegistry, *internalgrpc.Member, string) {
-			// m-1's callback fails its write; m-1 never answers the callout.
-			_, passes := first.seen()
-			claims := claimsOf(t, e, passes[0])
-			pairs := []txcoord.Pair{{Callout: claims.Callout, Major: claims.Major, Minor: claims.Minor}}
-			pairs = append(pairs, claims.Outer...)
-			s, _ := e.callback(t, txcoord.Write, pairs...)
-			// With loseAfterTheMark, the race is lost after this End has
-			// marked (raceTM): the failed write may have been the stale
-			// snapshot's doing.
-			s.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
-		})
-		second := e.attach(t, "m-2", tenantA, "x", answers("m-2"))
-
-		ctx := userCtx(tenantA)
-		if fromCallback {
-			_, endOuter := e.coord.BeginCallout(context.Background(), "tx-1", "outer-callout")
-			defer endOuter()
-			e.coord.Advance("outer-callout", 1)
-			scope, callback := e.callback(t, txcoord.Write, txcoord.Pair{Callout: "outer-callout", Major: 1})
-			defer scope.End(nil)
-			resume := txcoord.Pause(callback)
-			defer func() { _ = resume() }()
-			ctx = callback
-		}
-		err := e.dispatchPatientFunction(ctx, "x")
-		if second.count() != 0 {
-			t.Error("the owner's loop tried another member after the mark")
-		}
-		return err
-	}
+// A cnode that answers its callout after one of its callbacks failed a write
+// decides the callout: the failed callback kept nothing, and the scope the
+// callout was made from goes on, so the callout succeeds with the cnode's
+// answer, from the root and from a callback.
+func TestCoordinator_AnsweredAfterAFailedCallbackWrite_Succeeds(t *testing.T) {
 	for name, fromCallback := range map[string]bool{"from the root": false, "from a callback": true} {
 		t.Run(name, func(t *testing.T) {
-			err := run(t, false, fromCallback)
-			appErr := appErrOf(t, err)
-			if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeTransactionRollbackOnly || appErr.Retryable {
-				t.Fatalf("err = %d %s retryable=%v; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable", appErr.Status, appErr.Code, appErr.Retryable)
+			e := newEnv(t, Config{})
+			var only *cnode
+			only = e.attach(t, "m-1", tenantA, "x", func(_ *internalgrpc.MemberRegistry, m *internalgrpc.Member, requestID string) {
+				_, passes := only.seen()
+				claims := claimsOf(t, e, passes[0])
+				pairs := []txcoord.Pair{{Callout: claims.Callout, Major: claims.Major, Minor: claims.Minor}}
+				pairs = append(pairs, claims.Outer...)
+				s, _ := e.callback(t, txcoord.Write, pairs...)
+				if ans := s.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed}); ans != nil {
+					t.Errorf("the failed callback's answer was rewritten: %v", ans)
+				}
+				answers("m-1")(nil, m, requestID)
+			})
+
+			ctx := userCtx(tenantA)
+			if fromCallback {
+				_, endOuter := e.coord.BeginCallout(context.Background(), "tx-1", "outer-callout")
+				defer endOuter()
+				e.coord.Advance("outer-callout", 1)
+				scope, callback := e.callback(t, txcoord.Write, txcoord.Pair{Callout: "outer-callout", Major: 1})
+				defer scope.End(nil)
+				resume := txcoord.Pause(callback)
+				defer func() { _ = resume() }()
+				ctx = callback
 			}
-			if !strings.Contains(appErr.Message, common.ErrCodeWorkflowFailed) {
-				t.Errorf("message %q does not name the callback's code", appErr.Message)
+			if _, err := e.dispatchFunction(ctx, "x", ""); err != nil {
+				t.Fatalf("dispatch = %v; want the cnode's answer", err)
 			}
 		})
 	}
-	t.Run("lost race first", func(t *testing.T) {
-		if err := run(t, true, false); !errors.Is(err, spi.ErrTxAborted) {
-			t.Fatalf("err = %v; want the lost race (spi.ErrTxAborted)", err)
-		}
-	})
-}
-
-// A cnode that answers its callout after one of its callbacks failed a write
-// does not make the callout succeed: the scope it was made from is marked, so
-// the callout fails with that scope's refusal whichever the owner's loop sees
-// first, the mark's cancellation or the answer.
-//
-// The callback ends before the answer is sent. A callback still in progress
-// when the cnode answers is another case: the owner ends the callout, and the
-// callback then ends superseded and marks nothing (row 1).
-func TestCoordinator_AnsweredAfterTheMark_FailsRollbackOnly(t *testing.T) {
-	e := newEnv(t, Config{})
-	var only *cnode
-	only = e.attach(t, "m-1", tenantA, "x", func(_ *internalgrpc.MemberRegistry, m *internalgrpc.Member, requestID string) {
-		_, passes := only.seen()
-		s, _ := e.callback(t, txcoord.Write, pairOf(t, e, passes[0]))
-		s.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
-		answers("m-1")(nil, m, requestID)
-	})
-	_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
-	appErr := appErrOf(t, err)
-	if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeTransactionRollbackOnly {
-		t.Fatalf("err = %d %s; want 409 TRANSACTION_ROLLBACK_ONLY", appErr.Status, appErr.Code)
-	}
-}
-
-// A cnode that answers a non-retryable failure after one of its callbacks
-// failed a write does not decide the callout either: the scope is marked, so
-// the callout fails with the scope's refusal — 409 TRANSACTION_ROLLBACK_ONLY,
-// or the retryable conflict when the transaction has lost a write race after
-// the mark — whichever the owner's loop sees first, the mark's cancellation or
-// the failure.
-func TestCoordinator_FailedAfterTheMark_FailsWithTheScopesRefusal(t *testing.T) {
-	run := func(t *testing.T, lose bool) error {
-		e := newEnvOver(t, Config{}, raceFor(lose))
-		var only *cnode
-		verdict := false
-		only = e.attach(t, "m-1", tenantA, "x", func(_ *internalgrpc.MemberRegistry, m *internalgrpc.Member, requestID string) {
-			_, passes := only.seen()
-			s, _ := e.callback(t, txcoord.Write, pairOf(t, e, passes[0]))
-			s.End(&common.Outcome{Status: http.StatusBadRequest, Code: common.ErrCodeWorkflowFailed})
-			fails("the member failed", &verdict)(nil, m, requestID)
-		})
-		_, err := e.dispatchFunction(userCtx(tenantA), "x", "")
-		return err
-	}
-	t.Run("rollback-only", func(t *testing.T) {
-		appErr := appErrOf(t, run(t, false))
-		if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeTransactionRollbackOnly || appErr.Retryable {
-			t.Fatalf("err = %d %s retryable=%v; want 409 TRANSACTION_ROLLBACK_ONLY, not retryable", appErr.Status, appErr.Code, appErr.Retryable)
-		}
-	})
-	t.Run("lost race first", func(t *testing.T) {
-		if err := run(t, true); !errors.Is(err, spi.ErrTxAborted) {
-			t.Fatalf("err = %v; want the lost race (spi.ErrTxAborted)", err)
-		}
-	})
 }

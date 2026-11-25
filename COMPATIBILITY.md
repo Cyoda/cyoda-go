@@ -48,7 +48,7 @@ Coordinated-release procedure documented in [`MAINTAINING.md`](./MAINTAINING.md)
 
 ### Independent version axes
 
-`cyoda-go` and `cyoda-go-spi` version **independently**. The binary pins the SPI version it needs and never skips or burns a version number to mirror the SPI's — this matrix is the source of truth for which binary pins which SPI, not a shared digit. A breaking `cyoda-go-spi` release is a minor: one that breaks an interface, or that adds a conformance case an existing implementor fails ([`MAINTAINING.md`](./MAINTAINING.md), *Bumping cyoda-go-spi*). Read its `### Breaking` changelog section on every bump. The SPI was strictly additive throughout `v0.5.0…v0.8.2`. `v0.8.3` and `v0.8.4` are breaking releases that shipped as patches, before the rule covered the SPI; `v0.9.0`, a minor, is the first breaking release under it.
+`cyoda-go` and `cyoda-go-spi` version **independently**. The binary pins the SPI version it needs and never skips or burns a version number to mirror the SPI's — this matrix is the source of truth for which binary pins which SPI, not a shared digit. A breaking `cyoda-go-spi` release is a minor: one that breaks an interface, or that adds a conformance case an existing implementor fails ([`MAINTAINING.md`](./MAINTAINING.md), *Bumping cyoda-go-spi*). Read its `### Breaking` changelog section on every bump. The SPI was strictly additive throughout `v0.5.0…v0.8.2`. `v0.8.3` and `v0.8.4` are breaking releases that shipped as patches, before the rule covered the SPI; `v0.9.0`, a minor, is the first breaking release under it. `v0.9.1` is a breaking patch, as an exception: it backs out the rollback-only mark that `v0.9.0` added to `TransactionCoordinator` (a bug fix) and adds the conformance cases its `### Breaking` section lists.
 
 Two repo-internal rules still hold and must not be confused with a binary↔SPI coupling: **pin-sync** (root + every `plugins/*/go.mod` agree on one SPI version, CI-gated by `make check-spi-pin-sync`) and **plugin-tag-equals-umbrella** (plugin submodule tags match the `cyoda-go` tag). Both are release hygiene *within* this repo; neither ties the binary's version number to the SPI's.
 
@@ -65,18 +65,19 @@ cyoda-go's root `go.mod` may pin a **newer** SPI version than out-of-tree plugin
 ### The SPI pin during a milestone
 
 Through a development milestone the root `go.mod` and every in-tree plugin
-submodule pin a **pseudo-version** of `cyoda-go-spi` against its `main`, because
-the surface the milestone needs is merged there but not yet tagged. The
-pseudo-version advances as milestone work lands — not per PR, only when a
-dependent change needs the newer surface to build. Both halves must move
-together: the `GOWORK=off` CI jobs resolve the root manifest as a consumer
-would, so plugins left at old tags fail there while `go.work` keeps every local
-run green (`make repin-plugins`).
+submodule pin a **pseudo-version** of `cyoda-go-spi` against its `main`, or
+against its release branch for a patch milestone, because the surface the
+milestone needs is merged there but not yet tagged. The pseudo-version advances
+as milestone work lands — not per PR, only when a dependent change needs the
+newer surface to build. Both halves must move together: the `GOWORK=off` CI
+jobs resolve the root manifest as a consumer would, so plugins left at old tags
+fail there while `go.work` keeps every local run green (`make repin-plugins`).
 
 At the release cut the window closes: all four manifests are re-pinned to the
 real tag, checked by `make check-spi-pin-sync`. **Currently pinned:
-`v0.9.1-0.20261123010453-8c5902bf761f`**, a pseudo-version of `cyoda-go-spi`
-`main` for the `v0.10.0` milestone (it adds `EntityVersionMeta.Transition`).
+`v0.9.1-0.20261125040216-29bc685cebec`**, a pseudo-version of `cyoda-go-spi`
+`main` for the `v0.10.0` milestone (it adds `EntityVersionMeta.Transition`,
+and carries the `v0.9.1` changes to `TransactionCoordinator`).
 This module ships breaking changes without a major
 version: a breaking release is a minor, and its `### Breaking` changelog
 section says what broke (see [Independent version axes](#independent-version-axes)).
@@ -223,6 +224,14 @@ recorded with it, as it is. It passes the
 and `Transaction/DeleteSaveDelete`.
 [cyoda-go-cassandra#119](https://github.com/Cyoda/cyoda-go-cassandra/issues/119) tracks it; the first
 cyoda-go-cassandra release that contains it is the minimum for this version.
+For `v0.9.1`: a plugin that offers transaction coordination
+(`TransactionCoordinationCapable`) implements the `TransactionCoordinator`
+without the rollback-only mark. `DiscardScope(ctx)` takes no `failedCode`, and
+`RollbackOnlyError` and `ErrTxRollbackOnly` are gone. `DiscardScope` of a
+completed scope refuses, and `Seal` fails after any `DiscardScope` that
+returned an error. A discarded scope's reads leave the transaction's read set
+with its writes. [cyoda-go-cassandra#121](https://github.com/Cyoda/cyoda-go-cassandra/issues/121)
+tracks the capability.
 
 ## Helm chart × binary
 

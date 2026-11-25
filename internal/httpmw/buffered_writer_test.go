@@ -55,12 +55,12 @@ func TestTxJoin_AResponseOverTheCeilingFails_AndIsNotTruncated(t *testing.T) {
 		t.Fatal("the transaction's gate was not released")
 	}
 	// The answer is the request's outcome: a write whose answer could not be
-	// sent is discarded, and the transaction can only be rolled back — the
-	// compute node cannot know what its write did.
+	// sent is discarded, so the 413 tells the compute node that nothing of it
+	// was kept, and the transaction goes on: the next request is served.
 	rec = httptest.NewRecorder()
 	routed(TxJoin(j), okHandler()).ServeHTTP(rec, joinedRequest(t, pass, nil))
-	if rec.Code != http.StatusConflict || problemProps(t, rec).ErrorCode != "TRANSACTION_ROLLBACK_ONLY" {
-		t.Fatalf("the next request = %d %+v; want 409 TRANSACTION_ROLLBACK_ONLY", rec.Code, problemProps(t, rec))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the next request = %d %s; want it served 200", rec.Code, rec.Body.String())
 	}
 }
 

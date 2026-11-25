@@ -67,7 +67,7 @@ func NewJoiner(signer *token.Signer, txMgr spi.TransactionManager, coord txcoord
 // Past it the request FAILS, with the 413 ResponseTooLargeError builds: a
 // truncated answer would be a wrong answer given as an available one. The door
 // decides it inside the handler, so it is the request's outcome: a write
-// answered with it is discarded and marks its parent.
+// answered with it is discarded.
 func (j *Joiner) MaxResponseBytes() int { return j.maxResponseBytes }
 
 // ResponseTooLargeError is what a door tells a compute member whose answer
@@ -273,12 +273,12 @@ func (j *Joiner) Run(ctx context.Context, tok string, class txcoord.RequestClass
 // funnels record on the context (common.RecordOutcome) wins; the outcome the
 // handler returns is the door's backstop for an answer that passed no funnel,
 // and nil when it has none. A handler that panics ends its scope as a failed
-// request — discarded, and a write marks its parent — and the panic goes on
+// request — discarded — and the panic goes on
 // to the recovery layer outside the door.
 //
 // rewrite non-nil: the scope's end overrides the handler's answer (the pass
-// was superseded, the transaction lost a race or its session ended, the scope
-// was marked, or the completion failed). The door sends rewrite and drops what
+// was superseded, the transaction lost a race or its session ended, or the
+// completion failed). The door sends rewrite and drops what
 // the handler produced. A failure the handler answered through the shared
 // funnels is logged here, once the scope has ended: as it was answered, or,
 // when rewritten, folded into rewrite, whose line the door writes

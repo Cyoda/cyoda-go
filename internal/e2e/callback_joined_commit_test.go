@@ -30,9 +30,11 @@ import (
 // marker is the witness: had the second callback committed T, the marker would
 // have been committed with it and would still be readable after the rollback.
 //
-// The owner-commits scenario: the outer processor ignores the refusal and
-// answers success, so the owner commits T. The marker is committed with it, and
-// the refused write left nothing behind.
+// The processor-handles-it scenario: the outer processor makes the refused
+// write again without the pass — outside T, where its processor may commit —
+// and answers success, so the owner commits T. The marker is committed with
+// it, the write made outside has run the target's workflow, and the refused
+// write left nothing behind.
 //
 // Covered doors — every entity write a compute node can call back through that
 // runs the workflow engine: HTTP create, create collection, update with a
@@ -236,11 +238,17 @@ type joinedCommitObserved struct {
 	markerOK  bool
 	markerRes string
 	outcome   joinedCommitOutcome
+	// dispatchedAtRefusal counts the COMMIT_BEFORE_DISPATCH processor's
+	// dispatches when the write under test had answered.
+	dispatchedAtRefusal int32
+	// outside is the answer to the write made again without the pass, when
+	// the processor handles the refusal.
+	outside callbackResult
 }
 
-func runJoinedCommitCase(t *testing.T, h *callbackHarness, door joinedCommitDoor, startNewTx, ownerCommits bool) (observed joinedCommitObserved, outerStatus int, outerBody string, target joinedCommitTarget, cbdDispatched int32) {
+func runJoinedCommitCase(t *testing.T, h *callbackHarness, door joinedCommitDoor, startNewTx, processorHandles bool) (observed joinedCommitObserved, outerStatus int, outerBody string, target joinedCommitTarget, cbdDispatched int32) {
 	t.Helper()
-	suffix := fmt.Sprintf("%s-%t-%t", door.name, startNewTx, ownerCommits)
+	suffix := fmt.Sprintf("%s-%t-%t", door.name, startNewTx, processorHandles)
 	outer := "jc-outer-" + suffix
 	marker := "jc-marker-" + suffix
 	targetModel := "jc-target-" + suffix
@@ -274,10 +282,13 @@ func runJoinedCommitCase(t *testing.T, h *callbackHarness, door joinedCommitDoor
 		o.markerOK = err == nil && res.StatusCode == http.StatusOK
 		o.markerID, o.markerRes = res.EntityID, fmt.Sprintf("%d %s %v", res.StatusCode, res.Body, err)
 		o.outcome = door.write(h, rc, targetModel, target)
-		seen <- o
-		if ownerCommits {
-			return nil, nil // ignore the refusal: the owner commits T
+		o.dispatchedAtRefusal = dispatched.Load()
+		if processorHandles {
+			o.outside = callbackOutcome(outsideWrite(h, door.shape, target))
+			seen <- o
+			return nil, nil // the refusal is handled: the owner commits T
 		}
+		seen <- o
 		return nil, fmt.Errorf("outer processor fails on purpose so the owner rolls its transaction back")
 	})
 	h.SetupModelWithWorkflow(t, outer, joinedCommitOuterWorkflow(outer, outerProc))
@@ -364,29 +375,56 @@ func TestCallback_CommitBeforeDispatchInJoinedTransaction_Refused(t *testing.T) 
 	}
 }
 
-// TestCallback_CommitBeforeDispatchInJoinedTransaction_OwnerRollbackOnly: the
-// refused write is a non-retryable failure of a joined write. Its scope is
-// discarded and the owner's transaction made rollback-only, so an outer
-// processor that ignores the 409 and answers success still leaves its owner
-// refused 409 TRANSACTION_ROLLBACK_ONLY, naming the callback's code. Nothing of
-// T is committed: not the marker the outer processor wrote in T, not the target,
-// and not the refused workflow's audit events.
-func TestCallback_CommitBeforeDispatchInJoinedTransaction_OwnerRollbackOnly(t *testing.T) {
+// outsideWrite makes, over HTTP and without the pass, the write a door makes:
+// outside the joined transaction, so the target's COMMIT_BEFORE_DISPATCH
+// processor runs.
+func outsideWrite(h *callbackHarness, shape joinedCommitShape, target joinedCommitTarget) (callbackResult, error) {
+	switch shape {
+	case shapeOnManual:
+		return h.callback(http.MethodPut, "/api/entity/JSON/"+target.id+"/go", joinedCommitPayload, "")
+	case shapeOnLoopback:
+		return h.callback(http.MethodPut, "/api/entity/JSON/"+target.id, joinedCommitGoPayload, "")
+	default:
+		return h.callback(http.MethodPost, "/api/entity/JSON/"+target.model+"/1", joinedCommitPayload, "")
+	}
+}
+
+// TestCallback_CommitBeforeDispatchInJoinedTransaction_ProcessorHandlesIt: the
+// refused write is a non-retryable failure of a joined write, so its scope is
+// discarded and T goes on. The outer processor handles the refusal: it makes
+// the write again without the pass, outside T, and answers success. The owner
+// commits T with the marker; the write made outside ran the target's workflow
+// to DONE, dispatching the COMMIT_BEFORE_DISPATCH processor once; and the
+// refused write's workflow left no audit event.
+func TestCallback_CommitBeforeDispatchInJoinedTransaction_ProcessorHandlesIt(t *testing.T) {
 	h := newCallbackHarness(t)
 	for _, startNewTx := range []bool{false, true} {
 		for _, door := range joinedCommitDoors() {
 			t.Run(fmt.Sprintf("%s/startNewTxOnDispatch=%t", door.name, startNewTx), func(t *testing.T) {
 				o, outerStatus, outerBody, target, dispatched := runJoinedCommitCase(t, h, door, startNewTx, true)
-				pd := assertProblem(t, outerStatus, outerBody, http.StatusConflict, "TRANSACTION_ROLLBACK_ONLY", false)
-				if !strings.Contains(pd.Detail, "COMMIT_IN_JOINED_TRANSACTION") {
-					t.Errorf("owner detail = %q; want it to name the callback's COMMIT_IN_JOINED_TRANSACTION", pd.Detail)
+				assertJoinedCommitRefused(t, o.outcome, fmt.Sprintf("jc-cbd-proc-%s-%t-true", door.name, startNewTx), o.dispatchedAtRefusal)
+				if o.outside.StatusCode != http.StatusOK {
+					t.Fatalf("the write made outside the transaction: %d %s; want 200", o.outside.StatusCode, o.outside.Body)
 				}
-				assertJoinedCommitRefused(t, o.outcome, fmt.Sprintf("jc-cbd-proc-%s-%t-true", door.name, startNewTx), dispatched)
-
-				if st, code := h.GetEntityState(t, o.markerID); code != http.StatusNotFound {
-					t.Errorf("marker readable after the owner's refusal (http %d, state %q); want nothing of T committed", code, st)
+				if outerStatus != http.StatusOK {
+					t.Fatalf("owner: %d %s; want 200 — its processor handled the refusal and answered success", outerStatus, outerBody)
 				}
-				assertTargetUntouched(t, h, door, target)
+				if _, code := h.GetEntityState(t, o.markerID); code != http.StatusOK {
+					t.Errorf("marker %s: GET answered %d; want 200 — the owner committed T", o.markerID, code)
+				}
+				if dispatched != 1 {
+					t.Errorf("the COMMIT_BEFORE_DISPATCH processor was dispatched %d time(s); want once, for the write made outside", dispatched)
+				}
+				id := target.id
+				if door.shape == shapeOnCreate {
+					if n := h.countEntities(t, target.model); n != 1 {
+						t.Fatalf("%d target entities committed; want the one made outside", n)
+					}
+					id = h.firstEntityID(t, target.model)
+				}
+				if st, code := h.GetEntityState(t, id); code != http.StatusOK || st != "DONE" {
+					t.Errorf("target state = %q (http %d); want DONE — the write made outside ran its workflow", st, code)
+				}
 				if door.shape != shapeOnCreate && hasRefusedProcessorResult(h.GetSMAuditEvents(t, target.id)) {
 					t.Errorf("target %s carries the refused workflow's STATE_PROCESS_RESULT; the discarded scope's audit events must not be committed", target.id)
 				}

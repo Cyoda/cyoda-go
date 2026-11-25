@@ -1080,12 +1080,12 @@ func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, rea
 // recordEvent records a single audit event, and reports whether the store
 // accepted it.
 func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) bool {
-	// A chain whose scope is refused (superseded, or marked rollback-only)
-	// performs no store operation of any kind, an audit row included: on
-	// PostgreSQL it would be a statement on the operation's connection, after
-	// the owner has stopped waiting for this chain, and in a marked scope it
-	// would be discarded anyway. The guard is here, and not at the error paths
-	// that record, so that no further site can appear later.
+	// A chain whose scope is refused (superseded) performs no store operation
+	// of any kind, an audit row included: on PostgreSQL it would be a
+	// statement on the operation's connection, after the owner has stopped
+	// waiting for this chain, and the scope is discarded anyway. The guard is
+	// here, and not at the error paths that record, so that no further site
+	// can appear later.
 	if txcoord.Check(ctx) != nil {
 		return false
 	}

@@ -5,7 +5,6 @@ stability: stable
 see_also:
   - errors
   - workflows
-  - errors.TRANSACTION_ROLLBACK_ONLY
   - errors.TOO_MANY_JOINED_REQUESTS
 ---
 
@@ -31,5 +30,4 @@ The fix is in the compute node: send the callbacks of one transaction in series.
 
 - errors
 - workflows
-- errors.TRANSACTION_ROLLBACK_ONLY
 - errors.TOO_MANY_JOINED_REQUESTS

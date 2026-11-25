@@ -1083,7 +1083,7 @@ func waitForCapacity(t *testing.T, gate txcoord.Coordination, txID string, maxWa
 
 // lockFreeOn reports whether txID's gate is free right now: a request of the
 // live callout of txID (major 1) takes it within 50ms. A request refused after
-// it took the gate (a marked transaction) also reads as free.
+// it took the gate (a broken or sealed transaction) also reads as free.
 func lockFreeOn(gate txcoord.Coordination, txID string) func() bool {
 	return func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -1394,9 +1394,9 @@ func TestTxRoute_UnaryRewriteReplacesTheAnswer(t *testing.T) {
 }
 
 // A raw status error from a joined write is a failure the door reads itself:
-// the scope is discarded and its parent marked, so the next request is
-// refused 409 TRANSACTION_ROLLBACK_ONLY.
-func TestTxRoute_RawHandlerErrorMarks(t *testing.T) {
+// the scope is discarded, and the transaction goes on, so the next read or
+// write is served.
+func TestTxRoute_RawHandlerErrorDiscards(t *testing.T) {
 	ic, _, tok := joinedRouteInterceptor(t, "tx-1")
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
 	_, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-1"}, entityManageInfo(), func(context.Context, any) (any, error) {
@@ -1406,15 +1406,15 @@ func TestTxRoute_RawHandlerErrorMarks(t *testing.T) {
 		t.Fatalf("err = %v; want the handler's own status", err)
 	}
 	for name, info := range map[string]*googlegrpc.UnaryServerInfo{"write": entityManageInfo(), "read": entitySearchInfo()} {
+		served := &cepb.CloudEvent{Id: "req-2"}
+		ran := false
 		resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-2"}, info, func(context.Context, any) (any, error) {
-			t.Errorf("%s: a request under a marked scope ran", name)
-			return nil, nil
+			ran = true
+			return served, nil
 		})
-		if err != nil {
-			t.Fatalf("%s: expected an envelope, got %v", name, err)
+		if err != nil || !ran || resp != served {
+			t.Fatalf("%s after a failed write: ran=%v, resp=%v, err=%v; want it served", name, ran, resp, err)
 		}
-		ce, _ := resp.(*cepb.CloudEvent)
-		assertRefusalEnvelope(t, ce, "req-2", "TRANSACTION_ROLLBACK_ONLY")
 	}
 }
 

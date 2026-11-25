@@ -25,7 +25,7 @@ A compute member's callback — a request carrying a transaction token — runs 
 
 The whole answer is discarded when it passes the ceiling. Nothing is sent in part: a collection cut short would be a wrong answer given as an available one, and the caller could not tell the two apart. The same applies on all three doors — the HTTP callback door and the two gRPC ones, the unary door and the server-streaming door, where the frames of a chunked collection are counted together.
 
-On an entity write this answer is a failed write: its writes are discarded, except a schema extension it made, which stays (`cyoda help models`, SCHEMA EXTENSION), and the transaction becomes rollback-only — the operation that owns it fails with `409 TRANSACTION_ROLLBACK_ONLY`.
+On an entity write this answer is a failed write: its writes are discarded, except a schema extension it made, which stays (`cyoda help models`, SCHEMA EXTENSION). The transaction goes on, and the compute member's processor decides whether to fail.
 
 The ceiling is on the answer only. A callback's *request* body has its own, separate cap — a fixed 10 MiB, which no setting moves — and a body over it is refused with `413` `BAD_REQUEST` before the transaction is touched.
 

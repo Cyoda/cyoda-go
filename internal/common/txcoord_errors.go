@@ -1,33 +1,6 @@
 package common
 
-import (
-	"errors"
-	"fmt"
-	"net/http"
-)
-
-// ErrRollbackOnly is the cause every TRANSACTION_ROLLBACK_ONLY error carries.
-var ErrRollbackOnly = errors.New("transaction is rollback-only")
-
-// TransactionRollbackOnly is the owner's refusal: a request that joined its
-// transaction failed, so the transaction can only be rolled back. 409, not
-// retryable. failedCode is the code the failed callback got; it is empty when
-// the storage backend coordinates the transaction itself, which does not say.
-func TransactionRollbackOnly(failedCode string) *AppError {
-	msg := "a request that joined the transaction failed, so the transaction can only be rolled back"
-	if failedCode != "" {
-		msg = fmt.Sprintf("a request that joined the transaction failed with %s, so the transaction can only be rolled back", failedCode)
-	}
-	return Operational(http.StatusConflict, ErrCodeTransactionRollbackOnly, msg).WithCause(ErrRollbackOnly)
-}
-
-// TransactionRollbackOnlyJoined refuses a joined request under a marked scope.
-// 409, not retryable.
-func TransactionRollbackOnlyJoined() *AppError {
-	return Operational(http.StatusConflict, ErrCodeTransactionRollbackOnly,
-		"the transaction, or the part of it this request would run in, can only be rolled back").
-		WithCause(ErrRollbackOnly)
-}
+import "net/http"
 
 // TransactionBusy refuses a sibling of a paused callback. 503, retryable.
 func TransactionBusy() *AppError {
