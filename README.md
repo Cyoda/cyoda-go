@@ -336,7 +336,7 @@ This is the "leftmost non-zero component is the de-facto major" convention (as u
 
 **Each module versions on its own axis.** `cyoda-go-spi`, the `cyoda-go` binary, the in-tree plugins, and the Helm chart are **not** required to share a version number. The compatible combinations are recorded in [`COMPATIBILITY.md`](COMPATIBILITY.md); that matrix, not a shared digit, is the source of truth for what works with what.
 
-**`cyoda-go-spi` follows the same rule.** A breaking SPI release is a minor, and a conformance case that an existing implementor fails counts as breaking. `v0.8.3` and `v0.8.4` shipped breaking changes as patches, before the rule covered the SPI. Consumers read the SPI's own `### Breaking` changelog section on every bump.
+**`cyoda-go-spi` follows the same rule.** A breaking SPI release is a minor, and a conformance case that an existing implementor fails counts as breaking. `v0.8.3` and `v0.8.4` shipped breaking changes as patches, before the rule covered the SPI. `v0.9.1` is a breaking patch, as an exception: it backs out the rollback-only mark that `v0.9.0` added (a bug fix) and adds the conformance cases its `### Breaking` section lists. Consumers read the SPI's own `### Breaking` changelog section on every bump.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for breaking changes and [`MAINTAINING.md`](MAINTAINING.md#maintenance-of-older-release-lines) for the policy on older release lines.
 
