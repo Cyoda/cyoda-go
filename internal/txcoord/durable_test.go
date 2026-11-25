@@ -466,6 +466,62 @@ func TestDurableEnd_CompletionAppliedButUnconfirmedFailsSeal(t *testing.T) {
 	}
 }
 
+// countDiscards counts the DiscardScope calls of the coordinator it wraps.
+type countDiscards struct {
+	spi.TransactionCoordinator
+
+	mu       sync.Mutex
+	discards int
+}
+
+func (c *countDiscards) DiscardScope(ctx context.Context) error {
+	func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.discards++
+	}()
+	return c.TransactionCoordinator.DiscardScope(ctx)
+}
+
+func (c *countDiscards) discarded() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.discards
+}
+
+// TestDurableClose_CompletionAppliedButUnconfirmedFailsSeal: a processor
+// scope whose CompleteScope applied but returned an error the backend does
+// not name ends with ErrScopeInfra. Close cannot tell whether the completion
+// applied, so it discards the scope; the coordinator refuses to discard a
+// completed scope, and the owner's Seal fails.
+func TestDurableClose_CompletionAppliedButUnconfirmedFailsSeal(t *testing.T) {
+	cl := newCluster(t)
+	co, err := cl.f.(spi.TransactionCoordinationCapable).TransactionCoordinator(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := &countDiscards{TransactionCoordinator: lostAnswer{co}}
+	c := NewDurable(counted, cl.tm)
+
+	p, pctx, err := c.OpenChild(cl.txCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl.save(pctx)
+	if err := p.Close(nil); !errors.Is(err, ErrScopeInfra) {
+		t.Fatalf("Close(nil) = %v; want ErrScopeInfra", err)
+	}
+	if got := counted.discarded(); got != 1 {
+		t.Errorf("DiscardScope called %d times; want 1", got)
+	}
+
+	finish, err := cl.owner.Seal(cl.txCtx, cl.txID)
+	finish()
+	if err == nil {
+		t.Fatal("Seal after an unconfirmed processor completion = nil; want a refusal")
+	}
+}
+
 // TestDurableEnd_DiscardFailureIsAFailure: a scope the coordinator could not
 // discard is not answered as if it were: the request gets a 500.
 func TestDurableEnd_DiscardFailureIsAFailure(t *testing.T) {

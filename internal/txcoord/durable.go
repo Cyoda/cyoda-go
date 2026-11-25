@@ -351,7 +351,10 @@ func (s *durableScope) discard() error {
 }
 
 // Close implements Scope for a processor scope: discarded when the processor
-// failed, completed otherwise.
+// failed, completed otherwise. A refusal the backend names has discarded the
+// scope already. Any other error is a failed completion, and the scope is
+// discarded; when the completion applied all the same, the coordinator
+// refuses that discard, and Seal fails.
 func (s *durableScope) Close(procErr error) error {
 	if procErr != nil {
 		if err := s.c.co.DiscardScope(s.ctx); err != nil {
@@ -367,6 +370,9 @@ func (s *durableScope) Close(procErr error) error {
 		return supersededBy(err)
 	case errors.Is(err, spi.ErrScopeConflict):
 		return scopeConflict(err)
+	}
+	if dErr := s.c.co.DiscardScope(s.ctx); dErr != nil {
+		err = errors.Join(err, dErr)
 	}
 	return fmt.Errorf("failed to complete a processor scope: %w", errors.Join(ErrScopeInfra, err))
 }
